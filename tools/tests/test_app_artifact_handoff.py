@@ -89,10 +89,13 @@ for object in sys.argv[1:]:
     print(f'libc.so.6 => {dependency} (0x1000)')
 """)
         self.write("bin/readelf", """#!/usr/bin/env python3
-import pathlib, sys
+import os, pathlib, sys
 object = pathlib.Path(sys.argv[-1])
 assert object.read_bytes().startswith(b'\\x7fELF')
-if object.name != 'libc.so.6':
+if sys.argv[1] == '-lW':
+    loader = 'lib64/ld-linux-x86-64.so.2' if os.environ['FIXTURE_ARCH'] == 'x86_64' else 'lib/ld-linux-aarch64.so.1'
+    print(f'      [Requesting program interpreter: /{loader}]')
+elif object.name != 'libc.so.6':
     print(' 0x0000000000000001 (NEEDED) Shared library: [libc.so.6]')
 """)
         self.write("os/scripts/build-thin-apps.sh", """#!/bin/bash
@@ -127,6 +130,13 @@ elif a[0] == 'build':
     arch = a[a.index('--arch')+1]
     (out/'bundle.toml').write_text(f'version = "{version}"\\narch = "{arch}"\\nroot_hash = "'+'cd'*32+'"\\n')
     (out/'lib').mkdir(); (out/'lib/runtime.so').write_bytes(b'runtime payload')
+    # The loader at its interpreter path, answering the closure check's --list.
+    loader = out/'lib'/('lib64/ld-linux-x86-64.so.2' if arch == 'x86_64' else 'lib/ld-linux-aarch64.so.1')
+    loader.parent.mkdir(parents=True)
+    loader.write_text('#!/usr/bin/env python3\\nimport sys\\na = sys.argv[1:]\\n'
+                      "assert a[:2] == ['--inhibit-cache', '--library-path'] and a[3] == '--list', a\\n"
+                      "print(f'\\\\tlibc.so.6 => {a[2]}/libc.so.6 (0x1000)')\\n")
+    loader.chmod(0o755)
     for index, argument in enumerate(a):
         if argument == '--include':
             source = pathlib.Path(a[index+1])
