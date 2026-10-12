@@ -5,7 +5,7 @@
 # The custom installer cannot create users at install time (bootc install
 # makes no users), so it drops `<name>:<sha512-crypt-hash>` into the new
 # deployment's /etc/tilo/install-user.conf. On first boot, tilo-firstboot-user.service
-# runs this once: it creates the user (in wheel for sudo) initially locked,
+# runs this once: it creates the user (in wheel for sudo) locked and expired,
 # installs the supplied pre-hashed password through stdin,
 # then SHREDS the file so the hash does not linger or appear in process argv.
 set -euo pipefail
@@ -161,8 +161,10 @@ if [ -e "$TRANSACTION" ] || [ -L "$TRANSACTION" ]; then
     shadow="$(getent shadow "$user")" || exit 1
     shadow="${shadow#*:}"
     shadow="${shadow%%:*}"
-    # A crash after final unlock may leave the intent. Re-lock before retry.
+    # A crash after release may leave the intent. Expire before retry: a
+    # password lock alone does not block SSH public-key authentication.
     [ "$shadow" = "$lock_value" ] || [ "$shadow" = "$hash" ] || exit 1
+    chage -E 1970-01-02 "$user"
     printf '%s:%s\n' "$user" "$lock_value" | chpasswd --encrypted
     retry=1
   fi
@@ -221,14 +223,14 @@ if [ "$retry" -eq 0 ]; then
   done
   if [ -n "$seeded_home" ]; then
     if [ -n "$full_name" ]; then
-      useradd "${uid_args[@]}" -M -d "$seeded_home" -p "$lock_value" -c "$full_name" -G wheel,tilo-identity,video "$user"
+      useradd "${uid_args[@]}" -M -e 1970-01-02 -d "$seeded_home" -p "$lock_value" -c "$full_name" -G wheel,tilo-identity,video "$user"
     else
-      useradd "${uid_args[@]}" -M -d "$seeded_home" -p "$lock_value" -G wheel,tilo-identity,video "$user"
+      useradd "${uid_args[@]}" -M -e 1970-01-02 -d "$seeded_home" -p "$lock_value" -G wheel,tilo-identity,video "$user"
     fi
   elif [ -n "$full_name" ]; then
-    useradd "${uid_args[@]}" -M -d "$native_home" -p "$lock_value" -c "$full_name" -G wheel,tilo-identity,video "$user"
+    useradd "${uid_args[@]}" -M -e 1970-01-02 -d "$native_home" -p "$lock_value" -c "$full_name" -G wheel,tilo-identity,video "$user"
   else
-    useradd "${uid_args[@]}" -M -d "$native_home" -p "$lock_value" -G wheel,tilo-identity,video "$user"
+    useradd "${uid_args[@]}" -M -e 1970-01-02 -d "$native_home" -p "$lock_value" -G wheel,tilo-identity,video "$user"
   fi
 fi
 
@@ -286,9 +288,11 @@ if [ -e /var/lib/tilo/prepared-home ] || [ -L /var/lib/tilo/prepared-home ] \
   fi
 fi
 
-# All fallible migration runs while shadow still carries the locked intent.
+# All fallible migration runs while the account is expired and password locked.
+# Expiration also blocks SSH public-key authentication until final release.
 # Credential bytes travel only through stdin, never process arguments.
 printf '%s:%s\n' "$user" "$hash" | chpasswd --encrypted
+chage -E -1 "$user"
 
 # Remove the seed file (best-effort shred; fall back to rm).
 shred -u -- "$CONF" 2>/dev/null || rm -f -- "$CONF"
