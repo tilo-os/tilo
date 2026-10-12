@@ -15,12 +15,13 @@ without pulling an image. There is deliberately no hardcoded historical CI
 image: its fontconfig ABI may not match the executable. Neither path connects
 to a compositor or captures the user's desktop; both use `--shots` offscreen.
 
-If the executable is stale, use remote compilation/execution, not a local
-build. Run sequentially in the compatible builder and fetch only the captures:
+If the executable is stale, run these commands sequentially in a compatible
+build environment. A remote builder can use any cargo drop-in; retrieve the
+resulting PNGs through that builder's artifact mechanism.
 
 ```sh
-rcargo --no-fallback --on-builder --fetch chat-task-shots/normal.png run --locked -p chat --bin chat -- --shots target/chat-task-shots/normal.png --scenario agent-task
-rcargo --no-fallback --on-builder --fetch chat-task-shots/compact.png run --locked -p chat --bin chat -- --shots target/chat-task-shots/compact.png --scenario agent-task-compact
+cargo run --locked -p chat --bin chat -- --shots target/chat-task-shots/normal.png --scenario agent-task
+cargo run --locked -p chat --bin chat -- --shots target/chat-task-shots/compact.png --scenario agent-task-compact
 ```
 
 The scenarios draw the production Chat surface at 1280×800 and 420×680.
@@ -96,9 +97,9 @@ Backend task actions own `queue`, `approve-run`, `direct`, `stop`, and
 ## Focused verification (on the builder)
 
 ```sh
-rcargo --no-fallback test --locked -p chat --lib agent_
-rcargo --no-fallback test --locked -p tilo-app --lib framework::rows::tests
-rcargo --no-fallback check --locked -p chat --tests
+cargo test --locked -p chat --lib agent_
+cargo test --locked -p tilo-app --lib framework::rows::tests
+cargo check --locked -p chat --tests
 python3 apps/chat/tests/test_agent_start_surface.py
 bash -n apps/chat/examples/task-conversation.sh
 ```
