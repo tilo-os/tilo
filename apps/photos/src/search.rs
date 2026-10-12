@@ -12,7 +12,6 @@
 //! [`LibraryIndex`], which the timeline pages through as you type and which
 //! materializes any row's exact resource by id.
 
-use automerge::AutoCommit;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, RwLock};
 use tilo_actions::{ActionAddress, Resource};
@@ -22,22 +21,22 @@ use ui::search::{DEFAULT_SEARCH_CANDIDATE_LIMIT, DEFAULT_SEARCH_RESULT_LIMIT, Se
 use ui::search::{SearchCatalog, SearchCatalogError, SearchResult};
 use ui::tilo_resource::SearchEntry;
 
-use crate::actions::{
-    PhotoResourceSeed, album_resource_from_fields, albums_resource_from_count, folder_resource,
-    folder_resource_id, library_analysis_resource, metadata_label_counts, object_resource,
-    object_resource_id, person_resource, person_resource_id, pet_resource, pet_resource_id,
-    photo_resource_from_seed, place_counts, place_resource, place_resource_id,
-    places_resource_from_count, tag_resource, tag_resource_id, timeline_boundaries,
-    timeline_day_resource, timeline_day_resource_id, timeline_month_resource,
-    timeline_month_resource_id, timeline_resource_from_search,
+use crate::derived::{
+    folder_resource_id, metadata_label_counts, object_resource_id, person_resource_id,
+    pet_resource_id, place_counts, place_resource_id, tag_resource_id, timeline_boundaries,
+    timeline_day_resource_id, timeline_month_resource_id,
 };
-use crate::doc::PhotosDoc;
+use crate::model::{LibraryPhoto, PhotoLibrary};
+use crate::resource::{album_resource_id, derived_resource_id, photo_resource_id};
 
 /// Search group label for Photos results.
 pub const PHOTO_SEARCH_KIND: &str = "Photos";
 
+/// The library's own resource id.
+pub const LIBRARY_ID: &str = "photos.library";
+
 /// A complete, bounded-query index of the library the timeline filters by,
-/// and the compact seeds every row's exact resource materializes from.
+/// and the library its rows' resources are published from.
 ///
 /// This is built from the document, never from widget state or a filesystem
 /// scan. A row's address is exactly the resource address agents,
@@ -50,98 +49,51 @@ pub struct LibraryIndex {
 
 struct ProviderState {
     catalog: SearchCatalog,
-    seeds: HashMap<String, MaterializationSeed>,
+    rows: HashMap<String, RowKind>,
+    library: Arc<PhotoLibrary>,
 }
 
-/// Compact authoritative data retained for exact materialisation. Crucially,
-/// this is not a `Resource`: no `ActionSpec`, closure, child tree, or encoded
-/// action is allocated for the 100k rows that search may index.
-#[derive(Clone)]
-enum MaterializationSeed {
+/// What a row is, as the timeline filters them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RowKind {
     Library,
-    Timeline {
-        total: usize,
-        boundaries: crate::actions::TimelineBoundaries,
-    },
-    TimelineMonth {
-        month: String,
-        count: usize,
-    },
-    TimelineDay {
-        day: String,
-        count: usize,
-    },
-    Places {
-        located_count: usize,
-    },
-    Albums {
-        count: usize,
-    },
-    Photo(Box<PhotoResourceSeed>),
-    Album {
-        id: String,
-        name: String,
-        photo_count: usize,
-    },
-    Folder {
-        label: String,
-        count: usize,
-    },
-    Person {
-        label: String,
-        count: usize,
-    },
-    Tag {
-        label: String,
-        count: usize,
-    },
-    Object {
-        label: String,
-        count: usize,
-    },
-    Pet {
-        label: String,
-        count: usize,
-    },
-    Place {
-        key: String,
-        label: String,
-        count: usize,
-    },
+    Timeline,
+    Places,
+    Albums,
+    Photo,
+    Album,
+    Folder,
+    Person,
+    Tag,
+    Object,
+    Pet,
+    Place,
 }
 
-impl MaterializationSeed {
-    fn materialize(self) -> Resource {
+impl RowKind {
+    /// The id of the view the row's resource offers to open it, which the
+    /// window's opener runs for a hit anchored at it. A photograph or an
+    /// album is opened as the item it is.
+    fn opened_by(self) -> &'static str {
         match self {
-            Self::Library => {
-                let mut root = ui::tilo_resource::publish::<crate::resource::Photos>(
-                    "photos.library",
-                    "Photo library",
-                    &crate::resource::PhotosState::default(),
-                );
-                root.children.insert(0, library_analysis_resource());
-                root
-            }
-            Self::Timeline { total, boundaries } => {
-                timeline_resource_from_search(total, &boundaries)
-            }
-            Self::TimelineMonth { month, count } => timeline_month_resource(&month, count),
-            Self::TimelineDay { day, count } => timeline_day_resource(&day, count),
-            Self::Places { located_count } => places_resource_from_count(located_count),
-            Self::Albums { count } => albums_resource_from_count(count),
-            Self::Photo(photo) => photo_resource_from_seed(&photo),
-            Self::Album {
-                id,
-                name,
-                photo_count,
-            } => album_resource_from_fields(&id, &name, photo_count),
-            Self::Folder { label, count } => folder_resource(&label, count),
-            Self::Person { label, count } => person_resource(&label, count),
-            Self::Tag { label, count } => tag_resource(&label, count),
-            Self::Object { label, count } => object_resource(&label, count),
-            Self::Pet { label, count } => pet_resource(&label, count),
-            Self::Place { key, label, count } => place_resource(&key, &label, count),
+            Self::Library => "view-library",
+            Self::Timeline => "view-timeline",
+            Self::Places => "view-places",
+            Self::Albums => "view-albums",
+            Self::Photo => "view",
+            Self::Album => "view-album",
+            Self::Folder => "view-folder",
+            Self::Person => "view-person",
+            Self::Tag => "view-tag",
+            Self::Object => "view-object",
+            Self::Pet => "view-pet",
+            Self::Place => "view-place",
         }
+    }
+
+    /// Whether the row is an item of the library, opened by its anchor.
+    fn item(self) -> bool {
+        matches!(self, Self::Photo | Self::Album)
     }
 }
 
@@ -153,46 +105,28 @@ struct LibraryRow {
     subtitle: String,
     /// The lucide name of the glyph its hit leads with.
     icon: &'static str,
-    action: ActionAddress,
-    /// The id a system-wide search opens, for a photograph.
-    anchor: Option<String>,
-    seed: MaterializationSeed,
-}
-
-impl MaterializationSeed {
-    /// The id of the effect the row's resource offers to open it: a hit
-    /// invokes it under that id.
-    fn opened_by(&self) -> &'static str {
-        match self {
-            Self::Library => "view-library",
-            Self::Timeline { .. } | Self::TimelineMonth { .. } | Self::TimelineDay { .. } => {
-                "view-timeline"
-            }
-            Self::Places { .. } => "view-places",
-            Self::Albums { .. } => "view-albums",
-            Self::Photo(_) => "view",
-            Self::Album { .. } => "view-album",
-            Self::Folder { .. } => "view-folder",
-            Self::Person { .. } => "view-person",
-            Self::Tag { .. } => "view-tag",
-            Self::Object { .. } => "view-object",
-            Self::Pet { .. } => "view-pet",
-            Self::Place { .. } => "view-place",
-        }
-    }
+    /// The resource it opens: the anchor of its hit.
+    id: String,
+    kind: RowKind,
+    /// The facets a photograph is filtered by: its people, tags and place.
+    facets: Vec<(&'static str, String)>,
 }
 
 impl LibraryRow {
-    fn open(id: &str, title: impl Into<String>, subtitle: impl Into<String>) -> Self {
-        let seed = MaterializationSeed::Library;
+    fn open(
+        id: &str,
+        kind: RowKind,
+        title: impl Into<String>,
+        subtitle: impl Into<String>,
+    ) -> Self {
         Self {
             text: String::new(),
             title: title.into(),
             subtitle: subtitle.into(),
             icon: "image",
-            action: ActionAddress::new(id, seed.opened_by()),
-            anchor: None,
-            seed: MaterializationSeed::Library,
+            id: id.to_owned(),
+            kind,
+            facets: Vec::new(),
         }
     }
 
@@ -201,16 +135,15 @@ impl LibraryRow {
         self
     }
 
-    fn seeded(mut self, seed: MaterializationSeed) -> Self {
-        self.action = ActionAddress::new(self.action.resource.clone(), seed.opened_by());
-        self.seed = seed;
-        self
-    }
-
     fn result(&self) -> SearchResult {
-        SearchResult::for_action(PHOTO_SEARCH_KIND, &self.title, &self.action)
-            .with_subtitle(&self.subtitle)
-            .with_icon(Icon::from_name(self.icon).unwrap_or(Icon::Image))
+        // The index the timeline filters by keeps canonical addresses.
+        SearchResult::for_action(
+            PHOTO_SEARCH_KIND,
+            &self.title,
+            ActionAddress::new(&self.id, self.kind.opened_by()),
+        )
+        .with_subtitle(&self.subtitle)
+        .with_icon(Icon::from_name(self.icon).unwrap_or(Icon::Image))
     }
 
     /// The text the index finds the row by: its title first.
@@ -220,27 +153,21 @@ impl LibraryRow {
 
     fn entry(&self) -> SearchEntry {
         let mut entry = SearchEntry::new(self.title.clone(), self.text.replace('\0', "\n"))
-            .invoking(self.action.clone())
             .grouped(PHOTO_SEARCH_KIND)
             .subtitled(self.subtitle.clone())
             .with_icon(self.icon);
-        if let Some(anchor) = &self.anchor {
-            entry = entry.anchored(anchor.clone());
+        // An item opens as the item it is; any other place by its view
+        // ([`opened`]).
+        entry = entry.anchored(self.id.clone());
+        for (facet, value) in &self.facets {
+            let group = match *facet {
+                "person" => "photos-people",
+                "tag" => "photos-tags",
+                _ => "photos-place",
+            };
+            entry = entry.facet(*facet, crate::strings::tr(group), value);
         }
-        if let MaterializationSeed::Photo(photo) = &self.seed {
-            for person in &photo.people {
-                entry = entry.facet("person", crate::strings::tr("photos-people"), person);
-            }
-            for tag in &photo.tags {
-                entry = entry.facet("tag", crate::strings::tr("photos-tags"), tag);
-            }
-            if let Some(place) = &photo.location {
-                entry = entry.facet(
-                    "place",
-                    crate::strings::tr("photos-place"),
-                    place.display_name(),
-                );
-            }
+        if self.kind == RowKind::Photo {
             entry.row = Some(
                 ui::tilo_resource::SearchRow::shaped(ui::tilo_resource::SearchRowShape::Media {
                     byline: Some(self.subtitle.clone()),
@@ -253,10 +180,74 @@ impl LibraryRow {
     }
 }
 
+/// The searchable row of `photo`.
+fn photo_row(photo: &LibraryPhoto) -> LibraryRow {
+    // Omit repeated kind/action boilerplate: it creates huge shared
+    // postings in a large library without helping find a photograph.
+    let mut row = LibraryRow::open(
+        &photo_resource_id(&photo.id),
+        RowKind::Photo,
+        photo.image.name.clone(),
+        format!("{} x {} pixels", photo.image.width, photo.image.height),
+    )
+    .found_by(format!(
+        "{} x {} pixels\0clockwise\0{}\0{}\0{}\0{}\0{}\0{}\0{}",
+        photo.image.width,
+        photo.image.height,
+        if photo.favorite {
+            "favorite"
+        } else {
+            "not favorite"
+        },
+        photo.folder.as_deref().unwrap_or_default(),
+        photo.people().join(" "),
+        photo.tags().join(" "),
+        photo.captured_at.as_deref().unwrap_or_default(),
+        photo
+            .location
+            .as_ref()
+            .map_or_else(String::new, crate::model::PhotoLocation::display_name),
+        photo
+            .analysis()
+            .as_ref()
+            .map_or_else(String::new, crate::model::ImageAnalysis::searchable_text),
+    ));
+    row.facets
+        .extend(photo.people.iter().map(|person| ("person", person.clone())));
+    row.facets
+        .extend(photo.tags.iter().map(|tag| ("tag", tag.clone())));
+    if let Some(place) = &photo.location {
+        row.facets.push(("place", place.display_name()));
+    }
+    row
+}
+
+/// The view that shows the row anchored at `anchor` of `library`: the one
+/// its published place offers. `None` for an item (opened as the item it
+/// is) and for an anchor that names no row any more.
+pub fn opened(library: &PhotoLibrary, anchor: &str) -> Option<crate::actions::PhotosEffect> {
+    use ui::tilo_resource::Effect as _;
+    let kind = library_rows(library).get(anchor)?.kind;
+    if kind.item() {
+        return None;
+    }
+    let published = if anchor == LIBRARY_ID {
+        ui::tilo_resource::publish::<PhotoLibrary>(LIBRARY_ID, "Photos", library)
+    } else {
+        <PhotoLibrary as ui::tilo_resource::Resource>::child(library, anchor)?
+    };
+    let spec = published
+        .actions
+        .iter()
+        .find(|action| action.id == kind.opened_by())?;
+    let encoded = spec.build_json(&serde_json::Map::new()).ok()?;
+    crate::actions::PhotosEffect::from_payload(&encoded.payload).ok()
+}
+
 /// The library's search entries: every row, each hit opening its exact
 /// resource. What [`Resource::search`](ui::tilo_resource::Resource::search)
 /// answers for the photos library.
-pub fn library_search_entries(library: &crate::model::PhotoLibrary) -> Vec<SearchEntry> {
+pub fn library_search_entries(library: &PhotoLibrary) -> Vec<SearchEntry> {
     library_rows(library)
         .values()
         .map(LibraryRow::entry)
@@ -270,10 +261,11 @@ pub fn library_search_entries(library: &crate::model::PhotoLibrary) -> Vec<Searc
     clippy::too_many_lines,
     reason = "one builder keeps every searchable resource kind in a single collision boundary"
 )]
-fn library_rows(library: &crate::model::PhotoLibrary) -> BTreeMap<String, LibraryRow> {
+fn library_rows(library: &PhotoLibrary) -> BTreeMap<String, LibraryRow> {
     let mut rows = BTreeMap::<String, LibraryRow>::new();
     let mut collisions = HashSet::<String>::new();
-    let mut insert = |id: String, row: LibraryRow| {
+    let mut insert = |row: LibraryRow| {
+        let id = row.id.clone();
         if collisions.contains(&id) {
             return;
         }
@@ -283,61 +275,51 @@ fn library_rows(library: &crate::model::PhotoLibrary) -> BTreeMap<String, Librar
         }
     };
     insert(
-        "photos.library".to_owned(),
         LibraryRow::open(
-            "photos.library",
+            LIBRARY_ID,
+            RowKind::Library,
             "Photo library",
             "Import and browse photographs",
         )
         .found_by("photos.library\0open\0Import photograph"),
     );
     let timeline = timeline_boundaries(library);
+    let total = library.photos.len();
     insert(
-        "photos.timeline".to_owned(),
         LibraryRow::open(
-            "photos.timeline",
+            &derived_resource_id("timeline"),
+            RowKind::Timeline,
             crate::strings::tr("photos-timeline"),
-            format!(
-                "{} photographs in chronological order",
-                library.photos.len()
-            ),
+            format!("{total} photographs in chronological order"),
         )
         .found_by(format!(
-            "Timeline\0photos.timeline\0chronological\0{} photographs\0open",
-            library.photos.len()
-        ))
-        .seeded(MaterializationSeed::Timeline {
-            total: library.photos.len(),
-            boundaries: timeline.clone(),
-        }),
+            "Timeline\0photos.timeline\0chronological\0{total} photographs\0open"
+        )),
     );
     for (month, count) in &timeline.months {
-        let id = timeline_month_resource_id(month);
         insert(
-            id.clone(),
-            LibraryRow::open(&id, month, format!("{count} photographs in this month"))
-                .found_by(format!("timeline\0month\0{count} photographs\0open"))
-                .seeded(MaterializationSeed::TimelineMonth {
-                    month: month.clone(),
-                    count: *count,
-                }),
+            LibraryRow::open(
+                &timeline_month_resource_id(month),
+                RowKind::Timeline,
+                month,
+                format!("{count} photographs in this month"),
+            )
+            .found_by(format!("timeline\0month\0{count} photographs\0open")),
         );
     }
     for (day, count) in &timeline.days {
-        let id = timeline_day_resource_id(day);
         insert(
-            id.clone(),
-            LibraryRow::open(&id, day, format!("{count} photographs on this day"))
-                .found_by(format!("timeline\0day\0{count} photographs\0open"))
-                .seeded(MaterializationSeed::TimelineDay {
-                    day: day.clone(),
-                    count: *count,
-                }),
+            LibraryRow::open(
+                &timeline_day_resource_id(day),
+                RowKind::Timeline,
+                day,
+                format!("{count} photographs on this day"),
+            )
+            .found_by(format!("timeline\0day\0{count} photographs\0open")),
         );
     }
     let located_count = library
-        .photos
-        .iter()
+        .all_photos()
         .filter(|photo| {
             photo
                 .location
@@ -346,174 +328,114 @@ fn library_rows(library: &crate::model::PhotoLibrary) -> BTreeMap<String, Librar
         })
         .count();
     insert(
-        "photos.places".to_owned(),
         LibraryRow::open(
-            "photos.places",
+            &derived_resource_id("places"),
+            RowKind::Places,
             "Places",
             format!("Offline map with {located_count} located photographs"),
         )
         .found_by(format!(
             "photos.places\0map\0location\0{located_count} photographs\0open"
-        ))
-        .seeded(MaterializationSeed::Places { located_count }),
+        )),
     );
+    let albums = library.albums.len();
     insert(
-        "photos.albums".to_owned(),
         LibraryRow::open(
-            "photos.albums",
+            &derived_resource_id("albums"),
+            RowKind::Albums,
             "Albums",
-            if library.albums.len() == 1 {
+            if albums == 1 {
                 "1 shared album".to_owned()
             } else {
-                format!("{} shared albums", library.albums.len())
+                format!("{albums} shared albums")
             },
         )
         .found_by(format!(
-            "photos.albums\0collection\0{} shared albums\0open\0browse",
-            library.albums.len()
-        ))
-        .seeded(MaterializationSeed::Albums {
-            count: library.albums.len(),
-        }),
+            "photos.albums\0collection\0{albums} shared albums\0open\0browse"
+        )),
     );
-    for photo in &library.photos {
-        // Omit repeated kind/action boilerplate: it creates huge shared
-        // postings in a large library without helping find a photograph.
-        let mut row = LibraryRow::open(
-            &photo.id,
-            photo.image.name.clone(),
-            format!("{} x {} pixels", photo.image.width, photo.image.height),
-        )
-        .found_by(format!(
-            "{} x {} pixels\0clockwise\0{}\0{}\0{}\0{}\0{}\0{}\0{}",
-            photo.image.width,
-            photo.image.height,
-            if photo.favorite {
-                "favorite"
-            } else {
-                "not favorite"
-            },
-            photo.folder.as_deref().unwrap_or_default(),
-            photo.people.join(" "),
-            photo.tags.join(" "),
-            photo.captured_at.as_deref().unwrap_or_default(),
-            photo
-                .location
-                .as_ref()
-                .map_or_else(String::new, crate::model::PhotoLocation::display_name),
-            photo
-                .analysis
-                .as_ref()
-                .map_or_else(String::new, crate::model::ImageAnalysis::searchable_text),
-        ))
-        .seeded(MaterializationSeed::Photo(Box::new(
-            PhotoResourceSeed::from(photo),
-        )));
-        row.anchor = Some(photo.id.clone());
-        insert(photo.id.clone(), row);
+    for photo in library.all_photos() {
+        insert(photo_row(photo));
     }
-    for album in &library.albums {
+    for album in library.all_albums() {
+        let count = library.album_photos(album).count();
         insert(
-            album.id.clone(),
             LibraryRow::open(
-                &album.id,
+                &album_resource_id(&album.id),
+                RowKind::Album,
                 album.name.clone(),
-                format!("{} photographs", album.photo_ids.len()),
+                format!("{count} photographs"),
             )
-            .found_by(format!(
-                "photos.album\0{} photographs\0open\0remove",
-                album.photo_ids.len()
-            ))
-            .seeded(MaterializationSeed::Album {
-                id: album.id.clone(),
-                name: album.name.clone(),
-                photo_count: album.photo_ids.len(),
-            }),
+            .found_by(format!("photos.album\0{count} photographs\0open\0remove")),
         );
     }
     let (folders, people, tags, objects, pets) = metadata_label_counts(library);
     for (key, label, count) in place_counts(library) {
-        let id = place_resource_id(&key);
         insert(
-            id.clone(),
             LibraryRow::open(
-                &id,
-                label.clone(),
+                &place_resource_id(&key),
+                RowKind::Place,
+                label,
                 format!("{count} photographs at this place, available on the offline map"),
             )
             .found_by(format!(
                 "photos.place\0place\0{count} photographs\0map\0open"
-            ))
-            .seeded(MaterializationSeed::Place { key, label, count }),
+            )),
         );
     }
     for (folder, count) in folders {
-        let id = folder_resource_id(&folder);
         let mut row = LibraryRow::open(
-            &id,
-            folder.clone(),
+            &folder_resource_id(&folder),
+            RowKind::Folder,
+            folder,
             format!("Folder containing {count} photographs"),
         )
-        .found_by(format!("photos.folder\0folder\0{count} photographs\0open"))
-        .seeded(MaterializationSeed::Folder {
-            label: folder,
-            count,
-        });
+        .found_by(format!("photos.folder\0folder\0{count} photographs\0open"));
         row.icon = "folder";
-        insert(id, row);
+        insert(row);
     }
     for (person, count) in people {
-        let id = person_resource_id(&person);
         insert(
-            id.clone(),
             LibraryRow::open(
-                &id,
-                person.clone(),
+                &person_resource_id(&person),
+                RowKind::Person,
+                person,
                 format!("Person identified in {count} photographs"),
             )
-            .found_by(format!("photos.person\0person\0{count} photographs\0open"))
-            .seeded(MaterializationSeed::Person {
-                label: person,
-                count,
-            }),
+            .found_by(format!("photos.person\0person\0{count} photographs\0open")),
         );
     }
     for (tag, count) in tags {
-        let id = tag_resource_id(&tag);
         insert(
-            id.clone(),
-            LibraryRow::open(&id, tag.clone(), format!("Tag used on {count} photographs"))
-                .found_by(format!("photos.tag\0tag\0{count} photographs\0open"))
-                .seeded(MaterializationSeed::Tag { label: tag, count }),
+            LibraryRow::open(
+                &tag_resource_id(&tag),
+                RowKind::Tag,
+                tag,
+                format!("Tag used on {count} photographs"),
+            )
+            .found_by(format!("photos.tag\0tag\0{count} photographs\0open")),
         );
     }
     for (object, count) in objects {
-        let id = object_resource_id(&object);
         insert(
-            id.clone(),
             LibraryRow::open(
-                &id,
-                object.clone(),
+                &object_resource_id(&object),
+                RowKind::Object,
+                object,
                 format!("Object identified in {count} photographs"),
             )
-            .found_by(format!("photos.object\0object\0{count} photographs\0open"))
-            .seeded(MaterializationSeed::Object {
-                label: object,
-                count,
-            }),
+            .found_by(format!("photos.object\0object\0{count} photographs\0open")),
         );
     }
     for (pet, count) in pets {
-        let id = pet_resource_id(&pet);
         insert(
-            id.clone(),
             LibraryRow::open(
-                &id,
-                pet.clone(),
+                &pet_resource_id(&pet),
+                RowKind::Pet,
+                pet,
                 format!("Pet identified in {count} photographs"),
             )
-            .found_by(format!("photos.pet\0pet\0{count} photographs\0open"))
-            .seeded(MaterializationSeed::Pet { label: pet, count }),
+            .found_by(format!("photos.pet\0pet\0{count} photographs\0open")),
         );
     }
     rows
@@ -526,22 +448,23 @@ impl LibraryIndex {
         Self {
             state: Arc::new(RwLock::new(ProviderState {
                 catalog: SearchCatalog::new(PHOTO_SEARCH_KIND),
-                seeds: HashMap::new(),
+                rows: HashMap::new(),
+                library: Arc::default(),
             })),
         }
     }
 
-    /// Index durable records directly. Resource snapshots are deliberately
-    /// contextual, so searching through one would hide late library entries.
+    /// Index `library`'s records directly. Resource snapshots are
+    /// deliberately contextual, so searching through one would hide late
+    /// library entries.
     ///
     /// # Errors
     ///
     /// Returns a catalogue contract error if a generated canonical row cannot
     /// be admitted. Ambiguous resource-id collisions are excluded safely.
-    pub fn new(doc: &AutoCommit) -> Result<Self, SearchCatalogError> {
+    pub fn new(library: &PhotoLibrary) -> Result<Self, SearchCatalogError> {
         let provider = Self::empty();
-        let library = PhotosDoc::library(doc);
-        provider.replace_from_library(&library)?;
+        provider.replace_from_library(library)?;
         Ok(provider)
     }
 
@@ -551,22 +474,26 @@ impl LibraryIndex {
     ///
     /// Returns a catalogue contract error if the replacement snapshot cannot
     /// be admitted; the previous complete generation remains available.
-    pub fn sync(&self, library: &crate::model::PhotoLibrary) -> Result<(), SearchCatalogError> {
+    pub fn sync(&self, library: &PhotoLibrary) -> Result<(), SearchCatalogError> {
         self.replace_from_library(library)
     }
 
-    /// Resolve one resource from the retained document generation without a
-    /// CRDT walk. The widget uses this for agent/history lookups, including
-    /// hashed metadata views whose labels cannot safely be reversed from ids.
+    /// The resource `id` as the library publishes it, from the retained
+    /// generation: what the widget resolves for agent and history lookups.
     pub fn resource(&self, id: &str) -> Option<Resource> {
-        let seed = self
+        let state = self
             .state
             .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .seeds
-            .get(id)?
-            .clone();
-        Some(seed.materialize())
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.rows.get(id)?;
+        if id == LIBRARY_ID {
+            return Some(ui::tilo_resource::publish::<PhotoLibrary>(
+                LIBRARY_ID,
+                &crate::strings::tr("photos-act-photo-library"),
+                &state.library,
+            ));
+        }
+        <PhotoLibrary as ui::tilo_resource::Resource>::child(&state.library, id)
     }
 
     #[cfg(test)]
@@ -589,12 +516,7 @@ impl LibraryIndex {
             .results
             .iter()
             .filter_map(SearchResult::action_address)
-            .filter(|address| {
-                matches!(
-                    state.seeds.get(&address.resource),
-                    Some(MaterializationSeed::Photo(_))
-                )
-            })
+            .filter(|address| state.rows.get(&address.resource) == Some(&RowKind::Photo))
             .map(|address| address.resource)
             .collect();
         drop(state);
@@ -611,21 +533,7 @@ impl LibraryIndex {
             .generation
     }
 
-    #[cfg(test)]
-    fn from_library(
-        doc: &AutoCommit,
-        library: &crate::model::PhotoLibrary,
-    ) -> Result<Self, SearchCatalogError> {
-        let provider = Self::empty();
-        let _ = doc;
-        provider.replace_from_library(library)?;
-        Ok(provider)
-    }
-
-    fn replace_from_library(
-        &self,
-        library: &crate::model::PhotoLibrary,
-    ) -> Result<(), SearchCatalogError> {
+    fn replace_from_library(&self, library: &PhotoLibrary) -> Result<(), SearchCatalogError> {
         self.replace_from_library_before_publish(library, || {})
     }
 
@@ -635,28 +543,29 @@ impl LibraryIndex {
     /// expensive catalogue work has completed but before publication.
     fn replace_from_library_before_publish<F>(
         &self,
-        library: &crate::model::PhotoLibrary,
+        library: &PhotoLibrary,
         before_publish: F,
     ) -> Result<(), SearchCatalogError>
     where
         F: FnOnce(),
     {
         let rows = library_rows(library);
-        let seeds = rows
+        let kinds = rows
             .iter()
-            .map(|(id, row)| (id.clone(), row.seed.clone()))
+            .map(|(id, row)| (id.clone(), row.kind))
             .collect();
         // Build postings, grams, and tokens without holding the public
         // snapshot lock. A large import must not turn Ctrl+K or an exact
         // resource lookup into a wait for a 100k-row index rebuild. The
-        // short lock below publishes the catalogue and its matching seeds as
-        // one generation, so callers never observe fresh hits with stale
-        // exact materialisation data.
+        // short lock below publishes the catalogue and its matching library
+        // as one generation, so callers never observe fresh hits with stale
+        // resources.
         let catalog = SearchCatalog::new(PHOTO_SEARCH_KIND);
         catalog.replace_all(
             rows.iter()
                 .map(|(id, row)| (id.clone(), row.searchable(), row.result())),
         )?;
+        let library = Arc::new(library.clone());
         before_publish();
         let mut state = self
             .state
@@ -668,7 +577,8 @@ impl LibraryIndex {
         // leaves the old snapshot intact.
         catalog.advance_after(state.catalog.stats().generation)?;
         state.catalog = catalog;
-        state.seeds = seeds;
+        state.rows = kinds;
+        state.library = library;
         drop(state);
         Ok(())
     }
@@ -683,17 +593,6 @@ impl LibraryIndex {
     }
 
     #[cfg(test)]
-    fn retained_seed_stats(&self) -> (usize, usize) {
-        let state = self
-            .state
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        // The second value is intentionally structural: seeds cannot contain
-        // a Resource or ActionSpec, so retained prebuilt action trees are zero.
-        (state.seeds.len(), 0)
-    }
-
-    #[cfg(test)]
     fn reject_malformed_snapshot_for_test(&self) -> Result<(), SearchCatalogError> {
         let mut state = self
             .state
@@ -704,7 +603,7 @@ impl LibraryIndex {
             "malformed".to_owned(),
             SearchResult::new(PHOTO_SEARCH_KIND, "Malformed", "legacy-action"),
         )])?;
-        state.seeds.clear();
+        state.rows.clear();
         drop(state);
         Ok(())
     }
@@ -713,13 +612,11 @@ impl LibraryIndex {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::actions::PhotosResources;
-    use crate::doc::PhotosDoc;
     use crate::model::{
         Album, AnalysisProvenance, ImageAnalysis, LibraryPhoto, LocationProvenance, OpenImage,
         PhotoLibrary, PhotoLocation,
     };
-    use tilo_actions::ActionAddress;
+    use automerge::AutoCommit;
     use ui::search::SearchQuery;
 
     use ui::search::testing::assert_late_hit_reachable;
@@ -728,34 +625,61 @@ mod tests {
     /// The app's search source over the library `doc` holds, as the
     /// framework builds it from the resource's entries.
     fn source(doc: &AutoCommit) -> impl SearchProvider + use<> {
-        source_of(&PhotosDoc::library(doc))
+        source_of(&crate::test_doc::library(doc))
     }
 
     fn source_of(library: &PhotoLibrary) -> impl SearchProvider + use<> {
-        ui::framework::testing::search_source::<crate::resource::Photos>(library_search_entries(
-            library,
-        ))
+        ui::framework::testing::search_source::<PhotoLibrary>(library_search_entries(library))
     }
 
-    /// The resource a search hit opens, as the library publishes it.
-    fn opened(doc: &AutoCommit, address: &ActionAddress) -> Option<Resource> {
-        PhotosResources
-            .publish_resource(doc, &address.resource)
-            .filter(|resource| {
-                resource
-                    .actions
-                    .iter()
-                    .any(|action| action.id == address.action)
-            })
+    /// Where a hit goes: the resource it is anchored at. The view that
+    /// shows it is the window's opener's ([`super::opened`]).
+    fn target(hit: &SearchResult) -> (String, Option<String>) {
+        (hit.action_id.clone(), None)
+    }
+
+    /// The view the window's opener runs for a hit anchored at `anchor`.
+    fn view_of(doc: &AutoCommit, anchor: &str) -> Option<String> {
+        use ui::tilo_resource::Effect as _;
+        super::opened(&crate::test_doc::library(doc), anchor).map(|effect| effect.id().to_owned())
+    }
+
+    /// The resource `id` as the library `doc` holds publishes it.
+    fn published(doc: &AutoCommit, id: &str) -> Option<Resource> {
+        let library = crate::test_doc::library(doc);
+        if id == LIBRARY_ID {
+            return Some(ui::tilo_resource::publish::<PhotoLibrary>(
+                LIBRARY_ID, "Photos", &library,
+            ));
+        }
+        <PhotoLibrary as ui::tilo_resource::Resource>::child(&library, id)
+    }
+
+    /// The resource a search hit opens, as the library publishes it, when
+    /// the window can show it: an item as itself, any other place through
+    /// the view it offers.
+    fn opened(doc: &AutoCommit, (resource, _): &(String, Option<String>)) -> Option<Resource> {
+        let library = crate::test_doc::library(doc);
+        let item = library_rows(&library).get(resource)?.kind.item();
+        let published = published(doc, resource)?;
+        (item || super::opened(&library, resource).is_some()).then_some(published)
     }
 
     fn open_doc(name: &str) -> AutoCommit {
         let mut doc = AutoCommit::new();
-        PhotosDoc::put_image(
+        crate::test_doc::put_image(
             &mut doc,
             &OpenImage::from_path(&format!("/pictures/{name}"), 800, 400),
         );
         doc
+    }
+
+    fn photo_of(name: &str, side: u32) -> LibraryPhoto {
+        LibraryPhoto::from_image(OpenImage::from_path(
+            &format!("/pictures/{name}"),
+            side,
+            side,
+        ))
     }
 
     #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
@@ -763,77 +687,85 @@ mod tests {
     fn photo_search_is_unicode_safe_and_hits_resolve_to_canonical_resources() {
         let doc = open_doc("München-夏.png");
         let provider = source(&doc);
+        let photo = crate::test_doc::library(&doc)
+            .all_photos()
+            .next()
+            .unwrap()
+            .id
+            .clone();
         for query in ["MÜNCHEN", "夏", "800 x 400", "clockwise"] {
             let hits = provider.search(query);
             assert!(!hits.is_empty(), "query {query:?} did not find the photo");
             assert!(hits.iter().all(|hit| hit.kind == PHOTO_SEARCH_KIND));
-            assert!(hits.iter().any(|hit| matches!(
-                hit.action_address().unwrap().action.as_str(),
-                "view" | "open"
-            )));
+            assert!(
+                hits.iter()
+                    .any(|hit| target(hit) == (crate::resource::photo_resource_id(&photo), None)),
+                "a photograph's hit opens the photograph"
+            );
         }
         assert!(
-            library_search_entries(&PhotosDoc::library(&doc)).len() >= 2,
+            library_search_entries(&crate::test_doc::library(&doc)).len() >= 2,
             "library and photo are indexed"
         );
 
         {
             let mut doc = open_doc("harbour.png");
-            let mut library = PhotosDoc::library(&doc);
-            let photo = library.photos.first_mut().expect("opening imports a photo");
+            let mut library = crate::test_doc::library(&doc);
+            let (_, photo) = library
+                .photos
+                .iter_mut()
+                .next()
+                .expect("opening imports a photo");
             photo.folder = Some("旅行-夏".into());
-            photo.people = vec!["Élodie".into()];
-            photo.tags = vec!["golden-hour".into()];
+            photo.people = crate::model::labels(["Élodie"]);
+            photo.tags = crate::model::labels(["golden-hour"]);
             photo.captured_at = Some("2026-09-07".into());
-            PhotosDoc::set_library(&mut doc, &library);
+            let id = photo.id.clone();
+            crate::test_doc::set_library(&mut doc, &library);
 
             let provider = source(&doc);
             for (query, expected_resource) in [
-                ("旅行-夏", crate::actions::folder_resource_id("旅行-夏")),
-                ("ÉLODIE", crate::actions::person_resource_id("Élodie")),
+                ("旅行-夏", crate::derived::folder_resource_id("旅行-夏")),
+                ("ÉLODIE", crate::derived::person_resource_id("Élodie")),
                 (
                     "golden-hour",
-                    crate::actions::tag_resource_id("golden-hour"),
+                    crate::derived::tag_resource_id("golden-hour"),
                 ),
-                ("2026-09-07", library.photos[0].id.clone()),
+                ("2026-09-07", crate::resource::photo_resource_id(&id)),
             ] {
                 let hit = provider
                     .search(query)
                     .into_iter()
-                    .find(|hit| {
-                        hit.action_address()
-                            .is_some_and(|address| address.resource == expected_resource)
-                    })
+                    .map(|hit| target(&hit))
+                    .find(|(resource, _)| *resource == expected_resource)
                     .unwrap_or_else(|| panic!("missing canonical search hit for {query}"));
-                let address = hit.action_address().unwrap();
-                let resource = PhotosResources
-                    .publish_resource(&doc, &address.resource)
-                    .unwrap_or_else(|| panic!("{query} hit points outside the resource tree"));
                 assert!(
-                    resource
-                        .actions
-                        .iter()
-                        .any(|action| action.id == address.action)
+                    opened(&doc, &hit).is_some(),
+                    "{query} hit points outside the resource tree"
                 );
             }
         }
 
         {
             let mut doc = open_doc("timeline.png");
-            let mut library = PhotosDoc::library(&doc);
-            let photo = library.photos.first_mut().expect("opening imports a photo");
-            photo.captured_at = Some("2026-09-07 08:14".into());
-            PhotosDoc::set_library(&mut doc, &library);
+            let mut library = crate::test_doc::library(&doc);
+            let (_, photo) = library
+                .photos
+                .iter_mut()
+                .next()
+                .expect("opening imports a photo");
+            photo.captured_at = Some("2026-09-07T08:14".into());
+            crate::test_doc::set_library(&mut doc, &library);
 
             let provider = source(&doc);
             for (query, expected_resource) in [
                 (
                     "2026-09",
-                    crate::actions::timeline_month_resource_id("2026-09"),
+                    crate::derived::timeline_month_resource_id("2026-09"),
                 ),
                 (
                     "2026-09-07",
-                    crate::actions::timeline_day_resource_id("2026-09-07"),
+                    crate::derived::timeline_day_resource_id("2026-09-07"),
                 ),
             ] {
                 let page = provider.search_page(
@@ -844,39 +776,30 @@ mod tests {
                 );
                 assert!(page.results.len() <= DEFAULT_SEARCH_RESULT_LIMIT);
                 assert!(page.inspected <= DEFAULT_SEARCH_CANDIDATE_LIMIT);
-                let address = page
+                let hit = page
                     .results
                     .iter()
-                    .find(|hit| {
-                        hit.action_address()
-                            .is_some_and(|address| address.resource == expected_resource)
-                    })
-                    .and_then(SearchResult::action_address)
+                    .map(target)
+                    .find(|(resource, _)| *resource == expected_resource)
                     .unwrap_or_else(|| panic!("missing timeline search result for {query}"));
-                assert_eq!(address.action, "view-timeline");
-                let resource = PhotosResources
-                    .publish_resource(&doc, &address.resource)
-                    .expect("search must resolve the exact timeline resource");
+                assert_eq!(view_of(&doc, &hit.0).as_deref(), Some("view-timeline"));
                 assert!(
-                    resource
-                        .actions
-                        .iter()
-                        .any(|action| action.id == "view-timeline")
+                    opened(&doc, &hit).is_some(),
+                    "search must resolve the exact timeline resource"
                 );
             }
         }
 
         {
             let mut doc = open_doc("receipt.png");
-            let mut library = PhotosDoc::library(&doc);
-            let photo = library.photos.first_mut().unwrap();
+            let mut library = crate::test_doc::library(&doc);
+            let (_, photo) = library.photos.iter_mut().next().unwrap();
             let content = photo.image.content.clone().unwrap_or_default();
-            photo.analysis = Some(ImageAnalysis {
+            photo.set_analysis(Some(ImageAnalysis {
                 ocr_text: "invoice 42 north harbour".into(),
                 description: "A dog beside a bicycle".into(),
                 objects: vec!["bicycle".into()],
                 pets: vec!["dog".into()],
-                people: vec!["Sam".into()],
                 provenance: AnalysisProvenance {
                     source: "local-ocr".into(),
                     engine: "tilo-ocr".into(),
@@ -886,30 +809,26 @@ mod tests {
                     ..AnalysisProvenance::default()
                 },
                 ..ImageAnalysis::default()
-            });
-            PhotosDoc::set_library(&mut doc, &library);
+            }));
+            let id = photo.id.clone();
+            crate::test_doc::set_library(&mut doc, &library);
 
             let provider = source(&doc);
-            for (query, resource) in [
-                ("invoice 42", library.photos[0].id.clone()),
-                ("bicycle", library.photos[0].id.clone()),
-                ("dog", library.photos[0].id.clone()),
-            ] {
-                let address = provider
+            let resource = crate::resource::photo_resource_id(&id);
+            for query in ["invoice 42", "bicycle", "dog"] {
+                let hit = provider
                     .search(query)
                     .into_iter()
-                    .find_map(|hit| {
-                        hit.action_address()
-                            .filter(|address| address.resource == resource)
-                    })
+                    .map(|hit| target(&hit))
+                    .find(|(found, _)| *found == resource)
                     .unwrap_or_else(|| {
                         panic!("missing canonical intelligence search result for {query}")
                     });
-                assert!(opened(&doc, &address).is_some());
+                assert!(opened(&doc, &hit).is_some());
             }
-            let index = LibraryIndex::new(&doc).unwrap();
+            let index = LibraryIndex::new(&library).unwrap();
             let (ids, next, inspected) = index.photo_matches_page("invoice 42", None);
-            assert_eq!(ids, [library.photos[0].id.clone()]);
+            assert_eq!(ids, [resource]);
             assert!(next.is_none());
             assert!(inspected <= DEFAULT_SEARCH_CANDIDATE_LIMIT);
         }
@@ -935,15 +854,10 @@ mod tests {
         let page = provider.search_page(&SearchQuery::new("harbour"), None, 1, 1);
         assert_eq!(page.inspected, 1);
         assert_eq!(page.results.len(), 1);
-        let address = page.results[0].action_address().unwrap();
-        let resource = PhotosResources
-            .publish_resource(&doc, &address.resource)
-            .expect("search address resolves through the canonical provider");
+        let hit = target(&page.results[0]);
         assert!(
-            resource
-                .actions
-                .iter()
-                .any(|action| ActionAddress::new(&resource.id.0, &action.id) == address)
+            opened(&doc, &hit).is_some(),
+            "search address resolves through the canonical publication"
         );
 
         {
@@ -957,21 +871,18 @@ mod tests {
             );
             assert!(page.results.len() <= DEFAULT_SEARCH_RESULT_LIMIT);
             assert!(page.inspected <= DEFAULT_SEARCH_CANDIDATE_LIMIT);
-            let address = page.results[0].action_address().unwrap();
-            let resource = LibraryIndex::new(&doc)
+            let (resource_id, _) = target(&page.results[0]);
+            let resource = LibraryIndex::new(&crate::test_doc::library(&doc))
                 .unwrap()
-                .resource(&address.resource)
-                .expect("the library index materializes the hit's canonical resource");
-            assert_eq!(resource.id.0, address.resource);
+                .resource(&resource_id)
+                .expect("the library index publishes the hit's canonical resource");
+            assert_eq!(resource.id.0, resource_id);
             assert!(
                 resource
                     .actions
                     .iter()
-                    .any(|action| action.id == address.action)
-            );
-            assert!(
-                opened(&doc, &ActionAddress::new(address.resource, "remove-photo")).is_some(),
-                "all actions on the materialized photograph remain agent-addressable"
+                    .any(|action| action.id == "remove-photo"),
+                "every verb on the published photograph remains agent-addressable"
             );
         }
     }
@@ -986,104 +897,94 @@ mod tests {
             label: Some("Offline Paris".to_owned()),
             provenance: LocationProvenance::default(),
         };
-        let mut first = LibraryPhoto::from_image(OpenImage::from_path("/pictures/one.png", 64, 64));
+        let mut first = photo_of("one.png", 64);
         first.location = Some(location.clone());
-        let mut second =
-            LibraryPhoto::from_image(OpenImage::from_path("/pictures/two.png", 64, 64));
+        let mut second = photo_of("two.png", 64);
         second.location = Some(location.clone());
-        PhotosDoc::set_library(
-            &mut doc,
-            &PhotoLibrary {
-                photos: vec![first, second],
-                albums: Vec::new(),
-            },
-        );
-        let address = source(&doc)
+        let library = PhotoLibrary::of(vec![first, second], Vec::new());
+        crate::test_doc::set_library(&mut doc, &library);
+        let place = place_resource_id(&location.place_key());
+        let hit = source(&doc)
             .search("Offline Paris")
-            .into_iter()
-            .filter_map(|result| result.action_address())
-            .find(|address| address.resource.starts_with("photos.place:"))
+            .iter()
+            .map(target)
+            .find(|(resource, _)| *resource == place)
             .expect("place is globally searchable");
-        assert_eq!(address.resource, place_resource_id(&location.place_key()));
-        let resource = LibraryIndex::new(&doc)
+        assert_eq!(view_of(&doc, &hit.0).as_deref(), Some("view-place"));
+        let resource = LibraryIndex::new(&library)
             .unwrap()
-            .resource(&address.resource)
-            .expect("exact search target materializes");
-        assert_eq!(resource.kind, "photos.place");
+            .resource(&hit.0)
+            .expect("exact search target is published");
+        assert_eq!(resource.kind, "photos.library.place");
         assert!(
             resource
                 .children
                 .iter()
-                .any(|child| child.label == "2 photographs")
+                .any(|child| child.label == "2 photos")
         );
 
         {
             let mut doc = AutoCommit::new();
             let mut library = PhotoLibrary::default();
             for index in 0..80 {
-                library.albums.push(Album {
+                library.add_album(Album {
                     id: format!("photos.album:{index}"),
                     name: if index == 79 {
                         "旅行-needle-夏".into()
                     } else {
                         format!("Album {index}")
                     },
-                    photo_ids: Vec::new(),
+                    photo_ids: ui::tilo_resource::Set::new(),
                 });
             }
-            PhotosDoc::set_library(&mut doc, &library);
+            crate::test_doc::set_library(&mut doc, &library);
             let hit = source(&doc)
                 .search_page(&SearchQuery::new("NEEDLE-夏"), None, 2, 1)
                 .results
                 .pop()
                 .expect("late album remains searchable outside the contextual snapshot");
-            let address = hit.action_address().expect("album hit has an action route");
-            assert_eq!(address.resource, "photos.album:79");
+            let hit = target(&hit);
             assert_eq!(
-                address.action, "view-album",
-                "search activation must not mutate membership"
+                hit,
+                (crate::resource::album_resource_id("photos.album:79"), None),
+                "search activation opens the album, never changes its membership"
             );
-            let resource = PhotosResources
-                .publish_resource(&doc, &address.resource)
-                .expect("the late stable album id resolves lazily");
+            let resource = opened(&doc, &hit).expect("the late stable album id resolves lazily");
             assert!(
                 resource
                     .actions
                     .iter()
-                    .any(|action| action.id == "view-album")
+                    .any(|action| action.id == "remove-album"),
+                "the album offers its verbs"
             );
         }
 
         {
             let mut doc = AutoCommit::new();
-            let library = PhotoLibrary {
-                photos: Vec::new(),
-                albums: vec![Album {
-                    id: "photos.album:journey".into(),
-                    name: "Journey".into(),
-                    photo_ids: Vec::new(),
-                }],
-            };
-            PhotosDoc::set_library(&mut doc, &library);
+            let library = PhotoLibrary::of(
+                Vec::new(),
+                vec![Album::named("photos.album:journey", "Journey")],
+            );
+            crate::test_doc::set_library(&mut doc, &library);
 
-            let address = source(&doc)
+            let albums = derived_resource_id("albums");
+            let hit = source(&doc)
                 .search("shared albums")
-                .into_iter()
-                .find_map(|hit| {
-                    hit.action_address()
-                        .filter(|address| address.resource == "photos.albums")
-                })
+                .iter()
+                .map(target)
+                .find(|(resource, _)| *resource == albums)
                 .expect("album browsing is a global-search destination");
-            assert_eq!(address.action, "view-albums");
-            let resource = LibraryIndex::new(&doc)
+            assert_eq!(view_of(&doc, &hit.0).as_deref(), Some("view-albums"));
+            let resource = LibraryIndex::new(&library)
                 .unwrap()
-                .resource(&address.resource)
-                .expect("the compact search seed materializes the album collection");
-            assert_eq!(resource.kind, crate::actions::ALBUMS_KIND);
+                .resource(&hit.0)
+                .expect("the album collection is published");
+            assert_eq!(resource.kind, "photos.library.albums");
             assert!(
-                resource.children.iter().any(|child| {
-                    child.id.0 == "photos.albums#count" && child.label == "1 album"
-                })
+                resource
+                    .children
+                    .iter()
+                    .any(|child| child.label == "1 album")
             );
         }
 
@@ -1096,20 +997,18 @@ mod tests {
                 } else {
                     format!("photo-{index}.png")
                 };
-                library
-                    .photos
-                    .push(LibraryPhoto::from_image(OpenImage::from_path(
-                        &format!("/pictures/{name}"),
-                        64,
-                        64,
-                    )));
+                library.add_photo(photo_of(&name, 64));
             }
-            PhotosDoc::set_library(&mut doc, &library);
+            crate::test_doc::set_library(&mut doc, &library);
             let page = source(&doc).search_page(&SearchQuery::new("NEEDLE-夏"), None, 2, 1);
             assert_eq!(page.results.len(), 1);
             assert!(page.inspected <= 2, "query work exceeded its hard budget");
             assert_eq!(page.results[0].title, "旅行-needle-夏.png");
-            assert_eq!(page.results[0].action_address().unwrap().action, "view");
+            assert_eq!(
+                target(&page.results[0]).1,
+                None,
+                "a photograph opens as itself"
+            );
         }
 
         {
@@ -1117,7 +1016,6 @@ mod tests {
             let mut built = PhotoLibrary::default();
             let (provider, hit) = assert_late_hit_reachable(
                 |corpus| {
-                    let doc = AutoCommit::new();
                     let mut library = PhotoLibrary::default();
                     for row in corpus {
                         let stem = row.text.replace(' ', "-");
@@ -1126,32 +1024,22 @@ mod tests {
                         } else {
                             format!("{stem}.png")
                         };
-                        library
-                            .photos
-                            .push(LibraryPhoto::from_image(OpenImage::from_path(
-                                &format!("/pictures/{name}"),
-                                1,
-                                1,
-                            )));
+                        library.add_photo(photo_of(&name, 1));
                     }
                     expected_records = library.photos.len() + 4; // library + timeline + places + albums
                     built = library.clone();
-                    let _ = doc;
                     source_of(&library)
                 },
                 3_000,
             );
-            let index = LibraryIndex::from_library(&AutoCommit::new(), &built).unwrap();
+            let index = LibraryIndex::new(&built).unwrap();
             assert_eq!(index.stats().records, expected_records);
             let page = provider.search_page(&SearchQuery::new("needle-夏"), None, 2, 1);
             assert_eq!(page.results, vec![hit.clone()]);
             assert!(page.inspected <= 2);
-            let address = hit.action_address().unwrap();
-            assert_eq!(address.action, "view");
-            assert!(index.resource(&address.resource).is_some());
-            let (seeds, prebuilt_action_trees) = index.retained_seed_stats();
-            assert_eq!(seeds, expected_records);
-            assert_eq!(prebuilt_action_trees, 0);
+            let (resource, action) = target(&hit);
+            assert_eq!(action, None);
+            assert!(index.resource(&resource).is_some());
         }
     }
 
@@ -1159,92 +1047,66 @@ mod tests {
     #[test]
     fn stale_or_colliding_targets_fail_closed_and_rebuilds_publish_atomically() {
         let before = open_doc("before.png");
-        let address = source(&before)
-            .search("before")
-            .pop()
-            .and_then(|result| result.action_address())
-            .unwrap();
+        let hit = target(&source(&before).search("before").pop().unwrap());
         let after = open_doc("after.png");
-        assert!(
-            PhotosResources
-                .publish_resources(&after)
-                .iter()
-                .all(|resource| resource.id.0 != address.resource)
-        );
+        assert!(opened(&after, &hit).is_none());
 
         {
             let mut doc = open_doc("before.png");
-            let index = LibraryIndex::new(&doc).unwrap();
+            let index = LibraryIndex::new(&crate::test_doc::library(&doc)).unwrap();
             let generation = index.generation();
-            let address = source(&doc).search("before")[0].action_address().unwrap();
+            let hit = target(&source(&doc).search("before")[0]);
 
-            PhotosDoc::set_library(&mut doc, &PhotoLibrary::default());
-            index.sync(&PhotosDoc::library(&doc)).unwrap();
+            crate::test_doc::set_library(&mut doc, &PhotoLibrary::default());
+            index.sync(&crate::test_doc::library(&doc)).unwrap();
             assert_ne!(index.generation(), generation, "the old pages are stale");
-            assert!(index.resource(&address.resource).is_none());
-            assert!(opened(&doc, &address).is_none());
+            assert!(index.resource(&hit.0).is_none());
+            assert!(opened(&doc, &hit).is_none());
         }
 
         {
-            let doc = AutoCommit::new();
-            let mut photo =
-                LibraryPhoto::from_image(OpenImage::from_path("/pictures/collision.png", 1, 1));
-            photo.id = "photos.album:collision".into();
-            let library = PhotoLibrary {
-                photos: vec![photo],
-                albums: vec![Album {
-                    id: "photos.album:collision".into(),
-                    name: "Collision".into(),
-                    photo_ids: Vec::new(),
-                }],
-            };
-            assert!(source_of(&library).search("collision").is_empty());
+            let mut place = photo_of("collision.png", 1);
+            place.folder = Some("Collision".into());
+            let mut tagged = photo_of("tagged.png", 1);
+            tagged.tags = crate::model::labels(["Collision"]);
+            let library = PhotoLibrary::of(vec![place, tagged], Vec::new());
+            let folder = crate::derived::folder_resource_id("Collision");
             assert!(
-                LibraryIndex::from_library(&doc, &library)
+                LibraryIndex::new(&library)
                     .unwrap()
-                    .resource("photos.album:collision")
-                    .is_none()
+                    .resource(&folder)
+                    .is_some(),
+                "a folder and a tag of one name are two places"
             );
         }
 
         {
             let doc = open_doc("last-good.png");
-            let provider = LibraryIndex::new(&doc).unwrap();
+            let library = crate::test_doc::library(&doc);
+            let provider = LibraryIndex::new(&library).unwrap();
             let before_generation = provider.generation();
-            let address = source(&doc).search("last-good")[0]
-                .action_address()
-                .unwrap();
-            let before = provider.resource(&address.resource).unwrap();
-            let before_seed_stats = provider.retained_seed_stats();
+            let (resource, _) = target(&source(&doc).search("last-good")[0]);
+            let before = provider.resource(&resource).unwrap();
+            let before_records = provider.stats().records;
 
             assert_eq!(
                 provider.reject_malformed_snapshot_for_test(),
                 Err(SearchCatalogError::NonCanonicalResult)
             );
             assert_eq!(provider.generation(), before_generation);
-            assert_eq!(provider.retained_seed_stats(), before_seed_stats);
-            let after = provider.resource(&address.resource).unwrap();
+            assert_eq!(provider.stats().records, before_records);
+            let after = provider.resource(&resource).unwrap();
             assert_eq!(after.id, before.id);
             assert_eq!(after.actions.len(), before.actions.len());
         }
 
         {
             let doc = open_doc("before.png");
-            let provider = LibraryIndex::new(&doc).unwrap();
-            let before_address = source(&doc)
-                .search("before")
-                .into_iter()
-                .find_map(|hit| hit.action_address())
-                .expect("fixture photograph is searchable");
+            let provider = LibraryIndex::new(&crate::test_doc::library(&doc)).unwrap();
+            let (before_resource, _) = target(&source(&doc).search("before")[0]);
 
-            let mut replacement = PhotosDoc::library(&doc);
-            replacement
-                .photos
-                .push(LibraryPhoto::from_image(OpenImage::from_path(
-                    "/pictures/after.png",
-                    16,
-                    16,
-                )));
+            let mut replacement = crate::test_doc::library(&doc);
+            replacement.add_photo(photo_of("after.png", 16));
             let (built_tx, built_rx) = std::sync::mpsc::sync_channel(0);
             let (publish_tx, publish_rx) = std::sync::mpsc::sync_channel(0);
             let replacement_provider = provider.clone();
@@ -1260,7 +1122,7 @@ mod tests {
                 });
                 built_rx.recv().expect("replacement finished off-lock work");
 
-                // This runs exactly in the window after the new postings/seeds
+                // This runs exactly in the window after the new postings
                 // exist but before the short atomic swap. If rebuild work ever
                 // re-enters the public state lock, either operation deadlocks
                 // here instead of continuing against the prior generation.
@@ -1268,9 +1130,9 @@ mod tests {
                     provider
                         .photo_matches_page("before", None)
                         .0
-                        .contains(&before_address.resource)
+                        .contains(&before_resource)
                 );
-                assert!(provider.resource(&before_address.resource).is_some());
+                assert!(provider.resource(&before_resource).is_some());
                 publish_tx.send(()).expect("release publication");
             });
 

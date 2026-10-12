@@ -58,7 +58,6 @@ use ui::widget::{
     TextInput, Tone, Widget,
 };
 
-use crate::actions::ImagerAction;
 use crate::customize::CzField;
 use crate::export_dialog::ExportDialog;
 use crate::model::{
@@ -66,7 +65,7 @@ use crate::model::{
     fmt_eta, fmt_rate, fmt_size,
 };
 use crate::page::{self, Frame};
-use crate::resource::{Imager, ImagerEffect, ImagerState};
+use crate::resource::{Imager, ImagerEffect};
 use crate::write::{JobControl, WriteRequest, spawn_job};
 use crate::write_setup::SetupField;
 use ui::framework::{
@@ -128,7 +127,6 @@ pub(crate) fn command_button(
 pub struct ImagerApp {
     // ---- collaborative records (cached each `sync`) ----
     source: Option<Source>,
-    next_recent_rank: i64,
     recent: Vec<Source>,
     profile: InstallProfile,
     /// Host-session Wi-Fi passphrase. Never enters the collaborative document.
@@ -182,10 +180,8 @@ pub struct ImagerApp {
     /// and reset on every step change.
     scroll: Rc<Cell<(f32, f32)>>,
     /// Framework-owned action dispatch (the only action-dispatch state the app
-    /// holds). Every guided-customization profile edit dispatches its
-    /// [`ImagerAction`](crate::actions::ImagerAction) through this host, which
-    /// brackets the undo boundary and applies it through the executor so it
-    /// records one Ctrl+Z step and replays byte-identically on peers.
+    /// holds). Every profile edit is a field edit submitted through it, so it
+    /// is one Ctrl+Z step and replays on peers.
     dispatcher: Option<Dispatcher<Imager>>,
     control_actions: Option<ui::framework::Actions<Imager>>,
     live: bool,
@@ -214,7 +210,6 @@ impl ImagerApp {
     pub fn new() -> Self {
         Self {
             source: None,
-            next_recent_rank: 0,
             recent: Vec::new(),
             targets: Vec::new(),
             releases: Vec::new(),
@@ -365,10 +360,9 @@ impl ImagerApp {
 
     /// Show the selected image and install profile the framework resource holds.
     /// An empty projection does not wipe a selection that has not been published yet.
-    pub(crate) fn adopt_resource_state(&mut self, state: &ImagerState) {
+    pub(crate) fn adopt_resource_state(&mut self, state: &Imager) {
         self.source.clone_from(&state.source);
-        self.recent.clone_from(&state.recent);
-        self.next_recent_rank = state.next_recent_rank;
+        self.recent = state.recent_sources();
         self.profile = state.profile.clone();
 
         self.dirty = true;
@@ -1190,27 +1184,17 @@ impl ImagerApp {
     fn writer(&self) -> crate::write::WriteBackend {
         crate::write::WriteBackend::for_window(self.live)
     }
-    fn submit(&self, action: &ImagerAction) {
+    fn submit(&self, submit: impl ui::framework::Submit<Imager>) {
         if let Some(dispatcher) = &self.dispatcher {
-            dispatcher.apply(action);
+            dispatcher.submit(submit);
         }
     }
     fn select_source(&mut self, src: &Source) {
-        let previous = self
-            .source
-            .as_ref()
-            .filter(|previous| !previous.path.is_empty())
-            .cloned()
-            .map(Box::new);
         // A source outside the authenticated catalog cannot carry a profile.
         if !self.source_is_official(src) {
             self.action = Action::Flash;
         }
-        self.submit(&ImagerAction::SelectSource {
-            source: Box::new(src.clone()),
-            previous,
-            recent_rank: self.next_recent_rank,
-        });
+        self.submit(Imager::SELECT_SOURCE.with(src.clone()));
         self.source = Some(src.clone());
         self.set_status(&format!(
             "Selected {} — {}",
@@ -2016,7 +2000,7 @@ impl ImagerApp {
 }
 
 impl ImagerApp {
-    pub(crate) fn present_state(&mut self, state: &ImagerState) {
+    pub(crate) fn present_state(&mut self, state: &Imager) {
         self.adopt_resource_state(state);
     }
     fn go_to_station(&mut self, index: usize) {
@@ -2078,15 +2062,18 @@ impl ImagerApp {
             Command::Profile(field, shown) => {
                 if self.step == Step::Customize && self.customizable() {
                     match crate::customize::profile_value(field, &shown) {
-                        Some(value) => self.submit(&crate::customize::field_action(field, value)),
+                        Some(value) => match crate::customize::field_edit(field, value) {
+                            Some(edit) => self.submit(edit),
+                            None => self.fail(&format!("Choose a listed {}", field.label())),
+                        },
                         None => self.fail(&format!("Choose a listed {}", field.label())),
                     }
                 }
             }
             Command::WriteSetup(field, value) => {
                 if self.step == Step::Confirm && self.offers_write_setup() {
-                    match crate::write_setup::field_action(field, value.clone()) {
-                        Some(action) => self.submit(&action),
+                    match crate::write_setup::field_edit(field, value.clone()) {
+                        Some(edit) => self.submit(edit),
                         None => {
                             if let Some(dispatcher) = &self.dispatcher {
                                 match field {
@@ -2106,7 +2093,7 @@ impl ImagerApp {
             }
             Command::Enroll(on) => {
                 if self.step == Step::Confirm && self.offers_write_setup() {
-                    self.submit(&ImagerAction::SetEnrollLocalIdentity { on });
+                    self.submit(Imager::paths().profile.enroll_local_identity.set(on));
                 }
             }
         }
@@ -2344,8 +2331,8 @@ impl Widget for ImagerApp {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::doc::ImagerDoc;
     use automerge::AutoCommit;
+    use ui::tilo_resource::Fields as _;
 
     fn harness(
         app: ImagerApp,
@@ -2379,21 +2366,45 @@ mod tests {
         app.sync(&mut model, &automerge::ROOT);
     }
 
+    /// A document holding `state`.
+    fn document(state: &Imager) -> AutoCommit {
+        let mut doc = AutoCommit::new();
+        state.write_fields(&mut doc, &automerge::ROOT).unwrap();
+        doc
+    }
+
+    /// The demo record: a pre-selected Tilo image and a short recent-sources
+    /// history.
+    fn demo_state() -> Imager {
+        Imager {
+            source: Some(crate::model::sample_source()),
+            recent: crate::model::sample_recent_sources()
+                .into_iter()
+                .enumerate()
+                .map(|(rank, source)| crate::model::RecentSource {
+                    id: ui::tilo_resource::Id::from_raw(source.id()),
+                    rank: rank as i64,
+                    source,
+                })
+                .collect(),
+            profile: InstallProfile::default(),
+        }
+    }
+
     fn seeded_app() -> (ImagerApp, AutoCommit) {
         // Tests drive the wizard against the demo document (sample drives + a
         // Tilo image + recent history) — the same content the screenshot scenarios stage.
         let mut app = ImagerApp::new();
         app.targets = crate::model::sample_targets();
         app.releases = crate::model::sample_releases();
-        let mut doc = AutoCommit::new();
-        ImagerDoc::seed_demo(&mut doc);
+        let doc = document(&demo_state());
         present(&mut app, &doc);
         (app, doc)
     }
 
     #[test]
     fn unchanged_disk_review_discloses_the_authored_hostname() {
-        use tilo_actions::Action as _;
+        use ui::tilo_resource::Resource as _;
 
         let (mut app, mut doc) = seeded_app();
         let mut source = app
@@ -2403,23 +2414,20 @@ mod tests {
             .unwrap()
             .clone();
         source.installable = false;
-        ImagerAction::SelectSource {
-            source: Box::new(source),
-            previous: None,
-            recent_rank: 1,
-        }
-        .apply(&mut doc)
-        .unwrap();
+        let mut state = Imager::read(&doc).unwrap();
+        state.select_source(source);
+        state.write_fields(&mut doc, &automerge::ROOT).unwrap();
         present(&mut app, &doc);
         app.goto(Step::Confirm);
         assert!(!app.customizable());
         assert_eq!(app.review_setup(), "Written unchanged, then verified");
 
-        ImagerAction::SetHostname {
-            value: "reviewed-host".into(),
-        }
-        .apply(&mut doc)
-        .unwrap();
+        Imager::paths()
+            .profile
+            .hostname
+            .replace("reviewed-host")
+            .apply_local(&mut doc)
+            .unwrap();
         present(&mut app, &doc);
         assert_eq!(
             crate::handoff::chosen_hostname(&app.profile),
@@ -2968,19 +2976,21 @@ mod tests {
 
     #[test]
     fn write_setup_wifi_and_owner_key_stage_without_identity_enrollment() {
-        use tilo_actions::Action as _;
-
         let (mut app, mut doc) = seeded_app();
         app.select_target(0);
         app.goto(Step::Confirm);
         app.confirm_text = "sdb".into();
-        ImagerAction::SetWifiSsid {
-            value: "studio".into(),
-        }
-        .apply(&mut doc)
-        .unwrap();
-        ImagerAction::SetEnrollLocalIdentity { on: false }
-            .apply(&mut doc)
+        Imager::paths()
+            .profile
+            .wifi_ssid
+            .replace("studio")
+            .apply_local(&mut doc)
+            .unwrap();
+        Imager::paths()
+            .profile
+            .enroll_local_identity
+            .set(false)
+            .apply_local(&mut doc)
             .unwrap();
         present(&mut app, &doc);
         app.wifi_psk = "correct-horse".into();
@@ -3009,19 +3019,21 @@ mod tests {
 
     #[test]
     fn write_setup_missing_wifi_password_is_reported_before_identity_lookup() {
-        use tilo_actions::Action as _;
-
         let (mut app, mut doc) = seeded_app();
         app.select_target(0);
         app.goto(Step::Confirm);
         app.confirm_text = "sdb".into();
-        ImagerAction::SetWifiSsid {
-            value: "studio".into(),
-        }
-        .apply(&mut doc)
-        .unwrap();
-        ImagerAction::SetEnrollLocalIdentity { on: true }
-            .apply(&mut doc)
+        Imager::paths()
+            .profile
+            .wifi_ssid
+            .replace("studio")
+            .apply_local(&mut doc)
+            .unwrap();
+        Imager::paths()
+            .profile
+            .enroll_local_identity
+            .set(true)
+            .apply_local(&mut doc)
             .unwrap();
         present(&mut app, &doc);
         let error = app
@@ -3034,7 +3046,6 @@ mod tests {
 
     #[test]
     fn write_setup_uses_the_newly_published_document_without_a_render_frame() {
-        use tilo_actions::Action as _;
         use ui::tilo_resource::Resource as _;
 
         let (mut app, mut doc) = seeded_app();
@@ -3042,11 +3053,12 @@ mod tests {
         app.goto(Step::Confirm);
         app.confirm_text = "sdb".into();
         assert!(app.profile.wifi_ssid.is_empty());
-        ImagerAction::SetWifiSsid {
-            value: "studio".into(),
-        }
-        .apply(&mut doc)
-        .unwrap();
+        Imager::paths()
+            .profile
+            .wifi_ssid
+            .replace("studio")
+            .apply_local(&mut doc)
+            .unwrap();
         assert!(
             app.profile.wifi_ssid.is_empty(),
             "the previous projection is still cached"
@@ -3335,12 +3347,13 @@ mod tests {
         // Phase `internal_and_system_disks_can_never_be_selected`.
         {
             let mut app = ImagerApp::new();
-            let mut doc = AutoCommit::new();
             let mut targets = crate::model::sample_targets();
             targets[1].is_system = true; // the internal NVMe is the system disk
             app.targets = targets.clone();
-            ImagerDoc::seed(&mut doc);
-            ImagerDoc::set_source(&mut doc, Some(&crate::model::sample_source()));
+            let doc = document(&Imager {
+                source: Some(crate::model::sample_source()),
+                ..Imager::default()
+            });
             present(&mut app, &doc);
 
             app.select_target(1);

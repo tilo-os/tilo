@@ -27,6 +27,16 @@ pub fn shadow_reach(theme: &Theme) -> f64 {
     f64::from(elevation.blur) * 2.0 + f64::from(elevation.offset_y).abs()
 }
 
+/// Every pixel a floating Panel in `rect` paints, its shadow included: what
+/// a host repaints where one appears, changes or goes. Tighter than
+/// [`shadow_reach`] on every side, as it follows the shadow's real kernel
+/// and offset ([`crate::surface::shadow_bounds`]).
+#[must_use]
+pub fn painted_bounds(rect: Rect, theme: &Theme) -> Rect {
+    crate::surface::shadow_bounds(rect, &theme.tokens.elevation.floating)
+        .map_or(rect, |shadow| shadow.union(rect))
+}
+
 /// Paint a floating Panel's body in `rect`: shadow, material, edge. Content
 /// is drawn on top by the caller.
 pub fn paint(scene: &mut Scene, transform: Affine, rect: Rect, theme: &Theme) {

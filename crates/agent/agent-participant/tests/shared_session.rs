@@ -396,7 +396,6 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
         AgentScope {
             rooms: vec![ROOM.into()],
             apps: vec![SCRATCHPAD.into()],
-            may_confirm: false,
         },
         now,
         now + 3_600_000_000_000,
@@ -439,13 +438,14 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
     .unwrap();
 
     // 3. The browser spawns the agent through the host, with a task that
-    // edits the page's record through Scratchpad's own action.
+    // edits the page's record through Scratchpad's own field edit.
+    let (note, arguments) = common::scratchpad_body("Drafted by the agent");
     let task = serde_json::json!([{
         "app": SCRATCHPAD,
         "record": route.record,
         "resource": "scratchpad.note",
-        "action": "edit",
-        "arguments": {"text": "Drafted by the agent"},
+        "action": note.action,
+        "arguments": arguments,
     }])
     .to_string();
     let mut spawn_arguments = serde_json::Map::new();
@@ -494,7 +494,7 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
     let info = &status_after.agents[0];
     assert_eq!(info.status, AgentStatus::Waiting);
     assert_eq!(info.tasks[0].state, TaskState::Completed);
-    assert_eq!(info.tasks[0].steps[0].action, "edit");
+    assert_eq!(info.tasks[0].steps[0].action, note.action);
     assert_eq!(info.device, hex::encode(agent_cert.device_public_key));
     let carried = AgentDelegation::decode(&hex::decode(&info.delegation).unwrap()).unwrap();
     assert_eq!(carried.verify(&user, tilo_clock::unix_now_ns()), Ok(()));
@@ -640,12 +640,13 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
         )
         .await,
     );
+    let (note, arguments) = common::scratchpad_body("Second draft");
     let second = serde_json::json!({
         "app": SCRATCHPAD,
         "record": route.record,
         "resource": "scratchpad.note",
-        "action": "edit",
-        "arguments": {"text": "Second draft"},
+        "action": note.action,
+        "arguments": arguments,
     })
     .to_string();
     completed(
@@ -707,12 +708,13 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
     // between them (a loop on a 20 ms interval took one step per pump).
     let steps: Vec<serde_json::Value> = (1..=10)
         .map(|n| {
+            let (note, arguments) = common::scratchpad_body(&format!("Step {n} of ten"));
             serde_json::json!({
                 "app": SCRATCHPAD,
                 "record": route.record,
                 "resource": "scratchpad.note",
-                "action": "edit",
-                "arguments": {"text": format!("Step {n} of ten")},
+                "action": note.action,
+                "arguments": arguments,
             })
         })
         .collect();
@@ -753,12 +755,13 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
     // 11. A plan that takes a while (a model call) is made beside the loop:
     // the loop goes on pumping meanwhile, and the plan's first step runs as
     // soon as it is ready.
+    let (note, arguments) = common::scratchpad_body("Planned beside the loop");
     let planned_steps = serde_json::json!([{
         "app": SCRATCHPAD,
         "record": route.record,
         "resource": "scratchpad.note",
-        "action": "edit",
-        "arguments": {"text": "Planned beside the loop"},
+        "action": note.action,
+        "arguments": arguments,
     }]);
     let release_later = release_plan.clone();
     let releaser = std::thread::spawn(move || {
@@ -815,12 +818,13 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
     // task's late plan is dropped. Each step goes through the agent's
     // action door while the loop pumps.
     let gated_edit = |text: &str| {
+        let (note, arguments) = common::scratchpad_body(text);
         serde_json::json!([{
             "app": SCRATCHPAD,
             "record": route.record,
             "resource": "scratchpad.note",
-            "action": "edit",
-            "arguments": {"text": text},
+            "action": note.action,
+            "arguments": arguments,
         }])
     };
     let task_of = |id: &str| {

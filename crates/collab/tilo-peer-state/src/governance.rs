@@ -1,11 +1,10 @@
 //! Owner-neutral transactions over the canonical room governance document.
 
 use automerge::{AutoCommit, ROOT, ReadDoc, transaction::Transactable};
-use collab_types::caps::{CapOverride, Principal, Scope, Subject};
 use ed25519_dalek::SigningKey;
 use web_time::SystemTime;
 
-use crate::state::{GovernedIdentity, RedemptionReceipt, put_member_capability};
+use crate::state::{GovernedIdentity, RedemptionReceipt, put_member};
 
 /// How many later redemption receipts one governed identity row keeps beside
 /// its first (`GovernedIdentity::admission`).
@@ -182,9 +181,9 @@ pub fn admit_invited_member(
         .ok_or("governed peers missing")?
         .1;
     let caps = candidate
-        .get(ROOT, "capabilities")
+        .get(ROOT, "members")
         .map_err(|error| error.to_string())?
-        .ok_or("governed capabilities missing")?
+        .ok_or("governed members missing")?
         .1;
     candidate.set_actor(automerge::ActorId::from(
         authority_key.verifying_key().to_bytes().to_vec(),
@@ -250,7 +249,12 @@ pub fn admit_invited_member(
     candidate
         .put(&names, &id, member_display_name(grant, cert))
         .map_err(|error| error.to_string())?;
-    put_member_capability(&mut candidate, &caps, cert.user_public_key, grant.role)?;
+    put_member(
+        &mut candidate,
+        &caps,
+        cert.user_public_key,
+        grant.role.into(),
+    )?;
     candidate.commit();
     crate::room::media::refresh_authorization(document, &mut candidate)
         .map_err(|error| error.to_string())?;
@@ -395,15 +399,15 @@ pub fn set_member_role(
     }
     let mut candidate = document.clone();
     let before = candidate.get_heads();
-    let capabilities = candidate
-        .get(ROOT, "capabilities")
+    let members = candidate
+        .get(ROOT, "members")
         .map_err(|error| error.to_string())?
-        .ok_or("governed capabilities missing")?
+        .ok_or("governed members missing")?
         .1;
     candidate.set_actor(automerge::ActorId::from(
         authority_key.verifying_key().to_bytes().to_vec(),
     ));
-    put_member_capability(&mut candidate, &capabilities, user_public_key, role)?;
+    put_member(&mut candidate, &members, user_public_key, role.into())?;
     candidate.commit();
     finish(document, candidate, &before)
 }
@@ -425,42 +429,40 @@ pub fn remove_member(
         return Err("workspace owner cannot be removed".into());
     }
     let mut candidate = document.clone();
-    let (_, capabilities) = candidate
-        .get(ROOT, "capabilities")
+    let (_, members) = candidate
+        .get(ROOT, "members")
         .map_err(|error| error.to_string())?
-        .ok_or("governed capabilities missing")?;
+        .ok_or("governed members missing")?;
+    let (_, grants) = candidate
+        .get(ROOT, "grants")
+        .map_err(|error| error.to_string())?
+        .ok_or("governed grants missing")?;
     let person = hex::encode(user_public_key);
-    let matching = candidate
-        .keys(&capabilities)
-        .filter(|id| {
-            candidate
-                .get(&capabilities, id)
-                .ok()
-                .flatten()
-                .is_some_and(|(value, _)| {
-                    let automerge::Value::Scalar(value) = value else {
-                        return false;
-                    };
-                    let automerge::ScalarValue::Bytes(bytes) = value.as_ref() else {
-                        return false;
-                    };
-                    serde_json::from_slice::<CapOverride>(bytes).is_ok_and(|cap| {
-                        subject_is_person(&cap.subject, user_public_key, &person)
-                            && matches!(cap.scope, Scope::Room(_) | Scope::Workspace)
-                    })
-                })
-        })
+    let member = candidate
+        .get(&members, person.as_str())
+        .map_err(|error| error.to_string())?
+        .is_some();
+    let personal = crate::room::policy::legacy(&candidate)
+        .grants
+        .iter()
+        .filter(|grant| grant.subject == tilo_action_policy::Subject::Person(person.clone()))
+        .map(|grant| grant.id.as_str().to_owned())
         .collect::<Vec<_>>();
-    if matching.is_empty() {
+    if !member && personal.is_empty() {
         return Ok(GovernanceOutcome::Unchanged);
     }
     let before = candidate.get_heads();
     candidate.set_actor(automerge::ActorId::from(
         authority_key.verifying_key().to_bytes().to_vec(),
     ));
-    for id in matching {
+    if member {
         candidate
-            .delete(&capabilities, id)
+            .delete(&members, person.as_str())
+            .map_err(|error| error.to_string())?;
+    }
+    for id in personal {
+        candidate
+            .delete(&grants, id.as_str())
             .map_err(|error| error.to_string())?;
     }
     candidate.commit();
@@ -500,14 +502,6 @@ fn finish(
     }
     *document = candidate;
     Ok(GovernanceOutcome::Applied { changes })
-}
-
-fn subject_is_person(subject: &Subject, root: [u8; 32], canonical: &str) -> bool {
-    match subject {
-        Subject::User(key) => key.as_bytes() == &root,
-        Subject::Principal(Principal::Person(person)) => person == canonical,
-        _ => false,
-    }
 }
 
 #[cfg(test)]

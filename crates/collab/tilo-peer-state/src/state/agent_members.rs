@@ -12,9 +12,10 @@
 //! The rule every member applies, in one place ([`GovernedAgentRow::acting`]):
 //! an agent identity acts only while its delegation verifies against the
 //! certificate's own root, names that device and this room, is inside its
-//! validity window, and the governor has not withdrawn it. Its role is its
-//! person's, never above [`Role::Editor`] ([`agent_role`]): an agent writes
-//! where its person may write and governs nothing. Outside its window the
+//! validity window, and the governor has not withdrawn it. It acts with its
+//! person's grants bounded by its delegation
+//! ([`tilo_action_policy::roles::agent_delegation`]): an agent writes where
+//! its person may write and governs nothing. Outside its window the
 //! identity stays on the roster, so the history it wrote stays attributed,
 //! but it is no reader of the room's channels and no op of it is admitted.
 

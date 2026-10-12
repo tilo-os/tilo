@@ -950,14 +950,14 @@ async fn checked_restore_late_acl_replacement_buffer_aba_and_rebinding_are_zero_
 async fn checked_restore_expiry_and_storage_interleavings_complete_safely() {
     // Phase `checked_restore_real_expiry_is_rechecked_at_final_admission_and_acl_writer_waits`.
     {
-        use collab_types::{CapOverride, Effect, Expiry, Scope, Subject, Verb};
+        use collab_types::{Access, CapOverride, Effect, Expiry, Scope, Subject};
         let mut fixture = Fixture::new().await;
         let expiry = tilo_clock::try_unix_now().unwrap() + 2;
         let cap = CapOverride::new(
             Subject::User(Ed25519PublicKey([55; 32])),
             Scope::FsPath("/".into()),
             Effect::Grant,
-            Verb::Write,
+            Access::Write,
         )
         .expiring(Expiry::AtUnix(expiry));
         let acl = AclHandle::new(crate::acl::WorkspaceAcl::from_capabilities(

@@ -182,16 +182,11 @@ mod tests {
     use winit::keyboard::{Key, NamedKey};
 
     fn escape_event() -> WindowEvent {
-        let event = ui::synthetic_input::key_event(
+        ui::synthetic_input::keyboard_input(ui::synthetic_input::key_event(
             Key::Named(NamedKey::Escape),
             None,
             ElementState::Pressed,
-        );
-        WindowEvent::KeyboardInput {
-            device_id: DeviceId::dummy(),
-            event,
-            is_synthetic: false,
-        }
+        ))
     }
 
     use ui::synthetic_input::mouse_press;

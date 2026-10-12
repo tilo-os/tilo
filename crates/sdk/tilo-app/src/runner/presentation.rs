@@ -1,7 +1,9 @@
 //! Native presentation actions and their caches, selected by the SDK runner boundary.
 
 use super::RENDER_TYPE;
+use crate::framework::ViewCx;
 use std::cell::Cell;
+use tilo_resource::Resource;
 use ui_core::automerge::transaction::Transactable;
 use ui_core::presence::PresenceCtx;
 use ui_core::vello::{
@@ -21,9 +23,9 @@ pub(crate) struct Presentation {
 }
 
 impl Presentation {
-    pub(crate) fn new(store: Option<tilo_content::ContentStore>) -> Self {
+    pub(crate) fn new<R: Resource>(cx: &ViewCx<R>) -> Self {
         Self {
-            store,
+            store: cx.content(),
             drawn_theme: None,
             render_text: None,
             past: None,
@@ -209,7 +211,7 @@ fn activate_spec() -> tilo_actions::ActionSpec {
             payload: b"{}".to_vec(),
         },
     )
-    .requiring(tilo_actions::PermissionRequirement::Read)
+    .of_kind(tilo_actions::ActionKind::Read)
     .with_description(ui_core::I18nManager::lookup_plain(
         "app-activate-window-description",
     ));
@@ -251,7 +253,7 @@ fn render_spec() -> tilo_actions::ActionSpec {
             })
         },
     )
-    .requiring(tilo_actions::PermissionRequirement::Read)
+    .of_kind(tilo_actions::ActionKind::Read)
     .with_description(
         "See the app's window as a picture: answers with the image and the revision of the document it shows.",
     );

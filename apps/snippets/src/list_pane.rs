@@ -1,94 +1,30 @@
-//! The overview column: the snippets of the chosen place, one
-//! [`ListRowFace`] each, or the empty state when there are none.
+//! The overview column: the snippets of the chosen place as a
+//! [`VirtualList`] of [`ListRow`]s, or the empty state when there are none.
 //!
-//! The list is one focus stop: Tab reaches it, the arrow keys, Home and End
-//! move the open snippet, and Enter or Space brings it to the front of a
-//! narrow window. A row opens on a completed click (press and release on
-//! the same row), and shows its pressed state in between.
+//! The list is one focus stop: the arrow keys, Page Up and Down, Home and
+//! End move the open snippet, and Enter brings it to the front of a narrow
+//! window, as activating a row does.
 
-use std::collections::HashMap;
+use std::rc::Rc;
 
 use taffy::{NodeId, TaffyTree};
-use ui::a11y::{AccessNode, Role};
 use ui::icons::Icon;
-use ui::paint::PaintCtx;
-use ui::presence::PresenceCtx;
-use ui::text_render::TextRenderer;
-use ui::theme::Theme;
 use ui::widget::{
-    EmptyState, EmptyStateContent, Interaction, ListRowFace, RowLeading, ScrollRegion, Widget,
-    badge_column_width,
+    AppModel, Element, EmptyState, ListRow, ModelPath, VecListModel, VirtualList, Widget,
 };
-use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, Vec2};
-use vello::peniko::{BlendMode, Fill};
-use winit::event::{ElementState, MouseButton, WindowEvent};
-use winit::keyboard::{Key, NamedKey};
+use vello::kurbo::Point;
 
-use crate::app::{Action, Core, Shared};
-use crate::model::{Selection, SmartFolder, Snippet, SnippetId};
+use crate::app::{Action, Requests, Shared};
+use crate::model::{Selection, SmartFolder, Snippet, SnippetId, Snippets};
 
-/// What the list painted last frame, for hit-testing and scrolling.
-pub(crate) struct ListState {
-    pub(crate) rect: Rect,
-    pub(crate) scroller: ScrollRegion,
-    /// Scroll the open snippet's row into view on the next paint.
-    pub(crate) reveal: bool,
-    /// One row's height: Page Up and Down step by the rows that fit.
-    line: f64,
-    pub(crate) hits: Vec<(Rect, Action)>,
-    /// Each row's leading column and the snippet it shows, for tooltips.
-    rows: Vec<(Rect, Rect, SnippetId)>,
-    /// The row a press landed on, until it is released.
-    pressed: Option<SnippetId>,
-    /// The list has keyboard focus.
-    pub(crate) focused: bool,
+/// One row's snippet, with the badges of every row so they share a column.
+struct Row {
+    id: SnippetId,
+    snippet: Snippet,
+    badges: Rc<[String]>,
 }
 
-impl Default for ListState {
-    fn default() -> Self {
-        Self {
-            rect: Rect::ZERO,
-            scroller: ScrollRegion::vertical(),
-            reveal: true,
-            line: 0.0,
-            hits: Vec::new(),
-            rows: Vec::new(),
-            pressed: None,
-            focused: false,
-        }
-    }
-}
-
-impl ListState {
-    /// Scroll row `index` of rows `heights` tall into view. Scrolling down
-    /// stops at the first row that keeps it in view, so the list starts on
-    /// a whole row.
-    fn reveal_row(&mut self, heights: &[f64], index: usize, inset: f64) {
-        let tops: Vec<f64> = heights
-            .iter()
-            .scan(inset, |y, h| {
-                let top = *y;
-                *y += h;
-                Some(top)
-            })
-            .collect();
-        let top = tops.get(index).copied().unwrap_or(inset);
-        let bottom = top + heights.get(index).copied().unwrap_or_default();
-        let scroll = self.scroller.offset().y;
-        if top - inset < scroll {
-            self.scroller.set_offset(Vec2::new(0.0, top - inset));
-        } else if bottom + inset > scroll + self.rect.height() {
-            let least = bottom + inset - self.rect.height();
-            let whole = tops
-                .iter()
-                .map(|row_top| row_top - inset)
-                .find(|scroll| *scroll >= least)
-                .unwrap_or(least);
-            self.scroller.set_offset(Vec2::new(0.0, whole));
-        }
-    }
-}
+type Rows = VecListModel<Row, SnippetId>;
 
 /// The secondary text of a row: what the snippet is for, or its first line
 /// of code when it has no description.
@@ -100,480 +36,219 @@ fn secondary(snippet: &Snippet) -> &str {
     }
 }
 
-/// "2 variables" for a templated snippet.
-fn variables(snippet: &Snippet) -> Option<String> {
+/// The row of one snippet: its language badge (named by its tooltip), the
+/// favorite star, what it is for and its variables; resting on it tells how
+/// often it was used. Activating it opens the snippet.
+fn row(row: &Row, requests: &Requests) -> Element {
+    let snippet = &row.snippet;
+    let open = Action::OpenSnippet(row.id.clone());
+    let mut list_row = ListRow::new(open.semantic_id(), &snippet.title)
+        .badge(snippet.language.badge())
+        .badge_column(Rc::clone(&row.badges))
+        .leading_tooltip(snippet.language.name())
+        .secondary(secondary(snippet))
+        .two_line_secondary()
+        .tooltip(crate::tr_count("snippets-uses", snippet.use_count()));
+    if snippet.favorite {
+        list_row = list_row.mark(Icon::Star);
+    }
     let count = snippet.placeholders().len();
-    (count > 0).then(|| crate::tr_count("snippets-variables", count))
+    if count > 0 {
+        list_row = list_row.meta(crate::tr_count("snippets-variables", count));
+    }
+    let requests = Rc::clone(requests);
+    Box::new(list_row.on_view(move || requests.borrow_mut().push(open.clone())))
 }
 
-fn uses(snippet: &Snippet) -> String {
-    crate::tr_count("snippets-uses", snippet.uses as usize)
+enum Body {
+    List(Box<VirtualList<Rows>>),
+    Empty(Box<EmptyState>),
 }
 
-impl Core {
-    fn row_face<'a>(
-        &self,
-        snippet: &'a Snippet,
-        meta: Option<&'a str>,
-        column: f64,
-        interaction: Interaction,
-    ) -> ListRowFace<'a> {
-        let face = ListRowFace::new(&snippet.title)
-            .leading(RowLeading::Badge(snippet.language.badge()))
-            .leading_column(column)
-            .secondary(secondary(snippet))
-            .two_line_secondary()
-            .selected(self.open == Some(snippet.id))
-            .interaction(interaction);
-        let face = if snippet.favorite {
-            face.mark(Icon::Star)
-        } else {
-            face
-        };
-        match meta {
-            Some(meta) => face.meta(meta),
-            None => face,
-        }
-    }
-
-    fn badge_column(&self, text: &mut TextRenderer, theme: &Theme) -> f64 {
-        let badges: Vec<&str> = self
-            .visible
-            .iter()
-            .filter_map(|id| self.library.get(*id))
-            .map(|s| s.language.badge())
-            .collect();
-        badge_column_width(text, theme, &badges)
-    }
-
-    pub(crate) fn paint_list(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        area: Rect,
-    ) {
-        self.list.hits.clear();
-        self.list.rows.clear();
-        // A list that changes size keeps the open snippet in view.
-        let resized = self.list.rect.size() != area.size();
-        self.list.rect = area;
-        self.list.scroller.set_viewport(area, theme);
-        if area.width() <= 0.0 || area.height() <= 0.0 {
-            return;
-        }
-        if self.visible.is_empty() {
-            self.list.scroller.set_content_size(0.0, 0.0);
-            self.paint_list_empty(scene, t, text, theme, area);
-            return;
-        }
-        let spacing = &theme.tokens.spacing;
-        let inset = f64::from(spacing.s2);
-        // The rows' text starts on the column's content edge, where the
-        // column's title starts; a row's outer rect is that edge grown by
-        // the lift's bleed.
-        let edge = ui::chrome::column_gutter(theme) - ui::chrome::row_bleed(theme);
-        let column = self.badge_column(text, theme);
-
-        let snippets: Vec<Snippet> = self
-            .visible
-            .iter()
-            .filter_map(|id| self.library.get(*id).cloned())
-            .collect();
-        let metas: Vec<Option<String>> = snippets.iter().map(variables).collect();
-        let heights: Vec<f64> = snippets
-            .iter()
-            .zip(&metas)
-            .map(|(s, meta)| {
-                self.row_face(s, meta.as_deref(), column, Interaction::default())
-                    .height(text, theme)
-            })
-            .collect();
-        self.list.line = heights.first().copied().unwrap_or_default();
-        self.list
-            .scroller
-            .set_content_size(area.width(), heights.iter().sum::<f64>() + inset * 2.0);
-        if (std::mem::take(&mut self.list.reveal) || resized)
-            && let Some(index) = snippets.iter().position(|s| Some(s.id) == self.open)
-        {
-            self.list.reveal_row(&heights, index, inset);
-        }
-        let x1 = if self.list.scroller.overflows_vertically() {
-            self.list.scroller.content_rect().x1
-        } else {
-            area.x1 - edge
-        };
-        let mut y = area.y0 + inset - self.list.scroller.offset().y;
-        scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &area);
-        for (i, (snippet, meta)) in snippets.iter().zip(&metas).enumerate() {
-            let h = heights.get(i).copied().unwrap_or_default();
-            let rect = Rect::new(area.x0 + edge, y, x1, y + h);
-            y += h;
-            if rect.y1 < area.y0 || rect.y0 > area.y1 {
-                continue;
-            }
-            let hovered = rect.contains(self.pointer) && area.contains(self.pointer);
-            let interaction = Interaction {
-                hovered,
-                pressed: self.list.pressed == Some(snippet.id) && hovered,
-                focused: self.list.focused && self.open == Some(snippet.id),
-                disabled: false,
-            };
-            let face = self.row_face(snippet, meta.as_deref(), column, interaction);
-            let face = match snippets.get(i + 1) {
-                Some(next) => face.separator(self.open == Some(next.id)),
-                None => face,
-            };
-            let lead = face.leading_rect(rect, text, theme);
-            let lead = Rect::new(lead.x0, rect.y0, lead.x1, rect.y1);
-            face.paint(&mut PaintCtx::new(scene, t, text, theme), rect);
-            let shown = rect.intersect(area);
-            self.list
-                .rows
-                .push((shown, lead.intersect(area), snippet.id));
-            self.list
-                .hits
-                .push((shown, Action::OpenSnippet(snippet.id)));
-        }
-        scene.pop_layer();
-        self.list.scroller.paint_bars(scene, t, theme);
-    }
-
-    /// The list's zero state: one sentence saying what would fill the
-    /// place. Creating a snippet is the header's action.
-    fn paint_list_empty(
-        &self,
-        scene: &mut Scene,
-        t: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        area: Rect,
-    ) {
-        let title = crate::tr(match &self.selection {
-            _ if self.library.snippets.is_empty() => "snippets-empty-library",
-            Selection::Smart(SmartFolder::Favorites) => "snippets-empty-favorites",
-            Selection::Smart(SmartFolder::MostUsed) => "snippets-empty-most-used",
-            _ => "snippets-empty-place",
-        });
-        let content = EmptyStateContent {
-            icon: Some(match &self.selection {
-                Selection::Smart(SmartFolder::Favorites) => Icon::Star,
-                Selection::Smart(SmartFolder::MostUsed) => Icon::History,
-                _ => Icon::Inbox,
-            }),
-            ..EmptyStateContent::new(&title)
-        };
-        EmptyState::paint(
-            &mut PaintCtx::new(scene, t, text, theme),
-            area,
-            &content,
-            self.pointer,
-        );
-    }
-
-    /// Open the snippet `step` rows away from the open one (clamped to the
-    /// list), without bringing it to the front of a narrow window.
-    fn step_open(&mut self, step: isize) {
-        let Some(last) = self.visible.len().checked_sub(1) else {
-            return;
-        };
-        let current = self
-            .open
-            .and_then(|id| self.visible.iter().position(|v| *v == id));
-        let next = match (current, step) {
-            (None, _) => 0,
-            (Some(i), isize::MIN..=-1) => i.saturating_sub(step.unsigned_abs()),
-            (Some(i), _) => i.saturating_add(step.unsigned_abs()).min(last),
-        };
-        if let Some(id) = self.visible.get(next).copied() {
-            self.open = Some(id);
-            self.list.reveal = true;
-        }
-    }
-
-    /// A key while the list has focus. Returns whether the list used it.
-    pub(crate) fn list_key(&mut self, key: &Key) -> bool {
-        let page = ((self.list.rect.height() / self.list.line.max(1.0)) as isize).max(1);
-        match key {
-            Key::Named(NamedKey::ArrowDown) => self.step_open(1),
-            Key::Named(NamedKey::ArrowUp) => self.step_open(-1),
-            Key::Named(NamedKey::PageDown) => self.step_open(page),
-            Key::Named(NamedKey::PageUp) => self.step_open(-page),
-            Key::Named(NamedKey::Home) => self.step_open(isize::MIN),
-            Key::Named(NamedKey::End) => self.step_open(isize::MAX),
-            Key::Named(NamedKey::Enter | NamedKey::Space) => match self.open {
-                Some(id) => self.open_snippet(id),
-                None => return false,
-            },
-            _ => return false,
-        }
-        true
-    }
-
-    /// Route `event` to the list, marking it handled when the list used it.
-    pub(crate) fn list_event(
-        &mut self,
-        event: &WindowEvent,
-        ctx: &mut ui::widget::EventCtx<'_>,
-        theme: &Theme,
-    ) {
-        // The scroll region takes the wheel, touchpad gestures and its bar.
-        self.list.scroller.handle_event(event, ctx, theme);
-        if *ctx.handled {
-            return;
-        }
-        let inside = self.list.rect.contains(self.pointer);
-        let row_at = |list: &ListState, point: Point| {
-            list.hits
-                .iter()
-                .rev()
-                .find(|(rect, _)| rect.contains(point))
-                .and_then(|(_, action)| match action {
-                    Action::OpenSnippet(id) => Some(*id),
-                    _ => None,
-                })
-        };
-        let used = match event {
-            WindowEvent::KeyboardInput { event: key, .. }
-                if self.list.focused && key.state == ElementState::Pressed =>
-            {
-                let modifiers = ctx.modifiers.state();
-                !(modifiers.control_key() || modifiers.super_key() || modifiers.alt_key())
-                    && self.list_key(&key.logical_key)
-            }
-            WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-                ..
-            } if inside => {
-                self.list.pressed = row_at(&self.list, self.pointer);
-                if self.list.pressed.is_some() {
-                    self.body_editor.set_focused(false);
-                    *ctx.focus_target = Some(ctx.node_id);
-                }
-                true
-            }
-            WindowEvent::MouseInput {
-                state: ElementState::Released,
-                button: MouseButton::Left,
-                ..
-            } => {
-                let pressed = self.list.pressed.take();
-                if let Some(id) = pressed
-                    && inside
-                    && row_at(&self.list, self.pointer) == Some(id)
-                {
-                    self.apply(Action::OpenSnippet(id));
-                }
-                pressed.is_some()
-            }
-            _ => false,
-        };
-        if used {
-            *ctx.handled = true;
-        }
-    }
-
-    fn list_accessibility(&self) -> AccessNode {
-        let children = self
-            .list
-            .hits
-            .iter()
-            .filter_map(|(rect, action)| match action {
-                Action::OpenSnippet(id) => self.library.get(*id).map(|snippet| {
-                    let meta = variables(snippet);
-                    let face = ListRowFace::new(&snippet.title)
-                        .secondary(secondary(snippet))
-                        .selected(self.open == Some(*id))
-                        .interaction(Interaction {
-                            focused: self.list.focused && self.open == Some(*id),
-                            ..Interaction::default()
-                        });
-                    let face = if snippet.favorite {
-                        face.mark(Icon::Star)
-                    } else {
-                        face
-                    };
-                    match &meta {
-                        Some(meta) => face.meta(meta),
-                        None => face,
-                    }
-                    .accessibility(*rect, action.semantic_id())
-                }),
-                _ => None,
-            })
-            .collect();
-        AccessNode::new(Role::List)
-            .with_name(self.selection_title())
-            .with_bounds(self.list.rect)
-            .with_children(children)
-    }
-
-    fn list_tooltip(&self, point: Point) -> Option<(Rect, String)> {
-        let (row, lead, id) = self
-            .list
-            .rows
-            .iter()
-            .find(|(row, _, _)| row.contains(point))?;
-        let snippet = self.library.get(*id)?;
-        if lead.contains(point) {
-            Some((*lead, snippet.language.name()))
-        } else {
-            Some((*row, uses(snippet)))
-        }
-    }
-}
-
-/// The overview column widget: paints the list from the shared core.
+/// The overview column widget, kept in step with the shared core.
 pub(crate) struct ListPane {
     core: Shared,
-    rect: Rect,
-    /// The theme of the last layout, for the scroll region's lanes, steps
-    /// and fade.
-    theme: Theme,
+    requests: Requests,
+    body: Body,
+    /// The library and place the body was built from, and the open snippet
+    /// it shows.
+    library: Rc<Snippets>,
+    place: Option<Selection>,
+    open: Option<SnippetId>,
+    /// The open snippet to scroll into view once the list has its height.
+    reveal: Option<SnippetId>,
+    structure_dirty: bool,
 }
 
 impl ListPane {
-    pub(crate) fn new(core: &Shared) -> Self {
-        Self {
-            core: std::rc::Rc::clone(core),
-            rect: Rect::ZERO,
-            theme: Theme::dark(),
+    pub(crate) fn new(core: &Shared, requests: &Requests) -> Self {
+        let mut pane = Self {
+            core: Rc::clone(core),
+            requests: Rc::clone(requests),
+            body: Body::Empty(Box::new(EmptyState::new(""))),
+            library: Rc::default(),
+            place: None,
+            open: None,
+            reveal: None,
+            structure_dirty: false,
+        };
+        pane.refresh();
+        pane
+    }
+
+    fn list(&self, rows: Rows, name: String) -> VirtualList<Rows> {
+        let requests = Rc::clone(&self.requests);
+        let follow = Rc::clone(&self.core);
+        let activate = Rc::clone(&self.requests);
+        VirtualList::with_selection_delegate(rows, 72.0, move |rows, index, id, _, _| {
+            rows.item(index).map_or_else(
+                || {
+                    Box::new(ListRow::new(
+                        Action::OpenSnippet(id.clone()).semantic_id(),
+                        "",
+                    )) as Element
+                },
+                |item| row(item, &requests),
+            )
+        })
+        .filling()
+        .selection_follows_focus()
+        // Moving through the list opens the snippet without bringing it to
+        // the front of a narrow window.
+        .on_select(move |id, selected| {
+            if selected && let Ok(mut core) = follow.try_borrow_mut() {
+                core.open = Some(id);
+            }
+        })
+        .on_activate(move |id| activate.borrow_mut().push(Action::OpenSnippet(id)))
+        .with_id("snippets.list")
+        .with_accessible_name(name)
+        .with_semantic_key(ToString::to_string)
+    }
+
+    /// The zero state of a place without snippets: one sentence saying what
+    /// would fill it. Creating a snippet is the header's action.
+    fn empty(selection: &Selection) -> EmptyState {
+        let (title, icon) = match selection {
+            Selection::Smart(SmartFolder::Favorites) => ("snippets-empty-favorites", Icon::Star),
+            Selection::Smart(SmartFolder::MostUsed) => ("snippets-empty-most-used", Icon::History),
+            _ => ("snippets-empty-place", Icon::Inbox),
+        };
+        EmptyState::new(crate::tr(title)).with_icon(icon)
+    }
+
+    /// Follow the core: new rows for a new library, a fresh list for a new
+    /// place, the open snippet as the selected row, and whether to scroll
+    /// to it.
+    fn refresh(&mut self) {
+        let core = Rc::clone(&self.core);
+        let Ok(mut core) = core.try_borrow_mut() else {
+            return;
+        };
+        let reveal = core.reveal.take();
+        let same_place = self.place.as_ref() == Some(&core.selection);
+        let same_rows = same_place && Rc::ptr_eq(&self.library, &core.library);
+        if !same_rows {
+            self.library = Rc::clone(&core.library);
+            self.place = Some(core.selection.clone());
+            let snippets: Vec<(SnippetId, Snippet)> = core
+                .visible
+                .iter()
+                .filter_map(|id| core.library.get(id).map(|s| (id.clone(), s.clone())))
+                .collect();
+            if snippets.is_empty() {
+                self.body = Body::Empty(Box::new(Self::empty(&core.selection)));
+                self.structure_dirty = true;
+            } else {
+                let mut badges: Vec<String> = snippets
+                    .iter()
+                    .map(|(_, s)| s.language.badge().to_owned())
+                    .collect();
+                badges.sort_unstable();
+                badges.dedup();
+                let badges: Rc<[String]> = badges.into();
+                let rows = snippets
+                    .into_iter()
+                    .map(|(id, snippet)| Row {
+                        id,
+                        snippet,
+                        badges: Rc::clone(&badges),
+                    })
+                    .collect();
+                let Ok(rows) = VecListModel::new(rows, |row: &Row| row.id.clone()) else {
+                    return;
+                };
+                if same_place && let Body::List(list) = &mut self.body {
+                    list.update_model(|model| *model = rows);
+                } else {
+                    let list = self.list(rows, core.selection_title());
+                    self.body = Body::List(Box::new(list));
+                    self.structure_dirty = true;
+                }
+            }
         }
+        let open = core.open.clone();
+        if let Body::List(list) = &mut self.body
+            && (!same_rows || open != self.open)
+        {
+            let selection = list.selection_mut();
+            selection.clear();
+            if let Some(open) = &open {
+                selection.select_only(open.clone());
+            }
+        }
+        if !same_place || open != self.open {
+            self.reveal.clone_from(&open);
+        }
+        if reveal.is_some() {
+            self.reveal = reveal;
+        }
+        self.open = open;
     }
 }
 
-impl Widget for ListPane {
-    ui::provides!(dyn ui::widget::controls::ActionControls);
+impl ui::widget::Decorator for ListPane {
+    type Inner = dyn Widget;
 
-    fn build_layout(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        theme: &Theme,
-        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        self.theme = theme.clone();
-        crate::draw::fill_leaf(taffy, node_map, self)
-    }
-
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = ui::widget::layout_rect(taffy, node, origin);
-    }
-
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        _presence: &PresenceCtx,
-    ) {
-        self.core
-            .borrow_mut()
-            .paint_list(scene, transform, text, theme, self.rect);
-    }
-
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
-        self.core.borrow_mut().list_event(event, ctx, &self.theme);
-    }
-
-    fn is_focusable(&self) -> bool {
-        !self.core.borrow().visible.is_empty()
-    }
-
-    fn set_focus(&mut self, focused: bool) {
-        self.core.borrow_mut().list.focused = focused;
-    }
-
-    fn is_focused(&self) -> bool {
-        self.core.borrow().list.focused
-    }
-
-    fn accessibility(&self) -> Option<AccessNode> {
-        Some(self.core.borrow().list_accessibility())
-    }
-
-    fn perform_semantic_action(
-        &mut self,
-        target: &str,
-        action: &ui::a11y::Action,
-        _state: &mut ui::widget::Edits<'_>,
-        _path: &ui::widget::ModelPath,
-    ) -> bool {
-        // Synthetic list rows belong to this measured leaf, not the app root.
-        // Resolve only a currently presented row, so removed or filtered rows
-        // cannot reuse an old semantic target.
-        let mut core = self.core.borrow_mut();
-        let selected = core.list.hits.iter().find_map(|(_, candidate)| {
-            let Action::OpenSnippet(id) = candidate else {
-                return None;
-            };
-            (candidate.semantic_id() == target
-                && core.visible.contains(id)
-                && core.library.get(*id).is_some())
-            .then_some(*id)
-        });
-        let Some(selected) = selected else {
-            return false;
-        };
-        match action {
-            ui::a11y::Action::Activate => {
-                core.apply(Action::OpenSnippet(selected));
-                true
-            }
-            ui::a11y::Action::Focus => {
-                // Like directional list focus, select and reveal the row while
-                // keeping the overview in front on a narrow window.
-                core.open = Some(selected);
-                core.list.reveal = true;
-                core.list.focused = true;
-                true
-            }
-            _ => false,
+    fn inner(&self) -> &(dyn Widget + 'static) {
+        match &self.body {
+            Body::List(list) => list.as_ref(),
+            Body::Empty(empty) => empty.as_ref(),
         }
     }
 
-    fn tooltip_target_at(&self, point: Point) -> Option<(Rect, String)> {
-        self.core.borrow().list_tooltip(point)
+    fn inner_mut(&mut self) -> &mut (dyn Widget + 'static) {
+        match &mut self.body {
+            Body::List(list) => list.as_mut(),
+            Body::Empty(empty) => empty.as_mut(),
+        }
     }
 
-    fn wants_pointer_capture(&self) -> bool {
-        let core = self.core.borrow();
-        core.list.scroller.is_dragging() || core.list.pressed.is_some()
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
+        self.refresh();
+        self.inner_mut().sync(state, path);
     }
 
-    fn needs_animation_frame(&self) -> bool {
-        self.core
-            .try_borrow()
-            .is_ok_and(|core| core.list.scroller.needs_animation_frame(&self.theme))
+    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
+        self.refresh();
+        self.inner_mut().update(state, path) || self.structure_dirty
     }
 
-    fn next_wake_deadline(&self) -> Option<ui::time::Instant> {
-        self.core
-            .try_borrow()
-            .ok()
-            .and_then(|core| core.list.scroller.next_wake_deadline(&self.theme))
+    fn take_structure_dirty(&mut self) -> bool {
+        let own = std::mem::take(&mut self.structure_dirty);
+        self.inner_mut().take_structure_dirty() | own
+    }
+
+    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        self.inner_mut().apply_layout(taffy, node, origin);
+        if let Body::List(list) = &mut self.body
+            && let Some(open) = self.reveal.take()
+        {
+            list.reveal(&open);
+        }
     }
 
     fn name(&self) -> &'static str {
         "SnippetList"
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
-    }
-}
-
-impl ui::widget::controls::ActionControls for ListPane {
-    fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
-        let core = self.core.borrow();
-        let mut seen = std::collections::HashSet::new();
-        core.list
-            .hits
-            .iter()
-            .filter(|(_, action)| seen.insert(action.semantic_id()))
-            .map(|(_, action)| action.binding())
-            .collect()
     }
 }

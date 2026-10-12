@@ -1,0 +1,39 @@
+# The app's public surface, written by `tilo-app surface`: its resources' verbs
+# and stored fields. Review changes to it like an API change; `tilo-app check`
+# fails when the code and this file disagree.
+
+[[resources]]
+kind = "vpn.vault"
+label = "VPN"
+verbs = []
+version = 1
+
+[[resources.fields]]
+owner = "vpn"
+path = "connections"
+stored = "collection"
+title = "Connections"
+type = "Collection<Profile>"
+
+[[resources.fields]]
+label = true
+owner = "profile"
+path = "connections.*.name"
+stored = "value"
+title = "Name"
+type = "String"
+
+[[resources.fields]]
+owner = "profile"
+path = "connections.*.kind"
+readonly = true
+stored = "value"
+title = "The protocol the profile was imported with"
+type = "ConnKind"
+
+[[resources.fields]]
+owner = "profile"
+path = "connections.*.tor"
+stored = "value"
+title = "Route over Tor"
+type = "bool"

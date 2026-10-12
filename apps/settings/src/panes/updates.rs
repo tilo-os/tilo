@@ -15,7 +15,7 @@ use std::time::Duration;
 use tracing::warn;
 use ui::framework::{EffectReply, Effected};
 use ui::tilo_resource::{self, Effect};
-use ui::widget::{Button, Dropdown, ProgressBar, Row, Text, Toggle, Widget};
+use ui::widget::{Button, ProgressBar, Row, Text, Widget};
 use ui::{LocalState, WakeHandle};
 
 use crate::codec_pack::{CodecAction, CodecPackStatus, MesaState, PackState};
@@ -24,8 +24,8 @@ use crate::host::PaneCx;
 use crate::i18n::{t, t_args};
 use crate::prefs::UpdatePrefs;
 use crate::widgets::{
-    Body, Item, SettingsSection, card, choice_row, error_caption, error_row, note, row, rows,
-    setting_row, setting_row_described, value_row,
+    Body, Item, SettingsSection, card, error_caption, error_row, note, row, rows,
+    setting_row_described, value_row,
 };
 
 const UPDATE_SCHEDULES: &[&str] = &["System schedule", "Daily", "Weekly"];
@@ -1399,15 +1399,9 @@ impl UpdatesModel {
                 value_row(&t("upd-last-checked"), &self.prefs.last_checked),
                 value_row(&t("upd-release-channel"), &t("upd-release-channel-value")),
                 match self.timer_enabled {
-                    Some(_) => setting_row(
-                        &automatic,
-                        Box::new(
-                            self.cx.bind(
-                                Toggle::from_state(&LocalState::new(self.prefs.auto))
-                                    .with_id("updates.auto"),
-                                effect(UpdatesEffect::SET_AUTOMATIC_UPDATES),
-                            ),
-                        ),
+                    Some(_) => self.cx.row(automatic).id("updates.auto").toggle_effect(
+                        &LocalState::new(self.prefs.auto),
+                        effect(UpdatesEffect::SET_AUTOMATIC_UPDATES),
                     ),
                     // Not a switch stuck in one position: a switch that cannot
                     // reach the timer would report "off" for a machine that is
@@ -1415,38 +1409,23 @@ impl UpdatesModel {
                     None => value_row(&automatic, &unavailable),
                 },
                 match &schedule_placeholder {
-                    Some(schedule) => choice_row(
-                        &schedule_label,
-                        Box::new(
-                            self.cx.bind(
-                                Dropdown::from_state(
-                                    UPDATE_SCHEDULES
-                                        .iter()
-                                        .map(|id| schedule_shown(id))
-                                        .collect(),
-                                    &LocalState::new(schedule.clone()),
-                                )
-                                .with_placeholder(schedule),
-                                effect(UpdatesEffect::SET_UPDATE_SCHEDULE)
-                                    .map(|shown: String| schedule_from_label(&shown)),
-                            ),
-                        ),
+                    Some(schedule) => self.cx.row(schedule_label).choice_effect(
+                        UPDATE_SCHEDULES.iter().map(|id| schedule_shown(id)),
+                        &LocalState::new(schedule.clone()),
+                        effect(UpdatesEffect::SET_UPDATE_SCHEDULE)
+                            .map(|shown: String| schedule_from_label(&shown)),
                     ),
                     None => value_row(&schedule_label, &unavailable),
                 },
                 match self.allow_metered {
-                    Some(_) => setting_row(
-                        &t("upd-metered"),
-                        Box::new(
-                            self.cx.bind(
-                                Toggle::from_state(&LocalState::new(
-                                    self.allow_metered.unwrap_or(false),
-                                ))
-                                .with_id("updates.metered"),
-                                effect(UpdatesEffect::SET_METERED_UPDATES),
-                            ),
+                    Some(_) => self
+                        .cx
+                        .row(t("upd-metered"))
+                        .id("updates.metered")
+                        .toggle_effect(
+                            &LocalState::new(self.allow_metered.unwrap_or(false)),
+                            effect(UpdatesEffect::SET_METERED_UPDATES),
                         ),
-                    ),
                     None => value_row(&t("upd-metered-short"), &t("upd-metered-unavailable")),
                 },
                 self.button_row(

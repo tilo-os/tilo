@@ -41,6 +41,7 @@
 pub mod actions;
 pub mod app;
 pub mod journal;
+pub mod locales;
 pub mod model;
 pub mod resource;
 mod view;

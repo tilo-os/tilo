@@ -3150,12 +3150,7 @@ mod tests {
             dyn crate::component_lifecycle::ComponentLifecycle
         );
 
-        crate::testing::inert_widget_methods!(
-            apply_layout,
-            draw,
-            get_rect,
-            name = "RetainedTraversalProbe"
-        );
+        crate::testing::inert_widget_methods!(name = "RetainedTraversalProbe");
         #[allow(
             private_interfaces,
             reason = "focused retained-owner traversal regression"
@@ -3342,21 +3337,8 @@ mod tests {
         ) -> NodeId {
             taffy.leaf_node(taffy::Style::default())
         }
-        fn apply_layout(&mut self, _t: &TaffyTree<()>, _n: NodeId, _o: Point) {}
-        fn draw(
-            &mut self,
-            _scene: &mut Scene,
-            _transform: Affine,
-            _tr: &mut TextRenderer,
-            _th: &crate::theme::Theme,
-            _p: &PresenceCtx,
-        ) {
-        }
         fn name(&self) -> &'static str {
             "Starting"
-        }
-        fn get_rect(&self) -> Rect {
-            Rect::ZERO
         }
         fn presented(&self) -> bool {
             self.presented
@@ -3395,21 +3377,8 @@ mod tests {
         ) -> NodeId {
             taffy.leaf_node(taffy::Style::default())
         }
-        fn apply_layout(&mut self, _t: &TaffyTree<()>, _n: NodeId, _o: Point) {}
-        fn draw(
-            &mut self,
-            _scene: &mut Scene,
-            _transform: Affine,
-            _tr: &mut TextRenderer,
-            _th: &crate::theme::Theme,
-            _p: &PresenceCtx,
-        ) {
-        }
         fn name(&self) -> &'static str {
             "Restructuring"
-        }
-        fn get_rect(&self) -> Rect {
-            Rect::ZERO
         }
         fn take_structure_dirty(&mut self) -> bool {
             self.drained.set(self.drained.get() + 1);
@@ -3638,21 +3607,8 @@ mod tests {
         ) -> NodeId {
             taffy.leaf_node(taffy::Style::default())
         }
-        fn apply_layout(&mut self, _t: &TaffyTree<()>, _n: NodeId, _o: Point) {}
-        fn draw(
-            &mut self,
-            _scene: &mut Scene,
-            _transform: Affine,
-            _tr: &mut TextRenderer,
-            _th: &crate::theme::Theme,
-            _p: &PresenceCtx,
-        ) {
-        }
         fn name(&self) -> &'static str {
             "Latching"
-        }
-        fn get_rect(&self) -> Rect {
-            Rect::ZERO
         }
         fn presented(&self) -> bool {
             self.asked.set(self.asked.get().saturating_add(1));

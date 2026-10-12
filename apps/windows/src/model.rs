@@ -1,7 +1,9 @@
 //! Compatibility vocabulary shared by the UI and future `tilo-compatd` client.
 use serde::{Deserialize, Serialize};
+use ui::tilo_resource::{self, Model};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+/// How an application is run.
+#[derive(Model, Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Route {
     Wine,
     Proton,

@@ -4,6 +4,7 @@
 
 use std::collections::HashMap;
 
+use ui::advanced::{Affine, NodeId, Scene, TaffyTree};
 use ui::prelude::*;
 use ui::taffy::style_helpers::{length, percent};
 use ui::taffy::{Size as TaffySize, Style};

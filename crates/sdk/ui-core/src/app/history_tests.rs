@@ -447,7 +447,7 @@ fn routed_document(
             &route.cluster_id.to_string(),
             route.record.as_deref().unwrap_or(""),
         ),
-        collab_types::OpClass::Splice,
+        collab_types::OpKind::Change,
         crate::time::SystemTime::UNIX_EPOCH,
         0,
     )
@@ -2613,10 +2613,7 @@ fn round1_top_level_native_history_preserves_legacy_custody_and_stale_at_refusal
             .unwrap(),
         before + 1
     );
-    app.set_permission_ctx(PermissionContext::from_capabilities(
-        Actor::person(None, LOCAL_USER),
-        vec![],
-    ));
+    app.set_permission_ctx(crate::permissions::PermissionContext::stranger(LOCAL_USER));
     app.dispatch_a11y_action(target, &crate::a11y::Action::SetValue("denied".into()));
     assert_eq!(legacy_body(&fixture.store, &fixture.checkout), "owned edit");
     app.set_permission_ctx(allowed);
@@ -5409,7 +5406,7 @@ fn activate_component_palette(
 ) {
     app.open_action_palette();
     let target = crate::bound_dispatch::BoundActionTarget {
-        physical_text: false,
+        input: crate::bound_dispatch::Input::Discrete,
         binding: handle.binding.clone(),
         address: crate::bound_dispatch::BoundActionAddress {
             instance_id: handle.binding.instance_id,

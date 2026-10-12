@@ -11,3 +11,85 @@ pub fn install() {
         eprintln!("localization catalog: {error}");
     }
 }
+
+/// One constant per message of locales/en-US.ftl, for labels and placeholders.
+pub mod keys {
+    use ui::i18n::LabelKey;
+    pub const THEMES_APPLY: LabelKey = LabelKey::new("themes-apply");
+    pub const THEMES_BLUR: LabelKey = LabelKey::new("themes-blur");
+    pub const THEMES_CHROMA: LabelKey = LabelKey::new("themes-chroma");
+    pub const THEMES_CHROMA_HELP: LabelKey = LabelKey::new("themes-chroma-help");
+    pub const THEMES_CUSTOMIZE: LabelKey = LabelKey::new("themes-customize");
+    pub const THEMES_DELETE_BUTTON: LabelKey = LabelKey::new("themes-delete-button");
+    pub const THEMES_DENSITY: LabelKey = LabelKey::new("themes-density");
+    pub const THEMES_DISTINCT_LETTERS: LabelKey = LabelKey::new("themes-distinct-letters");
+    pub const THEMES_DISTINCT_LETTERS_HELP: LabelKey =
+        LabelKey::new("themes-distinct-letters-help");
+    pub const THEMES_DUPLICATE: LabelKey = LabelKey::new("themes-duplicate");
+    pub const THEMES_EMPHASIS: LabelKey = LabelKey::new("themes-emphasis");
+    pub const THEMES_EMPHASIS_KIND: LabelKey = LabelKey::new("themes-emphasis-kind");
+    pub const THEMES_EXPORT: LabelKey = LabelKey::new("themes-export");
+    pub const THEMES_FACE: LabelKey = LabelKey::new("themes-face");
+    pub const THEMES_FACE_HELP: LabelKey = LabelKey::new("themes-face-help");
+    pub const THEMES_GALLERY: LabelKey = LabelKey::new("themes-gallery");
+    pub const THEMES_HUE: LabelKey = LabelKey::new("themes-hue");
+    pub const THEMES_INK_PRIMARY: LabelKey = LabelKey::new("themes-ink-primary");
+    pub const THEMES_INK_SECONDARY: LabelKey = LabelKey::new("themes-ink-secondary");
+    pub const THEMES_INK_TERTIARY: LabelKey = LabelKey::new("themes-ink-tertiary");
+    pub const THEMES_LADDER: LabelKey = LabelKey::new("themes-ladder");
+    pub const THEMES_MISSING: LabelKey = LabelKey::new("themes-missing");
+    pub const THEMES_MOTION: LabelKey = LabelKey::new("themes-motion");
+    pub const THEMES_MOTION_MATERIAL: LabelKey = LabelKey::new("themes-motion-material");
+    pub const THEMES_NAME: LabelKey = LabelKey::new("themes-name");
+    pub const THEMES_NAME_LABEL: LabelKey = LabelKey::new("themes-name-label");
+    pub const THEMES_NEW: LabelKey = LabelKey::new("themes-new");
+    pub const THEMES_NEW_THEME: LabelKey = LabelKey::new("themes-new-theme");
+    pub const THEMES_PALETTE: LabelKey = LabelKey::new("themes-palette");
+    pub const THEMES_POLARITY: LabelKey = LabelKey::new("themes-polarity");
+    pub const THEMES_PRESENCE: LabelKey = LabelKey::new("themes-presence");
+    pub const THEMES_PRESENCE_CHROMA_LABEL: LabelKey =
+        LabelKey::new("themes-presence-chroma-label");
+    pub const THEMES_PRESENCE_LIGHTNESS_LABEL: LabelKey =
+        LabelKey::new("themes-presence-lightness-label");
+    pub const THEMES_PRESETS: LabelKey = LabelKey::new("themes-presets");
+    pub const THEMES_RADIUS: LabelKey = LabelKey::new("themes-radius");
+    pub const THEMES_RESET_BUTTON: LabelKey = LabelKey::new("themes-reset-button");
+    pub const THEMES_RUNG_BASE: LabelKey = LabelKey::new("themes-rung-base");
+    pub const THEMES_RUNG_CONTENT: LabelKey = LabelKey::new("themes-rung-content");
+    pub const THEMES_RUNG_INSPECTOR: LabelKey = LabelKey::new("themes-rung-inspector");
+    pub const THEMES_RUNG_OVERLAY: LabelKey = LabelKey::new("themes-rung-overlay");
+    pub const THEMES_RUNG_PRIMARY: LabelKey = LabelKey::new("themes-rung-primary");
+    pub const THEMES_RUNG_RAISED: LabelKey = LabelKey::new("themes-rung-raised");
+    pub const THEMES_RUNG_SECONDARY: LabelKey = LabelKey::new("themes-rung-secondary");
+    pub const THEMES_RUNG_SIDEBAR: LabelKey = LabelKey::new("themes-rung-sidebar");
+    pub const THEMES_RUNG_TERTIARY: LabelKey = LabelKey::new("themes-rung-tertiary");
+    pub const THEMES_SHAPE_DENSITY: LabelKey = LabelKey::new("themes-shape-density");
+    pub const THEMES_SIZE: LabelKey = LabelKey::new("themes-size");
+    pub const THEMES_SURFACES_BASE: LabelKey = LabelKey::new("themes-surfaces-base");
+    pub const THEMES_SURFACES_CONTENT: LabelKey = LabelKey::new("themes-surfaces-content");
+    pub const THEMES_SURFACES_INSPECTOR: LabelKey = LabelKey::new("themes-surfaces-inspector");
+    pub const THEMES_SURFACES_OVERLAY: LabelKey = LabelKey::new("themes-surfaces-overlay");
+    pub const THEMES_SURFACES_RAISED: LabelKey = LabelKey::new("themes-surfaces-raised");
+    pub const THEMES_SURFACES_SIDEBAR: LabelKey = LabelKey::new("themes-surfaces-sidebar");
+    pub const THEMES_SWITCH_POLARITY: LabelKey = LabelKey::new("themes-switch-polarity");
+    pub const THEMES_THEME_BASE_SIZE: LabelKey = LabelKey::new("themes-theme-base-size");
+    pub const THEMES_THEME_BLUR: LabelKey = LabelKey::new("themes-theme-blur");
+    pub const THEMES_THEME_CHROMA: LabelKey = LabelKey::new("themes-theme-chroma");
+    pub const THEMES_THEME_DENSITY: LabelKey = LabelKey::new("themes-theme-density");
+    pub const THEMES_THEME_DISTINCT_LETTERS: LabelKey =
+        LabelKey::new("themes-theme-distinct-letters");
+    pub const THEMES_THEME_FACE: LabelKey = LabelKey::new("themes-theme-face");
+    pub const THEMES_THEME_HIGH_CONTRAST: LabelKey = LabelKey::new("themes-theme-high-contrast");
+    pub const THEMES_THEME_HUE: LabelKey = LabelKey::new("themes-theme-hue");
+    pub const THEMES_THEME_MOTION: LabelKey = LabelKey::new("themes-theme-motion");
+    pub const THEMES_THEME_NAME: LabelKey = LabelKey::new("themes-theme-name");
+    pub const THEMES_THEME_TINT: LabelKey = LabelKey::new("themes-theme-tint");
+    pub const THEMES_THEME_TINT_OPACITY: LabelKey = LabelKey::new("themes-theme-tint-opacity");
+    pub const THEMES_THEME_WINDOW_RADIUS: LabelKey = LabelKey::new("themes-theme-window-radius");
+    pub const THEMES_TINT: LabelKey = LabelKey::new("themes-tint");
+    pub const THEMES_TINT_OPACITY: LabelKey = LabelKey::new("themes-tint-opacity");
+    pub const THEMES_TYPE: LabelKey = LabelKey::new("themes-type");
+    pub const THEMES_UNTITLED: LabelKey = LabelKey::new("themes-untitled");
+    pub const THEMES_USE: LabelKey = LabelKey::new("themes-use");
+    pub const THEMES_YOURS: LabelKey = LabelKey::new("themes-yours");
+}

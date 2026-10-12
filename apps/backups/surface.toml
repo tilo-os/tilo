@@ -1,0 +1,44 @@
+# The app's public surface, written by `tilo-app surface`: its resources' verbs
+# and stored fields. Review changes to it like an API change; `tilo-app check`
+# fails when the code and this file disagree.
+
+[[resources]]
+kind = "backups.workspace"
+label = "Backups"
+verbs = []
+version = 1
+
+[[resources.fields]]
+owner = "backups"
+path = "policy"
+stored = "record"
+title = "Policy"
+type = "RetentionPolicy"
+
+[[resources.fields]]
+owner = "retention-policy"
+path = "policy.hourly"
+stored = "value"
+title = "Hourly snapshots kept"
+type = "u32"
+
+[[resources.fields]]
+owner = "retention-policy"
+path = "policy.daily"
+stored = "value"
+title = "Daily snapshots kept"
+type = "u32"
+
+[[resources.fields]]
+owner = "retention-policy"
+path = "policy.weekly"
+stored = "value"
+title = "Weekly snapshots kept"
+type = "u32"
+
+[[resources.fields]]
+owner = "retention-policy"
+path = "policy.monthly"
+stored = "value"
+title = "Monthly snapshots kept"
+type = "u32"

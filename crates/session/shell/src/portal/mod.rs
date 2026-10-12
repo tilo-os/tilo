@@ -57,6 +57,13 @@ pub mod appearance;
 #[cfg(target_os = "linux")]
 pub mod auth;
 #[cfg(any(test, target_os = "linux"))]
+#[cfg_attr(
+    not(target_os = "linux"),
+    expect(
+        dead_code,
+        reason = "only the Linux portal adapter calls this model; other hosts build it for its tests"
+    )
+)]
 pub mod background;
 #[cfg(any(test, target_os = "linux"))]
 pub mod camera;
@@ -72,8 +79,22 @@ pub mod file_chooser;
 pub mod file_picker_spawner;
 pub mod global_shortcuts;
 #[cfg(any(test, target_os = "linux"))]
+#[cfg_attr(
+    not(target_os = "linux"),
+    expect(
+        dead_code,
+        reason = "only the Linux portal adapter calls this model; other hosts build it for its tests"
+    )
+)]
 pub mod inhibit;
 #[cfg(any(test, target_os = "linux"))]
+#[cfg_attr(
+    not(target_os = "linux"),
+    expect(
+        dead_code,
+        reason = "only the Linux portal adapter calls this model; other hosts build it for its tests"
+    )
+)]
 pub mod input_capture;
 #[cfg(target_os = "linux")]
 pub(crate) mod interface_dispatch;
@@ -87,8 +108,22 @@ pub mod permission_store;
 pub mod picker_queue;
 pub mod print;
 #[cfg(any(test, target_os = "linux"))]
+#[cfg_attr(
+    not(target_os = "linux"),
+    expect(
+        dead_code,
+        reason = "only the Linux portal adapter calls this model; other hosts build it for its tests"
+    )
+)]
 pub mod remote_desktop;
 #[cfg(any(test, target_os = "linux"))]
+#[cfg_attr(
+    not(target_os = "linux"),
+    expect(
+        dead_code,
+        reason = "only the Linux portal adapter calls this model; other hosts build it for its tests"
+    )
+)]
 pub mod screencast;
 pub mod screencast_pipewire;
 #[cfg(target_os = "linux")]
@@ -99,6 +134,13 @@ pub mod screenshot;
 pub mod secret;
 pub mod settings;
 #[cfg(any(test, target_os = "linux"))]
+#[cfg_attr(
+    not(target_os = "linux"),
+    expect(
+        dead_code,
+        reason = "only the Linux portal adapter calls this model; other hosts build it for its tests"
+    )
+)]
 pub mod usb;
 #[cfg(any(test, target_os = "linux"))]
 pub mod wallpaper;
@@ -190,8 +232,8 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::oneshot;
 
 use crate::shell::state::{
-    AppId, CapOverride, Capability, Expiry, FsMode, GRANT_ALWAYS, GRANT_ONCE, GRANT_SESSION,
-    GrantScope, ResourceRef, Verb, Workspace, WorkspaceId, WorkspaceTree, WorkspaceTreeHandle,
+    Access, AppId, Capability, Expiry, FsMode, GRANT_ALWAYS, GRANT_ONCE, GRANT_SESSION, GrantScope,
+    ResourceRef, Workspace, WorkspaceId, WorkspaceTree, WorkspaceTreeHandle,
 };
 
 /// Identity of the sandboxed app that issued a portal request.
@@ -408,7 +450,7 @@ impl GrantStoreHandle {
         reason = "the read guard protects `ws`, which `ws.allows` needs through the final \
                   call — already dropped at the earliest possible point, the function's end"
     )]
-    pub fn permits(&self, caller: &PortalCaller, resource: &ResourceRef, verb: Verb) -> bool {
+    pub fn permits(&self, caller: &PortalCaller, resource: &ResourceRef, verb: Access) -> bool {
         let tree = self.tree.read();
         let Some(ws) = tree
             .desktop
@@ -439,15 +481,13 @@ impl GrantStoreHandle {
         };
         let ids = ws.grant_app(&caller.app_id, capability);
         // Mirror into the automerge doc so peer-sync ships it and a restart reloads it; tolerant of the doc not being seeded yet.
-        let written: Vec<CapOverride> = ws
-            .capabilities
-            .iter()
-            .filter(|c| ids.contains(&c.id))
-            .cloned()
-            .collect();
-        for cap in written {
-            tree.doc_insert_capability(caller.workspace_id, &cap);
-        }
+        tree.doc_write_policy(
+            caller.workspace_id,
+            &crate::shell::state::PolicyEdit {
+                sandbox_granted: ids,
+                ..crate::shell::state::PolicyEdit::default()
+            },
+        );
         true
     }
 
@@ -524,11 +564,11 @@ impl GrantStoreHandle {
     ///
     /// Acquires a read lock; returns `false` if the workspace or app has no grants (default-deny, so the caller records the grant).
     pub fn filesystem_path_granted(&self, caller: &PortalCaller, path: &std::path::Path) -> bool {
-        self.filesystem_path_allows(caller, path, Verb::Read)
+        self.filesystem_path_allows(caller, path, Access::Read)
     }
 
     /// True if `caller`'s grants let it `verb` `path` (read it, or with
-    /// [`Verb::Write`] replace it).
+    /// [`Access::Write`] replace it).
     #[allow(
         clippy::significant_drop_tightening,
         reason = "the read guard protects `ws`, which `ws.allows` needs through the final call"
@@ -537,7 +577,7 @@ impl GrantStoreHandle {
         &self,
         caller: &PortalCaller,
         path: &std::path::Path,
-        verb: Verb,
+        verb: Access,
     ) -> bool {
         let tree = self.tree.read();
         let Some(ws) = tree
@@ -1418,7 +1458,7 @@ mod tests {
             Some(GRANT_ALWAYS)
         );
 
-        shared.write().desktop.workspaces[0].room = crate::shell::state::RoomId::nil();
+        shared.write().desktop.workspaces[0].set_room(crate::shell::state::RoomId::nil());
         assert_eq!(restored.lookup(&moved, CapabilityKind::Camera), None);
         assert!(!restored.insert_portal_consent(
             &moved,

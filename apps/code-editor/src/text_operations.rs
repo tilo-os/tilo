@@ -1,16 +1,16 @@
-//! Bounded reads and contextual edits of a collaborative file, never disk paths.
+//! Bounded reads of a collaborative file, never disk paths. Edits are
+//! field edits of the file's text ([`crate::project::SourceEdit`]).
 use automerge::{ReadDoc, transaction::Transactable};
 use serde::Serialize;
-use tilo_actions::{ActionArgs, ActionParam, ActionSpec, Doc, ExecutionLocus, ParamType};
+use tilo_actions::{ActionArgs, ActionParam, ActionSpec, Doc, ParamType};
 
-use crate::actions::{CodeEditorAction, TextEdit, text_digest};
 use crate::doc::EditorDoc;
+use crate::project::text_digest;
 
 pub(crate) const MAX_READ_CHARS: usize = 4096;
 const MAX_READ_BYTES: usize = 8192;
 const MAX_REPLY_BYTES: usize = 32768;
-const MAX_EDIT_BYTES: usize = 16384;
-const CONTEXT_CHARS: usize = 32;
+const CONTEXT_CHARS: usize = crate::project::CONTEXT_CHARS;
 
 #[derive(Serialize)]
 pub(crate) struct TextRead {
@@ -84,62 +84,6 @@ fn integer(args: &ActionArgs, name: &str) -> Result<usize, String> {
         .and_then(|value| usize::try_from(value).ok())
         .filter(|value| *value <= crate::disk::MAX_TEXT_BYTES as usize)
         .ok_or_else(|| format!("{name} must be a bounded nonnegative integer"))
-}
-
-fn edit(file: &str, args: &ActionArgs) -> Result<CodeEditorAction, String> {
-    let text = |name| {
-        args.text(name)
-            .map(str::to_owned)
-            .ok_or_else(|| format!("{name} must be text"))
-    };
-    let expected = text("expected_base_digest")?;
-    if expected.len() != 64
-        || !expected
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-    {
-        return Err("expected_base_digest must be a lowercase SHA-256".into());
-    }
-    let edit = TextEdit {
-        file_id: file.into(),
-        expected_base_digest: expected,
-        start_chars: integer(args, "start_chars")?,
-        delete_chars: integer(args, "delete_chars")?,
-        insert: text("insert")?,
-        before_context: text("before_context")?,
-        deleted_text: text("deleted_text")?,
-        after_context: text("after_context")?,
-    };
-    let bytes = edit
-        .insert
-        .len()
-        .saturating_add(edit.deleted_text.len())
-        .saturating_add(edit.before_context.len())
-        .saturating_add(edit.after_context.len());
-    if bytes > MAX_EDIT_BYTES
-        || edit.deleted_text.chars().count() != edit.delete_chars
-        || edit.before_context.chars().count() > CONTEXT_CHARS
-        || edit.after_context.chars().count() > CONTEXT_CHARS
-    {
-        return Err("contextual edit exceeds its bounds or deletion count".into());
-    }
-    Ok(CodeEditorAction::EditText(edit))
-}
-
-pub(crate) fn edit_action(file: String) -> ActionSpec {
-    ActionSpec::typed("edit-text", "Edit text", "A bounded contextual character splice",
-        ExecutionLocus::ClientLocal, vec![
-            ActionParam::required("expected_base_digest", ParamType::Text, "Current file SHA-256 from read-text"),
-            ActionParam::required("start_chars", ParamType::Integer, "Zero-based Unicode scalar position"),
-            ActionParam::required("delete_chars", ParamType::Integer, "Unicode scalar deletion count"),
-            ActionParam::required("insert", ParamType::Text, "Replacement text"),
-            ActionParam::required("deleted_text", ParamType::Text, "Original text of the selected range"),
-            ActionParam::required("before_context", ParamType::Text, "Up to 32 preceding Unicode scalars from read-text"),
-            ActionParam::required("after_context", ParamType::Text, "Up to 32 following Unicode scalars from read-text"),
-        ], move |args| match edit(&file, args).and_then(|edit| crate::actions::encode(&edit).map_err(|error| error.to_string())) {
-            Ok(encoded) => encoded,
-            Err(error) => crate::actions::invalid_arguments(&error),
-        }).with_description("Edit this file with a bounded character splice. Positions use Unicode scalar values. A stale base rebases only at one untouched contextual range; conflicting or ambiguous edits are refused.")
 }
 
 pub(crate) fn committed_heads(
@@ -218,7 +162,7 @@ fn validate_snapshot(
     payload: &[u8],
 ) -> Result<(), ui::semantic_document_read::SemanticReadError> {
     let request = decode_snapshot(payload)?;
-    if resource.kind != "code_editor.file"
+    if resource.kind != crate::actions::FILE_KIND
         || resource.id.as_str() != crate::actions::file_resource_id(&request.file)
     {
         return Err(ui::semantic_document_read::SemanticReadError::InvalidRequest);

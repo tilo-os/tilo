@@ -1,10 +1,41 @@
 use super::*;
-use crate::actions::RemoteAction;
+use crate::model::Remote;
 use crate::resource::RemoteShell;
 use ui::framework::ResourceApp as _;
 use ui::headless::Framed;
 use ui::prelude::TestApp;
-use ui::tilo_resource::Invoke;
+use ui::tilo_resource::{Atom, Invoke};
+
+/// What `app` submitted, comparable: each invocation's action and arguments.
+fn sent(app: &RemoteApp) -> Vec<(&'static str, serde_json::Map<String, serde_json::Value>)> {
+    app.submitted
+        .borrow()
+        .iter()
+        .map(|invoke| (invoke.id, invoke.arguments.clone()))
+        .collect()
+}
+
+/// `invoke`, comparable as [`sent`] lists it.
+fn as_sent(invoke: &Invoke<Remote>) -> (&'static str, serde_json::Map<String, serde_json::Value>) {
+    (invoke.id, invoke.arguments.clone())
+}
+
+/// The field edit pinning or unpinning `id`.
+fn pin(id: ConnectionId, pinned: bool) -> Invoke<Remote> {
+    let item = Remote::item(id);
+    Invoke::edit(&Remote::paths().connections.item(&item).favorite.set(pinned)).unwrap()
+}
+
+/// The field edit removing `id`.
+fn removal(id: ConnectionId) -> Invoke<Remote> {
+    Invoke::edit(&Remote::paths().connections.remove(&Remote::item(id))).unwrap()
+}
+
+/// The insert saving `connection` as the `at`th one.
+fn insertion(connection: &Connection, at: usize) -> Invoke<Remote> {
+    let item = Remote::item(connection.id);
+    Invoke::edit(&Remote::paths().connections.insert_as(&item, at, connection)).unwrap()
+}
 
 /// An app holding the sample connections and the legacy RDP profile, as
 /// the `session-rdp` scenario's actions leave it.
@@ -70,7 +101,7 @@ fn the_live_app_starts_empty_and_the_samples_are_complete() {
         assert!(app.tilo_devices.is_empty(), "no fabricated nearby devices");
         assert_eq!(app.screen, Screen::List);
         assert!(
-            hosted().state().is_empty(),
+            hosted().state().connections.is_empty(),
             "an empty live app must not write machines into the document"
         );
     }
@@ -82,8 +113,8 @@ fn the_live_app_starts_empty_and_the_samples_are_complete() {
         let mut names = std::collections::HashSet::new();
         for connection in &connections {
             assert!(names.insert(connection.name.as_str()), "duplicate name");
-            assert!(!connection.host.is_empty());
-            assert!(!connection.group.is_empty());
+            assert!(!connection.host.0.is_empty());
+            assert!(!connection.group.0.is_empty());
             if connection.kind == ConnectionKind::Tilo {
                 assert_eq!(connection.port, 0);
                 assert_eq!(connection.auth, AuthMethod::DeviceIdentity);
@@ -167,7 +198,7 @@ fn rows_say_when_a_machine_was_used_or_why_it_cannot_open() {
 }
 
 #[test]
-fn the_form_saves_through_the_upsert_action_and_reports_problems_at_save() {
+fn the_form_saves_through_the_resource_and_reports_problems_at_save() {
     eprintln!("phase an_incomplete_draft_names_each_problem_by_its_field");
     {
         let mut app = demo();
@@ -202,10 +233,11 @@ fn the_form_saves_through_the_upsert_action_and_reports_problems_at_save() {
         assert_eq!(saved.port, 22);
         assert_eq!(saved.auth, AuthMethod::PublicKey);
         assert_eq!(app.selected, Some(saved.id));
+        let at = app.workspace.connections().len() - 1;
         assert_eq!(
-            *app.submitted.borrow(),
-            [crate::actions::upsert_action(saved)],
-            "the upsert action went through the resource's door"
+            sent(&app),
+            [as_sent(&insertion(saved, at))],
+            "the new connection went through the resource's door"
         );
     }
 
@@ -251,26 +283,38 @@ fn the_form_saves_through_the_upsert_action_and_reports_problems_at_save() {
             "a new draft starts quiet"
         );
     }
+}
 
-    eprintln!("phase editing_preserves_favourite_and_history");
-    {
-        let mut app = demo();
-        let id = app.first_of_kind(ConnectionKind::Ssh).unwrap();
-        let before = app.workspace.get(id).unwrap().clone();
-        app.fields.secret.set("typed before".into());
-        app.apply(Action::EditConnection(id));
-        assert_eq!(app.fields.host.with(Clone::clone), before.host);
-        assert!(
-            app.fields.secret.with(String::is_empty),
-            "a saved credential is never read back into the form"
-        );
-        app.fields.name.set("Build server (rack 2)".into());
-        app.apply(Action::SaveForm);
-        let after = app.workspace.get(id).unwrap();
-        assert_eq!(after.name, "Build server (rack 2)");
-        assert_eq!(after.favorite, before.favorite);
-        assert_eq!(after.last_used_ms, before.last_used_ms);
-    }
+/// Editing a saved connection writes only the fields the form changed,
+/// so its pin and when it was last used stay.
+#[test]
+fn editing_preserves_favourite_and_history() {
+    let mut app = demo();
+    let id = app.first_of_kind(ConnectionKind::Ssh).unwrap();
+    let before = app.workspace.get(id).unwrap().clone();
+    app.fields.secret.set("typed before".into());
+    app.apply(Action::EditConnection(id));
+    assert_eq!(app.fields.host.with(Clone::clone), before.host.0);
+    assert!(
+        app.fields.secret.with(String::is_empty),
+        "a saved credential is never read back into the form"
+    );
+    app.fields.name.set("Build server (rack 2)".into());
+    app.apply(Action::SaveForm);
+    let after = app.workspace.get(id).unwrap();
+    assert_eq!(after.name, "Build server (rack 2)");
+    assert_eq!(after.favorite, before.favorite);
+    assert_eq!(after.last_used_ms, before.last_used_ms);
+    let item = Remote::item(id);
+    let name = Remote::paths().connections.item(&item).name;
+    let edited = name.edits(&before.name, &after.name);
+    assert_eq!(
+        sent(&app),
+        [as_sent(&Invoke::group(
+            edited.iter().map(|edit| Invoke::edit(edit).unwrap())
+        ))],
+        "an edit submits only the fields it changed, as one step"
+    );
 }
 
 #[test]
@@ -280,10 +324,7 @@ fn favourites_and_deletion_go_through_the_document_actions() {
     assert!(!app.workspace.get(id).unwrap().favorite);
     app.apply(Action::ToggleFavorite(id));
     assert!(app.workspace.get(id).unwrap().favorite);
-    assert_eq!(
-        app.submitted.borrow().last(),
-        Some(&crate::actions::set_favorite_action(id, true))
-    );
+    assert_eq!(sent(&app).last(), Some(&as_sent(&pin(id, true))));
 
     app.apply(Action::RequestDelete(id));
     assert!(pending_confirmation_is(&app, id));
@@ -299,10 +340,7 @@ fn favourites_and_deletion_go_through_the_document_actions() {
     app.apply(Action::RequestDelete(id));
     app.apply(Action::ConfirmPending);
     assert!(app.workspace.get(id).is_none());
-    assert_eq!(
-        app.submitted.borrow().last(),
-        Some(&crate::actions::delete_action(id))
-    );
+    assert_eq!(sent(&app).last(), Some(&as_sent(&removal(id))));
 }
 
 #[test]
@@ -313,14 +351,14 @@ fn hosted_controls_change_the_resource_and_keep_credentials_on_the_device() {
         let id = sample_id(3);
         let pinned = |app: &TestApp<RemoteShell>| {
             app.state()
-                .iter()
+                .list()
+                .into_iter()
                 .find(|connection| connection.id == id)
                 .unwrap()
                 .favorite
         };
         assert!(!pinned(&app));
-        app.invoke(Invoke::apply(&crate::actions::set_favorite_action(id, true)).unwrap())
-            .unwrap();
+        app.invoke(pin(id, true)).unwrap();
         app.settle();
         assert!(pinned(&app), "the pin reached the resource");
         assert!(app.undo());
@@ -331,10 +369,19 @@ fn hosted_controls_change_the_resource_and_keep_credentials_on_the_device() {
     {
         let mut app = hosted_sample();
         let id = sample_id(5);
-        app.invoke(Invoke::apply(&crate::actions::delete_action(id)).unwrap())
-            .unwrap();
+        app.invoke_confirmed(Remote::DELETE_CONNECTION.with(
+            crate::resource::remote::DeleteConnection {
+                connection: Remote::item(id),
+            },
+        ))
+        .unwrap();
         app.settle();
-        assert!(app.state().iter().all(|connection| connection.id != id));
+        assert!(
+            app.state()
+                .list()
+                .iter()
+                .all(|connection| connection.id != id)
+        );
         assert!(
             find_node(&mut app, &format!("remote.connection:{id}")).is_none(),
             "a deleted connection leaves no row behind"
@@ -358,13 +405,14 @@ fn hosted_controls_change_the_resource_and_keep_credentials_on_the_device() {
             .expect("saved")
             .clone();
         assert_eq!(saved.port, 22);
+        let at = app.workspace.connections().len() - 1;
         assert_eq!(
-            *app.submitted.borrow(),
-            [crate::actions::upsert_action(&saved)],
+            sent(&app),
+            [as_sent(&insertion(&saved, at))],
             "only the profile goes through the resource's door"
         );
         assert!(
-            !format!("{:?}", app.submitted.borrow()).contains("hunter2"),
+            !format!("{:?}", sent(&app)).contains("hunter2"),
             "the password never enters the document"
         );
         assert!(
@@ -408,7 +456,7 @@ fn connecting_asks_first_revalidates_and_explains_unavailable_transports() {
         let mut app = demo();
         let id = app.first_of_kind(ConnectionKind::Tilo).unwrap();
         app.apply(Action::RequestConnect(id));
-        app.workspace.get_mut(id).unwrap().host = SecretKey::generate().public().to_string();
+        app.workspace.get_mut(id).unwrap().host = Atom(SecretKey::generate().public().to_string());
         app.apply(Action::ConfirmPending);
         assert!(app.session.borrow().live.is_none());
         assert_eq!(app.toasts.len(), 1, "the person learns why nothing opened");
@@ -521,8 +569,13 @@ fn opening_a_session_marks_the_machine_used_and_this_device_observes_it() {
         let now = app.now_ms();
         assert_eq!(app.workspace.get(id).unwrap().last_used_ms, Some(now));
         assert_eq!(
-            *app.submitted.borrow(),
-            [RemoteAction::MarkUsed { id, at_ms: now }],
+            sent(&app),
+            [as_sent(&Remote::MARK_USED.with(
+                crate::resource::remote::MarkUsed {
+                    connection: Remote::item(id),
+                    at_ms: now,
+                }
+            ))],
             "when it was last used follows the person to their devices"
         );
     }
@@ -589,7 +642,7 @@ fn tilo_sessions_use_the_authenticated_broker_and_consent() {
     let mut app = demo();
     let target = SecretKey::generate().public();
     let id = app.first_of_kind(ConnectionKind::Tilo).unwrap();
-    app.workspace.get_mut(id).unwrap().host = target.to_string();
+    app.workspace.get_mut(id).unwrap().host = Atom(target.to_string());
     app.open_session(id);
     let session_id = match app.session.borrow().live.as_ref() {
         Some(LiveSession::Tilo(session)) => session.id,

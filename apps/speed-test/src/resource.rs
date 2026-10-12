@@ -11,9 +11,13 @@ use crate::app::SpeedTestApp;
 /// How many measurements are kept; the oldest go first.
 pub const KEPT: usize = 20;
 
-/// Every measurement taken, oldest first.
+/// Every measurement taken, oldest first. A measurement is what a run
+/// found, so only recording one adds to them and only clearing removes them;
+/// nobody edits a result.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct SpeedTest {
+    /// Measurements
+    #[model(readonly)]
     pub results: Collection<Measurement>,
 }
 
@@ -36,7 +40,7 @@ pub struct Measurement {
     pub device: String,
 }
 
-#[resource(kind = "so.tilo.speed-test", label = "Internet speed test")]
+#[resource(kind = "speed-test.results", label = "Internet speed test")]
 impl SpeedTest {
     /// Record a finished measurement.
     #[action(external)]
@@ -113,6 +117,7 @@ impl ResourceApp for SpeedTestShell {
     const DOCUMENT_HISTORY: bool = false;
 
     fn view(cx: &mut ViewCx<SpeedTest>) -> Element {
+        crate::locales::install();
         cx.surface(SpeedTestApp::new())
     }
 
@@ -184,7 +189,54 @@ mod tests {
             "the oldest runs went first"
         );
 
-        replica.apply(SpeedTest::CLEAR.invoke()).expect("clear");
+        let first = state.results.ids().next().expect("a measurement").clone();
+        let fake = SpeedTest::paths().results.item(&first).download.set(9999.0);
+        assert!(
+            Invoke::edit(&fake)
+                .ok()
+                .and_then(|edit| replica.apply(edit).ok())
+                .is_none(),
+            "a result is never edited"
+        );
+
+        replica
+            .apply_confirmed(SpeedTest::CLEAR.invoke())
+            .expect("clear");
         assert!(replica.state().expect("state").results.is_empty());
+    }
+
+    #[test]
+    fn history_says_what_a_run_measured() {
+        let mut replica = Replica::<SpeedTest>::new();
+        replica
+            .apply(SpeedTest::RECORD.with((
+                12.0,
+                1.5,
+                640.0,
+                118.0,
+                "Cloudflare".into(),
+                "laptop".into(),
+            )))
+            .expect("record");
+        replica
+            .apply_confirmed(SpeedTest::CLEAR.invoke())
+            .expect("clear");
+        let catalogue =
+            tilo_history::Catalogue::new("en-US", &[include_str!("../locales/en-US.ftl")]);
+        let reader = tilo_history::Reader::new("en-US").with_app(&catalogue);
+        let sentences: Vec<String> = replica
+            .versions()
+            .into_iter()
+            .filter_map(|version| version.context)
+            .filter(|entry| entry.what.is_some())
+            .map(|entry| reader.sentence(&entry))
+            .collect();
+        assert_eq!(
+            sentences,
+            [
+                "Measured 640 Mbit/s down and 118 Mbit/s up from Cloudflare",
+                "Cleared the measurements"
+            ]
+        );
     }
 }

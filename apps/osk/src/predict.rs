@@ -161,7 +161,12 @@ impl Predictor {
     /// predictor, replacing what it learned before.
     pub fn adopt_learned<'a>(
         &mut self,
-        learned: impl IntoIterator<Item = (&'a String, &'a std::collections::BTreeMap<String, u32>)>,
+        learned: impl IntoIterator<
+            Item = (
+                &'a String,
+                &'a std::collections::BTreeMap<String, ui::tilo_resource::Counter>,
+            ),
+        >,
     ) {
         self.learned = learned
             .into_iter()
@@ -170,7 +175,9 @@ impl Predictor {
                 let words = words
                     .iter()
                     .take(MAX_LEARNED_WORDS_PER_CONTEXT)
-                    .map(|(word, count)| (word.clone(), *count))
+                    .map(|(word, count)| {
+                        (word.clone(), u32::try_from(count.get()).unwrap_or(u32::MAX))
+                    })
                     .collect();
                 (context.clone(), words)
             })

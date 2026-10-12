@@ -795,6 +795,18 @@ than proposed (`AgentProposal::admits`), so an agent never exists without its
 delegation and the host never holds the root. `tilo-relay dev`'s approver
 approves proposals as they come; a production approver shows them.
 
+An agent never confirms an action by its own word. When its grants leave an
+action to the person, the host puts that one invocation to the same approvers
+as a question (`ApproverRequest::Confirmations` lists `PendingConfirmation`s,
+`ApproverRequest::Answer` gives `AllowOnce` or `Deny`); the approver shows it
+as the host's confirmation sheet ("<agent> wants to …, for you"). The agent
+shows it is waiting meanwhile, runs the step only on the witnessed answer, and
+takes no answer within two minutes as a refusal. `tilo-relay dev`'s approver
+allows each once. A Tilo shell that holds the person's root keeps an approver
+session with each host it connects to and shows every question on its own
+confirmation sheet, the one an agent acting for the person on that machine is
+confirmed on.
+
 `Relay::register_agent` verifies the delegation against the host's user:
 
 - The device is refused outside its rooms, at subscribe and on every
@@ -816,9 +828,9 @@ is the same one a page runs.
 - **Joining.** It joins the room's durable and live planes. The host's
   `Ready` follows its replay, so a task never starts on a half-seen room.
 - **Opening an app.** `open(app, record)` holds the record, from the
-  durable changes the host replayed, as a `ui::framework::Participant` of
-  the app's resource kind (`Replica`), as an agent principal holding the
-  editor role. Without a record it creates one (the resource's genesis)
+  durable changes the host replayed, in the app's own view mounted over it
+  and never drawn (`ui::framework::AttachedView`, the participant's
+  `Replica`), as an agent principal holding the editor role. Without a record it creates one (the resource's genesis)
   and publishes it.
 - **Which apps.** `component_apps()` is the browser desktop's registry:
   `tools/web/generate_web_desktop.py` writes the same manifest-derived app
@@ -967,14 +979,14 @@ user may steer; an agent caller is refused.
 |---|---|---|
 | capabilities, list | `agents#status` | `AgentsStatus {agents: AgentInfo[], grants: AgentGrant[]}` |
 | `spawnAgent({name, task, grantSetId})` | `agents#spawn` `{grant, task}` | `{agentId, taskId}` |
-| grant picker | `agents#request-grant` `{label, rooms, apps, expiresInSecs, color?, mayConfirm?}` | `{grant, pairingCode}` |
+| grant picker | `agents#request-grant` `{label, rooms, apps, expiresInSecs, color?}` | `{grant, pairingCode}` |
 | revoke | `agent:<id>#revoke` | `{}` |
 | `sendMessage(agentId, text)` | `agent:<id>#message` (text) | `{taskId}` |
 | `stopTask` | `agent:<id>#stop` | `{}` |
 | (new) pause, resume | `agent:<id>#pause`, `#resume` | `{}` |
 
 `AgentGrant` carries `state` (`pending|approved|denied|expired|revoked`),
-`color`, `expiresAtMs`, `mayConfirm`, and the `pairingCode` while pending.
+`color`, `expiresAtMs`, and the `pairingCode` while pending.
 `AgentInfo` carries `status` (`starting|running|waiting|paused|stopped|failed`), `room`,
 `tasks[]` (`queued|running|completed|failed|cancelled`, each with the app
 actions it performed), the conversation, the activity line, the device
@@ -988,7 +1000,7 @@ key (the live publisher of its cursor) and the delegation.
 interface Agents {                       // certifiedPeer.agents (web/agents.mjs)
   status(): Promise<AgentsStatus>;
   requestGrant(input: {label: string; rooms: string[]; apps: string[]; expiresInSecs: number;
-    color?: string; mayConfirm?: boolean}): Promise<{grant: string; pairingCode: string}>;
+    color?: string}): Promise<{grant: string; pairingCode: string}>;
   spawn(input: {grant: string; task: string; room?: string}): Promise<{agentId: string; taskId: string}>;
   message(agentId: string, text: string): Promise<{taskId: string}>;
   pause(agentId: string): Promise<void>;

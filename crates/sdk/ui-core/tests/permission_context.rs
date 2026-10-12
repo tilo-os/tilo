@@ -9,13 +9,13 @@
 )]
 
 use tilo_ui::permissions::{
-    Actor, AppKind, CapDecision, CapOverride, PermissionContext, PermissionScope, ResourceRef,
-    Role, Scope, Subject, UserId, Verb,
+    Access, ActionKind, Answer, AppKind, CapDecision, CapOverride, Denial, PermissionContext,
+    PermissionScope, ResourceRef, Role, Scope, Subject, TreePath, UserId, policy,
 };
 
 /// A viewer in the room: role only, no individual capabilities.
 fn viewer_ctx(user: &str) -> PermissionContext {
-    PermissionContext::from_capabilities(Actor::person(Some(Role::Viewer), user), vec![])
+    PermissionContext::member(user, Role::Viewer)
 }
 
 /// An editor in the room, additionally shared one file.
@@ -24,14 +24,26 @@ fn viewer_ctx(user: &str) -> PermissionContext {
 /// authority over the filesystem, so even an Owner needs one of these
 /// to touch a path.
 fn editor_ctx(user: &str) -> PermissionContext {
-    PermissionContext::from_capabilities(
-        Actor::person(Some(Role::Editor), user),
-        vec![CapOverride::grant(
-            Subject::person(user),
-            Scope::FsPath("/var/workspace/report.md".into()),
-            Verb::Write,
-        )],
-    )
+    PermissionContext::member(user, Role::Editor).granting(CapOverride::grant(
+        Subject::person(user),
+        Scope::FsPath("/var/workspace/report.md".into()),
+        Access::Write,
+    ))
+}
+
+/// What a denial was decided by, for the cases that pin it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum By {
+    Grants,
+    Sandbox,
+}
+
+fn by(denial: Option<Denial>) -> Option<By> {
+    match denial? {
+        Denial::NotGranted(_) => Some(By::Grants),
+        Denial::Sandbox(_) => Some(By::Sandbox),
+        Denial::Unavailable(error) => panic!("decision unavailable: {error}"),
+    }
 }
 
 /// One permission check: case label, context, scope, expected `check` answer,
@@ -41,7 +53,7 @@ type CheckCase = (
     PermissionContext,
     PermissionScope,
     bool,
-    Option<Option<CapDecision>>,
+    Option<Option<By>>,
 );
 
 /// Role ceilings and scoped shares decide every check: `allowed` is what
@@ -51,31 +63,36 @@ type CheckCase = (
 fn roles_and_scoped_shares_decide_each_permission_check() {
     // An actor with no role has no base authority at all, so absent an
     // explicit capability it is denied — fail-closed by construction.
-    let no_role = || PermissionContext::from_capabilities(Actor::person(None, "x"), vec![]);
-    // Role::Denied is a block, not an absence. A share must not undo it.
+    let no_role = || PermissionContext::stranger("x");
+    // A block is not an absence. A broader grant must not undo it.
     let denied_with_admin_grant = || {
-        PermissionContext::from_capabilities(
-            Actor::person(Some(Role::Denied), "mallory"),
-            vec![CapOverride::grant(
-                Subject::person("mallory"),
-                Scope::Workspace,
-                Verb::Admin,
-            )],
-        )
+        let ctx = PermissionContext::member("mallory", Role::Editor);
+        let block = ctx
+            .standing()
+            .policy
+            .block("mallory", policy::Subject::person("owner"));
+        ctx.with_grant(block).with_grant(policy::Grant::new(
+            "everything",
+            policy::Subject::person("mallory"),
+            TreePath::root(),
+            policy::KindSet::ALL,
+            Answer::Allow,
+            policy::Subject::person("owner"),
+        ))
     };
-    let denied = Some(Some(CapDecision::DeniedByRole));
+    let denied = Some(Some(By::Grants));
     let cases: Vec<CheckCase> = vec![
         (
             "viewer_cannot_edit_terminal",
             viewer_ctx("alice"),
-            PermissionScope::app_kind(AppKind::Terminal, Verb::Write),
+            PermissionScope::app_kind(AppKind::Terminal, ActionKind::Undoable),
             false,
             denied,
         ),
         (
             "editor_can_edit_file",
             editor_ctx("bob"),
-            PermissionScope::path("/var/workspace/report.md", Verb::Write),
+            PermissionScope::path("/var/workspace/report.md", Access::Write),
             true,
             Some(None),
         ),
@@ -85,57 +102,57 @@ fn roles_and_scoped_shares_decide_each_permission_check() {
         (
             "a_file_share_does_not_leak_to_its_siblings: textual prefix",
             editor_ctx("bob"),
-            PermissionScope::path("/var/workspace/report.md.bak", Verb::Write),
+            PermissionScope::path("/var/workspace/report.md.bak", Access::Write),
             false,
             None,
         ),
         (
             "a_file_share_does_not_leak_to_its_siblings: sibling",
             editor_ctx("bob"),
-            PermissionScope::path("/var/workspace/payroll.md", Verb::Write),
+            PermissionScope::path("/var/workspace/payroll.md", Access::Write),
             false,
             None,
         ),
         (
             "workspace_admin_requires_admin_authority",
             editor_ctx("bob"),
-            PermissionScope::workspace(Verb::Admin),
+            PermissionScope::governance(policy::roles::governance::SETTINGS),
             false,
             denied,
         ),
-        // An Editor's ceiling is Write; writing the room is still fine.
+        // An Editor changes the room; governing it is another matter.
         (
             "workspace_admin_requires_admin_authority: editor writes the room",
             editor_ctx("bob"),
-            PermissionScope::workspace(Verb::Write),
+            PermissionScope::workspace(ActionKind::Undoable),
             true,
             None,
         ),
         (
             "actor_with_no_role_denies_everything: app",
             no_role(),
-            PermissionScope::app_kind(AppKind::FileExplorer, Verb::Read),
+            PermissionScope::app_kind(AppKind::FileExplorer, ActionKind::Read),
             false,
             denied,
         ),
         (
             "actor_with_no_role_denies_everything: workspace",
             no_role(),
-            PermissionScope::workspace(Verb::Read),
+            PermissionScope::workspace(ActionKind::Read),
             false,
             None,
         ),
         (
             "actor_with_no_role_denies_everything: path",
             no_role(),
-            PermissionScope::path("/var/workspace/a.txt", Verb::Read),
+            PermissionScope::path("/var/workspace/a.txt", Access::Read),
             false,
             None,
         ),
         (
             "an_explicitly_denied_role_cannot_be_rescued_by_a_grant",
             denied_with_admin_grant(),
-            PermissionScope::workspace(Verb::Read),
+            PermissionScope::workspace(ActionKind::Read),
             false,
             denied,
         ),
@@ -144,7 +161,7 @@ fn roles_and_scoped_shares_decide_each_permission_check() {
         assert_eq!(ctx.check(&scope), allowed, "case {case}: check");
         if let Some(feedback) = feedback {
             assert_eq!(
-                ctx.check_with_denied_feedback(&scope),
+                by(ctx.check_with_denied_feedback(&scope)),
                 feedback,
                 "case {case}: denied feedback"
             );
@@ -167,27 +184,8 @@ impl tilo_ui::widget::Widget for NoOpWidget {
     ) -> taffy::NodeId {
         unimplemented!()
     }
-    fn apply_layout(
-        &mut self,
-        _t: &taffy::TaffyTree<()>,
-        _n: taffy::NodeId,
-        _o: vello::kurbo::Point,
-    ) {
-    }
-    fn draw(
-        &mut self,
-        _s: &mut vello::Scene,
-        _tr: vello::kurbo::Affine,
-        _txt: &mut tilo_ui::text_render::TextRenderer,
-        _th: &tilo_ui::theme::Theme,
-        _presence: &tilo_ui::presence::PresenceCtx,
-    ) {
-    }
     fn name(&self) -> &'static str {
         "noop"
-    }
-    fn get_rect(&self) -> vello::kurbo::Rect {
-        vello::kurbo::Rect::ZERO
     }
 }
 
@@ -221,22 +219,6 @@ impl tilo_ui::widget::Widget for GatedButton {
     ) -> taffy::NodeId {
         unimplemented!()
     }
-    fn apply_layout(
-        &mut self,
-        _t: &taffy::TaffyTree<()>,
-        _n: taffy::NodeId,
-        _o: vello::kurbo::Point,
-    ) {
-    }
-    fn draw(
-        &mut self,
-        _s: &mut vello::Scene,
-        _tr: vello::kurbo::Affine,
-        _txt: &mut tilo_ui::text_render::TextRenderer,
-        _th: &tilo_ui::theme::Theme,
-        _presence: &tilo_ui::presence::PresenceCtx,
-    ) {
-    }
     fn handle_event(
         &mut self,
         _e: &winit::event::WindowEvent,
@@ -246,9 +228,6 @@ impl tilo_ui::widget::Widget for GatedButton {
     }
     fn name(&self) -> &'static str {
         "gated"
-    }
-    fn get_rect(&self) -> vello::kurbo::Rect {
-        vello::kurbo::Rect::ZERO
     }
 }
 
@@ -277,7 +256,7 @@ fn gated_widget_fires_only_when_its_scope_is_granted() {
     for (case, ctx, want) in cases {
         let w = GatedButton {
             clicked: false,
-            scope: PermissionScope::app_kind(AppKind::Terminal, Verb::Write),
+            scope: PermissionScope::app_kind(AppKind::Terminal, ActionKind::Undoable),
         };
         let mut fired = false;
         let allowed = tilo_ui::app::dispatch_gated_event(&ctx, &w, || {
@@ -289,71 +268,99 @@ fn gated_widget_fires_only_when_its_scope_is_granted() {
 }
 
 #[test]
-fn capabilities_are_inspectable_scoped_and_expire() {
-    // Case `permission_context_built_from_an_actor_and_its_capabilities`.
+fn grants_and_capabilities_are_inspectable_scoped_and_expire() {
+    let terminal = TreePath::root().app(AppKind::Terminal.app_id());
+    // Case `a_context_built_from_a_role_and_a_grant`.
     {
-        let ctx = PermissionContext::from_capabilities(
-            Actor::person(Some(Role::Editor), "alice"),
-            vec![CapOverride::grant(
-                Subject::person("alice"),
-                Scope::App("terminal".into()),
-                Verb::Admin,
-            )],
-        );
+        let ctx = PermissionContext::member("alice", Role::Editor).with_grant(policy::Grant::new(
+            "terminal",
+            policy::Subject::person("alice"),
+            TreePath::room(tilo_ui::permissions::LOCAL_ROOM).join(&terminal),
+            policy::KindSet::ALL,
+            Answer::Allow,
+            policy::Subject::person("owner"),
+        ));
         assert_eq!(ctx.user(), &UserId("alice".into()));
         assert_eq!(ctx.role(), Some(Role::Editor));
-        assert!(ctx.check(&PermissionScope::app_kind(AppKind::Terminal, Verb::Write)));
-        // The individual grant lifts her above her role's ceiling — but only
-        // inside the scope it names.
-        assert!(ctx.check(&PermissionScope::app_kind(AppKind::Terminal, Verb::Admin)));
-        assert!(!ctx.check(&PermissionScope::app_kind(
-            AppKind::FileExplorer,
-            Verb::Admin
+        assert!(ctx.check(&PermissionScope::app_kind(
+            AppKind::Terminal,
+            ActionKind::Undoable
         )));
-    }
-
-    // Case `a_lapsed_capability_stops_granting`.
-    {
-        let cap = CapOverride::grant(
-            Subject::person("alice"),
-            Scope::App("terminal".into()),
-            Verb::Admin,
-        )
-        .with_expiry(2_000);
-        let actor = Actor::person(Some(Role::Editor), "alice");
-        let scope = PermissionScope::app_kind(AppKind::Terminal, Verb::Admin);
-
-        let live = PermissionContext::from_capabilities(actor.clone(), vec![cap.clone()])
-            .at_unix_time(1_999);
-        assert!(live.check(&scope));
-
-        let lapsed = PermissionContext::from_capabilities(actor, vec![cap]).at_unix_time(2_000);
-        assert!(
-            !lapsed.check(&scope),
-            "the deadline is exclusive: at it, the grant is dead"
-        );
+        // The individual grant lifts her past her role's "asks first" for
+        // outside effects — but only inside the node it names.
+        assert_eq!(ctx.answer(&terminal, ActionKind::Outside), Answer::Allow);
         assert_eq!(
-            lapsed.check_with_denied_feedback(&scope),
-            Some(CapDecision::DeniedByRole)
+            ctx.answer(
+                &TreePath::root().app(AppKind::FileExplorer.app_id()),
+                ActionKind::Outside
+            ),
+            Answer::Ask
         );
     }
 
-    // Case `permissive_holds_one_real_workspace_wide_admin_capability`.
+    // Case `a_lapsed_grant_stops_granting`.
+    {
+        let grant = policy::Grant::new(
+            "terminal",
+            policy::Subject::person("alice"),
+            TreePath::room(tilo_ui::permissions::LOCAL_ROOM).join(&terminal),
+            policy::KindSet::ALL,
+            Answer::Allow,
+            policy::Subject::person("owner"),
+        )
+        .with_lifetime(policy::Lifetime::Until(2_000_000));
+        let ctx = || PermissionContext::member("alice", Role::Editor).with_grant(grant.clone());
+        let live = ctx().at_unix_time(1_999);
+        assert_eq!(live.answer(&terminal, ActionKind::Outside), Answer::Allow);
+        let lapsed = ctx().at_unix_time(2_000);
+        assert_eq!(
+            lapsed.answer(&terminal, ActionKind::Outside),
+            Answer::Ask,
+            "the deadline is exclusive: at it, the grant is dead and the role answers"
+        );
+    }
+
+    // Case `permissive_is_an_owner_with_one_real_workspace_wide_capability`.
     {
         let ctx = PermissionContext::permissive();
-        // Not a bypass flag — an inspectable capability.
-        assert_eq!(ctx.capabilities().len(), 1);
-        assert_eq!(ctx.capabilities()[0].scope, Scope::Workspace);
-        assert_eq!(ctx.capabilities()[0].verb, Verb::Admin);
-        assert!(ctx.check(&PermissionScope::workspace(Verb::Admin)));
-        assert!(ctx.check(&PermissionScope::app_kind(AppKind::Terminal, Verb::Write)));
+        // Not a bypass flag — inspectable capabilities and a structural owner.
+        let scopes: Vec<_> = ctx.capabilities().iter().map(|cap| &cap.scope).collect();
+        assert_eq!(
+            scopes,
+            [
+                &Scope::FsPath("/".into()),
+                &Scope::Device("*".into()),
+                &Scope::NetHost("*".into()),
+                &Scope::FsRecord("*".into()),
+            ]
+        );
+        assert!(
+            ctx.capabilities()
+                .iter()
+                .all(|cap| cap.access == Access::Write)
+        );
+        assert!(ctx.check(&PermissionScope::governance(
+            policy::roles::governance::SETTINGS
+        )));
+        assert!(ctx.check(&PermissionScope::app_kind(
+            AppKind::Terminal,
+            ActionKind::Undoable
+        )));
         assert!(ctx.check(&PermissionScope::path(
             "/var/workspace/anything",
-            Verb::Write
+            Access::Write
         )));
+        assert!(ctx.check(&PermissionScope::Sandbox {
+            resource: ResourceRef::Device("camera".into()),
+            access: Access::Read,
+        }));
         assert_eq!(
-            ctx.decide(&ResourceRef::Device("camera".into()), Verb::Read),
-            CapDecision::Allow
+            ctx.check_with_denied_feedback(&PermissionScope::Sandbox {
+                resource: ResourceRef::Device("camera".into()),
+                access: Access::Read,
+            }),
+            None
         );
+        let _ = CapDecision::Allow;
     }
 }

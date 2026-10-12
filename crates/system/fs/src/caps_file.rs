@@ -1,6 +1,6 @@
 //! The capability list a mount enforces, kept current while it runs.
 //!
-//! `--acl FILE` binds a JSON array of [`CapOverride`] records to a mount.
+//! `--acl FILE` binds the [`collab_types::FsAuthority`] the governor exports to a mount.
 //! `/var/workspace` stays mounted for the whole session, so binding the list
 //! by value at mount time would make "a later grant needs a remount" mean "a
 //! later grant does not apply". [`CapabilityFile`] owns the file and an
@@ -80,7 +80,7 @@ impl CapabilityFile {
     /// # Errors
     ///
     /// Returns [`CapsError::Read`] when `path` cannot be opened or stat'd, or
-    /// [`CapsError::Parse`] when its contents are not a JSON array of capabilities.
+    /// [`CapsError::Parse`] when its contents are not an [`collab_types::FsAuthority`].
     pub fn load(
         path: impl Into<PathBuf>,
         identity: IdentityKey,
@@ -214,14 +214,14 @@ fn read_capabilities(path: &Path) -> Result<(Vec<CapOverride>, Stamp), CapsError
         path: path.to_path_buf(),
         source,
     })?);
-    let caps: Vec<CapOverride> =
+    let authority: collab_types::FsAuthority =
         serde_json::from_reader(std::io::BufReader::new(file)).map_err(|source| {
             CapsError::Parse {
                 path: path.to_path_buf(),
                 source,
             }
         })?;
-    Ok((caps, stamp))
+    Ok((authority.capabilities, stamp))
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -232,7 +232,7 @@ pub enum CapsError {
         #[source]
         source: std::io::Error,
     },
-    #[error("capability list {path} is not a JSON array of capabilities: {source}")]
+    #[error("capability list {path} is not the governor's file authority: {source}")]
     Parse {
         path: PathBuf,
         #[source]
@@ -244,7 +244,7 @@ pub enum CapsError {
 mod tests {
     use super::*;
     use crate::acl::Access;
-    use collab_types::{Ed25519PublicKey, Effect, Scope, Subject, Verb};
+    use collab_types::{Access as CapAccess, Ed25519PublicKey, Effect, Scope, Subject};
 
     const ALICE: IdentityKey = [0xA1; 32];
 
@@ -253,12 +253,16 @@ mod tests {
             Subject::User(Ed25519PublicKey(ALICE)),
             Scope::FsPath(path.into()),
             Effect::Grant,
-            Verb::Read,
+            CapAccess::Read,
         )
     }
 
     fn write_caps(path: &Path, caps: &[CapOverride]) {
-        std::fs::write(path, serde_json::to_vec(caps).unwrap()).unwrap();
+        std::fs::write(
+            path,
+            serde_json::to_vec(&collab_types::FsAuthority::from(caps.to_vec())).unwrap(),
+        )
+        .unwrap();
         // The stamp includes mtime at filesystem resolution; don't rely on length differing within one tick.
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
@@ -477,7 +481,7 @@ mod tests {
         {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("caps.json");
-            std::fs::write(&path, b"[]").unwrap();
+            std::fs::write(&path, br#"{"capabilities":[]}"#).unwrap();
             let file =
                 CapabilityFile::load(&path, ALICE, Vec::new()).expect("an empty list is valid");
             assert!(!file.handle().permits(&ALICE, "/", Access::Read));

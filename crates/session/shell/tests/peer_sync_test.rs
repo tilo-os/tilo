@@ -272,7 +272,7 @@ fn room_push_tree(room: RoomId, salt: u16) -> WorkspaceTree {
     let mut a = WorkspaceTree::default();
     a.set_salt_override(salt);
     let mut workspace = Workspace::new(WorkspaceId(id(1)), "Live");
-    workspace.room = room;
+    workspace.set_room(room);
     workspace.strips.push(Strip {
         id: StripId(id(2)),
         name: "Main".into(),
@@ -429,7 +429,7 @@ async fn a_document_edit_reaches_the_other_device_within_the_interactive_budget(
                     collab_types::ArtifactId(uuid::Uuid::from_bytes([0x11; 16])),
                     collab_types::Ed25519PublicKey::from_bytes([7; 32]),
                     collab_types::AttestationId(uuid::Uuid::from_bytes([0x22; 16])),
-                    collab_types::OpClass::Splice,
+                    collab_types::OpKind::Change,
                     std::time::SystemTime::now(),
                     sequence,
                 )),

@@ -143,7 +143,7 @@ pub(crate) fn select<'a>(
 
 impl SelectedSemanticRead<'_> {
     fn check_contract(&self) -> Result<(), SemanticReadError> {
-        use tilo_actions::{ExecutionMode, OperationKind, PermissionRequirement, ResultSpec};
+        use tilo_actions::{ActionKind, ExecutionMode, OperationKind, ResultSpec};
         if !self
             .resource
             .actions
@@ -152,7 +152,7 @@ impl SelectedSemanticRead<'_> {
             || self.spec.kind != OperationKind::Effect
             || self.spec.operation_type.as_deref() != Some(self.registration.operation_type)
             || self.encoded.type_id != self.registration.operation_type
-            || self.spec.contract.permission != PermissionRequirement::Read
+            || self.spec.contract.kind != ActionKind::Read
             || self.spec.contract.execution != ExecutionMode::Immediate
             || !matches!(&self.spec.contract.result, ResultSpec::Json { schema } if schema == (self.registration.schema)())
         {

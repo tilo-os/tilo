@@ -15,38 +15,37 @@ use tilo_automerge::ApplyIncoming;
 )]
 fn original(doc: &AutoCommit, peer: &crate::StatePeer) -> Result<(String, Vec<u64>), String> {
     let mut expiries = Vec::new();
-    let roots = doc
-        .get_all(ROOT, "capabilities")
-        .map_err(|e| e.to_string())?;
+    let roots = doc.get_all(ROOT, "grants").map_err(|e| e.to_string())?;
     if roots.len() > 1 {
-        return Err("ambiguous private policy capabilities".into());
+        return Err("ambiguous private policy grants".into());
     }
     if let Some((value, object)) = roots.into_iter().next() {
         if !matches!(value, Value::Object(ObjType::Map)) {
-            return Err("invalid private policy capabilities".into());
+            return Err("invalid private policy grants".into());
         }
         for key in doc.keys(&object) {
             let values = doc.get_all(&object, &key).map_err(|e| e.to_string())?;
             if values.len() != 1 {
-                return Err("ambiguous private policy capability".into());
+                return Err("ambiguous private policy grant".into());
             }
             let (value, _) = values
                 .into_iter()
                 .next()
-                .ok_or("missing private policy capability")?;
+                .ok_or("missing private policy grant")?;
             let Value::Scalar(value) = value else {
-                return Err("invalid private policy capability".into());
+                return Err("invalid private policy grant".into());
             };
             let ScalarValue::Bytes(bytes) = value.as_ref() else {
-                return Err("invalid private policy capability".into());
+                return Err("invalid private policy grant".into());
             };
-            let cap: CapOverride =
-                serde_json::from_slice(bytes).map_err(|_| "invalid private policy capability")?;
-            if !cap.persists_across_restart() {
-                return Err("nonpersistent governed private policy capability".into());
-            }
-            if let Expiry::AtUnix(at) = cap.expiry {
-                expiries.push(at);
+            let grant: tilo_action_policy::Grant =
+                serde_json::from_slice(bytes).map_err(|_| "invalid private policy grant")?;
+            match grant.lifetime {
+                tilo_action_policy::Lifetime::Once | tilo_action_policy::Lifetime::Session(_) => {
+                    return Err("nonpersistent governed private policy grant".into());
+                }
+                tilo_action_policy::Lifetime::Until(at) => expiries.push(at.div_ceil(1000)),
+                _ => {}
             }
         }
     }
@@ -64,16 +63,25 @@ fn original(doc: &AutoCommit, peer: &crate::StatePeer) -> Result<(String, Vec<u6
     if owner != expected.id() {
         return Err("owner differs from pinned authority root".into());
     }
-    let mut caps = BTreeMap::new();
+    let mut grants = BTreeMap::new();
+    let mut members = BTreeMap::new();
     let mut peers = BTreeMap::new();
     let mut identities = BTreeMap::new();
-    for (field, kind) in [("capabilities", 0), ("peers", 1), ("peer_identities_v1", 2)] {
+    for (field, kind) in [
+        ("grants", 0),
+        ("peers", 1),
+        ("peer_identities_v1", 2),
+        ("members", 3),
+    ] {
         if let Ok(Some((Value::Object(_), object))) = doc.get(ROOT, field) {
             for key in doc.keys(&object) {
                 if let Ok(Some((Value::Scalar(value), _))) = doc.get(&object, &key) {
                     match (kind, value.as_ref()) {
                         (0, ScalarValue::Bytes(bytes)) => {
-                            caps.insert(key, bytes.clone());
+                            grants.insert(key, bytes.clone());
+                        }
+                        (3, ScalarValue::Bytes(bytes)) => {
+                            members.insert(key, bytes.clone());
                         }
                         (1, ScalarValue::Str(name)) => {
                             peers.insert(key, name.to_string());
@@ -122,7 +130,8 @@ fn original(doc: &AutoCommit, peer: &crate::StatePeer) -> Result<(String, Vec<u6
         peer.room(),
         peer.authority(),
         owner.to_owned(),
-        caps,
+        members,
+        grants,
         peers,
         identities,
         media,
@@ -187,40 +196,35 @@ fn shared_private_policy_preserves_literal_malformed_and_error_precedence_matrix
         let mut doc = base.clone();
         match mode {
             0 => {
-                doc.delete(ROOT, "capabilities").unwrap();
+                doc.delete(ROOT, "grants").unwrap();
             }
             1 => {
-                doc.put(ROOT, "capabilities", false).unwrap();
+                doc.put(ROOT, "grants", false).unwrap();
             }
             2..=4 => {
                 doc.put_object(
                     ROOT,
-                    "capabilities",
+                    "grants",
                     [ObjType::List, ObjType::Text, ObjType::Table][mode - 2],
                 )
                 .unwrap();
             }
             5 => {
-                let caps = doc.get(ROOT, "capabilities").unwrap().unwrap().1;
+                let caps = doc.get(ROOT, "grants").unwrap().unwrap().1;
                 doc.put(&caps, "0", "wrong-type").unwrap();
             }
             6 => {
-                let caps = doc.get(ROOT, "capabilities").unwrap().unwrap().1;
+                let caps = doc.get(ROOT, "grants").unwrap().unwrap().1;
                 doc.put(&caps, "0", b"not-json".to_vec()).unwrap();
             }
             7..=8 => {
-                let caps = doc.get(ROOT, "capabilities").unwrap().unwrap().1;
-                let cap = CapOverride::grant(
-                    Subject::Role(collab_types::Role::Editor),
-                    Scope::Workspace,
-                    Verb::Read,
-                )
-                .expiring(if mode == 7 {
-                    Expiry::EndOfSession
+                let caps = doc.get(ROOT, "grants").unwrap().unwrap().1;
+                let grant = editor_grant(peer.room()).with_lifetime(if mode == 7 {
+                    tilo_action_policy::Lifetime::Session("session".into())
                 } else {
-                    Expiry::AfterUse
+                    tilo_action_policy::Lifetime::Once
                 });
-                doc.put(&caps, "0", serde_json::to_vec(&cap).unwrap())
+                doc.put(&caps, "0", serde_json::to_vec(&grant).unwrap())
                     .unwrap();
             }
             9 => {
@@ -238,10 +242,10 @@ fn shared_private_policy_preserves_literal_malformed_and_error_precedence_matrix
             }
             13 => {
                 doc.put(ROOT, "owner", false).unwrap();
-                doc.put(ROOT, "capabilities", false).unwrap();
+                doc.put(ROOT, "grants", false).unwrap();
             }
             _ => {
-                let caps = doc.get(ROOT, "capabilities").unwrap().unwrap().1;
+                let caps = doc.get(ROOT, "grants").unwrap().unwrap().1;
                 doc.put_object(&caps, "0", ObjType::Map).unwrap();
             }
         }
@@ -253,7 +257,7 @@ fn shared_private_policy_preserves_literal_malformed_and_error_precedence_matrix
             assert!(result.is_err());
         }
         if mode == 13 {
-            assert_eq!(result.unwrap_err(), "invalid private policy capabilities");
+            assert_eq!(result.unwrap_err(), "invalid private policy grants");
         }
     }
 }
@@ -307,10 +311,10 @@ fn shared_private_policy_preserves_real_capability_and_owner_conflicts() {
         let mut a = base.clone().with_actor(ActorId::from(vec![41]));
         let mut b = base.clone().with_actor(ActorId::from(vec![42]));
         if root {
-            a.put_object(ROOT, "capabilities", ObjType::Map).unwrap();
-            b.put(ROOT, "capabilities", false).unwrap();
+            a.put_object(ROOT, "grants", ObjType::Map).unwrap();
+            b.put(ROOT, "grants", false).unwrap();
         } else {
-            let caps = a.get(ROOT, "capabilities").unwrap().unwrap().1;
+            let caps = a.get(ROOT, "grants").unwrap().unwrap().1;
             a.put(&caps, "0", b"invalid".to_vec()).unwrap();
             b.put(&caps, "0", false).unwrap();
         }
@@ -322,9 +326,9 @@ fn shared_private_policy_preserves_real_capability_and_owner_conflicts() {
         assert_eq!(
             compare(&a, &peer).unwrap_err(),
             if root {
-                "ambiguous private policy capabilities"
+                "ambiguous private policy grants"
             } else {
-                "ambiguous private policy capability"
+                "ambiguous private policy grant"
             }
         );
     }

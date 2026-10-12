@@ -380,7 +380,12 @@ relative-ago-years = { $count ->
     }
 
 # Ein Software-Teilnehmer in Verlauf, Präsenz und Aktivität.
+history-run-step-separator = {", "}
 participant-agent = { $name } · Agent
+participant-shortcut = { $name } · Kurzbefehl
+participant-app = { $name } · App
+# Ein Agent, ein Kurzbefehl oder eine App, die für eine Person handelt.
+participant-acting-for = { $name }, für { $person }
 interaction-agent = Agent
 interaction-collaborator = Mitwirkende Person
 interaction-action-status = { $action } ({ $phase }) - { $name }
@@ -508,6 +513,8 @@ terminal-service-missing-lease = Die Shell-Sitzung hat keine Verbindung für ihr
 terminal-service-missing-terminal = Die Shell-Sitzung hat kein Terminal bereitgestellt.
 terminal-service-invalid-lease = Die Verbindung der Shell-Sitzung konnte nicht überprüft werden.
 
+# Shown instead of an app's view while its record does not read as the app expects.
+framework-unreadable = Dies kann nicht geöffnet werden
 display-arrangement-offline = Offline
 display-arrangement-excluded = Nicht im Layout
 display-arrangement-offline-excluded = Offline · Nicht im Layout

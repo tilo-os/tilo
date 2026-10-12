@@ -57,7 +57,7 @@ impl ResourceApp for Browsing {
         SEEN.with(|seen| *seen.borrow_mut() = Some((cx.is_private(), person.is_some())));
         if let Some(visits) = person {
             visits
-                .invoke(&Visits::VISIT.with("https://kept.test".into()))
+                .invoke(&Visits::VISIT.with("https://kept.test"))
                 .unwrap();
         }
         Box::new(cx.text(|tabs| tabs.open.join(", ")))

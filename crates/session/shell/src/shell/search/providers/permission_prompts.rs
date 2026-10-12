@@ -77,7 +77,7 @@ fn member_choice(
     let preset = args
         .text("preset")
         .map(|value| {
-            tilo_desktop::workspace_settings::AgentAuthorityPreset::parse(value)
+            tilo_action_policy::roles::AgentPreset::parse(value)
                 .ok_or_else(|| ActionError::Refused(t("agent-door-preset-invalid")))
         })
         .transpose()?;
@@ -136,7 +136,7 @@ impl SearchProvider for PermissionPromptsProvider {
             score: 0,
             params: prompt_params(agent_admission),
             contract: Some(tilo_actions::ActionContract {
-                permission: tilo_actions::PermissionRequirement::Admin,
+                kind: tilo_actions::ActionKind::Outside,
                 risk: tilo_actions::RiskLevel::Destructive,
                 confirmation: tilo_actions::ConfirmationPolicy::Confirm,
                 retry: tilo_actions::RetryPolicy::AtMostOnce,
@@ -231,10 +231,7 @@ mod tests {
                 .select(&ResourceRef::new(PROVIDER_ID, &action_id))
                 .expect("pending decision");
             let contract = action.contract().expect("contract");
-            assert_eq!(
-                contract.permission,
-                tilo_actions::PermissionRequirement::Admin
-            );
+            assert_eq!(contract.kind, tilo_actions::ActionKind::Outside);
             assert_eq!(contract.retry, tilo_actions::RetryPolicy::AtMostOnce);
             let mut doc = AutoCommit::new();
             assert!(

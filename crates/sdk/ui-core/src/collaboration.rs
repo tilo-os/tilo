@@ -1017,7 +1017,7 @@ impl SigningIdentity {
         &mut self,
         payload: Vec<u8>,
         artifact: collab_types::ArtifactId,
-        op_class: collab_types::OpClass,
+        kind: collab_types::OpKind,
     ) -> Result<collab_types::SignedOp, SignedSendError> {
         let timestamp = crate::time::wall();
         let sequence = self
@@ -1029,7 +1029,7 @@ impl SigningIdentity {
             artifact,
             self.public_key,
             self.attestation_id,
-            op_class,
+            kind,
             timestamp,
             sequence,
         );
@@ -1418,10 +1418,10 @@ impl CollaborationManager {
         &mut self,
         payload: Vec<u8>,
         artifact: collab_types::ArtifactId,
-        op_class: collab_types::OpClass,
+        kind: collab_types::OpKind,
     ) -> Result<(), SignedSendError> {
         let identity = self.identity.as_mut().ok_or(SignedSendError::NoIdentity)?;
-        let envelope = identity.sign_op(payload, artifact, op_class)?;
+        let envelope = identity.sign_op(payload, artifact, kind)?;
         self.send(CollabRequest::SignedOperation {
             envelope: Box::new(envelope),
         });
@@ -1429,9 +1429,9 @@ impl CollaborationManager {
     }
 
     /// Fire-and-forget and non-blocking on every backend. Presence may be
-    /// shed under saturation; any other durable enqueue failure visibly
-    /// disconnects the manager, so callers never continue under the illusion
-    /// it was sent. Document mutations never disconnect: see
+    /// shed under saturation; any other durable command is accepted and
+    /// waits for the transport's queue to have room, so a burst is
+    /// backpressure, never a disconnect. Document mutations never disconnect: see
     /// [`Self::try_send`] for why one was not sent.
     ///
     /// While the manager is [`CollaborationState::Connecting`] only a

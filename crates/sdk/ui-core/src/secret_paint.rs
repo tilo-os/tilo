@@ -59,12 +59,7 @@ mod tests {
     struct SettledSecret;
 
     impl Widget for SettledSecret {
-        crate::testing::inert_widget_methods!(
-            apply_layout,
-            get_rect,
-            leaf_layout,
-            name = "settled-secret"
-        );
+        crate::testing::inert_widget_methods!(leaf_layout, name = "settled-secret");
         fn draw(
             &mut self,
             _: &mut Scene,

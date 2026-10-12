@@ -1,74 +1,30 @@
-//! VPN as a [`tilo_resource::Resource`]: the shared, secret-free tunnel
-//! profiles are the document; what a profile does on this device (import,
-//! set up, connect, disconnect, delete) is a [`VpnEffect`] the surface
-//! answers.
+//! VPN as a resource: the shared, secret-free tunnel profiles are the
+//! document ([`Vpn`]), each edited at its path; what a profile does on this
+//! device (import, set up, connect, disconnect, delete) is a [`VpnEffect`]
+//! the surface answers.
 
 use std::rc::Rc;
 
 use ui::framework::{
     EffectCx, EffectStatus, Fixture, LiveRow, ResourceApp, ResourceSurface, SurfaceCx, ViewCx,
 };
-use ui::tilo_actions::{ActionParam, ParamType};
-use ui::tilo_resource::{ActionDecl, Doc, Invoke, ModelError, Resource, SearchEntry};
+use ui::tilo_resource::{self, Invoke, SearchEntry, resource};
 use ui::widget::Element;
 
-use crate::actions::{VPN_ACTION_TYPE, VpnAction, register};
 use crate::app::VpnApp;
 use crate::device::DeviceFacts;
-use crate::doc::VpnDoc;
 use crate::effects::VpnEffect;
-use crate::model::{ConnStatus, Vault, sample_vault};
+pub use crate::model::Vpn;
+use crate::model::{ConnStatus, Profile, Vault, sample_vault};
 
-/// The VPN vault resource.
-pub struct Vpn;
+#[resource(kind = "vpn.vault", label = "VPN", search = Vpn::search)]
+impl Vpn {}
 
-impl Resource for Vpn {
-    const KIND: &'static str = "vpn.vault";
-    const LABEL: &'static str = "VPN";
-    const ACTION_TYPE: &'static str = VPN_ACTION_TYPE;
-
-    type State = Vault;
-    type Action = VpnAction;
-
-    fn register(registry: &mut tilo_actions::ActionRegistry) {
-        register(registry);
-    }
-
-    fn read(doc: &Doc) -> Result<Vault, ModelError> {
-        Ok(VpnDoc::read_vault(doc))
-    }
-
-    fn declarations() -> Vec<ActionDecl<Self>> {
-        vec![
-            ActionDecl::new(
-                "rename-connection",
-                "Rename connection",
-                vec![
-                    ActionParam::required_owned(
-                        "connection",
-                        ParamType::Text,
-                        "Id of the saved profile",
-                    ),
-                    ActionParam::required_owned("name", ParamType::Text, "The new name"),
-                ],
-                |args, _| {
-                    let id = crate::effects::connection_id(args.text("connection").unwrap_or(""))?;
-                    Ok(VpnAction::RenameConnection {
-                        id,
-                        name: args.text("name").unwrap_or("").to_owned(),
-                    })
-                },
-            )
-            .describe("Rename a saved profile for everyone it is shared with"),
-        ]
-    }
-
-    fn children(state: &Vault) -> Vec<tilo_actions::Resource> {
-        crate::actions::connection_resources(state)
-    }
-
-    fn search(state: &Vault) -> Vec<SearchEntry> {
-        state
+impl Vpn {
+    /// Each profile, found by its name and protocol, anchored at the row
+    /// this device publishes for it.
+    fn search(&self) -> Vec<SearchEntry> {
+        Vault::of(self)
             .connections
             .iter()
             .map(|connection| SearchEntry {
@@ -112,6 +68,7 @@ impl ResourceApp for VpnShell {
     }
 
     fn view(cx: &mut ViewCx<Vpn>) -> Element {
+        crate::locales::install();
         cx.surface(VpnApp::new())
     }
 
@@ -124,9 +81,15 @@ impl ResourceApp for VpnShell {
             None | Some("empty") => Vec::new(),
             Some(_) => sample_vault()
                 .connections
-                .into_iter()
-                .filter_map(|connection| {
-                    Invoke::apply(&crate::actions::add_connection_action(connection)).ok()
+                .iter()
+                .enumerate()
+                .filter_map(|(at, connection)| {
+                    Invoke::edit(&Vpn::paths().connections.insert_as(
+                        &Vpn::item(connection.id),
+                        at,
+                        &Profile::of(connection),
+                    ))
+                    .ok()
                 })
                 .collect(),
         }
@@ -170,8 +133,8 @@ impl ResourceApp for VpnShell {
 }
 
 impl ResourceSurface<Vpn, VpnEffect> for VpnApp {
-    fn present(&mut self, state: &Rc<Vault>) {
-        self.present_vault(state);
+    fn present(&mut self, state: &Rc<Vpn>) {
+        self.present_vault(&Rc::new(Vault::of(state)));
     }
 
     fn attach(&mut self, cx: SurfaceCx<Vpn>) {
@@ -198,5 +161,160 @@ impl ResourceSurface<Vpn, VpnEffect> for VpnApp {
 
     fn live_rows(&self) -> Vec<LiveRow> {
         self.profile_rows()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::{ConnKind, Connection};
+    use ui::framework::testing::TestApp;
+    use ui::tilo_resource::{Edit, Replica};
+
+    fn add(replica: &mut Replica<Vpn>, connection: &Connection) {
+        let added = Vpn::paths().connections.insert_as(
+            &Vpn::item(connection.id),
+            usize::MAX,
+            &Profile::of(connection),
+        );
+        replica.apply(Invoke::edit(&added).unwrap()).unwrap();
+    }
+
+    fn edit(replica: &mut Replica<Vpn>, edit: &Edit<Vpn>) -> Result<(), String> {
+        replica
+            .apply(Invoke::edit(edit).map_err(|error| error.to_string())?)
+            .map(drop)
+            .map_err(|error| error.to_string())
+    }
+
+    fn sampled() -> Replica<Vpn> {
+        let mut replica = Replica::<Vpn>::new();
+        for connection in &sample_vault().connections {
+            add(&mut replica, connection);
+        }
+        replica
+    }
+
+    /// The shared fleet holds names, protocols and Tor preferences only:
+    /// no window selection and no device's live tunnel state.
+    #[test]
+    fn the_fleet_round_trips_without_live_state() {
+        let replica = sampled();
+        let back = Vault::of(&replica.state().unwrap());
+        assert_eq!(back.connections.len(), sample_vault().connections.len());
+        assert_eq!(back.selected, None, "window selection is not synchronized");
+        let home = back.connections.iter().find(|c| c.name == "Home").unwrap();
+        assert_eq!(home.kind, ConnKind::WireGuard);
+        assert!(back.connections.iter().all(|connection| {
+            connection.status == ConnStatus::Disconnected
+                && connection.last_handshake_secs.is_none()
+        }));
+        let relay = back
+            .connections
+            .iter()
+            .find(|c| c.name == "Cloud Relay")
+            .unwrap();
+        assert!(relay.tor);
+    }
+
+    /// Renaming, rerouting and removing are field edits at the profile's
+    /// path; a nameless profile or an absent one is refused.
+    #[test]
+    fn profiles_are_edited_at_their_paths() {
+        let mut replica = sampled();
+        let home = sample_vault()
+            .connections
+            .into_iter()
+            .find(|c| c.name == "Home")
+            .unwrap()
+            .id;
+        let profile = Vpn::paths().connections.item(&Vpn::item(home));
+        edit(&mut replica, &profile.name.replace("House")).unwrap();
+        edit(&mut replica, &profile.tor.set(true)).unwrap();
+        let state = replica.state().unwrap();
+        let house = state.connections.get(&Vpn::item(home)).unwrap();
+        assert_eq!((house.name.as_str(), house.tor), ("House", true));
+        assert!(edit(&mut replica, &profile.name.replace(" ")).is_err());
+        assert!(
+            edit(&mut replica, &profile.kind.set(ConnKind::OpenVpn)).is_err(),
+            "the protocol is the imported profile's"
+        );
+        // Removing a profile asks first.
+        assert!(
+            edit(
+                &mut replica,
+                &Vpn::paths().connections.remove(&Vpn::item(home))
+            )
+            .unwrap_err()
+            .contains("confirmation")
+        );
+        replica
+            .apply_confirmed(Vpn::paths().connections.remove(&Vpn::item(home)))
+            .unwrap();
+        assert!(
+            edit(
+                &mut replica,
+                &Vpn::paths().connections.remove(&Vpn::item(home))
+            )
+            .is_err(),
+            "a profile that is gone is not removed again"
+        );
+    }
+
+    /// Two devices adding and rerouting concurrently converge.
+    #[test]
+    fn two_devices_converge() {
+        let mut left = sampled();
+        let mut right = left.fork();
+        add(&mut left, &Connection::new("Travel", ConnKind::WireGuard));
+        let work = sample_vault()
+            .connections
+            .into_iter()
+            .find(|c| c.name == "Work")
+            .unwrap()
+            .id;
+        edit(
+            &mut right,
+            &Vpn::paths()
+                .connections
+                .item(&Vpn::item(work))
+                .tor
+                .set(true),
+        )
+        .unwrap();
+        left.sync_with(&mut right).unwrap();
+        assert_eq!(left.state().unwrap(), right.state().unwrap());
+        let names: Vec<String> = Vault::of(&left.state().unwrap())
+            .connections
+            .into_iter()
+            .map(|c| c.name)
+            .collect();
+        assert!(names.contains(&"Travel".to_owned()) && names.contains(&"Home".to_owned()));
+    }
+
+    /// An agent reroutes a profile in one call, and history says so.
+    #[test]
+    fn an_agent_reroutes_a_profile_and_history_says_so() {
+        let mut app = TestApp::<VpnShell>::new().unwrap();
+        let lab = Connection::new("Lab", ConnKind::OpenVpn);
+        let added = Vpn::paths()
+            .connections
+            .insert_as(&Vpn::item(lab.id), 0, &Profile::of(&lab));
+        app.invoke(Invoke::edit(&added).unwrap()).unwrap();
+        let tor = Vpn::paths().connections.item(&Vpn::item(lab.id)).tor;
+        app.call("field-edit", serde_json::json!({ "edit": tor.set(true) }))
+            .unwrap();
+        assert!(app.state().connections.values().all(|profile| profile.tor));
+        let catalogue =
+            tilo_history::Catalogue::new("en-US", &[include_str!("../locales/en-US.ftl")]);
+        let reader = tilo_history::Reader::new("en-US").with_app(&catalogue);
+        let sentences: Vec<String> = app
+            .versions()
+            .into_iter()
+            .filter_map(|version| version.context)
+            .filter(|entry| entry.what.is_some())
+            .map(|entry| reader.sentence(&entry))
+            .collect();
+        assert_eq!(sentences, ["Added a VPN profile", "Routed Lab over Tor"]);
     }
 }

@@ -11,6 +11,7 @@ description = "A device's enrolled replicas of rooms governed by a remote durabl
 test-support = ["dep:iroh-base"]
 
 [dependencies]
+tilo-action-policy = { path = "../action-policy" }
 # Writes the file-backed store: owner-only, crash-safe replacement.
 tilo-files = { path = "../../platform/tilo-files" }
 tilo-content = { path = "../../system/content" }

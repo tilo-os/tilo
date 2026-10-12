@@ -1,0 +1,616 @@
+# The app's public surface, written by `tilo-app surface`: its resources' verbs
+# and stored fields. Review changes to it like an API change; `tilo-app check`
+# fails when the code and this file disagree.
+
+[[resources]]
+kind = "maps.workspace"
+label = "Maps"
+version = 1
+
+[[resources.fields]]
+owner = "workspace"
+path = "places"
+stored = "keyed"
+title = "Places"
+type = "Keyed<Place>"
+
+[[resources.fields]]
+owner = "place"
+path = "places.*.id"
+readonly = true
+stored = "value"
+title = "The place's id, as the geocoder or the map names it"
+type = "String"
+
+[[resources.fields]]
+label = true
+owner = "place"
+path = "places.*.name"
+stored = "value"
+title = "Name"
+type = "String"
+
+[[resources.fields]]
+owner = "place"
+path = "places.*.category"
+stored = "value"
+title = "Category"
+type = "Category"
+
+[[resources.fields]]
+owner = "place"
+path = "places.*.address"
+stored = "value"
+title = "Address"
+type = "String"
+
+[[resources.fields]]
+owner = "place"
+path = "places.*.pos"
+readonly = true
+stored = "record"
+title = "Location"
+type = "LatLon"
+
+[[resources.fields]]
+owner = "lat-lon"
+path = "places.*.pos.lat"
+stored = "value"
+title = "Lat"
+type = "f64"
+
+[[resources.fields]]
+owner = "lat-lon"
+path = "places.*.pos.lon"
+stored = "value"
+title = "Lon"
+type = "f64"
+
+[[resources.fields]]
+owner = "place"
+path = "places.*.saved"
+stored = "value"
+title = "Saved"
+type = "bool"
+
+[[resources.fields]]
+owner = "workspace"
+path = "recents"
+readonly = true
+stored = "value"
+title = "Recent searches, newest first"
+type = "Vec<String>"
+
+[[resources.fields]]
+owner = "workspace"
+path = "mode"
+stored = "value"
+title = "Travel mode"
+type = "TravelMode"
+
+[[resources.fields]]
+owner = "workspace"
+path = "transit_time"
+stored = "value"
+title = "Transit time"
+type = "TransitTime"
+
+[[resources.fields]]
+owner = "workspace"
+path = "route_plan"
+readonly = true
+stored = "value"
+title = "The road route accepted last"
+type = "ActivePlan"
+
+[[resources.fields]]
+owner = "workspace"
+path = "transit_plan"
+readonly = true
+stored = "value"
+title = "The transit journeys accepted last"
+type = "ActivePlan"
+
+[[resources.verbs]]
+description = "Places a search or the map found become places of the shared map; one already known is updated and keeps being saved."
+id = "accept-places"
+kind = "undoable"
+label = "Accept places"
+
+[[resources.verbs.params]]
+name = "places"
+required = true
+
+[resources.verbs.params.schema]
+type = "array"
+
+[resources.verbs.params.schema.items]
+additionalProperties = false
+description = "A point of interest. `id` is stable; markers, the place card and the saved-list all reference it."
+required = [
+    "id",
+    "name",
+    "category",
+    "address",
+    "pos",
+    "saved",
+]
+type = "object"
+
+[resources.verbs.params.schema.items.properties.address]
+description = "Address"
+type = "string"
+
+[resources.verbs.params.schema.items.properties.category]
+description = "Category"
+enum = [
+    "landmark",
+    "cafe",
+    "restaurant",
+    "bar",
+    "museum",
+    "park",
+    "transit",
+    "hotel",
+    "shop",
+    "hospital",
+    "other",
+]
+type = "string"
+
+[resources.verbs.params.schema.items.properties.id]
+description = "The place's id, as the geocoder or the map names it."
+type = "string"
+
+[resources.verbs.params.schema.items.properties.name]
+description = "Name"
+type = "string"
+
+[resources.verbs.params.schema.items.properties.pos]
+additionalProperties = false
+description = "Location"
+required = [
+    "lat",
+    "lon",
+]
+type = "object"
+
+[resources.verbs.params.schema.items.properties.pos.properties.lat]
+type = "number"
+
+[resources.verbs.params.schema.items.properties.pos.properties.lon]
+type = "number"
+
+[resources.verbs.params.schema.items.properties.saved]
+description = "Saved"
+type = "boolean"
+
+[[resources.verbs]]
+description = "Remembers the search in the shared history; each window looks it up on its own."
+id = "commit-search"
+kind = "undoable"
+label = "Search maps"
+
+[[resources.verbs.params]]
+name = "query"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs]]
+id = "clear-recents"
+kind = "undoable"
+label = "Clear recent searches"
+params = []
+
+[[resources.verbs]]
+description = "The road route a planner answered, with its endpoints."
+id = "accept-route"
+kind = "undoable"
+label = "Accept a route"
+
+[[resources.verbs.params]]
+name = "route"
+required = true
+
+[resources.verbs.params.schema]
+additionalProperties = false
+description = "A computed road route between two points."
+required = [
+    "mode",
+    "distance_m",
+    "duration_s",
+    "geometry",
+    "steps",
+    "from",
+    "to",
+]
+type = "object"
+
+[resources.verbs.params.schema.properties.distance_m]
+type = "number"
+
+[resources.verbs.params.schema.properties.duration_s]
+type = "number"
+
+[resources.verbs.params.schema.properties.from]
+additionalProperties = false
+description = "A WGS-84 geographic coordinate (degrees)."
+required = [
+    "lat",
+    "lon",
+]
+type = "object"
+
+[resources.verbs.params.schema.properties.from.properties.lat]
+type = "number"
+
+[resources.verbs.params.schema.properties.from.properties.lon]
+type = "number"
+
+[resources.verbs.params.schema.properties.geometry]
+description = "Decoded polyline, WGS-84."
+type = "array"
+
+[resources.verbs.params.schema.properties.geometry.items]
+additionalProperties = false
+description = "A WGS-84 geographic coordinate (degrees)."
+required = [
+    "lat",
+    "lon",
+]
+type = "object"
+
+[resources.verbs.params.schema.properties.geometry.items.properties.lat]
+type = "number"
+
+[resources.verbs.params.schema.properties.geometry.items.properties.lon]
+type = "number"
+
+[resources.verbs.params.schema.properties.mode]
+description = "Travel mode for the directions engine. `Car`/`Bike`/`Foot` route on roads (OSRM); `Transit` plans a public-transport journey (MOTIS) instead — it is a mode of Directions, not a separate surface."
+enum = [
+    "car",
+    "transit",
+    "bike",
+    "foot",
+]
+type = "string"
+
+[resources.verbs.params.schema.properties.steps]
+type = "array"
+
+[resources.verbs.params.schema.properties.steps.items]
+additionalProperties = false
+description = "One turn-by-turn instruction."
+required = [
+    "instruction",
+    "distance_m",
+    "maneuver",
+]
+type = "object"
+
+[resources.verbs.params.schema.properties.steps.items.properties.distance_m]
+type = "number"
+
+[resources.verbs.params.schema.properties.steps.items.properties.instruction]
+type = "string"
+
+[resources.verbs.params.schema.properties.steps.items.properties.maneuver]
+description = "Turn type for a routing step. Maps to OSRM's `maneuver.modifier`."
+enum = [
+    "Depart",
+    "Continue",
+    "SlightLeft",
+    "Left",
+    "SharpLeft",
+    "SlightRight",
+    "Right",
+    "SharpRight",
+    "Uturn",
+    "Roundabout",
+    "Merge",
+    "Arrive",
+]
+type = "string"
+
+[resources.verbs.params.schema.properties.to]
+additionalProperties = false
+description = "A WGS-84 geographic coordinate (degrees)."
+required = [
+    "lat",
+    "lon",
+]
+type = "object"
+
+[resources.verbs.params.schema.properties.to.properties.lat]
+type = "number"
+
+[resources.verbs.params.schema.properties.to.properties.lon]
+type = "number"
+
+[[resources.verbs.params]]
+name = "origin"
+required = false
+
+[resources.verbs.params.schema]
+additionalProperties = false
+description = "A WGS-84 geographic coordinate (degrees)."
+required = [
+    "lat",
+    "lon",
+]
+type = [
+    "object",
+    "null",
+]
+
+[resources.verbs.params.schema.properties.lat]
+type = "number"
+
+[resources.verbs.params.schema.properties.lon]
+type = "number"
+
+[[resources.verbs.params]]
+name = "origin_name"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "dest"
+required = false
+
+[resources.verbs.params.schema]
+additionalProperties = false
+description = "A WGS-84 geographic coordinate (degrees)."
+required = [
+    "lat",
+    "lon",
+]
+type = [
+    "object",
+    "null",
+]
+
+[resources.verbs.params.schema.properties.lat]
+type = "number"
+
+[resources.verbs.params.schema.properties.lon]
+type = "number"
+
+[[resources.verbs.params]]
+name = "dest_name"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "mode"
+required = true
+
+[resources.verbs.params.schema]
+description = "Travel mode for the directions engine. `Car`/`Bike`/`Foot` route on roads (OSRM); `Transit` plans a public-transport journey (MOTIS) instead — it is a mode of Directions, not a separate surface."
+enum = [
+    "car",
+    "transit",
+    "bike",
+    "foot",
+]
+type = "string"
+
+[[resources.verbs]]
+id = "clear-route"
+kind = "undoable"
+label = "Clear route"
+params = []
+
+[[resources.verbs]]
+description = "The journeys a transit planner answered, with their endpoints."
+id = "accept-transit"
+kind = "undoable"
+label = "Accept transit journeys"
+
+[[resources.verbs.params]]
+name = "transit"
+required = true
+
+[resources.verbs.params.schema]
+type = "array"
+
+[resources.verbs.params.schema.items]
+additionalProperties = false
+description = "A full door-to-door public-transport journey option."
+required = [
+    "dep",
+    "arr",
+    "duration_min",
+    "transfers",
+    "legs",
+]
+type = "object"
+
+[resources.verbs.params.schema.items.properties.arr]
+type = "string"
+
+[resources.verbs.params.schema.items.properties.dep]
+type = "string"
+
+[resources.verbs.params.schema.items.properties.duration_min]
+maximum = 4294967295
+minimum = 0
+type = "integer"
+
+[resources.verbs.params.schema.items.properties.legs]
+type = "array"
+
+[resources.verbs.params.schema.items.properties.legs.items]
+additionalProperties = false
+description = "One leg of a public-transport itinerary."
+required = [
+    "mode",
+    "line",
+    "headsign",
+    "from_name",
+    "to_name",
+    "dep",
+    "arr",
+    "duration_min",
+    "num_stops",
+    "geometry",
+]
+type = "object"
+
+[resources.verbs.params.schema.items.properties.legs.items.properties.agency]
+description = 'Operating agency, e.g. "DB Regio AG S-Bahn München".'
+type = "string"
+
+[resources.verbs.params.schema.items.properties.legs.items.properties.arr]
+type = "string"
+
+[resources.verbs.params.schema.items.properties.legs.items.properties.color]
+description = 'Authentic GTFS line colour (`routeColor`) as a hex string without `#`, e.g. "78b82c" for the S2. `None` for walk legs / feeds without a colour; the renderer falls back to a theme-derived per-mode colour.'
+type = [
+    "string",
+    "null",
+]
+
+[resources.verbs.params.schema.items.properties.legs.items.properties.dep]
+description = '"HH:MM" local clock.'
+type = "string"
+
+[resources.verbs.params.schema.items.properties.legs.items.properties.duration_min]
+maximum = 4294967295
+minimum = 0
+type = "integer"
+
+[resources.verbs.params.schema.items.properties.legs.items.properties.from_name]
+type = "string"
+
+[resources.verbs.params.schema.items.properties.legs.items.properties.geometry]
+type = "array"
+
+[resources.verbs.params.schema.items.properties.legs.items.properties.geometry.items]
+additionalProperties = false
+description = "A WGS-84 geographic coordinate (degrees)."
+required = [
+    "lat",
+    "lon",
+]
+type = "object"
+
+[resources.verbs.params.schema.items.properties.legs.items.properties.geometry.items.properties.lat]
+type = "number"
+
+[resources.verbs.params.schema.items.properties.legs.items.properties.geometry.items.properties.lon]
+type = "number"
+
+[resources.verbs.params.schema.items.properties.legs.items.properties.headsign]
+type = "string"
+
+[resources.verbs.params.schema.items.properties.legs.items.properties.line]
+description = 'Line label, e.g. "U3", "58", "S1". Empty for walking legs.'
+type = "string"
+
+[resources.verbs.params.schema.items.properties.legs.items.properties.mode]
+description = "Mode of one public-transport leg."
+enum = [
+    "Walk",
+    "Bus",
+    "Tram",
+    "Subway",
+    "Rail",
+    "Ferry",
+]
+type = "string"
+
+[resources.verbs.params.schema.items.properties.legs.items.properties.num_stops]
+maximum = 4294967295
+minimum = 0
+type = "integer"
+
+[resources.verbs.params.schema.items.properties.legs.items.properties.realtime]
+description = """Whether this leg's times are backed by real-time data (vs. schedule only). Surfaced as a "live" indicator so freshness is honest."""
+type = "boolean"
+
+[resources.verbs.params.schema.items.properties.legs.items.properties.text_color]
+description = "GTFS `routeTextColor` hex (label colour on the line pill)."
+type = [
+    "string",
+    "null",
+]
+
+[resources.verbs.params.schema.items.properties.legs.items.properties.to_name]
+type = "string"
+
+[resources.verbs.params.schema.items.properties.transfers]
+maximum = 4294967295
+minimum = 0
+type = "integer"
+
+[[resources.verbs.params]]
+name = "origin"
+required = false
+
+[resources.verbs.params.schema]
+additionalProperties = false
+description = "A WGS-84 geographic coordinate (degrees)."
+required = [
+    "lat",
+    "lon",
+]
+type = [
+    "object",
+    "null",
+]
+
+[resources.verbs.params.schema.properties.lat]
+type = "number"
+
+[resources.verbs.params.schema.properties.lon]
+type = "number"
+
+[[resources.verbs.params]]
+name = "origin_name"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "dest"
+required = false
+
+[resources.verbs.params.schema]
+additionalProperties = false
+description = "A WGS-84 geographic coordinate (degrees)."
+required = [
+    "lat",
+    "lon",
+]
+type = [
+    "object",
+    "null",
+]
+
+[resources.verbs.params.schema.properties.lat]
+type = "number"
+
+[resources.verbs.params.schema.properties.lon]
+type = "number"
+
+[[resources.verbs.params]]
+name = "dest_name"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs]]
+id = "clear-transit"
+kind = "undoable"
+label = "Clear transit options"
+params = []

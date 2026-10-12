@@ -144,19 +144,8 @@ impl HostedDropdown {
         }
         let mut handled = false;
         let mut focus = None;
-        self.widget.handle_event(
-            ctx.event,
-            &mut ui::widget::EventCtx {
-                scale_factor: ctx.scale_factor,
-                modifiers: &ctx.modifiers,
-                state: ctx.state.reborrow(),
-                path: ctx.root,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: ctx.node_id,
-                taffy: ctx.taffy,
-            },
-        );
+        self.widget
+            .handle_event(ctx.event, &mut ctx.widget_ctx(&mut handled, &mut focus));
         if focus.is_some() {
             self.widget.set_focus(true);
         }

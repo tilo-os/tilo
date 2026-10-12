@@ -551,10 +551,7 @@ fn sending_text_is_secret_and_history_is_device_bound_read_only() {
     };
     assert!(!format!("{private:?}").contains(PRIVATE));
     assert!(history.device_only);
-    assert_eq!(
-        history.permission,
-        ui::tilo_actions::PermissionRequirement::Read
-    );
+    assert_eq!(history.action_kind, ui::tilo_actions::ActionKind::Read);
 }
 
 #[test]

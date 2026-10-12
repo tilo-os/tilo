@@ -50,12 +50,24 @@ pub fn freeze_for_capture() {
 }
 
 /// How times of day render: the shared `locale.time_format` setting.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+    tilo_resource::Model,
+)]
 pub enum TimeStyle {
     /// `14:05`
     #[default]
+    #[model(rename = "H24")]
     H24,
     /// `2:05 PM`
+    #[model(rename = "H12")]
     H12,
 }
 

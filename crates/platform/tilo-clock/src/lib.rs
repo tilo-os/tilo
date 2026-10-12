@@ -138,6 +138,22 @@ mod scoped_monotonic_tests {
 /// `0` while the clock runs.
 static FROZEN_WALL_MS: AtomicU64 = AtomicU64::new(0);
 
+thread_local! {
+    /// The wall time [`freeze_wall`] pinned on this thread, which wins over
+    /// the process-wide one here: two tests pinning different times on
+    /// their own threads of one process each read their own.
+    static FROZEN_HERE_MS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// The pinned wall time this thread reads, in milliseconds; `0` while the
+/// clock runs.
+fn frozen_ms() -> u64 {
+    match FROZEN_HERE_MS.with(std::cell::Cell::get) {
+        0 => FROZEN_WALL_MS.load(Ordering::Relaxed),
+        here => here,
+    }
+}
+
 /// The current wall-clock time, for timestamps shown to people or persisted.
 /// After [`freeze_wall`] it is that instant, every time.
 #[must_use]
@@ -147,7 +163,7 @@ static FROZEN_WALL_MS: AtomicU64 = AtomicU64::new(0);
     reason = "the one sanctioned wall-clock read"
 )]
 pub fn wall() -> SystemTime {
-    match FROZEN_WALL_MS.load(Ordering::Relaxed) {
+    match frozen_ms() {
         0 => SystemTime::now(),
         ms => UNIX_EPOCH
             .checked_add(Duration::from_millis(ms))
@@ -159,17 +175,22 @@ pub fn wall() -> SystemTime {
 /// capture shows the same date and time on every run. The monotonic clock
 /// ([`now`]) keeps running: animations and timeouts still advance. Never
 /// called in a live session.
+///
+/// The calling thread reads `at` from then on even when another thread
+/// pins another time later, so tests sharing one process each keep the
+/// time they chose; other threads read the last time pinned anywhere.
 pub fn freeze_wall(at: SystemTime) {
     let ms = at
         .duration_since(UNIX_EPOCH)
         .map_or(1, |since| saturating_u64(since.as_millis()).max(1));
     FROZEN_WALL_MS.store(ms, Ordering::Relaxed);
+    FROZEN_HERE_MS.with(|here| here.set(ms));
 }
 
 /// Whether [`freeze_wall`] pinned the wall clock.
 #[must_use]
 pub fn wall_frozen() -> bool {
-    FROZEN_WALL_MS.load(Ordering::Relaxed) != 0
+    frozen_ms() != 0
 }
 
 /// A wall-clock time as `std::time`'s, for crates and APIs that name
@@ -302,6 +323,33 @@ impl Clock for ManualClock {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_thread_keeps_the_wall_time_it_pinned_when_another_pins_another() {
+        let first = UNIX_EPOCH + Duration::from_secs(1_000);
+        let second = UNIX_EPOCH + Duration::from_secs(2_000);
+        let pinned = std::sync::Barrier::new(2);
+        std::thread::scope(|scope| {
+            let early = scope.spawn(|| {
+                freeze_wall(first);
+                pinned.wait();
+                pinned.wait();
+                wall()
+            });
+            let late = scope.spawn(|| {
+                pinned.wait();
+                freeze_wall(second);
+                pinned.wait();
+                wall()
+            });
+            assert_eq!(
+                early.join().ok(),
+                Some(first),
+                "the first thread keeps its own time"
+            );
+            assert_eq!(late.join().ok(), Some(second));
+        });
+    }
 
     #[test]
     fn a_frozen_wall_clock_holds_while_the_monotonic_clock_runs() {

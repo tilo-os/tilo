@@ -1,0 +1,131 @@
+# The app's public surface, written by `tilo-app surface`: its resources' verbs
+# and stored fields. Review changes to it like an API change; `tilo-app check`
+# fails when the code and this file disagree.
+
+[[resources]]
+kind = "typst-editor.workspace"
+label = "Typst workspace"
+version = 1
+
+[[resources.fields]]
+owner = "workspace"
+path = "files"
+stored = "collection"
+title = "Files"
+type = "Collection<TypstFile>"
+
+[[resources.fields]]
+label = true
+owner = "typst-file"
+path = "files.*.name"
+stored = "value"
+title = "Name"
+type = "Atom"
+
+[[resources.fields]]
+owner = "typst-file"
+path = "files.*.path"
+readonly = true
+stored = "value"
+title = "Path"
+type = "Option<Atom>"
+
+[[resources.fields]]
+owner = "typst-file"
+path = "files.*.source"
+stored = "value"
+title = "Source"
+type = "String"
+
+[[resources.verbs]]
+id = "new-file"
+kind = "undoable"
+label = "Create a Typst file"
+
+[[resources.verbs.params]]
+name = "name"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "path"
+required = false
+
+[resources.verbs.params.schema]
+type = [
+    "string",
+    "null",
+]
+
+[[resources.verbs.params]]
+name = "source"
+required = false
+
+[resources.verbs.params.schema]
+type = [
+    "string",
+    "null",
+]
+
+[[resources.verbs]]
+description = "It lives at that path now and takes the path's name."
+id = "saved-at"
+kind = "undoable"
+label = "Record where a file was saved"
+
+[[resources.verbs.params]]
+name = "file"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "path"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs]]
+description = "Its source becomes what the file holds, and it lives at the file's path."
+id = "load"
+kind = "undoable"
+label = "Load a file from disk into this one"
+
+[[resources.verbs.params]]
+name = "file"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "path"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "source"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs]]
+description = "It leaves the workspace."
+destructive = true
+id = "close-file"
+kind = "undoable"
+label = "Close a file"
+
+[[resources.verbs.params]]
+name = "file"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"

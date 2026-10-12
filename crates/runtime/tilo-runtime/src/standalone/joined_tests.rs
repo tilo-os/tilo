@@ -8,6 +8,7 @@
 use super::*;
 use crate::RuntimeServices as _;
 use automerge::{AutoCommit, ROOT, transaction::Transactable};
+use collab_types::CommitNamed as _;
 use ed25519_dalek::SigningKey;
 use std::sync::Arc;
 use tilo_action_broker::channel_encryption::{
@@ -352,7 +353,7 @@ fn assert_runtime_admission_revoked(joined: &Arc<Joined>, room: RoomId, actor: &
 
     let mut workspace = Workspace::new(WorkspaceId(41), "Execution isolation");
     workspace.set_owner(actor.to_owned());
-    workspace.room = room;
+    workspace.set_room(room);
     let room = room.to_string();
     let mut tree = WorkspaceTree::default();
     tree.desktop.workspaces.push(workspace);
@@ -565,9 +566,10 @@ async fn a_foreign_runtime_joins_a_hosted_room_as_an_editor_and_syncs_both_ways(
     joined
         .owner
         .with_current(room, |view| {
-            let (role, _, _) = view
+            let role = view
                 .peer()
-                .permissions(device.device_public_key, SystemTime::now())?;
+                .permissions(device.device_public_key, SystemTime::now())?
+                .role;
             assert_eq!(
                 role,
                 collab_types::Role::Editor,
@@ -609,7 +611,7 @@ async fn a_foreign_runtime_joins_a_hosted_room_as_an_editor_and_syncs_both_ways(
     let mut doc = AutoCommit::load(&chat).unwrap();
     let heads = doc.get_heads();
     doc.put(ROOT, "topic", "written in the runtime").unwrap();
-    doc.commit();
+    doc.commit_edit("fixture", "topic");
     let message = joined
         .owner
         .with_current(room, |view| {
@@ -661,7 +663,7 @@ async fn a_foreign_runtime_joins_a_hosted_room_as_an_editor_and_syncs_both_ways(
     let mut doc = AutoCommit::load(&chat).unwrap();
     let heads = doc.get_heads();
     doc.put(ROOT, "secret", SECRET).unwrap();
-    doc.commit();
+    doc.commit_edit("fixture", "secret");
     let message = joined
         .owner
         .with_current(room, |view| {
@@ -767,7 +769,7 @@ fn a_live_sdk_app_in_a_joined_room_gets_keys_from_the_governors_steward() {
         assert!(manager.is_connected(), "{:?}", manager.state());
         let mut doc = AutoCommit::new();
         doc.put(ROOT, "text", SDK_WRITTEN).unwrap();
-        doc.commit();
+        doc.commit_edit("fixture", "text");
         assert!(
             manager.send(ui::collaboration::CollabRequest::document_snapshot(
                 doc.save()
@@ -935,19 +937,7 @@ impl Steward {
             .certificates()
             .into_iter()
             .filter(|cert| !cert.capabilities.can_act_as_host)
-            .filter(|cert| {
-                matches!(
-                    peer.permissions(cert.device_public_key, now),
-                    Ok((
-                        collab_types::Role::Owner
-                            | collab_types::Role::Editor
-                            | collab_types::Role::Commenter
-                            | collab_types::Role::Viewer,
-                        _,
-                        _
-                    ))
-                )
-            })
+            .filter(|cert| peer.permissions(cert.device_public_key, now).is_ok())
             .map(|cert| collab_types::Ed25519PublicKey::from_bytes(cert.device_public_key))
             .collect();
         self.keys.pump(transport);

@@ -416,7 +416,7 @@ fn file_timeline_entries(files: &FileController) -> Vec<crate::HistoryEntry> {
                     identity.clone(),
                     crate::presence::user_color(&identity),
                 ),
-                op_class: collab_types::OpClass::Compaction,
+                entry_kind: crate::widget::EntryKind::Compaction,
                 artifact_kind: collab_types::ArtifactKind::File,
                 timestamp: crate::time::UNIX_EPOCH
                     .checked_add(crate::time::Duration::from_millis(version.timestamp_ms))
@@ -482,7 +482,7 @@ mod tests {
                     .map(|id| crate::HistoryEntry {
                         id: crate::HistoryEntryId(*uuid::Uuid::from_u128(id).as_bytes()),
                         author: crate::HistoryAuthor::new("Unknown author", 0.0, "unknown"),
-                        op_class: collab_types::OpClass::Compaction,
+                        entry_kind: crate::widget::EntryKind::Compaction,
                         artifact_kind: collab_types::ArtifactKind::File,
                         timestamp: crate::time::UNIX_EPOCH,
                         summary: "File revision".into(),

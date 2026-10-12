@@ -34,6 +34,7 @@
     reason = "paired measurements are named after the protocol they were taken on"
 )]
 
+use collab_types::CommitNamed as _;
 use std::path::Path;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -66,11 +67,14 @@ const KEYSTROKES: usize = 1_000;
 const DOCUMENT_CHARS: usize = 10_000;
 
 /// Ceiling for the median one-character keystroke frame on `tilo-relay/5`:
-/// the 548 B the TIL-625 probe measured with the zero signature, less its 64
-/// bytes. Measured here on Linux CI: 481 B.
-const BUDGET_COMPACT_FRAME_P50_BYTES: u64 = 484;
-/// Ceiling for the largest such frame: measured 489 B on Linux CI, plus 10 %.
-const BUDGET_COMPACT_FRAME_MAX_BYTES: u64 = 538;
+/// 481 B measured on Linux CI before every change named its action, plus
+/// the keystroke's compact continuation of its word's gesture (~60 B; a
+/// cleartext op carries no second copy of it). Measured here: 544 B.
+const BUDGET_COMPACT_FRAME_P50_BYTES: u64 = 550;
+/// Ceiling for the largest such frame, a word's first keystroke carrying
+/// the gesture's full entry in its compact form: measured 673 B, held to
+/// the 697 B of the frame before changes named their actions.
+const BUDGET_COMPACT_FRAME_MAX_BYTES: u64 = 697;
 /// Ceiling for the median keystroke frame on `tilo-relay/7`, coded against
 /// the author's previous keystroke on the same document (TIL-755). Measured
 /// on Linux CI: 157 B against 482 B on `tilo-relay/5`, plus 15 %.
@@ -297,12 +301,62 @@ fn delta_fields(frame: EnvelopeV2) -> DeltaFields {
     }
 }
 
+/// Typing one character at the end of the body, as an app's text control
+/// does: through the executor, as its writer's step in the gesture of the
+/// word it types. A word is eight keystrokes; every keystroke after a word's
+/// first continues its gesture.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct Type(String);
+
+impl tilo_actions::Action for Type {
+    fn apply(&self, doc: &mut tilo_actions::Doc) -> Result<(), tilo_actions::ActionError> {
+        let Some((_, body)) = doc.get(ROOT, "body")? else {
+            return Err(tilo_actions::ActionError::Refused("no body".into()));
+        };
+        let end = doc.length(&body);
+        doc.splice_text(&body, end, 0, &self.0)?;
+        Ok(())
+    }
+}
+
+const WORD_KEYSTROKES: usize = 8;
+
+fn type_one(doc: &mut AutoCommit, typed: usize) {
+    let word = typed / WORD_KEYSTROKES;
+    let gesture = tilo_actions::ActionId(uuid::Uuid::from_u128(
+        u128::try_from(word).unwrap().saturating_add(1),
+    ));
+    let context = tilo_actions::ActionContext {
+        what: Some(tilo_actions::Did::Edit(tilo_actions::FieldEdit {
+            ty: "fixture".into(),
+            field: "body".into(),
+            path: vec![tilo_actions::PathStep::Field("body".into())],
+            op: tilo_actions::EditOp::Splice,
+            old: None,
+            new: None,
+            args: std::collections::BTreeMap::new(),
+        })),
+        gesture: Some(gesture),
+        ..tilo_actions::ActionContext::for_resource("fixture", "fixture", "Fixture")
+    };
+    let action = Type("a".into());
+    tilo_actions::dispatch_by_with_context(
+        doc,
+        &action,
+        tilo_actions::EncodedAction::encode("fixture.type", &action).unwrap(),
+        &mut tilo_actions::LocalTransport::new(),
+        Some(&[3; 32]),
+        context,
+    )
+    .unwrap();
+}
+
 fn text_document(actor: u8) -> Vec<u8> {
     let mut doc = AutoCommit::new().with_actor(automerge::ActorId::from(vec![actor; 16]));
     let body = doc.put_object(ROOT, "body", ObjType::Text).unwrap();
     doc.splice_text(&body, 0, 0, &"x".repeat(DOCUMENT_CHARS))
         .unwrap();
-    doc.commit();
+    doc.commit_edit("fixture", "body");
     doc.save()
 }
 
@@ -472,11 +526,8 @@ async fn one_keystroke_costs_the_host_bounded_bytes_on_the_wire_and_disk() {
         let route = keystroke % ROUTES.len();
         let (app, record) = ROUTES[route];
         let doc = &mut documents[route];
-        let body = doc.get(ROOT, "body").unwrap().unwrap().1;
         let heads = doc.get_heads();
-        let end = doc.length(&body);
-        doc.splice_text(&body, end, 0, "a").unwrap();
-        doc.commit();
+        type_one(doc, keystroke / ROUTES.len());
         let change = doc.save_after(&heads);
         change_bytes.push(change.len() as u64);
         let message = owner

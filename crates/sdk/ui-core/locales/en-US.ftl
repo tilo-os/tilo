@@ -383,7 +383,12 @@ relative-ago-years = { $count ->
     }
 
 # A software participant in history, presence and activity rows.
+history-run-step-separator = {", "}
 participant-agent = { $name } · Agent
+participant-shortcut = { $name } · Shortcut
+participant-app = { $name } · App
+# An agent, a Shortcut or an app acting for a person.
+participant-acting-for = { $name }, for { $person }
 interaction-agent = Agent
 interaction-collaborator = Collaborator
 interaction-action-status = { $action } ({ $phase }) - { $name }
@@ -511,6 +516,8 @@ terminal-service-missing-lease = The shell session did not provide its lifetime 
 terminal-service-missing-terminal = The shell session did not provide a terminal.
 terminal-service-invalid-lease = The shell session connection could not be validated.
 
+# Shown instead of an app's view while its record does not read as the app expects.
+framework-unreadable = This cannot be opened
 display-arrangement-offline = Offline
 display-arrangement-excluded = Not in layout
 display-arrangement-offline-excluded = Offline · Not in layout

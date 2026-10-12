@@ -23,8 +23,8 @@ use ui::tilo_actions::remote::{
     ReceiptStatus,
 };
 use ui::tilo_actions::{
-    ActionAddress, ActionContract, ActionDescriptor, ActionOutput, ActionParam, ExecutionLocus,
-    InputSpec, InvocationId, OperationKind, ParamType, PermissionRequirement, ResultSpec,
+    ActionAddress, ActionContract, ActionDescriptor, ActionKind, ActionOutput, ActionParam,
+    ExecutionLocus, InputSpec, InvocationId, OperationKind, ParamType, ResultSpec,
 };
 use ui::{RemoteActions, RemoteActionsGuard};
 
@@ -38,7 +38,7 @@ fn row(
     kind: &str,
     action: &str,
     params: Vec<ActionParam>,
-    permission: PermissionRequirement,
+    permission: ActionKind,
     result: ResultSpec,
 ) -> CatalogueRow {
     CatalogueRow {
@@ -61,7 +61,7 @@ fn row(
             locus: ExecutionLocus::default(),
             kind: OperationKind::Document,
             contract: ActionContract {
-                permission,
+                kind: permission,
                 result,
                 ..ActionContract::default()
             },
@@ -94,7 +94,7 @@ impl FakeHost {
                 "shortcuts.library",
                 action,
                 params,
-                PermissionRequirement::Write,
+                ActionKind::Undoable,
                 ResultSpec::None,
             )
         };
@@ -114,7 +114,7 @@ impl FakeHost {
                     "notes.folder",
                     "list",
                     Vec::new(),
-                    PermissionRequirement::Read,
+                    ActionKind::Read,
                     ResultSpec::Json {
                         schema: json!({
                             "type": "object",
@@ -133,7 +133,7 @@ impl FakeHost {
                         ActionParam::required("title", ParamType::Text, "Title"),
                         ActionParam::required("pinned", ParamType::Boolean, "Pin it"),
                     ],
-                    PermissionRequirement::Write,
+                    ActionKind::Undoable,
                     ResultSpec::None,
                 ),
                 library("list", Vec::new()),
@@ -196,13 +196,13 @@ impl ActionHost for FakeHost {
             "freeform" => Some(json!({
                 "name": "Note the inbox",
                 "steps": [
-                    {"id": "list", "step": "invoke", "app_id": NOTES,
-                     "resource": {"fixed": INBOX}, "action": "list"},
-                    {"id": "note", "step": "invoke", "app_id": NOTES,
-                     "resource": {"fixed": INBOX}, "action": "create",
+                    {"id": "list", "step": "invoke", "action": {"app": NOTES, "kind": "notes.folder", "action": "list"},
+                     "resource": {"fixed": INBOX}},
+                    {"id": "note", "step": "invoke", "action": {"app": NOTES, "kind": "notes.folder", "action": "create"},
+                     "resource": {"fixed": INBOX},
                      "args": {"title": {"literal": "Inbox"}, "pinned": {"literal": false}}}
                 ],
-                "grant": [{"scope": "Any", "effect": "Grant", "verb": "Admin"}]
+                "grant": [{"node": "**", "kinds": ["read", "undoable", "outside"], "answer": "allow"}]
             })),
             _ => None,
         };
@@ -228,15 +228,17 @@ impl ActionHost for FakeHost {
     }
 }
 
-fn rule(action: &str, verb: collab_types::Verb) -> Value {
-    serde_json::to_value(collab_types::PermissionProfileRule::grant(
-        collab_types::Scope::Action {
-            app: NOTES.into(),
-            resource: INBOX.into(),
+fn rule(action: &str, kind: tilo_action_policy::ActionKind) -> Value {
+    serde_json::to_value(
+        shortcuts::grant::Permission {
+            app_id: NOTES.into(),
+            reach: shortcuts::grant::Reach::Resource(INBOX.into()),
             action: action.into(),
-        },
-        verb,
-    ))
+            kind,
+            label: String::new(),
+        }
+        .rule(),
+    )
     .unwrap()
 }
 
@@ -301,7 +303,7 @@ fn every_operation_is_a_published_action() {
         "draft-shortcut",
         "set-schedule",
         "add-step",
-        "set-argument",
+        "bind-argument",
         "remove-step",
         "move-step",
     ] {
@@ -330,7 +332,7 @@ fn every_operation_is_a_published_action() {
 #[test]
 fn add_steps_bind_them_validate_and_save_through_the_door() {
     let (host, _guard, mut app) = open();
-    app.invoke(Workbench::NEW_DRAFT.with("Tidy".into()))
+    app.invoke(Workbench::NEW_DRAFT.with("Tidy"))
         .expect("a new draft");
     let shortcut_id = app
         .state()
@@ -412,19 +414,18 @@ fn add_steps_bind_them_validate_and_save_through_the_door() {
             "id": shortcut_id,
             "name": "Tidy",
             "inputs": [{
-                "name": "who", "ty": "text", "required": true, "description": "who",
-                "nullable": false
+                "name": "who", "ty": "text", "required": true, "description": "who"
             }],
             "steps": [
-                {"id": "list", "step": "invoke", "app_id": NOTES,
-                 "resource": {"fixed": INBOX}, "action": "list"},
-                {"id": "create", "step": "invoke", "app_id": NOTES,
-                 "resource": {"fixed": INBOX}, "action": "create",
+                {"id": "list", "step": "invoke", "action": {"app": NOTES, "kind": "notes.folder", "action": "list"},
+                 "resource": {"fixed": INBOX}},
+                {"id": "create", "step": "invoke", "action": {"app": NOTES, "kind": "notes.folder", "action": "create"},
+                 "resource": {"fixed": INBOX},
                  "args": {"pinned": {"literal": true}, "title": {"input": "who"}}}
             ],
             "grant": [
-                rule("list", collab_types::Verb::Read),
-                rule("create", collab_types::Verb::Write),
+                rule("list", tilo_action_policy::ActionKind::Read),
+                rule("create", tilo_action_policy::ActionKind::Undoable),
             ]
         }})
     );
@@ -444,7 +445,7 @@ fn with_agent() -> FakeHost {
             ActionParam::required("input", ParamType::Text, "Input"),
             ActionParam::required("schema", ParamType::Object, "Schema"),
         ],
-        PermissionRequirement::Write,
+        ActionKind::Undoable,
         ResultSpec::Json { schema: json!({}) },
     ));
     host
@@ -531,7 +532,7 @@ fn with_saved_note() -> FakeHost {
         "shortcuts.shortcut",
         tilo_automation::SHORTCUT_RUN_ACTION,
         Vec::new(),
-        PermissionRequirement::Write,
+        ActionKind::Undoable,
         ResultSpec::None,
     ));
     host.saved.push(json!({
@@ -542,8 +543,8 @@ fn with_saved_note() -> FakeHost {
             "description": "Note title", "nullable": false
         }],
         "steps": [
-            {"id": "create", "step": "invoke", "app_id": NOTES,
-             "resource": {"fixed": INBOX}, "action": "create",
+            {"id": "create", "step": "invoke", "action": {"app": NOTES, "kind": "notes.folder", "action": "create"},
+             "resource": {"fixed": INBOX},
              "args": {"title": {"input": "title"}, "pinned": {"literal": false}}}
         ]
     }));
@@ -610,7 +611,7 @@ fn morning_refresh_draft_requires_schedule_choice_and_keyboard_save_review() {
         "weather.location",
         "refresh",
         Vec::new(),
-        PermissionRequirement::Read,
+        ActionKind::Read,
         ResultSpec::Job,
     );
     refresh.resource.label = "Chosen weather".into();
@@ -619,7 +620,7 @@ fn morning_refresh_draft_requires_schedule_choice_and_keyboard_save_review() {
     fixture.rows.push(refresh);
     let (host, _guard, mut app) = open_with(fixture);
     app.invoke(Workbench::DRAFT_SHORTCUT.with(json!({
-        "id": "fixture-refresh", "name": "Refresh chosen weather", "steps": [{"id": "refresh", "step": "invoke", "app_id": "so.tilo.weather", "resource": {"fixed": "weather.location:fixture"}, "action": "refresh"}]
+        "id": "fixture-refresh", "name": "Refresh chosen weather", "steps": [{"id": "refresh", "step": "invoke", "action": {"app": "so.tilo.weather", "kind": "weather.location", "action": "refresh"}, "resource": {"fixed": "weather.location:fixture"}}]
     }))).unwrap();
     act(&mut app, "schedule-enabled", &Action::Focus);
     assert!(host.library_calls("create").is_empty());
@@ -683,16 +684,17 @@ fn morning_refresh_draft_requires_schedule_choice_and_keyboard_save_review() {
     assert_eq!(saved.triggers, program.triggers);
     assert_eq!(
         saved.grant,
-        vec![collab_types::PermissionProfileRule::grant(
-            collab_types::Scope::Action {
-                app: "so.tilo.weather".into(),
-                resource: "weather.location:fixture".into(),
-                action: "refresh".into()
-            },
-            collab_types::Verb::Read
-        )]
+        vec![
+            shortcuts::grant::Permission {
+                app_id: "so.tilo.weather".into(),
+                reach: shortcuts::grant::Reach::Resource("weather.location:fixture".into()),
+                action: "refresh".into(),
+                kind: ActionKind::Read,
+                label: String::new(),
+            }
+            .rule()
+        ]
     );
-    assert!(saved.consents.is_empty());
 }
 
 fn render_morning_matrix(app: &mut TestApp<App>, output: &std::path::Path, page: &str) {

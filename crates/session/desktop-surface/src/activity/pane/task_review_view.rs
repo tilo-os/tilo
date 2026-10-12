@@ -189,7 +189,7 @@ impl RoomActivityPane {
                     revision,
                     actor: snapshot.actor.clone(),
                     input: ui::widget::TextInput::local()
-                        .with_placeholder(&t("activity-task-direction-placeholder"))
+                        .with_placeholder(t("activity-task-direction-placeholder"))
                         .with_accessible_name(t("activity-task-direction-label"))
                         .with_id("task-direction"),
                     rect: Rect::ZERO,

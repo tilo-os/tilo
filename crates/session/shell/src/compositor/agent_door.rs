@@ -403,9 +403,9 @@ mod tests {
         };
         use crate::shell::state::{FreshId as _, WorkspaceAuthority as _};
         use crate::shell::state::{Workspace, WorkspaceId, WorkspaceTree, WorkspaceTreeHandle};
-        use collab_types::caps::{CapOverride, Scope, Subject, Verb};
         use std::io::{BufRead, Write};
         use std::sync::Arc;
+        use tilo_action_policy::Subject;
 
         let mut tree = WorkspaceTree::default();
         let id = WorkspaceId::new();
@@ -445,10 +445,7 @@ mod tests {
                     description: None,
                     operation_kind: tilo_actions::OperationKind::View,
                     params: vec![],
-                    contract: tilo_actions::ActionContract {
-                        permission: tilo_actions::PermissionRequirement::Read,
-                        ..tilo_actions::ActionContract::view()
-                    },
+                    contract: tilo_actions::ActionContract::view(),
                     input: crate::shell::collab_broker_capnp::PublishedInput::None,
                     view: None,
                 }],
@@ -582,15 +579,6 @@ mod tests {
             "admitted as a visible, revocable member"
         );
 
-        // What the person reviews in Settings → Agents: the Settings app.
-        handle.write().desktop.workspaces[0].grant_capability(
-            CapOverride::grant(
-                Subject::agent("claude-code"),
-                Scope::App("so.tilo.settings".into()),
-                Verb::Read,
-            )
-            .with_id("agent-door-test-settings"),
-        );
         let listed = loop {
             let listed = reply(&mut consent);
             if listed["id"] == 3 {
@@ -612,13 +600,7 @@ mod tests {
 
         // Removing the agent revokes its catalogue at once.
         handle.write().desktop.workspaces[0]
-            .capabilities
-            .retain(|cap| {
-                !matches!(
-                    &cap.subject,
-                    Subject::Principal(collab_types::caps::Principal::Agent(_))
-                )
-            });
+            .revoke_grants_matching(|grant| matches!(grant.subject, Subject::Agent(_)));
         send(list_apps(4));
         let revoked = reply(&mut consent);
         assert_eq!(revoked["id"], 4);

@@ -72,6 +72,12 @@ impl Touched {
     pub fn written(&self) -> impl Iterator<Item = &str> {
         self.written.iter().map(String::as_str)
     }
+
+    fn merge(&mut self, other: Self) {
+        self.written.extend(other.written);
+        self.below.extend(other.below);
+        self.all |= other.all;
+    }
 }
 
 /// How one key of a map was touched by a [`Delta`].
@@ -113,6 +119,20 @@ impl Delta {
         Self {
             kind: Kind::Everything,
         }
+    }
+
+    /// Add what `other` touched, so the deltas of several syncs read as one.
+    pub fn merge(&mut self, other: Self) {
+        self.kind = match (std::mem::take(&mut self.kind), other.kind) {
+            (Kind::Everything, _) | (_, Kind::Everything) => Kind::Everything,
+            (Kind::Nothing, other) | (other, Kind::Nothing) => other,
+            (Kind::Indexed(mut index), Kind::Indexed(more)) => {
+                for (obj, touched) in more {
+                    index.entry(obj).or_default().merge(touched);
+                }
+                Kind::Indexed(index)
+            }
+        };
     }
 
     /// The delta Automerge's patches describe.
@@ -199,7 +219,7 @@ impl Delta {
 /// Where an object sits: the path from the root to it, as `(parent, prop)`
 /// pairs, root first — what a state already knowing an object answers
 /// without asking the document (see [`Resource::locate`](crate::Resource::locate)).
-pub type Path = Vec<(ObjId, Prop)>;
+pub type ObjPath = Vec<(ObjId, Prop)>;
 
 /// Above this many new changes, or operations in them, a delta is
 /// [`Delta::everything`]: reading the change would cost about as much as
@@ -222,7 +242,7 @@ impl Delta {
     pub fn from_changes(
         doc: &Doc,
         changes: &[automerge::Change],
-        locate: &dyn Fn(&ObjId) -> Option<Path>,
+        locate: &dyn Fn(&ObjId) -> Option<ObjPath>,
     ) -> Self {
         let mut index: HashMap<ObjId, Touched> = HashMap::new();
         let mut created: HashMap<ObjId, (ObjId, Option<String>)> = HashMap::new();
@@ -269,7 +289,7 @@ fn mark_path(
     doc: &Doc,
     obj: &ObjId,
     created: &HashMap<ObjId, (ObjId, Option<String>)>,
-    locate: &dyn Fn(&ObjId) -> Option<Path>,
+    locate: &dyn Fn(&ObjId) -> Option<ObjPath>,
     located: &mut std::collections::HashSet<ObjId>,
     index: &mut HashMap<ObjId, Touched>,
 ) {
@@ -290,7 +310,7 @@ fn mark_path(
             current = parent.clone();
             continue;
         }
-        let path: Option<Path> = locate(&current).or_else(|| {
+        let path: Option<ObjPath> = locate(&current).or_else(|| {
             let parents: Vec<automerge::Parent> = doc.parents(&current).ok()?.collect();
             // An object no longer reachable changes nothing anyone reads.
             if parents.iter().any(|parent| !parent.visible) {
@@ -360,7 +380,7 @@ impl Tracker {
     pub fn delta_located(
         &mut self,
         doc: &mut Doc,
-        locate: &dyn Fn(&ObjId) -> Option<Path>,
+        locate: &dyn Fn(&ObjId) -> Option<ObjPath>,
     ) -> Delta {
         // Closes the open transaction, so its edits are part of the delta.
         doc.get_heads();
@@ -373,7 +393,7 @@ impl Tracker {
     pub fn committed_delta_located(
         &mut self,
         doc: &Doc,
-        locate: &dyn Fn(&ObjId) -> Option<Path>,
+        locate: &dyn Fn(&ObjId) -> Option<ObjPath>,
     ) -> Delta {
         let heads = doc.committed_heads();
         let committed = doc.committed_document();
@@ -495,5 +515,28 @@ mod tests {
         assert_eq!(asked.get(), 1);
         assert_eq!(delta.under(&blocks).key("b"), Touch::Below);
         assert_eq!(delta.under(&block).key("text"), Touch::Below);
+    }
+
+    #[test]
+    fn merged_deltas_read_as_one() {
+        let mut doc = Doc::new();
+        doc.put(ROOT, "a", 1).unwrap();
+        doc.put(ROOT, "b", 1).unwrap();
+        doc.commit();
+        let mut tracker = Tracker::new();
+        tracker.start(&mut doc);
+        doc.put(ROOT, "a", 2).unwrap();
+        doc.commit();
+        let mut merged = tracker.delta(&mut doc);
+        doc.put(ROOT, "b", 2).unwrap();
+        doc.commit();
+        merged.merge(tracker.delta(&mut doc));
+        assert_eq!(merged.key(&ROOT, "a"), Touch::Written);
+        assert_eq!(merged.key(&ROOT, "b"), Touch::Written);
+        let mut nothing = Delta::nothing();
+        nothing.merge(merged.clone());
+        assert_eq!(nothing.key(&ROOT, "b"), Touch::Written);
+        merged.merge(Delta::everything());
+        assert!(merged.is_everything());
     }
 }

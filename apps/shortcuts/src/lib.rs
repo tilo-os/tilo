@@ -46,7 +46,7 @@ pub struct App;
 
 /// The app as every host mounts it.
 pub fn definition() -> &'static ui::application::ApplicationDefinition {
-    ui::framework::definition::<App>()
+    ui::built_in_definition!(App)
 }
 
 impl ResourceApp for App {

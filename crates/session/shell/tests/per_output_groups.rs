@@ -110,7 +110,7 @@ fn group(id: GroupId) -> WindowGroup {
 fn tree() -> WorkspaceTree {
     let ws_id = WorkspaceId(7);
     let mut ws = Workspace::new(ws_id, "Desk");
-    ws.room = RoomId::parse(ROOM).expect("room id");
+    ws.set_room(RoomId::parse(ROOM).expect("room id"));
     ws.strips = vec![Strip {
         id: STRIP,
         name: "Main".into(),

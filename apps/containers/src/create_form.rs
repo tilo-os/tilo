@@ -1,7 +1,7 @@
 //! The new-container form: one labelled field per draft entry, each showing
-//! the draft's collaborative text in the shared document.
+//! the draft's collaborative text at its path in the record.
 //!
-//! Every edit in a field is a splice of its text through the resource's
+//! Every edit in a field is a field edit of its text through the resource's
 //! dispatcher ([`TextControl`]), so the draft merges with a second person
 //! typing in the same form, undoes a word at a time, and shows a restore or
 //! an agent's edit as it lands.
@@ -9,7 +9,6 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 use ui::framework::{Dispatcher, TextControl};
-use ui::tilo_resource::PlainText;
 
 use ui::icons::Icon;
 use ui::widget::{
@@ -17,7 +16,8 @@ use ui::widget::{
     Widget,
 };
 
-use crate::doc::{CreateDoc, CreateField};
+use crate::draft::CreateField;
+use crate::resource::Containers;
 
 /// The installed images' references, which the image field suggests. The
 /// app keeps it current as the engine changes.
@@ -27,7 +27,7 @@ pub(crate) type InstalledImages = Rc<RefCell<Vec<String>>>;
 /// what to type (the image field offers the installed images).
 pub(crate) struct DraftInput {
     field: CreateField,
-    text: TextControl<Autocomplete>,
+    text: TextControl<Autocomplete, Containers>,
 }
 
 impl DraftInput {
@@ -45,7 +45,7 @@ impl DraftInput {
         }
         Self {
             field,
-            text: TextControl::view_only(control, move |doc| CreateDoc::field_obj(doc, field)),
+            text: TextControl::view_only_at(control, field.path()),
         }
     }
 
@@ -58,7 +58,7 @@ impl DraftInput {
     }
 
     /// Edit the draft through `dispatcher` from now on.
-    pub(crate) fn attach(&mut self, dispatcher: Dispatcher<PlainText>) {
+    pub(crate) fn attach(&mut self, dispatcher: Dispatcher<Containers>) {
         self.text.attach(dispatcher);
     }
 }
@@ -73,13 +73,13 @@ impl FormControl for DraftInput {
 }
 
 impl ui::widget::Decorator for DraftInput {
-    type Inner = TextControl<Autocomplete>;
+    type Inner = TextControl<Autocomplete, Containers>;
 
-    fn inner(&self) -> &TextControl<Autocomplete> {
+    fn inner(&self) -> &TextControl<Autocomplete, Containers> {
         &self.text
     }
 
-    fn inner_mut(&mut self) -> &mut TextControl<Autocomplete> {
+    fn inner_mut(&mut self) -> &mut TextControl<Autocomplete, Containers> {
         &mut self.text
     }
 

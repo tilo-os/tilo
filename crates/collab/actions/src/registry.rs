@@ -11,6 +11,7 @@ use serde::de::DeserializeOwned;
 use crate::action::{Action, ActionError, EncodedAction};
 
 type Decoder = Box<dyn Fn(&[u8]) -> Result<Box<dyn Action>, ActionError> + Send + Sync>;
+type ContentReader = Box<dyn Fn(&str) -> Option<Vec<u8>> + Send + Sync>;
 
 /// Decodes one action type's payload ([`ActionRegistry::register_decoder`]).
 pub type DecodePayload = fn(&[u8]) -> Result<Box<dyn Action>, serde_json::Error>;
@@ -20,6 +21,9 @@ pub type DecodePayload = fn(&[u8]) -> Result<Box<dyn Action>, serde_json::Error>
 #[derive(Default)]
 pub struct ActionRegistry {
     decoders: HashMap<String, Decoder>,
+    /// Where the large parts of a recorded action are read from by hash
+    /// ([`crate::content`]): the content store of the device replaying.
+    content: Option<ContentReader>,
 }
 
 impl ActionRegistry {
@@ -47,7 +51,7 @@ impl ActionRegistry {
         self.decoders.insert(
             type_id,
             Box::new(move |bytes: &[u8]| {
-                let action: A = serde_json::from_slice(bytes).map_err(|e| ActionError::Decode {
+                let action: A = decode_json(bytes).map_err(|e| ActionError::Decode {
                     type_id: tid.clone(),
                     source: e,
                 })?;
@@ -88,6 +92,34 @@ impl ActionRegistry {
         decoder(&encoded.payload)
     }
 
+    /// Read the large parts of recorded actions from `read` (the device's
+    /// content store), so a change whose action names content replays.
+    /// Without one, the thread's reader ([`crate::keep_content_in`]) is used.
+    pub fn set_content(&mut self, read: impl Fn(&str) -> Option<Vec<u8>> + Send + Sync + 'static) {
+        self.content = Some(Box::new(read));
+    }
+
+    /// The recorded action `recorded` as it ran, its content parts read
+    /// from this registry's content reader.
+    ///
+    /// # Errors
+    /// [`MissingContent`](crate::MissingContent) for content not here yet
+    /// (inside `Ok`), or a payload that is not JSON.
+    pub fn resolve(
+        &self,
+        recorded: &EncodedAction,
+    ) -> Result<Result<EncodedAction, crate::MissingContent>, ActionError> {
+        if recorded.content_parts().is_empty() {
+            return Ok(Ok(recorded.clone()));
+        }
+        let here = crate::content::read_here;
+        let read: &dyn Fn(&str) -> Option<Vec<u8>> = match &self.content {
+            Some(read) => read.as_ref(),
+            None => &here,
+        };
+        recorded.resolve_content(read)
+    }
+
     /// Whether a decoder is registered for `type_id`.
     pub fn contains(&self, type_id: &str) -> bool {
         self.decoders.contains_key(type_id)
@@ -97,4 +129,18 @@ impl ActionRegistry {
     pub fn type_ids(&self) -> Vec<&str> {
         self.decoders.keys().map(String::as_str).collect()
     }
+}
+
+/// A `T` from its JSON bytes, through a JSON value: one byte parser for
+/// every action type, compiled here, rather than one per type and crate.
+///
+/// # Errors
+/// Why the bytes are not a `T`.
+pub fn decode_json<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, serde_json::Error> {
+    T::deserialize(json_value(bytes)?)
+}
+
+#[inline(never)]
+fn json_value(bytes: &[u8]) -> Result<serde_json::Value, serde_json::Error> {
+    serde_json::from_slice(bytes)
 }

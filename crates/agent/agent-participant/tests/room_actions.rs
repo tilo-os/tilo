@@ -82,7 +82,6 @@ const SLIDES: &str = "so.tilo.slides";
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_existing_native_chat_reference_discovers_local_views_over_the_governed_https_host() {
-    use chat::doc::{ChatDoc, NewMessage};
     use tilo_actions::remote::ViewResourceQuery;
     let (identity_key, _) = tilo_user_identity::UserIdentity::generate("Resource fixture", 1);
     let host = enrol(
@@ -115,29 +114,41 @@ async fn an_existing_native_chat_reference_discovers_local_views_over_the_govern
     )
     .unwrap();
     let mut doc = source.read(Clone::clone).unwrap();
-    ChatDoc::create_workspace(&mut doc, "Native shared space");
-    let channel = ChatDoc::list_channels(&doc)
-        .into_iter()
-        .find(|channel| channel.kind == chat::model::ChannelKind::Text)
-        .unwrap();
-    let message = ChatDoc::push_message(
+    chat::demo::apply_as(
         &mut doc,
-        &channel.id,
-        NewMessage {
-            author: "ada".into(),
-            text: "Hello é, shared natively".into(),
-            ..NewMessage::default()
-        },
-    );
+        "ada",
+        chat::Chat::CREATE_WORKSPACE.with(chat::record::chat::CreateWorkspace {
+            name: "Native shared space".into(),
+        }),
+    )
+    .unwrap();
+    let workspace = chat::projection::read(&doc)
+        .workspace_rows()
+        .into_iter()
+        .find(|workspace| workspace.name == "Native shared space")
+        .unwrap()
+        .id;
+    let channel = chat::projection::read(&doc)
+        .channel_rows()
+        .into_iter()
+        .find(|channel| {
+            channel.workspace == workspace && channel.kind == chat::model::ChannelKind::Text
+        })
+        .unwrap();
+    let message =
+        chat::demo::say(&mut doc, "ada", &channel.id, "Hello é, shared natively").unwrap();
     source
         .apply(&collab_types::DocumentMutation::Snapshot(doc.save()))
         .unwrap();
-    let id = format!("chat.message:{message}");
-    let reference = serde_json::json!({"id": id, "kind": "chat.message", "label": "Native selection",
+    let id = chat::projection::item_id("messages", &message);
+    let reference = serde_json::json!({"id": id, "kind": "chat.workspace.messages", "label": "Native selection",
         "span": {"start": 6, "end": 7, "unit": "Chars"}});
     source
         .invoke(
-            &ActionAddress::new(format!("chat.channel:{}", channel.id), "share-resource"),
+            &ActionAddress::new(
+                chat::projection::item_id("channels", &channel.id),
+                "share-resource",
+            ),
             &serde_json::json!({"reference": reference, "text": "Discuss this resource"})
                 .as_object()
                 .unwrap()
@@ -146,7 +157,7 @@ async fn an_existing_native_chat_reference_discovers_local_views_over_the_govern
         )
         .unwrap();
     let shared = source
-        .read(|doc| ChatDoc::list_messages(doc, &channel.id))
+        .read(|doc| chat::projection::read(doc).message_rows(&channel.id))
         .unwrap()
         .into_iter()
         .find(|message| message.text == "Discuss this resource")
@@ -162,9 +173,10 @@ async fn an_existing_native_chat_reference_discovers_local_views_over_the_govern
         .publish(route.clone(), &source.take_mutation().unwrap())
         .unwrap();
     let provider = record_provider(&route);
-    let policy = ui::permissions::PermissionContext::from_capabilities(
-        ui::permissions::Actor::person(Some(collab_types::Role::Owner), "ada").in_room(&room.room),
-        Vec::new(),
+    let policy = ui::permissions::PermissionContext::member_of(
+        &room.room,
+        "ada",
+        ui::permissions::Role::Owner,
     );
     let source_views = source
         .read(|doc| {
@@ -173,7 +185,7 @@ async fn an_existing_native_chat_reference_discovers_local_views_over_the_govern
                 doc,
                 &ViewResourceQuery {
                     id: id.clone(),
-                    kind: "chat.message".into(),
+                    kind: "chat.workspace.messages".into(),
                 },
                 &policy,
             )
@@ -187,7 +199,7 @@ async fn an_existing_native_chat_reference_discovers_local_views_over_the_govern
         provider: Some(provider.clone()),
         view_resource: Some(ViewResourceQuery {
             id: id.clone(),
-            kind: "chat.message".into(),
+            kind: "chat.workspace.messages".into(),
         }),
         max_results: 256,
         ..CatalogueQuery::default()
@@ -208,7 +220,7 @@ async fn an_existing_native_chat_reference_discovers_local_views_over_the_govern
     };
     assert!(page.rows.iter().all(|row| {
         row.resource.id == id
-            && row.resource.kind == "chat.message"
+            && row.resource.kind == "chat.workspace.messages"
             && row
                 .action
                 .as_ref()
@@ -224,8 +236,8 @@ async fn an_existing_native_chat_reference_discovers_local_views_over_the_govern
     assert_eq!(locator.provider, provider);
     for wanted in [
         ViewResourceQuery {
-            id: "chat.message:missing".into(),
-            kind: "chat.message".into(),
+            id: chat::projection::item_id("messages", "missing"),
+            kind: "chat.workspace.messages".into(),
         },
         ViewResourceQuery {
             id: id.clone(),
@@ -384,9 +396,14 @@ impl tilo_agent_participant::room_actions::RoomRecordsLink for DeliveryReadFixtu
         }
         Some(tilo_agent_participant::room_actions::ViewReadPolicy {
             room: self.route.cluster_id.clone(),
-            role: collab_types::Role::Owner,
-            caps: Vec::new(),
-            person: hex::encode(self.user_public_key()),
+            standing: ui::permissions::Standing::person(
+                ui::permissions::policy::RoomPolicy::new(
+                    &self.route.cluster_id,
+                    hex::encode(self.user_public_key()),
+                ),
+                hex::encode(self.user_public_key()),
+            ),
+            sandbox: Vec::new(),
             unix_time: 1,
         })
     }
@@ -703,18 +720,18 @@ impl Browser {
 }
 
 fn sheet_names(app: &Replica) -> Vec<String> {
-    let body: serde_json::Value = app
-        .read(|doc| serde_json::to_value(automerge::AutoSerde::from(doc)).unwrap())
-        .unwrap();
-    body["wb"]["sheets"]
-        .as_array()
-        .map(|sheets| {
-            sheets
-                .iter()
-                .map(|sheet| sheet["name"].as_str().unwrap_or_default().to_owned())
-                .collect()
-        })
-        .unwrap_or_default()
+    app.read(|doc| {
+        <sheets::Workbook as ui::tilo_resource::Resource>::read(doc)
+            .map(|workbook| {
+                workbook
+                    .sheets
+                    .values()
+                    .map(|sheet| sheet.name.0.clone())
+                    .collect()
+            })
+            .unwrap_or_default()
+    })
+    .unwrap_or_default()
 }
 
 /// The argument of Sheets' New sheet: the sheet's name.

@@ -34,21 +34,8 @@ impl Widget for TestContent {
     ) -> NodeId {
         taffy.widget_leaf(Style::default(), node_map, self)
     }
-    fn apply_layout(&mut self, _taffy: &TaffyTree<()>, _node: NodeId, _origin: Point) {}
-    fn draw(
-        &mut self,
-        _scene: &mut Scene,
-        _transform: Affine,
-        _text_renderer: &mut TextRenderer,
-        _theme: &Theme,
-        _presence: &PresenceCtx,
-    ) {
-    }
     fn name(&self) -> &'static str {
         "TestContent"
-    }
-    fn get_rect(&self) -> Rect {
-        Rect::ZERO
     }
 }
 
@@ -90,15 +77,6 @@ impl Widget for CountingContent {
     }
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         self.rect = crate::widget::layout_rect(taffy, node, origin);
-    }
-    fn draw(
-        &mut self,
-        _scene: &mut Scene,
-        _transform: Affine,
-        _text_renderer: &mut TextRenderer,
-        _theme: &Theme,
-        _presence: &PresenceCtx,
-    ) {
     }
     fn handle_event(&mut self, _event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         self.events.set(self.events.get().saturating_add(1));

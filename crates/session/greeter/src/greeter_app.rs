@@ -1198,7 +1198,7 @@ impl GreeterApp {
                 TextInput::from_state(&self.username)
                     .with_id("greeter.username")
                     .with_accessible_name(t("greeter-username"))
-                    .with_placeholder(&t("greeter-username-placeholder"))
+                    .with_placeholder(t("greeter-username-placeholder"))
                     .disabled(busy),
             ));
         }
@@ -1218,7 +1218,7 @@ impl GreeterApp {
                 }))
                 .with_secret(true)
                 .control_size(ControlSize::Large)
-                .with_placeholder(&t("greeter-passcode-placeholder"))
+                .with_placeholder(t("greeter-passcode-placeholder"))
                 .disabled(busy && challenge.is_none())
         };
         let sign_in = t(if challenge.is_some() {
