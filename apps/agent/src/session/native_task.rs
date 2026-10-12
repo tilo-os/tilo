@@ -40,7 +40,6 @@ impl Session {
                 invocation,
                 run_id: run.run_id,
                 lease: lease.clone(),
-                step: None,
                 peer_id: action.peer_id,
                 resource: action.resource.clone(),
                 action: action.action.clone(),

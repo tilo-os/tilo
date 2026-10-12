@@ -2052,6 +2052,10 @@ global-search-rename-workspace = Rename Workspace
 global-search-switch-workspace = Switch Workspace…
 global-search-open-settings = Open Settings
 global-search-open-file = Open File
+search-action-workspace-create = Create a workspace
+search-action-workspace-create-subtitle = Create and switch to a new empty workspace
+search-action-workspace-create-default-name = Untitled
+search-action-workspace-create-invalid-name = Enter a workspace name of 1 to 120 characters without control characters.
 
 # Shortcut steps that ask before they run, and keyboard capture
 shortcut-step-confirm-detail = “{ $shortcut }” wants to { $action } on { $resource }.

@@ -3,8 +3,6 @@
 //! `NetEvent`s into replica replies re-published as `NetCmd::Publish`s.
 //! Started by default in normal sessions; recovery sessions may disable it.
 
-use crate::shell::state::WorkspaceAuthority as _;
-
 mod boot_join;
 #[cfg(test)]
 mod display_input_tests;
@@ -910,11 +908,6 @@ impl PendingInvitation {
     pub fn is_expired(&self, now_unix_seconds: u64) -> bool {
         self.expiry_unix_seconds < now_unix_seconds
     }
-
-    #[must_use]
-    pub fn id_hex(&self) -> String {
-        hex::encode(self.id)
-    }
 }
 
 /// Nanoseconds since the Unix epoch, failing closed to `u64::MAX` (every
@@ -1141,17 +1134,6 @@ fn persist_pending_invitations(
     if let Err(error) = tilo_files::native::atomic::write_with_mode(path, &bytes, 0o600) {
         tracing::warn!(%error, path = %path.display(), "could not persist pending invitations");
     }
-}
-
-/// Non-secret metadata shown in collaboration settings for a pending invite.
-/// `invite_id` is a one-way BLAKE3 digest, never the redeemable bearer.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct PendingInviteSummary {
-    pub invite_id: String,
-    pub invitee: String,
-    pub role: crate::network::invite::InviteRole,
-    pub recipient_bound: bool,
-    pub expiry_unix_seconds: u64,
 }
 
 /// Shell-side handle for the peer-sync subsystem. Owns the tokio
@@ -1665,7 +1647,7 @@ impl ShellNetwork {
             &endpoint,
             &deferred_relays,
             runtime.handle().clone(),
-            rest_after,
+            Some(rest_after),
         );
         let mdns = if internet {
             init_lan_discovery(&endpoint)
@@ -4290,54 +4272,6 @@ impl ShellNetwork {
         drop(pending);
         self.note_session_reachability(true);
         Ok(token)
-    }
-
-    /// List live invitations for a locally governed workspace. Only
-    /// non-secret metadata is returned through this API; the private bearer
-    /// remains available through the explicit resend action.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the workspace is unknown, replica state is
-    /// unavailable, or the local user may not administer the workspace.
-    pub fn pending_invites(
-        &self,
-        local: crate::shell::state::WorkspaceId,
-    ) -> Result<Vec<PendingInviteSummary>, String> {
-        let room = {
-            let replica = self
-                .replica
-                .lock()
-                .map_err(|_| "peer-sync replica lock poisoned".to_string())?;
-            let tree = replica.tree.read();
-            let workspace = tree
-                .desktop
-                .workspaces
-                .iter()
-                .find(|workspace| workspace.id == local)
-                .ok_or_else(|| format!("no workspace {}", local.raw()))?;
-            let actor = crate::shell::state::local_user_id_for_room(&workspace.room);
-            if !tree.governs_room(workspace.room) || !workspace.may_administer(&actor) {
-                return Err(
-                    "only the governing workspace administrator can inspect invites".into(),
-                );
-            }
-            let room = workspace.room;
-            drop(tree);
-            drop(replica);
-            room
-        };
-        Ok(self
-            .pending_invitations(room)
-            .into_iter()
-            .map(|invite| PendingInviteSummary {
-                invite_id: invite.id_hex(),
-                invitee: invite.name,
-                role: invite.role,
-                recipient_bound: invite.recipient_user_public_key.is_some(),
-                expiry_unix_seconds: invite.expiry_unix_seconds,
-            })
-            .collect())
     }
 
     /// Promote a transport-authenticated identity announcement through room
@@ -7919,6 +7853,7 @@ impl crate::shell::remote_action_link::RemoteActionLink for ShellNetwork {
 )]
 mod tests {
     use super::*;
+    use crate::shell::state::WorkspaceAuthority as _;
 
     #[test]
     fn a_local_tab_is_pushed_on_the_next_tick_and_an_idle_tick_sends_nothing() {
