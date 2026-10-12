@@ -1,7 +1,8 @@
 //! Device-local launcher record associations. These are restart metadata,
 //! never room membership, permissions, or a replicated document projection.
 
-use super::{RoomId, TabId, TileContent, WorkspaceTree};
+use super::{DesktopTree, RoomId, TabId, TileContent, WorkspaceTree};
+use std::collections::HashMap;
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -11,27 +12,31 @@ pub struct LocalAppRecord {
     pub record_instance: u64,
 }
 
+/// The room and app `tab` shows in `desktop`, when it shows an app.
+fn local_app_at(desktop: &DesktopTree, tab: TabId) -> Option<(RoomId, &str)> {
+    desktop.workspaces.iter().find_map(|workspace| {
+        workspace
+            .strips
+            .iter()
+            .flat_map(|strip| &strip.window_groups)
+            .flat_map(|group| &group.tabs)
+            .find_map(|candidate| {
+                if candidate.id != tab {
+                    return None;
+                }
+                match &candidate.tile {
+                    TileContent::Foreign { app_id, .. } | TileContent::LocalApp { app_id, .. } => {
+                        Some((workspace.room, app_id.as_str()))
+                    }
+                    _ => None,
+                }
+            })
+    })
+}
+
 impl WorkspaceTree {
     fn local_app_at(&self, tab: TabId) -> Option<(RoomId, &str)> {
-        self.desktop.workspaces.iter().find_map(|workspace| {
-            workspace
-                .strips
-                .iter()
-                .flat_map(|strip| &strip.window_groups)
-                .flat_map(|group| &group.tabs)
-                .find_map(|candidate| {
-                    if candidate.id != tab {
-                        return None;
-                    }
-                    match &candidate.tile {
-                        TileContent::Foreign { app_id, .. }
-                        | TileContent::LocalApp { app_id, .. } => {
-                            Some((workspace.room, app_id.as_str()))
-                        }
-                        _ => None,
-                    }
-                })
-        })
+        local_app_at(&self.desktop, tab)
     }
 
     /// Called only after the launcher/toplevel handshake supplies an instance.
@@ -68,14 +73,20 @@ impl WorkspaceTree {
     }
 
     pub(crate) fn prune_local_app_records(&mut self) {
-        let valid: std::collections::HashSet<_> = self
-            .local_app_records
-            .iter()
-            .filter_map(|(tab, record)| {
-                self.local_app_record(*tab, record.room, &record.app_id)
-                    .map(|_| *tab)
-            })
-            .collect();
-        self.local_app_records.retain(|tab, _| valid.contains(tab));
+        Self::prune_local_app_records_of(&self.desktop, &mut self.local_app_records);
+    }
+
+    /// Drop the records in `records` whose tab no longer shows their room's
+    /// app in `desktop`, as [`Self::local_app_record`] revalidates them.
+    pub(crate) fn prune_local_app_records_of(
+        desktop: &DesktopTree,
+        records: &mut HashMap<TabId, LocalAppRecord>,
+    ) {
+        records.retain(|tab, record| {
+            record.record_instance != 0
+                && !record.room.is_nil()
+                && !record.app_id.trim().is_empty()
+                && local_app_at(desktop, *tab) == Some((record.room, record.app_id.as_str()))
+        });
     }
 }

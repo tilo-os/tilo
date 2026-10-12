@@ -21,7 +21,7 @@ use crate::canonical::{CanonicalError, canonical_bytes};
 use crate::channel::{ArtifactId, ChannelId};
 use crate::crypto::{Ed25519PublicKey, Signature};
 use crate::identity::AttestationId;
-use crate::role::OpClass;
+use crate::role::OpKind;
 
 pub(crate) const DOCUMENT_MUTATION_V2_PREFIX: &[u8] = b"tilo-document-mutation-v2\0";
 pub(crate) const DOCUMENT_SNAPSHOT_TAG: u8 = 1;
@@ -220,6 +220,41 @@ pub fn live_artifact_id(record_digest: &[u8; 32], kind: u8, seq: u64) -> Artifac
     bytes[6] = (bytes[6] & 0x0f) | 0x80;
     bytes[8] = (bytes[8] & 0x3f) | 0x80;
     ArtifactId(uuid::Uuid::from_bytes(bytes))
+}
+
+static LAST_UNORDERED_DOCUMENT_SEQUENCE: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+/// Sequence for a document write signed outside its record owner's
+/// serialized turn: never below wall-clock microseconds and strictly
+/// increasing within the process, so the owner's own dense `floor + 1`
+/// reservations (recovery projections) cannot take it first.
+///
+/// This is the one process-wide allocator for caller-signed document
+/// writes; every SDK document signer and every out-of-turn test signer
+/// draws from it.
+#[must_use]
+pub fn next_unordered_document_sequence(now: SystemTime) -> u64 {
+    use std::sync::atomic::Ordering;
+
+    let wall = now
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map_or(0, |duration| {
+            u64::try_from(duration.as_micros()).unwrap_or(u64::MAX)
+        });
+    let mut observed = LAST_UNORDERED_DOCUMENT_SEQUENCE.load(Ordering::Relaxed);
+    loop {
+        let candidate = wall.max(observed.saturating_add(1));
+        match LAST_UNORDERED_DOCUMENT_SEQUENCE.compare_exchange_weak(
+            observed,
+            candidate,
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+        ) {
+            Ok(_) => return candidate,
+            Err(actual) => observed = actual,
+        }
+    }
 }
 
 /// Deterministic attestation slot used by certified workspace admission.
@@ -597,9 +632,9 @@ pub struct SignedOp {
     pub attestation_id: AttestationId,
     /// The author's self-declared op class, cross-checked against the role
     /// table (validator check 5). A lying client doesn't gain capability —
-    /// `role_permits(attestation.role, artifact.kind, op_class)` must be
+    /// `role_permits(attestation.role, artifact.kind, kind)` must be
     /// true regardless of what the client claims.
-    pub op_class: OpClass,
+    pub kind: OpKind,
     /// Wall-clock time the op was created, checked to fall inside
     /// `[attestation.valid_from, attestation.valid_until]` (validator check
     /// 6). Clock skew tolerance is the validator's responsibility.
@@ -616,6 +651,16 @@ pub struct SignedOp {
     /// the wire encoding, which keeps every earlier op decodable.
     #[serde(default, with = "encryption_wire")]
     pub encryption: Option<EncryptionMetadata>,
+    /// What each change in `payload` claims to be: its action and the
+    /// storage units it writes, one per change, signed with the op so a
+    /// receiver (a relay that cannot read a sealed payload included) decides
+    /// every change against the author's grants before merging it.
+    pub claims: Vec<crate::claim::ChangeClaim>,
+    /// The content hash (BLAKE3) of the app surface the op's changes are
+    /// decided against: the `surface.toml` of the package that made them,
+    /// as the launcher handed it to the app. A receiver fetches it by hash
+    /// and holds the op until it has it.
+    pub surface: Option<[u8; 32]>,
     /// Detached Ed25519 signature by `author` over the canonical-bytes view
     /// of every other field. See `SignedOp::signing_bytes`.
     pub signature: Signature,
@@ -631,7 +676,7 @@ impl SignedOp {
         artifact: ArtifactId,
         author: Ed25519PublicKey,
         attestation_id: AttestationId,
-        op_class: OpClass,
+        kind: OpKind,
         timestamp: SystemTime,
         seq: u64,
     ) -> Self {
@@ -640,10 +685,12 @@ impl SignedOp {
             artifact,
             author,
             attestation_id,
-            op_class,
+            kind,
             timestamp,
             seq,
             encryption: None,
+            claims: Vec::new(),
+            surface: None,
             signature: Signature::from_bytes([0u8; 64]),
         }
     }
@@ -657,7 +704,7 @@ impl SignedOp {
         artifact: ArtifactId,
         author: Ed25519PublicKey,
         attestation_id: AttestationId,
-        op_class: OpClass,
+        kind: OpKind,
         timestamp: SystemTime,
         seq: u64,
         encryption: EncryptionMetadata,
@@ -667,12 +714,28 @@ impl SignedOp {
             artifact,
             author,
             attestation_id,
-            op_class,
+            kind,
             timestamp,
             seq,
             encryption: Some(encryption),
+            claims: Vec::new(),
+            surface: None,
             signature: Signature::from_bytes([0u8; 64]),
         }
+    }
+
+    /// The op claiming `claims` for its changes. Sign after setting them.
+    #[must_use]
+    pub fn with_claims(mut self, claims: Vec<crate::claim::ChangeClaim>) -> Self {
+        self.claims = claims;
+        self
+    }
+
+    /// The op deciding its changes against the app surface `surface`.
+    #[must_use]
+    pub fn with_surface(mut self, surface: Option<[u8; 32]>) -> Self {
+        self.surface = surface;
+        self
     }
 
     /// Canonical bytes the author signs to mint this envelope — the struct
@@ -689,20 +752,24 @@ impl SignedOp {
             artifact: &'a ArtifactId,
             author: &'a Ed25519PublicKey,
             attestation_id: &'a AttestationId,
-            op_class: &'a OpClass,
+            kind: &'a OpKind,
             timestamp: &'a SystemTime,
             seq: u64,
             encryption: encryption_wire::View<'a>,
+            claims: &'a [crate::claim::ChangeClaim],
+            surface: &'a Option<[u8; 32]>,
         }
         canonical_bytes(&View {
             payload: &self.payload,
             artifact: &self.artifact,
             author: &self.author,
             attestation_id: &self.attestation_id,
-            op_class: &self.op_class,
+            kind: &self.kind,
             timestamp: &self.timestamp,
             seq: self.seq,
             encryption: encryption_wire::View(&self.encryption),
+            claims: &self.claims,
+            surface: &self.surface,
         })
     }
 }
@@ -713,9 +780,74 @@ mod tests {
     use crate::canonical::from_canonical_bytes;
     use crate::crypto::generate_keypair;
 
+    /// The unordered document sequence never falls below wall-clock
+    /// microseconds and strictly increases, even when the clock stands still
+    /// or steps backwards.
+    #[test]
+    fn next_unordered_document_sequence_is_monotonic_and_at_least_wall_clock() {
+        let now = SystemTime::now();
+        let micros = u64::try_from(
+            now.duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap()
+                .as_micros(),
+        )
+        .unwrap();
+        let first = next_unordered_document_sequence(now);
+        assert!(first >= micros, "{first} < wall clock {micros}");
+        let second = next_unordered_document_sequence(now);
+        assert!(second > first, "same instant must still advance");
+        let earlier = next_unordered_document_sequence(SystemTime::UNIX_EPOCH);
+        assert!(earlier > second, "a backwards clock must still advance");
+    }
+
     /// Signed ops round-trip with and without encryption; encryption metadata changes the signing
     /// bytes, which exclude the signature; version-one metadata keeps the legacy wire and signing
     /// bytes; content-key metadata round-trips and is signed.
+    /// The signed envelope's field layout, as the wire and the signature see
+    /// it: a change here is a wire change every peer must make together.
+    #[test]
+    fn signed_op_field_layout() {
+        use sha2::Digest as _;
+        let key = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
+        let mut op = SignedOp::new_unsigned(
+            b"change".to_vec(),
+            document_artifact_id("app", "room", "record"),
+            Ed25519PublicKey::from_bytes(key.verifying_key().to_bytes()),
+            document_attestation_id("app", "room", "record"),
+            OpKind::Change,
+            SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1),
+            3,
+        )
+        .with_claims(vec![crate::claim::ChangeClaim {
+            change: [9; 32],
+            action: crate::claim::ClaimedAction::Group(vec![
+                crate::claim::ClaimedAction::Edit {
+                    kind: "k".into(),
+                    path: vec![tilo_actions::PathStep::Field("f".into())],
+                },
+                crate::claim::ClaimedAction::Verb {
+                    action: tilo_actions::ActionKey::new("app", "k", "v"),
+                    item: None,
+                },
+            ]),
+            units: vec![Vec::new()],
+        }])
+        .with_surface(Some([5; 32]));
+        crate::crypto::sign_op(&mut op, &key).unwrap();
+        let bytes = canonical_bytes(&op).unwrap();
+        assert_eq!(from_canonical_bytes::<SignedOp>(&bytes).unwrap(), op);
+        assert_eq!(
+            postcard::from_bytes::<SignedOp>(&postcard::to_allocvec(&op).unwrap()).unwrap(),
+            op
+        );
+        assert_eq!(
+            hex::encode(sha2::Sha256::digest(&bytes)),
+            "4d36ec4cbbb005c0eb17855ec94b0d7ff48f64bd0dcd31ff82e1063b3366176d",
+            "{}",
+            hex::encode(&bytes)
+        );
+    }
+
     #[test]
     #[allow(
         clippy::too_many_lines,
@@ -730,7 +862,7 @@ mod tests {
                 ArtifactId::new(),
                 pk,
                 AttestationId::new(),
-                OpClass::Splice,
+                OpKind::Change,
                 SystemTime::UNIX_EPOCH,
                 0,
             );
@@ -747,7 +879,7 @@ mod tests {
                 ArtifactId::new(),
                 pk,
                 AttestationId::new(),
-                OpClass::Splice,
+                OpKind::Change,
                 SystemTime::UNIX_EPOCH,
                 42,
                 EncryptionMetadata::mls_application(3, crate::channel::ChannelId::new()),
@@ -772,7 +904,7 @@ mod tests {
                 ArtifactId::new(),
                 pk,
                 AttestationId::new(),
-                OpClass::Splice,
+                OpKind::Change,
                 SystemTime::UNIX_EPOCH,
                 0,
             );
@@ -791,7 +923,7 @@ mod tests {
                 ArtifactId::new(),
                 pk,
                 AttestationId::new(),
-                OpClass::Splice,
+                OpKind::Change,
                 SystemTime::UNIX_EPOCH,
                 7,
             );
@@ -824,7 +956,7 @@ mod tests {
                 ArtifactId::new(),
                 pk,
                 AttestationId::new(),
-                OpClass::Splice,
+                OpKind::Change,
                 SystemTime::UNIX_EPOCH,
                 5,
                 EncryptionMetadata::content_key(2, channel, ContentRetention::Checkpoint),
@@ -919,7 +1051,7 @@ mod tests {
                 document_artifact_id(app, workspace, record),
                 Ed25519PublicKey::from_bytes([7; 32]),
                 document_attestation_id(app, workspace, record),
-                OpClass::Splice,
+                OpKind::Change,
                 SystemTime::UNIX_EPOCH,
                 1,
             );
@@ -990,7 +1122,7 @@ mod tests {
                 document_artifact_id(app, workspace, record),
                 Ed25519PublicKey::from_bytes([7; 32]),
                 document_attestation_id(app, workspace, record),
-                OpClass::Splice,
+                OpKind::Change,
                 SystemTime::UNIX_EPOCH,
                 1,
                 EncryptionMetadata::mls_application(4, document_channel_id(app, workspace, record)),
@@ -1017,7 +1149,7 @@ mod tests {
                     document_artifact_id(app, workspace, record),
                     Ed25519PublicKey::from_bytes([8; 32]),
                     document_attestation_id(app, workspace, record),
-                    OpClass::Splice,
+                    OpKind::Change,
                     SystemTime::UNIX_EPOCH,
                     1,
                     EncryptionMetadata::mls_application(0, channel),

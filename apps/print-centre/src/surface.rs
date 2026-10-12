@@ -1,20 +1,13 @@
-use std::collections::HashMap;
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::{Arc, mpsc};
-use taffy::{NodeId, TaffyTree};
 use ui::framework::{
     Dispatcher, Effect as _, EffectAnswer, EffectCx, EffectStatus, Effected, LiveRow,
 };
 
+use ui::tilo_resource::Atom;
 use ui::widget::{AppModel, ModelPath};
 use ui::widget::{CropSelection, Widget};
-use ui::{presence::PresenceCtx, text_render::TextRenderer, theme::Theme};
-use vello::{
-    Scene,
-    kurbo::{Affine, Point, Rect},
-};
-use winit::event::WindowEvent;
 
 mod views;
 use views::{
@@ -287,27 +280,39 @@ impl Door {
             UiCommand::ApplyScanCrop => E::CropScanPage,
             UiCommand::RecognizeCurrentPage => E::RecognizeText,
             UiCommand::SetTwoSided(value) => {
-                dispatcher.invoke(PrintDefaults::SET_TWO_SIDED.with(value));
+                dispatcher.submit(PrintDefaults::paths().two_sided.set(value));
                 return Ok(());
             }
             UiCommand::SetScanResolution(index) => {
                 let dpi = SCAN_RESOLUTIONS.get(index).ok_or("invalid resolution")?;
-                dispatcher.invoke(PrintDefaults::SET_SCAN_RESOLUTION.with(*dpi));
+                dispatcher.submit(PrintDefaults::paths().scan_resolution.set(*dpi));
                 return Ok(());
             }
             UiCommand::SetScanColor(index) => {
                 let value = SCAN_COLORS.get(index).ok_or("invalid color")?;
-                dispatcher.invoke(PrintDefaults::SET_SCAN_COLOR.with((*value).to_owned()));
+                dispatcher.submit(
+                    PrintDefaults::paths()
+                        .scan_color
+                        .set(Atom((*value).to_owned())),
+                );
                 return Ok(());
             }
             UiCommand::SetScanSource(index) => {
                 let value = SCAN_SOURCES.get(index).ok_or("invalid source")?;
-                dispatcher.invoke(PrintDefaults::SET_SCAN_SOURCE.with((*value).to_owned()));
+                dispatcher.submit(
+                    PrintDefaults::paths()
+                        .scan_source
+                        .set(Atom((*value).to_owned())),
+                );
                 return Ok(());
             }
             UiCommand::SetOcrLanguage(index) => {
                 let (value, _) = OCR_LANGUAGES.get(index).ok_or("invalid language")?;
-                dispatcher.invoke(PrintDefaults::SET_OCR_LANGUAGE.with((*value).to_owned()));
+                dispatcher.submit(
+                    PrintDefaults::paths()
+                        .ocr_language
+                        .set(Atom((*value).to_owned())),
+                );
                 return Ok(());
             }
         };
@@ -1904,7 +1909,15 @@ impl Default for PrintCentre {
         Self::new()
     }
 }
-impl Widget for PrintCentre {
+impl ui::widget::Decorator for PrintCentre {
+    type Inner = dyn Widget;
+
+    fn inner(&self) -> &(dyn Widget + 'static) {
+        self.inner.as_ref()
+    }
+    fn inner_mut(&mut self) -> &mut (dyn Widget + 'static) {
+        self.inner.as_mut()
+    }
     fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
         if self.poll_picker() {
             self.inner.sync(state, path);
@@ -1923,41 +1936,8 @@ impl Widget for PrintCentre {
         }
         self.inner.update(state, path)
     }
-    fn build_layout(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        theme: &Theme,
-        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        self.inner.build_layout(taffy, theme, node_map)
-    }
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.inner.apply_layout(taffy, node, origin);
-    }
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
-        self.inner.draw(scene, transform, text, theme, presence);
-    }
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
-        self.inner.handle_event(event, ctx);
-    }
-    fn children(&self) -> Vec<&dyn Widget> {
-        vec![self.inner.as_ref()]
-    }
-    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        vec![self.inner.as_mut()]
-    }
     fn name(&self) -> &'static str {
         "PrintCentre"
-    }
-    fn get_rect(&self) -> Rect {
-        self.inner.get_rect()
     }
     fn take_structure_dirty(&mut self) -> bool {
         // Effects replace the whole page; the new one needs a new layout.
@@ -1974,11 +1954,13 @@ mod tests {
     use crate::resource::PrintCentreShell;
     use ui::framework::ResourceApp;
     use ui::prelude::TestApp;
+    use ui::theme::Theme;
+    use vello::kurbo::Rect;
 
     fn registry() -> ui::tilo_actions::ActionRegistry {
-        let mut registry = ui::tilo_actions::ActionRegistry::new();
-        <PrintDefaults as ui::tilo_resource::Resource>::register(&mut registry);
-        registry
+        ui::tilo_actions::ActionRegistry::with(
+            <PrintDefaults as ui::tilo_resource::Resource>::register,
+        )
     }
 
     thread_local! {
@@ -2105,7 +2087,7 @@ mod tests {
                 "find-printers",
                 "print-document",
                 "scan-document",
-                "set-scan-resolution",
+                "field-edit",
             ] {
                 assert!(
                     actions.contains(&expected),
@@ -2238,7 +2220,7 @@ mod tests {
             )
             .unwrap();
             app.settle();
-            assert_eq!(app.state().ocr_language, "deu");
+            assert_eq!(app.state().ocr_language.0, "deu");
         }
 
         eprintln!("phase backend_failures_remain_distinct_from_legitimate_empty_results");

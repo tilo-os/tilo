@@ -32,11 +32,7 @@
 #![cfg_attr(
     test,
     allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
         clippy::string_slice,
-        clippy::panic,
         clippy::unreachable,
         reason = "in a test these are the assertion, not a hazard"
     )
@@ -65,5 +61,6 @@ pub use tilo_oauth::client::Authorization;
 pub use tilo_oauth::loopback::LoopbackCancel;
 pub use tilo_oauth::{Registration, TokenSet};
 
-#[cfg(all(test, feature = "custody"))]
+#[cfg(test)]
+#[cfg(feature = "custody")]
 mod tests;

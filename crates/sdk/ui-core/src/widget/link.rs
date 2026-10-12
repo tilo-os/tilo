@@ -134,18 +134,6 @@ impl Link {
         self.last_activated.as_deref()
     }
 
-    /// For a parent that routes input by hand instead of through
-    /// [`handle_event`](Widget::handle_event). Returns `true` when the state
-    /// changed, so the caller can request a redraw.
-    pub fn set_hovered(&mut self, hovered: bool) -> bool {
-        if hovered == self.is_hovered {
-            false
-        } else {
-            self.is_hovered = hovered;
-            true
-        }
-    }
-
     /// Bypasses taffy — mirrors
     /// [`TextInput::apply_layout_external`](crate::widget::TextInput) for
     /// parents that lay children out by hand.
@@ -173,20 +161,7 @@ impl Link {
 }
 
 impl crate::widget::controls::ActionControls for Link {
-    fn install_control_custody(
-        &mut self,
-        domain: &crate::ControlDomain,
-        attachment: crate::control_custody::CustodyAttachment,
-    ) {
-        if let Some(action) = &mut self.action {
-            let _ = action.install_custody(domain, attachment);
-        }
-    }
-    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
-        self.action
-            .as_mut()
-            .and_then(crate::widget::ActionEmitter::take)
-    }
+    crate::widget::controls::optional_emitter_controls!(custody);
     fn control_action_bindings(&self) -> Vec<crate::widget::ControlBindingMetadata> {
         self.action
             .as_ref()
@@ -225,7 +200,7 @@ impl Widget for Link {
             self.style = style;
             self.dirty = true;
         }
-        let node = taffy.leaf_node(Style {
+        let style = Style {
             size: Size {
                 width: Dimension::auto(),
                 height: Dimension::auto(),
@@ -233,9 +208,8 @@ impl Widget for Link {
             flex_shrink: 0.0,
             flex_grow: 0.0,
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn measure(
@@ -260,13 +234,7 @@ impl Widget for Link {
         reason = "dirty-checking wants exact equality against the previous layout, not a fuzzy tolerance"
     )]
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        let new_rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
-            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
-        );
+        let new_rect = crate::widget::layout_rect(taffy, node, origin);
         if new_rect.width() != self.rect.width() || new_rect.height() != self.rect.height() {
             self.dirty = true;
         }
@@ -416,6 +384,7 @@ impl Widget for Link {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
+        _key_path: &[u64],
         _state: &mut crate::widget::Edits<'_>,
         _root: &ModelPath,
     ) -> bool {
@@ -452,7 +421,7 @@ impl Widget for Link {
 mod tests {
     use super::*;
     use automerge::AutoCommit;
-    use winit::event::{DeviceId, ElementState, MouseButton};
+    use winit::event::{ElementState, MouseButton};
 
     #[test]
     fn link_opens_its_url_by_pointer_and_keyboard() {
@@ -470,26 +439,10 @@ mod tests {
             let mut link = Link::new("https://example.com/page");
             let (tree, node) = laid_out(&mut link);
 
-            let device: DeviceId = unsafe { std::mem::zeroed() };
-            let mut doc = AutoCommit::new();
-            let root = automerge::ROOT;
-            let mods = winit::event::Modifiers::default();
+            let device = winit::event::DeviceId::dummy();
+            let mut sender = crate::testing::Dispatch::new().layout(&tree, node);
             let mut dispatch = |link: &mut Link, ev: WindowEvent| {
-                let mut handled = false;
-                let mut focus = None;
-                link.handle_event(
-                    &ev,
-                    &mut crate::widget::EventCtx {
-                        scale_factor: 1.0,
-                        modifiers: &mods,
-                        state: crate::widget::Edits::lend(&mut doc),
-                        path: &root,
-                        handled: &mut handled,
-                        focus_target: &mut focus,
-                        node_id: node,
-                        taffy: &tree,
-                    },
-                );
+                sender.send(link, &ev);
             };
 
             dispatch(
@@ -538,6 +491,7 @@ mod tests {
             let handled = crate::host::scoped(&services, || {
                 link.perform_action(
                     &crate::a11y::Action::Activate,
+                    &[],
                     &mut crate::widget::Edits::lend(&mut doc),
                     &automerge::ROOT,
                 )

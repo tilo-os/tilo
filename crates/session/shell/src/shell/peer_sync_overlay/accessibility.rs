@@ -14,14 +14,6 @@ use crate::shell::i18n::t;
 const TARGET_PREFIX: &str = "peer-sync:";
 const FIELD: &str = "field";
 
-fn hex(id: &[u8; 32]) -> String {
-    use std::fmt::Write as _;
-    id.iter().fold(String::with_capacity(64), |mut out, byte| {
-        let _ = write!(out, "{byte:02x}");
-        out
-    })
-}
-
 fn slug(button: Button) -> String {
     use crate::network::invite::InviteRole;
     match button {
@@ -42,8 +34,8 @@ fn slug(button: Button) -> String {
         Button::Cancel => "cancel".into(),
         Button::CopyToken => "copy".into(),
         Button::PasteToken => "paste".into(),
-        Button::Resend(id) => format!("resend/{}", hex(&id)),
-        Button::CancelPending(id) => format!("cancel-pending/{}", hex(&id)),
+        Button::Resend(id) => format!("resend/{}", hex::encode(id)),
+        Button::CancelPending(id) => format!("cancel-pending/{}", hex::encode(id)),
         Button::PasteIdentity => "paste-identity".into(),
         Button::CopyIdentity => "copy-identity".into(),
     }

@@ -5,10 +5,12 @@
 //! [`AgentHost`] owns an [`AgentSupervisor`] whose spawner starts one thread
 //! per agent. The thread mounts its apps, plans with the host's
 //! [`ModelChoice`] and pumps the participant until the agent stops or the
-//! host shuts down. A ticker settles expired grants (the agent stops and the
-//! host refuses its device) and writes the supervisor's snapshot to
-//! `agents.json` whenever it changed. The file holds the agents' device keys
-//! and is written owner-only.
+//! host shuts down, sleeping between pumps until its session or steering
+//! changes or its presence keep-alive is due. A keeper thread settles expired
+//! grants (the agent stops and the host refuses its device) and writes the
+//! supervisor's snapshot to `agents.json` whenever it changed, sleeping
+//! until a change or the next expiry. The file
+//! holds the agents' device keys and is written owner-only.
 //!
 //! On start the snapshot is restored ([`AgentSupervisor::restore`]):
 //! approved grants are registered with the host again, agents that were
@@ -21,7 +23,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::thread::JoinHandle;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use tilo_browser_peer::Host;
 use tilo_relay_protocol::agents::AgentStatus;
@@ -36,10 +38,9 @@ use crate::participant::{AgentParticipant, ParticipantConfig};
 
 /// The file under the state directory.
 const STATE_FILE: &str = "agents.json";
-/// How often an agent's loop takes in its session and steps.
-const PUMP_INTERVAL: Duration = Duration::from_millis(20);
-/// How often grants are checked for expiry and the state written.
-const TICK_INTERVAL: Duration = Duration::from_millis(500);
+/// The least time between two writes of the state: a burst of changes (an
+/// agent's steps) is written as one.
+const WRITE_SPACING: Duration = Duration::from_millis(500);
 
 /// Builds the apps an agent may open, on the agent's own thread.
 pub type CatalogueFactory = Arc<dyn Fn() -> AppCatalogue + Send + Sync>;
@@ -76,7 +77,8 @@ struct Shared {
     /// The runtime agents' sessions run their I/O on.
     runtime: OnceLock<tokio::runtime::Handle>,
     stopping: AtomicBool,
-    threads: Mutex<Vec<JoinHandle<()>>>,
+    /// Each agent's thread, with its control to wake it for shutdown.
+    threads: Mutex<Vec<(JoinHandle<()>, Arc<AgentControl>)>>,
 }
 
 /// Every agent of one host.
@@ -167,7 +169,7 @@ impl AgentHost {
         let _ = self.shared.runtime.set(runtime);
         self.supervisor.set_link(link);
         let snapshot = read_state(&self.state_file())?;
-        let resume = self.supervisor.restore(snapshot, now_ns());
+        let resume = self.supervisor.restore(snapshot, tilo_clock::unix_now_ns());
         for (identity, control) in resume {
             tracing::info!(agent = %identity.delegation.agent_id, "agent resumes after a host restart");
             if let Err(error) = spawn_agent(&self.shared, identity, control.clone()) {
@@ -175,6 +177,13 @@ impl AgentHost {
             }
         }
         persist(&self.supervisor, &self.state_file(), &self.written);
+        self.keep()
+    }
+
+    /// Keep the state written and the grants expired, on a thread that
+    /// sleeps until the supervisor's snapshot changes, the next grant
+    /// expires or the host stops — never on an interval.
+    fn keep(&mut self) -> Result<(), String> {
         let supervisor = self.supervisor.clone();
         let shared = self.shared.clone();
         let written = self.written.clone();
@@ -183,12 +192,29 @@ impl AgentHost {
             std::thread::Builder::new()
                 .name("agent-host".into())
                 .spawn(move || {
-                    while !shared.stopping.load(Ordering::Acquire) {
-                        for expired in supervisor.expire(now_ns()) {
+                    let changes = supervisor.changes().clone();
+                    loop {
+                        // Read before the snapshot: a change after this
+                        // point wakes the wait below.
+                        let seen = changes.generation();
+                        for expired in supervisor.expire(tilo_clock::unix_now_ns()) {
                             tracing::info!(grant = %expired, "agent grant expired");
                         }
                         persist(&supervisor, &file, &written);
-                        std::thread::sleep(TICK_INTERVAL);
+                        let wrote = Instant::now();
+                        if shared.stopping.load(Ordering::Acquire) {
+                            break;
+                        }
+                        let until_expiry = supervisor.next_expiry_ns().map(|at| {
+                            Duration::from_nanos(at.saturating_sub(tilo_clock::unix_now_ns()))
+                        });
+                        changes.wait_past(seen, until_expiry);
+                        if shared.stopping.load(Ordering::Acquire) {
+                            break;
+                        }
+                        if let Some(rest) = WRITE_SPACING.checked_sub(wrote.elapsed()) {
+                            std::thread::sleep(rest);
+                        }
                     }
                 })
                 .map_err(|error| error.to_string())?,
@@ -205,6 +231,7 @@ impl AgentHost {
     /// the next start resumes it, and write the state a last time.
     pub fn shutdown(mut self) {
         self.shared.stopping.store(true, Ordering::Release);
+        self.supervisor.changes().raise();
         if let Some(ticker) = self.ticker.take() {
             let _ = ticker.join();
         }
@@ -215,7 +242,10 @@ impl AgentHost {
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner),
         );
-        for thread in threads {
+        for (_, control) in &threads {
+            control.wake();
+        }
+        for (thread, _) in threads {
             let _ = thread.join();
         }
         persist(&self.supervisor, &self.state_file(), &self.written);
@@ -241,16 +271,17 @@ fn spawn_agent(
         .ok_or("the agent has no room")?;
     let thread_shared = shared.clone();
     let name = format!("agent-{}", identity.delegation.agent_id);
+    let thread_control = control.clone();
     let handle = std::thread::Builder::new()
         .name(name)
-        .spawn(move || run_agent(&thread_shared, endpoint, room, identity, &control))
+        .spawn(move || run_agent(&thread_shared, endpoint, room, identity, &thread_control))
         .map_err(|error| error.to_string())?;
     let mut threads = shared
         .threads
         .lock()
         .unwrap_or_else(PoisonError::into_inner);
-    threads.retain(|thread| !thread.is_finished());
-    threads.push(handle);
+    threads.retain(|(thread, _)| !thread.is_finished());
+    threads.push((handle, control));
     drop(threads);
     Ok(())
 }
@@ -292,14 +323,12 @@ fn run_agent(
         }
     };
     tracing::info!(agent = %agent_id, model = %shared.model.describe(), "agent joined its room");
-    while !shared.stopping.load(Ordering::Acquire) {
+    participant.run_until(None, |_| {
+        shared.stopping.load(Ordering::Acquire) || control.status() == AgentStatus::Stopped
+    });
+    if control.status() == AgentStatus::Stopped {
+        // One more pump publishes the cleared presence.
         participant.pump();
-        if control.status() == AgentStatus::Stopped {
-            // One more pump publishes the cleared presence.
-            participant.pump();
-            break;
-        }
-        std::thread::sleep(PUMP_INTERVAL);
     }
     participant.close();
     tracing::info!(agent = %agent_id, "agent left its room");
@@ -349,10 +378,87 @@ fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     out.sync_all()
 }
 
-fn now_ns() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |elapsed| {
-            u64::try_from(elapsed.as_nanos()).unwrap_or(u64::MAX)
-        })
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ed25519_dalek::SigningKey;
+    use tilo_relay_protocol::agents::GrantState;
+
+    /// Wait up to `limit` for `done`, checking every 10 ms.
+    fn within(limit: Duration, mut done: impl FnMut() -> bool) -> bool {
+        let start = Instant::now();
+        while start.elapsed() < limit {
+            if done() {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        done()
+    }
+
+    fn grant_state(file: &Path) -> Option<GrantState> {
+        read_state(file)
+            .ok()?
+            .grants
+            .first()
+            .map(|grant| grant.state)
+    }
+
+    #[test]
+    fn the_idle_host_sleeps_until_its_state_changes_or_a_grant_expires() {
+        let state = tempfile::tempdir().unwrap();
+        let root = SigningKey::from_bytes(&[1; 32]);
+        let mut host = AgentHost::new(
+            root.verifying_key().to_bytes(),
+            state.path().to_owned(),
+            ModelChoice::Scripted,
+            Arc::new(AppCatalogue::native),
+        );
+        #[cfg(target_os = "linux")]
+        {
+            use tilo_test_env::idle;
+            let (kept, keeper) = idle::spawned_thread("agent-host", || host.keep());
+            kept.unwrap();
+            // Its first write (a synced file and a rename) is work, not
+            // idling: measure once it is done.
+            let first = host.state_file();
+            assert!(
+                within(Duration::from_secs(5), || first.exists()),
+                "the first state was not written"
+            );
+            idle::assert_stays_asleep(&keeper, "agent host with nothing to write");
+            let window = Duration::from_secs(2);
+            let before = idle::context_switches(&keeper);
+            std::thread::sleep(window);
+            let woke = idle::context_switches(&keeper).saturating_sub(before);
+            eprintln!("agent host idle wakeups: {woke} in {window:?}");
+            assert_eq!(woke, 0, "the idle agent host woke");
+        }
+        #[cfg(not(target_os = "linux"))]
+        host.keep().unwrap();
+
+        // A change is written at once, not at the next tick.
+        let expires_at = tilo_clock::unix_now_ns().saturating_add(1_500_000_000);
+        let changed = Instant::now();
+        host.supervisor()
+            .add_grant(crate::control::tests::identity_until(&root, expires_at));
+        let file = host.state_file();
+        assert!(
+            within(Duration::from_secs(2), || grant_state(&file)
+                == Some(GrantState::Approved)),
+            "the new grant was not written"
+        );
+        eprintln!("agent host wrote a change after {:?}", changed.elapsed());
+
+        // With nothing else changing, the grant still expires on time.
+        assert!(
+            within(Duration::from_secs(4), || grant_state(&file)
+                == Some(GrantState::Expired)),
+            "the grant did not expire"
+        );
+        let late = Duration::from_nanos(tilo_clock::unix_now_ns().saturating_sub(expires_at));
+        eprintln!("agent host expired the grant {late:?} after its expiry");
+        assert!(late < Duration::from_millis(1_500), "expired {late:?} late");
+        host.shutdown();
+    }
 }

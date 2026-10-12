@@ -35,6 +35,12 @@ mod encrypted_resource;
 #[cfg(test)]
 #[path = "room_actions/feedback_journey.rs"]
 mod feedback_journey;
+#[cfg(test)]
+#[path = "room_actions/governed_agent.rs"]
+mod governed_agent;
+#[cfg(test)]
+#[path = "room_actions/governed_sealed.rs"]
+mod governed_sealed;
 #[path = "room_actions/resource_support.rs"]
 mod resource_support;
 
@@ -42,6 +48,9 @@ mod resource_support;
 pub mod mounted_resource;
 
 tilo_automerge_isolate::test_worker!();
+// Room actions hold each record in a confined app worker: this binary,
+// started again.
+tilo_agent_participant::app_worker!();
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -73,7 +82,6 @@ const SLIDES: &str = "so.tilo.slides";
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_existing_native_chat_reference_discovers_local_views_over_the_governed_https_host() {
-    use chat::doc::{ChatDoc, NewMessage};
     use tilo_actions::remote::ViewResourceQuery;
     let (identity_key, _) = tilo_user_identity::UserIdentity::generate("Resource fixture", 1);
     let host = enrol(
@@ -106,29 +114,41 @@ async fn an_existing_native_chat_reference_discovers_local_views_over_the_govern
     )
     .unwrap();
     let mut doc = source.read(Clone::clone).unwrap();
-    ChatDoc::create_workspace(&mut doc, "Native shared space");
-    let channel = ChatDoc::list_channels(&doc)
-        .into_iter()
-        .find(|channel| channel.kind == chat::model::ChannelKind::Text)
-        .unwrap();
-    let message = ChatDoc::push_message(
+    chat::demo::apply_as(
         &mut doc,
-        &channel.id,
-        NewMessage {
-            author: "ada".into(),
-            text: "Hello é, shared natively".into(),
-            ..NewMessage::default()
-        },
-    );
+        "ada",
+        chat::Chat::CREATE_WORKSPACE.with(chat::record::chat::CreateWorkspace {
+            name: "Native shared space".into(),
+        }),
+    )
+    .unwrap();
+    let workspace = chat::projection::read(&doc)
+        .workspace_rows()
+        .into_iter()
+        .find(|workspace| workspace.name == "Native shared space")
+        .unwrap()
+        .id;
+    let channel = chat::projection::read(&doc)
+        .channel_rows()
+        .into_iter()
+        .find(|channel| {
+            channel.workspace == workspace && channel.kind == chat::model::ChannelKind::Text
+        })
+        .unwrap();
+    let message =
+        chat::demo::say(&mut doc, "ada", &channel.id, "Hello é, shared natively").unwrap();
     source
         .apply(&collab_types::DocumentMutation::Snapshot(doc.save()))
         .unwrap();
-    let id = format!("chat.message:{message}");
-    let reference = serde_json::json!({"id": id, "kind": "chat.message", "label": "Native selection",
+    let id = chat::projection::item_id("messages", &message);
+    let reference = serde_json::json!({"id": id, "kind": "chat.workspace.messages", "label": "Native selection",
         "span": {"start": 6, "end": 7, "unit": "Chars"}});
     source
         .invoke(
-            &ActionAddress::new(format!("chat.channel:{}", channel.id), "share-resource"),
+            &ActionAddress::new(
+                chat::projection::item_id("channels", &channel.id),
+                "share-resource",
+            ),
             &serde_json::json!({"reference": reference, "text": "Discuss this resource"})
                 .as_object()
                 .unwrap()
@@ -137,7 +157,7 @@ async fn an_existing_native_chat_reference_discovers_local_views_over_the_govern
         )
         .unwrap();
     let shared = source
-        .read(|doc| ChatDoc::list_messages(doc, &channel.id))
+        .read(|doc| chat::projection::read(doc).message_rows(&channel.id))
         .unwrap()
         .into_iter()
         .find(|message| message.text == "Discuss this resource")
@@ -153,9 +173,10 @@ async fn an_existing_native_chat_reference_discovers_local_views_over_the_govern
         .publish(route.clone(), &source.take_mutation().unwrap())
         .unwrap();
     let provider = record_provider(&route);
-    let policy = ui::permissions::PermissionContext::from_capabilities(
-        ui::permissions::Actor::person(Some(collab_types::Role::Owner), "ada").in_room(&room.room),
-        Vec::new(),
+    let policy = ui::permissions::PermissionContext::member_of(
+        &room.room,
+        "ada",
+        ui::permissions::Role::Owner,
     );
     let source_views = source
         .read(|doc| {
@@ -164,7 +185,7 @@ async fn an_existing_native_chat_reference_discovers_local_views_over_the_govern
                 doc,
                 &ViewResourceQuery {
                     id: id.clone(),
-                    kind: "chat.message".into(),
+                    kind: "chat.workspace.messages".into(),
                 },
                 &policy,
             )
@@ -178,7 +199,7 @@ async fn an_existing_native_chat_reference_discovers_local_views_over_the_govern
         provider: Some(provider.clone()),
         view_resource: Some(ViewResourceQuery {
             id: id.clone(),
-            kind: "chat.message".into(),
+            kind: "chat.workspace.messages".into(),
         }),
         max_results: 256,
         ..CatalogueQuery::default()
@@ -199,7 +220,7 @@ async fn an_existing_native_chat_reference_discovers_local_views_over_the_govern
     };
     assert!(page.rows.iter().all(|row| {
         row.resource.id == id
-            && row.resource.kind == "chat.message"
+            && row.resource.kind == "chat.workspace.messages"
             && row
                 .action
                 .as_ref()
@@ -215,8 +236,8 @@ async fn an_existing_native_chat_reference_discovers_local_views_over_the_govern
     assert_eq!(locator.provider, provider);
     for wanted in [
         ViewResourceQuery {
-            id: "chat.message:missing".into(),
-            kind: "chat.message".into(),
+            id: chat::projection::item_id("messages", "missing"),
+            kind: "chat.workspace.messages".into(),
         },
         ViewResourceQuery {
             id: id.clone(),
@@ -375,9 +396,14 @@ impl tilo_agent_participant::room_actions::RoomRecordsLink for DeliveryReadFixtu
         }
         Some(tilo_agent_participant::room_actions::ViewReadPolicy {
             room: self.route.cluster_id.clone(),
-            role: collab_types::Role::Owner,
-            caps: Vec::new(),
-            person: hex::encode(self.user_public_key()),
+            standing: ui::permissions::Standing::person(
+                ui::permissions::policy::RoomPolicy::new(
+                    &self.route.cluster_id,
+                    hex::encode(self.user_public_key()),
+                ),
+                hex::encode(self.user_public_key()),
+            ),
+            sandbox: Vec::new(),
             unix_time: 1,
         })
     }
@@ -633,6 +659,14 @@ impl Browser {
     /// Create `app`'s record the way a page does, then close it: nobody has
     /// it open afterwards.
     fn create(&mut self, app: &str) -> DocumentRoute {
+        self.create_before_publish(app, |_| {})
+    }
+
+    fn create_before_publish(
+        &mut self,
+        app: &str,
+        before_publish: impl FnOnce(&DocumentRoute),
+    ) -> DocumentRoute {
         let mut page = Replica::open(
             &common::catalogue(),
             app,
@@ -648,6 +682,7 @@ impl Browser {
             record: page.wire_record().to_owned(),
         };
         let mutation = page.take_mutation().unwrap();
+        before_publish(&route);
         self.peer.publish(route.clone(), &mutation).unwrap();
         // The host never echoes a device's own change back to it.
         let bytes = match mutation {
@@ -685,18 +720,18 @@ impl Browser {
 }
 
 fn sheet_names(app: &Replica) -> Vec<String> {
-    let body: serde_json::Value = app
-        .read(|doc| serde_json::to_value(automerge::AutoSerde::from(doc)).unwrap())
-        .unwrap();
-    body["wb"]["sheets"]
-        .as_array()
-        .map(|sheets| {
-            sheets
-                .iter()
-                .map(|sheet| sheet["name"].as_str().unwrap_or_default().to_owned())
-                .collect()
-        })
-        .unwrap_or_default()
+    app.read(|doc| {
+        <sheets::Workbook as ui::tilo_resource::Resource>::read(doc)
+            .map(|workbook| {
+                workbook
+                    .sheets
+                    .values()
+                    .map(|sheet| sheet.name.0.clone())
+                    .collect()
+            })
+            .unwrap_or_default()
+    })
+    .unwrap_or_default()
 }
 
 /// The argument of Sheets' New sheet: the sheet's name.
@@ -718,7 +753,198 @@ fn request(provider: &str, address: ActionAddress, argument: InvokeArgument) -> 
         context: None,
         confirmation: None,
         revision: None,
+        wait_ms: None,
     }
+}
+
+/// The record `create_before_publish` makes, with the host device's
+/// admission to its channel held: the host sees it sealed and cannot open it
+/// until the hold is dropped.
+async fn create_withheld(
+    browser: &mut Browser,
+    steward: &steward::Steward,
+    host_key: [u8; 32],
+) -> (DocumentRoute, steward::HeldAdmission) {
+    let mut held = None;
+    let route = browser.create_before_publish(SHEETS, |route| {
+        held = Some(steward.hold_admission(route, host_key));
+    });
+    let held = held.unwrap();
+    browser.peer.barrier().unwrap().recv().unwrap().unwrap();
+    held.requested().await;
+    (route, held)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_record_whose_keys_are_withheld_holds_back_no_other() {
+    let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
+    let host = enrol(&root, "home-server", DeviceCapabilities::host());
+    let browser_device = enrol(&root, "browser", DeviceCapabilities::member());
+    let state = tempfile::tempdir().unwrap();
+    let hosted = start(&root, &host, state.path()).await;
+    let steward = steward::Steward::start(&hosted.relay, &root).await;
+    let mut browser = Browser::open(&hosted, &browser_device, &host).await;
+    let host_key = host.cert.device_public_key;
+
+    // A record the host holds keys for. The room's first listing joins it
+    // and waits, once, for every record's keys.
+    let open = browser.create(SHEETS);
+    browser.peer.barrier().unwrap().recv().unwrap().unwrap();
+    let open_provider = record_provider(&open);
+    let started = Instant::now();
+    let listing = browser.catalogue(CatalogueQuery::default()).await.unwrap();
+    let joined = started.elapsed();
+    assert!(
+        listing
+            .providers
+            .iter()
+            .any(|p| p.provider == open_provider),
+        "{:?}",
+        listing.providers
+    );
+    let by_name = CatalogueQuery {
+        provider: Some(open_provider.clone()),
+        max_results: 200,
+        ..CatalogueQuery::default()
+    };
+    let new_sheet = browser
+        .catalogue(by_name.clone())
+        .await
+        .unwrap()
+        .rows
+        .iter()
+        .filter_map(|row| row.action.as_ref())
+        .find(|action| action.address.action == "new-sheet")
+        .expect("Sheets offers New sheet")
+        .address
+        .clone();
+    let started = Instant::now();
+    let warm = browser
+        .invoke(request(
+            &open_provider,
+            new_sheet.clone(),
+            sheet_named("Keys held"),
+        ))
+        .await;
+    let acted_with_keys = started.elapsed();
+    eprintln!(
+        "room actions latency: join and first listing {joined:?}, invoke with keys {acted_with_keys:?}"
+    );
+    assert!(
+        matches!(warm.status, ReceiptStatus::Completed { .. }),
+        "{warm:?}"
+    );
+
+    // A second record arrives sealed, and the host's admission to it is held.
+    let (withheld, held) = create_withheld(&mut browser, &steward, host_key).await;
+
+    // Nothing about the first record waits for the second's keys.
+    let started = Instant::now();
+    browser.catalogue(by_name).await.unwrap();
+    let named_while_held = started.elapsed();
+    let started = Instant::now();
+    let listing = browser.catalogue(CatalogueQuery::default()).await.unwrap();
+    let listed_while_held = started.elapsed();
+    let started = Instant::now();
+    let acted = browser
+        .invoke(request(
+            &open_provider,
+            new_sheet.clone(),
+            sheet_named("Keys withheld elsewhere"),
+        ))
+        .await;
+    let acted_while_held = started.elapsed();
+    eprintln!(
+        "room actions latency, another record's keys withheld: named catalogue \
+         {named_while_held:?}, listing {listed_while_held:?}, invoke {acted_while_held:?}"
+    );
+    assert!(
+        matches!(acted.status, ReceiptStatus::Completed { .. }),
+        "{acted:?}"
+    );
+    assert!(
+        !listing
+            .providers
+            .iter()
+            .any(|p| p.provider == record_provider(&withheld)),
+        "a record the host cannot open is not listed"
+    );
+
+    // An invoke on the withheld record waits for its keys, then runs as
+    // soon as they arrive: the key's arrival wakes the wait.
+    let pending = request(
+        &record_provider(&withheld),
+        new_sheet.clone(),
+        sheet_named("After the keys"),
+    );
+    browser.send(RemoteActionMessage::Invoke(pending.clone()));
+    tokio::time::sleep(Duration::from_millis(1_000)).await;
+    browser.pump();
+    assert!(
+        !browser.answers.iter().any(|answer| matches!(
+            answer,
+            RemoteActionMessage::Receipt(receipt) if receipt.invocation == pending.invocation
+        )),
+        "nothing runs on a record before its keys: {:?}",
+        browser.answers
+    );
+    let released = Instant::now();
+    drop(held);
+    let after_keys = browser.receipt(pending.invocation).await;
+    let ran_after_keys = released.elapsed();
+    eprintln!("room actions latency: the withheld record ran {ran_after_keys:?} after its keys");
+    assert!(
+        matches!(after_keys.status, ReceiptStatus::Completed { .. }),
+        "{after_keys:?}"
+    );
+
+    // Keys that never arrive refuse the invocation clearly; nothing runs.
+    let (refused, held) = create_withheld(&mut browser, &steward, host_key).await;
+    let started = Instant::now();
+    let never = browser
+        .invoke(request(
+            &record_provider(&refused),
+            new_sheet,
+            sheet_named("Never"),
+        ))
+        .await;
+    let refused_after = started.elapsed();
+    eprintln!("room actions latency: a record without keys refused after {refused_after:?}");
+    match &never.status {
+        ReceiptStatus::Rejected {
+            error: ActionHostError::Unavailable { reason },
+        } => assert!(
+            reason.contains(&refused.record),
+            "the refusal names the record: {reason}"
+        ),
+        other => panic!("an invocation without keys is refused: {other:?}"),
+    }
+    browser.pump();
+    assert!(
+        !browser
+            .documents
+            .get(&refused)
+            .is_some_and(|changes| changes.iter().any(|(author, _)| *author == host_key)),
+        "the host wrote nothing to a record it could not open"
+    );
+    // The steward stops before the hold is released, so it never admits
+    // the host into a relay that is shutting down.
+    drop(steward);
+    drop(held);
+
+    let prompt = Duration::from_secs(5);
+    assert!(
+        named_while_held < prompt && listed_while_held < prompt && acted_while_held < prompt,
+        "another record's missing keys held a request back: catalogue {named_while_held:?}, \
+         listing {listed_while_held:?}, invoke {acted_while_held:?}"
+    );
+    assert!(
+        ran_after_keys < prompt,
+        "the wait did not end when the keys arrived: {ran_after_keys:?}"
+    );
+    drop(hosted.web);
+    hosted.agents.shutdown();
+    hosted.relay.shutdown().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -818,7 +1044,7 @@ async fn a_page_acts_on_records_nobody_has_open_through_the_host() {
     let browser_device = enrol(&root, "browser", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
     let hosted = start(&root, &host, state.path()).await;
-    let _steward = steward::Steward::start(&hosted.relay, &root).await;
+    let steward = steward::Steward::start(&hosted.relay, &root).await;
     let mut browser = Browser::open(&hosted, &browser_device, &host).await;
     let host_key = host.cert.device_public_key;
 
@@ -962,9 +1188,14 @@ async fn a_page_acts_on_records_nobody_has_open_through_the_host() {
 
     // 5. Cancel: an invocation queued behind another is cancelled before it
     // starts and never runs; a finished one cannot be cancelled.
-    // The first job mounts a record the host has never mounted, which keeps
-    // the service busy while the cancel for the second arrives.
-    let busy_route = browser.create(SHEETS);
+    // Hold the first record's real host admission so its mount cannot finish
+    // before the queued invocation's cancel arrives. A cold mount alone is
+    // not a synchronization boundary on a fast or differently scheduled host.
+    let mut held = None;
+    let busy_route = browser.create_before_publish(SHEETS, |route| {
+        held = Some(steward.hold_admission(route, host_key));
+    });
+    let held = held.unwrap();
     browser.peer.barrier().unwrap().recv().unwrap().unwrap();
     let slow = request(
         &record_provider(&busy_route),
@@ -972,6 +1203,7 @@ async fn a_page_acts_on_records_nobody_has_open_through_the_host() {
         sheet_named("Busy"),
     );
     let queued = request(&sheets_provider, new_sheet, sheet_named("Never"));
+    held.requested().await;
     browser.send(RemoteActionMessage::Invoke(slow.clone()));
     browser.send(RemoteActionMessage::Invoke(queued.clone()));
     browser.send(RemoteActionMessage::Cancel {
@@ -987,10 +1219,11 @@ async fn a_page_acts_on_records_nobody_has_open_through_the_host() {
             _ => None,
         })
         .await;
+    drop(held);
     let queued_receipt = browser.receipt(queued.invocation).await;
     let slow_receipt = browser.receipt(slow.invocation).await;
     assert!(
-        !matches!(slow_receipt.status, ReceiptStatus::Accepted),
+        matches!(slow_receipt.status, ReceiptStatus::Completed { .. }),
         "{slow_receipt:?}"
     );
     match cancel {
@@ -999,9 +1232,7 @@ async fn a_page_acts_on_records_nobody_has_open_through_the_host() {
                 matches!(queued_receipt.status, ReceiptStatus::Cancelled { .. }),
                 "{queued_receipt:?}"
             );
-            browser.send(RemoteActionMessage::Observe {
-                invocation: queued.invocation,
-            });
+            browser.send(RemoteActionMessage::observe(queued.invocation));
             let observed = browser
                 .answer("observe", |answer| match answer {
                     RemoteActionMessage::Update { invocation, state }

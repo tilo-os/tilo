@@ -1096,6 +1096,36 @@ class SelectorTests(unittest.TestCase):
             self.assertTrue(ci_select.make_plan(
                 self.metadata, self.root, [source, "leaf/src/lib.rs"], 2)["rust_required"])
 
+    def test_os_image_request_wrappers_keep_policy_and_real_build_coverage(self):
+        self.install_quality_helpers()
+        self.install_control_inputs()
+        wrappers = [".forgejo/workflows/os-dev.yml",
+                    ".forgejo/workflows/os-dev-x86.yml",
+                    ".forgejo/workflows/os-dev-arm.yml"]
+        for source in wrappers:
+            with self.subTest(source=source):
+                plan = ci_select.make_plan(self.metadata, self.root, [source], 2)
+                self.assertTrue(plan["security_required"])
+                self.assertFalse(plan["rust_required"])
+                self.assertEqual(plan["selected"], [])
+                self.assertEqual(plan["matrix"], {"include": []})
+                for build_input in ("leaf/src/lib.rs", ".forgejo/workflows/build-image.yml",
+                                    "Cargo.lock"):
+                    mixed = ci_select.make_plan(
+                        self.metadata, self.root, [source, build_input], 2)
+                    self.assertTrue(mixed["rust_required"], build_input)
+                full = ci_select.make_plan(
+                    self.metadata, self.root, [source], 2, force_full=True)
+                self.assertTrue(full["full"])
+                self.assertEqual(full["selected_count"], full["workspace_count"])
+                self.assertEqual({row["arch"] for row in full["matrix"]["include"]},
+                                 set(ci_select.NATIVE_RUNNERS))
+        observer = self.root / "tools/tests/test_os_dev_arches.py"
+        observer.unlink()
+        for source in wrappers:
+            self.assertTrue(ci_select.make_plan(
+                self.metadata, self.root, [source], 2)["rust_required"], source)
+
     def install_quality_helpers(self) -> None:
         for source, test in ci_select.QUALITY_ONLY_HELPERS.items():
             for path in (source, test):
@@ -1205,6 +1235,39 @@ class SelectorTests(unittest.TestCase):
             self.assertFalse(
                 ci_select.builder_only_asset_manifest_change(self.root, base, untrusted_head)
             )
+
+    def test_chunkah_release_rows_compile_no_workspace_rust(self):
+        """Only os/Containerfile.rechunk reads chunkah's tarballs (TIL-747)."""
+        subprocess.run(["git", "init", "-q", "-b", "base"], cwd=self.root, check=True)
+        subprocess.run(["git", "config", "user.email", "ci@example.invalid"], cwd=self.root, check=True)
+        subprocess.run(["git", "config", "user.name", "CI"], cwd=self.root, check=True)
+        manifest = self.root / "os/external-assets/github-assets.tsv"
+        manifest.parent.mkdir(parents=True)
+        manifest.write_text("a" * 64 + "\tpdfium.tgz\thttps://example.invalid/pdfium.tgz\n")
+        subprocess.run(["git", "add", str(manifest.relative_to(self.root))], cwd=self.root, check=True)
+        subprocess.run(["git", "commit", "-qm", "base manifest"], cwd=self.root, check=True)
+        base = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=self.root, text=True).strip()
+
+        def commit(rows: str, message: str) -> str:
+            manifest.write_text("a" * 64 + "\tpdfium.tgz\thttps://example.invalid/pdfium.tgz\n" + rows)
+            subprocess.run(["git", "commit", "-qam", message], cwd=self.root, check=True)
+            return subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=self.root, text=True).strip()
+
+        release = "https://github.com/coreos/chunkah/releases/download/v0.7.1/"
+        trusted = commit(
+            "b" * 64 + f"\tchunkah-0.7.1.tar.gz\t{release}chunkah-0.7.1.tar.gz\n"
+            + "c" * 64 + f"\tchunkah-0.7.1-vendor.tar.gz\t{release}chunkah-0.7.1-vendor.tar.gz\n",
+            "add chunkah")
+        self.assertTrue(ci_select.builder_only_asset_manifest_change(self.root, base, trusted))
+        elsewhere = commit(
+            "b" * 64 + "\tchunkah-0.7.1.tar.gz\thttps://example.invalid/chunkah-0.7.1.tar.gz\n",
+            "chunkah from elsewhere")
+        self.assertFalse(ci_select.builder_only_asset_manifest_change(self.root, base, elsewhere))
+        mixed = commit(
+            "b" * 64 + f"\tchunkah-0.7.1.tar.gz\t{release}chunkah-0.7.1.tar.gz\n"
+            + "d" * 64 + "\tpdfium-new.tgz\thttps://example.invalid/pdfium-new.tgz\n",
+            "chunkah and a shared asset")
+        self.assertFalse(ci_select.builder_only_asset_manifest_change(self.root, base, mixed))
 
     def test_changed_files_follow_the_true_merge_base_and_renames(self):
         with self.subTest(phase='changed files fails when merge base is unavailable'):

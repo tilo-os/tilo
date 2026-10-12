@@ -20,9 +20,10 @@
 //! verifying and applying them one stream at a time.
 
 use collab_types::{
-    CanonicalError, Ed25519PublicKey, FileActor, FileRecordId, Signature, VerifyError,
-    canonical_bytes, sign_event, verify_event,
+    CanonicalError, Ed25519PublicKey, Signature, VerifyError, canonical_bytes, sign_event,
+    verify_event,
 };
+use fs_protocol::{FileActor, FileRecordId};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use uuid::Uuid;

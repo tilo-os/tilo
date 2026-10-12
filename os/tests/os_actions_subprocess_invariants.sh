@@ -43,7 +43,7 @@ must_contain 'bounded_command::run\(' \
     "OS controls do not use the shared bounded process runner"
 must_contain 'Some\(input\)' \
     "secret-bearing OS controls do not pass input through the bounded runner"
-must_contain 'sanitized_diagnostic' \
+must_contain 'stderr_diagnostic\(\)' \
     "OS helper diagnostics are not sanitized before display"
 must_not_contain '\.spawn\(\)|\.output\(\)|wait_with_output' \
     "the shared OS action boundary contains raw subprocess execution"

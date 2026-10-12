@@ -136,6 +136,7 @@ fn slider_and_media_key_share_commit_volume() {
         crate::shell::media_keys::MediaKey::VolumeUp,
         &crate::shell::media_keys::Context {
             actions: &key_actions,
+            audio: &crate::shell::media_keys::DispatcherAudio(&key_actions),
             status: Some(&key_bridge),
             transport_osd: &transport_osd,
             airplane_mode: false,

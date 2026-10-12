@@ -206,7 +206,8 @@ impl DavClient {
 
     /// `GET` of `range` (a half-open byte range; the whole resource when
     /// `None`) under `precondition`. A server that ignores ranges answers
-    /// 200 with the whole body; check [`DavResponse::content_range`].
+    /// 200 with the whole body; check the status and its `Content-Range`
+    /// header.
     ///
     /// # Errors
     /// On transport failure.
@@ -301,18 +302,6 @@ impl DavResponse {
     /// The declared body length.
     pub fn content_length(&self) -> Option<u64> {
         self.inner.content_length()
-    }
-
-    /// `Content-Range: bytes start-end/total` as `(start..end+1, total)`.
-    pub fn content_range(&self) -> Option<(std::ops::Range<u64>, Option<u64>)> {
-        let value = self.header("content-range")?;
-        let spec = value.trim().strip_prefix("bytes ")?;
-        let (range, total) = spec.split_once('/')?;
-        let (start, end) = range.split_once('-')?;
-        let start: u64 = start.trim().parse().ok()?;
-        let end: u64 = end.trim().parse().ok()?;
-        let total = total.trim().parse().ok();
-        (end >= start).then(|| (start..end.saturating_add(1), total))
     }
 
     /// The body as a stream. The caller bounds how much it reads.
@@ -476,7 +465,10 @@ mod tests {
         let ranged = client
             .get_range(&url, Some(2..5), Precondition::IfMatch("\"e\""))
             .unwrap();
-        assert_eq!(ranged.content_range(), Some((2..5, Some(10))));
+        assert_eq!(
+            ranged.header("content-range").as_deref(),
+            Some("bytes 2-4/10")
+        );
         let mut body = String::new();
         ranged.into_reader().read_to_string(&mut body).unwrap();
         assert_eq!(body, "cde");

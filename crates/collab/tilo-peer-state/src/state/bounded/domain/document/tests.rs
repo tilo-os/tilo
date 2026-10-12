@@ -4,8 +4,6 @@ use crate::BoundedStatePeer;
 use crate::PeerLimits;
 use crate::StatePeer;
 use automerge::{ActorId, AutoCommit, ROOT, ReadDoc, transaction::Transactable};
-use collab_types::Ed25519PublicKey;
-use collab_types::caps::{CapOverride, Scope, Subject, Verb};
 use tilo_automerge::ApplyIncoming;
 use tilo_user_identity::RevocationList;
 use web_time::Duration;
@@ -83,25 +81,40 @@ fn route_lookup_is_exact_and_permission_precedes_missing_route_observation() {
 }
 
 #[test]
-fn current_membership_expiry_is_rechecked_on_each_document_read() {
+fn current_read_grant_expiry_is_rechecked_on_each_document_read() {
+    use tilo_action_policy::{Answer, Grant, KindSet, Lifetime, Subject, TreePath};
     let (mut source, _, _, cert, now) = crate::admission_tests::seeded();
+    let room_id = source.room().to_owned();
     let room = source.core.room_doc.as_mut().unwrap();
     room.put(ROOT, "owner", "different owner").unwrap();
-    let caps = room.get(ROOT, "capabilities").unwrap().unwrap().1;
-    let keys: Vec<_> = room.keys(&caps).collect();
-    for key in keys {
-        room.delete(&caps, key).unwrap();
-    }
-    let cap = CapOverride::grant(
-        Subject::User(Ed25519PublicKey::from_bytes(cert.user_public_key)),
-        Scope::Workspace,
-        Verb::Read,
-    )
-    .with_expiry(crate::state::now_secs(now) + 1);
+    let members = room.get(ROOT, "members").unwrap().unwrap().1;
     room.put(
-        &caps,
-        "member",
-        automerge::ScalarValue::Bytes(serde_json::to_vec(&cap).unwrap()),
+        &members,
+        hex::encode(cert.user_public_key),
+        automerge::ScalarValue::Bytes(serde_json::to_vec(&collab_types::Role::Viewer).unwrap()),
+    )
+    .unwrap();
+    // The room lets viewers read only until a moment from now.
+    let grants = room.get(ROOT, "grants").unwrap().unwrap().1;
+    let keys: Vec<_> = room.keys(&grants).collect();
+    for key in keys {
+        room.delete(&grants, key).unwrap();
+    }
+    let read = Grant::new(
+        "viewers-read",
+        Subject::Role(collab_types::Role::Viewer),
+        TreePath::room(&room_id),
+        KindSet::READ,
+        Answer::Allow,
+        Subject::person("different owner"),
+    )
+    .with_lifetime(Lifetime::Until(
+        (crate::state::now_secs(now) + 1).saturating_mul(1000),
+    ));
+    room.put(
+        &grants,
+        "viewers-read",
+        automerge::ScalarValue::Bytes(serde_json::to_vec(&read).unwrap()),
     )
     .unwrap();
     room.commit();
@@ -119,9 +132,7 @@ fn current_membership_expiry_is_rechecked_on_each_document_read() {
         let expired = now + Duration::from_secs(2);
         assert!(matches!(
             read.document_read(cert.device_public_key, APP, RECORD, expired),
-            Err(PeerDocumentReadError::Peer(BoundedPeerError::Invalid(
-                BoundedPeerInvalid::Governance
-            )))
+            Err(PeerDocumentReadError::Denied)
         ));
     });
 }

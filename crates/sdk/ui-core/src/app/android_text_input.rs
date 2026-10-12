@@ -120,7 +120,7 @@ impl TextInputSession {
 fn push_key(events: &mut Vec<WindowEvent>, key: NamedKey) {
     let key = Key::Named(key);
     for state in [ElementState::Pressed, ElementState::Released] {
-        events.push(crate::synthetic_input::key_event(&key, state));
+        events.push(crate::synthetic_input::key_input(&key, state));
     }
 }
 

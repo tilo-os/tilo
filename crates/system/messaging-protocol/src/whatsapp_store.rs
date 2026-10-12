@@ -22,6 +22,7 @@ use crate::journal::Owner;
 
 mod app_state;
 mod device;
+pub(crate) mod groups;
 mod protocol;
 mod signal_state;
 #[cfg(test)]
@@ -114,6 +115,20 @@ impl EncryptedBackend {
     /// Refuses wrong service/authority, competing writers or corrupt state.
     pub fn open_with_key(root: &Path, owner: Owner, key: VaultKey) -> Result<Self> {
         Self::open_state(root, owner, key, None)
+    }
+
+    /// Open the host's original approved profile key with its original grant.
+    /// The grant is installed before any store initialization and retained by
+    /// every SDK reader and writer, including clones.
+    /// # Errors
+    /// Refuses revoked authority, competing writers or invalid encrypted state.
+    pub fn open_profile(
+        root: &Path,
+        owner: Owner,
+        key: VaultKey,
+        authority: Arc<dyn StateAuthority>,
+    ) -> Result<Self> {
+        Self::open_authorized(root, owner, authority, || Ok(key))
     }
 
     fn open_state(

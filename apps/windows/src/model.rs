@@ -1,7 +1,9 @@
 //! Compatibility vocabulary shared by the UI and future `tilo-compatd` client.
 use serde::{Deserialize, Serialize};
+use ui::tilo_resource::{self, Model};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+/// How an application is run.
+#[derive(Model, Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Route {
     Wine,
     Proton,
@@ -140,19 +142,6 @@ pub struct WindowsApp {
 impl WindowsApp {
     pub fn uses_override(&self) -> bool {
         self.route != self.recommended_route
-    }
-    pub fn access_summary(&self) -> String {
-        let enabled: Vec<&str> = self
-            .grants
-            .iter()
-            .filter(|grant| grant.enabled)
-            .map(|grant| grant.label.as_str())
-            .collect();
-        if enabled.is_empty() {
-            "No host access".to_string()
-        } else {
-            enabled.join(", ")
-        }
     }
 }
 

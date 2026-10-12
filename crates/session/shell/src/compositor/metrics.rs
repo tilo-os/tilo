@@ -6,9 +6,13 @@
 //! exact submitted serial).
 //!
 //! Entirely env-var driven (`TILO_FRAME_TRACE`, `TILO_FRAME_SUMMARY`, `TILO_FRAME_WARMUP_MS`);
+//! `TILO_FRAME_CPU_TRACE` adds a bounded numeric-only companion with phase CPU and clock anchors.
 //! disabled, every [`FrameRecorder`] method is a `bool` branch. Production host sessions set a
 //! private trace path so the final second before an abrupt reset remains measurable. [`summarize`]
 //! is pure — the same function the live binary and unit tests call, so they can't drift.
+
+pub(crate) mod cpu_trace;
+pub(crate) use cpu_trace::{CpuPhase, CpuSnapshot};
 
 use std::io::Write;
 use std::time::{Duration, Instant};
@@ -48,7 +52,11 @@ pub struct FrameSample {
     pub input_retirement_latency_us: Option<u32>,
     /// Presentation queue was full while this tick had paint work to do.
     pub backpressured: bool,
-    /// Microseconds after the target deadline when this frame was submitted.
+    /// Microseconds this frame was submitted after the later of its target
+    /// deadline and the moment it was first wanted ([`DemandOnset`]). The
+    /// frame clock's deadline does not move while nothing is presented, so
+    /// against the deadline alone the first frame after an idle park was
+    /// "late" by the whole park.
     pub deadline_late_us: u32,
     /// What ended the park that closed this tick: the name of the deadline
     /// that expired, or [`WAKE_IO`] when a registered fd became readable
@@ -66,7 +74,134 @@ pub struct FrameSample {
     /// phase had no steps.
     pub input_step: &'static str,
     pub input_step_us: u32,
+    /// Every reason that held on a painted tick, as [`paint_reason`] bits;
+    /// zero on a tick that did not paint. An idle desktop that keeps
+    /// repainting is named here.
+    pub paint_reasons: u16,
+    /// The apps whose surfaces committed a new frame since the previous
+    /// painted tick, `+`-joined; empty when none did or nothing painted.
+    pub paint_clients: &'static str,
 }
+
+/// [`FrameSample::paint_reasons`] bits: why the compositor decided a tick had
+/// something new to show.
+pub mod paint_reason {
+    /// The session's first frame.
+    pub const FORCE: u16 = 1 << 0;
+    /// Backend (input or output) events were drained.
+    pub const INPUT: u16 = 1 << 1;
+    /// Input moved compositor-owned pixels (the cursor).
+    pub const CURSOR: u16 = 1 << 2;
+    pub const SESSION: u16 = 1 << 3;
+    /// The chrome's revision moved.
+    pub const REVISION: u16 = 1 << 4;
+    /// A chrome or widget animation is running, or owes its resting frame.
+    pub const ANIMATION: u16 = 1 << 5;
+    /// A compositor transition asked for its run of frames (the overview's
+    /// fade, a workspace switch).
+    pub const TRANSITION: u16 = 1 << 6;
+    /// A hosted app or a client surface changed what the widget tree shows.
+    pub const APPS: u16 = 1 << 7;
+    pub const PEERS: u16 = 1 << 8;
+    pub const PRESENTATION: u16 = 1 << 9;
+    pub const CAPTURE: u16 = 1 << 10;
+    pub const KEEPALIVE: u16 = 1 << 11;
+    pub const LOCK_CLOCK: u16 = 1 << 12;
+    pub const LOCK_ANIMATION: u16 = 1 << 13;
+    pub const LOCK_OSD: u16 = 1 << 14;
+
+    /// Bit and CSV name, in bit order.
+    pub const NAMES: [(u16, &str); 15] = [
+        (FORCE, "force"),
+        (INPUT, "input"),
+        (CURSOR, "cursor"),
+        (SESSION, "session"),
+        (REVISION, "revision"),
+        (ANIMATION, "animation"),
+        (TRANSITION, "transition"),
+        (APPS, "apps"),
+        (PEERS, "peers"),
+        (PRESENTATION, "presentation"),
+        (CAPTURE, "capture"),
+        (KEEPALIVE, "keepalive"),
+        (LOCK_CLOCK, "lock-clock"),
+        (LOCK_ANIMATION, "lock-animation"),
+        (LOCK_OSD, "lock-osd"),
+    ];
+
+    /// `+`-joined names of the set bits, in bit order.
+    pub fn names(bits: u16) -> String {
+        NAMES
+            .iter()
+            .filter(|(bit, _)| (bits & *bit) != 0)
+            .map(|(_, name)| *name)
+            .collect::<Vec<_>>()
+            .join("+")
+    }
+}
+
+/// When the frame the loop is about to paint was first wanted: the start of
+/// the first tick that had something new to show after a tick that had
+/// nothing. Lateness is measured from the later of this and the frame
+/// clock's deadline, so a park with nothing to paint is not charged to the
+/// frame that ends it, while a frame wanted on time and submitted late still
+/// is. The clock itself is not touched.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct DemandOnset {
+    since: Option<Instant>,
+}
+
+impl DemandOnset {
+    /// Record one tick: whether it had something new to show, and when it began.
+    pub fn note_tick(&mut self, wanted: bool, at: Instant) {
+        self.since = if wanted {
+            Some(self.since.unwrap_or(at))
+        } else {
+            None
+        };
+    }
+
+    /// How late a frame submitted at `submitted` is against `deadline`.
+    pub fn lateness(&self, submitted: Instant, deadline: Instant) -> Duration {
+        let from = self.since.map_or(deadline, |since| since.max(deadline));
+        submitted.saturating_duration_since(from)
+    }
+
+    /// The wanted frame went out; the next one is wanted from its own tick.
+    pub fn painted(&mut self) {
+        self.since = None;
+    }
+}
+
+/// Interned `+`-joined app ids for [`FrameSample::paint_clients`]. Bounded:
+/// app ids come from clients, so past [`MAX_CLIENT_LABELS`] distinct labels
+/// every new one reads as [`OTHER_CLIENTS`] instead of leaking more.
+pub fn intern_clients(label: &str) -> &'static str {
+    use std::collections::HashSet;
+    use std::sync::{Mutex, OnceLock};
+    static LABELS: OnceLock<Mutex<HashSet<&'static str>>> = OnceLock::new();
+    if label.is_empty() {
+        return "";
+    }
+    let mut labels = LABELS
+        .get_or_init(|| Mutex::new(HashSet::new()))
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(known) = labels.get(label).copied() {
+        return known;
+    }
+    if labels.len() >= MAX_CLIENT_LABELS {
+        return OTHER_CLIENTS;
+    }
+    let leaked: &'static str = Box::leak(label.to_owned().into_boxed_str());
+    labels.insert(leaked);
+    leaked
+}
+
+/// Cap on distinct [`intern_clients`] labels.
+pub const MAX_CLIENT_LABELS: usize = 256;
+/// The label past [`MAX_CLIENT_LABELS`].
+pub const OTHER_CLIENTS: &str = "(other)";
 
 /// The slowest of a phase's consecutive named steps. Each [`Self::step`]
 /// closes the step that began at the previous one; two clock reads per step,
@@ -122,7 +257,7 @@ impl FrameSample {
     fn write_csv_row(&self, out: &mut impl Write) -> std::io::Result<()> {
         writeln!(
             out,
-            "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
+            "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
             self.seq,
             self.start_us,
             self.period_us,
@@ -148,6 +283,8 @@ impl FrameSample {
             self.cpu_us.map(|v| v.to_string()).unwrap_or_default(),
             self.input_step,
             self.input_step_us,
+            paint_reason::names(self.paint_reasons),
+            self.paint_clients,
         )
     }
 }
@@ -155,7 +292,8 @@ impl FrameSample {
 /// Header line for the `TILO_FRAME_TRACE` CSV, kept next to `FrameSample::write_csv_row` so the two cannot drift.
 pub const CSV_HEADER: &str = "seq,start_us,period_us,input_us,pump_us,layout_us,scene_us,\
 submit_us,testctl_us,clients_us,sleep_us,painted,present_async,input_latency_us,\
-input_retirement_latency_us,backpressured,deadline_late_us,wake,cpu_us,input_step,input_step_us";
+input_retirement_latency_us,backpressured,deadline_late_us,wake,cpu_us,input_step,input_step_us,\
+paint_reasons,paint_clients";
 
 /// Percentile bundle for one measured quantity, in microseconds.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize)]
@@ -396,6 +534,7 @@ pub struct FrameRecorder {
     completed_retirement_latency_us: Option<u32>,
     /// The loop thread's CPU clock when the current tick began.
     tick_cpu_start: Option<Duration>,
+    cpu_trace: Option<cpu_trace::CpuTrace>,
 }
 
 /// Cap on retained samples: 200k ticks is ~55 minutes at 60 Hz and ~7 MB of `FrameSample`.
@@ -457,6 +596,7 @@ impl FrameRecorder {
             pending_retirement: None,
             completed_retirement_latency_us: None,
             tick_cpu_start: None,
+            cpu_trace: None,
         }
     }
 
@@ -464,7 +604,8 @@ impl FrameRecorder {
     pub fn from_env() -> Self {
         let trace_path = std::env::var_os(TRACE_ENV);
         let summary_path = std::env::var_os(SUMMARY_ENV);
-        if trace_path.is_none() && summary_path.is_none() {
+        let cpu_path = std::env::var_os(cpu_trace::ENV);
+        if trace_path.is_none() && summary_path.is_none() && cpu_path.is_none() {
             return Self::disabled();
         }
         let warmup_ms = std::env::var(WARMUP_ENV)
@@ -491,15 +632,25 @@ impl FrameRecorder {
         });
         let mut me = Self::disabled();
         me.enabled = true;
+        me.cpu_trace = cpu_path.and_then(|path| {
+            match cpu_trace::CpuTrace::open(std::path::Path::new(&path)) {
+                Ok(trace) => Some(trace),
+                Err(error) => {
+                    eprintln!("frame-metrics: cannot open CPU trace ({error})");
+                    None
+                }
+            }
+        });
         me.warmup_us = warmup_ms.saturating_mul(1_000);
         me.trace = trace;
         me.trace_path = opened_trace_path;
         me.summary_path = summary_path.map(std::path::PathBuf::from);
         me.samples.reserve(4096);
         eprintln!(
-            "frame-metrics: recording (warmup {warmup_ms} ms, trace={}, summary={})",
+            "frame-metrics: recording (warmup {warmup_ms} ms, trace={}, summary={}, cpu_trace={})",
             me.trace.is_some(),
-            me.summary_path.is_some()
+            me.summary_path.is_some(),
+            me.cpu_trace.is_some()
         );
         me
     }
@@ -533,7 +684,29 @@ impl FrameRecorder {
         };
         self.cur.input_retirement_latency_us = self.completed_retirement_latency_us.take();
         self.tick_cpu_start = thread_cpu_time();
+        if let Some(trace) = self.cpu_trace.as_mut() {
+            trace.begin_tick(now);
+        }
         self.seq = self.seq.saturating_add(1);
+    }
+
+    /// Snapshot phase CPU only for an explicitly requested CPU companion trace.
+    pub(crate) fn cpu_snapshot(&self) -> Option<CpuSnapshot> {
+        self.cpu_trace
+            .as_ref()
+            .and_then(cpu_trace::CpuTrace::snapshot)
+    }
+
+    pub(crate) fn mark_cpu(&mut self, phase: CpuPhase, start: Option<CpuSnapshot>) {
+        if let Some(trace) = self.cpu_trace.as_mut() {
+            trace.mark(phase, start);
+        }
+    }
+
+    pub(crate) fn mark_paint_wall(&mut self, wall: Duration) {
+        if let Some(trace) = self.cpu_trace.as_mut() {
+            trace.mark_paint_wall(wall);
+        }
     }
 
     /// Note that an input event was consumed this tick; the first painted frame that follows closes
@@ -584,6 +757,14 @@ impl FrameRecorder {
     }
     pub fn mark_wake(&mut self, reason: &'static str) {
         self.cur.wake = reason;
+    }
+    /// Why this tick paints and whose commits it carries; see
+    /// [`FrameSample::paint_reasons`].
+    pub fn mark_paint_reasons(&mut self, reasons: u16, clients: &'static str) {
+        if self.enabled {
+            self.cur.paint_reasons = reasons;
+            self.cur.paint_clients = clients;
+        }
     }
 
     pub fn mark_backpressured(&mut self) {
@@ -665,6 +846,9 @@ impl FrameRecorder {
             .zip(thread_cpu_time())
             .map(|(start, end)| us(end.saturating_sub(start)));
         let sample = self.cur;
+        if let Some(trace) = self.cpu_trace.as_mut() {
+            trace.end_tick(sample);
+        }
         if let Some(t) = self.trace.as_mut()
             && let Err(e) = sample.write_csv_row(t)
         {
@@ -750,6 +934,9 @@ impl FrameRecorder {
 
     /// Flush the trace and write the JSON summary. Called from `Drop`, and directly by the loop's shutdown path (which `process::exit`s past destructors).
     pub fn finish(&mut self) {
+        if let Some(trace) = self.cpu_trace.as_mut() {
+            trace.finish();
+        }
         if !self.enabled {
             return;
         }
@@ -840,6 +1027,79 @@ mod tests {
             painted,
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn a_frame_after_an_idle_park_is_late_only_by_its_own_work() {
+        let deadline = Instant::now();
+        let mut onset = DemandOnset::default();
+        // A widget deadline ended a 300 ms park with nothing to paint before it.
+        onset.note_tick(false, deadline + Duration::from_millis(10));
+        let woke = deadline + Duration::from_millis(300);
+        onset.note_tick(true, woke);
+        let submitted = woke + Duration::from_millis(4);
+        assert_eq!(
+            onset.lateness(submitted, deadline),
+            Duration::from_millis(4),
+            "the park before the frame was wanted is not the frame's lateness"
+        );
+        // The stale deadline alone would have charged the whole park.
+        assert_eq!(
+            submitted.saturating_duration_since(deadline),
+            Duration::from_millis(304)
+        );
+    }
+
+    #[test]
+    fn a_frame_wanted_on_time_and_submitted_late_is_still_late() {
+        let start = Instant::now();
+        let mut onset = DemandOnset::default();
+        onset.note_tick(true, start);
+        // Held across ticks (off cadence, a full presenter): still the same frame.
+        onset.note_tick(true, start + Duration::from_millis(8));
+        let deadline = start + Duration::from_millis(16);
+        let submitted = start + Duration::from_millis(60);
+        assert_eq!(
+            onset.lateness(submitted, deadline),
+            Duration::from_millis(44),
+            "lateness after the deadline is kept when the frame was wanted before it"
+        );
+        onset.painted();
+        onset.note_tick(true, start + Duration::from_millis(100));
+        assert_eq!(
+            onset.lateness(start + Duration::from_millis(101), deadline),
+            Duration::from_millis(1),
+            "after a paint the next frame is wanted from its own tick"
+        );
+        // With no onset recorded the deadline alone is the reference.
+        assert_eq!(
+            DemandOnset::default().lateness(submitted, deadline),
+            Duration::from_millis(44)
+        );
+    }
+
+    #[test]
+    fn paint_reasons_name_every_set_bit_and_clients_stay_bounded() {
+        assert_eq!(paint_reason::names(0), "");
+        assert_eq!(
+            paint_reason::names(paint_reason::APPS | paint_reason::FORCE | paint_reason::LOCK_OSD),
+            "force+apps+lock-osd"
+        );
+        let all = paint_reason::NAMES
+            .iter()
+            .fold(0, |bits, (bit, _)| bits | bit);
+        assert_eq!(all.count_ones(), 15, "the 15 bits are distinct");
+        assert_eq!(intern_clients(""), "");
+        let first = intern_clients("so.tilo.notes");
+        assert!(
+            std::ptr::eq(first, intern_clients("so.tilo.notes")),
+            "interned once"
+        );
+        for n in 0..MAX_CLIENT_LABELS {
+            let _ = intern_clients(&format!("bounded.{n}"));
+        }
+        assert_eq!(intern_clients("one.more.than.allowed"), OTHER_CLIENTS);
+        assert_eq!(intern_clients("so.tilo.notes"), "so.tilo.notes");
     }
 
     #[test]
@@ -1181,6 +1441,45 @@ mod tests {
     }
 
     #[test]
+    fn csv_row_column_count_matches_the_header() {
+        let mut buf = Vec::new();
+        FrameSample {
+            seq: 1,
+            start_us: 2,
+            period_us: 3,
+            input_us: 4,
+            pump_us: 5,
+            layout_us: 6,
+            scene_us: 7,
+            submit_us: 8,
+            testctl_us: 9,
+            clients_us: 10,
+            sleep_us: 11,
+            painted: true,
+            present_async: false,
+            input_latency_us: Some(12),
+            input_retirement_latency_us: Some(13),
+            backpressured: true,
+            deadline_late_us: 14,
+            wake: "cadence",
+            cpu_us: Some(15),
+            input_step: "events",
+            input_step_us: 16,
+            paint_reasons: paint_reason::APPS | paint_reason::REVISION,
+            paint_clients: "so.tilo.file-explorer",
+        }
+        .write_csv_row(&mut buf)
+        .expect("write csv row into a Vec");
+        let row = String::from_utf8(buf).expect("csv row is utf8");
+        assert_eq!(
+            row.trim_end().split(',').count(),
+            CSV_HEADER.split(',').count(),
+            "trace rows must have exactly as many columns as the header:\n  header: {CSV_HEADER}\n  row:    {}",
+            row.trim_end()
+        );
+    }
+
+    #[test]
     fn metrics_cli_and_trace_output_are_well_formed() {
         // Phase `parse_run_seconds_accepts_positive_values_only`.
         assert_eq!(
@@ -1205,42 +1504,6 @@ mod tests {
                 super::parse_run_seconds(bad),
                 None,
                 "{bad:?} must mean run-forever, not exit-immediately"
-            );
-        }
-        // Phase `csv_row_column_count_matches_the_header`.
-        {
-            let mut buf = Vec::new();
-            FrameSample {
-                seq: 1,
-                start_us: 2,
-                period_us: 3,
-                input_us: 4,
-                pump_us: 5,
-                layout_us: 6,
-                scene_us: 7,
-                submit_us: 8,
-                testctl_us: 9,
-                clients_us: 10,
-                sleep_us: 11,
-                painted: true,
-                present_async: false,
-                input_latency_us: Some(12),
-                input_retirement_latency_us: Some(13),
-                backpressured: true,
-                deadline_late_us: 14,
-                wake: "cadence",
-                cpu_us: Some(15),
-                input_step: "events",
-                input_step_us: 16,
-            }
-            .write_csv_row(&mut buf)
-            .expect("write csv row into a Vec");
-            let row = String::from_utf8(buf).expect("csv row is utf8");
-            assert_eq!(
-                row.trim_end().split(',').count(),
-                CSV_HEADER.split(',').count(),
-                "trace rows must have exactly as many columns as the header:\n  header: {CSV_HEADER}\n  row:    {}",
-                row.trim_end()
             );
         }
         // Phase `production_trace_flushes_periodically_without_waiting_for_clean_exit`.

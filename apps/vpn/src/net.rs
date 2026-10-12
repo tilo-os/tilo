@@ -289,16 +289,12 @@ YmF6cXV1eDExMTExMTExMTExMTExMTExMTExMTExMTE=\t500\t250
         }
         // Case `bring_up_is_real_or_honestly_gated`.
         {
-            use crate::config::{self, Backend};
+            use crate::config;
             use crate::model::ConnKind;
 
-            // A legacy WireGuard plan resolves the local interface hint `qtest0`.
-            // Production activation uses NetworkManager's UUID instead.
+            // The status probe looks for the interface named after the tunnel.
             let conn = Connection::new("qtest0", ConnKind::WireGuard);
             assert_eq!(config::iface_name(&conn), "qtest0");
-            let plan = config::connect_plan(&conn, Backend::WgQuick);
-            assert_eq!(plan.program, "wg-quick");
-            assert_eq!(plan.args, vec!["up", "qtest0"]);
 
             // REAL end-to-end, but only when the operator has opted in AND the box
             // can create a network interface (root + iproute2). We stand up a real
@@ -334,7 +330,7 @@ YmF6cXV1eDExMTExMTExMTExMTExMTExMTExMTExMTE=\t500\t250
             // refused — the UI can never claim connected without a real success.
             let mut env = tilo_test_env::ScopedEnv::new();
             env.remove("TILO_VPN_ALLOW_EXEC");
-            let refused = config::execute(&plan);
+            let refused = config::execute(&config::connect_local_plan(&conn, "qtest0-uuid"));
             assert!(
                 refused.is_err() && refused.unwrap_err().contains("execution disabled"),
                 "bring-up must be refused while execution is gated off"

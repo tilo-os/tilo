@@ -7,6 +7,10 @@
 //! change is a [`NetworkEffect`] that runs on a worker and reports what
 //! happened. Passwords and PINs live in process-local buffers that are
 //! zeroed once used; they never reach a document.
+//!
+//! A radio the device does not have is not offered: Wi-Fi and the hotspot
+//! without a Wi-Fi radio, mobile broadband without a modem, airplane mode
+//! with neither ([`NetworkArea::statuses`]).
 
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -19,8 +23,8 @@ use os_actions::{
 use tracing::warn;
 use ui::LocalState;
 use ui::collaboration::{WifiContinuityCommand, WifiContinuityReply};
-use ui::framework::{EffectAnswer, EffectCx, Effected, LiveRow};
-use ui::tilo_resource::{self, Effect};
+use ui::framework::{EffectAnswer, EffectCx, EffectStatus, Effected, LiveRow};
+use ui::tilo_resource::{self, ActionRef, Effect};
 use ui::widget::{Button, Dropdown, QrWidget, Row, Spacer, Text, TextInput, Toggle, Widget};
 use zeroize::{Zeroize, Zeroizing};
 
@@ -32,8 +36,7 @@ use crate::panes::model::{PaneModel, Shared};
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
 use crate::widgets::{
-    El, caption, card, card_with_action, choice_row, error_caption, error_row, rows, setting_row,
-    value_row,
+    El, caption, card, card_with_action, error_caption, error_row, rows, setting_row, value_row,
 };
 
 /// The bands a hotspot can use.
@@ -58,7 +61,7 @@ pub enum NetworkEffect {
         view,
         returns,
         device_only,
-        permission = "read",
+        kind = "read",
         label = "Inspect network state"
     )]
     InspectNetworkState,
@@ -231,6 +234,10 @@ pub(crate) fn answer(
 ) -> EffectAnswer {
     if effect == NetworkEffect::InspectNetworkState {
         return app.network().inspection().map(Effected::value);
+    }
+    if effect == NetworkEffect::RefreshNetworks {
+        // A dongle plugged in a moment ago is seen without waiting.
+        app.host().radios().look_again();
     }
     let begun = app.network().model().borrow_mut().begin(effect)?;
     Ok(match begun {
@@ -591,7 +598,11 @@ impl Drop for NetworkChange {
 /// device, a fixed sample in a screenshot or test.
 pub(crate) trait NetworkService: Send + Sync {
     /// Read everything Network shows; `initial` also reads the SIMs.
+    /// Connectivity is the last verdict; this never probes the internet.
     fn snapshot(&self, initial: bool) -> NetworkSnapshot;
+    /// Ask the device to check internet connectivity again, so the next
+    /// snapshot carries a fresh verdict. Only the explicit refresh does this.
+    fn recheck_connectivity(&self) {}
     /// Carry out `change`.
     ///
     /// # Errors
@@ -628,6 +639,12 @@ struct DeviceNetwork {
 impl NetworkService for DeviceNetwork {
     fn snapshot(&self, initial: bool) -> NetworkSnapshot {
         NetworkSnapshot::read(initial)
+    }
+
+    fn recheck_connectivity(&self) {
+        // A refused or failed recheck still leaves the last verdict, which
+        // the snapshot that follows reads and reports.
+        let _ = os_actions::check_connectivity_now();
     }
 
     fn change(&self, change: &NetworkChange) -> Result<(), String> {
@@ -839,6 +856,37 @@ impl EnterpriseForm {
     }
 }
 
+/// Which radios Network can switch, each as the kernel lists it or
+/// `NetworkManager` reported it: either one seeing a radio is enough, so a
+/// dongle plugged in counts at once and a modem only `NetworkManager` knows
+/// still counts. `None` while neither has said.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct NetworkRadios {
+    wifi: Option<bool>,
+    wwan: Option<bool>,
+}
+
+impl NetworkRadios {
+    fn of(cx: &PaneCx, reported: Option<&os_actions::RadioState>) -> Self {
+        let listed = cx.radios().now();
+        let either = |listed: Option<bool>, reported: Option<bool>| match (listed, reported) {
+            (Some(true), _) | (_, Some(true)) => Some(true),
+            (None, None) => None,
+            _ => Some(false),
+        };
+        Self {
+            wifi: either(
+                listed.map(|radios| radios.wifi),
+                reported.map(|radios| radios.wifi_available),
+            ),
+            wwan: either(
+                listed.map(|radios| radios.wwan),
+                reported.map(|radios| radios.wwan_available),
+            ),
+        }
+    }
+}
+
 /// What the Network area keeps for the window: the model, read when first
 /// needed.
 pub struct NetworkArea {
@@ -878,11 +926,68 @@ impl NetworkArea {
         }
     }
 
+    /// What this device cannot do with its networks now: Wi-Fi and a
+    /// hotspot without a Wi-Fi radio, mobile broadband without a modem,
+    /// airplane mode with neither. Reads nothing itself: only what the
+    /// radios and the area's model have read, so it never opens the area.
+    pub(crate) fn statuses(&self) -> Vec<EffectStatus> {
+        let reported = self.model.get().and_then(|model| {
+            let model = model.try_borrow().ok()?;
+            model.reported_radios().cloned()
+        });
+        let radios = NetworkRadios::of(&self.cx, reported.as_ref());
+        let mut statuses = Vec::new();
+        let mut unavailable = |effects: &[&'static str], code: &str, reason: &str| {
+            statuses.extend(effects.iter().map(|&id| {
+                EffectStatus::unavailable(
+                    ActionRef::<SettingsEffect, ()>::new(id, &[]),
+                    code,
+                    reason,
+                )
+            }));
+        };
+        let wifi = radios.wifi == Some(false);
+        let wwan = radios.wwan == Some(false);
+        if wifi {
+            unavailable(
+                &[
+                    NetworkEffect::SET_WIFI.id,
+                    NetworkEffect::SET_HOTSPOT.id,
+                    NetworkEffect::START_HOTSPOT.id,
+                ],
+                "no_adapter",
+                &t("net-no-wifi-adapter"),
+            );
+        }
+        if wwan {
+            unavailable(
+                &[NetworkEffect::SET_MOBILE_BROADBAND.id],
+                "no_modem",
+                &t("net-no-modem"),
+            );
+        }
+        if wifi && wwan {
+            unavailable(
+                &[NetworkEffect::SET_AIRPLANE_MODE.id],
+                "no_radio",
+                &t("net-no-radio"),
+            );
+        }
+        statuses
+    }
+
     /// Take in background results, if the model exists.
     pub(crate) fn poll(&self) {
         if let Some(model) = self.model.get() {
             model.borrow_mut().poll_background();
         }
+    }
+
+    /// Whether the area has read what its rows show: its pane was shown,
+    /// an effect or a row lookup reached it, or the window read it after
+    /// its first frame ([`crate::effects::LIVE_AREAS`]).
+    pub(crate) fn is_open(&self) -> bool {
+        self.model.get().is_some()
     }
 
     /// One row per nearby network, saved network and VPN, each offering
@@ -957,8 +1062,8 @@ pub struct NetworkModel {
     snapshot: Option<std::sync::mpsc::Receiver<NetworkSnapshot>>,
     networks: Vec<WifiNetworkInfo>,
     wifi_enabled: bool,
-    /// The last radio state read lists no Wi-Fi adapter.
-    wifi_adapter_absent: bool,
+    /// The radios the kernel listed when the model last looked.
+    listed: Option<crate::radios::Present>,
     wired: WiredInfo,
     radios: os_actions::RadioState,
     connectivity: ConnectivityState,
@@ -1047,7 +1152,7 @@ impl NetworkModel {
         let known_wired = self.loaded && self.read_errors.wired.is_none();
         let known_connectivity = self.loaded && self.read_errors.connectivity.is_none();
         let wifi_status = self.loaded.then(|| {
-            if self.wifi_adapter_absent {
+            if self.wifi_absent() {
                 t("net-no-wifi-adapter")
             } else {
                 self.wifi_status_error()
@@ -1112,13 +1217,13 @@ impl NetworkModel {
 
     fn with_service(cx: PaneCx, service: Arc<dyn NetworkService>) -> Self {
         Self {
+            listed: cx.radios().now(),
             cx,
             service,
             loaded: false,
             snapshot: None,
             networks: Vec::new(),
             wifi_enabled: false,
-            wifi_adapter_absent: false,
             wired: WiredInfo::default(),
             radios: os_actions::RadioState::default(),
             connectivity: ConnectivityState::Unknown,
@@ -1154,6 +1259,21 @@ impl NetworkModel {
             ca_picker: None,
             changed: false,
         }
+    }
+
+    /// The radio state `NetworkManager` last reported, once it has.
+    fn reported_radios(&self) -> Option<&os_actions::RadioState> {
+        (self.loaded && self.read_errors.radios.is_none()).then_some(&self.radios)
+    }
+
+    /// Which radios Network can switch now.
+    fn radios_present(&self) -> NetworkRadios {
+        NetworkRadios::of(&self.cx, self.reported_radios())
+    }
+
+    /// Whether this device has no Wi-Fi radio.
+    fn wifi_absent(&self) -> bool {
+        self.radios_present().wifi == Some(false)
     }
 
     /// The networks in range, as last scanned.
@@ -1214,7 +1334,6 @@ impl NetworkModel {
             self.wired = wired;
         }
         if let Some(radios) = adopt(snapshot.radios, &mut self.read_errors.radios) {
-            self.wifi_adapter_absent = !radios.wifi_available;
             self.radios = radios;
         }
         if let Some(connectivity) = adopt(snapshot.connectivity, &mut self.read_errors.connectivity)
@@ -1372,7 +1491,10 @@ impl NetworkModel {
             }
             NetworkEffect::RefreshNetworks => {
                 self.refreshes_pending += 1;
-                Begun::work(move || Landed::Refreshed(service.snapshot(false)))
+                Begun::work(move || {
+                    service.recheck_connectivity();
+                    Landed::Refreshed(service.snapshot(false))
+                })
             }
             NetworkEffect::SetWifi { on } => {
                 if let Some(error) = &self.read_errors.wifi_enabled {
@@ -2183,7 +2305,7 @@ impl NetworkModel {
             self.switch_control("network.wifi", self.wifi_enabled, NetworkEffect::SET_WIFI);
         // An unread radio state is not offered as a switch position.
         let wifi_toggle: El = Box::new(
-            if self.read_errors.wifi_enabled.is_none() && !self.wifi_adapter_absent {
+            if self.read_errors.wifi_enabled.is_none() && !self.wifi_absent() {
                 wifi_toggle
             } else {
                 wifi_toggle.with_enabled(false)
@@ -2192,7 +2314,7 @@ impl NetworkModel {
 
         let mut wifi_rows: Vec<El> = Vec::new();
         let status_label = t("net-status");
-        if self.wifi_adapter_absent {
+        if self.wifi_absent() {
             wifi_rows.push(value_row(&status_label, &t("net-no-wifi-adapter")));
         } else {
             match self.wifi_status_error() {
@@ -2308,7 +2430,7 @@ impl NetworkModel {
             Box::new(
                 TextInput::from_state(&self.hotspot_name)
                     .with_id("network.hotspot.ssid")
-                    .with_placeholder(&t("net-hotspot-name")),
+                    .with_placeholder(t("net-hotspot-name")),
             ),
             Box::new(
                 TextInput::local()
@@ -2316,9 +2438,9 @@ impl NetworkModel {
                     .with_external_buffer(Arc::clone(&self.hotspot_password))
                     .with_initial_value(&hotspot_secret)
                     .with_secret(true)
-                    .with_placeholder(&t("net-hotspot-password")),
+                    .with_placeholder(t("net-hotspot-password")),
             ),
-            choice_row(
+            setting_row(
                 &t("net-band"),
                 Box::new(
                     Dropdown::from_state(
@@ -2471,7 +2593,7 @@ impl NetworkModel {
             return;
         };
         if wifi_profiles.len() > 1 {
-            rows_out.push(choice_row(
+            rows_out.push(setting_row(
                 &t("net-edit-profile"),
                 Box::new(
                     Dropdown::from_state(
@@ -2490,7 +2612,7 @@ impl NetworkModel {
             rows_out.push(caption(&t("net-policy-unread")));
             return;
         };
-        rows_out.push(choice_row(
+        rows_out.push(setting_row(
             &t("net-metered"),
             Box::new(
                 Dropdown::from_state(
@@ -2504,7 +2626,7 @@ impl NetworkModel {
                 .with_placeholder(&form.metered.get()),
             ),
         ));
-        rows_out.push(choice_row(
+        rows_out.push(setting_row(
             &t("net-mac"),
             Box::new(
                 Dropdown::from_state(
@@ -2623,7 +2745,7 @@ impl NetworkModel {
             caption(&t("net-sim-pin-caption")),
         ]);
         if !self.sims.is_empty() {
-            rows.push(choice_row(
+            rows.push(setting_row(
                 &t("net-sim"),
                 Box::new(
                     Dropdown::from_state(
@@ -2651,7 +2773,7 @@ impl NetworkModel {
     fn enterprise_rows(&self) -> Vec<El> {
         let form = &self.enterprise;
         vec![
-            choice_row(
+            setting_row(
                 &t("net-method"),
                 Box::new(
                     Dropdown::from_state(
@@ -2661,7 +2783,7 @@ impl NetworkModel {
                     .with_placeholder(&form.method.get()),
                 ),
             ),
-            choice_row(
+            setting_row(
                 &t("net-inner-auth"),
                 Box::new(
                     Dropdown::from_state(
@@ -2797,7 +2919,7 @@ impl NetworkModel {
             .with_id(&format!("settings.network.password.{ssid}"))
             .with_external_buffer(buffer)
             .with_secret(true)
-            .with_placeholder(&t("net-password"));
+            .with_placeholder(t("net-password"));
         Box::new(
             Row::new()
                 .push(Box::new(field))
@@ -2844,7 +2966,7 @@ impl NetworkModel {
             return out;
         };
         if wired_profiles.len() > 1 {
-            out.push(choice_row(
+            out.push(setting_row(
                 &t("net-edit-profile"),
                 Box::new(
                     Dropdown::from_state(
@@ -3027,6 +3149,17 @@ impl PaneModel for NetworkModel {
 impl NetworkModel {
     /// Take in a snapshot or a chosen certificate that arrived.
     fn poll_background(&mut self) {
+        let listed = self.cx.radios().now();
+        if listed != self.listed {
+            let plugged = self.listed.is_some();
+            self.listed = listed;
+            self.changed = true;
+            // A radio plugged in or pulled out: what `NetworkManager` makes
+            // of it is read again.
+            if plugged && self.loaded && self.snapshot.is_none() {
+                self.start_snapshot();
+            }
+        }
         if let Some(receiver) = &self.snapshot {
             match receiver.try_recv() {
                 Ok(snapshot) => {
@@ -3047,15 +3180,6 @@ impl NetworkModel {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn find<'a>(root: &'a dyn Widget, id: &str) -> Option<&'a dyn Widget> {
-        if root.test_id() == Some(id) {
-            return Some(root);
-        }
-        root.children()
-            .into_iter()
-            .find_map(|child| find(child, id))
-    }
 
     #[test]
     fn network_pane_relabels_retained_controls_when_locale_changes() -> Result<(), String> {
@@ -3084,7 +3208,7 @@ mod tests {
             I18nManager::set_locale(locale);
             host.relayout_themed(viewport((1000.0, 1800.0)), ui::Theme::dark())
                 .map_err(|error| error.to_string())?;
-            let name = find(host.root_widget(), "settings.network.refresh")
+            let name = ui::widget::find_test_id(host.root_widget(), "settings.network.refresh")
                 .and_then(Widget::accessibility)
                 .and_then(|node| node.name);
             if name.as_deref() != Some(expected) {
@@ -3170,7 +3294,7 @@ mod tests {
         use ui::headless::{Framed, viewport};
 
         fn expanded(host: &ui::headless::FrameHarness) -> Result<bool, String> {
-            find(host.root_widget(), "network.hotspot.band")
+            ui::widget::find_test_id(host.root_widget(), "network.hotspot.band")
                 .and_then(Widget::accessibility)
                 .and_then(|node| node.state.expanded)
                 .ok_or_else(|| "the actual band picker must expose its expanded state".into())
@@ -3301,9 +3425,15 @@ mod tests {
         profiles: Mutex<Vec<SavedNetworkProfile>>,
         snapshot_gate: Mutex<Option<SnapshotGate>>,
         snapshot_reads: std::sync::atomic::AtomicUsize,
+        connectivity_rechecks: std::sync::atomic::AtomicUsize,
     }
 
     impl NetworkService for FakeNetwork {
+        fn recheck_connectivity(&self) {
+            self.connectivity_rechecks
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+
         fn snapshot(&self, _initial: bool) -> NetworkSnapshot {
             self.snapshot_reads
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -3423,9 +3553,7 @@ mod tests {
             ui::framework::testing::TestApp::<crate::SettingsShell>::with_role(ui::Role::Viewer)
                 .expect("read-only Settings opens");
         mount_network(&mut app, observed).expect("the ordinary mounted network model");
-        let open = crate::effects::open_pane_address(crate::categories::Category::Network);
-        app.call_on(&open.resource, &open.action, serde_json::json!({}))
-            .unwrap();
+        crate::effects::show_pane(&mut app, crate::categories::Category::Network);
         app.settle();
         let before = app
             .call("inspect-network-state", serde_json::json!({}))
@@ -3739,11 +3867,24 @@ mod tests {
             "an unread radio is not switched"
         );
 
+        assert_eq!(
+            fake.connectivity_rechecks
+                .load(std::sync::atomic::Ordering::Relaxed),
+            0,
+            "opening Network reads the last verdict; it does not probe the internet"
+        );
+
         *fake.unreadable.lock().unwrap() = None;
         *fake.networks.lock().unwrap() = networks();
         run(&mut model, NetworkEffect::RefreshNetworks).unwrap();
         assert_eq!(model.read_errors, NetworkReadErrors::default());
         assert_eq!(model.networks().len(), 3);
+        assert_eq!(
+            fake.connectivity_rechecks
+                .load(std::sync::atomic::Ordering::Relaxed),
+            1,
+            "the explicit refresh asks for a fresh connectivity verdict"
+        );
     }
 
     /// A secure network first asks the person's devices for its password,
@@ -3930,5 +4071,133 @@ mod tests {
         .unwrap();
         assert_eq!(fake.changes.lock().unwrap().as_slice(), ["hotspot Kitchen"]);
         assert!(model.radios.hotspot_active);
+    }
+
+    /// The availability Settings publishes for `id`, as agents, the
+    /// palette and assistive technology read it.
+    fn published(
+        app: &mut ui::framework::testing::TestApp<crate::SettingsShell>,
+        id: &str,
+    ) -> ui::tilo_actions::Availability {
+        app.actions()
+            .expect("the actions are published")
+            .into_iter()
+            .find(|action| action.address.action == id)
+            .unwrap_or_else(|| panic!("`{id}` is published"))
+            .contract
+            .availability
+    }
+
+    fn unavailable(code: &str, reason: &str) -> ui::tilo_actions::Availability {
+        ui::tilo_actions::Availability::Unavailable {
+            code: code.into(),
+            reason: reason.into(),
+        }
+    }
+
+    /// A wired-only machine publishes Wi-Fi, the hotspot, mobile broadband
+    /// and airplane mode unavailable with why, and refuses them; a Wi-Fi
+    /// dongle plugged in is offered at once, before `NetworkManager` is
+    /// read again.
+    #[test]
+    fn without_a_wifi_radio_wifi_is_unavailable_until_one_is_plugged_in() {
+        use crate::radios::Present;
+        use ui::tilo_actions::Availability;
+
+        let mut app = ui::framework::testing::TestApp::<crate::SettingsShell>::new().unwrap();
+        let fake = Arc::new(FakeNetwork::default());
+        let mut wired_only = model(&fake);
+        let mut snapshot = NetworkSnapshot::of_networks(Vec::new());
+        snapshot.radios = Some(Ok(os_actions::RadioState::default()));
+        snapshot.wifi_enabled = Some(Ok(false));
+        wired_only.adopt_snapshot(snapshot).unwrap();
+        mount_network(&mut app, wired_only).unwrap();
+        let radios = app.surface_mut::<SettingsApp>().host().radios().clone();
+
+        radios.set(Present::NONE);
+        app.settle();
+        let no_wifi = unavailable("no_adapter", "No Wi-Fi adapter on this device");
+        for id in ["set-wifi", "set-hotspot", "start-hotspot"] {
+            assert_eq!(published(&mut app, id), no_wifi, "`{id}`");
+        }
+        assert_eq!(
+            published(&mut app, "set-mobile-broadband"),
+            unavailable("no_modem", "No mobile broadband modem on this device")
+        );
+        assert_eq!(
+            published(&mut app, "set-airplane-mode"),
+            unavailable(
+                "no_radio",
+                "No Wi-Fi or mobile broadband radio on this device"
+            )
+        );
+        assert_eq!(
+            published(&mut app, "refresh-networks"),
+            Availability::Available,
+            "a wired connection is still read"
+        );
+        app.effect(&SettingsEffect::from(NetworkEffect::SetWifi { on: true }))
+            .expect_err("an unavailable radio is refused, not tried");
+        assert!(fake.changes.lock().unwrap().is_empty(), "nothing was tried");
+
+        radios.set(Present {
+            wifi: true,
+            ..Present::NONE
+        });
+        app.settle();
+        for id in [
+            "set-wifi",
+            "set-hotspot",
+            "start-hotspot",
+            "set-airplane-mode",
+        ] {
+            assert_eq!(published(&mut app, id), Availability::Available, "`{id}`");
+        }
+        assert_eq!(
+            published(&mut app, "set-mobile-broadband"),
+            unavailable("no_modem", "No mobile broadband modem on this device")
+        );
+    }
+
+    /// Either the kernel or `NetworkManager` seeing a radio is enough: a
+    /// modem `ModemManager` drives over a serial port is listed by
+    /// `NetworkManager` alone. Neither having said offers everything, and
+    /// the area's model is never read for it.
+    #[test]
+    fn a_radio_either_source_sees_is_offered() {
+        use crate::radios::Present;
+
+        let profile = tempfile::tempdir().unwrap();
+        let cx = PaneCx::in_file(profile.path().join("settings.json"));
+        let area = NetworkArea::new(&cx);
+        assert!(
+            area.statuses().is_empty(),
+            "radios not read offer everything"
+        );
+        assert!(!area.is_open(), "the networks were not read");
+
+        cx.radios().set(Present::ALL);
+        assert!(
+            area.statuses().is_empty(),
+            "with every radio nothing changes"
+        );
+
+        let reported = os_actions::RadioState {
+            wwan_available: true,
+            ..os_actions::RadioState::default()
+        };
+        cx.radios().set(Present::NONE);
+        assert_eq!(
+            NetworkRadios::of(&cx, Some(&reported)),
+            NetworkRadios {
+                wifi: Some(false),
+                wwan: Some(true),
+            }
+        );
+        assert_eq!(
+            NetworkRadios::of(&PaneCx::in_file(profile.path().join("other.json")), None),
+            NetworkRadios::default(),
+            "neither has said"
+        );
     }
 }

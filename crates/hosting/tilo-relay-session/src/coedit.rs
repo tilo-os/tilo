@@ -47,11 +47,37 @@ pub use tilo_relay_client::coedit::{
 };
 // The daemon classifies retained frames with these (`tilo_relay::coedit::*`).
 #[cfg(not(target_arch = "wasm32"))]
-pub use tilo_relay_client::coedit::{RetentionKind, retention_metadata};
+pub use tilo_relay_client::coedit::{RetentionKind, retention_metadata, retention_view};
 
 use crate::client::RelayClient;
 use crate::transport::Envelope;
-use tilo_delivery_protocol::clock::now_ns;
+
+/// The shortest gap between two moves of one pointer slot on any wire: 20 Hz.
+/// Receivers glide a peer's pointer over the gap between two samples
+/// (`ui::presence::POINTER_EASE_MAX` caps the glide at 100 ms), so 20 Hz moves
+/// as smoothly as the 30 Hz producers publish at. The relay forwards a pointer
+/// slot to each connection at most this often, a client writes one to a relay
+/// at most this often, so a move the relay would only coalesce away never
+/// costs a packet, and the shell broadcasts one to its direct (gossip)
+/// neighbours at most this often too ([`crate::pointer_pacing`]).
+pub const POINTER_GAP: std::time::Duration = std::time::Duration::from_millis(50);
+
+/// The coalescing slot of a co-edit presence body: latest-state presence (a
+/// pointer, a caret) has one, events do not. Only the two `NeighbourMsg`
+/// variants that can have one are decoded, to tell which; the body itself is
+/// sent and forwarded as it came.
+#[must_use]
+pub fn presence_slot(body: &[u8]) -> Option<tilo_peer_state::PresenceSlot> {
+    if !body
+        .first()
+        .is_some_and(|tag| tilo_peer_state::NeighbourMsg::SLOTTED_PRESENCE_TAGS.contains(tag))
+    {
+        return None;
+    }
+    postcard::from_bytes::<tilo_peer_state::NeighbourMsg>(body)
+        .ok()?
+        .presence_slot()
+}
 
 /// A co-edit session bound to one workspace on one host connection.
 ///
@@ -62,7 +88,7 @@ pub struct RelayCoeditSession {
     client: RelayClient,
     workspace_id: u64,
     author: [u8; 32],
-    /// When the host was last heard from, as [`now_ns`].
+    /// When the host was last heard from, as [`tilo_clock::unix_now_ns`].
     last_heard_ns: std::sync::atomic::AtomicU64,
 }
 
@@ -88,7 +114,7 @@ impl RelayCoeditSession {
             client,
             workspace_id,
             author,
-            last_heard_ns: std::sync::atomic::AtomicU64::new(now_ns()),
+            last_heard_ns: std::sync::atomic::AtomicU64::new(tilo_clock::unix_now_ns()),
         })
     }
 
@@ -156,12 +182,19 @@ impl RelayCoeditSession {
             .map_err(|_| CoeditError::Disconnected)
     }
 
+    /// The host connection's packet and frame counters
+    /// ([`RelayClient::transport_stats`]).
+    #[must_use]
+    pub fn transport_stats(&self) -> Option<iroh::endpoint::ConnectionStats> {
+        self.client.transport_stats()
+    }
+
     /// How long nothing arrived from the host, keep-alives included.
     pub fn silent_for(&self) -> std::time::Duration {
         let heard = self
             .last_heard_ns
             .load(std::sync::atomic::Ordering::Relaxed);
-        std::time::Duration::from_nanos(now_ns().saturating_sub(heard))
+        std::time::Duration::from_nanos(tilo_clock::unix_now_ns().saturating_sub(heard))
     }
 
     /// Enable the private v2 lane on this same co-edit connection. Await its
@@ -288,7 +321,7 @@ impl RelayCoeditSession {
             .send(Envelope::Delta {
                 workspace_id: self.workspace_id,
                 author_device_public_key: self.author,
-                authored_at_ns: now_ns(),
+                authored_at_ns: tilo_clock::unix_now_ns(),
                 delta,
                 // The op-level signature (for the signed variant) lives
                 // inside the CoeditPayload; the envelope-level slot is
@@ -446,8 +479,10 @@ impl RelayCoeditSession {
     pub async fn recv(&self) -> Option<Inbound> {
         loop {
             let envelope = self.client.recv().await?;
-            self.last_heard_ns
-                .store(now_ns(), std::sync::atomic::Ordering::Relaxed);
+            self.last_heard_ns.store(
+                tilo_clock::unix_now_ns(),
+                std::sync::atomic::Ordering::Relaxed,
+            );
             if matches!(&envelope,
                 Envelope::Delta { workspace_id, .. }
                 | Envelope::Presence { workspace_id, .. }
@@ -677,7 +712,7 @@ mod tests {
             &ack,
             &cert.user_public_key,
             &RevocationList::new(),
-            tilo_delivery_protocol::clock::now_ns(),
+            tilo_clock::unix_now_ns(),
             &[1; 32],
         )
         .unwrap();

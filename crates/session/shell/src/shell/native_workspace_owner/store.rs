@@ -1,6 +1,6 @@
 //! One state-file writer shared by UI snapshots and committed native owners.
 use super::{NativeAuthorityStorage, NativeWorkspaceOwner};
-use crate::shell::state::{WorkspaceTree, WorkspaceTreeHandle};
+use crate::shell::state::{WeakWorkspaceTreeHandle, WorkspaceTreeHandle};
 use parking_lot::{Mutex, RwLock};
 use std::{
     io::{self, Write},
@@ -17,13 +17,13 @@ pub(crate) use tilo_joined_room::{LimitedWriter, MAX_AUTHORITY_BYTES, MAX_STATE_
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct StateSequence(u64);
 
-/// A file written from a snapshot of the tree, beside the state file.
+/// A file written from a snapshot of the tree, beside the state file. The
+/// tree document is not one: it is written as a log of changes, in the
+/// order they were made (see [`NativeStateRuntime::document_log`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Companion {
-    /// The tree document and its meta.
-    Document = 0,
     /// The capability list the filesystem enforces.
-    FsCapabilities = 1,
+    FsCapabilities = 0,
 }
 
 /// What [`NativeStateRuntime::publish`] did with a snapshot.
@@ -138,7 +138,9 @@ pub(super) struct Runtime {
     sequence: AtomicU64,
     /// Per [`Companion`], the newest snapshot it was written from. Held
     /// across the write, so a companion file never goes backwards.
-    companions: Mutex<[u64; 2]>,
+    companions: Mutex<[u64; 1]>,
+    /// The tree document beside the state file.
+    document: crate::shell::persist::DocLog,
 }
 impl Default for Runtime {
     fn default() -> Self {
@@ -148,7 +150,8 @@ impl Default for Runtime {
             healthy: AtomicBool::new(true),
             uncertain_rooms: RwLock::new(std::collections::BTreeSet::default()),
             sequence: AtomicU64::new(0),
-            companions: Mutex::new([0; 2]),
+            companions: Mutex::new([0; 1]),
+            document: crate::shell::persist::DocLog::default(),
         }
     }
 }
@@ -162,7 +165,7 @@ pub(super) struct Writer {
     /// The attached owner and the tree whose state file it publishes into.
     owner: Option<(
         tilo_joined_room::WeakNativeWorkspaceOwner,
-        Weak<RwLock<WorkspaceTree>>,
+        WeakWorkspaceTreeHandle,
     )>,
 }
 
@@ -205,13 +208,13 @@ impl NativeStateRuntime {
         let Some(owner) = owner.upgrade() else {
             return Ok(None);
         };
-        if !Weak::ptr_eq(&bound, &Arc::downgrade(tree)) {
+        if !bound.ptr_eq(&tree.downgrade()) {
             return Err("state writer already belongs to a different native tree handle".into());
         }
         Ok(Some(owner))
     }
     pub(super) fn attach(&self, owner: &NativeWorkspaceOwner, tree: &WorkspaceTreeHandle) {
-        self.0.writer.lock().owner = Some((owner.downgrade(), Arc::downgrade(tree)));
+        self.0.writer.lock().owner = Some((owner.downgrade(), tree.downgrade()));
     }
     pub(crate) fn requires_uncertain(&self, room: crate::shell::state::RoomId) -> bool {
         self.0.uncertain_rooms.read().contains(&room)
@@ -257,6 +260,12 @@ impl NativeStateRuntime {
                 .fetch_add(1, Ordering::AcqRel)
                 .wrapping_add(1),
         )
+    }
+
+    /// The tree document beside this state file: every copy of the tree
+    /// cuts its changes into it, and every save writes them.
+    pub(crate) fn document_log(&self) -> &crate::shell::persist::DocLog {
+        &self.0.document
     }
 
     /// Run `write` for `companion` of snapshot `sequence`, unless that file

@@ -9,8 +9,7 @@ use tilo_delivery_protocol::workspace_join::{
 };
 use tilo_peer_state::join::{
     JoinBootstrap, JoinChallengeRequest, JoinTransportRequest, JoinTransportResponse,
-    MembershipChallengeRequest, MembershipCompleteRequest, TransportHint, sign_join_proof,
-    sign_membership_proof,
+    TransportHint, sign_join_proof,
 };
 use tilo_user_identity::DeviceCert;
 
@@ -69,14 +68,15 @@ impl WorkspaceJoinClient {
             .open_bi()
             .await
             .map_err(|error| WorkspaceJoinError::Transport(error.to_string()))?;
-        crate::framing::write_frame(&mut send, &bytes)
+        tilo_relay_client::frame::write_frame(&mut send, &bytes)
             .await
             .map_err(|error| WorkspaceJoinError::Transport(error.to_string()))?;
         send.finish()
             .map_err(|error| WorkspaceJoinError::Transport(error.to_string()))?;
-        let response = crate::framing::read_frame(&mut recv, MAX_WORKSPACE_JOIN_RESPONSE_BYTES)
-            .await
-            .map_err(|error| WorkspaceJoinError::Transport(error.to_string()))?;
+        let response =
+            tilo_relay_client::frame::read_frame(&mut recv, MAX_WORKSPACE_JOIN_RESPONSE_BYTES)
+                .await
+                .map_err(|error| WorkspaceJoinError::Transport(error.to_string()))?;
         postcard::from_bytes(&response)
             .map_err(|error| WorkspaceJoinError::Decode(error.to_string()))
     }
@@ -182,90 +182,6 @@ impl WorkspaceJoinClient {
                 "invitation and bootstrap host trust disagree".into(),
             ));
         }
-        Ok(WorkspaceJoinAdmission { bootstrap, trust })
-    }
-
-    /// Refresh bootstrap state for an already admitted member without reusing an invitation.
-    ///
-    /// # Errors
-    ///
-    /// Returns `WorkspaceJoinError` if the request cannot be sent or its reply is rejected.
-    pub async fn refresh_membership(
-        &self,
-        address: iroh::EndpointAddr,
-        room: String,
-        workspace_id: u64,
-        device_cert: DeviceCert,
-        device_key: &ed25519_dalek::SigningKey,
-        request_id: [u8; 32],
-    ) -> Result<JoinBootstrap, WorkspaceJoinError> {
-        if *self.endpoint.id().as_bytes() != device_cert.device_public_key
-            || device_key.verifying_key().to_bytes() != device_cert.device_public_key
-        {
-            return Err(WorkspaceJoinError::Protocol(
-                "membership client endpoint, certificate, and proof key disagree".into(),
-            ));
-        }
-        let challenge = match self
-            .request(
-                address.clone(),
-                JoinTransportRequest::MembershipChallenge(MembershipChallengeRequest {
-                    room,
-                    workspace_id,
-                    device_cert,
-                    request_id,
-                }),
-            )
-            .await?
-        {
-            JoinTransportResponse::MembershipChallenge(response) => response.challenge,
-            response => return Err(response_error(response)),
-        };
-        let proof =
-            sign_membership_proof(challenge, device_key).map_err(WorkspaceJoinError::Protocol)?;
-        match self
-            .request(
-                address,
-                JoinTransportRequest::MembershipComplete(MembershipCompleteRequest { proof }),
-            )
-            .await?
-        {
-            JoinTransportResponse::MembershipComplete(bootstrap) => Ok(bootstrap),
-            response => Err(response_error(response)),
-        }
-    }
-
-    /// Verify the signed host/service binding and refresh through its exact pinned address.
-    ///
-    /// # Errors
-    ///
-    /// Returns `WorkspaceJoinError` if the request cannot be sent or its reply is rejected.
-    pub async fn refresh_membership_hint(
-        &self,
-        hint: &TransportHint,
-        room: String,
-        workspace_id: u64,
-        device_cert: DeviceCert,
-        device_key: &ed25519_dalek::SigningKey,
-        request_id: [u8; 32],
-    ) -> Result<WorkspaceJoinAdmission, WorkspaceJoinError> {
-        let host = IrohWorkspaceHostHintV1::from_transport_hint(hint)?;
-        if host.room != room || host.workspace_id != workspace_id {
-            return Err(WorkspaceJoinError::Protocol(
-                "membership scope does not match its signed workspace host hint".into(),
-            ));
-        }
-        let bootstrap = self
-            .refresh_membership(
-                host.endpoint_addr.clone(),
-                room,
-                workspace_id,
-                device_cert,
-                device_key,
-                request_id,
-            )
-            .await?;
-        let trust = host.validate_bootstrap(&bootstrap)?;
         Ok(WorkspaceJoinAdmission { bootstrap, trust })
     }
 }

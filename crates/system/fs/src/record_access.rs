@@ -10,7 +10,8 @@
 use std::collections::{BTreeSet, HashMap};
 use std::sync::{Arc, Mutex};
 
-use collab_types::{Ed25519PublicKey, FileRecordId};
+use collab_types::Ed25519PublicKey;
+use fs_protocol::FileRecordId;
 use thiserror::Error;
 use tilo_clock::{Clock, MonotonicClock};
 use uuid::Uuid;
@@ -293,10 +294,9 @@ mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::thread;
 
-    use collab_types::{
-        Ed25519PublicKey, FileInviteSpec, FileInviteSubject, FilePermission, mint_file_invite,
-    };
+    use collab_types::Ed25519PublicKey;
     use ed25519_dalek::SigningKey;
+    use fs_protocol::{FileInviteSpec, FileInviteSubject, FilePermission, mint_file_invite};
     use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
 
     use super::*;

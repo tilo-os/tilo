@@ -259,26 +259,6 @@ impl EncoderInit {
         }
     }
 
-    /// HEVC Main10 HDR10.
-    pub fn hdr10_hevc(
-        width: u32,
-        height: u32,
-        fps: u32,
-        bitrate_kbps: u32,
-        keyframe_interval_secs: u32,
-        hdr: HdrConfig,
-    ) -> Self {
-        Self::hdr10(
-            Codec::HevcMain10,
-            width,
-            height,
-            fps,
-            bitrate_kbps,
-            keyframe_interval_secs,
-            hdr,
-        )
-    }
-
     /// Bits per sample of the encoded stream.
     pub fn bit_depth(&self) -> u8 {
         if self.hdr.is_some() || self.colorimetry.is_hdr() {

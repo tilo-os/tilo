@@ -35,33 +35,13 @@ use shell::compositor::foreign::{self, ForeignSurfaceWidget, store};
 use shell::compositor::frame::FrameBuilder;
 use shell::compositor::tab_binding;
 use shell::shell::state::WorkspaceTree;
+use ui::num::{i32_of_f64, u32_of_f64};
 use ui::offscreen::OffscreenRenderer;
 use ui::widget::Widget;
 use vello::peniko::Color;
 
 const W: u32 = 1600;
 const H: u32 = 900;
-
-/// `v as u32`: Rust's float-to-int `as` cast saturates (NaN/negative → 0,
-/// huge → `u32::MAX`), so it can't wrap or panic — this just narrows a rect
-/// coordinate to the pixel index used for sampling/configure math.
-#[allow(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    reason = "float-to-int `as` saturates in Rust (no UB/wrap/panic); nothing here can misbehave"
-)]
-fn as_u32(v: f64) -> u32 {
-    v as u32
-}
-
-/// Same saturating cast as [`as_u32`], for the wire configure sizes (`i32`).
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "float-to-int `as` saturates in Rust (no UB/wrap/panic); nothing here can misbehave"
-)]
-fn as_i32(v: f64) -> i32 {
-    v as i32
-}
 
 /// Surface ids are the process-wide key into the frame store, so each
 /// test picks its own to stay independent under parallel execution.
@@ -163,14 +143,17 @@ fn foreign_buffers_are_composited_once_into_visible_tabs_only() {
             rect.width() > 100.0 && rect.height() > 100.0,
             "the foreign tile must occupy real area; got {rect:?}"
         );
-        let (cx, cy) = (as_u32(rect.center().x), as_u32(rect.center().y));
+        let (cx, cy) = (u32_of_f64(rect.center().x), u32_of_f64(rect.center().y));
 
         let viewport = store()
             .viewport(surface_id)
             .expect("apply_layout must publish the tab rect into the frame store");
         assert_eq!(
             viewport,
-            (as_u32(rect.width().round()), as_u32(rect.height().round())),
+            (
+                u32_of_f64(rect.width().round()),
+                u32_of_f64(rect.height().round())
+            ),
             "the published viewport is the tab's on-screen extent"
         );
 
@@ -211,7 +194,7 @@ fn foreign_buffers_are_composited_once_into_visible_tabs_only() {
         // opening card is up. Sample the rect painted by this frame, not the
         // pre-commit position captured above.
         let rect = tile_rect(&mut fb, surface_id);
-        let (cx, cy) = (as_u32(rect.center().x), as_u32(rect.center().y));
+        let (cx, cy) = (u32_of_f64(rect.center().x), u32_of_f64(rect.center().y));
         let px = OffscreenRenderer::sample(&after, W, cx, cy);
         // The compositor may paint transient collaboration/chrome ink at the
         // exact centre. Prove that the client owns the tile as an area, rather
@@ -224,8 +207,8 @@ fn foreign_buffers_are_composited_once_into_visible_tabs_only() {
                     OffscreenRenderer::sample(
                         after_pixels,
                         W,
-                        as_u32(rect.x0 + rect.width() * fx),
-                        as_u32(rect.y0 + rect.height() * fy),
+                        u32_of_f64(rect.x0 + rect.width() * fx),
+                        u32_of_f64(rect.y0 + rect.height() * fy),
                     )
                 })
             })
@@ -245,7 +228,7 @@ fn foreign_buffers_are_composited_once_into_visible_tabs_only() {
         );
 
         // A point well outside the tile keeps the shell's own chrome.
-        let outside_y = as_u32(rect.y0).saturating_sub(30).max(1);
+        let outside_y = u32_of_f64(rect.y0).saturating_sub(30).max(1);
         let out = OffscreenRenderer::sample(&after, W, cx, outside_y);
         assert!(
             !(out.0.abs_diff(0xE0) <= 4 && out.1.abs_diff(0x18) <= 4 && out.2.abs_diff(0xA0) <= 4),
@@ -343,7 +326,7 @@ fn foreign_buffers_are_composited_once_into_visible_tabs_only() {
         settle(&mut fb);
 
         let rect = tile_rect(&mut fb, front);
-        let (cx, cy) = (as_u32(rect.center().x), as_u32(rect.center().y));
+        let (cx, cy) = (u32_of_f64(rect.center().x), u32_of_f64(rect.center().y));
 
         let (bw, bh) = store()
             .viewport(front)
@@ -396,15 +379,15 @@ fn last_window_close_keeps_every_produced_frame_nonblack() {
     settle(&mut fb);
     let rect = tile_rect(&mut fb, surface_id);
     let pixels = solid(
-        as_u32(rect.width()),
-        as_u32(rect.height()),
+        u32_of_f64(rect.width()),
+        u32_of_f64(rect.height()),
         (0xE0, 0x18, 0xA0),
     );
     store().publish_rgba(
         surface_id,
         &pixels,
-        as_u32(rect.width()),
-        as_u32(rect.height()),
+        u32_of_f64(rect.width()),
+        u32_of_f64(rect.height()),
     );
     quiesce(&mut fb, surface_id);
 
@@ -668,7 +651,10 @@ fn foreign_toplevel_lifecycle_drives_configure_unmap_and_tab_removal() {
         let rect = tile_rect(&mut fb, surface_id);
         assert_eq!(
             first,
-            (as_i32(rect.width().round()), as_i32(rect.height().round())),
+            (
+                i32_of_f64(rect.width().round()),
+                i32_of_f64(rect.height().round())
+            ),
             "the configure carries the tab's laid-out size"
         );
         assert_eq!(
@@ -687,8 +673,8 @@ fn foreign_toplevel_lifecycle_drives_configure_unmap_and_tab_removal() {
         assert_eq!(
             resized,
             (
-                as_i32(rect_after.width().round()),
-                as_i32(rect_after.height().round())
+                i32_of_f64(rect_after.width().round()),
+                i32_of_f64(rect_after.height().round())
             ),
             "the re-configure carries the tab's new laid-out size"
         );
@@ -721,7 +707,7 @@ fn foreign_toplevel_lifecycle_drives_configure_unmap_and_tab_removal() {
         let scene = frame(&mut fb);
         let mapped = shot("foreign-lifecycle-mapped", &mut renderer, &scene);
         let rect = tile_rect(&mut fb, surface_id);
-        let (cx, cy) = (as_u32(rect.center().x), as_u32(rect.center().y));
+        let (cx, cy) = (u32_of_f64(rect.center().x), u32_of_f64(rect.center().y));
         let px = OffscreenRenderer::sample(&mapped, W, cx, cy);
         assert!(
             px.0.abs_diff(0x22) <= 4 && px.1.abs_diff(0xC0) <= 4 && px.2.abs_diff(0x40) <= 4,

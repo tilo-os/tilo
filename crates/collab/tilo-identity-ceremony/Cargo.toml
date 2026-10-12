@@ -1,0 +1,51 @@
+[package]
+name = "tilo-identity-ceremony"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Tilo's identity ceremony protocol: identity records, device pairing, invites and recovery challenges."
+
+[features]
+# Test builds share a loaded runner, so pairing waits use the shared hang
+# bound and invites fall back to a process-local redemption authority.
+test-support = ["dep:tilo-test-env"]
+
+[dependencies]
+collab-types = { version = "0.1.0", path = "../collab-types" }
+threshold-identity = { version = "0.1.0", path = "../threshold-identity" }
+tilo-clock = { path = "../../platform/tilo-clock" }
+tilo-advisory-lock = { version = "0.1.0", path = "../../system/advisory-lock" }
+tilo-seal = { version = "0.1.0", path = "../../system/tilo-seal" }
+tilo-test-env = { version = "0.1.0", path = "../../dev/test-env", optional = true }
+wire-frame = { version = "0.1.0", path = "../../system/wire-frame", features = ["postcard", "tokio"] }
+chrono = { workspace = true, features = ["clock", "std"] }
+data-encoding.workspace = true
+ed25519-dalek = { workspace = true, features = ["rand_core"] }
+getrandom.workspace = true
+hex.workspace = true
+hmac.workspace = true
+postcard = { workspace = true, features = ["alloc", "use-std"] }
+rand_core.workspace = true
+serde.workspace = true
+serde_bytes.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+zeroize.workspace = true
+
+# Private files and the pairing broker's TLS client need an OS.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+private-fs = { version = "0.1.0", path = "../../system/private-fs" }
+rustls.workspace = true
+tilo-net = { version = "0.1.0", path = "../../platform/tilo-net" }
+workspace-hack = { version = "0.1" }
+
+[dev-dependencies]
+tempfile.workspace = true
+tilo-test-env = { version = "0.1.0", path = "../../dev/test-env" }
+
+[lints]
+workspace = true

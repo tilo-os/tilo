@@ -1,0 +1,107 @@
+name: CI / render counters
+
+# The per-change half of the render benchmarks (TIL-582): the toolkit's 4K
+# dashboard harness (`ui-perf dashboard_perf_bench`) checks counters that do
+# not depend on how fast the runner is (allocator calls and bytes per redraw,
+# native pixels rasterised per redraw, allocations per 1,000 events that need
+# no redraw) against docs/ui-performance-benchmark.md's budgets, after its
+# retained-damage pixel parity preflight. No clock is compared here; frame
+# times are the nightly `render` group of perf-scheduled.yml.
+#
+# It runs only when the toolkit, its vendored renderer stack or the harness
+# changes, and it is not a required check. The shell's runner-independent
+# render counters (pixels repainted per keyed scene part, GPU copies and
+# readback bytes per client frame) are tests of the `shell` package, which
+# every change to it already runs.
+on:
+  pull_request:
+    branches: ["main"]
+    paths:
+      - "crates/sdk/ui-core/**"
+      - "crates/dev/ui-examples/Cargo.toml"
+      - "crates/dev/ui-examples/examples/dashboard_perf_bench.rs"
+      - "crates/dev/ui-examples/examples/registry.rs"
+      - "crates/dev/ui-examples/examples/ui_perf.rs"
+      - "vendor/cosmic-text/**"
+      - "vendor/vello/**"
+      - "vendor/vello_encoding/**"
+      - "vendor/vello_shaders/**"
+      - "vendor/wgpu/**"
+      - "vendor/wgpu-hal/**"
+      - "scripts/perf/render_bench.py"
+      - ".forgejo/workflows/ci-render-counters.yml"
+  push:
+    branches: ["main"]
+    paths:
+      - "crates/sdk/ui-core/**"
+      - "crates/dev/ui-examples/Cargo.toml"
+      - "crates/dev/ui-examples/examples/dashboard_perf_bench.rs"
+      - "crates/dev/ui-examples/examples/registry.rs"
+      - "crates/dev/ui-examples/examples/ui_perf.rs"
+      - "vendor/cosmic-text/**"
+      - "vendor/vello/**"
+      - "vendor/vello_encoding/**"
+      - "vendor/vello_shaders/**"
+      - "vendor/wgpu/**"
+      - "vendor/wgpu-hal/**"
+      - "scripts/perf/render_bench.py"
+      - ".forgejo/workflows/ci-render-counters.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: render-counters-${{ github.event_name }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  builder:
+    uses: ./.forgejo/workflows/resolve-builder.yml
+    secrets: inherit
+
+  counters:
+    needs: builder
+    runs-on: runner
+    timeout-minutes: 60
+    container:
+      image: ${{ needs.builder.outputs.image }}
+    env:
+      # perf-scheduled.yml's `render` job builds the same release example
+      # with the same Cargo environment (thin LTO, as release-apps.yml
+      # builds), so each fills the other's cache.
+      CARGO_BUILD_JOBS: "8"
+      CARGO_INCREMENTAL: "0"
+      CARGO_TERM_COLOR: never
+      CARGO_PROFILE_RELEASE_LTO: thin
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
+      CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-D warnings"
+      CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-D warnings"
+      # The runner has no GPU: Mesa's CPU Vulkan driver renders. Its speed
+      # moves no counter this job checks.
+      WGPU_BACKEND: vulkan
+      VK_DRIVER_FILES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+      WGPU_ADAPTER_NAME: llvmpipe
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Prepare Rust build caches
+        uses: ./.forgejo/actions/prepare-rust-build
+
+      - name: Build the toolkit benchmark
+        run: >-
+          bash scripts/ci-run.sh "ui-perf release build" --
+          cargo build --locked --release -p ui-examples --example ui-perf
+
+      - name: Verify retained frames, then check the render counters
+        run: |
+          set -euo pipefail
+          ./os/dev/assert-native-arch.sh x86_64
+          test -r "$VK_DRIVER_FILES"
+          python3 scripts/perf/render_bench.py counters target/release/examples/ui-perf --out render-counters
+
+      - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
+        if: always()
+        with:
+          name: render-counters
+          path: render-counters/
+          if-no-files-found: warn
