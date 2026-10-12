@@ -147,14 +147,14 @@ pub fn probe_bytes(data: &[u8], path: &Path) -> Result<ProbedMedia, ProbeError> 
     if data.is_empty() {
         return Err(ProbeError::Empty);
     }
-    if let Some(format) = tilo_content::image_format(data)
+    if let Some(format) = ui::framework::content::image_format(data)
         && let Some(codec) = match format.extension {
             "png" => Some("png"),
             "jpg" => Some("jpeg"),
             _ => None,
         }
     {
-        let (w, h) = tilo_content::image_size(data).map_or((0, 0), |(_, w, h)| (w, h));
+        let (w, h) = ui::framework::content::image_size(data).map_or((0, 0), |(_, w, h)| (w, h));
         return Ok(image_probe(w, h, codec));
     }
     if is_wav(data)
