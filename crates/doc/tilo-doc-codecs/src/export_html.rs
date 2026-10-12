@@ -3,7 +3,7 @@ use crate::xml_escape::{escape_html_attr, escape_text};
 use base64::Engine as _;
 use std::fmt::Write as _;
 use tilo_content::ContentSource;
-use tilo_doc::export::{BlockKind, ExportBlock, TablePlan, detect_image_media};
+use tilo_doc::export::{BlockKind, ExportBlock, TablePlan};
 use tilo_doc::snapshot::AttrVal;
 use tilo_doc::{BlockView, DocSnapshot, InlinePlan, MarkSpan};
 
@@ -450,7 +450,7 @@ fn render_image(
     };
     match hash.as_ref().and_then(|h| snap.image(h)) {
         Some(bytes) => {
-            let mime = detect_image_media(bytes).map_or("image/png", |media| media.mime);
+            let mime = tilo_content::image_format(bytes).map_or("image/png", |media| media.mime);
             let data = base64::engine::general_purpose::STANDARD.encode(bytes);
             // The data URI is self-contained; no escaping needed beyond the
             // base64 alphabet (no `"` in b64).

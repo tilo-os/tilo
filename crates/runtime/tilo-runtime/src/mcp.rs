@@ -101,15 +101,9 @@ const MAX_SHOWN: usize = 256;
 
 /// The MIME type of image bytes an MCP client can show.
 fn image_mime(bytes: &[u8]) -> Option<&'static str> {
-    if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
-        Some("image/png")
-    } else if bytes.starts_with(&[0xff, 0xd8, 0xff]) {
-        Some("image/jpeg")
-    } else if bytes.len() > 12 && bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WEBP") {
-        Some("image/webp")
-    } else {
-        None
-    }
+    tilo_content::image_format(bytes)
+        .map(|format| format.mime)
+        .filter(|mime| matches!(*mime, "image/png" | "image/jpeg" | "image/webp"))
 }
 
 /// The images an answer carries, taken out of it: its own, and those of

@@ -754,7 +754,26 @@ Presentation also controls the compositor's existing physical input delivery
 observer immediately. Existing applications and the compositor's initialized
 GPU renderer retain their configuration; reopen the application to collect
 its new timing stream. Inspect returns the current fixed options and their
-scope. Agent-scoped, sandboxed, other-account and locked-session calls cannot
+scope, plus `launch_history`: at most 64 launch attempts with at most 12 events
+each, original epoch timestamps and monotonic elapsed times. It joins the
+immutable launch ID to its saved tab/record/workspace, launcher PID and kernel
+start time, original package hash, mapped surface, exit status and executing
+process-binding phases. App stderr is fully redacted; only its bounded retained
+line count and a fixed failure category are reported. Runtime cohort and shell
+source still require the matched component receipt and signed pins; missing
+evidence is not guessed. Eviction counters disclose lost history.
+
+For one app, use the optional `app_id` argument. These actions require the
+existing authenticated owner socket, not the test-control socket:
+
+```bash
+tilo-control --socket "$XDG_RUNTIME_DIR/tilo-session/admin-control.sock" actions invoke session-diagnostics inspect@session-diagnostics --args-json '{"app_id":"so.tilo.browser"}'
+```
+
+The history is captured directly by the compositor, not reconstructed from
+journal or flight-recorder replay. Inspect does not launch an app, replay an
+action or change diagnostic configuration. An unsupported connection receives
+`not_permitted` explaining the required owner socket. Agent-scoped, sandboxed, other-account and locked-session calls cannot
 configure this owner-only surface. No application content or typed keys are
 recorded by these timing options.
 
