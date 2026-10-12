@@ -127,6 +127,152 @@ fn whole_record_checkpoint_inventory_and_item_reads_are_frozen_across_rename_and
 }
 
 #[test]
+fn compared_frozen_source_frontier_drives_selective_review_after_rename_and_edit() {
+    let mut app = App::new().unwrap();
+    app.call("new-folder", json!({"name": "src"})).unwrap();
+    let folder = named(&app, "src");
+    let main = file(&mut app, "main.rs", "fn original() {}\n", Some(&folder));
+    let other = file(&mut app, "other.rs", "other original\n", None);
+    checkpoint(&mut app, "baseline");
+    let address = actions::file_resource_id(&main);
+    app.call_on(&address, "rename", json!({"name": "renamed.rs"}))
+        .unwrap();
+    replace(&mut app, &main, "fn edited() {}\n");
+    replace(&mut app, &other, "unrelated work\n");
+    checkpoint(&mut app, "edited");
+    let compared = answer(
+        &mut app,
+        "compare",
+        json!({"from": "baseline", "to": "edited", "items": [address]}),
+    );
+    let pair = &compared["comparisons"][0];
+    assert_eq!(pair["item"], address);
+    assert_eq!(pair["before"]["status"], "present");
+    assert_eq!(pair["before"]["content"]["id"], main);
+    assert_eq!(pair["before"]["content"]["path"], "src/main.rs");
+    assert_eq!(pair["before"]["content"]["text"], "fn original() {}\n");
+    assert_eq!(pair["after"]["status"], "present");
+    assert_eq!(pair["after"]["content"]["id"], main);
+    assert_eq!(pair["after"]["content"]["path"], "src/renamed.rs");
+    assert_eq!(pair["after"]["content"]["text"], "fn edited() {}\n");
+    assert_eq!(
+        app.state().read_texts(),
+        (0, 0),
+        "frozen reads must demand their own text, not load the live model"
+    );
+
+    // Rebind the mutable checkpoint and change live content. Consuming the
+    // comparison identity must still inspect and recover the original text.
+    checkpoint(&mut app, "baseline");
+    replace(&mut app, &main, "fn later() {}\n");
+    replace(&mut app, &other, "new unrelated work\n");
+    let pinned = answer(
+        &mut app,
+        "compare",
+        json!({"from": compared["from"], "to": compared["to"], "items": [address]}),
+    );
+    assert_eq!(pinned, compared);
+    let diff = answer(&mut app, "diff", json!({"from": compared["from"]}));
+    assert_eq!(diff["from_heads"], compared["from_heads"]);
+    let path = format!("buffers/{main}");
+    assert!(
+        diff["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["item"] == path)
+    );
+    let reviewed = answer(
+        &mut app,
+        "review-restore",
+        json!({"version": compared["from"], "paths": [path]}),
+    );
+    assert_eq!(reviewed["review"]["target_heads"], compared["from_heads"]);
+    assert_eq!(reviewed["review"]["live_heads"], diff["to_heads"]);
+    let restored = answer(
+        &mut app,
+        "restore-reviewed",
+        json!({"review": reviewed["review"]}),
+    );
+    assert_eq!(restored["restored"], json!([path]));
+    let current = read(&mut app, None, Some(&address));
+    assert_eq!(current["text"], "fn original() {}\n");
+    assert_eq!(
+        current["path"], "src/renamed.rs",
+        "buffer-only recovery must not undo the rename"
+    );
+    assert_eq!(
+        read(&mut app, None, Some(&other))["text"],
+        "new unrelated work\n"
+    );
+}
+
+#[test]
+fn compared_deleted_source_is_absent_only_on_deleted_side_and_recovers_selected_identity() {
+    let mut app = App::new().unwrap();
+    let main = file(&mut app, "main.rs", "retained source\n", None);
+    let other = file(&mut app, "other.rs", "original\n", None);
+    checkpoint(&mut app, "before-delete");
+    let address = actions::file_resource_id(&main);
+    app.call_confirmed_on(&address, "delete", json!({}))
+        .unwrap();
+    replace(&mut app, &other, "keep unrelated text\n");
+    let compared = answer(
+        &mut app,
+        "compare",
+        json!({"from": "before-delete", "items": [address]}),
+    );
+    let pair = &compared["comparisons"][0];
+    assert_eq!(pair["before"]["status"], "present");
+    assert_eq!(pair["before"]["content"]["id"], main);
+    assert_eq!(pair["before"]["content"]["path"], "main.rs");
+    assert_eq!(pair["before"]["content"]["text"], "retained source\n");
+    assert_eq!(pair["after"], json!({"status": "absent"}));
+    let diff = answer(
+        &mut app,
+        "diff",
+        json!({"from": compared["from"], "to": compared["to"]}),
+    );
+    assert_eq!(diff["from_heads"], compared["from_heads"]);
+    assert_eq!(diff["to_heads"], compared["to_heads"]);
+    let paths = [format!("files/{main}"), format!("buffers/{main}")];
+    for path in &paths {
+        assert!(
+            diff["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|item| item["item"] == *path)
+        );
+    }
+    let reviewed = answer(
+        &mut app,
+        "review-restore",
+        json!({"version": compared["from"], "paths": paths}),
+    );
+    assert_eq!(reviewed["review"]["target_heads"], compared["from_heads"]);
+    assert_eq!(reviewed["review"]["live_heads"], compared["to_heads"]);
+    app.call("restore-reviewed", json!({"review": reviewed["review"]}))
+        .unwrap();
+    assert_eq!(
+        read(&mut app, None, Some(&address)),
+        pair["before"]["content"]
+    );
+    assert_eq!(
+        read(&mut app, None, Some(&other))["text"],
+        "keep unrelated text\n"
+    );
+    assert_eq!(
+        answer(
+            &mut app,
+            "compare",
+            json!({"from": compared["from"], "to": compared["to"], "items": [address]})
+        ),
+        compared
+    );
+}
+
+#[test]
 fn reviewed_buffer_restore_preserves_unrelated_current_text_and_rejects_stale_review() {
     let mut app = App::new().unwrap();
     let main = file(&mut app, "main.rs", "original\n", None);
@@ -300,6 +446,14 @@ fn typed_reads_refuse_oversized_text_instead_of_truncating_it() {
     checkpoint(&mut app, "large");
     let inventory = read(&mut app, Some("large"), None);
     assert_eq!(inventory["entries"][0]["text_available"], true);
+    let comparison = app.call(
+        "compare",
+        json!({"from": "large", "items": [actions::file_resource_id(&id)]}),
+    );
+    assert!(
+        comparison.is_err(),
+        "unreadable demanded text must fail, not report absence: {comparison:?}"
+    );
     for item in [&id, &actions::file_resource_id(&id)] {
         assert!(
             app.call("read", json!({"version": "large", "item": item}))

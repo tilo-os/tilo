@@ -25,10 +25,18 @@ following are action arguments, not a new CLI or a separate history service:
    version. It returns differing `items`, display names `from`/`to`, and exact
    full-hash arrays `from_heads`/`to_heads`. Keep the complete arrays: concurrent
    heads are one frontier, not competing versions to choose arbitrarily.
-4. `review-restore({version, paths})` validates the selection without writing.
+4. `compare({from, to, items?})` returns frozen typed before/after content and
+   the same full frontier identities. Omit `items` for the whole resource, or
+   supply 1–32 distinct published resource IDs (at most 512 bytes each). Each
+   side is `present` with `content`, or explicitly `absent`. Absence means no
+   published item after decoding and demand-loading; unreadable schemas,
+   demand-load failures and content-decoder errors fail instead. `READABLE=false`
+   cannot disclose content. The **entire** response is bounded to 256 KiB, not
+   each side separately. See [typed comparison](history-typed-comparison.md).
+5. `review-restore({version, paths})` validates the selection without writing.
    Its response contains `items` and a `review` object with `schema: 1`,
    `target_heads`, `live_heads` and `paths`.
-5. Copy that object unchanged into `restore-reviewed({review})`. The edit
+6. Copy that object unchanged into `restore-reviewed({review})`. The edit
    checks the live frontier again and appends a restore attributed to the
    invoking collaborator (including an agent acting for a person).
 
@@ -40,8 +48,20 @@ For example, after comparing an old checkpoint against now:
 
 is an argument to `review-restore`; the returned `review`, not this request,
 becomes the argument to `restore-reviewed`. A diff is structural selection
-information, not a complete before/after content renderer: use typed reads to
-inspect content at the pinned versions.
+information, not a complete before/after content renderer: use `compare` or
+typed reads to inspect content at the pinned versions. Consume the returned
+immutable `from` identity as the review's `version`; restore paths still come
+from `diff`, not comparison item IDs.
+
+For terminal use, see [native history from a terminal](history-cli.md) for
+`tilo-control history log/read/diff/review/restore/checkpoint/status`. Every
+operation requires an exact published provider/action ID or the complete
+application/room/record/resource target. The client forwards the successful
+review output unchanged and invokes only `restore-reviewed`; ambiguity or an
+incomplete listing fails closed. There is no `history compare` subcommand:
+invoke the published `compare` action through `tilo-control actions invoke`
+([action API](agent-action-api.md)). Neither interface is a Git bridge or a
+sandbox escape.
 
 ### Exact selection and conservative staleness
 
@@ -93,6 +113,8 @@ This does not prove every app's adapter redacts every sensitive field.
   historical reads and action publication/dispatch.
 - `crates/sdk/tilo-app/src/framework/history.rs`: history specs, full diff head
   arrays, `HistoryEdit::RestoreReviewed` and resource-registered compensation.
+- `crates/sdk/tilo-app/src/framework/history/compare.rs`: bounded typed
+  comparison, published result schema and frozen before/after sides.
 - `crates/sdk/tilo-app/src/framework/history/review.rs`: `RestoreReview`,
   `answer`, `apply`, bounds and the two new action specs.
 - `crates/sdk/ui-core/src/history_source/steps.rs`: `resolve`, `changed_items`,
@@ -103,9 +125,15 @@ This does not prove every app's adapter redacts every sensitive field.
 **Compatibility:** existing `restore({version, ids?})` is preserved and remains
 unchecked by the new review precondition. Its legacy id/whole-document behavior
 is not the exact-path protocol above. Existing undo, redo and checkpoint remain.
-The tests compare historical action-read content with the existing UI preview;
-they do **not** establish that UI restore controls invoke these new review
-and restore actions. This slice does not replace existing UI restore routing.
+The managed History UI's admitted recovery controls invoke native
+`review-restore` and `restore-reviewed` through the owner's registered action
+surface. `crates/sdk/tilo-app/tests/framework.rs` proves the UI uses admitted
+native actions for selective recovery, retains unrelated work and rechecks
+freshness and authority at confirmation.
+`crates/sdk/ui-core/src/history_mode/integration_tests.rs` additionally proves
+a failed native review cannot downgrade to legacy restore after capability loss.
+Owners without the native surface retain the separate legacy checked-owner route. These tests do not certify every app, owner or
+cross-owner restore path.
 
 ## Repository-grounded coverage audit
 
@@ -117,9 +145,9 @@ Standalone `tilo.history` is the UI-core action provider, distinct from the
 |---|---|---|---|---|
 | History/provenance | Framework history actions | Existing session/provider | File version records/projection | Aggregates tree and resource records |
 | Historical content | New bounded typed `read(version, item?)` | Existing session preview | Existing frontier/version preview reads | Entry/detail views; not a typed snapshot of every resource |
-| Compare | `diff` items plus full head arrays | Existing History model | Separate checked-file history model | Existing causal detail/replay views |
-| Restore safety | New exact-path review + stale-frontier guard | Existing document-bound review/confirmation | Separate checked review/restore protocol | Existing undo/detail routes; no workspace-wide atomic restore |
-| This slice's proof | Native action door and replay fixtures | Not newly certified here | Not newly certified here | Closed/cold host routing not tested here |
+| Compare | Typed `compare` plus structural `diff`, full head arrays | Existing History model | Separate checked-file history model | Existing causal detail/replay views |
+| Restore safety | Exact-path review + stale-frontier guard; admitted managed UI actions | Existing document-bound review/confirmation | Separate checked review/restore protocol | Existing undo/detail routes; no workspace-wide atomic restore |
+| This slice's proof | Native action door, managed UI recovery and replay fixtures | Not newly certified here | Not newly certified here | Closed-record routing mock only; no native owner cold restore proof |
 
 Exact references for the other columns:
 
@@ -150,12 +178,30 @@ patch behavior and version resolution; `tests/history_actions.rs` retains the
 existing action coverage. These are source-level test claims, not a test-run
 report or an all-resource proof.
 
+`crates/sdk/tilo-app/tests/history_compare.rs` additionally proves typed content,
+added/deleted sides, concurrent frontier identity, readability refusal and the
+combined-response bound. The Code Editor tests below couple that protocol to
+production demanded Source text and selective recovery. The executable's
+`crates/session/control-cli/tests/history_socket.rs` tests exact discovery,
+review forwarding and receipt handling on the JSON-line socket protocol; its
+scripted server is not a running desktop.
+
+The closed-record fixture in
+`crates/collab/tilo-action-broker/src/collab_broker_capnp/launchable.rs` proves
+retained-catalogue session-host routing, exact record launch and result custody
+across broker restart. Its fake app supplies history answers: this is **routing
+mock proof only**, not native owner execution, document mutation or cold restore.
+See [typed comparison evidence](history-typed-comparison.md#what-the-tests-prove).
+
 Assumptions: retained target changes, readable current resource schema, committed
 frontiers, normal action admission and the resource's own registered decoder.
 No multi-resource atomic snapshots, branch/merge product workflow, all-types
 schema-evolution proof or universal redaction proof is delivered here. Closed
-resources, cold/remote hosts and restart routing need end-to-end tests for this
-new workflow. Broader coverage and UI review-action integration remain work.
+resources and cold/remote native owners still need execution end-to-end tests
+for this workflow; the routing fixture does not close that gap. Retained local
+launch providers deny remote callers. Cross-owner atomic restoration and
+remote granted history transport remain unproven; managed UI integration does
+not expand those limits.
 
 Git records **`d8bc16deea` — “feat: one resource/action/view model”** as
 landed. Coverage must be audited against the current implementations and their
@@ -169,8 +215,11 @@ read inventories every recorded file/folder (stable id, nested resource address,
 relative path, kind, language and text availability); it does not dump the Model
 or include terminal state, command outboxes or machine-local disk paths. Item
 reads accept the stable id or published file address and demand only that file's
-text from the requested document. Rename changes the historical path, not the
-id. A deleted item remains readable at a retained earlier frontier.
+text from the requested document. Generic `compare` uses the **published file
+resource address**, not arbitrary read-adapter selectors such as `inventory:0`;
+those pseudoitems are paging arguments to Project `read`, not published children.
+Rename changes the historical path, not the id. A deleted item remains readable
+at a retained earlier frontier.
 
 Responses are capped at 240 KiB including JSON escaping (below the framework's
 256 KiB historical envelope limit). `read({version, item: "inventory:0"})` reads
@@ -185,8 +234,11 @@ Source text itself is disclosed as requested content; the adapter is not a
 secret detector for credentials deliberately stored inside source files.
 
 `apps/code-editor/tests/source_history.rs` exercises the actual ResourceApp:
-whole-record checkpoints, frozen reads across rename/delete, reviewed recovery
-of deleted metadata plus text under the same id, selective restoration retaining
+whole-record checkpoints, frozen reads and typed comparison across rename/edit
+and delete, consumption of comparison frontiers for selective reviewed recovery,
+demanded text from the frozen document (not the live model), and explicit
+unreadable-text refusal rather than false absence. It also proves reviewed
+recovery of deleted metadata plus text under the same id, selective restoration retaining
 unrelated work, agent attribution/undo/redo, replica reconstruction, private-key
 and terminal-queue omission, bounded refusal and complete inventory paging.
 Replica reconstruction is not a new certification of cold-host routing or
