@@ -116,10 +116,39 @@ pub enum Answer {
         /// I/O); near the budget it is working, just not returning: slow, or
         /// spinning.
         main_thread_cpu_ms: u64,
+        /// Time the main thread spent runnable but not running, waiting for a
+        /// core, while the heartbeat waited, in milliseconds. A starved loop is
+        /// slow, not stopped: it will run when the machine lets it. A blocked
+        /// one sleeps, and waits for no core. Zero where the kernel keeps no
+        /// scheduler statistics.
+        #[serde(default)]
+        main_thread_starved_ms: u64,
         threads: Vec<ThreadReport>,
     },
     Threads(Vec<ThreadReport>),
     Err(String),
+}
+
+impl Answer {
+    /// A stall in which the main thread was still making or about to make
+    /// progress: it used CPU, or waited for one, for a quarter of the budget.
+    /// Slow, not hung: only a thread that neither ran nor waited to run is
+    /// blocked.
+    #[must_use]
+    pub fn stalled_but_working(&self) -> bool {
+        match self {
+            Self::Stalled {
+                budget_ms,
+                main_thread_cpu_ms,
+                main_thread_starved_ms,
+                ..
+            } => {
+                let quarter = budget_ms / 4;
+                *main_thread_cpu_ms >= quarter || *main_thread_starved_ms >= quarter
+            }
+            _ => false,
+        }
+    }
 }
 
 /// What the main loop and the answering threads share.
@@ -250,6 +279,7 @@ fn answer(stream: UnixStream, beat: &Beat, ping: &calloop::ping::Ping) {
 /// Ask the loop to acknowledge within `budget`, and answer how it went.
 fn heartbeat_answer(beat: &Beat, ping: &calloop::ping::Ping, budget: Duration) -> Answer {
     let cpu_before = main_thread_cpu_ms();
+    let starved_before = main_thread_starved_ms();
     if let Some(latency) = beat.heartbeat(ping, budget) {
         return Answer::Alive {
             ticks: beat.ticks(),
@@ -258,10 +288,12 @@ fn heartbeat_answer(beat: &Beat, ping: &calloop::ping::Ping, budget: Duration) -
     }
     // Before the dump: it takes time of its own.
     let main_thread_cpu_ms = main_thread_cpu_ms().saturating_sub(cpu_before);
+    let main_thread_starved_ms = main_thread_starved_ms().saturating_sub(starved_before);
     let answer = Answer::Stalled {
         budget_ms: u64::try_from(budget.as_millis()).unwrap_or(u64::MAX),
         ticks: beat.ticks(),
         main_thread_cpu_ms,
+        main_thread_starved_ms,
         threads: dump_threads(),
     };
     eprintln!("tilo compositor: main loop stalled\n{}", render(&answer));
@@ -276,15 +308,19 @@ pub fn render(answer: &Answer) -> String {
             budget_ms,
             ticks,
             main_thread_cpu_ms,
+            main_thread_starved_ms,
             threads,
         } => (
             format!(
                 "main loop did not acknowledge a wake within {budget_ms} ms (acknowledged {ticks} \
-                 before); the main thread used {main_thread_cpu_ms} ms of CPU meanwhile: {}",
-                if *main_thread_cpu_ms < budget_ms / 4 {
-                    "it is blocked"
-                } else {
+                 before); the main thread used {main_thread_cpu_ms} ms of CPU and waited \
+                 {main_thread_starved_ms} ms for a core meanwhile: {}",
+                if *main_thread_cpu_ms >= budget_ms / 4 {
                     "it is busy"
+                } else if *main_thread_starved_ms >= budget_ms / 4 {
+                    "it is starved of CPU"
+                } else {
+                    "it is blocked"
                 }
             ),
             threads,
@@ -349,6 +385,18 @@ fn install_capture_handler() {
             );
         }
     });
+}
+
+/// Time the main thread has spent runnable and waiting for a core, in
+/// milliseconds, per `/proc/<pid>/task/<tid>/schedstat` (`run_ns wait_ns
+/// timeslices`). Zero when the kernel has no scheduler statistics.
+fn main_thread_starved_ms() -> u64 {
+    // SAFETY: `getpid` takes no arguments and cannot fail.
+    let pid = unsafe { libc::getpid() };
+    std::fs::read_to_string(format!("/proc/self/task/{pid}/schedstat"))
+        .ok()
+        .and_then(|stat| stat.split_whitespace().nth(1)?.parse::<u64>().ok())
+        .map_or(0, |wait_ns| wait_ns / 1_000_000)
 }
 
 /// CPU time the main thread (the thread whose id is the process id) has used,
@@ -478,6 +526,32 @@ fn frames_of(backtrace: &Backtrace) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn stalled(cpu: u64, starved: u64) -> Answer {
+        Answer::Stalled {
+            budget_ms: 500,
+            ticks: 1,
+            main_thread_cpu_ms: cpu,
+            main_thread_starved_ms: starved,
+            threads: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_loop_that_ran_or_waited_to_run_is_slow_and_one_that_did_neither_is_blocked() {
+        assert!(stalled(400, 0).stalled_but_working(), "computing");
+        assert!(stalled(0, 400).stalled_but_working(), "starved of a core");
+        assert!(
+            !stalled(0, 0).stalled_but_working(),
+            "asleep and waiting for nothing: a deadlock or a missed wake"
+        );
+        assert!(
+            !stalled(10, 20).stalled_but_working(),
+            "a sliver of either does not make it working"
+        );
+        assert!(render(&stalled(0, 400)).contains("starved"));
+        assert!(render(&stalled(0, 0)).contains("blocked"));
+    }
 
     #[test]
     fn the_liveness_socket_sits_beside_the_control_socket() {
