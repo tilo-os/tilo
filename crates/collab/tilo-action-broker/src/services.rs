@@ -116,6 +116,15 @@ pub trait WorkspaceAuthority: Send + Sync {
     fn announces_policy_changes(&self) -> bool {
         false
     }
+
+    /// The delegated agents on `room`'s roster whose person's root signed
+    /// the delegation for exactly that device, as this host verified them:
+    /// who an app's history names for the changes an agent's own key
+    /// signed. Presentation only; nothing is admitted by it. The default
+    /// knows none, so every such change stays an unknown participant.
+    fn history_agents(&self, _room: &str) -> Vec<ui::history_source::RosterAgent> {
+        Vec::new()
+    }
 }
 
 const UNANSWERED: &str = "workspace authority did not answer";
