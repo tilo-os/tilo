@@ -836,10 +836,11 @@ impl Widget for SettingsApp {
             if let Some(field) = self.shell.as_mut().and_then(NavShell::filter_mut) {
                 field.set_query(&self.search_query);
             }
-            self.structure_dirty = true;
             // Filtering changes only navigation. Reconstructing the active
             // pane here would discard its transient state and reseed its
-            // document bindings on every search character.
+            // document bindings on every search character, and flagging the
+            // composition dirty would rebuild the whole layout tree for it.
+            // The navigation list is virtualised: it re-measures itself.
             if let Some(nav) = self
                 .shell
                 .as_mut()
