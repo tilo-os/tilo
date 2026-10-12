@@ -13,10 +13,12 @@ name = "tilo_action_policy"
 path = "src/lib.rs"
 
 # Pure data and pure functions: every door, every host, the relay and the
-# browser decide with this crate, so it depends on nothing but serde.
+# browser decide with this crate; web-time preserves the native clock API
+# while accepting the browser's wall clock.
 
 [dependencies]
 serde.workspace = true
+web-time = "1"
 
 [dev-dependencies]
 serde_json.workspace = true

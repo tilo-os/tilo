@@ -47,6 +47,11 @@ inputs = ["tools/android/atl_entry.c", "tools/android/test_sticky_entry.c", "too
 suites = ["tools/android/test_sticky_entry.py"]
 
 [[group]]
+name = "chat-task-approval"
+inputs = ["apps/chat/"]
+suites = ["apps/chat/tests/test_agent_start_surface.py"]
+
+[[group]]
 name = "session-diagnostics"
 inputs = ["dist/session/tilo-flight-recorder.py"]
 suites = ["os/tests/flight_recorder_test.py"]

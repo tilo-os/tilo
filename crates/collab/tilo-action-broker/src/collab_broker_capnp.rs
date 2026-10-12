@@ -804,7 +804,7 @@ impl BrokerActor {
     /// then needs the confirmation of the person it is made for, and the
     /// `Once` grants admitting it spends. Decided on one sample: the action
     /// where it is published; the task the call works in (`task`, and every
-    /// task an agent runs: [`tilo_desktop_model::Workspace::task_bound_at`]);
+    /// task an agent runs, including waiting tasks);
     /// and, for a person, a change of the route record it acts on, so a
     /// person restricted on one record cannot act on it through an action
     /// they may otherwise use.
@@ -817,6 +817,21 @@ impl BrokerActor {
         workspace: &tilo_desktop_model::Workspace,
         now: u64,
         task: Option<&str>,
+        (surface, action): (&PublishedSurface, &PublishedAction),
+    ) -> Result<(bool, Vec<tilo_action_policy::GrantId>), String> {
+        self.admit_published_with_task_in(
+            workspace,
+            now,
+            workspace_tasks::TaskAdmission::Legacy(task),
+            (surface, action),
+        )
+    }
+
+    fn admit_published_with_task_in(
+        &self,
+        workspace: &tilo_desktop_model::Workspace,
+        now: u64,
+        task: workspace_tasks::TaskAdmission<'_>,
         (surface, action): (&PublishedSurface, &PublishedAction),
     ) -> Result<(bool, Vec<tilo_action_policy::GrantId>), String> {
         let refused = || "caller no longer authorized for invocation".to_owned();
@@ -838,7 +853,7 @@ impl BrokerActor {
         let agent = self
             .is_agent
             .then(|| self.id.strip_prefix("agent:").unwrap_or(&self.id));
-        match workspace.task_bound_at(agent, task, &node, need.kind, now) {
+        match task.answer(workspace, agent, &node, need.kind, now) {
             Some(Answer::Deny) => return Err("the task's grants do not cover this action".into()),
             Some(Answer::Ask) => asks = true,
             Some(Answer::Allow) | None => {}
@@ -1595,6 +1610,7 @@ impl InvocationEnvelope {
 struct TaskRunEnvelope {
     task_id: String,
     title: String,
+    instruction: Option<String>,
     run_id: u64,
     lease: String,
     planning: runtime_collab::TaskRunPlanning,
@@ -5284,6 +5300,21 @@ impl CapnpBrokerState {
             DurableContext::owner,
         );
         owner.validate()?;
+        // In native rooms an agent's action authority comes only from the
+        // authenticated task admission callback, never from ambient context
+        // or a room grant alone (including after its run has stopped).
+        if actor.is_agent && self.native_tasks(&offered.0.route.cluster_id).is_some() {
+            match durable {
+                Some(DurableContext::Task { binding, .. })
+                    if actor.id.strip_prefix("agent:").unwrap_or(&actor.id) == binding.agent_id => {
+                }
+                _ => {
+                    return Err(
+                        "native task agent requires authenticated task action admission".into(),
+                    );
+                }
+            }
+        }
         // Never trust an envelope's invoker: the host sets it.
         let context = invoker::host_set_invoker(context, actor, caller, execution.as_ref())?;
         // A certified local origin retains its original registered clock and
@@ -5364,20 +5395,30 @@ impl CapnpBrokerState {
         // Every check of this admission is decided on one committed sample,
         // so a policy change cannot land between the action check and the
         // record check.
-        // Work done in a task — the one the call names, or the task its
-        // agent is running — is bounded by the task's grant set.
+        // A context group can only narrow legacy work. Only authenticated
+        // native custody selects the exact-run ceiling instead of all of an
+        // agent's running/waiting task ceilings.
         let task = context
             .as_ref()
             .and_then(|context| context.group.as_ref())
             .filter(|group| group.kind == "task")
-            .map(|group| group.id.clone());
+            .map(|group| group.id.as_str());
         let (asks, spent) = self
             .membership
             .as_ref()
             .ok_or("workspace authority unavailable")?
             .decide_in_room(&offered.0.route.cluster_id, |workspace| {
                 let workspace = workspace.ok_or("workspace no longer hosted")?;
-                actor.admit_published_in(workspace, now, task.as_deref(), (&offered.0, &offered.1))
+                match durable {
+                    Some(DurableContext::Task { binding, .. }) => actor
+                        .admit_published_with_task_in(
+                            workspace,
+                            now,
+                            workspace_tasks::TaskAdmission::Native(binding),
+                            (&offered.0, &offered.1),
+                        ),
+                    _ => actor.admit_published_in(workspace, now, task, (&offered.0, &offered.1)),
+                }
             })??;
 
         if (durable.is_some() || execution.is_some())
@@ -6077,6 +6118,12 @@ impl CapnpBrokerState {
         tx.send(TaskRunEnvelope {
             task_id: task.id.clone(),
             title: task.title.clone(),
+            instruction: Some(
+                task.resource
+                    .as_ref()
+                    .and_then(|resource| resource.agent_request.as_ref())
+                    .map_or_else(|| task.title.clone(), |request| request.instruction.clone()),
+            ),
             run_id,
             lease: lease.clone(),
             planning: match task.route {
@@ -6280,13 +6327,14 @@ impl CapnpBrokerState {
             .and_then(|surface| surface.action_projection(resource, action))
             .ok_or("the task action is no longer published in this workspace")?;
         let requirement = crate::services::NativeTaskActionRequirement {
-            app: surface.app_id,
+            binding: run.native.clone(),
+            app: surface.app_id.clone(),
             resource_kind: descriptor.resource_kind.clone(),
             resource: resource.into(),
             action: descriptor.action.clone(),
             need: descriptor.contract.need(),
         };
-        let confirmation_required = descriptor.contract.confirmation;
+        let confirmation_required = descriptor.contract.confirmation.clone();
         if !matches!(
             confirmation_required,
             tilo_actions::ConfirmationPolicy::None
@@ -6305,7 +6353,13 @@ impl CapnpBrokerState {
             self.native_tasks(&run.cluster_id)
                 .ok_or("native task owner unavailable")?
                 .admit(&run.cluster_id, &current, &requirement, &mut || {
-                    self.start_native_task_invocation(&run, target, caller, *invocation)
+                    self.start_native_task_invocation(
+                        &run,
+                        target,
+                        caller,
+                        *invocation,
+                        (surface.clone(), descriptor.clone()),
+                    )
                 })
         } else {
             self.start_invocation_confirmed_for(
@@ -6984,6 +7038,8 @@ impl CapnpBrokerState {
             // A new admitted session brings its own certificate expiry: the
             // policy turn re-checks, and from then on wakes at that expiry.
             tilo_identity_host::policy_change::announce();
+            let room = CrdtRoute::from_channel_key(channel_id).cluster_id;
+            self.publish_certified_people(&room);
         }
         rx
     }
@@ -7101,6 +7157,110 @@ impl CapnpBrokerState {
         Ok(collaborators)
     }
 
+    /// Complete certified membership currently backing native Context
+    /// subscribers, normalized for host chrome (which has no app-local
+    /// `is_self`). Conflicting certified snapshots fail closed to empty.
+    /// Resolve an exact certified participant to its canonical workspace key.
+    /// Both the native roster and current owner-backed membership must agree.
+    pub fn certified_agent_identity(
+        &self,
+        room: &str,
+        actor: &str,
+    ) -> Option<ui::collaboration::CertifiedAgentIdentity> {
+        if !self
+            .certified_people_in_room(room)
+            .iter()
+            .any(|row| row.id == actor && row.is_agent)
+        {
+            return None;
+        }
+        let now = self.policy_now_ns().ok()? / 1_000_000_000;
+        self.membership
+            .as_ref()?
+            .decide_in_room(room, |workspace| {
+                workspace?
+                    .agent_members_at(now)
+                    .into_iter()
+                    .find_map(|(agent, _)| {
+                        let participant_id = format!("agent:{agent}");
+                        (participant_id == actor).then_some(
+                            ui::collaboration::CertifiedAgentIdentity {
+                                participant_id,
+                                agent_key: agent,
+                            },
+                        )
+                    })
+            })
+            .ok()
+            .flatten()
+    }
+
+    pub(crate) fn certified_people_in_room(
+        &self,
+        room: &str,
+    ) -> Vec<ui::collaboration::Collaborator> {
+        let Ok(channels) = self.channels.lock() else {
+            return Vec::new();
+        };
+        let mut people =
+            std::collections::BTreeMap::<String, ui::collaboration::Collaborator>::new();
+        for (channel, subscribers) in channels.iter() {
+            let route = CrdtRoute::from_channel_key(channel);
+            if route.cluster_id != room {
+                continue;
+            }
+            for native in subscribers
+                .context
+                .iter()
+                .filter_map(|subscriber| subscriber.native.as_ref())
+            {
+                for participant in &native.roster {
+                    let mut participant = participant.clone();
+                    participant.is_self = false;
+                    if let Some(held) = people.get(&participant.id) {
+                        if held.name != participant.name
+                            || held.packed_colour() != participant.packed_colour()
+                            || held.is_agent != participant.is_agent
+                        {
+                            return Vec::new();
+                        }
+                    } else {
+                        people.insert(participant.id.clone(), participant);
+                    }
+                }
+            }
+        }
+        people.into_values().collect()
+    }
+
+    pub(crate) fn certified_people_for_shell(
+        &self,
+    ) -> Vec<(String, Vec<ui::collaboration::Collaborator>)> {
+        let rooms = self
+            .channels
+            .lock()
+            .map(|channels| {
+                channels
+                    .iter()
+                    .filter(|(_, subscribers)| {
+                        subscribers
+                            .context
+                            .iter()
+                            .any(|subscriber| subscriber.native.is_some())
+                    })
+                    .map(|(channel, _)| CrdtRoute::from_channel_key(channel).cluster_id)
+                    .collect::<std::collections::BTreeSet<_>>()
+            })
+            .unwrap_or_default();
+        rooms
+            .into_iter()
+            .map(|room| {
+                let people = self.certified_people_in_room(&room);
+                (room, people)
+            })
+            .collect()
+    }
+
     fn native_roster_for_subscriber(
         &self,
         route: &CrdtRoute,
@@ -7120,6 +7280,12 @@ impl CapnpBrokerState {
             admitted: current,
             roster,
         }))
+    }
+
+    fn publish_certified_people(&self, room: &str) {
+        if let Some(fanout) = self.fanout.upgrade() {
+            fanout.publish_certified_people(room);
+        }
     }
 
     /// The delegated agents of the room `channel` belongs to whose person's
@@ -7232,6 +7398,7 @@ impl CapnpBrokerState {
                     });
                 }
                 drop(channels);
+                self.publish_certified_people(&route.cluster_id);
                 continue;
             };
             let roster = self.native_membership_roster(&route, &current)?;
@@ -7239,6 +7406,7 @@ impl CapnpBrokerState {
                 .channels
                 .lock()
                 .map_err(|_| "native context subscriptions unavailable")?;
+            let mut changed = false;
             if let Some(subscribers) = channels.get_mut(&channel) {
                 subscribers.context.retain_mut(|subscriber| {
                     let Some(native) = subscriber.native.as_mut() else {
@@ -7250,6 +7418,7 @@ impl CapnpBrokerState {
                     if same_roster(&native.roster, &roster) {
                         return true;
                     }
+                    changed = true;
                     if subscriber
                         .tx
                         .send(ContextEnvelope::Snapshot {
@@ -7263,6 +7432,10 @@ impl CapnpBrokerState {
                     native.roster.clone_from(&roster);
                     true
                 });
+            }
+            drop(channels);
+            if changed {
+                self.publish_certified_people(&route.cluster_id);
             }
         }
         Ok(())
@@ -11676,6 +11849,7 @@ impl task_run_stream::Server for TaskRunStreamServer {
                 version: 1,
                 task_id: run.task_id,
                 title: run.title,
+                instruction: run.instruction,
                 run_id: run.run_id,
                 lease: run.lease,
                 planning: run.planning,
@@ -16017,8 +16191,17 @@ pub mod tests {
         admitted.display_handle = Some(tide.into());
         assert_eq!(CapnpBrokerState::participant_id(&admitted), person);
         let membership = tree.shared();
+        let fanout = Arc::new(FanoutState::new());
+        let observed = Arc::new(Mutex::new(Vec::<(
+            String,
+            Vec<ui::collaboration::Collaborator>,
+        )>::new()));
+        let observed_sink = Arc::clone(&observed);
+        let _people = fanout.subscribe_certified_people(Arc::new(move |room, people| {
+            observed_sink.lock().unwrap().push((room, people));
+        }));
         let (state, _bridge_rx) = CapnpBrokerState::new_configured(
-            &Arc::new(FanoutState::new()),
+            &fanout,
             Arc::new(Mutex::new(BrokerChannels::default())),
             PeerPublisher::disabled(),
             Some(membership.authority()),
@@ -16029,6 +16212,7 @@ pub mod tests {
                 ..Default::default()
             },
         );
+        fanout.attach_capnp(state.clone());
 
         let roster = state.native_membership_roster(&route, &admitted).unwrap();
         let legacy_route =
@@ -16088,6 +16272,14 @@ pub mod tests {
             stream.try_recv(),
             Ok(ContextEnvelope::Snapshot { .. })
         ));
+        assert_eq!(
+            state.certified_agent_identity(&room, &format!("agent:{tide}")),
+            Some(ui::collaboration::CertifiedAgentIdentity {
+                participant_id: format!("agent:{tide}"),
+                agent_key: tide.into(),
+            }),
+        );
+        assert!(state.certified_agent_identity(&room, &person).is_none());
         let forged = ui::collaboration::Collaborator {
             id: "agent:forged".into(),
             name: "forged".into(),
@@ -16120,6 +16312,17 @@ pub mod tests {
         assert_eq!(collaborators[0].name, forged.name);
         assert!(collaborators[0].is_agent);
         assert!(!collaborators[0].is_self);
+        assert!(
+            observed
+                .lock()
+                .unwrap()
+                .last()
+                .unwrap()
+                .1
+                .iter()
+                .all(|row| row.id != forged.id),
+            "ordinary Context cannot enter the certified People observer"
+        );
         assert!(membership.write().workspaces[0].revoke_grant(&collision));
         assert!(membership.write().workspaces[0].dismiss(other_person));
         state.refresh_workspace_context_services().unwrap();
@@ -16130,6 +16333,17 @@ pub mod tests {
             collaborators
                 .iter()
                 .all(|row| row.id != format!("agent:{person}"))
+        );
+        assert!(
+            observed
+                .lock()
+                .unwrap()
+                .last()
+                .unwrap()
+                .1
+                .iter()
+                .all(|row| row.id != format!("agent:{person}")),
+            "membership replacement retires the certified agent from shell projection"
         );
         assert!(collaborators.iter().all(|row| row.id != other_person));
         assert!(
@@ -16163,6 +16377,17 @@ pub mod tests {
                 .iter()
                 .any(|row| row.id == "agent:reed" && row.is_agent)
         );
+        assert!(
+            observed
+                .lock()
+                .unwrap()
+                .last()
+                .unwrap()
+                .1
+                .iter()
+                .any(|row| row.id == "agent:reed" && row.is_agent),
+            "certified kind comes from the owner row, not an id convention"
+        );
 
         let mut queued = state.subscribe_context(&channel, 48, Some(native.clone()));
         assert!(matches!(
@@ -16188,10 +16413,25 @@ pub mod tests {
         );
         membership.write().workspaces[0].policy.owner = None;
         state.refresh_workspace_context_services().unwrap();
+        assert!(
+            observed.lock().unwrap().last().unwrap().1.is_empty(),
+            "losing the certified source withdraws the complete shell roster"
+        );
         let Err(error) = pending.await else {
             panic!("revocation must terminate an already waiting native read");
         };
         assert!(error.to_string().contains("context stream fanout closed"));
+        assert!(
+            state
+                .certified_agent_identity(&room, &format!("agent:{tide}"))
+                .is_none(),
+            "an empty certified roster immediately revokes marker activation identity"
+        );
+        assert!(
+            state
+                .certified_agent_identity(&room, "agent:forged")
+                .is_none()
+        );
     }
 
     #[test]

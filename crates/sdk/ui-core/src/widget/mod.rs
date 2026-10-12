@@ -773,6 +773,13 @@ pub trait FloatingSurfaceProvider {
     /// Route native keyboard focus to the exact presentation instance.
     fn on_floating_surface_focus_changed(&mut self, _id: Option<&str>, _focused: bool) {}
 
+    /// Keep the exact secondary presentation's editor logically focused while
+    /// the platform deliberately retains text-input focus on its source.
+    ///
+    /// This is a host-authenticated input route, not a claim made by the app.
+    /// The host clears it when the continuation ends or no longer validates.
+    fn on_floating_surface_ime_source_changed(&mut self, _id: Option<&str>) {}
+
     /// Identify the native surface delivering the current input event. The
     /// host resets this immediately after dispatch; it grants no authority.
     fn on_floating_surface_event_source(&mut self, _id: Option<&str>) {}
@@ -829,6 +836,32 @@ pub trait FloatingSurfaceProvider {
         _theme: &crate::theme::Theme,
         _presence: &crate::presence::PresenceCtx,
     ) {
+    }
+
+    /// Paint exactly one app-owned presentation into its native window.
+    ///
+    /// Native secondary windows are independent buffers. Painting the plural
+    /// overlay pass into each one can duplicate sibling surfaces and lets
+    /// content escape the window's own clip.
+    fn draw_floating_surface(
+        &mut self,
+        id: &str,
+        scene: &mut vello::Scene,
+        transform: vello::kurbo::Affine,
+        text_renderer: &mut crate::text_render::TextRenderer,
+        theme: &crate::theme::Theme,
+        presence: &crate::presence::PresenceCtx,
+    ) -> bool {
+        let presentations = self.floating_surface_presentations();
+        if presentations.len() != 1 || presentations[0].id != id {
+            // A plural paint pass cannot select one of several owners safely.
+            // Multi-surface providers must implement the exact-id pass.
+            return false;
+        }
+        // Existing single-surface providers retain their normal paint pass.
+        // Multi-surface providers override this to select the exact owner.
+        self.draw_floating_surfaces(scene, transform, text_renderer, theme, presence);
+        true
     }
 
     /// Desktop-space presentations that need a native secondary window.
@@ -2396,6 +2429,7 @@ pub trait Widget {
 /// contract contains only capability accessors.
 pub trait FloatingSurfaceWidgetExt {
     fn on_floating_surface_focus_changed(&mut self, id: Option<&str>, focused: bool);
+    fn on_floating_surface_ime_source_changed(&mut self, id: Option<&str>);
     fn on_floating_surface_event_source(&mut self, id: Option<&str>);
     fn floating_surface_accessibility(&self, id: &str) -> Option<crate::a11y::AccessNode>;
     fn perform_floating_surface_accessibility_action(
@@ -2423,6 +2457,15 @@ pub trait FloatingSurfaceWidgetExt {
         theme: &crate::theme::Theme,
         presence: &crate::presence::PresenceCtx,
     );
+    fn draw_floating_surface(
+        &mut self,
+        id: &str,
+        scene: &mut vello::Scene,
+        transform: vello::kurbo::Affine,
+        text_renderer: &mut crate::text_render::TextRenderer,
+        theme: &crate::theme::Theme,
+        presence: &crate::presence::PresenceCtx,
+    ) -> bool;
     fn floating_surface_presentations(
         &self,
     ) -> Vec<crate::floating_surface::FloatingSurfacePresentation>;
@@ -2438,6 +2481,12 @@ impl<T: Widget + ?Sized> FloatingSurfaceWidgetExt for T {
     fn on_floating_surface_focus_changed(&mut self, id: Option<&str>, focused: bool) {
         if let Some(provider) = capability::capability_mut::<dyn FloatingSurfaceProvider>(self) {
             provider.on_floating_surface_focus_changed(id, focused);
+        }
+    }
+
+    fn on_floating_surface_ime_source_changed(&mut self, id: Option<&str>) {
+        if let Some(provider) = capability::capability_mut::<dyn FloatingSurfaceProvider>(self) {
+            provider.on_floating_surface_ime_source_changed(id);
         }
     }
 
@@ -2502,6 +2551,20 @@ impl<T: Widget + ?Sized> FloatingSurfaceWidgetExt for T {
         if let Some(provider) = capability::capability_mut::<dyn FloatingSurfaceProvider>(self) {
             provider.draw_floating_surfaces(scene, transform, text_renderer, theme, presence);
         }
+    }
+
+    fn draw_floating_surface(
+        &mut self,
+        id: &str,
+        scene: &mut vello::Scene,
+        transform: vello::kurbo::Affine,
+        text_renderer: &mut crate::text_render::TextRenderer,
+        theme: &crate::theme::Theme,
+        presence: &crate::presence::PresenceCtx,
+    ) -> bool {
+        capability::capability_mut::<dyn FloatingSurfaceProvider>(self).is_some_and(|provider| {
+            provider.draw_floating_surface(id, scene, transform, text_renderer, theme, presence)
+        })
     }
 
     fn floating_surface_presentations(

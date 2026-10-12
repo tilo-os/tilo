@@ -195,6 +195,13 @@ impl Container {
         self
     }
 
+    /// Update a fixed-width container without rebuilding its retained child.
+    /// Responsive top-layer surfaces use this during layout when text scale
+    /// changes after construction.
+    pub fn set_width(&mut self, px: f32) {
+        self.fixed_width = Some(px);
+    }
+
     /// Keeps the container fluid in narrow spaces, while centring it at no
     /// more than `px` in a wider parent. This is useful for readable forms
     /// and sparse settings panes without constraining data-dense layouts.

@@ -113,7 +113,7 @@ pub mod accesskit_bridge;
 pub mod action_host;
 mod action_locus;
 pub mod table_model;
-pub use action_locus::ActionUiRoute;
+pub use action_locus::{ActionUiRoute, PaintedActionMarker};
 pub mod action_palette;
 pub mod agent_identity;
 pub mod animation;

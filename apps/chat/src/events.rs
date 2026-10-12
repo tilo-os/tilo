@@ -339,6 +339,10 @@ impl ChatApp {
             self.request_relayout();
             *handled = true;
         }
+        if self.agent_conversation_drag.is_some() {
+            self.update_agent_conversation_drag(self.last_mouse);
+            *handled = true;
+        }
         let hovered = if self.call.placement.is_dragging() {
             None
         } else {
@@ -394,6 +398,10 @@ impl ChatApp {
                 );
                 *handled = true;
             }
+            Some(Hit::AgentDragHandle) => {
+                self.begin_agent_conversation_drag(self.last_mouse);
+                *handled = true;
+            }
             Some(Hit::Channel(id)) => {
                 // Arm a potential swipe on the row; a plain click still
                 // resolves on release if it didn't travel.
@@ -446,6 +454,7 @@ impl ChatApp {
         handled: &mut bool,
     ) {
         self.call.placement.end_drag(self.desktop_floating_bounds());
+        self.end_agent_conversation_drag();
         // End any composer drag-selection in progress.
         self.forward_pointer_to_text_inputs(event, scale, modifiers, doc);
         if let Some(sw) = self.swipe.take() {
@@ -542,7 +551,7 @@ impl ChatApp {
             return;
         }
 
-        let composer_owns = self.can_participate()
+        let composer_owns = self.main_composer_can_edit()
             && self.menu.is_none()
             && !self.emoji_open
             && self.history_open.is_none()
@@ -575,7 +584,7 @@ impl ChatApp {
         } else if self.emoji_open {
             self.route_emoji_search(event, scale, modifiers, doc);
             true
-        } else if self.can_participate()
+        } else if self.main_composer_can_edit()
             && self.menu.is_none()
             && !self.emoji_open
             && self.history_open.is_none()
@@ -645,9 +654,11 @@ impl ChatApp {
     /// Route a keystroke into the focused composer `TextInput`. Enter submits
     /// (Shift+Enter inserts a newline — the composer is multiline with
     /// enter-submits); any text edit is written back into the per-channel /
-    /// thread draft `Text` in the CRDT (diff-spliced) so a draft stays
-    /// collaborative + persistent. On an empty composer, `ArrowUp` loads your
-    /// last message into the inline editor (Slack/Discord convention).
+    /// thread draft `Text` in the CRDT (diff-spliced) so a shared draft stays
+    /// collaborative + persistent. A direct-Agent draft stays in the
+    /// peer-local composer source and never creates a document draft. On an
+    /// empty composer, `ArrowUp` loads your last message into the inline
+    /// editor (Slack/Discord convention).
     fn route_composer_key(
         &mut self,
         event: &WindowEvent,
@@ -672,11 +683,15 @@ impl ChatApp {
             }
             return;
         }
-        // The draft is created the first time its surface is written in.
-        let key = self.draft_key();
-        if !crate::projection::has_draft(doc, &key) {
-            self.ensure_composer_draft(doc, &key);
-            self.focused_composer_mut().sync(doc);
+        // A shared draft is created the first time its surface is written
+        // in. Direct-Agent drafts are process-local and must not mint even an
+        // empty placeholder in the workspace document.
+        if self.direct_agent.is_none() {
+            let key = self.draft_key();
+            if !crate::projection::has_draft(doc, &key) {
+                self.ensure_composer_draft(doc, &key);
+                self.focused_composer_mut().sync(doc);
+            }
         }
         self.focused_composer_mut()
             .handle(event, scale, modifiers, doc);
@@ -847,6 +862,31 @@ impl ChatApp {
                 self.on_hit_workspace(self.context_ws.clone());
             }
             Hit::Channel(id) => self.on_hit_channel(id, doc),
+            Hit::Agent(agent) => {
+                self.open_agent_conversation(&agent);
+            }
+            Hit::AgentWindow => {
+                if self.conversation_surface {
+                    self.conversation_return_requested = true;
+                } else {
+                    self.float_agent_conversation();
+                }
+            }
+            Hit::AgentIntent(intent) => self.set_direct_agent_intent(intent),
+            Hit::AgentTask(frontier) => {
+                self.select_agent_task(&frontier);
+            }
+            Hit::AgentTaskMore => {
+                if let Some(agent) = self.direct_agent.clone() {
+                    self.agent_tasks.next_page(&agent);
+                }
+            }
+            Hit::AgentStart => {
+                self.start_agent_task();
+            }
+            Hit::AgentStop => {
+                self.stop_agent_task();
+            }
             Hit::VoiceChannel(id) => self.join_voice(&id, doc),
             Hit::CategoryToggle(id) => self.toggle_category(&id),
             Hit::EditSave => self.commit_edit(doc),
@@ -937,7 +977,7 @@ impl ChatApp {
             Hit::ToggleLeftFlap => self.left_flap.toggle(),
             Hit::ToggleRightFlap => self.right_flap.toggle(),
             Hit::Dismiss => self.on_hit_dismiss(),
-            // MessageMenu is a right-click affordance and CallDragHandle is
+            // MessageMenu is a right-click affordance and drag handles are
             // handled at press time; permission-gated fallthroughs are no-ops.
             _ => {}
         }
@@ -1437,17 +1477,22 @@ impl ChatApp {
     /// if typed. Composer keystrokes themselves go straight to the widget via
     /// [`route_composer_key`].
     fn insert_text(&mut self, doc: &mut ui::widget::Edits<'_>, s: &str) {
-        if !self.can_participate() {
+        if !self.main_composer_can_edit() {
             return;
         }
         if self.editing.is_some() {
+            if !self.can_participate() {
+                return;
+            }
             self.edit_input.insert_text(doc, s);
             return;
         }
-        let key = self.draft_key();
-        if !crate::projection::has_draft(doc, &key) {
-            self.ensure_composer_draft(doc, &key);
-            self.focused_composer_mut().sync(doc);
+        if self.direct_agent.is_none() {
+            let key = self.draft_key();
+            if !crate::projection::has_draft(doc, &key) {
+                self.ensure_composer_draft(doc, &key);
+                self.focused_composer_mut().sync(doc);
+            }
         }
         self.focused_composer_mut().insert_text(doc, s);
         self.reload(doc);
@@ -1533,6 +1578,10 @@ impl ChatApp {
     }
 
     fn send_focused(&mut self, doc: &mut ui::widget::Edits<'_>) {
+        if self.direct_agent.is_some() {
+            self.send_agent_focused(doc);
+            return;
+        }
         // Posting is a write into the workspace: gated by the OS permission
         // context (a View-only / ungranted peer can read but not send).
         if !self.can_participate() {
@@ -1579,6 +1628,70 @@ impl ChatApp {
             self.jump_to_latest();
         }
         self.reload(doc);
+    }
+
+    pub(crate) fn send_agent_focused(&mut self, doc: &ui::widget::Edits<'_>) -> bool {
+        let Some(agent) = self.direct_agent.clone() else {
+            return false;
+        };
+        if !self.direct_agent_intent_allowed(self.direct_agent_intent()) {
+            return false;
+        }
+        let text = self.composer_main.private_plain().unwrap_or_default();
+        if text.trim().is_empty() {
+            return false;
+        }
+        let Some(route) = self.agent_draft_route() else {
+            return false;
+        };
+        let Some(revision) = self
+            .composer_main
+            .private_revision_for(&self.active_ws, &route)
+        else {
+            return false;
+        };
+        let accepted = match self.direct_agent_intent() {
+            crate::agent_tasks::AgentComposerIntent::Steer => {
+                self.agent_tasks.direct(&agent, text, revision)
+            }
+            crate::agent_tasks::AgentComposerIntent::Queue => {
+                self.agent_tasks.queue(&agent, text, revision)
+            }
+        };
+        if accepted {
+            self.jump_to_latest();
+        }
+        self.reload(doc);
+        accepted
+    }
+
+    pub(crate) fn select_agent_task(
+        &mut self,
+        frontier: &crate::agent_tasks::AgentTaskFrontier,
+    ) -> bool {
+        let Some(agent) = self.direct_agent.clone() else {
+            return false;
+        };
+        let selected = self.agent_tasks.select(&agent, frontier);
+        if selected {
+            self.set_direct_agent_intent(crate::agent_tasks::AgentComposerIntent::Steer);
+            self.sync_agent_route();
+        }
+        selected
+    }
+
+    pub(crate) fn start_agent_task(&mut self) -> bool {
+        let Some(agent) = self.direct_agent.clone() else {
+            return false;
+        };
+        self.agent_tasks.start(&agent)
+    }
+
+    pub(crate) fn stop_agent_task(&mut self) -> bool {
+        let Some(agent) = self.direct_agent.clone() else {
+            return false;
+        };
+        self.agent_tasks.stop(&agent)
     }
 
     /// Return to the newest message. This is intentionally local state: it
@@ -2283,6 +2396,33 @@ mod tests {
                 "thread gained one reply on top of the seeded three"
             );
         }
+    }
+
+    #[test]
+    fn agent_private_drafts_keep_exact_identity_and_never_enter_the_room_document() {
+        let (mut app, mut doc) = app_with_doc();
+        app.room_agents = vec!["reed".into(), "scribe".into()];
+
+        assert!(app.open_agent_conversation("scribe"));
+        app.composer_main.sync(&doc);
+        app.focus = Focus::Main;
+        app.set_composer_focus();
+        type_str(&mut app, &mut doc, "private for scribe");
+        app.composer_main.select(8, 18);
+        let scribe_selection = app.composer_main.selection();
+        assert!(!crate::projection::has_draft(&doc, &app.active_channel));
+
+        assert!(app.open_agent_conversation("reed"));
+        app.composer_main.sync(&doc);
+        assert_eq!(app.composer_main.value(), "");
+        type_str(&mut app, &mut doc, "private for reed");
+        assert!(!crate::projection::has_draft(&doc, &app.active_channel));
+
+        assert!(app.open_agent_conversation("scribe"));
+        app.composer_main.sync(&doc);
+        assert_eq!(app.composer_main.value(), "private for scribe");
+        assert_eq!(app.composer_main.selection(), scribe_selection);
+        assert!(!crate::projection::has_draft(&doc, &app.active_channel));
     }
 
     #[test]
@@ -3510,6 +3650,68 @@ mod tests {
         let mut tr = TextRenderer::new();
         let mut scene = Scene::new();
         app.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+    }
+
+    #[test]
+    fn agent_task_conversation_normal_and_compact_keep_exact_control_and_private_editor() {
+        for (scenario, width) in [("agent-task", 1280.0), ("agent-task-compact", 420.0)] {
+            let (mut app, mut doc) = app_with_doc();
+            app.stage_scenario(scenario);
+            app.composer_main.sync(&doc);
+            app.focus = Focus::Main;
+            app.set_composer_focus();
+            type_str(&mut app, &mut doc, "Keep this private clarification.");
+            app.composer_main.select(5, 17);
+            let selection = app.composer_main.selection();
+            let route = app.agent_draft_route().unwrap();
+            assert_eq!(route, "task:task:review:7");
+            render_frame(&mut app, width, 680.0);
+            assert!(
+                app.hits
+                    .iter()
+                    .any(|(_, hit)| matches!(hit, Hit::AgentStop))
+            );
+            assert!(
+                !app.hits
+                    .iter()
+                    .any(|(_, hit)| matches!(hit, Hit::AgentStart)),
+                "an active run cannot be approved again"
+            );
+            assert!(app.hits.iter().any(|(_, hit)| matches!(hit, Hit::Send)));
+            assert_eq!(
+                app.header_identity_text().name,
+                "Review the resource action contract"
+            );
+            assert!(!crate::projection::has_draft(&doc, &app.active_channel));
+
+            let channel = app.active_channel.clone();
+            let mut surface =
+                crate::agent_conversation_surface::AgentConversationSurface::from_attached(
+                    &mut app, "scribe",
+                );
+            assert_eq!(
+                surface.view.agent_draft_route().as_deref(),
+                Some(route.as_str())
+            );
+            assert_eq!(
+                surface.view.composer_main.value(),
+                "Keep this private clarification."
+            );
+            assert_eq!(surface.view.composer_main.selection(), selection);
+            assert!(surface.request().title.contains("Run 7"));
+            surface.move_editor_to_parent(&mut app);
+            assert_eq!(app.agent_draft_route().as_deref(), Some(route.as_str()));
+            assert_eq!(app.composer_main.selection(), selection);
+            assert_eq!(app.active_channel, channel);
+            assert_eq!(
+                app.direct_agent_tasks()
+                    .unwrap()
+                    .current()
+                    .unwrap()
+                    .run_epoch,
+                Some(7)
+            );
+        }
     }
 
     fn stage_agent_work(app: &mut ChatApp, doc: &mut AutoCommit) {
