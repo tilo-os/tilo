@@ -21,6 +21,7 @@ use fs_protocol::{
 use fuser::{FileAttr, FileType, INodeNo};
 use iroh_blobs::Hash;
 use tilo_automerge::ApplyIncoming;
+use tilo_automerge::read::{map_at, str_at};
 use uuid::Uuid;
 
 pub const ROOT_INO: u64 = 1;
@@ -517,15 +518,6 @@ fn revision_from_scalar(value: &ScalarValue) -> Option<ContentRevisionV1> {
     }
 }
 
-fn read_str(doc: &AutoCommit, obj: &ObjId, key: &str) -> Option<String> {
-    match doc.get(obj, key) {
-        Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
-            ScalarValue::Str(x) => Some(x.to_string()),
-            _ => None,
-        },
-        _ => None,
-    }
-}
 fn read_name(doc: &AutoCommit, obj: &ObjId, key: &str) -> Option<FileNameV1> {
     match doc.get(obj, key) {
         Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
@@ -694,7 +686,7 @@ impl Namespace {
                 operations.sort();
                 frontier.push((id.clone(), key, operations));
             }
-            id = read_str(&self.doc, &node, "parent")?;
+            id = str_at(&self.doc, &node, "parent")?;
         }
         Some(frontier)
     }
@@ -1126,10 +1118,7 @@ impl Namespace {
     }
 
     fn node(&self, id: &str) -> Option<ObjId> {
-        match self.doc.get(&self.nodes, id) {
-            Ok(Some((Value::Object(ObjType::Map), obj))) => Some(obj),
-            _ => None,
-        }
+        map_at(&self.doc, &self.nodes, id)
     }
 
     /// The structural index of every node, read from the document.
@@ -1139,11 +1128,11 @@ impl Namespace {
             let Some(node) = self.node(&id) else {
                 continue;
             };
-            if let Some(parent) = read_str(&self.doc, &node, "parent") {
+            if let Some(parent) = str_at(&self.doc, &node, "parent") {
                 let name = read_name(&self.doc, &node, "name").unwrap_or_default();
                 tree.place(&id, parent, name);
             }
-            if let Some(record_id) = read_str(&self.doc, &node, RECORD_ID_KEY)
+            if let Some(record_id) = str_at(&self.doc, &node, RECORD_ID_KEY)
                 .and_then(|value| Uuid::parse_str(&value).ok())
             {
                 tree.bind_record(&id, FileRecordId(record_id));
@@ -1185,7 +1174,7 @@ impl Namespace {
                 id,
                 Raw {
                     record_id,
-                    parent_id: read_str(&self.doc, &node, "parent").unwrap_or_default(),
+                    parent_id: str_at(&self.doc, &node, "parent").unwrap_or_default(),
                     name: read_name(&self.doc, &node, "name").unwrap_or_default(),
                     is_dir,
                 },
@@ -1330,7 +1319,7 @@ impl Namespace {
             self.update_record_index_revision();
             return;
         }
-        let parent_id = read_str(&self.doc, &node, "parent").unwrap_or_default();
+        let parent_id = str_at(&self.doc, &node, "parent").unwrap_or_default();
         let parent_path = if parent_id == ROOT_ID {
             Some(String::from("/"))
         } else {
@@ -1412,7 +1401,7 @@ impl Namespace {
     /// Populate snapshots written before record-scoped replication. Peers
     /// migrating the same legacy namespace independently derive the same ids.
     fn ensure_record_ids(&mut self) {
-        if read_str(&self.doc, &ROOT, ROOT_RECORD_ID_KEY)
+        if str_at(&self.doc, &ROOT, ROOT_RECORD_ID_KEY)
             .and_then(|value| Uuid::parse_str(&value).ok())
             .is_none()
         {
@@ -1427,7 +1416,7 @@ impl Namespace {
             let Some(node) = self.node(&id) else {
                 continue;
             };
-            if read_str(&self.doc, &node, RECORD_ID_KEY)
+            if str_at(&self.doc, &node, RECORD_ID_KEY)
                 .and_then(|value| Uuid::parse_str(&value).ok())
                 .is_some()
             {
@@ -1441,7 +1430,7 @@ impl Namespace {
     }
 
     fn parent_of(&self, id: &str) -> Option<String> {
-        read_str(&self.doc, &self.node(id)?, "parent")
+        str_at(&self.doc, &self.node(id)?, "parent")
     }
     fn name_of(&self, id: &str) -> Option<FileNameV1> {
         read_name(&self.doc, &self.node(id)?, "name")
@@ -1472,7 +1461,7 @@ impl Namespace {
 
     fn kind_of(&self, id: &str) -> NodeKind {
         self.node(id)
-            .and_then(|o| read_str(&self.doc, &o, "kind"))
+            .and_then(|o| str_at(&self.doc, &o, "kind"))
             .map_or(NodeKind::File, |k| NodeKind::from_str(&k))
     }
 
@@ -1489,7 +1478,7 @@ impl Namespace {
     /// document after its parent or name changed.
     fn reindex_node(&mut self, id: &str) {
         let placement = self.node(id).and_then(|node| {
-            let parent = read_str(&self.doc, &node, "parent")?;
+            let parent = str_at(&self.doc, &node, "parent")?;
             let name = read_name(&self.doc, &node, "name").unwrap_or_default();
             Some((parent, name))
         });
@@ -1529,13 +1518,13 @@ impl Namespace {
         Some(Entry {
             id: id.to_string(),
             record_id: meta.record_id,
-            parent: read_str(&self.doc, &obj, "parent").unwrap_or_default(),
+            parent: str_at(&self.doc, &obj, "parent").unwrap_or_default(),
             name: read_name(&self.doc, &obj, "name").unwrap_or_default(),
             kind: meta.kind,
             hash: meta.hash,
             size: meta.size,
             mtime: meta.mtime,
-            author: read_str(&self.doc, &obj, "author").unwrap_or_default(),
+            author: str_at(&self.doc, &obj, "author").unwrap_or_default(),
         })
     }
 
@@ -1552,17 +1541,17 @@ impl Namespace {
         let record_id = if id == ROOT_ID {
             self.record_id_for_id(id)?
         } else {
-            FileRecordId(Uuid::parse_str(&read_str(&self.doc, obj, RECORD_ID_KEY)?).ok()?)
+            FileRecordId(Uuid::parse_str(&str_at(&self.doc, obj, RECORD_ID_KEY)?).ok()?)
         };
         let revision = self.content_revision_of(obj, record_id);
         Some(NodeMeta {
             record_id,
-            kind: NodeKind::from_str(&read_str(&self.doc, obj, "kind").unwrap_or_default()),
+            kind: NodeKind::from_str(&str_at(&self.doc, obj, "kind").unwrap_or_default()),
             hash: match (self.content_authority, revision) {
                 (_, Some(revision)) => revision.content_hash.map(|hash| Hash::from(hash.0)),
                 (ContentAuthority::SignedRecords, None) => None,
                 (ContentAuthority::LegacyNamespace, None) => {
-                    read_str(&self.doc, obj, "hash").and_then(|h| hash_from_hex(&h))
+                    str_at(&self.doc, obj, "hash").and_then(|h| hash_from_hex(&h))
                 }
             },
             size: match (self.content_authority, revision) {
@@ -1632,9 +1621,9 @@ impl Namespace {
     /// Stable collaborative record id for a namespace node id.
     pub fn record_id_for_id(&self, id: &str) -> Option<FileRecordId> {
         let value = if id == ROOT_ID {
-            read_str(&self.doc, &ROOT, ROOT_RECORD_ID_KEY)?
+            str_at(&self.doc, &ROOT, ROOT_RECORD_ID_KEY)?
         } else {
-            read_str(&self.doc, &self.node(id)?, RECORD_ID_KEY)?
+            str_at(&self.doc, &self.node(id)?, RECORD_ID_KEY)?
         };
         Uuid::parse_str(&value).ok().map(FileRecordId)
     }
@@ -2639,7 +2628,7 @@ impl Namespace {
                 None
             },
             document: self.content_authority == ContentAuthority::LegacyNamespace
-                && read_str(&self.doc, &obj, "codec").is_some(),
+                && str_at(&self.doc, &obj, "codec").is_some(),
         })
     }
 
@@ -2939,14 +2928,11 @@ impl Namespace {
 
     pub fn document_codec(&self, ino: u64) -> Option<String> {
         let id = self.ino_to_id.get(&ino)?;
-        read_str(&self.doc, &self.node(id)?, "codec")
+        str_at(&self.doc, &self.node(id)?, "codec")
     }
 
     fn document_root(&self, id: &str) -> Option<ObjId> {
-        match self.doc.get(&self.node(id)?, "doc") {
-            Ok(Some((Value::Object(ObjType::Map), root))) => Some(root),
-            _ => None,
-        }
+        map_at(&self.doc, &self.node(id)?, "doc")
     }
 
     /// Project a document into its file format, embedding the binary content (images, binary
@@ -2957,7 +2943,7 @@ impl Namespace {
         content: &dyn tilo_content::ContentSource,
     ) -> Option<Vec<u8>> {
         let id = self.ino_to_id.get(&ino)?.clone();
-        let codec = read_str(&self.doc, &self.node(&id)?, "codec")?;
+        let codec = str_at(&self.doc, &self.node(&id)?, "codec")?;
         let provider = tilo_doc_codecs::provider_for_ext(&codec)?;
         let root = self.document_root(&id)?;
         let containers = tilo_doc::model::open(&self.doc, &root).ok()?;
@@ -2988,7 +2974,7 @@ impl Namespace {
         let Some(node) = self.node(&id) else {
             return false;
         };
-        let Some(codec) = read_str(&self.doc, &node, "codec") else {
+        let Some(codec) = str_at(&self.doc, &node, "codec") else {
             return false;
         };
         let Some(provider) = tilo_doc_codecs::provider_for_ext(&codec) else {
@@ -3294,7 +3280,7 @@ impl Namespace {
                 .and_then(|projection| projection.thumbnail);
         }
         let id = self.ino_to_id.get(&ino)?;
-        read_str(&self.doc, &self.node(id)?, "thumb").and_then(|h| hash_from_hex(&h))
+        str_at(&self.doc, &self.node(id)?, "thumb").and_then(|h| hash_from_hex(&h))
     }
 
     /// Every live node naming content, with its path: the input of the blob
@@ -3325,7 +3311,7 @@ impl Namespace {
                         .and_then(|projection| projection.thumbnail)
                 } else {
                     self.node(id)
-                        .and_then(|obj| read_str(&self.doc, &obj, "thumb"))
+                        .and_then(|obj| str_at(&self.doc, &obj, "thumb"))
                         .and_then(|value| hash_from_hex(&value))
                 };
                 if manifest.is_none() && thumbnail.is_none() {
@@ -3353,7 +3339,7 @@ impl Namespace {
                 .and_then(|projection| projection.thumbnail);
         }
         self.node(id)
-            .and_then(|obj| read_str(&self.doc, &obj, "thumb"))
+            .and_then(|obj| str_at(&self.doc, &obj, "thumb"))
             .and_then(|value| hash_from_hex(&value))
     }
 
@@ -3409,11 +3395,11 @@ impl Namespace {
     }
 
     pub fn deleted_hash(&self, id: &str) -> Option<Hash> {
-        read_str(&self.doc, &self.node(id)?, "deleted_hash").and_then(|h| hash_from_hex(&h))
+        str_at(&self.doc, &self.node(id)?, "deleted_hash").and_then(|h| hash_from_hex(&h))
     }
 
     pub fn prev_parent(&self, id: &str) -> Option<String> {
-        read_str(&self.doc, &self.node(id)?, "prev_parent")
+        str_at(&self.doc, &self.node(id)?, "prev_parent")
     }
 
     pub fn is_visible(&self, id: &str) -> bool {
@@ -3509,7 +3495,7 @@ impl Namespace {
             };
             let pp = self
                 .node(&loser)
-                .and_then(|o| read_str(&self.doc, &o, "prev_parent"))
+                .and_then(|o| str_at(&self.doc, &o, "prev_parent"))
                 .unwrap_or_else(|| ROOT_ID.to_string());
             let target = if cycle.contains(&pp)
                 || (pp != ROOT_ID && pp != TRASH_ID && self.node(&pp).is_none())
