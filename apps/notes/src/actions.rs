@@ -93,6 +93,23 @@ pub fn page_of_resource(id: &str) -> Option<PageId> {
     }
 }
 
+/// The resource a note's body is published as: a rich-text resource beneath
+/// the note's (`#[model(resource)]` on [`Page::body`]).
+#[must_use]
+pub fn body_resource_id(page: PageId) -> String {
+    ui::tilo_resource::child::nested_resource_id(&page_resource_id(page), BODY_KEY)
+}
+
+/// The note whose body a published resource id names.
+#[must_use]
+pub fn page_of_body_resource(id: &str) -> Option<PageId> {
+    let page = id.strip_suffix(BODY_KEY)?.strip_suffix('/')?;
+    page_of_resource(page)
+}
+
+/// The key [`Page::body`] is stored under.
+const BODY_KEY: &str = "body";
+
 /// The resource a tag is published as.
 #[must_use]
 pub fn tag_resource_id(tag: TagId) -> String {
