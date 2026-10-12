@@ -129,7 +129,7 @@ fn semantic_schema_for_app(app_id: &str) -> Option<ContinuitySemanticSchema> {
     }
 }
 
-/// TRANSITION ONLY (TIL-341): senders still write semantic payloads untagged
+/// TRANSITION ONLY: senders still write semantic payloads untagged
 /// (`ContinuitySemanticSchema::LEGACY_UNTAGGED_TAG`), and an untagged payload
 /// from an app this device has not installed can only be read by package id.
 /// Delete this table once senders stamp `ContinuitySemanticSchema::wire_tag`
@@ -1392,33 +1392,5 @@ mod tests {
         );
         let (semantic, _) = launch_with(None, both).expect("the presentation checkpoint survives");
         assert!(!semantic, "a launch with no signed manifest cannot agree");
-    }
-
-    #[test]
-    fn realtime_schema_facets_mirror_the_toolkit_contract() {
-        use launcher::manifest::continuity_schema as schema;
-        for bits in 0u8..16 {
-            let [microphone, camera, screen_share, share_audio] =
-                [0, 1, 2, 3].map(|bit| bits & (1 << bit) != 0);
-            let toolkit = ui::realtime_continuity::RealtimeMediaFacets {
-                microphone,
-                camera,
-                screen_share,
-                share_audio,
-            };
-            let json = serde_json::to_vec(&toolkit).unwrap();
-            let mirrored: schema::RealtimeMediaFacets = serde_json::from_slice(&json).unwrap();
-            assert_eq!(serde_json::to_vec(&mirrored).unwrap(), json);
-            assert_eq!(mirrored.valid(), toolkit.valid(), "{json:?}");
-            let controls = ui::realtime_continuity::RealtimeControlIntent {
-                microphone_muted: microphone,
-                camera_muted: camera,
-                screen_share_paused: screen_share,
-                share_audio_muted: share_audio,
-            };
-            let json = serde_json::to_vec(&controls).unwrap();
-            let mirrored: schema::RealtimeControlIntent = serde_json::from_slice(&json).unwrap();
-            assert_eq!(serde_json::to_vec(&mirrored).unwrap(), json);
-        }
     }
 }

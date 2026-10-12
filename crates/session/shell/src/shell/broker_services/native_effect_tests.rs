@@ -519,7 +519,7 @@ fn assert_new_session_refuses_job(
         .open(&fixture.room.to_string(), Some(person))
         .unwrap();
     assert!(
-        fresh.observe(original).is_none(),
+        fresh.observe(&original).is_none(),
         "a new execution cannot borrow custody"
     );
     assert!(

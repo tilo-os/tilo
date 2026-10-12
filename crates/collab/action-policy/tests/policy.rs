@@ -319,6 +319,38 @@ fn grants_apply_only_to_their_subject() {
 }
 
 #[test]
+fn wall_clock_context_preserves_epoch_and_expiry() {
+    use web_time::{Duration, UNIX_EPOCH};
+
+    assert_eq!(Context::at_time(UNIX_EPOCH).now_unix_ms, 0);
+    assert_eq!(
+        Context::at_time(UNIX_EPOCH - Duration::from_millis(1)).now_unix_ms,
+        0
+    );
+    let grants =
+        [grant("until", send(), KindSet::ALL, Answer::Allow).with_lifetime(Lifetime::Until(NOW))];
+    for (millis, expected) in [
+        (NOW - 1, Answer::Allow),
+        (NOW, Answer::Deny),
+        (NOW + 1, Answer::Deny),
+    ] {
+        let cx = Context::at_time(UNIX_EPOCH + Duration::from_millis(millis));
+        assert_eq!(cx.now_unix_ms, millis);
+        assert_eq!(
+            decide(&grants, &[alice()], &send(), ActionKind::Outside, &cx).answer,
+            expected
+        );
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn wall_clock_context_accepts_native_system_time() {
+    let now: std::time::SystemTime = std::time::UNIX_EPOCH + std::time::Duration::from_millis(NOW);
+    assert_eq!(Context::at_time(now).now_unix_ms, NOW);
+}
+
+#[test]
 fn expired_grants_are_not_live() {
     let grants = [
         grant("broad", mail(), KindSet::ALL, Answer::Allow),

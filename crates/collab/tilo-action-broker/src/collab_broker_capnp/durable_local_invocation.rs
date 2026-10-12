@@ -99,6 +99,17 @@ impl LocalCaller {
             now,
         )?;
         Ok(crate::services::NativeTaskActionRequirement {
+            binding: match &record.key.owner {
+                InvocationOwner::NativeTask { task, agent, epoch } => {
+                    Some(crate::services::NativeTaskBinding {
+                        task_id: task.clone(),
+                        agent_id: agent.clone(),
+                        epoch: *epoch,
+                        revision: 0,
+                    })
+                }
+                _ => None,
+            },
             app: app.into(),
             resource_kind: resource_kind.into(),
             resource: resource.into(),
@@ -357,6 +368,12 @@ impl CapnpBrokerState {
         invocation: tilo_actions::InvocationId,
     ) -> Result<Option<DurableInvocation>, String> {
         let current = caller.current(self)?;
+        // Ordinary durable observations may reconcile effects too. Only the
+        // task-owned route can exercise a native agent's action authority.
+        if current.broker_actor().is_agent && self.native_tasks(&caller.route.cluster_id).is_some()
+        {
+            return Err("native task agent requires authenticated task action admission".into());
+        }
         if host != self.invocation_host()? {
             return Err("durable invocation host mismatch".into());
         }

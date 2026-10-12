@@ -883,6 +883,14 @@ pub enum PresencePayload {
     },
 }
 
+/// Explicit correlation supplied by owner-backed membership, never decoded
+/// from a participant label or an actor-id prefix.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CertifiedAgentIdentity {
+    pub participant_id: String,
+    pub agent_key: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct Collaborator {
     pub id: String,
@@ -1550,6 +1558,14 @@ impl CollaborationManager {
         {
             self.action_directory_published = true;
         }
+    }
+
+    pub(crate) fn action_directory_observation(&self) -> (bool, Option<(u64, u64)>) {
+        let counts = match &self.backend {
+            Backend::Transport(transport) => transport.action_directory_publication_counts(),
+            Backend::Disabled(_) => None,
+        };
+        (self.action_directory_published, counts)
     }
 
     /// Drain requests issued by the transport's `ActionDirectory` server.

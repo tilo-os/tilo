@@ -46,6 +46,8 @@
     )
 )]
 
+mod agent_conversation_surface;
+mod agent_tasks;
 pub mod app;
 pub mod body;
 pub mod call;

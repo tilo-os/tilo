@@ -1798,7 +1798,7 @@ mod tests {
     }
 
     /// Run every device's protocol for `seconds` of simulated time the way
-    /// the broker's drain thread does (TIL-706): a device runs a pass only
+    /// the broker's drain thread does: a device runs a pass only
     /// when a message waits for it or the wait its last pass returned has
     /// run out, and otherwise stays parked. `parked` carries each device's
     /// wait across calls (`None`: parked until a message); a test that calls
@@ -1846,7 +1846,7 @@ mod tests {
         }
     }
 
-    /// TIL-706: a member holding its keys has nothing to pump until a frame
+    /// #3998: a member holding its keys has nothing to pump until a frame
     /// arrives; a steward re-checks its policy once a reconcile interval.
     #[test]
     fn only_a_steward_or_an_unfinished_member_has_a_pump_deadline() {
@@ -1893,7 +1893,7 @@ mod tests {
         assert_eq!(wait_after_pass(None, now), None);
     }
 
-    /// TIL-706: a member the steward has not admitted asks again on its
+    /// #3998: a member the steward has not admitted asks again on its
     /// backoff, and is due exactly then.
     #[test]
     fn a_waiting_member_is_due_on_its_request_backoff() {
@@ -1920,7 +1920,7 @@ mod tests {
         );
     }
 
-    /// TIL-706: devices that park between deadlines reach the same outcome
+    /// #3998: devices that park between deadlines reach the same outcome
     /// in the same simulated time as devices pumped on a fixed tick:
     /// admission, then removal once the policy drops the member.
     #[test]
@@ -1969,7 +1969,7 @@ mod tests {
         ));
     }
 
-    /// TIL-707: with a directory that announces its changes, an idle steward
+    /// #4022: with a directory that announces its changes, an idle steward
     /// has no deadline at all, and a revocation is enforced as soon as it is
     /// announced, with no clock having run in between.
     #[test]
@@ -2014,7 +2014,7 @@ mod tests {
         ));
     }
 
-    /// TIL-707: announcements in quick succession cost at most one re-check
+    /// #4022: announcements in quick succession cost at most one re-check
     /// a reconcile interval, and none waits longer than that.
     #[test]
     fn announcements_in_quick_succession_coalesce() {
@@ -2039,7 +2039,7 @@ mod tests {
         );
     }
 
-    /// TIL-707: a grant that expires while nothing else happens is enforced
+    /// #4022: a grant that expires while nothing else happens is enforced
     /// when it expires: the steward registered the expiry, the process clock
     /// announces it, and the pump's watch wakes it. In between, the steward
     /// stays asleep.
@@ -2112,7 +2112,7 @@ mod tests {
         );
     }
 
-    /// TIL-598: an app endpoint waiting on its route's channel hears of its
+    /// #3964: an app endpoint waiting on its route's channel hears of its
     /// admission and its removal the moment this device's service records
     /// them, and of nothing that happens to another channel.
     #[test]

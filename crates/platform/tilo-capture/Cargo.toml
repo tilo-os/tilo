@@ -55,6 +55,7 @@ dispatch2 = { version = "0.3", optional = true, default-features = false, featur
 # Capture descriptors pass between an app and its host.
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
+rustix = { workspace = true, features = ["net", "std"] }
 
 # The ScreenCast portal picks the monitor or window; SANE scans documents.
 [target.'cfg(target_os = "linux")'.dependencies]

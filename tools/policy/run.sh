@@ -18,6 +18,8 @@ run() {
 
 run 'Source blobs are text and LF or explicitly pinned assets' \
   python3 tools/policy/check_source_content.py
+run 'Tracked files reference no internal tracker' \
+  python3 tools/policy/check_public_references.py
 run 'Workspace membership' ./scripts/check-workspace-complete.sh
 run 'Repository layout' python3 tools/policy/check_repository_layout.py
 run 'Integration tests are compiled by a test target' \

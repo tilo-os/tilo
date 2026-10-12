@@ -542,7 +542,10 @@ impl JobObserver {
     fn status(&self, id: u64, actor: &str) -> Option<tilo_actions::InvocationUpdate> {
         let route = self.retained(id).ok()?;
         match route {
-            Some(route) if route.person == actor => route.session.observe(route.invocation),
+            Some(route) if route.person == actor => route
+                .session
+                .observe(&route.invocation)
+                .map(|state| state.update),
             Some(route) => {
                 tracing::debug!(id, current_person = actor, original_person = route.person,
                     invocation = %route.invocation.0, "job observation refused current Person projection");
@@ -577,8 +580,8 @@ impl JobObserver {
                     && route.cancellable
                     && route
                         .session
-                        .observe(route.invocation)
-                        .is_some_and(|update| !update.is_terminal())
+                        .observe(&route.invocation)
+                        .is_some_and(|state| !state.update.is_terminal())
             }
             Ok(None) => self.broker.can_cancel(id, actor),
             Err(_) => false,
@@ -602,9 +605,9 @@ impl JobObserver {
         };
         retained.sort_unstable_by_key(|(id, _)| std::cmp::Reverse(*id));
         for (id, route) in retained.into_iter().take(MAX_JOB_ROWS_PER_QUERY) {
-            if let Some(update) = route.session.observe(route.invocation) {
+            if let Some(state) = route.session.observe(&route.invocation) {
                 jobs.retain(|(existing, _)| *existing != id);
-                jobs.push((id, update));
+                jobs.push((id, state.update));
             }
         }
         jobs.sort_unstable_by_key(|(id, _)| *id);
@@ -3959,6 +3962,66 @@ mod tests {
             provider.resolve(id, context("", &state, &doc)).is_none(),
             "the unchanged query must not retain the pre-edit Undo contract"
         );
+    }
+
+    #[test]
+    fn rejected_directory_ticket_releases_the_retained_empty_projection() {
+        for outcome in ["refused", "stale", "abandoned"] {
+            let provider = LiveAppActionsProvider::new(
+                crate::shell::collab_broker_capnp::CapnpBrokerState::test_broker_with_idle_directory_queue(),
+            );
+            let key: DirectoryCacheKey = (7, "actor".into(), "read".into(), Vec::new());
+            let retained: DirectoryCacheKey = (8, "actor".into(), "read".into(), Vec::new());
+            provider
+                .directory_pages
+                .borrow_mut()
+                .insert(retained.clone(), page(Vec::new(), Vec::new()));
+            let (sender, receiver) = pending();
+            let deadline = Instant::now() + Duration::from_secs(3);
+            provider.directory_pending.borrow_mut().insert(
+                key.clone(),
+                PendingDirectoryPage {
+                    receiver,
+                    deadline,
+                    initial_page: true,
+                },
+            );
+            *provider.auxiliary_snapshot.borrow_mut() = Some(AuxiliarySnapshot {
+                revision: "r1".into(),
+                query: "read".into(),
+                scope: String::new(),
+                resume: AuxiliaryResume {
+                    root_after: None,
+                    directory: None,
+                },
+                entries: Vec::new(),
+                pending_directory: Vec::new(),
+                next_resume: None,
+            });
+            match outcome {
+                "refused" => sender.complete(Err(ActionHostError::NotPermitted)),
+                "stale" => {
+                    let mut reply = page(Vec::new(), Vec::new());
+                    reply.stale_cursor = true;
+                    sender.complete(Ok(reply));
+                }
+                _ => drop(sender),
+            }
+            provider.poll_directory_pages_at(deadline.checked_sub(Duration::from_secs(1)).unwrap());
+            assert!(provider.directory_pending.borrow().is_empty());
+            assert!(!provider.directory_pages.borrow().contains_key(&key));
+            assert!(provider.directory_pages.borrow().contains_key(&retained));
+            assert!(
+                provider.auxiliary_snapshot.borrow().is_none(),
+                "same-query discovery must retry after {outcome}"
+            );
+            assert_eq!(
+                provider
+                    .directory_epoch
+                    .load(std::sync::atomic::Ordering::Relaxed),
+                1
+            );
+        }
     }
 
     #[test]
