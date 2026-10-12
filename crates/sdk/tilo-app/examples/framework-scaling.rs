@@ -59,6 +59,21 @@
 //! cargo run --release -p tilo-app --features test-support \
 //!     --example framework-scaling -- 5000 scroll
 //! ```
+//!
+//! A second argument `focus` measures only the keyboard focus order: what an
+//! agent call adding one task costs end to end through the test harness, what
+//! each focus-order recomputation inside it costs, and what one recomputation
+//! of the live window's order costs ([`tilo_app::App::refresh_focus_order`],
+//! timed as its `ui.focus_order` scope alone). Its rows sit outside a scroll
+//! view, so every row is mounted, and a row is about four widgets: 500 tasks
+//! is a window of about 2,000. Each size prints a
+//! `FRAMEWORK-FOCUS` line for `tools/perf/adapters.py framework-focus`
+//! (`render.framework_focus.*` KPIs):
+//!
+//! ```text
+//! cargo run --release -p tilo-app --features test-support \
+//!     --example framework-scaling -- 250,500,1000,2500 focus
+//! ```
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
@@ -173,22 +188,52 @@ impl ResourceApp for Scaling {
     }
 
     fn view(cx: &mut ViewCx<Checklist>) -> Element {
-        let draft = cx.input(Checklist::paths().draft).with_id("draft");
-        let rows = cx.each(
-            |list| &list.tasks,
-            |row| {
-                if row.item().is_none() {
-                    return Box::new(Column::new()) as Element;
-                }
-                let done = row.paths().done;
-                Box::new(tilo_app::row![
-                    row.text(|task| task.title.clone()),
-                    row.checkbox("scaling-done", done),
-                ]) as Element
-            },
-        );
-        let list = Scrollable::new_vertical().with_child(Box::new(rows));
-        Box::new(tilo_app::column![draft, list])
+        let (draft, rows) = draft_and_rows(cx);
+        let list: Element = Box::new(Scrollable::new_vertical().with_child(rows));
+        Box::new(Column::new().push(draft).push(list))
+    }
+}
+
+/// The draft field and one row per task.
+fn draft_and_rows(cx: &ViewCx<Checklist>) -> (Element, Element) {
+    let draft = cx.input(Checklist::paths().draft).with_id("draft");
+    let rows = cx.each(
+        |list| &list.tasks,
+        |row| {
+            if row.item().is_none() {
+                return Box::new(Column::new()) as Element;
+            }
+            let done = row.paths().done;
+            Box::new(tilo_app::row![
+                row.text(|task| task.title.clone()),
+                row.checkbox("scaling-done", done),
+            ]) as Element
+        },
+    );
+    (Box::new(draft), Box::new(rows))
+}
+
+/// The same checklist with its rows outside a scroll view, so every row is
+/// mounted: a window whose widget count grows with the list, as the `focus`
+/// mode needs.
+pub struct Mounted;
+
+impl ResourceApp for Mounted {
+    type Resource = Checklist;
+    const ID: &'static str = "so.tilo.example.framework-scaling-mounted";
+    const TITLE: &'static str = "Checklist";
+
+    fn catalog() -> Option<&'static EmbeddedCatalog> {
+        Some(&CATALOG)
+    }
+
+    fn genesis(input: &LaunchInput<'_>) -> Vec<Invoke<Checklist>> {
+        Scaling::genesis(input)
+    }
+
+    fn view(cx: &mut ViewCx<Checklist>) -> Element {
+        let (draft, rows) = draft_and_rows(cx);
+        Box::new(Column::new().push(draft).push(rows))
     }
 }
 
@@ -237,7 +282,14 @@ fn count(resources: &[tilo_actions::Resource]) -> usize {
 /// A checklist window holding `tasks` tasks. Its genesis seeds as many as
 /// the last live window was asked for; the rest are added here.
 fn checklist(tasks: u32) -> Result<TestApp<Scaling>, Box<dyn std::error::Error>> {
-    let mut app = TestApp::<Scaling>::for_person("ada")?;
+    checklist_in::<Scaling>(tasks)
+}
+
+/// [`checklist`] in the window `A`.
+fn checklist_in<A: ResourceApp<Resource = Checklist>>(
+    tasks: u32,
+) -> Result<TestApp<A>, Box<dyn std::error::Error>> {
+    let mut app = TestApp::<A>::for_person("ada")?;
     let seeded = u32::try_from(app.state().tasks.len())?;
     if let Some(missing) = tasks.checked_sub(seeded).filter(|&missing| missing > 0) {
         app.call("seed", serde_json::json!({ "count": missing }))?;
@@ -992,6 +1044,108 @@ fn scroll_mode(sizes: &[u32]) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// Times the focus-order scope ran in `phases`, and its time in ms.
+fn focus_order_phase(phases: &[tilo_app::tilo_resource::profiling::Sample]) -> (usize, f64) {
+    phases
+        .iter()
+        .filter(|phase| phase.phase == "ui.focus_order")
+        .fold((0, 0.0), |(calls, ms), phase| {
+            let elapsed = u64::try_from(phase.elapsed_ns).unwrap_or(u64::MAX);
+            (
+                calls.saturating_add(phase.calls),
+                ms + std::time::Duration::from_nanos(elapsed).as_secs_f64() * 1e3,
+            )
+        })
+}
+
+/// Focus-order recomputations timed per size, and tasks added.
+const FOCUS_SAMPLES: usize = 10;
+
+/// What the keyboard focus order costs in a window over `tasks` tasks, in ms.
+struct FocusCost {
+    /// Each agent call adding one task, end to end.
+    adding: Vec<f64>,
+    /// Each focus-order recomputation those calls ran.
+    recomputing: Vec<f64>,
+    /// Each recomputation of the live window's order.
+    native: Vec<f64>,
+}
+
+/// Add one task at a time through an agent call, and recompute the live
+/// window's focus order, [`FOCUS_SAMPLES`] times each.
+fn focus_cost(tasks: u32) -> Result<FocusCost, Box<dyn std::error::Error>> {
+    TASKS.store(tasks, Ordering::Relaxed);
+    let mut app = checklist_in::<Mounted>(tasks)?;
+    let add = serde_json::json!({ "count": 1 });
+    // The first call is a warm-up: it settles the record and the layout.
+    app.call("seed", add.clone())?;
+    let mut add_ms = Vec::new();
+    let mut recompute_ms = Vec::new();
+    for _ in 0..FOCUS_SAMPLES {
+        let start = Instant::now();
+        let (called, phases) = observe(|| app.call("seed", add.clone()));
+        add_ms.push(millis(start));
+        called?;
+        let (calls, ms) = focus_order_phase(&phases);
+        if calls == 0 {
+            return Err("adding a task recomputed no focus order".into());
+        }
+        recompute_ms.push(ms / f64::from(u32::try_from(calls)?));
+    }
+    let native_ms = drive_live_window::<Mounted, _>(|app| {
+        app.init_layout();
+        host_frame(app);
+        (0..FOCUS_SAMPLES)
+            .map(|_| {
+                let ((), phases) = observe(|| app.refresh_focus_order());
+                focus_order_phase(&phases)
+            })
+            .collect::<Vec<_>>()
+    })?;
+    if native_ms.iter().any(|&(calls, _)| calls != 1) {
+        return Err("the live window did not recompute its focus order once per refresh".into());
+    }
+    Ok(FocusCost {
+        adding: add_ms,
+        recomputing: recompute_ms,
+        native: native_ms.into_iter().map(|(_, ms)| ms).collect(),
+    })
+}
+
+/// The `focus` mode: what the keyboard focus order costs as the list grows.
+fn focus_mode(sizes: &[u32]) -> Result<(), Box<dyn std::error::Error>> {
+    println!("tasks  add one task p50  focus order in it p50  live window focus order p50");
+    let joined = |samples: &[f64]| {
+        samples
+            .iter()
+            .map(|sample| format!("{sample:.4}"))
+            .collect::<Vec<_>>()
+            .join(",")
+    };
+    let mut lines = Vec::new();
+    for &tasks in sizes {
+        let cost = focus_cost(tasks)?;
+        println!(
+            "{tasks:>5}  {:>13.3} ms  {:>18.4} ms  {:>24.4} ms",
+            median(cost.adding.clone()),
+            median(cost.recomputing.clone()),
+            median(cost.native.clone()),
+        );
+        // For tools/perf/adapters.py framework-focus.
+        lines.push(format!(
+            "FRAMEWORK-FOCUS tasks={tasks} add_ms={} recompute_ms={} native_ms={}",
+            joined(&cost.adding),
+            joined(&cost.recomputing),
+            joined(&cost.native),
+        ));
+    }
+    println!();
+    for line in lines {
+        println!("{line}");
+    }
+    Ok(())
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mode = std::env::args().nth(2);
     let open_only = mode.as_deref() == Some("open");
@@ -1003,6 +1157,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .collect::<Result<Vec<_>, _>>()?;
     if mode.as_deref() == Some("scroll") {
         return scroll_mode(&sizes);
+    }
+    if mode.as_deref() == Some("focus") {
+        return focus_mode(&sizes);
     }
     if std::env::var_os("TILO_SCALING_KEYSTROKES").is_some() {
         println!(

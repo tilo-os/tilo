@@ -496,6 +496,11 @@ jobs:
           target/release/examples/framework-scaling 5000 scroll | tee perf/framework-scroll.log
           python3 tools/perf/adapters.py framework-scroll --env-json perf/env.json \
             perf/framework-scroll.log >> perf/render.jsonl
+          # The keyboard focus order of a long framework list: one
+          # recomputation, and an agent call adding one item.
+          target/release/examples/framework-scaling 500,1000,2500 focus | tee perf/framework-focus.log
+          python3 tools/perf/adapters.py framework-focus --env-json perf/env.json \
+            perf/framework-focus.log >> perf/render.jsonl
           cat perf/render.jsonl
 
       - name: Check the render counters

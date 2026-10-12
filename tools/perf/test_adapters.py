@@ -346,6 +346,51 @@ class FrameworkScroll(unittest.TestCase):
         self.assertEqual(budgeted, produced)
 
 
+def focus_log(scale: float) -> str:
+    """framework-scaling's `focus` output: the table, then one line per size."""
+    return "\n".join([
+        "tasks  add one task p50  focus order in it p50  live window focus order p50",
+        f"  500  {20 * scale:>13.3} ms  {0.2 * scale:>18.4} ms  {0.15 * scale:>24.4} ms",
+        "",
+        f"FRAMEWORK-FOCUS tasks=500 add_ms={20 * scale:.4f},{22 * scale:.4f} "
+        f"recompute_ms={0.2 * scale:.4f},{0.25 * scale:.4f} native_ms={0.15 * scale:.4f},{0.16 * scale:.4f}",
+        f"FRAMEWORK-FOCUS tasks=1000 add_ms={60 * scale:.4f} recompute_ms={0.4 * scale:.4f} "
+        f"native_ms={0.3 * scale:.4f}",
+    ])
+
+
+class FrameworkFocus(unittest.TestCase):
+    def test_every_timing_is_a_sample(self):
+        records = {item.kpi: item for item in adapters.framework_focus([focus_log(1.0), focus_log(2.0)], ENV)}
+        adding = records["render.framework_focus.add_item_ms.500"]
+        self.assertEqual((adding.unit, adding.n, adding.max), ("ms", 4, 44.0))
+        self.assertEqual(records["render.framework_focus.recompute_ms.1k"].n, 2)
+        self.assertEqual(records["render.framework_focus.native_recompute_ms.500"].unit, "ms")
+        self.assertEqual(records["render.framework_focus.add_item_ms.1k"].meta, {"runs": "2"})
+
+    def test_a_run_without_its_lines_fails(self):
+        with self.assertRaisesRegex(ValueError, "FRAMEWORK-FOCUS"):
+            adapters.framework_focus([focus_log(1.0), "tasks  add one task p50"], ENV)
+
+    def test_the_fields_are_the_examples(self):
+        """The example prints the line the adapter reads."""
+        source = SCALING.read_text()
+        printed = source[source.index('"FRAMEWORK-FOCUS'):]
+        for field in ("tasks", "add_ms", "recompute_ms", "native_ms"):
+            self.assertIn(f"{field}={{", printed)
+
+    def test_every_nightly_size_has_a_budget(self):
+        """The scheduled lane runs the focus mode at the sizes the budgets name."""
+        workflow = (ROOT / ".forgejo/workflows/perf-scheduled.yml").read_text()
+        [sizes] = re.findall(r"framework-scaling ([0-9,]+) focus", workflow)
+        log = "\n".join(f"FRAMEWORK-FOCUS tasks={tasks} add_ms=1 recompute_ms=1 native_ms=1"
+                        for tasks in sizes.split(","))
+        budgets = compare.load_budgets(compare.BUDGETS)
+        budgeted = {kpi for kpi in budgets.kpis if kpi.startswith("render.framework_focus.")}
+        produced = {item.kpi for item in adapters.framework_focus([log], ENV)}
+        self.assertEqual(budgeted, produced)
+
+
 LOAD_BENCH = ROOT / "crates/hosting/tilo-relay/examples/relay_load/main.rs"
 
 
