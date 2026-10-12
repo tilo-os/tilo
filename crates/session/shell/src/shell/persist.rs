@@ -745,6 +745,7 @@ mod tests {
                     active_tab: 0,
                     width: WindowWidth::Normal,
                     maximized: false,
+                    focus_history: Vec::new(),
                 }],
             }];
             let group = &mut tree.desktop.workspaces[0].strips[0].window_groups[0];
@@ -819,6 +820,7 @@ mod tests {
                     active_tab: survivor,
                     width: WindowWidth::Normal,
                     maximized: false,
+                    focus_history: Vec::new(),
                 });
             let group = &mut tree.desktop.workspaces[0].strips[0].window_groups[0];
             group.tabs.push(Tab {
@@ -916,6 +918,7 @@ mod tests {
                     active_tab: 0,
                     width: WindowWidth::Normal,
                     maximized: false,
+                    focus_history: Vec::new(),
                 });
             let group = &mut tree.desktop.workspaces[0].strips[0].window_groups[0];
             group.tabs.push(Tab {
@@ -968,6 +971,7 @@ mod tests {
                     active_tab: 92_002,
                     width: WindowWidth::Normal,
                     maximized: false,
+                    focus_history: Vec::new(),
                 });
             assert!(crate::shell::tab_binding::close_tab_for_destroyed_surface(
                 &mut tree, 92_003

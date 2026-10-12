@@ -47,6 +47,7 @@ fn workspace_with_group() -> Workspace {
             active_tab: 30,
             width: WindowWidth::Normal,
             maximized: false,
+            focus_history: Vec::new(),
             tabs: [30, 31]
                 .into_iter()
                 .map(|id| Tab {

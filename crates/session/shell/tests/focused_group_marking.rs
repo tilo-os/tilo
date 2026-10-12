@@ -62,6 +62,7 @@ fn tree() -> (WorkspaceTree, StripId, StripId) {
         active_tab: tab,
         width: WindowWidth::Normal,
         maximized: false,
+        focus_history: Vec::new(),
     };
 
     let strip_a = Strip {

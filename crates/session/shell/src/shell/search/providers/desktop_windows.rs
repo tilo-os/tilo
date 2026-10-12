@@ -333,6 +333,7 @@ mod tests {
                 active_tab: 2,
                 width: WindowWidth::Normal,
                 maximized: false,
+                focus_history: Vec::new(),
             },
             WindowGroup {
                 id: 200,
@@ -347,6 +348,7 @@ mod tests {
                 active_tab: 3,
                 width: WindowWidth::Normal,
                 maximized: false,
+                focus_history: Vec::new(),
             },
         ];
         tree.seed_doc_from_cache();
@@ -886,6 +888,7 @@ mod tests {
                     active_tab: gid,
                     width: WindowWidth::Normal,
                     maximized: false,
+                    focus_history: Vec::new(),
                 }
             })
             .collect();

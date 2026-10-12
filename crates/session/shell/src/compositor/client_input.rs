@@ -1078,6 +1078,11 @@ pub fn focus_touch_target(state: &mut State, fb: &mut FrameBuilder, surface_id: 
 
 /// Reconcile the seat's keyboard focus with the shell's focused tab. Called every tick: chrome capture drops client focus outright; otherwise focus follows the active tab.
 pub fn sync_keyboard_focus(state: &mut State, fb: &FrameBuilder) {
+    // A popup the client destroyed (a closed menu or Quick Access panel) keeps
+    // its keyboard grab until smithay is told to forget it; while the grab
+    // lives it ignores every focus change below, so the next window to open
+    // or the one that should get focus back never receives it.
+    state.popup_manager.cleanup();
     let captured = chrome_captures_input(fb);
     // Overlay clicks assign focus directly because they are not represented in
     // the workspace tree. Preserve that assignment across the next tick while

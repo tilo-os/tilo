@@ -1033,7 +1033,7 @@ mod tests {
                     })
                     .map(|t| t.id)
                     .expect("the default tree seeds a terminal");
-                g.active_tab = id;
+                g.activate_tab(id);
                 id
             };
             let before = focused_group_tab_count(&st);
@@ -1080,7 +1080,7 @@ mod tests {
                         surface_id: 7,
                     },
                 });
-                g.active_tab = id;
+                g.activate_tab(id);
             }
             assert_eq!(
                 duplicate_active_tab(&mut st),

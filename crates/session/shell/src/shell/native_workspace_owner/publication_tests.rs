@@ -1000,6 +1000,7 @@ fn native_outgoing_sanitized_foreign_title_cannot_consume_recovery_reserve() {
             active_tab: 990_001,
             width: WindowWidth::Normal,
             maximized: false,
+            focus_history: Vec::new(),
         });
         index
     };

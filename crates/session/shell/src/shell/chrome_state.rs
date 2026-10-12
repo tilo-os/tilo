@@ -1714,7 +1714,7 @@ impl ChromeState {
                 .and_then(|w| w.strips.iter_mut().find(|s| s.id == strip))
                 .and_then(|s| s.window_groups.iter_mut().find(|g| g.id == group))
             {
-                g.active_tab = tab;
+                g.activate_tab(tab);
             }
             // Focus is part of the serialized local session view. Commit
             // the complete address together so a compositor restart cannot

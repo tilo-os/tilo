@@ -72,6 +72,7 @@ fn single_strip_tree(group_ids: &[u64]) -> (WorkspaceTree, StripId, Vec<GroupId>
             active_tab: gid.saturating_mul(10).saturating_add(1),
             width: WindowWidth::Normal,
             maximized: false,
+            focus_history: Vec::new(),
         })
         .collect();
 
@@ -1094,6 +1095,7 @@ fn expand_restore_and_workspace_switch_change_what_is_rendered() {
             active_tab: 3001,
             width: WindowWidth::Normal,
             maximized: false,
+            focus_history: Vec::new(),
         };
         let group_400 = WindowGroup {
             id: 400,
@@ -1101,6 +1103,7 @@ fn expand_restore_and_workspace_switch_change_what_is_rendered() {
             active_tab: 4001,
             width: WindowWidth::Normal,
             maximized: false,
+            focus_history: Vec::new(),
         };
         let ws_b = Workspace {
             strips: vec![Strip {
@@ -1200,6 +1203,7 @@ fn focus_scrolls_groups_into_view_but_the_wheel_does_not_pan() {
                     active_tab: tab_id,
                     width: WindowWidth::Normal,
                     maximized: false,
+                    focus_history: Vec::new(),
                 },
             );
             t.desktop.set_active_group(strip_id, id);

@@ -483,6 +483,7 @@ mod tests {
                     active_tab: host(3),
                     width: WindowWidth::Normal,
                     maximized: false,
+                    focus_history: Vec::new(),
                 },
                 WindowGroup {
                     id: own(1),
@@ -490,6 +491,7 @@ mod tests {
                     active_tab: own(2),
                     width: WindowWidth::Normal,
                     maximized: false,
+                    focus_history: Vec::new(),
                 },
                 WindowGroup {
                     id: own(4),
@@ -497,6 +499,7 @@ mod tests {
                     active_tab: host(9),
                     width: WindowWidth::Normal,
                     maximized: false,
+                    focus_history: Vec::new(),
                 },
             ],
         }];
@@ -536,6 +539,7 @@ mod tests {
                         active_tab: own(3),
                         width: WindowWidth::Normal,
                         maximized: false,
+                        focus_history: Vec::new(),
                     }],
                 }],
                 salt,
@@ -660,6 +664,7 @@ mod tests {
                     active_tab: own(3),
                     width: WindowWidth::Normal,
                     maximized: false,
+                    focus_history: Vec::new(),
                 }],
             }],
             salt,

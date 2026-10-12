@@ -5148,7 +5148,7 @@ impl ShellOverlayHost {
                                 continue;
                             }
                             selection_changed |= group.active_tab != w.tab;
-                            group.active_tab = w.tab;
+                            group.activate_tab(w.tab);
                             if ws.id == active_workspace {
                                 focus_writes.push((ws.id, w.strip, w.group));
                                 activated_file_tabs.push(w.tab);
@@ -7271,7 +7271,7 @@ impl ShellOverlayHost {
                 .and_then(|s| s.window_groups.iter_mut().find(|g| g.id == group))
                 && g.active_tab != tab
             {
-                g.active_tab = tab;
+                g.activate_tab(tab);
                 changed = true;
             }
             if tree.desktop.active_group_for(strip) != Some(group) {
@@ -20890,6 +20890,7 @@ fn build_state_group_from_widget(
         active_tab,
         width,
         maximized: false,
+        focus_history: Vec::new(),
     }
 }
 

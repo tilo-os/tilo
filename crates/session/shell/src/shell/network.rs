@@ -10883,6 +10883,7 @@ mod tests {
             active_tab: browser_tab,
             width: WindowWidth::Normal,
             maximized: false,
+            focus_history: Vec::new(),
         });
         source_tree
             .continuation_file_references
