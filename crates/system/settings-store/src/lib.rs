@@ -121,9 +121,10 @@ pub use key::{Key, SectionWrite};
 pub use section_digest::SectionDigest;
 pub use session::{SessionPaths, SessionSettings};
 pub use source::{
-    ChangeOrigin, ChangeSignal, ConditionalUpdate, DisplayUpdate, HostDocument, Listener,
-    SectionChange, SettingsSource, defer_writes_on_this_thread, flush_pending_writes,
-    install_source, installed_source, merge_section, writes_deferred_on_this_thread,
+    ChangeOrigin, ChangeSignal, ConditionalUpdate, DeferredFailure, DisplayUpdate, HostDocument,
+    Listener, SectionChange, SettingsSource, defer_writes_on_this_thread, deferred_failure_pending,
+    flush_pending_writes, install_source, installed_source, merge_section, take_deferred_failures,
+    writes_deferred_on_this_thread,
 };
 
 /// The file name under the Tilo config root.

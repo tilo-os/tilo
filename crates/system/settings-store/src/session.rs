@@ -268,8 +268,8 @@ pub struct SessionSettings {
     /// see them already ([`Self::publish_committed`] lays them over the
     /// records); [`Self::write_pending`] makes them durable.
     pending: Mutex<Vec<Edit>>,
-    /// The newest deferred write that failed, until taken.
-    deferred_failure: Mutex<Option<String>>,
+    /// The deferred writes that failed, until taken.
+    deferred_failures: Mutex<Vec<crate::DeferredFailure>>,
 }
 
 /// A write accepted before it was durable.
@@ -315,7 +315,7 @@ impl SessionSettings {
             changes: crate::ChangeSignal::default(),
             committed: Mutex::new(std::sync::Arc::new(committed)),
             pending: Mutex::new(Vec::new()),
-            deferred_failure: Mutex::new(None),
+            deferred_failures: Mutex::new(Vec::new()),
         })
     }
 
@@ -478,12 +478,24 @@ impl SessionSettings {
         if let Err(error) = persist(&self.paths, state, touched) {
             state.person = person;
             state.device = device;
-            let message = format!("settings were not saved and are reverted: {error}");
-            eprintln!("settings-store: {message}");
-            *self
-                .deferred_failure
+            let mut sections: Vec<String> = Vec::new();
+            for edit in &edits {
+                if !sections.contains(&edit.section) {
+                    sections.push(edit.section.clone());
+                }
+            }
+            eprintln!(
+                "settings-store: writes to {} were not saved and are reverted: {error}",
+                sections.join(", ")
+            );
+            self.deferred_failures
                 .lock()
-                .unwrap_or_else(PoisonError::into_inner) = Some(message);
+                .unwrap_or_else(PoisonError::into_inner)
+                .push(crate::DeferredFailure {
+                    sections,
+                    error: error.to_string(),
+                });
+            crate::source::note_deferred_failure();
             self.publish_committed(state);
             return;
         }
@@ -519,12 +531,14 @@ impl SessionSettings {
         self.changes.ring();
     }
 
-    /// The newest deferred write that failed, once.
-    pub fn take_deferred_failure(&self) -> Option<String> {
-        self.deferred_failure
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .take()
+    /// The deferred writes that failed, each once, oldest first.
+    pub fn take_deferred_failures(&self) -> Vec<crate::DeferredFailure> {
+        std::mem::take(
+            &mut *self
+                .deferred_failures
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner),
+        )
     }
 
     /// Take in a write another process made to the copy since this source
@@ -786,8 +800,8 @@ impl SettingsSource for SessionSettings {
         self.write_pending();
     }
 
-    fn take_deferred_failure(&self) -> Option<String> {
-        SessionSettings::take_deferred_failure(self)
+    fn take_deferred_failures(&self) -> Vec<crate::DeferredFailure> {
+        SessionSettings::take_deferred_failures(self)
     }
 
     fn changes(&self) -> &crate::ChangeSignal {
@@ -1116,8 +1130,40 @@ mod tests {
         view.flush_pending();
         assert_eq!(view.load(), before, "the document went back");
         assert!(view.revision() > revision, "readers are told it went back");
-        assert!(view.take_deferred_failure().is_some());
-        assert!(view.take_deferred_failure().is_none(), "reported once");
+        assert!(
+            crate::deferred_failure_pending(),
+            "the loop is told cheaply"
+        );
+        let failures = view.take_deferred_failures();
+        assert_eq!(failures.len(), 1);
+        assert_eq!(failures[0].sections, vec!["appearance".to_owned()]);
+        assert!(!failures[0].error.is_empty());
+        assert!(view.take_deferred_failures().is_empty(), "reported once");
+    }
+
+    #[test]
+    fn one_failed_batch_names_every_section_it_reverted_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let (session, view) = deferring_view(dir.path());
+        let parked = lock_copy(&session.paths.copy).unwrap();
+        std::fs::create_dir_all(session.paths.device.parent().unwrap()).unwrap();
+        std::fs::create_dir(&session.paths.device).unwrap();
+        std::fs::create_dir(&session.paths.person).unwrap();
+        view.update_section("appearance", object(json!({"theme": "dark"})))
+            .unwrap();
+        view.update_section("power", object(json!({"profile": "quiet"})))
+            .unwrap();
+        view.update_section("appearance", object(json!({"theme": "light"})))
+            .unwrap();
+        drop(parked);
+        view.flush_pending();
+        let failures = view.take_deferred_failures();
+        assert_eq!(failures.len(), 1, "one batch, one failure");
+        assert_eq!(
+            failures[0].sections,
+            vec!["appearance".to_owned(), "power".to_owned()],
+            "each section once, in the order first written"
+        );
     }
 
     #[test]

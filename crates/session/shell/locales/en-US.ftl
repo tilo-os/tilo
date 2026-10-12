@@ -2143,6 +2143,8 @@ capture-recording-audio-lost = Recording continues without audio
 capture-recording-audio-lost-body = { $path } · { $reason }
 capture-recent-audio-lost = Recent capture continues without audio
 capture-failed = Capture failed
+settings-not-saved-title = Setting not saved
+settings-not-saved-body = Tilo could not save a change to your settings, so it went back to what it was. Check that the disk has free space, then try again.
 idle-inhibit-unnamed-app = An app
 
 # Sending a screenshot to a device or into the workspace files

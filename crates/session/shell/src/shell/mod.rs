@@ -147,6 +147,7 @@ pub mod service_members;
 pub mod session_audio_policy;
 pub mod session_policy;
 pub(crate) mod shared_display_actions;
+pub mod settings_failures;
 pub mod shell_narrator;
 pub mod spatial_calibration;
 pub mod speaker_calibration;
