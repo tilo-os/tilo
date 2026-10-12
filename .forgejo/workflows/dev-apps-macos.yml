@@ -33,6 +33,7 @@ jobs:
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 1
+      - uses: ./.forgejo/actions/prepare-font-assets
       - uses: ./.forgejo/actions/stable-source
       - name: Build tilo-app and tilo-app-package
         working-directory: ${{ env.SRC }}
@@ -95,6 +96,7 @@ jobs:
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 1
+      - uses: ./.forgejo/actions/prepare-font-assets
       - uses: ./.forgejo/actions/stable-source
       - name: Build every macOS app
         working-directory: ${{ env.SRC }}
