@@ -661,7 +661,7 @@ impl Drop for Desktop {
         self.watch.stop.store(true, Ordering::Relaxed);
         // For investigations: keep everything the compositor said.
         if let Some(path) = std::env::var_os("TILO_SMOKE_COMPOSITOR_LOG") {
-            let mut named = path.clone();
+            let mut named = path;
             named.push(format!(
                 ".{}",
                 self.runtime_dir
@@ -692,6 +692,10 @@ impl Drop for Desktop {
 /// The password the compositor accepts to unlock (it stands in for PAM).
 pub const UNLOCK_PASSWORD: &str = "correct-horse-battery";
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "the monitor thread is one heartbeat loop with its stall reporting inline"
+)]
 fn spawn_monitor(liveness: PathBuf, watch: Arc<Watch>) -> std::thread::JoinHandle<()> {
     std::thread::Builder::new()
         .name("heartbeat-monitor".into())

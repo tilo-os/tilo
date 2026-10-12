@@ -192,6 +192,10 @@ fn window_count(desktop: &Desktop) -> usize {
     desktop.windows().len()
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "the smoke scenario is one ordered walk through the desktop on one compositor"
+)]
 fn scenario(desktop: &Desktop) {
     // Restored: the tree the compositor was started on is what it shows.
     let restored = desktop.windows();

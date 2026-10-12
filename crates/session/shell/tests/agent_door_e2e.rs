@@ -240,8 +240,8 @@ impl McpClient {
     }
 
     /// One tool call: the text the agent reads, and whether it is an error.
-    fn tool(&mut self, name: &str, arguments: serde_json::Value) -> (String, bool) {
-        self.next_id += 1;
+    fn tool(&mut self, name: &str, arguments: &serde_json::Value) -> (String, bool) {
+        self.next_id = self.next_id.checked_add(1).expect("request ids left");
         let id = self.next_id;
         self.send(
             &serde_json::json!({"jsonrpc":"2.0","id":id,"method":"tools/call",
@@ -268,7 +268,7 @@ impl McpClient {
     ) -> String {
         let deadline = tilo_test_env::hang_deadline();
         loop {
-            let (text, failed) = self.tool(name, arguments.clone());
+            let (text, failed) = self.tool(name, arguments);
             if !failed && ready(&text) {
                 return text;
             }
@@ -305,6 +305,10 @@ impl Drop for McpClient {
 /// the note Notes restored by the names a person uses, with no id in sight:
 /// ls, a new page, a paragraph appended to its body, a read back.
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one end-to-end agent session: ls, create, append and read back read in order"
+)]
 fn an_agent_without_the_desktop_name_edits_a_note_by_path() {
     let session = spawn();
     let mut agent = McpClient::start(&session);
@@ -364,7 +368,7 @@ fn an_agent_without_the_desktop_name_edits_a_note_by_path() {
 
     // A new note, then its body once the editor publishes it.
     let params = agent
-        .tool("tilo_ls", serde_json::json!({"path": "notes#new-page"}))
+        .tool("tilo_ls", &serde_json::json!({"path": "notes#new-page"}))
         .0;
     // The action page lists its parameters, one per indented line, the name
     // first: the title is the first required one.
@@ -379,7 +383,7 @@ fn an_agent_without_the_desktop_name_edits_a_note_by_path() {
     }
     let (created, failed) = agent.tool(
         "tilo_do",
-        serde_json::json!({"path": "notes#new-page", "args": arguments}),
+        &serde_json::json!({"path": "notes#new-page", "args": arguments}),
     );
     assert!(!failed && created.starts_with("ok"), "{created}");
     let listed = agent.tool_until("tilo_ls", &serde_json::json!({"path": "notes"}), |text| {
@@ -418,7 +422,7 @@ fn an_agent_without_the_desktop_name_edits_a_note_by_path() {
     loop {
         let (text, failed) = agent.tool(
             "tilo_read",
-            serde_json::json!({"path": format!("notes/{page}")}),
+            &serde_json::json!({"path": format!("notes/{page}")}),
         );
         assert!(
             !text.contains("buy milk") || Instant::now() < deadline,

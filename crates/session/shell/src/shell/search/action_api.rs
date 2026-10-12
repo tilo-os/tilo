@@ -607,7 +607,7 @@ mod tests {
         let row = |kind: ResourceKind, provider: &str, id: &str| {
             SearchResult::nullary(kind, provider, id, id, None, 0, |_, _, _| {})
         };
-        let results = vec![
+        let results = [
             row(ResourceKind::File, "files", "/src/a/markdown.rs"),
             row(ResourceKind::Folder, "files", "/src/a"),
             row(ResourceKind::Application, "applications", "so.tilo.notes"),

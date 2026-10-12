@@ -1379,6 +1379,10 @@ mod tests {
     /// and a buffer already imported is not imported again.
     #[cfg(target_os = "linux")]
     #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one GPU fixture: allocate, import, draw and count readbacks in order"
+    )]
     fn a_client_dmabuf_is_drawn_from_its_import_without_a_cpu_readback() {
         use smithay::backend::allocator::Fourcc;
         use smithay::backend::allocator::dmabuf::AsDmabuf as _;
@@ -1621,6 +1625,10 @@ mod tests {
     /// the pattern different each time, so a stale or half-written read shows.
     #[cfg(target_os = "linux")]
     #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one GPU fixture: a client writes, the compositor samples, fifty frames compared"
+    )]
     fn a_gpu_client_writing_a_compressed_buffer_is_sampled_exactly_for_fifty_frames() {
         use smithay::backend::allocator::dmabuf::AsDmabuf as _;
         use smithay::backend::allocator::gbm::{GbmBuffer, GbmBufferFlags, GbmDevice};
@@ -1713,7 +1721,7 @@ mod tests {
                 let mut frame = gl
                     .render(
                         &mut target,
-                        (WIDTH as i32, HEIGHT as i32).into(),
+                        (WIDTH.cast_signed(), HEIGHT.cast_signed()).into(),
                         Transform::Normal,
                     )
                     .expect("begin the client's frame");
@@ -1729,8 +1737,8 @@ mod tests {
                                     1.0,
                                 ),
                                 &[Rectangle::new(
-                                    ((cx * CELL) as i32, (cy * CELL) as i32).into(),
-                                    (CELL as i32, CELL as i32).into(),
+                                    ((cx * CELL).cast_signed(), (cy * CELL).cast_signed()).into(),
+                                    (CELL.cast_signed(), CELL.cast_signed()).into(),
                                 )],
                             )
                             .expect("clear a cell");
