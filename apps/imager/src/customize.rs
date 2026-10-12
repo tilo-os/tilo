@@ -17,7 +17,7 @@ use ui::local_state::LocalState;
 use ui::widget::{Dropdown, Field, Form, FormSection, TextInput};
 
 use crate::app::{Command, Commands};
-use crate::model::{Filesystem, InstallProfile, installer_locales};
+use crate::model::{Filesystem, InstallProfile};
 use crate::resource::Imager;
 
 const KEYBOARDS: &[(&str, &str)] = &[
@@ -132,7 +132,7 @@ fn shown_value(profile: &InstallProfile, field: CzField) -> String {
 /// value no catalog lists. Free-text identity fields stay as typed.
 pub(crate) fn profile_value(field: CzField, value: &str) -> Option<String> {
     match field {
-        CzField::Locale => installer_locales()
+        CzField::Locale => tilo_install_profile::locales()
             .any(|locale| locale == value)
             .then(|| value.to_string()),
         CzField::Timezone => timezones().into_iter().find(|zone| zone == value),
@@ -259,7 +259,9 @@ pub(crate) fn form(
         .into_iter()
         .map(|filesystem| filesystem.label().to_string())
         .collect();
-    let locales = installer_locales().map(str::to_string).collect();
+    let locales = tilo_install_profile::locales()
+        .map(str::to_string)
+        .collect();
     Form::new()
         .section(
             FormSection::new("Identity")

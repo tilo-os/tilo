@@ -34,6 +34,7 @@ serde.workspace = true
 uuid.workspace = true
 tilo-actions = { path = "../../collab/actions" }
 console-control = { path = "../console-control" }
+tilo-install-profile = { path = "../install-profile" }
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
