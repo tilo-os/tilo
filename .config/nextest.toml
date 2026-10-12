@@ -56,7 +56,7 @@ priority = 90
 # burst of a whole-workspace shard (every slot starting a process at once)
 # exceeds.
 [[profile.default.overrides]]
-filter = 'package(agent) and binary(it) and (test(presence_semantics::) or test(relay_roundtrip::) or test(discovered_operations::) or test(concurrent_edit::))'
+filter = 'package(agent) and binary(it) and test(presence_semantics::)'
 test-group = "agent-collaboration"
 
 [[profile.default.overrides]]
@@ -66,6 +66,22 @@ priority = 100
 
 [[profile.default.overrides]]
 filter = 'package(shell) and test(shell::render::paint::tests::gpu_target_)'
+threads-required = "num-cpus"
+priority = 100
+
+# Loopback peer-sync latency budgets assert a 50 ms p95 on wall-clock time;
+# sharing the runner with the parallel suite measures scheduler contention
+# instead of the push path, so they run with the pool to themselves.
+[[profile.default.overrides]]
+filter = 'package(shell) and binary(it) and (test(=peer_sync_test::warm_exact_target_input_stays_below_the_interactive_p95_budget) or test(=peer_sync_test::a_pushed_tab_change_reaches_the_other_device_within_the_interactive_budget) or test(=peer_sync_test::a_document_edit_reaches_the_other_device_within_the_interactive_budget))'
+threads-required = "num-cpus"
+priority = 100
+
+# These four mounted Code journeys fsync a growing retained selection. Under
+# concurrent native journeys, the owner queue passed four seconds and a real
+# checkpoint refresh hit its existing deadline; serial focused runs pass.
+[[profile.default.overrides]]
+filter = 'package(shell) and test(/^network::invite::exchange_tests::mounted_code::/)'
 threads-required = "num-cpus"
 priority = 100
 

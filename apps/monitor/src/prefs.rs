@@ -60,14 +60,6 @@ impl Prefs {
             _ => 1000,
         };
     }
-
-    pub fn interval_label(&self) -> String {
-        if self.interval_ms.is_multiple_of(1000) {
-            format!("{}s", self.interval_ms / 1000)
-        } else {
-            format!("{:.1}s", self.interval_ms as f32 / 1000.0)
-        }
-    }
 }
 
 /// The Monitor preferences that follow the person to every device.

@@ -13,13 +13,13 @@
 
 use canvas::render::Renderer;
 use canvas::resource::Look;
-use canvas::{ArtworkResource, view_ops};
-use ui::prelude::{Invoke, Replica};
+use canvas::{Artwork, view_ops};
+use ui::prelude::Replica;
 
-fn landscape() -> Replica<ArtworkResource> {
-    let mut art = Replica::<ArtworkResource>::new();
+fn landscape() -> Replica<Artwork> {
+    let mut art = Replica::<Artwork>::new();
     for action in canvas::sample::landscape() {
-        art.apply(Invoke::apply(&action).unwrap()).unwrap();
+        art.apply(action).unwrap();
     }
     art
 }
@@ -97,13 +97,12 @@ fn a_look_shows_the_painting_whole_and_up_close() {
 /// the mark: the stops' alpha thins the paint, it is not the whole mark's.
 #[test]
 fn a_painted_gradient_that_starts_clear_fades_in() {
-    use canvas::CanvasAction;
     use canvas::actions::{AddLayer, Draw, NewMark};
     use canvas::model::{Gradient, Shape};
     use ui::vello::kurbo::Rect;
 
-    let mut replica = Replica::<ArtworkResource>::new();
-    let layer = CanvasAction::AddLayer(AddLayer {
+    let mut replica = Replica::<Artwork>::new();
+    let layer = Artwork::ADD_LAYER.with(AddLayer {
         id: Some("mist".into()),
         name: "mist".into(),
         medium: Some("oil".into()),
@@ -126,12 +125,12 @@ fn a_painted_gradient_that_starts_clear_fades_in() {
             radius: 0.0,
         })
     };
-    let draw = CanvasAction::Draw(Draw {
+    let draw = Artwork::DRAW.with(Draw {
         layer: Some("mist".into()),
         marks: vec![veil],
     });
     for action in [layer, draw] {
-        replica.apply(Invoke::apply(&action).unwrap()).unwrap();
+        replica.apply(action).unwrap();
     }
     let art = replica.state().unwrap();
     let mut renderer = Renderer::default();
@@ -160,13 +159,12 @@ fn a_painted_gradient_that_starts_clear_fades_in() {
 /// leading: letters without descenders end on `y`.
 #[test]
 fn text_stands_on_its_baseline() {
-    use canvas::CanvasAction;
     use canvas::actions::{Draw, NewMark};
     use canvas::model::Shape;
     use ui::vello::kurbo::Rect;
 
     for (size, line_height) in [(60.0, None), (24.0, Some(2.0)), (120.0, Some(0.9))] {
-        let mut replica = Replica::<ArtworkResource>::new();
+        let mut replica = Replica::<Artwork>::new();
         let mark = NewMark {
             fill: Some("#000000".into()),
             ..NewMark::new(Shape::Text {
@@ -184,11 +182,11 @@ fn text_stands_on_its_baseline() {
                 path: None,
             })
         };
-        let draw = CanvasAction::Draw(Draw {
+        let draw = Artwork::DRAW.with(Draw {
             layer: None,
             marks: vec![mark],
         });
-        replica.apply(Invoke::apply(&draw).unwrap()).unwrap();
+        replica.apply(draw).unwrap();
         let art = replica.state().unwrap();
         let mut renderer = Renderer::default();
         let mut text = ui::TextRenderer::new();

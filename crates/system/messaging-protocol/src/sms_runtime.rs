@@ -9,6 +9,7 @@
 
 #[cfg(feature = "signal-broker")]
 mod inbox;
+mod profile;
 #[cfg(test)]
 mod tests;
 mod transport;
@@ -20,7 +21,7 @@ use crate::routing::LiveBinding;
 use crate::signal_session::{CheckedSendError, Completion, SendError, SendJournal};
 use crate::{Error, ProtocolReference, Route, Service};
 use tilo_clock::Duration;
-pub use transport::{DbusTransport, SimBinding};
+pub use transport::{DbusTransport, SimAuthority, SimBinding};
 
 /// A bounded complete text read from this runtime's pinned modem/SIM.
 /// No Debug implementation: incoming content and addresses are private.
@@ -92,10 +93,17 @@ impl SmsRuntime {
             .map_err(|_| before(Error::ConnectionUnavailable))?
             .map_err(before)?;
         let frozen = self.transport.freeze(&properties).map_err(before)?;
+        self.transport.check_permission().map_err(before)?;
         self.journal
             .begin(operation, route, &frozen)
             .map_err(|error| CheckedSendError::Transport(SendError::Journal(error)))?;
         let result = tokio::time::timeout_at(deadline, self.submit(&properties)).await;
+        if self.transport.check_permission().is_err() {
+            self.usable = false;
+            // A native operation may already have reached the modem. Keep its
+            // durable reservation uncertain and perform no post-revocation write.
+            return Err(CheckedSendError::Transport(SendError::Uncertain));
+        }
         let Ok(Ok(reference)) = result else {
             self.usable = false;
             let _ = self.journal.complete(operation, Completion::Uncertain);

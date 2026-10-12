@@ -75,9 +75,17 @@ host-session issue and requires a live password-prompt check after login.
 the fedora-44 RPMs from Release / desktop installed with dnf on the Fedora 44
 Cloud image under KVM, a gnome-keyring Secret Service unlocked on the user's
 bus, the identity provisioned there (`--provision-identity`, the same
-platform-storage minting the setup screen does), SDDM autologin into
+platform-storage minting the setup screen does), GNOME input sources seeded
+in the user's dconf database as a GNOME user has them (`de+nodeadkeys`,
+`compose:ralt`; `guest.sh gnome-input`), SDDM autologin into
 `tilo.desktop`, then Settings, Notes, Files and Terminal opened through
-Super+Space search on the VM's keyboard (QMP). There is no control socket in
+Super+Space search on the VM's keyboard (QMP). The first login must import the
+GNOME input settings into the session's `settings.json` (`de:nodeadkeys`,
+Compose on Right Alt, the import's completion marker; check H05), and the lock
+screen password and app names are then typed on that German layout, so the
+imported keymap is what unlocks the session. This is the only place the
+import is exercised: it runs only with `--host-desktop-session`, which the Tilo
+OS session never passes. There is no control socket in
 this session, so the run sees it only through SSH, the keyboard and
 screenshots. Each app must start, and the compositor must stay the same
 process for the dwell after it, with no crash log, core dump, unexpected
@@ -89,3 +97,44 @@ and on dispatch or a pull request changing the test with RPMs built from that
 commit first (`dist/ci/run-package-job.sh` with the fedora-44 target of
 `dist/ci/package-targets.txt`). `report.md`, screenshots, the guest journal and session logs
 are the run's artifact.
+
+## Files workspace recovery before first initialization
+
+A remembered home peer is a recovery lead, not evidence that a local Files
+workspace is empty. `home-peers.json` stores certified relay identities and
+numeric collaboration room IDs; it does not contain the Files namespace UUID
+or its ticket. The authenticated relay content-discovery response supplies
+that binding. An offline or unconfigured host must not be interpreted as
+"no existing files".
+
+Before starting a Files daemon, inspect the selected existing cache:
+
+```sh
+fs workspace-status --cache-dir /path/to/existing/cache
+```
+
+This reads bindings only and prints public workspace UUIDs, namespace
+presence and whether existing state can be resumed. It does not contact peers,
+repair files, initialize storage, or print tickets. A local ticket without a
+saved namespace is not sufficient recovery material. Malformed or ambiguous
+bindings fail; a saved namespace bound to a different discovered workspace
+requires a separate cache rather than loading it under another authority.
+
+A recovery launch uses the ordinary daemon with
+`serve --require-existing-workspace --cache-dir /path/to/existing/cache` and
+the mount, certified identity root, existing ACL and data-plane arguments for
+that installation. The guard runs before identity loading, transport binding
+or cache creation. Once admitted, the ordinary daemon validates/recovers the
+namespace and authenticates remote peers; the preflight is not a permission
+grant or a substitute for those checks. It also cannot prove that a saved
+namespace is healthy or that an offline remote can currently be reached.
+
+For an existing person with no local namespace, first establish the Files
+binding advertised by their already-enrolled home peer through authenticated
+content discovery. The current host package does not yet deliver the primary
+Files service, and registration currently expects a running daemon. This
+bootstrap gap must be repaired before a fresh host can complete remote
+recovery automatically. Do not work around it by creating an empty namespace
+and describing it as recovered data. A genuinely new workspace is a separate,
+explicit initialization decision; existing host folders remain ordinary local
+files until a separately authorized import into that workspace.

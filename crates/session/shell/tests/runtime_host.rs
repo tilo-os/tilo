@@ -47,12 +47,7 @@ fn profile_is_exclusive_and_workspace_survives_restart() {
         workspace_id,
         invocation,
         "agent:Scribe",
-        tilo_actions::ActionContext::for_resource(
-            "Publish",
-            "document:brief",
-            "document",
-            "Release brief",
-        ),
+        tilo_actions::ActionContext::for_resource("document:brief", "document", "Release brief",),
         tilo_actions::EffectReceiptStatus::Failed {
             code: "controlled_denial".into(),
         },

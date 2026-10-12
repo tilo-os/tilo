@@ -125,7 +125,8 @@ impl Collected {
     }
 }
 
-#[cfg(all(test, feature = "signal-profile-native-test"))]
+#[cfg(test)]
+#[cfg(feature = "signal-profile-native-test")]
 mod tests {
     use super::*;
     use std::{

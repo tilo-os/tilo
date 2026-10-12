@@ -9,5 +9,12 @@
 //! implementations.
 
 #[cfg(any(test, target_os = "linux"))]
+#[cfg_attr(
+    not(target_os = "linux"),
+    expect(
+        dead_code,
+        reason = "only the Linux Wayland dispatcher reads this color state; other hosts build it for its tests"
+    )
+)]
 pub mod color_management;
 pub mod edid;

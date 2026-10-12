@@ -27,11 +27,7 @@
 #![cfg_attr(
     test,
     allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
         clippy::string_slice,
-        clippy::panic,
         clippy::unreachable,
         clippy::float_cmp,
         reason = "in a test these are the assertion, not a hazard"
@@ -41,7 +37,6 @@
 pub mod actions;
 pub mod app;
 pub mod chrome;
-pub mod doc;
 pub mod draw;
 pub mod engine;
 pub mod graph2d;
@@ -59,5 +54,5 @@ pub use resource::{Calculator, CalculatorShell};
 /// The calculator's application definition, which the browser desktop and
 /// other hosts mount.
 pub fn definition() -> &'static ui::application::ApplicationDefinition {
-    ui::framework::definition::<CalculatorShell>()
+    ui::built_in_definition!(CalculatorShell)
 }

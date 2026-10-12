@@ -381,28 +381,6 @@ pub fn playback_reports(app_id: &str, workspace_id: &str) -> Vec<PlaybackReport>
         .unwrap_or_default()
 }
 
-/// Replace all reports owned by one authenticated app connection. The shell
-/// calls this only after binding app id, workspace and instance to the broker
-/// route; stale sessions disappear level-triggeredly.
-pub fn replace_external_reports(owner: String, reports: Vec<PlaybackReport>) {
-    if let Ok(mut external) = external_registry().lock() {
-        if reports.is_empty() {
-            external.remove(&owner);
-        } else {
-            external.insert(
-                owner,
-                reports.into_iter().take(MAX_PLAYBACK_REPORTS).collect(),
-            );
-        }
-    }
-}
-
-pub fn remove_external_reports(owner: &str) {
-    if let Ok(mut external) = external_registry().lock() {
-        external.remove(owner);
-    }
-}
-
 /// Replace the shell-owned snapshot of standards-discovered players.
 ///
 /// Unlike authenticated app reports, discovery has no broker route to trust.

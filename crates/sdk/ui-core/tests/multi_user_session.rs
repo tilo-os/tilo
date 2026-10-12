@@ -11,9 +11,7 @@
 use crate::support::{MemoryRelay, document_mutation, headless_app, pump};
 use std::time::SystemTime;
 use tilo_ui::collaboration::{CollabEvent, CollabRequest, PresencePayload};
-use tilo_ui::permissions::{
-    Actor, AppKind, PermissionContext, PermissionScope, Role, UserId, Verb,
-};
+use tilo_ui::permissions::{ActionKind, AppKind, PermissionContext, PermissionScope, Role, UserId};
 use tilo_ui::presence::{PathSegment, PresenceKey};
 use tilo_ui::widget::{TextInput, Widget};
 
@@ -350,15 +348,13 @@ fn peer_carets_pointers_and_tabs_render_on_the_remote_app() {
         let mut scene = vello::Scene::new();
         let theme = tilo_ui::theme::Theme::dark();
         let mut tr = tilo_ui::text_render::TextRenderer::new();
-        let perms = tilo_ui::permissions::PermissionContext::permissive();
 
-        input.draw_with_presence(
+        input.draw(
             &mut scene,
             vello::kurbo::Affine::IDENTITY,
             &mut tr,
             &theme,
             bob_app.presence_ctx(),
-            &perms,
         );
 
         assert!(!scene.encoding().is_empty());
@@ -412,11 +408,11 @@ fn peer_carets_pointers_and_tabs_render_on_the_remote_app() {
 /// reads the terminal surface and an Editor writes it — no individual
 /// capabilities needed.
 fn member_ctx(user: &str, role: Role) -> PermissionContext {
-    PermissionContext::from_capabilities(Actor::person(Some(role), user), vec![])
+    PermissionContext::member(user, role)
 }
 
 fn terminal_write() -> PermissionScope {
-    PermissionScope::app_kind(AppKind::Terminal, Verb::Write)
+    PermissionScope::app_kind(AppKind::Terminal, ActionKind::Undoable)
 }
 
 #[test]
@@ -431,11 +427,10 @@ fn roles_and_permission_changes_apply_across_the_session() {
 
         assert!(!alice_app.permission_ctx().check(&terminal_write()));
         // The denial is specific, not blanket: reading is allowed.
-        assert!(
-            alice_app
-                .permission_ctx()
-                .check(&PermissionScope::app_kind(AppKind::Terminal, Verb::Read))
-        );
+        assert!(alice_app.permission_ctx().check(&PermissionScope::app_kind(
+            AppKind::Terminal,
+            ActionKind::Read
+        )));
     }
 
     // Case `permission_change_from_peer_reflects_locally_after_sync`.

@@ -106,3 +106,61 @@ coverage shape requires a corresponding schema extension.
 Addition has two same-shape FP32 inputs (`left`, `right`) and one `result`
 output. It represents residual connections through the same public graph
 actions, shared canvas and system undo; it does not execute arithmetic.
+
+## Reported execution and physical evidence flows
+
+The `evidence_flow` receipt family presents a read-only dependency graph. Import
+through `import-verification`, inspect its stage, artifact, and subflow child
+resources, or open their search anchors. `open-evidence-subflow` on a subflow
+child invokes the same view navigation as its button and refuses unloaded
+references; its `read` content reports the resolved resource when available. It does not lower the structural operator
+graph, execute artifact paths, authenticate detached reports, or establish model
+quality, silicon measurements, signoff, or manufacturability.
+
+The standard receipt envelope contains `schema_version: 1`, `evidence:
+"evidence_flow"`, `status`, `checks`, `tools`, `artifact_sha256`, `excludes`, and
+`evidence_flow`. Required exclusions are `artifact_authentication`,
+`silicon_measurement`, `manufacturing`, and `model_quality`. Tool versions may
+explicitly be unknown. Artifact keys are bounded relative references, with
+lowercase SHA-256 declarations; their bytes are not opened by the importer.
+
+`evidence_flow` contains `title`, `input_identity_sha256`, `stages`, `edges`, and
+`subflows`. Each stage contains `id`, `title`, `status`,
+`original_receipt_artifact`, `producer_sha256`, `input_identity_sha256`, `checks`,
+`limitations`, and nullable `observations`. The receipt artifact must exist in
+the envelope's artifact map. Stage observations use a strict tagged `scope`:
+
+- `cpu_reference`: `comparison` (`exact` or `characterization`), `compared_words`,
+  `differing_words`, and `output_sha256`. Exact comparison requires zero
+  differing words. Successful characterization can retain backend differences.
+- `rtl_simulation`: `outcome` (`completed` or `expected_refusal`),
+  `refused_inputs`, `cycles`, `accepted_inputs`, `accepted_outputs`, and
+  `output_sha256`. Cycles are observed simulation cycles, with no frequency or
+  tokens-per-second conversion. Simulator wall time is not hardware latency.
+  Expected refusal requires zero accepted outputs and a positive refusal count;
+  it is distinct from completed numerical execution.
+- `generic_synthesis`: `logic_cells` and `logical_memory_bits`. These counts
+  do not establish licensed memory macros or physical area.
+- `library_physical`: `library`, `clock_constraint_ns`, `setup_slack_ns`,
+  `hold_slack_ns`, `routed_signal_nets`, `router_violations`, and
+  `library_area_um2`. Timing and area are reported extracted library estimates.
+  Negative slack and nonzero router violations remain visible observations;
+  they do not become successful timing or signoff assertions.
+
+Edges contain `from`, `to`, `kind` (`data`, `build`, or `verification`), and
+`artifact`. Node IDs and referenced artifacts must exist; dependencies must be
+acyclic. They describe declared dependencies, not proven lineage. Independently
+sampled physical tiles must not be represented as routed versions of a different
+connected execution subject.
+
+A subflow contains `id`, `title`, and `summary_artifact`. Its artifact SHA binds
+the exact raw imported summary bytes. The view offers navigation only after a
+matching evidence-flow summary has been imported. Unloaded links remain references
+and carry no execution or success claim. Each view admits at most 32 combined
+stages/subflows and 64 edges; hierarchical summaries can cover a full design.
+The bounded project capacity is 128 receipts, supporting a root plus 64 layer
+flows while preserving the 1 MiB limit per imported report.
+
+The `evidence-flow` capture scenario uses anonymous synthetic contract data only.
+Live applications still start empty. Research producers and their adapters belong
+in the independent inference-hardware repository.

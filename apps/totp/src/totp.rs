@@ -13,8 +13,6 @@
 //! string for "now") and [`period_progress`] (the 0..1 fraction of the
 //! current step still remaining — drives the countdown ring).
 
-use ui::time::UNIX_EPOCH;
-
 use hmac::{Hmac, KeyInit, Mac};
 use sha1::Sha1;
 use sha2::{Sha256, Sha512};
@@ -58,9 +56,7 @@ fn decode_base32_lenient(encoding: &data_encoding::Encoding, symbols: &[u8]) -> 
 /// Seconds since the Unix epoch for "now". Centralised so tests and the
 /// ring share one clock source.
 pub fn unix_now() -> f64 {
-    ui::time::wall()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0.0, |d| d.as_secs_f64())
+    ui::time::Duration::from_nanos(ui::time::unix_now_ns()).as_secs_f64()
 }
 
 /// RFC 4226 HOTP value for an 8-byte big-endian counter. Returns the

@@ -2,6 +2,7 @@
 # Signal's optional provider runtime (os/external-assets/signal-runtime.json).
 ccd408e831eff7e41ebaaf309704840bb00d78a7869f35ad700dbae5b5a5bb65	signal-cli-0.14.8.tar.gz	https://github.com/AsamK/signal-cli/releases/download/v0.14.8/signal-cli-0.14.8.tar.gz
 1731a34baadec5479258ea0202e4d5d865d2efeee60cb0c7d7eb056fe96ca219	OpenJDK25U-jre_x64_linux_hotspot_25.0.4.1_1.tar.gz	https://github.com/adoptium/temurin25-binaries/releases/download/jdk-25.0.4.1%2B1/OpenJDK25U-jre_x64_linux_hotspot_25.0.4.1_1.tar.gz
+83ee12f7a58904436f04fd9179aa1286c7e5a98d1113671b08b64aebf9865444	jdk25u-520406d871955300957ef01e406ac2acd0f9b75c-source.tar.gz	https://github.com/adoptium/jdk25u/archive/520406d871955300957ef01e406ac2acd0f9b75c.tar.gz
 8ceb4b9ee5adedde47b31e975c1d90c73ad27b6b165a1dcd80c7c545eb65b903	signal-cli-0.14.8-LICENSE	https://raw.githubusercontent.com/AsamK/signal-cli/22b028bbb9cee8f6aa22af71c6b3e9d09028a16a/LICENSE
 ca012287f714968e5ee4b043887c9cbfe04d30572c9c76527c09ed327e6060c4	signal-cli-0.14.8-source.tar.gz	https://github.com/AsamK/signal-cli/archive/22b028bbb9cee8f6aa22af71c6b3e9d09028a16a.tar.gz
 bcfeae05557a9f313ee4392d2f335d0ff69ebbfd232019e3736fb04999fe1734	cosign-v2.5.2-linux-amd64	https://github.com/sigstore/cosign/releases/download/v2.5.2/cosign-linux-amd64
@@ -17,6 +18,10 @@ e6c213bb221f4598e7e5e35804e8066b5b49a15ca2fb685729c9cf4ad82a20b7	doubletake-ae06
 bfa0e96a25928cb7c9d906643e8947182ad124b35bcad3f0c765f4fc011c47ab	fluxcast-a74f39f.tar.gz	https://github.com/IlyaP358/fluxcast/archive/a74f39fe3f2012e20315cd37e13e9803871e587f.tar.gz
 a78c32ec651aa445a2e5fbae08b91fb046aa9c538547ada4019f9d3ada9ba4d1	joycond-0df025a.tar.gz	https://github.com/DanielOgorchock/joycond/archive/0df025ac5dc284b1f31172b6b252321ba788c4de.tar.gz
 e75e0d10752aacfcac041d88f0f5099ba60248b046f1eb135ae886a4d58019ac	bootc-fa0d3f9.tar.gz	https://github.com/bootc-dev/bootc/archive/fa0d3f9cb9a0ce3b4d1dc2607a0bf5e31b822f60.tar.gz
+# chunkah, the content-based OCI re-layering of the published OS image (os/Containerfile.rechunk):
+# the release's source and its cargo vendor tree, built offline. GitHub asset SHA-256.
+12c0101532e4c65cd63244f28ed801296df9d0a7302e3646026387f684fb690b	chunkah-0.7.1.tar.gz	https://github.com/coreos/chunkah/releases/download/v0.7.1/chunkah-0.7.1.tar.gz
+56c73d1003f6c88fb8467434563a25ce65aa2125331b9d258202de3239dee328	chunkah-0.7.1-vendor.tar.gz	https://github.com/coreos/chunkah/releases/download/v0.7.1/chunkah-0.7.1-vendor.tar.gz
 67c4a96dd237c1f518f6b36083f270f9976d516f1e57fce891755ea782e50006	sccache-v0.17.0-x86_64-unknown-linux-musl.tar.gz	https://github.com/mozilla/sccache/releases/download/v0.17.0/sccache-v0.17.0-x86_64-unknown-linux-musl.tar.gz
 821a86343191aa1cbab74bd42f9e93c9a63bf85e4742945f40d3ae84193c1c77	sccache-v0.17.0-aarch64-unknown-linux-musl.tar.gz	https://github.com/mozilla/sccache/releases/download/v0.17.0/sccache-v0.17.0-aarch64-unknown-linux-musl.tar.gz
 d15d7e476feec78d0ec9edc27b8f77279ec7a3e6227756e7036e5cd2066800f4	wasm-bindgen-0.2.108-x86_64-unknown-linux-musl.tar.gz	https://github.com/wasm-bindgen/wasm-bindgen/releases/download/0.2.108/wasm-bindgen-0.2.108-x86_64-unknown-linux-musl.tar.gz

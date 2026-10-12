@@ -7,6 +7,7 @@
 use std::collections::HashMap;
 use std::io::BufRead;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use zbus::zvariant::{OwnedObjectPath, OwnedValue};
@@ -66,8 +67,21 @@ enum Fault {
     IncomingPdu,
     FailSend,
     DelaySend,
+    DelayAfterCreate,
     SwapOnRead,
     ChangeOnRead,
+    RevokeAfterCreate,
+}
+#[derive(Default)]
+struct SimPermission(AtomicBool);
+impl SimAuthority for SimPermission {
+    fn check(&self) -> Result<(), Error> {
+        if self.0.load(Ordering::Acquire) {
+            Err(Error::WrongAccount)
+        } else {
+            Ok(())
+        }
+    }
 }
 #[derive(Default)]
 struct Evidence {
@@ -85,6 +99,9 @@ struct Evidence {
     timestamp: String,
     state_reads: usize,
     inbox_copies: usize,
+    permission: Arc<SimPermission>,
+    journal_at_revoke: Option<std::path::PathBuf>,
+    revoked_bytes: Option<Vec<u8>>,
 }
 #[derive(Clone)]
 struct Modem(OwnedObjectPath);
@@ -100,8 +117,21 @@ struct Sim(Arc<Mutex<Evidence>>);
 #[zbus::interface(name = "org.freedesktop.ModemManager1.Sim")]
 impl Sim {
     #[zbus(property)]
-    fn sim_identifier(&self) -> String {
-        self.0.lock().unwrap().iccid.clone()
+    async fn sim_identifier(&self) -> String {
+        let (iccid, delay) = {
+            let state = self.0.lock().unwrap();
+            (
+                state.iccid.clone(),
+                matches!(state.fault, Fault::DelayAfterCreate | Fault::DelaySend)
+                    && state.creates == 1,
+            )
+        };
+        // Deliberately exceed the old fixture's 250ms wall budget before Send.
+        // Response-timeout tests must observe Send before advancing their clock.
+        if delay {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        }
+        iccid
     }
 }
 #[derive(Clone)]
@@ -117,6 +147,11 @@ impl Messaging {
         state.text = String::try_from(properties.remove("text").unwrap()).unwrap();
         if state.fault == Fault::SwapAfterCreate {
             state.iccid = "8901000000000000002".into();
+        }
+        if state.fault == Fault::RevokeAfterCreate {
+            state.revoked_bytes =
+                Some(std::fs::read(state.journal_at_revoke.as_ref().unwrap()).unwrap());
+            state.permission.0.store(true, Ordering::Release);
         }
         drop(state);
         MESSAGE_PATH.try_into().unwrap()
@@ -272,12 +307,43 @@ impl Fixture {
                 .unwrap();
         SmsRuntime::new(
             owner(),
-            DbusTransport::new(self.client.clone(), modem),
+            DbusTransport::new(
+                self.client.clone(),
+                modem,
+                self.state.lock().unwrap().permission.clone(),
+            )
+            .unwrap(),
             journal,
         )
         .unwrap()
     }
 }
+struct DeadlineFixture {
+    fixture: Fixture,
+    io: Option<tokio::runtime::Runtime>,
+}
+impl DeadlineFixture {
+    async fn new() -> Self {
+        let io = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap();
+        let fixture = io.spawn(Fixture::new()).await.unwrap();
+        Self {
+            fixture,
+            io: Some(io),
+        }
+    }
+}
+impl Drop for DeadlineFixture {
+    fn drop(&mut self) {
+        if let Some(io) = self.io.take() {
+            io.shutdown_background();
+        }
+    }
+}
+
 fn owner() -> Owner {
     Owner {
         principal: "11".repeat(32),
@@ -300,6 +366,74 @@ fn accounts() -> accounts::AccountStore {
 }
 fn route() -> Route {
     Route::new(Service::Sms, "fixture-sim".into(), "+12025550123".into()).unwrap()
+}
+
+#[tokio::test]
+async fn revoked_sim_permission_refuses_before_hardware_or_journal_writes() {
+    let fixture = Fixture::new().await;
+    let root = tempfile::tempdir().unwrap();
+    let mut runtime = fixture.runtime(root.path());
+    let file = root.path().join(secret_vault::VAULT_FILE);
+    let before = std::fs::read(&file).ok();
+    fixture
+        .state
+        .lock()
+        .unwrap()
+        .permission
+        .0
+        .store(true, Ordering::Release);
+    assert!(
+        runtime
+            .send(
+                &accounts(),
+                &binding(),
+                &route(),
+                "revoked",
+                "private fixture text",
+                Duration::from_secs(2)
+            )
+            .await
+            .is_err()
+    );
+    let state = fixture.state.lock().unwrap();
+    assert_eq!((state.creates, state.sends), (0, 0));
+    drop(state);
+    assert_eq!(std::fs::read(file).ok(), before);
+    assert_eq!(runtime.status("revoked"), None);
+}
+
+#[tokio::test]
+async fn revocation_during_create_never_sends_or_rewrites_the_private_journal() {
+    let fixture = Fixture::new().await;
+    let root = tempfile::tempdir().unwrap();
+    let mut runtime = fixture.runtime(root.path());
+    let file = root.path().join(secret_vault::VAULT_FILE);
+    {
+        let mut state = fixture.state.lock().unwrap();
+        state.fault = Fault::RevokeAfterCreate;
+        state.journal_at_revoke = Some(file.clone());
+    }
+    assert!(matches!(
+        runtime
+            .send(
+                &accounts(),
+                &binding(),
+                &route(),
+                "interrupted",
+                "private fixture text",
+                Duration::from_secs(2)
+            )
+            .await,
+        Err(CheckedSendError::Transport(SendError::Uncertain))
+    ));
+    let state = fixture.state.lock().unwrap();
+    assert_eq!((state.creates, state.sends), (1, 0));
+    assert_eq!(
+        std::fs::read(file).unwrap(),
+        *state.revoked_bytes.as_ref().unwrap()
+    );
+    drop(state);
+    assert_eq!(runtime.status("interrupted"), Some(Status::Started));
 }
 
 #[tokio::test]
@@ -457,7 +591,8 @@ async fn sim_switch_wrong_recipient_or_cross_modem_object_after_create_never_sen
 #[tokio::test]
 async fn send_error_and_response_timeout_are_uncertain_without_delivery_or_retry() {
     for delayed in [false, true] {
-        let fixture = Fixture::new().await;
+        let fixture_owner = DeadlineFixture::new().await;
+        let fixture = &fixture_owner.fixture;
         {
             let mut state = fixture.state.lock().unwrap();
             state.fault = if delayed {
@@ -468,17 +603,38 @@ async fn send_error_and_response_timeout_are_uncertain_without_delivery_or_retry
         }
         let root = tempfile::tempdir().unwrap();
         let mut runtime = fixture.runtime(root.path());
+        // The operation retains its original end-to-end 250ms deadline.
+        // Freeze only fixture time while admitting real D-Bus I/O, then expire
+        // that deadline after the exact Send handler has demonstrably started.
+        tokio::time::pause();
+        let result = {
+            let accounts = accounts();
+            let binding = binding();
+            let route = route();
+            let mut send = std::pin::pin!(runtime.send(
+                &accounts,
+                &binding,
+                &route,
+                "op",
+                "fixture text",
+                Duration::from_millis(250)
+            ));
+            if delayed {
+                assert!(
+                    drive_sms_send(send.as_mut(), &fixture.state, true)
+                        .await
+                        .is_none()
+                );
+                // Cross Tokio's millisecond timer tick; the operation budget stays 250ms.
+                tokio::time::advance(Duration::from_millis(251)).await;
+            }
+            drive_sms_send(send.as_mut(), &fixture.state, false)
+                .await
+                .unwrap()
+        };
+        tokio::time::resume();
         assert_eq!(
-            runtime
-                .send(
-                    &accounts(),
-                    &binding(),
-                    &route(),
-                    "op",
-                    "fixture text",
-                    Duration::from_millis(250)
-                )
-                .await,
+            result,
             Err(CheckedSendError::Transport(SendError::Uncertain))
         );
         assert_eq!(runtime.status("op"), Some(Status::Uncertain));
@@ -499,6 +655,98 @@ async fn send_error_and_response_timeout_are_uncertain_without_delivery_or_retry
         assert_eq!((state.creates, state.sends), (1, 1));
         drop(state);
     }
+}
+
+// Keep the paused runtime runnable while the external private bus admits I/O.
+// Otherwise Tokio can auto-advance the operation timer before the server runs.
+// This wall bound fails an unobservable fixture; it never extends SMS time.
+async fn drive_sms_send(
+    mut send: std::pin::Pin<
+        &mut impl std::future::Future<Output = Result<ProtocolReference, CheckedSendError>>,
+    >,
+    evidence: &Mutex<Evidence>,
+    until_send: bool,
+) -> Option<Result<ProtocolReference, CheckedSendError>> {
+    let started = tilo_clock::now();
+    std::future::poll_fn(|cx| {
+        if let std::task::Poll::Ready(result) = send.as_mut().poll(cx) {
+            return std::task::Poll::Ready(Some(result));
+        }
+        if until_send && evidence.lock().unwrap().sends == 1 {
+            return std::task::Poll::Ready(None);
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "private SMS fixture did not reach its controlled RPC phase"
+        );
+        cx.waker().wake_by_ref();
+        std::task::Poll::Pending
+    })
+    .await
+}
+
+#[tokio::test]
+async fn deadline_after_create_stops_before_send_and_keeps_uncertainty_without_retry() {
+    let fixture_owner = DeadlineFixture::new().await;
+    let fixture = &fixture_owner.fixture;
+    fixture.state.lock().unwrap().fault = Fault::DelayAfterCreate;
+    let root = tempfile::tempdir().unwrap();
+    let mut runtime = fixture.runtime(root.path());
+    tokio::time::pause();
+    let result = {
+        let accounts = accounts();
+        let binding = binding();
+        let route = route();
+        let mut send = std::pin::pin!(runtime.send(
+            &accounts,
+            &binding,
+            &route,
+            "op",
+            "fixture text",
+            Duration::from_millis(250)
+        ));
+        let started = tilo_clock::now();
+        std::future::poll_fn(|cx| {
+            assert!(send.as_mut().poll(cx).is_pending());
+            if fixture.state.lock().unwrap().creates == 1 {
+                return std::task::Poll::Ready(());
+            }
+            assert!(
+                started.elapsed() < Duration::from_secs(2),
+                "private SMS Create was not observed"
+            );
+            cx.waker().wake_by_ref();
+            std::task::Poll::Pending
+        })
+        .await;
+        // Cross Tokio's millisecond timer tick; the operation budget stays 250ms.
+        tokio::time::advance(Duration::from_millis(251)).await;
+        drive_sms_send(send.as_mut(), &fixture.state, false)
+            .await
+            .unwrap()
+    };
+    tokio::time::resume();
+    assert_eq!(
+        result,
+        Err(CheckedSendError::Transport(SendError::Uncertain))
+    );
+    assert_eq!(runtime.status("op"), Some(Status::Uncertain));
+    assert!(
+        runtime
+            .send(
+                &accounts(),
+                &binding(),
+                &route(),
+                "next",
+                "fixture text",
+                Duration::from_secs(2)
+            )
+            .await
+            .is_err()
+    );
+    let state = fixture.state.lock().unwrap();
+    assert_eq!((state.creates, state.sends), (1, 0));
+    drop(state);
 }
 
 fn receive_state(state: &mut Evidence) {
@@ -1244,4 +1492,62 @@ async fn actual_sms_arrival_reply_and_revocation_keep_private_history_out_of_sha
     let state = fixture.state.lock().unwrap();
     assert_eq!((state.creates, state.sends), (1, 1));
     drop(state);
+}
+
+#[tokio::test]
+async fn encrypted_selected_sim_resume_requires_exact_owner_current_hardware_and_original_permission()
+ {
+    let fixture = Fixture::new().await;
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("sim.enc");
+    let key = secret_vault::VaultKey::from_slice(&[0x44; 32]).unwrap();
+    let original = SimBinding::new(
+        fixture.server.unique_name().unwrap().to_string(),
+        MODEM_PATH.into(),
+        SIM_PATH.into(),
+        ICCID.into(),
+        7,
+    )
+    .unwrap();
+    original.save(&path, &owner(), &key).unwrap();
+    let ciphertext = std::fs::read(&path).unwrap();
+    assert!(
+        !ciphertext
+            .windows(ICCID.len())
+            .any(|bytes| bytes == ICCID.as_bytes())
+    );
+    let restored = SimBinding::load(&path, &owner(), &key, &fixture.client)
+        .await
+        .unwrap();
+    let permission = fixture.state.lock().unwrap().permission.clone();
+    DbusTransport::new(fixture.client.clone(), restored, permission.clone())
+        .unwrap()
+        .validate()
+        .await
+        .unwrap();
+    let mut foreign = owner();
+    foreign.account = "foreign-sim-account".into();
+    assert!(matches!(
+        SimBinding::load(&path, &foreign, &key, &fixture.client).await,
+        Err(Error::WrongAccount)
+    ));
+    fixture.state.lock().unwrap().iccid = "8901000000000000002".into();
+    let changed = SimBinding::load(&path, &owner(), &key, &fixture.client)
+        .await
+        .unwrap();
+    assert_eq!(
+        DbusTransport::new(fixture.client.clone(), changed, permission.clone())
+            .unwrap()
+            .validate()
+            .await,
+        Err(Error::WrongAccount)
+    );
+    permission.0.store(true, Ordering::Release);
+    let restored = SimBinding::load(&path, &owner(), &key, &fixture.client)
+        .await
+        .unwrap();
+    assert!(DbusTransport::new(fixture.client.clone(), restored, permission).is_err());
+    assert_eq!(std::fs::read(path).unwrap(), ciphertext);
+    assert_eq!(fixture.state.lock().unwrap().creates, 0);
+    assert_eq!(fixture.state.lock().unwrap().sends, 0);
 }

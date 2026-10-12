@@ -1,11 +1,7 @@
 #![cfg_attr(
     test,
     allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
         clippy::string_slice,
-        clippy::panic,
         clippy::unreachable,
         clippy::float_cmp,
         reason = "in a test these are the assertion, not a hazard"
@@ -23,8 +19,6 @@ pub use tilo_identity_host::device_fleet;
 pub mod diagnostics;
 pub mod firstboot;
 pub mod identity_broker;
-#[cfg(all(test, target_os = "linux"))]
-mod idle_thread_probe;
 mod idle_wake;
 pub mod runtime_host;
 

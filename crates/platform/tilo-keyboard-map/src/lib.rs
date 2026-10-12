@@ -1,6 +1,9 @@
 //! Read-only native keyboard metadata. This service neither captures input nor
 //! changes the active layout, and never accepts an include path or environment.
 
+/// Shared touch layout data and geometry for keyboards and source previews.
+pub mod touch;
+
 /// A native symbol's printable value and canonical keysym name.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Symbol {
@@ -116,7 +119,8 @@ mod backend {
     }
 }
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(test)]
+#[cfg(target_os = "linux")]
 mod tests {
     use super::*;
 

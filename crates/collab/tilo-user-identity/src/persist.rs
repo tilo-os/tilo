@@ -1025,8 +1025,9 @@ pub fn write_device_cert(path: &Path, cert: &DeviceCert) -> Result<(), PersistEr
 /// `sign` is the person's existing root capability. It receives the device
 /// certificate digest and returns the signature. This function never receives
 /// or writes the root secret. It writes the person's public key, a freshly
-/// generated device key, and the signed certificate under `paths`. An existing
-/// device key is left untouched.
+/// generated device key, and the signed certificate under `paths`, both as the
+/// default and the identity-specific certificate used for authorization. An
+/// existing device key is left untouched.
 ///
 /// # Errors
 ///
@@ -1094,6 +1095,7 @@ pub fn provision_joined_device(
             "target already has a device identity",
         )));
     }
+    write_device_cert(&paths.device_cert_for_user(&cert.user_public_key), &cert)?;
     write_device_cert(&paths.device_cert, &cert)?;
     if paths.user_privkey.exists() {
         return Err(PersistError::Io(io::Error::new(
@@ -1268,6 +1270,10 @@ mod tests {
         assert!(!cert.capabilities.can_admit_devices);
         verify_device_cert_at(&cert, 1_000).unwrap();
         assert_eq!(read_device_cert(&paths.device_cert).unwrap(), cert);
+        assert_eq!(
+            read_device_cert(&paths.device_cert_for_user(&cert.user_public_key)).unwrap(),
+            cert
+        );
         assert_eq!(
             read_device_key(&paths.device_privkey)
                 .unwrap()

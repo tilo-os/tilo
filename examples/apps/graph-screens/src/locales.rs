@@ -2,12 +2,20 @@
 // Edit Fluent catalogs under locales/; tilo-app maintains this registry.
 // tilo-app:locale=en-US
 
-const CATALOG_0: &str = include_str!("../locales/en-US.ftl");
+ui::embedded_catalog!(pub static CATALOG, ["en-US"]);
 
-pub const IDS: &[&str] = &["en-US"];
-
-pub fn install() {
-    if let Err(error) = ui::i18n::I18nManager::install_system("en-US", &[("en-US", CATALOG_0)]) {
-        eprintln!("localization catalog: {error}");
-    }
+/// One constant per message of locales/en-US.ftl, for labels and placeholders.
+pub mod keys {
+    use ui::i18n::LabelKey;
+    pub const ABOUT_BACK: LabelKey = LabelKey::new("about-back");
+    pub const ABOUT_BODY: LabelKey = LabelKey::new("about-body");
+    pub const ABOUT_TITLE: LabelKey = LabelKey::new("about-title");
+    pub const GRAPH_CREATE: LabelKey = LabelKey::new("graph-create");
+    pub const GRAPH_INTRODUCTION: LabelKey = LabelKey::new("graph-introduction");
+    pub const GRAPH_LOAD_ERROR: LabelKey = LabelKey::new("graph-load-error");
+    pub const GRAPH_OPEN_ABOUT: LabelKey = LabelKey::new("graph-open-about");
+    pub const GRAPH_PROJECT_NAME: LabelKey = LabelKey::new("graph-project-name");
+    pub const GRAPH_SUMMARY_DETAIL: LabelKey = LabelKey::new("graph-summary-detail");
+    pub const GRAPH_SUMMARY_TITLE: LabelKey = LabelKey::new("graph-summary-title");
+    pub const GRAPH_TITLE: LabelKey = LabelKey::new("graph-title");
 }

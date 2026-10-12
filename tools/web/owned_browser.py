@@ -24,7 +24,7 @@ def children():
             continue
         try:
             stat = (entry / 'stat').read_text()
-        except FileNotFoundError:
+        except (FileNotFoundError, ProcessLookupError):
             continue  # Another process exited; waitpid still proves our children.
         fields = stat[stat.rindex(')') + 2:].split()
         if int(fields[1]) == os.getpid():

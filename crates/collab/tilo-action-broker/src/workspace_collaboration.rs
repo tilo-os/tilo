@@ -1,5 +1,6 @@
 //! Broker-authenticated workspace collaboration administration surface.
 
+use super::room_service::{ServiceOutcome, refused};
 use super::{
     Arc, CapnpBrokerState, CrdtRoute, InvocationEnvelope, PublishedAction, PublishedInput,
     PublishedSurface,
@@ -15,86 +16,37 @@ impl CapnpBrokerState {
         let room = service.room().to_string();
         uuid::Uuid::parse_str(&room).map_err(|error| error.to_string())?;
         let peer_id = self.next_service_peer_id();
-        let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
-        self.invocation_subscribers
-            .lock()
-            .map_err(|_| "invocation subscribers unavailable")?
-            .insert(peer_id, sender);
-        self.stable_invocation_subscribers
-            .lock()
-            .map_err(|_| "stable invocation registry unavailable")?
-            .insert(peer_id);
-        self.surfaces
-            .lock()
-            .map_err(|_| "action surfaces unavailable")?
-            .insert(
-                peer_id,
-                PublishedSurface {
-                    peer_id,
-                    app_id: collaboration::APP_ID.into(),
-                    route: CrdtRoute::record(collaboration::APP_ID, &room, ""),
-                    live: true,
-                    actions: collaboration_actions(&room, service.supports_media_governance()),
-                },
-            );
-        let state = self.clone();
-        tokio::task::spawn_local(async move {
-            while let Some(envelope) = receiver.recv().await {
-                let outcome = state
-                    .execute_workspace_collaboration(peer_id, &envelope, service.as_ref())
-                    .await;
-                let update = match outcome {
-                    Ok(value) => tilo_actions::InvocationUpdate::Succeeded {
-                        invocation: envelope.invocation,
-                        output: tilo_actions::ActionOutput {
-                            value: Some(value),
-                            resources: vec![],
-                        },
-                    },
-                    Err(collaboration::CollaborationAdminError::Rejected(message)) => {
-                        tilo_actions::InvocationUpdate::Failed {
-                            invocation: envelope.invocation,
-                            error: tilo_actions::ActionFailure {
-                                code: "workspace_collaboration_denied".into(),
-                                message,
-                                details: None,
-                                retryable: false,
-                            },
+        let surface = PublishedSurface {
+            peer_id,
+            app_id: collaboration::APP_ID.into(),
+            route: CrdtRoute::record(collaboration::APP_ID, &room, ""),
+            live: true,
+            actions: collaboration_actions(&room, service.supports_media_governance()),
+        };
+        self.serve_room(
+            surface,
+            move |state, envelope| {
+                let service = service.clone();
+                async move {
+                    match state
+                        .execute_workspace_collaboration(peer_id, &envelope, service.as_ref())
+                        .await
+                    {
+                        Ok(value) => ServiceOutcome::Succeeded(value),
+                        Err(collaboration::CollaborationAdminError::Rejected(message)) => {
+                            refused("workspace_collaboration_denied", message)
+                        }
+                        Err(collaboration::CollaborationAdminError::Semantic { code, message }) => {
+                            refused(code.as_str(), message)
+                        }
+                        Err(collaboration::CollaborationAdminError::Uncertain(reason)) => {
+                            ServiceOutcome::Uncertain(reason)
                         }
                     }
-                    Err(collaboration::CollaborationAdminError::Semantic { code, message }) => {
-                        tilo_actions::InvocationUpdate::Failed {
-                            invocation: envelope.invocation,
-                            error: tilo_actions::ActionFailure {
-                                code: code.as_str().into(),
-                                message,
-                                details: None,
-                                retryable: false,
-                            },
-                        }
-                    }
-                    Err(collaboration::CollaborationAdminError::Uncertain(reason)) => {
-                        if let Ok(mut failure) = state.owner_commit_failure.lock() {
-                            failure.get_or_insert(reason);
-                        }
-                        break;
-                    }
-                };
-                if let Err(error) = state
-                    .apply_invocation_update(peer_id, envelope.id, update, None)
-                    .await
-                {
-                    if let Ok(mut failure) = state.owner_commit_failure.lock() {
-                        failure.get_or_insert(error.to_string());
-                    }
-                    break;
                 }
-            }
-            if let Ok(mut surfaces) = state.surfaces.lock() {
-                surfaces.remove(&peer_id);
-            }
-        });
-        Ok(())
+            },
+            |_, _| {},
+        )
     }
 
     async fn execute_workspace_collaboration(

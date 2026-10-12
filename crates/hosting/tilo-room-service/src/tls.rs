@@ -3,10 +3,7 @@
 //! over a second TLS connection to that room's host, which presents the
 //! service's own internal certificate, pinned here.
 use anyhow::{Context, Result};
-use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
-use rustls::pki_types::pem::PemObject;
-use rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName, UnixTime};
-use rustls::{DigitallySignedStruct, SignatureScheme};
+use rustls::pki_types::{PrivateKeyDer, ServerName};
 use std::sync::Arc;
 use tokio::net::{TcpListener, TcpStream};
 
@@ -32,10 +29,6 @@ impl HostIdentity {
     }
 }
 
-fn provider() -> Arc<rustls::crypto::CryptoProvider> {
-    Arc::new(rustls::crypto::ring::default_provider())
-}
-
 /// The public server configuration: the configured chain, or for local
 /// development a self-signed `*.<domain>` certificate.
 pub fn public_config(
@@ -43,13 +36,9 @@ pub fn public_config(
     domain: &str,
 ) -> Result<Arc<rustls::ServerConfig>> {
     let (chain, key) = if let Some((chain, key)) = certificate {
-        (
-            CertificateDer::pem_file_iter(chain)
-                .context("read TILO_ROOMS_TLS_CERT")?
-                .collect::<Result<Vec<_>, _>>()
-                .context("parse TILO_ROOMS_TLS_CERT")?,
-            PrivateKeyDer::from_pem_file(key).context("read TILO_ROOMS_TLS_KEY")?,
-        )
+        tilo_moq::tls::load_pem(chain, key)
+            .map_err(anyhow::Error::msg)
+            .context("load TILO_ROOMS_TLS_CERT and TILO_ROOMS_TLS_KEY")?
     } else {
         eprintln!(
             "tilo-room-service: no TILO_ROOMS_TLS_CERT; serving a self-signed *.{domain} certificate"
@@ -62,68 +51,9 @@ pub fn public_config(
                 .map_err(anyhow::Error::msg)?,
         )
     };
-    let mut config = rustls::ServerConfig::builder_with_provider(provider())
-        .with_safe_default_protocol_versions()?
-        .with_no_client_auth()
-        .with_single_cert(chain, key)?;
-    config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
-    Ok(Arc::new(config))
-}
-
-#[derive(Debug)]
-struct Pinned {
-    certificate: Vec<u8>,
-    provider: Arc<rustls::crypto::CryptoProvider>,
-}
-
-impl ServerCertVerifier for Pinned {
-    fn verify_server_cert(
-        &self,
-        end_entity: &CertificateDer<'_>,
-        _intermediates: &[CertificateDer<'_>],
-        _server_name: &ServerName<'_>,
-        _ocsp: &[u8],
-        _now: UnixTime,
-    ) -> Result<ServerCertVerified, rustls::Error> {
-        if end_entity.as_ref() == self.certificate.as_slice() {
-            Ok(ServerCertVerified::assertion())
-        } else {
-            Err(rustls::Error::General(
-                "room host certificate differs".into(),
-            ))
-        }
-    }
-    fn verify_tls12_signature(
-        &self,
-        message: &[u8],
-        cert: &CertificateDer<'_>,
-        dss: &DigitallySignedStruct,
-    ) -> Result<HandshakeSignatureValid, rustls::Error> {
-        rustls::crypto::verify_tls12_signature(
-            message,
-            cert,
-            dss,
-            &self.provider.signature_verification_algorithms,
-        )
-    }
-    fn verify_tls13_signature(
-        &self,
-        message: &[u8],
-        cert: &CertificateDer<'_>,
-        dss: &DigitallySignedStruct,
-    ) -> Result<HandshakeSignatureValid, rustls::Error> {
-        rustls::crypto::verify_tls13_signature(
-            message,
-            cert,
-            dss,
-            &self.provider.signature_verification_algorithms,
-        )
-    }
-    fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
-        self.provider
-            .signature_verification_algorithms
-            .supported_schemes()
-    }
+    Ok(Arc::new(
+        tilo_moq::tls::https_server_config(chain, key).map_err(anyhow::Error::msg)?,
+    ))
 }
 
 /// Serves the TLS front until the listener fails. `port_of` maps a room id
@@ -137,16 +67,19 @@ pub async fn serve(
 ) -> Result<()> {
     let port_of = Arc::new(port_of);
     let suffix = format!(".{domain}");
-    let provider = provider();
+    let host = Arc::new(tilo_net::pinned_client_config(move |certificate| {
+        certificate == host_certificate.as_slice()
+    })?);
     loop {
         let (socket, _) = listener.accept().await?;
-        let (public, suffix, port_of) = (Arc::clone(&public), suffix.clone(), Arc::clone(&port_of));
-        let pinned = Arc::new(Pinned {
-            certificate: host_certificate.clone(),
-            provider: Arc::clone(&provider),
-        });
+        let (public, suffix, port_of, host) = (
+            Arc::clone(&public),
+            suffix.clone(),
+            Arc::clone(&port_of),
+            Arc::clone(&host),
+        );
         tokio::spawn(async move {
-            let _ = relay(socket, public, &suffix, port_of.as_ref(), pinned).await;
+            let _ = relay(socket, public, &suffix, port_of.as_ref(), &host).await;
         });
     }
 }
@@ -156,7 +89,7 @@ async fn relay(
     public: Arc<rustls::ServerConfig>,
     suffix: &str,
     port_of: &(dyn Fn(&str) -> Option<u16> + Send + Sync),
-    pinned: Arc<Pinned>,
+    host: &rustls::ClientConfig,
 ) -> Result<()> {
     let start =
         tokio_rustls::LazyConfigAcceptor::new(rustls::server::Acceptor::default(), socket).await?;
@@ -168,11 +101,7 @@ async fn relay(
         .context("unknown room")?;
     let mut client = start.into_stream(public).await?;
     let alpn = client.get_ref().1.alpn_protocol().map(<[u8]>::to_vec);
-    let mut config = rustls::ClientConfig::builder_with_provider(Arc::clone(&pinned.provider))
-        .with_safe_default_protocol_versions()?
-        .dangerous()
-        .with_custom_certificate_verifier(pinned)
-        .with_no_client_auth();
+    let mut config = host.clone();
     config.alpn_protocols = alpn.into_iter().collect();
     let upstream = TcpStream::connect(("127.0.0.1", port)).await?;
     let mut host = tokio_rustls::TlsConnector::from(Arc::new(config))

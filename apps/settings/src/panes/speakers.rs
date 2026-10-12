@@ -41,8 +41,8 @@ use crate::speaker_setup::{
     member_status_text, playback_text, role_answer, role_text,
 };
 use crate::widgets::{
-    StatusTone, caption, card, cards, choice_row_described, rows, semantic_status_pill,
-    setting_row, setting_row_described, value_row,
+    StatusTone, caption, card, cards, rows, semantic_status_pill, setting_row,
+    setting_row_described, value_row,
 };
 
 const REFRESH_INTERVAL: Duration = Duration::from_secs(2);
@@ -331,6 +331,7 @@ impl SpeakersArea {
             Rc::new(std::cell::RefCell::new(SpeakersModel::new(
                 self.cx.clone(),
                 service,
+                !self.cx.reaches_devices(),
             )))
         })
     }
@@ -341,6 +342,13 @@ impl SpeakersArea {
         if let Some(model) = self.model.get() {
             model.borrow_mut().poll_finished();
         }
+    }
+
+    /// Whether the area has read what its rows show: its pane was shown,
+    /// an effect or a row lookup reached it, or the window read it after
+    /// its first frame ([`crate::effects::LIVE_AREAS`]).
+    pub(crate) fn is_open(&self) -> bool {
+        self.model.get().is_some()
     }
 
     /// One row per set this device leads, offering its calibration and
@@ -373,6 +381,7 @@ pub struct SpeakersModel {
     cx: PaneCx,
     setup: SpeakerSetup,
     service: Arc<dyn SpeakerService>,
+    sample: bool,
     finished_tx: Sender<Finished>,
     finished_rx: Receiver<Finished>,
     in_flight: usize,
@@ -391,12 +400,13 @@ pub struct SpeakersModel {
 }
 
 impl SpeakersModel {
-    fn new(cx: PaneCx, service: Arc<dyn SpeakerService>) -> Self {
+    fn new(cx: PaneCx, service: Arc<dyn SpeakerService>, sample: bool) -> Self {
         let (finished_tx, finished_rx) = channel();
         let mut model = Self {
             cx,
             setup: SpeakerSetup::default(),
             service,
+            sample,
             finished_tx,
             finished_rx,
             in_flight: 0,
@@ -414,6 +424,9 @@ impl SpeakersModel {
             changed: false,
         };
         model.refresh();
+        if sample {
+            model.poll_finished();
+        }
         model
     }
 
@@ -427,6 +440,15 @@ impl SpeakersModel {
         let service = Arc::clone(&self.service);
         let finished = self.finished_tx.clone();
         self.in_flight = self.in_flight.saturating_add(1);
+        // Only the in-memory screenshot/test service runs here. Real broker
+        // calls keep their worker so device I/O never blocks the UI thread.
+        if self.sample {
+            let _ = finished.send(Finished {
+                purpose,
+                result: service.call(command),
+            });
+            return;
+        }
         let spawned = std::thread::Builder::new()
             .name("settings-speakers".into())
             .spawn(move || {
@@ -798,7 +820,7 @@ impl SpeakersModel {
         .with_id("speakers.listening")
         .with_accessible_name(t("speakers-listening-title"))
         .with_placeholder(&listening.label);
-        body.push(choice_row_described(
+        body.push(setting_row_described(
             &t("speakers-listening-title"),
             &t("speakers-listening-description"),
             Box::new(chooser),
@@ -1008,7 +1030,7 @@ impl SpeakersModel {
         .with_id("speakers.arrangement")
         .with_accessible_name(t("speakers-arrangement"));
         let candidates = self.setup.candidates();
-        let mut body = vec![choice_row_described(
+        let mut body = vec![setting_row_described(
             &t("speakers-arrangement"),
             &self.setup.arrangement().description(),
             Box::new(arrangement),
@@ -1184,9 +1206,9 @@ impl SpeakersModel {
     fn build_name(&self) -> Vec<Box<dyn Widget>> {
         let name = TextInput::from_state(&self.name_state)
             .with_id("speakers.name")
-            .with_placeholder(&t("speakers-name-placeholder"))
+            .with_placeholder(t("speakers-name-placeholder"))
             .with_accessible_name(t("speakers-name"));
-        let mut body = vec![choice_row_described(
+        let mut body = vec![setting_row_described(
             &t("speakers-name"),
             &t("speakers-name-description"),
             Box::new(name),
@@ -1592,13 +1614,7 @@ impl Widget for RoomCanvas {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x + layout.size.width),
-            origin.y + f64::from(layout.location.y + layout.size.height),
-        );
+        self.rect = ui::widget::layout_rect(taffy, node, origin);
     }
 
     fn draw(
@@ -1748,6 +1764,23 @@ mod tests {
 
     use super::*;
 
+    #[test]
+    fn sample_area_rows_do_not_wait_for_workers() {
+        let profile = tempfile::tempdir().unwrap();
+        let area = SpeakersArea::new(&PaneCx::in_file(profile.path().join("settings.json")));
+        assert_eq!(
+            area.rows().len(),
+            1,
+            "the speaker group publishes on the first read"
+        );
+        let model = area.model().borrow();
+        assert_eq!(
+            model.in_flight, 0,
+            "sample rows are ready when the area reads"
+        );
+        assert_eq!(model.setup.groups().len(), 1);
+    }
+
     /// Answers from a fixed snapshot and records every command.
     struct FakeService {
         snapshot: Mutex<SpeakerSnapshot>,
@@ -1828,6 +1861,7 @@ mod tests {
         SpeakersModel::new(
             PaneCx::in_file(profile.path().join("settings.json")),
             service,
+            false,
         )
     }
 

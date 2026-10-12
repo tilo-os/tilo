@@ -89,6 +89,11 @@ pub struct Heuristics {
     generation: Arc<AtomicU64>,
     cancel: tokio::sync::watch::Sender<u64>,
     queue: mpsc::Sender<PrefetchJob>,
+    /// Set by every open, cleared by [`Self::take_opened`]; the policy
+    /// monitor samples power and storage only while files are opened.
+    opened: Arc<std::sync::atomic::AtomicBool>,
+    /// Signalled by every open, so the monitor resumes sampling at once.
+    activity: Arc<tokio::sync::Notify>,
 }
 
 impl Heuristics {
@@ -170,7 +175,20 @@ impl Heuristics {
             generation,
             cancel,
             queue,
+            opened: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            activity: Arc::new(tokio::sync::Notify::new()),
         }
+    }
+
+    /// Whether a file was opened since the last call (TIL-774).
+    pub fn take_opened(&self) -> bool {
+        self.opened.swap(false, Ordering::AcqRel)
+    }
+
+    /// Wait for the next open; returns at once if one happened since the
+    /// last [`Self::take_opened`] began waiting.
+    pub async fn opened(&self) {
+        self.activity.notified().await;
     }
 
     /// Replace the current speculative policy. Tightening any gate invalidates
@@ -219,6 +237,9 @@ impl Heuristics {
     /// `candidates` must likewise come from the mount's filtered directory
     /// listing. Each tuple is `(manifest_hash, declared_file_size)`.
     pub fn on_open(&self, _ino: u64, candidates: Vec<(Hash, u64)>) {
+        if !self.opened.swap(true, Ordering::AcqRel) {
+            self.activity.notify_one();
+        }
         let policy = self.policy();
         if !policy.permits() {
             return;
@@ -311,6 +332,37 @@ mod tests {
             assert!(admit_pending(&mut pending, second, 4, policy));
             assert_eq!(pending.values().copied().sum::<u64>(), 10);
         }
+    }
+
+    /// TIL-774. The policy monitor sleeps until a file is opened: the first
+    /// open after a quiet interval wakes it, and opens are reported once
+    /// per interval however many there were.
+    #[tokio::test]
+    async fn an_open_wakes_the_policy_monitor() {
+        let endpoint = Endpoint::builder(presets::Minimal)
+            .bind_addr((std::net::Ipv4Addr::LOCALHOST, 0))
+            .unwrap()
+            .bind()
+            .await
+            .unwrap();
+        let hydrator = Arc::new(Hydrator::new(
+            endpoint.clone(),
+            Arc::new(ContentStore::memory()),
+        ));
+        let heuristics = Heuristics::new(hydrator);
+        assert!(!heuristics.take_opened(), "nothing was opened yet");
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(50), heuristics.opened())
+                .await
+                .is_err(),
+            "an idle mount does not wake the monitor"
+        );
+        heuristics.on_open(7, Vec::new());
+        heuristics.on_open(8, Vec::new());
+        tilo_test_env::within("the first open wakes the monitor", heuristics.opened()).await;
+        assert!(heuristics.take_opened());
+        assert!(!heuristics.take_opened(), "reported once");
+        endpoint.close().await;
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

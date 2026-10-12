@@ -64,6 +64,10 @@ pub enum Command {
         destination: String,
         operation: String,
     },
+    RestoreTrash {
+        source: SelectedDescriptor,
+        operation: String,
+    },
     Observe {
         operation: String,
     },
@@ -106,6 +110,7 @@ impl Command {
                 destination,
                 operation,
             } => valid_id(offer) && valid_id(destination) && valid_id(operation),
+            Self::RestoreTrash { source, operation } => source.valid() && valid_id(operation),
             Self::Recover { operation }
             | Self::Observe { operation }
             | Self::Cancel { operation }

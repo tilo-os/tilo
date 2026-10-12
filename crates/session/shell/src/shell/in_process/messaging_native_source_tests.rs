@@ -81,6 +81,22 @@ impl SignalAuthority for Provider {
         self.authorize(&route())
     }
 }
+
+fn await_private_reply(harness: &mut ui::headless::FrameHarness, mut pump: impl FnMut()) {
+    // A completed send can schedule another authorized private-history read.
+    // Observe its actual accessibility projection, not just the send receipt.
+    assert!(
+        harness.wait_until(ui::time::Duration::from_secs(5), |harness| {
+            pump();
+            harness
+                .a11y_nodes()
+                .iter()
+                .any(|(_, node)| node.label() == Some("native private reply"))
+        }),
+        "the completed native reply must reach the private accessibility tree"
+    );
+}
+
 fn seed_person<P: Resource<State = P> + Fields + SharedRecord>(
     apps: &mut super::super::super::InProcessApps,
     value: &P,
@@ -92,7 +108,7 @@ fn seed_person<P: Resource<State = P> + Fields + SharedRecord>(
     )
     .unwrap();
     let record = records
-        .open_record(ui::record::RecordKind::new(P::KIND), |doc| {
+        .open_record(ui::record::RecordKind::new(P::KIND), &|doc| {
             P::initialize(doc).map_err(|error| error.to_string())
         })
         .unwrap();
@@ -158,7 +174,21 @@ fn probe(reader: &mut BufReader<UnixStream>, peer: &mut UnixStream) {
     reader.read_line(&mut line).unwrap();
     let request: serde_json::Value = serde_json::from_str(&line).unwrap();
     assert_eq!(request["method"], "listAccounts");
-    writeln!(peer, "{}", serde_json::json!({"jsonrpc":"2.0","id":request["id"],"result":[{"aci":OWN_ACI,"number":"+15555550101"}]})).unwrap();
+    writeln!(
+        peer,
+        "{}",
+        serde_json::json!({"jsonrpc":"2.0","id":request["id"],"result":[{"number":"+15555550101"}]})
+    )
+    .unwrap();
+    let mut own_line = String::new();
+    reader.read_line(&mut own_line).unwrap();
+    let own_probe: serde_json::Value = serde_json::from_str(&own_line).unwrap();
+    assert_eq!(own_probe["method"], "listIdentities");
+    assert_eq!(
+        own_probe["params"]["number"],
+        own_probe["params"]["account"]
+    );
+    writeln!(peer, "{}", serde_json::json!({"jsonrpc":"2.0","id":own_probe["id"],"result":serde_json::json!([{"uuid":OWN_ACI,"number":"+15555550101","trustLevel":"TRUSTED_VERIFIED","fingerprint":format!("05 {}", vec!["aa"; 32].join(" "))}])})).unwrap();
 }
 fn source(
     rig: &Rig,
@@ -843,6 +873,7 @@ fn default_native_launch_receives_displays_and_replies_on_exact_signed_account()
         apps.pump_messaging_records();
     })
     .unwrap();
+    await_private_reply(&mut mounted.harness, || apps.pump_messaging_records());
     assert!(
         mounted
             .harness
@@ -1054,6 +1085,7 @@ fn activate_linked_conversation(
     );
     assert!(effect(&mut mounted.harness, &reply, false).is_err());
     effect(&mut mounted.harness, &reply, true).unwrap();
+    await_private_reply(&mut mounted.harness, || {});
     assert!(
         mounted
             .harness
@@ -1293,7 +1325,7 @@ fn exercise_verified_enrollment_profile(include_ram: bool) {
     // Existing host fixture APIs isolate both paths and secret backend. This
     // exercises the production custody contract, never the user's OS keyring.
     let rig = Rig::new();
-    let _paths = xdg_paths::scope_profile(rig.root.path().join("isolated-profile-owner"));
+    let _paths = tilo_paths::scope_profile(rig.root.path().join("isolated-profile-owner"));
     let _secrets = tilo_secrets::scope_thread(tilo_secrets::memory_backend());
     let lifecycle = LocalSessionAuthority::new();
     lifecycle.lifecycle().publish_native_state(false, false);
@@ -1841,3 +1873,11 @@ fn wait_network_prompt(queue: &crate::portal::PromptQueueHandle) -> crate::porta
         std::thread::park_timeout(ui::time::Duration::from_millis(1));
     }
 }
+
+#[path = "messaging_sms_first_tests.rs"]
+mod sms_first_journey;
+
+#[path = "messaging_native_first_tests.rs"]
+mod native_first_journey;
+#[path = "messaging_whatsapp_first_tests.rs"]
+mod whatsapp_first_tests;

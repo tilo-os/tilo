@@ -509,3 +509,28 @@ Viewer journey and adds the actual Chat build/recovery journey with separate
 receipts. See `docs/native-chat-browser-acceptance.md` for scope and reproduction.
 These loopback fixture results do not establish public demo access, browser
 voice, a full profile restart with queued edits or cross-app Follow.
+
+## Compiled browser call acceptance (2026-10-07)
+
+The `mounted-resource --voice` journey now exercises two certified profiles
+running the actual compiled Chat and Wasm peer, including production audio and
+signalling. The governor prepares the registered native primary and authors its
+existing graph through the host-local `Rooms::author_application` API. The API
+checks exact current custody and record access, refuses missing or sealed
+records before the callback, and publishes admitted incremental changes. It is
+not an incoming member publication or a new network authoring endpoint. Native
+resource replay and voice binding keep their existing admission predicates.
+
+The journey passed muted join without capture, explicit Unmute through public
+actions and the rendered semantic control, bidirectional decoded synthetic
+audio, independent mute, Leave cleanup, rejoin with fresh consent, and targeted
+owner revocation. The SDK web lane runs it with unprivileged sandboxed browsers
+and retains screenshots and quantitative lifecycle observations. A regression
+also proves that an authored record reaches the retained resource view when a
+real signed governance tail crosses its publication limit.
+
+This qualifies the governed loopback compiled-browser call. It does not
+establish physical microphone support, arbitrary remote encrypted Chat routes,
+cross-app Follow, or public demo access. See
+`docs/native-chat-browser-acceptance.md` for reproduction and the separate
+Viewer and disconnect/retry journeys.

@@ -1,14 +1,45 @@
 # Messaging integration research
 
-Status: unified Messages, the shared Contacts surface, exact transport routing,
-private encrypted history and native account adapters are implemented on the task
-branch. The later implementation sections describe their current boundaries.
-Default desktop startup does not yet invoke the native account setup factories;
-private Signal linking has a native setup capability and Messages controls; default live account configuration and the remaining acceptance gaps are unfinished.
-
+Current source status (2026-10-09): private Messages, shared Contacts routing,
+account-scoped encrypted history and the native Tilo transport are on main.
+Default native startup invokes Tilo, Signal and SMS enrollment paths with original
+protected account review. Signal linking and text delivery are fixture-qualified,
+not real-account qualified. Its production publication restriction remains;
+accepted installed-runtime and live-account qualification are still prerequisites.
+WhatsApp transport/encrypted-store adapters are present, but default startup and
+first-account linking were reverted with #3468; the existing reland #3526 is pending.
+No real WhatsApp or Signal linking, sending or receiving is claimed here.
+Direct text is the qualified first scope; media, calls and external group UI
+remain separate work.
 The inventory and feasibility sections below preserve the initial research. Their
 base-specific findings are historical; they do not override the subsequent
 accepted product direction or imply that live accounts are configured.
+
+## Pinned Signal compatibility acceptance
+
+signal-cli 0.14.8 `listAccounts` returns only `{number}` rows. Enrollment and
+sender/receiver activation must separately query `listIdentities` with both
+`account` and `number` set to the explicitly selected owned account. That local
+query yields the canonical `uuid`, number and verified identity key; the number
+must appear exactly once in `listAccounts`. No `trust` or public `getUserStatus`
+lookup establishes account ownership. The original credential authority is
+rechecked around pairing completion and again at protected acceptance.
+
+Sources: [ListAccountsCommand](https://github.com/AsamK/signal-cli/blob/v0.14.8/src/main/java/org/asamk/signal/commands/ListAccountsCommand.java),
+[ListIdentitiesCommand](https://github.com/AsamK/signal-cli/blob/v0.14.8/src/main/java/org/asamk/signal/commands/ListIdentitiesCommand.java),
+[ManagerImpl](https://github.com/AsamK/signal-cli/blob/v0.14.8/lib/src/main/java/org/asamk/signal/manager/internal/ManagerImpl.java),
+[SignalAccount local self identity initialization](https://github.com/AsamK/signal-cli/blob/v0.14.8/lib/src/main/java/org/asamk/signal/manager/storage/SignalAccount.java).
+
+Only direct plain text is projected. Sync, edit, story, call, receipt and typing
+payloads are not flattened into a concurrent `dataMessage`; supported receipts
+retain their separate journal-correlated path. Media, groups, disappearing text
+and linked-device sent-history synchronization need their own semantics.
+An interrupted unpublished enrollment offers an explicit return to account
+selection, clears its private projection and retires the old owned attempt.
+Starting again still requires confirmation and fresh protected review. Published
+accounts, pending reviews and uncertain message sends cannot use this reset.
+These are source and nonsecret fixture acceptance limits; accepted-runtime and
+real-account qualification remain outstanding under the publication restriction.
 
 ## Verified repository building blocks
 
@@ -1457,10 +1488,21 @@ Provider readiness is separate from the Messages UI and from one another:
 
 | Provider | Qualified path | Next production gap |
 | --- | --- | --- |
-| Signal | Default empty native app, synthetic first-account linking, original protected Passwords review, receive/display/reply and revocation | Protected main integration, existing-authority publication, accepted catalogue artifacts and immutable installed-runtime qualification; no real account is enrolled |
-| WhatsApp | Encrypted SDK state, original account grant on every SDK state transaction, guarded supplied network handles and explicit native account activation | Default startup never invokes `start_native_whatsapp_account`; first-account self-identity/linking and protected network/credential review need an owned host factory |
-| SMS | Pinned private ModemManager D-Bus receive/display/reply, explicit sender selection, submitted-only receipt and revoked-write refusal | Protected SIM selection/lease and default native startup are absent; a supplied adapter is not SIM enrollment |
-| Native Tilo | Shared Contacts service identity/routing vocabulary | No private native-Tilo broker is installed by this provider supervisor; workspace Chat must not provide a fallback |
+| Signal | Default empty app, synthetic first-account linking, original Passwords review, owned processes, encrypted profiles/history, receive/display/reply and revoked-write refusal | Accepted existing-authority runtime publication/installation and real-account qualification remain; production publication is restricted. Pinned 0.14.8 ordinary-text metadata requires the codec correction described below. |
+| WhatsApp | SDK transport, encrypted SDK state, original grant on state transactions, supplied protected native account activation | Default startup/linking reland #3526 is pending after #3468 was reverted. No real-account compatibility proof. |
+| SMS | Default first-SIM chooser, protected lease/review, private ModemManager receive/display/reply and revoked-write refusal in controlled fixtures | Physical SIM/modem/carrier qualification remains; submitted-only is not carrier delivery. |
+| Native Tilo | Default original-identity enrollment, protected review, dedicated certified private transport, two-peer text, encrypted restart and revocation | Controlled native-peer proof is separate from WhatsApp/Signal compatibility; external group/media/call UI is not qualified. |
+
+The Signal plain-text codec now recognizes the pinned
+[signal-cli 0.14.8 JsonDataMessage schema](https://github.com/AsamK/signal-cli/blob/v0.14.8/src/main/java/org/asamk/signal/json/JsonDataMessage.java).
+Ordinary events serialize false expiration-update, end-session and profile-update
+flags plus a Boolean profile-key-presence flag. Rejecting those fields as unknown
+also rejected ordinary direct text. Schema-derived fixtures reproduce that
+failure and cover the correction through the production decoder and stream runtime.
+Control flags set true, malformed values, unknown fields, rich/group/ephemeral
+events and wrong-account traffic remain refused. The profile-key-presence flag
+creates no identity, account or permission authority. This source proof does not
+qualify an installed runtime or a real Signal account.
 
 The SMS fixture `sms_runtime::tests::actual_sms_arrival_reply_and_revocation_keep_private_history_out_of_shared_state`
 uses an owned private `dbus-daemon` and synthetic ModemManager objects. It receives
@@ -1477,12 +1519,12 @@ Run it remotely with plain Cargo arguments:
 cargo test --locked -p tilo-messaging-protocol --lib sms_runtime::tests::actual_sms_arrival_reply_and_revocation_keep_private_history_out_of_shared_state -- --exact
 ```
 
-WhatsApp fixtures must next connect the original default first-account owner to
-an isolated SDK network peer, retaining its own reviewed self identity and grant.
-Native-Tilo fixtures must use independent personal owners and an authenticated
-private transport, prove encrypted histories remain separate and prove workspace
-collaborators cannot enumerate messages or membership. Neither qualification may
-borrow workspace Chat, manufacture a trusted publisher or use real accounts.
+The pending WhatsApp reland owns default first-account startup and its isolated
+SDK-peer qualification, retaining the original reviewed self identity and grant.
+Native Tilo now has independent personal-owner/private-transport fixtures proving
+separate encrypted histories and collaborator exclusion. Neither proof supplies
+WhatsApp/Signal compatibility, workspace Chat authority, a new trusted publisher
+or real-account enrollment.
 
 The native WhatsApp bootstrap retains the original account grant in the encrypted
 SDK store. It checks that grant under the shared transaction lock before reads or

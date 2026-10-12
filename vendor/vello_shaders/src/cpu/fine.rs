@@ -83,7 +83,9 @@ fn fill_path(area: &mut [f32], segments: &[PathSegment], fill: &CmdFill, x_tile:
                     let b = xmax.min(1.0);
                     let c = b.max(0.0);
                     let d = xmin.max(0.0);
-                    let a = (b + 0.5 * (d * d - c * c) - xmin) / (xmax - xmin);
+                    // As fine.wgsl's `fill_path`: factored, so an edge's
+                    // coverage does not depend on where the shape sits.
+                    let a = ((b - xmin) - 0.5 * ((c - d) * (c + d))) / (xmax - xmin);
                     area[yi * TILE_WIDTH + i] += y_edge + a * dy;
                 }
             } else if y_edge != 0.0 {

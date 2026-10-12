@@ -207,6 +207,29 @@ class SmokeShards(unittest.TestCase):
             self.assertEqual(worker["args"][1], "http://fixture")
             self.assertEqual(worker["worker"], "1")
 
+    def test_three_shards_preserve_round_robin_coverage_and_profile_isolation(self):
+        apps = ["calculator", "calendar", "file-explorer", "desktop", "terminal", "settings", "chat"]
+        result, workers, browsers = self.run_driver(apps, shards="3")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len(workers), 3)
+        self.assertEqual(len(browsers), 3)
+        assignments = {worker["port"]: worker["args"][2:] for worker in workers}
+        self.assertEqual(assignments, {str(9333 + shard): apps[shard::3] for shard in range(3)})
+        profiles = [next(arg for arg in args if arg.startswith("--user-data-dir=")) for args in browsers]
+        self.assertEqual(len(set(profiles)), 3)
+
+    def test_three_shards_finish_all_probes_and_preserve_failure_through_cleanup(self):
+        apps = ["calculator", "calendar", "desktop", "terminal"]
+        result, workers, _ = self.run_driver(apps, shards="3", failing_app="calendar", cleanup_failures=1)
+        self.assertEqual(result.returncode, 1)
+        self.assertCountEqual([app for worker in workers for app in worker["args"][2:]], apps)
+
+    def test_three_requested_shards_do_not_start_empty_browsers(self):
+        result, workers, browsers = self.run_driver(["calculator", "desktop"], shards="3")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len(workers), 2)
+        self.assertEqual(len(browsers), 2)
+
     def test_failure_is_propagated_and_other_shard_finishes(self):
         result, workers, _ = self.run_driver(["calculator", "calendar", "desktop"], failing_app="calculator")
         self.assertEqual(result.returncode, 1)
@@ -246,7 +269,7 @@ class SmokeShards(unittest.TestCase):
         self.assertEqual(len(browsers), 1)
 
     def test_extra_parallelism_is_rejected(self):
-        result, workers, browsers = self.run_driver(["calculator", "desktop"], shards="3")
+        result, workers, browsers = self.run_driver(["calculator", "desktop"], shards="4")
         self.assertEqual(result.returncode, 2)
         self.assertEqual(workers, [])
         self.assertEqual(browsers, [])

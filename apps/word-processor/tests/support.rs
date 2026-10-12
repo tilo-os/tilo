@@ -25,13 +25,14 @@ pub fn launched(path: &Path) -> App {
 
 /// Submit `action` through the app's door, as a control or the palette does.
 pub fn apply(app: &mut App, action: &RichTextAction) {
-    app.invoke(Invoke::apply(action).unwrap()).unwrap();
+    app.invoke(Invoke::edit(&word_processor::model::edit(action)).unwrap())
+        .unwrap();
 }
 
 /// The document as it is now.
 pub fn snapshot(app: &App) -> tilo_doc::DocSnapshot {
     app.read_document(|doc| {
-        let containers = tilo_doc::model::open(doc, &automerge::ROOT).unwrap();
+        let containers = word_processor::model::open(doc).unwrap();
         tilo_doc::model::materialize(doc, &containers)
     })
 }
@@ -57,7 +58,7 @@ pub fn save_as(app: &mut App, path: &Path) {
     arguments.insert("path".into(), path.to_string_lossy().into_owned().into());
     app.harness()
         .invoke_action(
-            &tilo_actions::ActionAddress::new("tilo.rich-text", "save-as"),
+            &tilo_actions::ActionAddress::new("word-processor.document", "save-as"),
             &arguments,
             true,
             None,

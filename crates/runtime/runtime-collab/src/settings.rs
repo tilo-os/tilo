@@ -18,6 +18,8 @@ use crate::collab_capnp::app_settings;
 /// The most bytes one settings view or write carries on the wire.
 pub const MAX_SETTINGS_WIRE_BYTES: usize = 1024 * 1024;
 
+pub use crate::DisplayOrigin;
+
 /// The capability [`crate::ChannelHandle::settings`] answers.
 #[derive(Clone)]
 pub struct AppSettingsHandle {
@@ -68,6 +70,43 @@ impl AppSettingsHandle {
         SettingsView::from_reply(reply.get_revision(), reply.get_document_json()?)
     }
 
+    /// Invoke the host's separately admitted display transaction service.
+    ///
+    /// # Errors
+    /// Refuses oversized requests, unavailable authority and lost replies.
+    pub async fn display_control(
+        &self,
+        command: &[u8],
+        origin: DisplayOrigin,
+    ) -> Result<Vec<u8>, NotAvailable> {
+        if command.len() > 64 * 1024 {
+            return Err(NotAvailable::Capnp(capnp::Error::failed(
+                "display request exceeds the wire bound".into(),
+            )));
+        }
+        let mut request = self.inner.display_control_request();
+        request.get().set_command_json(command);
+        match origin {
+            DisplayOrigin::LocalHost => request
+                .get()
+                .set_origin(crate::collab_capnp::DisplayRequestOrigin::LocalHost),
+            DisplayOrigin::Published(invocation) => {
+                request
+                    .get()
+                    .set_origin(crate::collab_capnp::DisplayRequestOrigin::Published);
+                request.get().set_published_invocation(&invocation);
+            }
+        }
+        let reply = request.send().promise.await?;
+        let bytes = reply.get()?.get_reply_json()?;
+        if bytes.len() > 64 * 1024 {
+            return Err(NotAvailable::Capnp(capnp::Error::failed(
+                "display reply exceeds the wire bound".into(),
+            )));
+        }
+        Ok(bytes.to_vec())
+    }
+
     /// Merge `values_json`, `{"<app id>": {...}}`, into the app's entry in
     /// `section`, answering the view after the write.
     ///
@@ -114,9 +153,15 @@ pub mod host {
     /// admission was withdrawn).
     pub type Revalidate = Arc<dyn Fn() -> Result<(), capnp::Error> + Send + Sync>;
 
+    /// An independently admitted typed display delegate; the caller's identity
+    /// is captured by the broker, never read from the request.
+    pub type DisplayControl =
+        Arc<dyn Fn(&[u8], super::DisplayOrigin) -> Result<Vec<u8>, String> + Send + Sync>;
+
     /// One app's `AppSettings` capability over `source`.
     pub struct AppSettingsServer {
         app_id: String,
+        display: Option<DisplayControl>,
         dictionary_owner: Option<[u8; 32]>,
         source: Arc<dyn SettingsSource>,
         revalidate: Revalidate,
@@ -142,6 +187,7 @@ pub mod host {
             source.changes().listen(&listener);
             Self {
                 app_id: app_id.into(),
+                display: None,
                 dictionary_owner: None,
                 source,
                 revalidate,
@@ -149,6 +195,14 @@ pub mod host {
                 changed,
                 _listener: listener,
             }
+        }
+
+        /// Attach the broker's independent display authority, without extending
+        /// generic settings write permissions.
+        #[must_use]
+        pub fn with_display(mut self, display: Option<DisplayControl>) -> Self {
+            self.display = display;
+            self
         }
 
         /// Host-certified local descriptor owner. Remote collaborators and
@@ -220,6 +274,59 @@ pub mod host {
                     changed.await;
                 }
             })
+        }
+
+        fn display_control(
+            self: std::rc::Rc<Self>,
+            params: app_settings::DisplayControlParams,
+            mut results: app_settings::DisplayControlResults,
+        ) -> Promise<(), capnp::Error> {
+            let answered = (|| {
+                (self.revalidate)()?;
+                let bytes = params.get()?.get_command_json()?;
+                if bytes.len() > 64 * 1024 {
+                    return Err(capnp::Error::failed(
+                        "display request exceeds the wire bound".into(),
+                    ));
+                }
+                let display = self.display.as_ref().ok_or_else(|| {
+                    capnp::Error::failed(
+                        "display control is unavailable to this application".into(),
+                    )
+                })?;
+                let original = params.get()?.get_published_invocation()?;
+                let origin = match params
+                    .get()?
+                    .get_origin()
+                    .map_err(|_| capnp::Error::failed("invalid display origin".into()))?
+                {
+                    crate::collab_capnp::DisplayRequestOrigin::LocalHost if original.is_empty() => {
+                        super::DisplayOrigin::LocalHost
+                    }
+                    crate::collab_capnp::DisplayRequestOrigin::Published => {
+                        super::DisplayOrigin::Published(original.try_into().map_err(|_| {
+                            capnp::Error::failed("invalid original display invocation".into())
+                        })?)
+                    }
+                    _ => {
+                        return Err(capnp::Error::failed(
+                            "original display origin is unavailable".into(),
+                        ));
+                    }
+                };
+                let reply = display(bytes, origin).map_err(capnp::Error::failed)?;
+                if reply.len() > 64 * 1024 {
+                    return Err(capnp::Error::failed(
+                        "display reply exceeds the wire bound".into(),
+                    ));
+                }
+                results.get().set_reply_json(&reply);
+                Ok(())
+            })();
+            match answered {
+                Ok(()) => Promise::ok(()),
+                Err(error) => Promise::err(error),
+            }
         }
 
         fn update(

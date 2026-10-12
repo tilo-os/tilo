@@ -1,6 +1,6 @@
 //! Installed, explicitly authorized managed processes and shared supervision.
 //! No ambient identity, package trust or process-global environment is changed.
-use crate::manifest::MinimalManifest;
+use crate::manifest::ManifestView;
 use package_store::InstalledPackage;
 use std::{
     collections::{HashMap, VecDeque},
@@ -26,19 +26,6 @@ pub struct PackageTrust {
 }
 
 impl PackageTrust {
-    /// Load the same independently configured app trust used by the installer.
-    /// This never adds the installed package's self-declared publisher.
-    ///
-    /// # Errors
-    /// Refuses unavailable configuration roots or malformed trust/revocation files.
-    pub fn from_user_config() -> Result<Self, String> {
-        let attestors = tilo_app_package::default_trusted_attestors_path()
-            .ok_or("application trust configuration directory is unavailable")?;
-        let revoked = tilo_app_package::default_revoked_keys_path()
-            .ok_or("application revocation configuration directory is unavailable")?;
-        Self::from_config_paths(&attestors, &revoked)
-    }
-
     /// Load explicit host-owned paths; absent files mean no additional trust.
     ///
     /// # Errors
@@ -80,6 +67,7 @@ pub fn agent_package_row(
         runtime: String::new(),
         source: String::new(),
         held: false,
+        payload_bytes: 0,
         system: false,
     }
 }
@@ -142,13 +130,13 @@ impl InstalledManagedPackage {
     /// # Errors
     ///
     /// Returns a description of the first verification failure.
-    pub fn revalidate(&self, trust: &PackageTrust) -> Result<MinimalManifest, String> {
+    pub fn revalidate(&self, trust: &PackageTrust) -> Result<ManifestView, String> {
         self.verified_manifest(trust).map(|(manifest, _)| manifest)
     }
     fn verified_manifest(
         &self,
         trust: &PackageTrust,
-    ) -> Result<(MinimalManifest, tilo_app_package::BlobHash), String> {
+    ) -> Result<(ManifestView, tilo_app_package::BlobHash), String> {
         let evidence = self.record_dir();
         let signed = std::fs::read(evidence.join("signed-root")).map_err(|e| e.to_string())?;
         let root = tilo_app_package::SignedRoot::decode(&signed).map_err(|e| e.to_string())?;
@@ -228,7 +216,7 @@ impl InstalledManagedPackage {
         refuse_unexpected_files(&self.installed.payload_root, collection)?;
         // Parse the exact bytes already verified above, never reread a path
         // that could have changed after signature/integrity validation.
-        let manifest: MinimalManifest =
+        let manifest: ManifestView =
             toml::from_str(std::str::from_utf8(&manifest).map_err(|e| e.to_string())?)
                 .map_err(|e| e.to_string())?;
         require_managed_service(&manifest)?;
@@ -321,7 +309,7 @@ fn refuse_unusual_entries(root: &Path) -> Result<(), String> {
 }
 /// A managed agent is a headless service with required collaboration and
 /// model gateway services and no network.
-fn require_managed_service(manifest: &MinimalManifest) -> Result<(), String> {
+fn require_managed_service(manifest: &ManifestView) -> Result<(), String> {
     let requires = |service: &str| {
         manifest.sandbox.services.get(service).is_some_and(|value| {
             crate::manifest::ServiceReq::parse(value).is_ok_and(|req| req.is_required())
@@ -455,7 +443,7 @@ impl ManagedRuntime {
     /// # Errors
     /// Refuses missing trust, policy bypasses, or an untrusted/missing runtime.
     pub fn from_launch_options(
-        manifest: &MinimalManifest,
+        manifest: &ManifestView,
         options: &crate::run::RunOptions,
         sandbox_shim: PathBuf,
         bwrap: PathBuf,
@@ -634,7 +622,7 @@ impl VerifiedManagedRuntime {
     }
 }
 fn verify_bundle(
-    manifest: &MinimalManifest,
+    manifest: &ManifestView,
     runtime: &ManagedRuntime,
 ) -> Result<runtime_bundle::BundleManifest, String> {
     let (_, version) = manifest
@@ -696,6 +684,18 @@ struct ManagedAttempt {
     binding: ManagedBinding,
     cancelled: Arc<std::sync::atomic::AtomicBool>,
     terminal: Arc<std::sync::atomic::AtomicBool>,
+    /// Rung on cancellation; the launch's supervisor sleeps on it and the
+    /// child's exit instead of polling both.
+    #[cfg(target_os = "linux")]
+    wake: Arc<bounded_command::WakeFd>,
+}
+impl ManagedAttempt {
+    fn cancel(&self) {
+        self.cancelled
+            .store(true, std::sync::atomic::Ordering::Release);
+        #[cfg(target_os = "linux")]
+        self.wake.ring();
+    }
 }
 #[derive(Default, Clone)]
 pub struct ProcessRegistry(Arc<Mutex<HashMap<ProcessIdentity, Arc<ProcessRecord>>>>);
@@ -926,6 +926,11 @@ impl ManagedLauncher {
         if self.events.lock().map_err(|_| "event owner lost")?.len() > 8 {
             return Err("managed event queue full".into());
         }
+        #[cfg(target_os = "linux")]
+        let wake = Arc::new(
+            bounded_command::WakeFd::new()
+                .map_err(|e| format!("managed launch wake unavailable: {e}"))?,
+        );
         let cancelled = Arc::new(std::sync::atomic::AtomicBool::new(false));
         self.attempts.insert(
             binding.launch.clone(),
@@ -933,6 +938,8 @@ impl ManagedLauncher {
                 binding: binding.clone(),
                 cancelled: cancelled.clone(),
                 terminal: Arc::new(false.into()),
+                #[cfg(target_os = "linux")]
+                wake,
             },
         );
         self.owner.revalidate()?;
@@ -991,9 +998,7 @@ impl ManagedLauncher {
             .get(&binding.launch)
             .filter(|a| &a.binding == binding)
             .ok_or("not an owned launch")?;
-        attempt
-            .cancelled
-            .store(true, std::sync::atomic::Ordering::Release);
+        attempt.cancel();
         #[cfg(target_os = "linux")]
         for record in self
             .registry
@@ -1017,10 +1022,10 @@ impl ManagedLauncher {
             .live
             .store(false, std::sync::atomic::Ordering::Release);
         let mut failed = None;
+        // Cancelling every attempt also wakes its supervisor for the
+        // `live` store above, which has no wake of its own.
         for attempt in self.attempts.values() {
-            attempt
-                .cancelled
-                .store(true, std::sync::atomic::Ordering::Release);
+            attempt.cancel();
         }
         #[cfg(target_os = "linux")]
         if let Ok(records) = self.registry.0.lock() {
@@ -1175,7 +1180,7 @@ pub(crate) trait EnrolledProcessObserver {
 }
 #[cfg(target_os = "linux")]
 pub(crate) fn verify_runtime(
-    manifest: &MinimalManifest,
+    manifest: &ManifestView,
     opts: &crate::run::RunOptions,
 ) -> Result<(PathBuf, String), String> {
     let root = opts
@@ -1211,6 +1216,7 @@ struct LaunchObserver {
     registry: ProcessRegistry,
     events: Arc<Mutex<VecDeque<ManagedLaunchEvent>>>,
     cancelled: Arc<std::sync::atomic::AtomicBool>,
+    wake: Arc<bounded_command::WakeFd>,
     terminal: Arc<std::sync::atomic::AtomicBool>,
     spawned: std::sync::atomic::AtomicBool,
     process: Mutex<Option<ProcessIdentity>>,
@@ -1254,10 +1260,15 @@ impl EnrolledProcessObserver for LaunchObserver {
                 Some(error)
             }
         };
+        // Sleep on exit and on the attempt's cancellation ring; `stop` and
+        // `shutdown` ring after storing `cancelled` (and `live`).
         let status = loop {
-            match child.try_wait() {
-                Ok(Some(status)) => break Ok(status),
-                Ok(None) => {}
+            match bounded_command::wait_child_or(&mut child, Some(self.wake.fd()), None) {
+                Ok(bounded_command::Wakeup::Exited(status)) => break Ok(status),
+                // Drain before checking, so a cancel racing the check rings again.
+                Ok(bounded_command::Wakeup::Woken | bounded_command::Wakeup::Deadline) => {
+                    self.wake.drain();
+                }
                 Err(error) => {
                     let _ = child.kill();
                     break Err(error);
@@ -1273,7 +1284,6 @@ impl EnrolledProcessObserver for LaunchObserver {
                     break Err(error);
                 }
             }
-            std::thread::sleep(std::time::Duration::from_millis(10));
         };
         let process = self.process.lock().ok().and_then(|p| *p);
         // Operator visibility: a signal (for example a seccomp kill)
@@ -1415,6 +1425,7 @@ impl ManagedLauncher {
         let registry = self.registry.clone();
         let events = self.events.clone();
         let cancelled = attempt.cancelled.clone();
+        let wake = attempt.wake.clone();
         let terminal = attempt.terminal.clone();
         let thread_failure = terminal.clone();
         let thread = std::thread::Builder::new()
@@ -1427,6 +1438,7 @@ impl ManagedLauncher {
                     registry,
                     events,
                     cancelled,
+                    wake,
                     terminal,
                     spawned: false.into(),
                     process: Mutex::new(None),
@@ -1551,7 +1563,8 @@ impl Drop for OwnedChild {
     }
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
+#[cfg(unix)]
 mod stamp_tests {
     use super::TreeStamp;
     #[test]

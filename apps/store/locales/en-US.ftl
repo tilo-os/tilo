@@ -38,6 +38,48 @@ store-refresh-in-progress = Sources are already refreshing. You can keep browsin
 store-catalogue-loading = Loading more apps…
 store-catalogue-refreshed = Store refreshed.
 
+# A local archive never authorizes its own publisher.
+store-package-size-refused = Choose a Tilo app package smaller than 64 MiB.
+store-package-invalid = This file is not a valid signed Tilo package.
+store-package-app-only = Choose an app package. System components and runtimes use the system updater.
+store-package-offer-required = This package does not match a verified offer from your configured Tilo repositories. Refresh the catalogue or choose a published package.
+store-package-unavailable = The package file or app service is unavailable.
+store-package-ready = Package verified. Review its details before installing.
+store-package-review-required = Review this exact package before installing it.
+store-package-installed = Package installed. Open it from its app details.
+store-package-choose = Choose a Tilo package
+store-package-review = Review package
+store-package-install = Install reviewed package
+store-package-installing = Installing reviewed package…
+store-package-reviewing = Checking package against verified repositories…
+store-package-source-required = Choose one package file or handed content identity.
+store-package-reviewed-file = Reviewed package file
+store-package-reviewed-version = File version
+store-package-reviewed-root = Signed package identity
+store-package-reviewed-state = Installation
+store-package-reinstall = Already installed; the reviewed offer will be verified before installation.
+store-package-new-install = Not installed on this device.
+store-package-file-type = Tilo package
+store-package-review-busy = Too many package reviews are waiting. Finish the current reviews first.
+
+store-package-local-trust = Verified by an existing trusted attestor
+store-package-local-description = Signed local application. Installation requires its payload and exact runtime to be available.
+store-package-local-source = Local package
 store-app-installed = App installed.
 store-app-updated = App updated.
 store-app-removed = App removed.
+
+store-search-empty = No apps found
+store-search-empty-help = Try a different search or category.
+store-search-clear = Clear filters
+store-operation-failed = Could not complete the operation
+store-error-refresh = Refresh apps
+store-repository-timeout = { $name } did not respond. Other apps remain available. Refresh apps to try again.
+store-build-version = Full build version
+
+## History: what each change to the reports did
+
+store-draft-report = Started a report about { $app_id }
+store-record-moderation-case = The registry opened case { $case_id }: { $status }
+store-report-note = Described the concern of a report
+store-reports-reports = Edited a report

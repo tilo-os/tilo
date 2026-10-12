@@ -82,6 +82,9 @@ impl MessagingRouter {
     }
 }
 impl MessagingHost for MessagingRouter {
+    fn groups(&self, account: &ServiceAccount) -> Option<crate::GroupClient> {
+        self.services.get(account)?.groups(account)
+    }
     fn setup(&self, account: &ServiceAccount) -> Option<crate::SetupClient> {
         self.services.get(account)?.setup(account)
     }

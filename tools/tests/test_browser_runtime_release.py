@@ -276,6 +276,30 @@ class BrowserRuntimeRelease(unittest.TestCase):
                     release.verify_package(out, architecture, source, '9', key)
                     with self.assertRaisesRegex(ValueError, 'publisher differs'):
                         release.verify_package(out, architecture, source, '9', 'c' * 64)
+                    if architecture == 'x86_64':
+                        lock_path = ROOT / 'scripts/browser/cef-lock.json'
+                        lock = json.loads(lock_path.read_text())
+                        lock['platforms']['linux64']['source_patch_sha256'] = 'd' * 64
+                        read_text = Path.read_text
+
+                        def read_locked_source(path, *args, **kwargs):
+                            if path == lock_path:
+                                return json.dumps(lock)
+                            return read_text(path, *args, **kwargs)
+
+                        with patch.object(Path, 'read_text', read_locked_source):
+                            # Source binding is checked before the verifier or any upload.
+                            with self.assertRaisesRegex(ValueError, 'provenance differs'):
+                                release.verify_package(out, architecture, source, '9', key)
+                            proof['cef_source_patch_sha256'] = 'e' * 64
+                            (package / 'provenance.json').write_text(json.dumps(proof))
+                            with self.assertRaisesRegex(ValueError, 'provenance differs'):
+                                release.verify_package(out, architecture, source, '9', key)
+                            lock['platforms']['linux64']['source_patch_sha256'] = 'latest'
+                            with self.assertRaisesRegex(ValueError, 'invalid rebuilt CEF source patch'):
+                                release.verify_package(out, architecture, source, '9', key)
+                        proof.pop('cef_source_patch_sha256')
+                        (package / 'provenance.json').write_text(json.dumps(proof))
                     baseline = tapp.read_text()
                     for invalid_host in ('bin = \"missing-host\"', 'bin = \"../host\"', ''):
                         tapp.write_text(baseline.replace('bin = \"lib/chromium/tilo-chromium-host\"', invalid_host))

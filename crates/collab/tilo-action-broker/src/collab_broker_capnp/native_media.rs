@@ -68,6 +68,7 @@ pub(super) struct LocalAppConnection {
     pub(super) app_id: String,
     pub(super) workspace_id: String,
     pub(super) creation: Option<crate::services::ApplicationCreationEvidence>,
+    pub(super) continuation_instance: Option<u64>,
     process: PeerProcess,
     connected: AtomicBool,
 }
@@ -189,13 +190,14 @@ impl LocalAppConnection {
         app_id: String,
         workspace_id: String,
         process: PeerProcess,
-        creation: Option<crate::services::ApplicationCreationEvidence>,
+        launch: crate::services::AuthenticatedApplicationLaunch,
     ) -> Option<Arc<Self>> {
         process.alive().then(|| {
             Arc::new(Self {
                 app_id,
                 workspace_id,
-                creation,
+                creation: launch.creation,
+                continuation_instance: launch.continuation_instance,
                 process,
                 connected: AtomicBool::new(true),
             })
@@ -204,10 +206,10 @@ impl LocalAppConnection {
     pub(super) fn from_launch(
         handoff: super::CollabLaunchHandoff,
         process: Option<PeerProcess>,
-        creation: Option<crate::services::ApplicationCreationEvidence>,
+        launch: crate::services::AuthenticatedApplicationLaunch,
     ) -> Option<Arc<Self>> {
         process.and_then(|process| {
-            Self::attested(handoff.app_id, handoff.workspace_id, process, creation)
+            Self::attested(handoff.app_id, handoff.workspace_id, process, launch)
         })
     }
     pub(super) fn current(&self) -> bool {
@@ -241,6 +243,9 @@ impl ProcessMonitor {
             let state = Arc::downgrade(state);
             let stop: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
                 checked.stop();
+                // Launcher custody ended: held committed-read waits re-check
+                // it now rather than on a clock.
+                tilo_identity_host::policy_change::announce();
                 if let Some(state) = state.upgrade() {
                     if let Some(service) = state.services.native_media.as_ref() {
                         service.disconnect(peer);
@@ -433,10 +438,12 @@ impl CapnpChannelHandle {
     }
 }
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(test)]
+#[cfg(target_os = "linux")]
 mod tests;
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(test)]
+#[cfg(target_os = "linux")]
 mod descriptor_tests {
     use super::*;
     use std::os::unix::fs::MetadataExt as _;

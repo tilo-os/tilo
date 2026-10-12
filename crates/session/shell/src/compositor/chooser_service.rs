@@ -20,7 +20,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::Duration;
 
-use collab_types::caps::Verb;
+use collab_types::caps::Access;
 use tilo_dialogs::shell::{Handshake, MAX_FRAME_BYTES, PROTOCOL, PickMode, Reply, Request};
 
 use crate::portal::{
@@ -51,6 +51,7 @@ pub struct OpenRequest {
 }
 
 pub struct ChooserService {
+    grants: GrantStoreHandle,
     opens: mpsc::Receiver<OpenRequest>,
     stop: Arc<AtomicBool>,
     acceptor: Option<std::thread::JoinHandle<()>>,
@@ -80,6 +81,7 @@ impl ChooserService {
         let listener = UnixListener::bind(&path)
             .map_err(|error| format!("bind chooser service {}: {error}", path.display()))?;
         let (opens_tx, opens_rx) = mpsc::channel();
+        let grants = context.grants.clone();
         let context = Arc::new(context);
         let stop = Arc::new(AtomicBool::new(false));
         let thread_stop = Arc::clone(&stop);
@@ -112,6 +114,7 @@ impl ChooserService {
                 format!("spawn chooser service: {error}")
             })?;
         Ok(Self {
+            grants,
             opens: opens_rx,
             stop,
             acceptor: Some(acceptor),
@@ -119,9 +122,31 @@ impl ChooserService {
         })
     }
 
-    /// Opens asked for since the last call; each must be answered.
+    /// Opens still permitted at dispatch; each returned request must be answered.
     pub fn drain_opens(&self) -> Vec<OpenRequest> {
-        self.opens.try_iter().collect()
+        self.opens
+            .try_iter()
+            .filter_map(|mut open| {
+                // Admission can precede compositor dispatch by several frames.
+                // Resolve the path again against the original app's current
+                // workspace policy rather than handing over stale approval.
+                match permitted(
+                    &self.grants,
+                    &open.caller,
+                    std::slice::from_ref(&open.path),
+                    PickMode::Open,
+                ) {
+                    Ok(mut paths) => {
+                        open.path = paths.remove(0);
+                        Some(open)
+                    }
+                    Err(reason) => {
+                        let _ = open.reply.send(Err(reason));
+                        None
+                    }
+                }
+            })
+            .collect()
     }
 }
 
@@ -303,9 +328,9 @@ fn authorized_scope(
     mode: PickMode,
 ) -> Option<PickerScope> {
     let verb = if mode == PickMode::Save {
-        Verb::Write
+        Access::Write
     } else {
-        Verb::Read
+        Access::Read
     };
     let granted = context
         .grants
@@ -367,9 +392,9 @@ fn permitted(
                 PickMode::Open | PickMode::Directory => path.canonicalize().ok(),
             };
             let verb = if mode == PickMode::Save {
-                Verb::Write
+                Access::Write
             } else {
-                Verb::Read
+                Access::Read
             };
             resolved
                 .filter(|resolved| grants.filesystem_path_allows(caller, resolved, verb))
@@ -425,6 +450,7 @@ mod tests {
         service: ChooserService,
         pickers: FilePickerQueue,
         present: Arc<AtomicBool>,
+        wakes: Arc<std::sync::atomic::AtomicU64>,
         room: String,
         socket: PathBuf,
         inbox: PathBuf,
@@ -464,6 +490,8 @@ mod tests {
             let present = Arc::clone(&present);
             Arc::new(move || present.load(Ordering::Acquire))
         };
+        let wakes = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let wake_counter = Arc::clone(&wakes);
         let socket = base.join("chooser.sock");
         let service = ChooserService::start_at(
             socket.clone(),
@@ -472,7 +500,9 @@ mod tests {
                 pickers: Arc::new(pickers.clone()),
                 presence,
                 save_directory: hint.then(|| outbox.clone()),
-                wake: Arc::new(|| {}),
+                wake: Arc::new(move || {
+                    wake_counter.fetch_add(1, Ordering::Release);
+                }),
             },
         )
         .unwrap();
@@ -480,6 +510,7 @@ mod tests {
             service,
             pickers,
             present,
+            wakes,
             room,
             socket,
             inbox,
@@ -713,6 +744,29 @@ mod tests {
         app.send(&pick(1, PickMode::Open));
         assert!(matches!(app.reply(), Some(Reply::Failed { id: 1, .. })));
         assert!(session.pickers.is_empty());
+    }
+
+    #[test]
+    fn a_queued_open_rechecks_the_file_before_handing_it_to_the_compositor() {
+        let session = session_with_save_hint(true);
+        let mut app = App::launch(&session, APP, &session.room);
+        let path = session.inbox.join("x.xlsx");
+        app.send(&Request::Open {
+            id: 1,
+            path: path.clone(),
+        });
+        let deadline = Instant::now().checked_add(Duration::from_secs(10)).unwrap();
+        while session.wakes.load(Ordering::Acquire) == 0 {
+            assert!(Instant::now() < deadline, "the open was never queued");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        std::fs::remove_file(&path).unwrap();
+        std::os::unix::fs::symlink(session.elsewhere.join("secret.xlsx"), &path).unwrap();
+        assert!(
+            session.service.drain_opens().is_empty(),
+            "an admitted path now outside the grant must not reach the compositor"
+        );
+        assert!(matches!(app.reply(), Some(Reply::Failed { id: 1, .. })));
     }
 
     #[test]

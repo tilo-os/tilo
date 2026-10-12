@@ -95,9 +95,10 @@ nothing else: no runtime image, container, service or hardware gate. The
 installed model is the content-addressed object
 `$XDG_DATA_HOME/tilo/models/sha256/<sha256>`, and `state.json` beside it
 records its revision, licence and capabilities. A consumer finds it with
-`local_model_service::installed_in_process_model(&user_model_root(),
-InProcessCapability::Segmentation)`, a filesystem-only lookup that needs
-neither the catalogue nor the model manager. Removal deletes the object; the
+`local_model_service::installed_in_process_model` over the store
+`user_model_root()` names (none without a data home, never a shared
+directory), a filesystem-only lookup that needs neither the catalogue nor
+the model manager. Removal deletes the object; the
 lookup then reports no model.
 
 ## Hardware policy

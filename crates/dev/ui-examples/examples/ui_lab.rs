@@ -16,9 +16,7 @@ registry::scenario_modules! {
     conflict_picker, "conflict_picker.rs", "conflict resolution picker";
     dashboard, "dashboard.rs", "dashboard composition";
     gallery, "gallery.rs", "complete interactive component gallery";
-    identity_flow_demo, "identity_flow_demo.rs", "identity onboarding and recovery flows";
     responsive_gallery, "responsive_gallery.rs", "responsive layout gallery";
-    widget_showcase, "widget_showcase.rs", "legacy widget showcase";
 }
 
 fn main() {

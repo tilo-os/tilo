@@ -25,7 +25,7 @@ path = "src/lib.rs"
 # Unix service clients and identity store into native host applications which
 # merely reuse `standalone_state_dir`.
 runtime-portal   = { version = "0.1.0", path = "../runtime-portal", default-features = false }
-tilo-xdg-paths        = { version = "0.1.0", path = "../../system/xdg-paths" }
+tilo-paths.workspace = true
 
 anyhow.workspace = true
 
