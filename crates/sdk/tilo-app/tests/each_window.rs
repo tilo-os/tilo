@@ -468,9 +468,10 @@ fn checkboxes(app: &tilo_app::App) -> Vec<String> {
 fn a_live_window_mounts_an_added_row_in_place() {
     use tilo_app::framework::testing::drive_live_window;
     fn seed(app: &mut tilo_app::App, count: u32) {
-        let serde_json::Value::Object(arguments) = serde_json::json!({ "count": count }) else {
-            unreachable!("an object");
-        };
+        let arguments = serde_json::json!({ "count": count })
+            .as_object()
+            .cloned()
+            .unwrap();
         app.invoke_local_resource_action(
             &tilo_actions::ActionAddress::new("test.window-checklist", "seed"),
             &arguments,
