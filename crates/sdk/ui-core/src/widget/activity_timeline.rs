@@ -3087,13 +3087,15 @@ impl Widget for ActivityTimeline {
                                 .with_position(index.saturating_add(1), row_count)
                                 .with_level(item.depth.saturating_add(1))
                                 .with_bounds(bounds)
-                                .with_state(AccessState {
-                                    focusable: true,
-                                    focused: self.focused_row.as_ref()
-                                        == Some(&FocusedRow::Group(item.key.clone())),
-                                    expanded: Some(item.expanded),
-                                    ..Default::default()
-                                }),
+                                .with_state(
+                                    AccessState::new()
+                                        .focusable(true)
+                                        .focused(
+                                            self.focused_row.as_ref()
+                                                == Some(&FocusedRow::Group(item.key.clone())),
+                                        )
+                                        .expanded(item.expanded),
+                                ),
                         )
                     }
                     VisualRow::Entry(entry, depth) => {
@@ -3125,15 +3127,17 @@ impl Widget for ActivityTimeline {
                                 .with_position(index.saturating_add(1), row_count)
                                 .with_level(depth.saturating_add(1))
                                 .with_bounds(bounds)
-                                .with_state(AccessState {
-                                    focusable: true,
-                                    focused: self.focused_row.as_ref()
-                                        == Some(&FocusedRow::Entry(item.id)),
-                                    selected: self.selection.is_some_and(|(start, end)| {
-                                        *entry >= start && *entry <= end
-                                    }),
-                                    ..Default::default()
-                                }),
+                                .with_state(
+                                    AccessState::new()
+                                        .focusable(true)
+                                        .focused(
+                                            self.focused_row.as_ref()
+                                                == Some(&FocusedRow::Entry(item.id)),
+                                        )
+                                        .selected(self.selection.is_some_and(|(start, end)| {
+                                            *entry >= start && *entry <= end
+                                        })),
+                                ),
                         )
                     }
                 }
@@ -3143,11 +3147,11 @@ impl Widget for ActivityTimeline {
             AccessNode::new(Role::List)
                 .with_name("History entries")
                 .with_description(description)
-                .with_state(AccessState {
-                    focusable: self.is_focusable(),
-                    focused: self.has_focus,
-                    ..Default::default()
-                })
+                .with_state(
+                    AccessState::new()
+                        .focusable(self.is_focusable())
+                        .focused(self.has_focus),
+                )
                 .with_children(children),
         )
     }

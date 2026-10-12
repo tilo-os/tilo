@@ -425,13 +425,13 @@ impl Widget for Checkbox {
         let mut node = AccessNode::new(Role::Checkbox)
             .with_semantic_key(self.test_id().unwrap_or("checkbox"))
             .with_optional_name(name)
-            .with_state(AccessState {
-                focusable: self.is_focusable(),
-                focused: self.is_focused(),
-                disabled: !self.is_enabled(),
-                checked: Some(self.control.is_checked),
-                ..Default::default()
-            });
+            .with_state(
+                AccessState::new()
+                    .focusable(self.is_focusable())
+                    .focused(self.is_focused())
+                    .disabled(!self.is_enabled())
+                    .checked(self.control.is_checked),
+            );
         if self.control.action.is_none() && self.control.on_change.is_none() {
             node = node.with_action_target(self.test_id().unwrap_or("checkbox"));
         }

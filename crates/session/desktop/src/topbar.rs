@@ -4515,13 +4515,11 @@ impl TopBarChrome {
                 let image = match self.app_tray_images.get(&item.key) {
                     Some((cached, image)) if *cached == identity => image.clone(),
                     _ => {
-                        let image = vello::peniko::ImageData {
-                            data: vello::peniko::Blob::new(rgba.clone()),
-                            format: vello::peniko::ImageFormat::Rgba8,
-                            alpha_type: vello::peniko::ImageAlphaType::Alpha,
-                            width: *width,
-                            height: *height,
-                        };
+                        let image = ui::raster::rgba8(
+                            vello::peniko::Blob::new(rgba.clone()),
+                            *width,
+                            *height,
+                        );
                         self.app_tray_images
                             .insert(item.key.clone(), (identity, image.clone()));
                         image

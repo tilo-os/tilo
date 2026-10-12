@@ -470,12 +470,12 @@ impl Widget for AddressSuggestions {
                         row_top + self.row_height(),
                     ))
                     .with_position(index.saturating_add(1), self.items.len())
-                    .with_state(AccessState {
-                        focusable: true,
-                        focused: index == self.selected,
-                        selected: index == self.selected,
-                        ..Default::default()
-                    })
+                    .with_state(
+                        AccessState::new()
+                            .focusable(true)
+                            .focused(index == self.selected)
+                            .selected(index == self.selected),
+                    )
             })
             .collect();
         Some(

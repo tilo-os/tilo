@@ -77,7 +77,7 @@ use ui::widget::{AppKind, AppWidget, IconDescriptor, Widget};
 use taffy::{NodeId, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
-use vello::peniko::{Blob, Extend, Fill, ImageAlphaType, ImageBrush, ImageData, ImageFormat};
+use vello::peniko::{Blob, Extend, Fill, ImageBrush, ImageData};
 
 #[cfg(target_os = "linux")]
 use crate::compositor::surface_readback::{
@@ -4543,14 +4543,8 @@ fn frame_image(frame: FrameSnapshot) -> ImageData {
 
 /// Tightly packed RGBA `pixels` as a GPU-uploadable image, sharing them.
 fn rgba_image(pixels: Arc<Vec<u8>>, width: u32, height: u32) -> ImageData {
-    ImageData {
-        data: Blob::new(pixels),
-        format: ImageFormat::Rgba8,
-        // Wayland `ARGB8888` carries premultiplied alpha; `X` variants are forced opaque during the swizzle, where premultiplied and straight coincide.
-        alpha_type: ImageAlphaType::AlphaPremultiplied,
-        width,
-        height,
-    }
+    // Wayland `ARGB8888` carries premultiplied alpha; `X` variants are forced opaque during the swizzle, where premultiplied and straight coincide.
+    ui::raster::rgba8_premultiplied(Blob::new(pixels), width, height)
 }
 
 /// The current frame of a surface with nothing composited onto it, shared

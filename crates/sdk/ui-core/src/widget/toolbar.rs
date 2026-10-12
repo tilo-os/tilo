@@ -2146,11 +2146,11 @@ impl Widget for Toolbar {
         }
         Some(
             AccessNode::new(Role::Toolbar)
-                .with_state(AccessState {
-                    focusable: self.is_focusable(),
-                    focused: self.focused,
-                    ..Default::default()
-                })
+                .with_state(
+                    AccessState::new()
+                        .focusable(self.is_focusable())
+                        .focused(self.focused),
+                )
                 .with_children(children),
         )
     }

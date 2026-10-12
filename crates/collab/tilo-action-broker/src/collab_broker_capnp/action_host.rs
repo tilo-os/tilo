@@ -1425,12 +1425,19 @@ impl CapnpBrokerState {
         // workspace is copied, once every check on the same sample passed.
         let workspace = self
             .decide_for(caller, &room, |workspace, policy, now| {
-                if !policy.may_in(
-                    workspace,
-                    &app_node(workspace, &app_id),
-                    tilo_action_policy::ActionKind::Undoable,
-                    now,
-                ) {
+                // A live application target is a route to an existing action,
+                // not a request to launch another instance. Reads retain their
+                // read-only authority while actual launches still require write.
+                if self
+                    .ready_publisher(&app_id, &room, record.as_deref(), address)
+                    .is_none()
+                    && !policy.may_in(
+                        workspace,
+                        &app_node(workspace, &app_id),
+                        tilo_action_policy::ActionKind::Undoable,
+                        now,
+                    )
+                {
                     return Err(refusal(
                         "the caller is not allowed to launch that application".into(),
                     ));
@@ -1515,7 +1522,7 @@ impl CapnpBrokerState {
             {
                 let mut delivered = request.clone();
                 delivered.target.provider = peer_id.to_string();
-                return self.start_for(caller, None, None, origin, &delivered);
+                return self.start_for(caller, None, None, origin, &delivered, request);
             }
             if !launched {
                 let permit = tokio::select! {
@@ -1693,7 +1700,7 @@ impl CapnpBrokerState {
 
     /// The live connection of `app_id` in `room` that publishes `address`
     /// and can receive invocations.
-    fn ready_publisher(
+    pub(super) fn ready_publisher(
         &self,
         app_id: &str,
         room: &str,
@@ -1733,7 +1740,7 @@ impl CapnpBrokerState {
                     reason: "the invocation ledger is unavailable".into(),
                 })?;
         let (job, _) = ledger.admit(caller, request, || {
-            self.start_for(caller, own_peer, launch, origin, request)
+            self.start_for(caller, own_peer, launch, origin, request, request)
         })?;
         let job = *job;
         drop(ledger);
@@ -1986,6 +1993,7 @@ impl CapnpBrokerState {
             root.peer_id,
             (surface, offered),
             InvocationInputs {
+                original_request: None,
                 caller: Some(caller),
                 requested: Some(request.invocation),
                 execution: super::ExecutionScope::for_call(caller, request.invocation),
@@ -2012,6 +2020,7 @@ impl CapnpBrokerState {
         launch: Option<&LaunchScope>,
         origin: Option<&super::published_invocation::InvocationCaller>,
         request: &InvokeRequest,
+        original_request: &InvokeRequest,
     ) -> Result<u64, ActionHostError> {
         let address = &request.target.address;
         let argument = request.argument.to_slot();
@@ -2079,6 +2088,7 @@ impl CapnpBrokerState {
             &address.resource,
             &address.action,
             InvocationInputs {
+                original_request: Some(original_request),
                 caller: Some(caller),
                 requested: Some(request.invocation),
                 execution: super::ExecutionScope::for_call(caller, request.invocation),

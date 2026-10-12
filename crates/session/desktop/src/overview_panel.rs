@@ -850,11 +850,11 @@ impl Widget for OverviewPanel {
                             AccessNode::new(Role::Button)
                                 .with_name(name(target))
                                 .with_bounds(*rect)
-                                .with_state(AccessState {
-                                    focusable: true,
-                                    focused: self.selected == Some(index),
-                                    ..Default::default()
-                                })
+                                .with_state(
+                                    AccessState::new()
+                                        .focusable(true)
+                                        .focused(self.selected == Some(index)),
+                                )
                         })
                         .collect(),
                 ),

@@ -285,13 +285,13 @@ pub fn toggle_accessibility(
                 .map(|name| crate::i18n!(name))
                 .filter(|name| !name.is_empty()),
         )
-        .with_state(AccessState {
-            focusable: enabled,
-            focused,
-            disabled: !enabled,
-            checked: Some(on),
-            ..Default::default()
-        })
+        .with_state(
+            AccessState::new()
+                .focusable(enabled)
+                .focused(focused)
+                .disabled(!enabled)
+                .checked(on),
+        )
 }
 
 impl Toggle {
