@@ -757,7 +757,6 @@ inputs = [
   "crates/system/fs-native/",
   "crates/system/fs/",
   "crates/system/power/",
-  "crates/system/private-fs/",
   "crates/system/sandbox-core/",
   "crates/system/secret-vault/",
   "crates/system/settings-store/",

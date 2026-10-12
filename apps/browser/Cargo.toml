@@ -20,7 +20,6 @@ thin = ["dep:runtime-dylib"]
 
 [dependencies]
 fnv.workspace = true
-private-fs = { path = "../../crates/system/private-fs" }
 # Session-store ownership and the private cache root's cleanup barrier.
 tilo-advisory-lock = { path = "../../crates/system/advisory-lock" }
 tilo-clock = { path = "../../crates/platform/tilo-clock" }

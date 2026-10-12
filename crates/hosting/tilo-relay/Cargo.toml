@@ -178,8 +178,6 @@ env-tools = { path = "../../runtime/env-tools" }
 tilo-app-package = { path = "../../packaging/tilo-app-package" }
 # App surfaces, fetched by hash from the registry's reviewed payload blobs.
 app-registry = { path = "../../packaging/app-registry" }
-# Exclusive, owner-only publication of the relay's node secret.
-private-fs = { path = "../../system/private-fs" }
 clap.workspace = true
 toml.workspace = true
 anyhow.workspace = true
