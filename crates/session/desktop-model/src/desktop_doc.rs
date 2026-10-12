@@ -18,9 +18,10 @@
 //! Geometry and maximization are presentation state and never written.
 
 use std::collections::HashSet;
+use tilo_automerge::ReadTyped as _;
 
 use automerge::{
-    AutoCommit, ObjId, ObjType, Prop, ROOT, ReadDoc, ScalarValue, Value, transaction::Transactable,
+    AutoCommit, ObjId, ObjType, Prop, ROOT, ReadDoc, ScalarValue, transaction::Transactable,
 };
 use collab_types::caps::CapOverride;
 use tilo_action_policy::{Grant, GrantId, Preset, Role};
@@ -58,36 +59,6 @@ fn obj(doc: &AutoCommit, parent: &ObjId, prop: impl Into<Prop>) -> Option<ObjId>
     doc.get(parent, prop).ok().flatten().map(|(_, id)| id)
 }
 
-fn uint(doc: &AutoCommit, parent: &ObjId, prop: impl Into<Prop>) -> Option<u64> {
-    match doc.get(parent, prop).ok().flatten() {
-        Some((Value::Scalar(s), _)) => match s.as_ref() {
-            ScalarValue::Uint(v) => Some(*v),
-            _ => None,
-        },
-        _ => None,
-    }
-}
-
-fn text(doc: &AutoCommit, parent: &ObjId, prop: impl Into<Prop>) -> Option<String> {
-    match doc.get(parent, prop).ok().flatten() {
-        Some((Value::Scalar(s), _)) => match s.as_ref() {
-            ScalarValue::Str(v) => Some(v.to_string()),
-            _ => None,
-        },
-        _ => None,
-    }
-}
-
-fn bytes(doc: &AutoCommit, parent: &ObjId, prop: impl Into<Prop>) -> Option<Vec<u8>> {
-    match doc.get(parent, prop).ok().flatten() {
-        Some((Value::Scalar(s), _)) => match s.as_ref() {
-            ScalarValue::Bytes(b) => Some(b.clone()),
-            _ => None,
-        },
-        _ => None,
-    }
-}
-
 fn map_or_create(doc: &mut AutoCommit, parent: &ObjId, key: &str) -> Option<ObjId> {
     match obj(doc, parent, key) {
         Some(id) => Some(id),
@@ -103,7 +74,7 @@ fn workspace_entries(doc: &AutoCommit) -> Vec<(u64, ObjId)> {
     (0..doc.length(&list))
         .filter_map(|i| {
             let entry = obj(doc, &list, i)?;
-            Some((uint(doc, &entry, "id")?, entry))
+            Some((doc.uint_at(&entry, "id")?, entry))
         })
         .collect()
 }
@@ -119,7 +90,7 @@ fn strip_entries(doc: &AutoCommit) -> Vec<(u64, ObjId, Option<ObjId>)> {
             let Some(entry) = obj(doc, &strips, i) else {
                 continue;
             };
-            let Some(id) = uint(doc, &entry, "id") else {
+            let Some(id) = doc.uint_at(&entry, "id") else {
                 continue;
             };
             let groups = obj(doc, &entry, GROUPS_KEY);
@@ -140,7 +111,7 @@ fn strip_groups(doc: &AutoCommit, strip_id: StripId) -> Option<ObjId> {
 /// Position of the group `group_id` in a `window_groups` list.
 fn group_index(doc: &AutoCommit, groups: &ObjId, group_id: GroupId) -> Option<usize> {
     (0..doc.length(groups)).find(|&i| {
-        obj(doc, groups, i).is_some_and(|entry| uint(doc, &entry, "id") == Some(group_id))
+        obj(doc, groups, i).is_some_and(|entry| doc.uint_at(&entry, "id") == Some(group_id))
     })
 }
 
@@ -150,7 +121,7 @@ fn tab_in_strip(doc: &AutoCommit, strip_id: StripId, tab_id: TabId) -> Option<(O
     (0..doc.length(&groups)).find_map(|g| {
         let tabs = obj(doc, &obj(doc, &groups, g)?, TABS_KEY)?;
         let idx = (0..doc.length(&tabs))
-            .find(|&i| obj(doc, &tabs, i).is_some_and(|t| uint(doc, &t, "id") == Some(tab_id)))?;
+            .find(|&i| obj(doc, &tabs, i).is_some_and(|t| doc.uint_at(&t, "id") == Some(tab_id)))?;
         Some((tabs, idx))
     })
 }
@@ -202,7 +173,7 @@ fn child_object(doc: &mut AutoCommit, parent: &ObjId, key: &str, kind: ObjType) 
 /// Writing an unchanged value is still an operation, and every operation is
 /// a history row; these write only a value that differs.
 fn put_text_if_changed(doc: &mut AutoCommit, parent: &ObjId, key: &str, value: &str) {
-    if text(doc, parent, key).as_deref() != Some(value) {
+    if doc.str_at(parent, key).as_deref() != Some(value) {
         let _ = doc.put(parent, key, value.to_string());
     }
 }
@@ -219,7 +190,8 @@ fn put_json_if_changed<T: serde::Serialize>(
     let Ok(wanted) = serde_json::to_value(value) else {
         return false;
     };
-    let current = bytes(doc, parent, key)
+    let current = doc
+        .bytes_at(parent, key)
         .and_then(|blob| serde_json::from_slice::<serde_json::Value>(&blob).ok());
     if current.as_ref() != Some(&wanted)
         && let Ok(blob) = serde_json::to_vec(value)
@@ -259,7 +231,7 @@ fn sync_blob_map<T: serde::Serialize>(
 }
 
 fn entry_id(doc: &AutoCommit, list: &ObjId, index: usize) -> Option<u64> {
-    obj(doc, list, index).and_then(|entry| uint(doc, &entry, "id"))
+    obj(doc, list, index).and_then(|entry| doc.uint_at(&entry, "id"))
 }
 
 /// Make the list of id-keyed map entries `list` match `items`, in order.
@@ -420,7 +392,7 @@ fn write_workspace(doc: &mut AutoCommit, entry: &ObjId, ws: &Workspace) {
 /// an entry the tree no longer holds is deleted. Best-effort: a write that
 /// fails skips the entries nested under it rather than aborting.
 pub fn seed(doc: &mut AutoCommit, desktop: &DesktopTree) {
-    if uint(doc, &ROOT, ACTIVE_KEY) != Some(desktop.active.raw()) {
+    if doc.uint_at(&ROOT, ACTIVE_KEY) != Some(desktop.active.raw()) {
         let _ = doc.put(&ROOT, ACTIVE_KEY, ScalarValue::Uint(desktop.active.raw()));
     }
     let Some(list) = child_object(doc, &ROOT, WORKSPACES_KEY, ObjType::List) else {
@@ -443,7 +415,7 @@ fn read_blob_map<T: serde::de::DeserializeOwned>(
     let map = obj(doc, parent, key)?;
     Some(
         doc.keys(&map)
-            .filter_map(|k| serde_json::from_slice(&bytes(doc, &map, k.as_str())?).ok())
+            .filter_map(|k| serde_json::from_slice(&doc.bytes_at(&map, k.as_str())?).ok())
             .collect(),
     )
 }
@@ -458,7 +430,7 @@ fn read_keyed_blob_map<T: serde::de::DeserializeOwned>(
     Some(
         doc.keys(&map)
             .filter_map(|k| {
-                let value = serde_json::from_slice(&bytes(doc, &map, k.as_str())?).ok()?;
+                let value = serde_json::from_slice(&doc.bytes_at(&map, k.as_str())?).ok()?;
                 Some((k, value))
             })
             .collect(),
@@ -472,7 +444,7 @@ type StoredPolicy = (Option<UserId>, Vec<(String, Role)>, Vec<Grant>);
 /// absent from the document are absent from the answer — what makes a
 /// revocation take effect.
 fn read_policy(doc: &AutoCommit, entry: &ObjId) -> Option<StoredPolicy> {
-    let owner = text(doc, entry, "owner");
+    let owner = doc.str_at(entry, "owner");
     let members = read_keyed_blob_map(doc, entry, MEMBERS_KEY).unwrap_or_default();
     let grants = read_blob_map(doc, entry, GRANTS_KEY)?;
     Some((owner, members, grants))
@@ -527,7 +499,7 @@ fn tile_from_blob(blob: &[u8], title: &str) -> TileContent {
 /// on the matching local group, and a group seen for the first time gets
 /// local defaults.
 pub fn rebuild(doc: &AutoCommit, desktop: &mut DesktopTree) {
-    if let Some(raw) = uint(doc, &ROOT, ACTIVE_KEY) {
+    if let Some(raw) = doc.uint_at(&ROOT, ACTIVE_KEY) {
         desktop.active = WorkspaceId::from(raw);
     }
     if obj(doc, &ROOT, WORKSPACES_KEY).is_none() {
@@ -536,7 +508,7 @@ pub fn rebuild(doc: &AutoCommit, desktop: &mut DesktopTree) {
     let entries = workspace_entries(doc);
     let mut rebuilt: Vec<Workspace> = Vec::with_capacity(entries.len());
     for (id_raw, entry) in &entries {
-        let name = text(doc, entry, "name").unwrap_or_default();
+        let name = doc.str_at(entry, "name").unwrap_or_default();
         let ws_id = WorkspaceId::from(*id_raw);
         let mut ws = match desktop.workspaces.iter().position(|w| w.id == ws_id) {
             Some(existing) => {
@@ -547,7 +519,8 @@ pub fn rebuild(doc: &AutoCommit, desktop: &mut DesktopTree) {
             None => Workspace::new(ws_id, name),
         };
         // Absent or unparseable keeps the tree's.
-        if let Some(room) = text(doc, entry, "room")
+        if let Some(room) = doc
+            .str_at(entry, "room")
             .and_then(|v| RoomId::parse(v.as_str()))
             .filter(|r| !r.is_nil())
         {
@@ -583,7 +556,7 @@ pub fn rebuild(doc: &AutoCommit, desktop: &mut DesktopTree) {
             let Some(strip_entry) = obj(doc, &strips, strip_pos) else {
                 continue;
             };
-            let Some(strip_id) = uint(doc, &strip_entry, "id").map(StripId::from) else {
+            let Some(strip_id) = doc.uint_at(&strip_entry, "id").map(StripId::from) else {
                 continue;
             };
             let Some(groups) = obj(doc, &strip_entry, GROUPS_KEY) else {
@@ -593,7 +566,7 @@ pub fn rebuild(doc: &AutoCommit, desktop: &mut DesktopTree) {
                 let Some(group_entry) = obj(doc, &groups, group_pos) else {
                     continue;
                 };
-                let Some(group_id) = uint(doc, &group_entry, "id") else {
+                let Some(group_id) = doc.uint_at(&group_entry, "id") else {
                     continue;
                 };
                 let Some(ws) = desktop.workspaces.iter_mut().find(|w| w.id == ws_id) else {
@@ -621,9 +594,9 @@ fn group_tabs(doc: &AutoCommit, group_entry: &ObjId) -> Vec<(u64, String, Vec<u8
     (0..doc.length(&tabs))
         .filter_map(|i| {
             let entry = obj(doc, &tabs, i)?;
-            let id = uint(doc, &entry, "id")?;
-            let title = text(doc, &entry, "title").unwrap_or_default();
-            let blob = bytes(doc, &entry, "tile_json").unwrap_or_default();
+            let id = doc.uint_at(&entry, "id")?;
+            let title = doc.str_at(&entry, "title").unwrap_or_default();
+            let blob = doc.bytes_at(&entry, "tile_json").unwrap_or_default();
             Some((id, title, blob))
         })
         .collect()
