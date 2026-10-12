@@ -232,7 +232,7 @@ a `tilo-vm` VM does not expose, so it stays in `build-image.yml`.
 
 `run.py --records FILE` writes one record per KPI (`tools/perf/record.py`) from what the
 checks measured, whether they passed or not; the CI run's `perf` job compares them with
-the store (DEVELOPMENT.md, "Performance results") and publishes the nightly run's.
+the store (docs/measurements/performance.md) and publishes the nightly run's.
 
 | KPI | Unit | Check | What |
 |---|---|---|---|
@@ -277,6 +277,61 @@ The records name the commit whose code ran (the swapped ref's, else the disk's) 
 the base disk's commit, the swapped components and the booted image digest in `meta`.
 
 ## Provenance
+
+### Component replacement evidence
+
+`component-replacement.py` checks captures from a **fresh disposable headless
+slot**, named `replace-<12 random hex>`. It performs no VM operations and makes
+no claim that the evidence is a remote attestation. Its success status is
+`captured_evidence_consistent`; live execution and artifact authentication must
+be established separately. Fixtures in its unit tests are not live evidence.
+
+The acceptance operator first obtains an owned VM QA window, prepares a known
+working shell, the candidate and a shell that fails session readiness using the
+existing import/build pipeline, and selects the authenticated `apps+runtime`
+cohort through the existing manager. Do not create new trust grants, replace
+publisher pins, or roll back that runtime independently of installed packages.
+Use `tilo-vm` throughout; do not use raw SSH/SCP for deployment or removal.
+
+Retain these **canonical `run.json` receipts** under the names below (the CLI's
+`receipt` field gives their paths; its printed JSON is not the canonical file):
+
+| File | Production operation captured |
+| --- | --- |
+| `create-run.json` | `tilo-vm --json slot create SLOT --headless`, with `created=true`, empty generation 0 |
+| `before-run.json` | `slot show SLOT` after selecting the working shell and matched runtime |
+| `activate-run.json` | `swap shell --from layer:CANDIDATE` targeting SLOT, with successful session restart |
+| `active-run.json` | `slot show SLOT` after candidate readiness succeeds |
+| `fail-run.json` | `swap shell --from layer:FAULT_FIXTURE` targeting SLOT, failing readiness and reporting successful recovery |
+| `recovered-run.json` | `slot show SLOT` after recovery; generation, layers, inventory and provenance must match the active capture |
+| `remove-run.json` | `slot rm SLOT`, only after fresh ownership was acknowledged |
+
+Capture `fixture-before.json` before the fault injection and `fixture-after.json`
+after recovery through `tilo-vm slot exec`. Each object contains `vm`, `slot`,
+`user`, `uid`, `home`, `identity_root` and `sentinel_sha256`. Read only the named
+environment fields and hash one sentinel created in this fresh user's home;
+never dump the environment, keys, personal documents or existing identities.
+The captures must be identical; the identity root must be the fixture user's
+`HOME/.local/share/tilo/test-identity`. Identity minting is unnecessary.
+
+After supported removal, independently observe teardown through manager slot
+listing and read-only account/path/unit probes. `teardown.json` must carry the
+same `vm`, `slot`, `user`, `uid`, `home`, and explicitly false values for
+`slot_present`, `account_present`, `home_present`, `session_active`,
+`user_manager_active`, `session_dropins_present`, `user_dropins_present`.
+An unavailable observation fails; it cannot be replaced by assuming removal
+succeeded. Keep the probe commands/output with the captures for review.
+
+```sh
+python3 scripts/vm-acceptance/component-replacement.py PATH_TO_CAPTURES \
+  --vm OWNED_VM --slot replace-012345abcdef --source FULL_CANDIDATE_COMMIT
+```
+
+The result hashes every input file. An absent receipt, missing provenance,
+ABI/source mismatch, no-op activation, preflight-only failure, failed recovery,
+lost sentinel, or unobserved teardown fails the contract. This audit neither
+substitutes for the native signed-cohort checks nor proves the live journey when
+only source tests have run.
 
 A dev image does not carry the commit it was built from, so `build-disk.sh` writes
 `<disk>.provenance.json` next to the qcow2:

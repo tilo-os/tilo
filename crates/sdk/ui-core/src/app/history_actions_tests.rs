@@ -342,6 +342,78 @@ fn history_list_returns_an_agents_change_as_the_agents_for_its_person() {
     );
 }
 
+/// A change an agent's own device key signed reads in the app's own
+/// history as the agent's, on behalf of its person, once the session named
+/// the room's verified agents; a device it did not verify stays unknown.
+#[test]
+fn history_list_names_a_verified_agents_own_key_change_and_no_other() {
+    let mut app = document(&["v1"]);
+    present(&mut app);
+    // Two collaborators' changes arrive, each signed by its own device.
+    let (scribe, stranger) = ([7_u8; 32], [8_u8; 32]);
+    for (device, value) in [(scribe, "by scribe"), (stranger, "by stranger")] {
+        let mut remote = app
+            .state
+            .doc
+            .fork()
+            .with_actor(automerge::ActorId::from(device.as_slice()));
+        remote.put(ROOT, "title", value).unwrap();
+        remote.commit();
+        app.state.doc.merge(&mut remote).unwrap();
+    }
+    // Newest first: the stranger's change came after the agent's.
+    let (stranger_row, scribe_row) = (0, 1);
+    let unknown = crate::history_source::UNKNOWN_AUTHOR_NAME;
+    let listing = invoke(&mut app, LIST, Some(json!({}))).unwrap();
+    assert_eq!(
+        listing["entries"][scribe_row]["author"], unknown,
+        "{listing}"
+    );
+
+    // The session tells the app which agents of its room it verified.
+    let room = uuid::Uuid::from_u128(5).to_string();
+    let person = [9_u8; 32];
+    app.apply_collab_event_for_test(CollabEvent::HistoryAgents {
+        cluster_id: room.clone(),
+        agents: vec![crate::history_source::RosterAgent {
+            device: scribe,
+            person,
+            person_name: "Ada".into(),
+            agent_id: "scribe".into(),
+            label: "Scribe".into(),
+            color: [10, 20, 30],
+        }],
+    });
+    let listing = invoke(&mut app, LIST, Some(json!({}))).unwrap();
+    let agent = &listing["entries"][scribe_row];
+    assert_eq!(agent["author"], "Scribe · Agent, for Ada", "{listing}");
+    assert_eq!(
+        agent["attribution"],
+        json!({
+            "actor": "agent:scribe",
+            "kind": "agent",
+            "actor_name": "Scribe",
+            "on_behalf_of": hex::encode(person),
+            "on_behalf_of_name": "Ada",
+        }),
+        "{listing}"
+    );
+    let other = &listing["entries"][stranger_row];
+    assert_eq!(other["author"], unknown, "an unverified device: {listing}");
+    assert_eq!(other["attribution"], Value::Null, "{listing}");
+
+    // The session took the agent back: its changes are nobody's again.
+    app.apply_collab_event_for_test(CollabEvent::HistoryAgents {
+        cluster_id: room,
+        agents: Vec::new(),
+    });
+    let listing = invoke(&mut app, LIST, Some(json!({}))).unwrap();
+    assert_eq!(
+        listing["entries"][scribe_row]["author"], unknown,
+        "{listing}"
+    );
+}
+
 #[test]
 fn the_in_app_palette_lists_one_history_launcher() {
     let mut app = document(&["v1"]);

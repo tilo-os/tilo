@@ -4,7 +4,7 @@ use crate::history::FileHistoryStore;
 use crate::namespace::ROOT_INO;
 use crate::record_publisher::RecordPublisher;
 use crate::record_replication::{
-    RecordAction, RecordAuthorizer, RecordEnvelopeV1, RecordOperationV1,
+    RecordEnvelopeV1, RecordOperationV1, test_authorizers::AllowActor,
 };
 use collab_types::{Access, CapOverride, Ed25519PublicKey, Effect, Scope, Subject};
 use fs_protocol::{
@@ -1680,7 +1680,7 @@ async fn structure_content_and_transactions_propagate_between_peers() {
                 person: Ed25519PublicKey(server_root.verifying_key().to_bytes()),
                 device: Ed25519PublicKey(server_identity.device_public_key()),
             };
-            let authorizer = AllowRecordActor(actor);
+            let authorizer = AllowActor(actor);
 
             let mut server_namespace = Namespace::new("live-record-mesh-server").unwrap();
             let source_ino = server_namespace
@@ -2226,11 +2226,12 @@ async fn publish_durable_test_revision(
 async fn three_live_peers_require_a_fresh_exact_replica_before_eviction_and_rehydrate_after_gc() {
     use crate::availability::{
         AvailabilityError, AvailabilityRegistry, EvictionBlocker, EvictionDecision,
-        EvictionRequirements, RecordAvailability, RecordKind, Residency,
+        EvictionRequirements, RecordAvailability, RecordKind,
     };
     use crate::eviction::{
         EvictionCatalog, EvictionQueue, EvictionRequestState, PlanError, plan_safe_eviction,
     };
+    use fs_protocol::Residency;
 
     let temp = tempfile::tempdir().unwrap();
     let (owner_ep, _owner_lookup, owner_identity, _owner_root, _owner_device) =
@@ -2538,19 +2539,6 @@ async fn three_live_peers_require_a_fresh_exact_replica_before_eviction_and_rehy
         .verify_durable_revision(&current_revision)
         .await
         .unwrap();
-}
-
-#[derive(Clone, Copy)]
-struct AllowRecordActor(FileActor);
-
-impl RecordAuthorizer for AllowRecordActor {
-    fn actor_is_certified(&self, actor: &FileActor) -> bool {
-        *actor == self.0
-    }
-
-    fn allows(&self, actor: &FileActor, _record_id: FileRecordId, _action: RecordAction) -> bool {
-        *actor == self.0
-    }
 }
 
 #[test]

@@ -28,6 +28,9 @@ def polls(probe, timeout, **kwargs):
     return None
 
 
+ROOM = "room"
+
+
 def state(*tabs):
     return {"workspace_tree": {"local_app_records": {str(tab): {"room": "room",
             "app_id": app.BROWSER, "record_instance": tab + 10} for tab in tabs}, "workspaces": [{"room": "room", "strips": [{
@@ -86,6 +89,52 @@ class Jobs(unittest.TestCase):
                 action_jobs.invoke(Untracked(), {"provider": "actions", "id": "open"}, {}, Path(directory), "open", require_job=False)
 
 
+class BrowserWorker(unittest.TestCase):
+    def current(self):
+        value = state(1, 2)
+        worker = {"room":ROOM, "tab_id":2, "surface_id":102, "package_id":app.BROWSER,
+                  "certified_checkout":{"application":app.BROWSER,"room":ROOM,"record":"derived:default@tab:000000000000000c"},
+                  "record_instance":12, "peer_pid":456, "peer_start_time_ticks":"12345",
+                  "adoption_id":"12345678-1234-1234-1234-123456789abc"}
+        value["chrome"] = {"native_window_provenance":{"method":"authenticated-wayland-peer", "omitted":0,
+                                                     "windows":[worker]}}
+        return value, worker
+
+    def test_uses_public_record_instance_and_exact_new_surface_not_other_workers(self):
+        value, worker = self.current()
+        value["chrome"]["native_window_provenance"]["windows"].append(dict(worker, tab_id=1, surface_id=101, peer_pid=789))
+        self.assertEqual(app.browser_subject(value,(ROOM,"2","102")),worker)
+
+    def test_foreign_record_pid_lifetime_ambiguous_or_missing_provenance_refuses(self):
+        for field,bad in [("record_instance",2),("package_id",app.STORE),("peer_pid",True),
+                          ("peer_start_time_ticks",""),("adoption_id","00000000-0000-0000-0000-000000000000")]:
+            value,worker=self.current();worker[field]=bad
+            with self.assertRaises(VmError):app.browser_subject(value,(ROOM,"2","102"))
+        value,worker=self.current();value["chrome"]["native_window_provenance"]["windows"].append(dict(worker))
+        with self.assertRaises(VmError):app.browser_subject(value,(ROOM,"2","102"))
+        value,_=self.current();value["chrome"]["native_window_provenance"]["omitted"]=1
+        with self.assertRaises(VmError):app.browser_subject(value,(ROOM,"2","102"))
+
+    def test_current_saved_checkout_is_not_reconstructed_from_continuity(self):
+        value, worker = self.current()
+        worker["certified_checkout"]["record"] = "saved:restored-notebook"
+        self.assertEqual(app.mapped_record(value, (ROOM,"2","102"), app.BROWSER),
+                         "saved:restored-notebook")
+        self.assertEqual(worker["record_instance"], 12)
+
+    def test_no_checkout_proof_never_falls_back_to_a_derived_record(self):
+        value, worker = self.current()
+        worker.pop("certified_checkout")
+        self.assertIsNone(app.mapped_record(value, (ROOM,"2","102"), app.BROWSER))
+
+    def test_foreign_or_malformed_certified_checkout_refuses(self):
+        for field, bad in [("application",app.STORE),("room","foreign"),
+                           ("record",""),("record","bad\x1froute"),("record",True)]:
+            value, worker = self.current()
+            worker["certified_checkout"][field] = bad
+            with self.assertRaises(VmError):
+                app.mapped_record(value,(ROOM,"2","102"),app.BROWSER)
+
 class FreshBrowser(unittest.TestCase):
     def vm(self, new_record=True, new_surface=True):
         class VM:
@@ -93,7 +142,14 @@ class FreshBrowser(unittest.TestCase):
             invoked = []
 
             def state(self):
-                return state(1, 2) if self.stage and new_surface else state(1)
+                tabs=(1, 2) if self.stage and new_surface else (1,)
+                value=state(*tabs)
+                value["chrome"]={"session_locked":False,"native_window_provenance":{"method":"authenticated-wayland-peer", "omitted":0,
+                    "windows":[{"room":ROOM, "tab_id":tab, "surface_id":tab+100, "package_id":app.BROWSER,
+                                "certified_checkout":{"application":app.BROWSER,"room":ROOM,"record":f"derived:default@tab:{tab+10:016x}"},
+                                "record_instance":tab+10, "peer_pid":400+tab, "peer_start_time_ticks":str(1000+tab),
+                                "adoption_id":f"12345678-1234-1234-1234-{tab:012x}"} for tab in tabs]}}
+                return value
 
             def actions(self, query):
                 return [{"provider": "actions", "id": "tab.open-beside"}]
@@ -202,6 +258,32 @@ class HttpsReadback(unittest.TestCase):
 
 
 class ResidentPackage(unittest.TestCase):
+    def test_selected_worker_requires_exact_pid_lifetime_and_preserves_unrelated_report(self):
+        import copy
+        import json
+        from unittest.mock import Mock
+        vm = Mock()
+        selected = {"peer_pid": 222, "peer_start_time_ticks": "999"}
+        data = {"method": "proc-map-files-fd", "reader_uid": 0, "uid": 1000,
+                "processes": [{"pid": 222, "start_time_ticks": "999", "runtime": [
+                    {"path": "/run/tilo-runtime/sdk/lib/libruntime_dylib.so", "sha256": "sdk"}],
+                    "executable": {"sha256": "app"}}],
+                "unrelated_processes": [{"pid": 111, "status": "unrelated_not_verified_against_selected_offer"}]}
+        for field, value in (("pid", 111), ("start_time_ticks", "1000")):
+            foreign = copy.deepcopy(data)
+            foreign["processes"][0][field] = value
+            vm.root_exec.return_value = json.dumps(foreign)
+            with self.subTest(field=field), tempfile.TemporaryDirectory() as directory:
+                with self.assertRaisesRegex(VmError, "foreign worker"):
+                    app.mapped(vm, "calculator", {}, 1000, Path(directory), selected=selected)
+        vm.root_exec.return_value = json.dumps(data)
+        with tempfile.TemporaryDirectory() as directory:
+            app.mapped(vm, "calculator", {"/run/tilo-runtime/sdk/lib/libruntime_dylib.so": "sdk"},
+                       1000, Path(directory), executable="app", selected=selected)
+            report = json.loads((Path(directory) / "calculator-mapped-sdk.json").read_text())
+            self.assertEqual(report["unrelated_processes"], data["unrelated_processes"])
+            self.assertIn(" 222 999", vm.root_exec.call_args.args[0])
+
     def test_old_executable_fails_even_when_runtime_matches(self):
         import json
         from unittest.mock import Mock

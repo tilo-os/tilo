@@ -878,6 +878,14 @@ fn cadence_wait_needed(pipe_ready: bool, frame_pending: bool) -> bool {
     pipe_ready && frame_pending
 }
 
+/// Whether a tick that is about to park leaves its inputs answered without a
+/// frame: it painted nothing, nothing is dirty (a frame held back by a full
+/// presenter is dirty), and no frame is awaited (no cadence wait is armed and
+/// no redraw was asked for after the paint decision).
+fn unpainted_input_settled(painted: bool, content_changed: bool, frame_awaited: bool) -> bool {
+    !(painted || content_changed || frame_awaited)
+}
+
 /// A transition the presenter could not take stays pending. The park while
 /// the pipe is full with a frame due is not animation time; the next submit
 /// still has the frame run ahead of it. A full pipe before the frame is due is
@@ -2713,7 +2721,11 @@ impl FrameBuilderControlState<'_> {
         // yet: an index build or an app's directory page that would add to it
         // is still on its way. `wait_ms` waits for that.
         answer.insert("revision".into(), format!("{fingerprint:016x}").into());
-        answer.insert("complete".into(), complete.into());
+        answer.insert(
+            "complete".into(),
+            (complete && catalog.completion().complete).into(),
+        );
+        answer.insert("completion".into(), serde_json::json!(catalog.completion()));
         Ok(serde_json::Value::Object(answer))
     }
 }
@@ -3198,10 +3210,15 @@ impl ControlState for FrameBuilderControlState<'_> {
     fn chrome_state_json(&self) -> serde_json::Value {
         let chrome = self.fb.chrome();
         let overlays = &chrome.overlays;
+        let native_broker = chrome
+            .native_app_opening
+            .as_ref()
+            .and_then(|opening| opening.0.upgrade().ok());
         let peer_sync = self.fb.host().peer_sync_snapshot();
         let (status_sharing, own_status, following) = self.fb.host().presence_snapshot();
         serde_json::json!({
             "seat_focus": self.seat.map(State::seat_focus_json),
+            "native_window_provenance": self.seat.map(|seat| seat.native_window_provenance_with_broker(native_broker.as_ref())),
             "overlays": {
                 "overview": overlays.overview,
                 "quick_settings": overlays.quick_settings,
@@ -5515,6 +5532,19 @@ fn pump_test_control_conn(
                                 }
                                 continue;
                             }
+                        }
+                        if let Some(response) =
+                            super::diagnostic_actions::owner_required(&request.command)
+                        {
+                            let progress = queue_test_control_response(conn, &response);
+                            if matches!(
+                                progress,
+                                PendingConnectionProgress::Closed
+                                    | PendingConnectionProgress::OutputPending
+                            ) {
+                                return injected_input;
+                            }
+                            continue;
                         }
                         settle_for = super::control_invocation::settle_window(&request.command);
                         listing_wait = ListingWait::begin(
@@ -10723,8 +10753,24 @@ pub fn run() {
                     settings_store::hardware::DesktopControlsConfig::load(),
                 );
             }
-            if settings_change.display_identify() {
-                frame_builder.host_mut().poll_display_identify();
+            if settings_change.display_identify()
+                && frame_builder.host_mut().poll_display_identify()
+                && let Some(network) = peer_sync.as_ref()
+            {
+                // Identify can follow an arrangement edit in the same tick;
+                // resolve that explicit request instead of numbering from an
+                // older periodic sample.
+                crate::shell::device_fabric_runtime::person_layout::refresh(
+                    network,
+                    crate::shell::continuity_policy::ContinuityPolicySnapshot::load(),
+                );
+                if let Some(view) =
+                    crate::shell::device_fabric_runtime::person_layout::current(network)
+                {
+                    frame_builder
+                        .host_mut()
+                        .number_identified_displays(&view.layout);
+                }
             }
             input_steps.step("settings-shortcuts");
             if settings_change.appearance() {
@@ -13214,6 +13260,17 @@ pub fn run() {
         // left to wake the loop; its frame is due on the next cadence.
         let cadence_needed =
             cadence_needed || cadence_wait_needed(pipe_ready, injected_redraw_pending);
+        // Nothing changed on screen and no frame is waiting, here or behind
+        // the presenter: the inputs handled so far are done without a frame.
+        // Their latency ends here rather than at the next painted frame,
+        // which answers a later input.
+        if unpainted_input_settled(
+            should_paint,
+            content_changed,
+            cadence_needed || injected_redraw_pending,
+        ) {
+            metrics.settle_unpainted_input();
+        }
         // The desktop rested since a frame changed it: draw it as layers for
         // the presenter to warm while nothing else is drawn, so the next
         // strip pan starts by copying. Never under a frame on its way, and
@@ -14169,6 +14226,34 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn presenter_backpressure_and_deadlines_schedule_work() {
+        // Phase `an_input_that_changes_nothing_settles_without_a_frame`.
+        assert!(
+            unpainted_input_settled(false, false, false),
+            "a key release that changes nothing is answered when the loop parks"
+        );
+        assert!(
+            !unpainted_input_settled(true, false, false),
+            "a painted tick closes the latency on its own frame"
+        );
+        assert!(
+            !unpainted_input_settled(false, true, cadence_wait_needed(false, true)),
+            "a frame held back by a full presenter still owes the input its latency"
+        );
+        assert!(
+            !unpainted_input_settled(false, false, cadence_wait_needed(true, true)),
+            "a frame waiting for its cadence still owes the input its latency"
+        );
+        // A redraw a control-socket input asked for after the paint decision,
+        // behind a full presenter (so no cadence wait is armed for it).
+        let control_redraw = true;
+        assert!(
+            !unpainted_input_settled(
+                false,
+                false,
+                cadence_wait_needed(false, control_redraw) || control_redraw
+            ),
+            "a redraw asked for after the paint decision is still owed"
+        );
         // Phase `prepaint_stall_threshold_reports_fifty_milliseconds_and_above`.
         assert!(!slow_prepaint_phase(Duration::from_millis(49)));
         assert!(slow_prepaint_phase(Duration::from_millis(50)));
@@ -16099,6 +16184,7 @@ mod tests {
                 panic!("a waited listing answers with the listing");
             };
             assert_eq!(listing["complete"], true, "{listing}");
+            assert_eq!(listing["completion"]["complete"], true, "{listing}");
             assert_eq!(listing["settled"], true, "{listing}");
             let action_id = listing["actions"]
                 .as_array()
@@ -16882,6 +16968,20 @@ mod tests {
             rows["count"].as_u64().is_some_and(|count| count > 0),
             "{rows}"
         );
+        let completion = &rows["completion"];
+        assert!(
+            completion["complete"].is_boolean(),
+            "admin wire preserves completion: {rows}"
+        );
+        assert!(
+            completion["incomplete"].is_array(),
+            "admin wire preserves provider outcomes: {rows}"
+        );
+        assert_eq!(
+            completion["complete"].as_bool(),
+            completion["incomplete"].as_array().map(Vec::is_empty)
+        );
+        assert_eq!(rows["complete"], completion["complete"]);
         assert!(matches!(
             ask(r#"{"op":"state_dump"}"#),
             test_control::Response::State { .. }
@@ -17061,7 +17161,7 @@ mod tests {
         );
         assert!(matches!(
             socket_response(&mut reader),
-            test_control::Response::Err { .. }
+            test_control::Response::Err { code, .. } if code == "not_permitted"
         ));
         assert!(
             crate::shell::launcher::LaunchSession::current()
@@ -17077,6 +17177,13 @@ mod tests {
         );
         assert!(
             matches!(socket_response(&mut reader), test_control::Response::Answer(value) if value["diagnostics"]["presentation"] == true)
+        );
+        writer.write_all(b"{\"op\":\"actions_invoke\",\"provider\":\"session-diagnostics\",\"id\":\"inspect@session-diagnostics\",\"args\":{}}\n").unwrap();
+        pump_test_control_conn(
+            &mut conn, &mut fb, &mut ctx, &session, &mut lock, &mut state,
+        );
+        assert!(
+            matches!(socket_response(&mut reader), test_control::Response::Answer(value) if value["launch_history"]["attempts"].is_array())
         );
         writer
             .write_all(b"{\"op\":\"actions_enumerate\",\"query\":\"session-diagnostics\"}\n")

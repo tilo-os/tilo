@@ -13,93 +13,9 @@ use std::rc::Rc;
 use super::{
     Actions, Affine, Effective, Element, Form, HashMap, LayoutInfo, LayoutOrigin, NodeId, ObjId,
     PageLayout, Parts, Point, PresenceCtx, Rect, Scene, Scrollable, TaffyTree, Text, TextRenderer,
-    TextRole, Theme, Widget, column_style, fr, length, minmax, percent, spacing,
+    TextRole, Theme, Widget, column_style, fr, length, minmax, percent, retained_parts, spacing,
 };
 use crate::tokens::Rhythm;
-
-/// The retained-child lifecycle over the `Parts` at `self.<path>`: every
-/// method but identity, layout building and drawing.
-macro_rules! lifecycle {
-    ($($path:ident).+) => {
-        fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-            self.$($path).+.apply_layout(taffy, node, origin);
-        }
-        fn start_operation(
-            &mut self,
-            op: &crate::widget::ResourceOperation<'_>,
-            doc: &mut crate::widget::Edits<'_>,
-            path: &ObjId,
-        ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
-            crate::widget::start_in_children(self, op, doc, path)
-        }
-        fn update(
-            &mut self,
-            state: &crate::widget::AppModel,
-            path: &crate::widget::ModelPath,
-        ) -> bool {
-            let mut changed = false;
-            for child in &mut self.$($path).+.children {
-                changed |= child.update(state, path);
-            }
-            changed
-        }
-        fn sync(&mut self, state: &crate::widget::AppModel, path: &crate::widget::ModelPath) {
-            for child in &mut self.$($path).+.children {
-                child.sync(state, path);
-            }
-        }
-        fn handle_event(
-            &mut self,
-            event: &winit::event::WindowEvent,
-            ctx: &mut crate::widget::EventCtx<'_>,
-        ) {
-            let parts = &mut self.$($path).+;
-            for (child, &node) in parts.children.iter_mut().zip(&parts.nodes) {
-                let path = ctx.path;
-                child.handle_event(event, &mut ctx.reborrow(path, node));
-                if *ctx.handled {
-                    break;
-                }
-            }
-        }
-        fn children(&self) -> Vec<&dyn Widget> {
-            self.$($path).+.children.iter().map(|child| child.as_ref()).collect()
-        }
-        fn for_each_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) {
-            for child in &self.$($path).+.children {
-                visitor(child.as_ref());
-            }
-        }
-        fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-            self.$($path).+
-                .children
-                .iter_mut()
-                .map(|child| child.as_mut() as &mut (dyn Widget + '_))
-                .collect()
-        }
-        fn mark_drawn(&mut self) {
-            for child in &mut self.$($path).+.children {
-                child.mark_drawn();
-            }
-        }
-        fn take_structure_dirty(&mut self) -> bool {
-            let mut dirty = false;
-            for child in &mut self.$($path).+.children {
-                dirty |= child.take_structure_dirty();
-            }
-            dirty
-        }
-        fn wants_pointer_capture(&self) -> bool {
-            self.$($path).+
-                .children
-                .iter()
-                .any(|child| child.wants_pointer_capture())
-        }
-        fn get_rect(&self) -> Rect {
-            self.$($path).+.rect
-        }
-    };
-}
 
 /// How far an item of a page's body sits below the one before it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -163,7 +79,7 @@ impl Widget for PageBody {
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
         Some(self)
     }
-    lifecycle!(parts);
+    retained_parts!(lifecycle: parts);
     fn name(&self) -> &'static str {
         self.name
     }
@@ -227,7 +143,7 @@ struct PinnedActions {
 }
 
 impl Widget for PinnedActions {
-    lifecycle!(parts);
+    retained_parts!(lifecycle: parts);
     fn name(&self) -> &'static str {
         "PinnedActions"
     }
@@ -647,7 +563,7 @@ macro_rules! framed_page {
             fn layout_info(&self) -> Option<LayoutInfo> {
                 self.effective_layout().map(LayoutInfo::Page)
             }
-            lifecycle!(frame.parts);
+            retained_parts!(lifecycle: frame.parts);
             fn name(&self) -> &'static str {
                 $name
             }

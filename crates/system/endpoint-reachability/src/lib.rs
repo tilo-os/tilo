@@ -1,12 +1,13 @@
-//! When this device's endpoint runs its relays.
+//! When an iroh endpoint runs its relays.
 //!
 //! A relay is what makes a device dialable from outside its own network: it
 //! holds a home relay connection open (with keep-alive pings) and, every
 //! 20-26 s, re-runs iroh's net report, which opens fresh QUIC
 //! address-discovery connections to every relay in its map and probes for a
-//! port mapping. An idle desktop that nobody could dial pays all of that for
+//! port mapping. An idle device that nobody could dial pays all of that for
 //! nothing: on the installed desktop it was two thirds of the network
-//! runtime's idle wakeups.
+//! runtime's idle wakeups, on an idle `fs serve` 5.8 of its 6.9 wakeups a
+//! second.
 //!
 //! So the endpoint binds with an *empty* relay map and the relays wait here
 //! until something needs this device reachable. iroh skips net report, QAD
@@ -27,12 +28,14 @@
 //! recorded (a shared room, an open invitation, another of the person's
 //! devices).
 //!
-//! When nothing needs them any more, the relays rest again, [`REST_AFTER`]
-//! after the last thing that did, through [`Endpoint::remove_relay`]: with
+//! When nothing needs them any more, the relays rest again, a delay
+//! ([`REST_AFTER`] in a session) after the last thing that did, through [`Endpoint::remove_relay`]: with
 //! the map empty, net report, QAD and port mapping stop, and the vendored
 //! iroh gives up its home relay (`vendor/iroh/TILO-PATCH.md`): the address
 //! stops naming it, and the connection and its keep-alive close once it has
-//! been idle a minute. The next wake picks a home relay afresh.
+//! been idle a minute. The next wake picks a home relay afresh. A handle
+//! deferred without a delay never rests: the filesystem daemon wakes its
+//! relays for conditions that last as long as the process.
 
 use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
@@ -74,7 +77,8 @@ struct Held {
     endpoint: Endpoint,
     relays: Vec<Arc<RelayConfig>>,
     runtime: tokio::runtime::Handle,
-    rest_after: Duration,
+    /// `None`: once woken, the relays stay up.
+    rest_after: Option<Duration>,
     /// Whether the relays should be in the endpoint's map.
     awake: bool,
     /// What holds them up now, by [`Need`].
@@ -121,14 +125,14 @@ impl Reachability {
     /// a relay transport and an empty relay map
     /// (`RelayMode::Custom(RelayMap::empty())`); [`Self::wake`] inserts them
     /// on `runtime`, and they rest again `rest_after` after nothing needs
-    /// them ([`REST_AFTER`] in a session). An empty `relays` holds nothing
-    /// back.
+    /// them ([`REST_AFTER`] in a session), or never for `None`. An empty
+    /// `relays` holds nothing back.
     #[must_use]
     pub fn defer(
         endpoint: &Endpoint,
         relays: &RelayMap,
         runtime: tokio::runtime::Handle,
-        rest_after: Duration,
+        rest_after: Option<Duration>,
     ) -> Self {
         let relays: Vec<Arc<RelayConfig>> = relays.relays();
         if relays.is_empty() {
@@ -167,8 +171,9 @@ impl Reachability {
 
     /// What holds the relays up now, by source, for a test to say why they
     /// did not rest.
-    #[cfg(test)]
-    pub(crate) fn holders(&self) -> (Option<&'static str>, Option<&'static str>) {
+    #[cfg(any(test, feature = "test-support"))]
+    #[must_use]
+    pub fn holders(&self) -> (Option<&'static str>, Option<&'static str>) {
         with_held(&self.held, |held| {
             (held.needs.transport, held.needs.session)
         })
@@ -280,7 +285,7 @@ impl Held {
     /// them once [`Self::rest_after`] has passed since they were last
     /// needed. A later wake moves that moment on; a need cancels it.
     fn rest_when_unneeded(&mut self) {
-        if !self.awake || self.rest_pending || self.needs.any() {
+        if self.rest_after.is_none() || !self.awake || self.rest_pending || self.needs.any() {
             return;
         }
         self.rest_pending = true;
@@ -296,9 +301,8 @@ impl Held {
             return None;
         }
         let due = self
-            .needed_at
-            .checked_add(self.rest_after)
-            .unwrap_or(self.needed_at);
+            .rest_after
+            .and_then(|rest_after| self.needed_at.checked_add(rest_after))?;
         if Instant::now() < due {
             return Some(due);
         }
@@ -414,7 +418,7 @@ mod tests {
             endpoint,
             &unused_relays(),
             tokio::runtime::Handle::current(),
-            rest_after,
+            Some(rest_after),
         )
     }
 
@@ -448,7 +452,7 @@ mod tests {
             &endpoint,
             &RelayMap::empty(),
             tokio::runtime::Handle::current(),
-            REST_AFTER,
+            Some(REST_AFTER),
         );
         assert!(!reachability.is_dormant());
         assert!(!reachability.wake("a test"));
@@ -461,6 +465,26 @@ mod tests {
                 .is_none(),
             "a handle holding nothing back has no relay to wait for"
         );
+        endpoint.close().await;
+    }
+
+    /// Without a delay, a wake lasts for the life of the handle.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn relays_deferred_without_a_delay_never_rest() {
+        let (endpoint, relays) = endpoint_without_relays().await;
+        let reachability = Reachability::defer(
+            &endpoint,
+            &unused_relays(),
+            tokio::runtime::Handle::current(),
+            None,
+        );
+        assert!(reachability.wake("a test"));
+        until_relays(&relays, 2).await;
+        reachability.need(Need::Session, Some("a test"));
+        reachability.need(Need::Session, None);
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(!reachability.is_dormant());
+        assert_eq!(relays.len(), 2);
         endpoint.close().await;
     }
 
@@ -559,7 +583,7 @@ mod tests {
             &endpoint,
             &own,
             tokio::runtime::Handle::current(),
-            Duration::from_millis(300),
+            Some(Duration::from_millis(300)),
         );
         assert_eq!(endpoint.addr().relay_urls().count(), 0);
         let waiting = reachability.clone();
@@ -600,8 +624,8 @@ mod tests {
 }
 
 /// A relay of a test's own, for tests that need a home relay to appear.
-#[cfg(test)]
-pub(crate) mod test_support {
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_support {
     #![allow(
         clippy::expect_used,
         reason = "a test fixture that cannot start fails the test that needs it"
@@ -613,7 +637,11 @@ pub(crate) mod test_support {
     /// discovery, so a net report needs only its HTTP probe: an endpoint
     /// picks it as its home relay in a fraction of a second, where a probe
     /// waiting on QAD that never answers takes about three.
-    pub(crate) async fn local_relay() -> (Server, iroh::RelayMap) {
+    ///
+    /// # Panics
+    ///
+    /// If the loopback relay cannot start.
+    pub async fn local_relay() -> (Server, iroh::RelayMap) {
         let mut config = ServerConfig::default();
         config.relay = Some(RelayConfig::new((std::net::Ipv4Addr::LOCALHOST, 0)));
         let server = Server::spawn(config)

@@ -14,7 +14,7 @@ checkout.
 Current results come from the scheduled performance lane, not from this page.
 Each benchmark writes records with `tools/perf/record.py`, and the records are
 stored in the `tilo-perf-results` package. See
-[Performance results](../DEVELOPMENT.md#performance-results) for how a benchmark
+[Performance results](measurements/performance.md) for how a benchmark
 such as `ui-perf` or `redraw_bench` joins that lane.
 
 ## Where this runs

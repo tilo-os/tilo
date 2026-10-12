@@ -42,6 +42,13 @@ pub trait ActivityTree: Clone + Deref<Target = DesktopTree> + DerefMut {
     fn replay_presentation_note(&self) -> Option<String> {
         None
     }
+    /// The delegated agents on the rooms' rosters whose person's root signed
+    /// the delegation for exactly that device, as the host verified them:
+    /// the changes their own keys signed read as theirs, on behalf of their
+    /// person. A host that verifies none leaves those changes unknown.
+    fn roster_agents(&self) -> Vec<ui::history_source::RosterAgent> {
+        Vec::new()
+    }
     fn commit_activity_change(&mut self) {}
     fn native_manual_tasks(&self, _workspace: WorkspaceId) -> bool {
         false

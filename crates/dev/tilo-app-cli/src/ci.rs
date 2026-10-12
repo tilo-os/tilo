@@ -12,7 +12,7 @@ pub const BUILDER_IMAGE: &str = "registry.tilo.so/tilo/tilo-builder:latest";
 
 const SDK_GIT: &str = "https://code.tilo.so/tilo/tilo.git";
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
 pub enum Forge {
     Github,
     Forgejo,

@@ -487,16 +487,7 @@ impl RecordReplica {
         authorizer: &A,
     ) -> Result<(), RecordReplicationError> {
         envelope.verify()?;
-        if envelope.record_id != self.record_id {
-            return Err(RecordReplicationError::WrongRecord);
-        }
-        if !authorizer.actor_is_certified(&envelope.actor) {
-            return Err(RecordReplicationError::UncertifiedActor);
-        }
-        if !authorizer.allows(&envelope.actor, self.record_id, RecordAction::Write) {
-            return Err(RecordReplicationError::WriteDenied);
-        }
-        self.apply_verified(envelope)
+        self.merge_authenticated(envelope, authorizer)
     }
 
     /// [`Self::merge`] for an envelope this process just signed with the
@@ -872,6 +863,56 @@ pub enum RecordReplicationError {
     /// Canonical envelope encoding or decoding failed.
     #[error(transparent)]
     Canonical(#[from] CanonicalError),
+}
+
+/// Authorizers for tests whose subject is not authorization itself.
+#[cfg(test)]
+pub(crate) mod test_authorizers {
+    use super::{FileActor, FileRecordId, RecordAction, RecordAuthorizer};
+    use std::collections::BTreeSet;
+
+    /// Certifies every actor and allows every action.
+    pub(crate) struct AllowAll;
+
+    impl RecordAuthorizer for AllowAll {
+        fn actor_is_certified(&self, _: &FileActor) -> bool {
+            true
+        }
+
+        fn allows(&self, _: &FileActor, _: FileRecordId, _: RecordAction) -> bool {
+            true
+        }
+    }
+
+    /// Certifies one actor and allows it every action on every record.
+    #[derive(Clone, Copy)]
+    pub(crate) struct AllowActor(pub(crate) FileActor);
+
+    impl RecordAuthorizer for AllowActor {
+        fn actor_is_certified(&self, actor: &FileActor) -> bool {
+            *actor == self.0
+        }
+
+        fn allows(&self, actor: &FileActor, _: FileRecordId, _: RecordAction) -> bool {
+            *actor == self.0
+        }
+    }
+
+    /// Certifies one actor and allows it every action on these records only.
+    pub(crate) struct AllowActorOn {
+        pub(crate) actor: FileActor,
+        pub(crate) records: BTreeSet<FileRecordId>,
+    }
+
+    impl RecordAuthorizer for AllowActorOn {
+        fn actor_is_certified(&self, actor: &FileActor) -> bool {
+            *actor == self.actor
+        }
+
+        fn allows(&self, actor: &FileActor, record: FileRecordId, _: RecordAction) -> bool {
+            *actor == self.actor && self.records.contains(&record)
+        }
+    }
 }
 
 #[cfg(test)]
