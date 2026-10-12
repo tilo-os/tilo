@@ -4090,15 +4090,14 @@ impl App {
         }
         let manifest = self.manifest()?;
         let entry = manifest.as_ref().and_then(|m| m.get(&component)).cloned();
-        if let Some(c) = &entry {
-            let fits = (slot == VM_SLOT) == (c.info.scope == Scope::Vm);
-            if !fits {
-                return Err(CliError::ScopeMismatch {
-                    component,
-                    slot,
-                    scope: c.info.scope.as_str().into(),
-                });
-            }
+        if let Some(c) = &entry
+            && (slot == VM_SLOT) != (c.info.scope == Scope::Vm)
+        {
+            return Err(CliError::ScopeMismatch {
+                component,
+                slot,
+                scope: c.info.scope.as_str().into(),
+            });
         }
         let source = ci::parse(from, self.worktree.as_ref())?;
         if matches!(source, ci::Source::Worktree)
