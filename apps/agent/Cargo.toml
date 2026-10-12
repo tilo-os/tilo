@@ -52,11 +52,14 @@ workspace-hack = { version = "0.1" }
 tilo-action-policy = { path = "../../crates/collab/action-policy" }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 tempfile.workspace = true
-shell = { path = "../../crates/session/shell", default-features = false, features = ["test-support"] }
 tilo-user-identity = { path = "../../crates/collab/tilo-user-identity" }
 runtime-identity = { path = "../../crates/runtime/runtime-identity" }
 ed25519-dalek.workspace = true
 tilo-test-env = { path = "../../crates/dev/test-env" }
+
+# typed_peer drives the shell's in-process broker, which runs on Linux.
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+shell = { path = "../../crates/session/shell", default-features = false, features = ["test-support"] }
 
 [[test]]
 name = "it"
