@@ -219,7 +219,7 @@ impl Desktop {
         // its session's file. Holding it here refused every save the
         // compositor made ("file lease is busy").
         let mut seed = tree.clone();
-        seed.native_runtime = Default::default();
+        drop(std::mem::take(&mut seed.native_runtime));
         shell::shell::persist::save_tree_to(&seed, &state_path).expect("seed the saved session");
         drop(seed);
         seed_tab_records(&runtime_dir, tree);

@@ -266,7 +266,7 @@ impl Compositor {
         shell::shell::persist::save_tree_to(&fixture_tree, &state_path)
             .expect("seed the clipboard e2e desktop");
         // Let go of the file's writer lease: the compositor owns its session.
-        fixture_tree.native_runtime = Default::default();
+        drop(std::mem::take(&mut fixture_tree.native_runtime));
         Self::seed_tab_records(&runtime_dir, &fixture_tree);
         let identity_root = Self::seed_identity(&runtime_dir);
 

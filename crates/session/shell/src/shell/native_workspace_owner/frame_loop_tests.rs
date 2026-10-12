@@ -139,7 +139,6 @@ fn owner_and_authority_lookups_never_wait_for_a_publication_in_progress() {
     // is slow.
     let snapshot = persist::TreeSnapshot::of(&tree.read());
     let (syncing, synced) = std::sync::mpsc::channel();
-    let saving = path.clone();
     let saver = std::thread::spawn(move || {
         with_observer(
             move |event| {
@@ -148,7 +147,7 @@ fn owner_and_authority_lookups_never_wait_for_a_publication_in_progress() {
                     std::thread::sleep(SLOW_PUBLICATION);
                 }
             },
-            || snapshot.write_to(&saving),
+            || snapshot.write_to(&path),
         )
     });
     synced
