@@ -378,6 +378,12 @@ class HostingLoad(unittest.TestCase):
         fanout = records["hosting.relay.fanout_ms.n100"]
         self.assertEqual((fanout.n, fanout.p50, fanout.max), (3, 6.0, 30.0))
         self.assertEqual(cpu.meta["prices_checked"], self.prices["checked"])
+        self.assertEqual(cpu.meta["relay_cpus"], "all")
+
+    def test_records_say_how_many_cpus_the_relay_ran_on(self):
+        report = {**load_report(), "relay_cpus": 2}
+        records = adapters.hosting_load(report, self.prices, ENV)
+        self.assertEqual({item.meta["relay_cpus"] for item in records}, {"2"})
 
     def test_the_price_sheet_prices_each_minute(self):
         records = {item.kpi: item for item in adapters.hosting_load(load_report(), self.prices, ENV)}
