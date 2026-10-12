@@ -3402,6 +3402,28 @@ impl BlockEditor {
             .and_then(|index| self.block_drag_handle_rect(index))
     }
 
+    /// Everything the last draw may have painted for where the pointer is
+    /// rather than where the text is: the hovered block's drag handle, the
+    /// copy chrome of each code run (lit under the pointer), each table's
+    /// add-row and add-column controls (shown under it) and each image's
+    /// button (shown under it). The text moves under a resting pointer, so a
+    /// host that copies a scroll of the text repaints these where they are
+    /// and where they were.
+    pub fn pointer_chrome(&self) -> Vec<Rect> {
+        let mut chrome: Vec<Rect> = self.hover_handle().into_iter().collect();
+        chrome.extend(self.code_copy_hits.iter().map(|(rect, _, _)| *rect));
+        for control in self.table_mode_controls.values() {
+            chrome.extend([control.add_row.get_rect(), control.add_column.get_rect()]);
+        }
+        chrome.extend(
+            self.image_attachments
+                .values()
+                .map(|image| image.button().get_rect()),
+        );
+        chrome.retain(|rect| rect.width() > 0.0 && rect.height() > 0.0);
+        chrome
+    }
+
     fn hovered_block(&self) -> Option<usize> {
         (0..self.blocks.len()).find_map(|index| {
             let line = self.block_paint_rect(index)?;

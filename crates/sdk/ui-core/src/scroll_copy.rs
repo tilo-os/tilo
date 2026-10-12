@@ -94,6 +94,37 @@ thread_local! {
     static OUTER: std::cell::Cell<Affine> = const { std::cell::Cell::new(Affine::IDENTITY) };
 }
 
+thread_local! {
+    /// Embedded apps drawn now are drawn for a host that copies
+    /// ([`HostCopies`]).
+    static HOST_COPIES: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// While held, every [`crate::app::EmbeddedApp`] drawn on this thread is
+/// drawn for a host that presents each frame over the pixels it last
+/// presented and can move them, as
+/// [`crate::app::EmbeddedApp::set_accepts_scroll_copies`] says; an app that
+/// learned so keeps handing out copies, which a host that cannot make them
+/// repaints where they land.
+pub struct HostCopies(bool);
+
+impl HostCopies {
+    pub fn begin(copies: bool) -> Self {
+        Self(HOST_COPIES.replace(copies))
+    }
+}
+
+impl Drop for HostCopies {
+    fn drop(&mut self) {
+        HOST_COPIES.set(self.0);
+    }
+}
+
+/// Whether the host drawing now copies ([`HostCopies`]).
+pub fn host_copies() -> bool {
+    HOST_COPIES.get()
+}
+
 /// Puts back the enclosing cache's transform even when drawing unwinds.
 struct Outer(Affine);
 
@@ -369,6 +400,112 @@ impl DeviceCopy {
         let x = f64::from(self.x) + f64::from(self.dx);
         let y = f64::from(self.y) + f64::from(self.dy);
         Rect::new(x, y, x + f64::from(self.width), y + f64::from(self.height))
+    }
+}
+
+/// A copy as a host that composites the target elsewhere sees it: the
+/// rectangle it reads and how far it moves it, in the coordinates of the
+/// scene the target is drawn into (an embedded app's region in a desktop
+/// section), before that scene is rasterised.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MovedRegion {
+    pub source: Rect,
+    pub delta: Vec2,
+}
+
+impl MovedRegion {
+    /// `copy`, made in a target of `scale` device pixels per unit of the
+    /// scene it is drawn with.
+    pub fn of(copy: &DeviceCopy, scale: f64) -> Self {
+        let source = Rect::new(
+            f64::from(copy.x),
+            f64::from(copy.y),
+            f64::from(copy.x) + f64::from(copy.width),
+            f64::from(copy.y) + f64::from(copy.height),
+        );
+        Self {
+            source: Rect::new(
+                source.x0 / scale,
+                source.y0 / scale,
+                source.x1 / scale,
+                source.y1 / scale,
+            ),
+            delta: Vec2::new(f64::from(copy.dx) / scale, f64::from(copy.dy) / scale),
+        }
+    }
+
+    /// Where the copy lands.
+    pub fn destination(&self) -> Rect {
+        self.source + self.delta
+    }
+
+    /// Every pixel the copy reads or writes.
+    pub fn reach(&self) -> Rect {
+        self.source.union(self.destination())
+    }
+
+    /// The same copy in the coordinates `transform` maps into, or `None`
+    /// when it rotates or skews (a copy moves rows and columns as they are).
+    pub fn transformed(&self, transform: Affine) -> Option<Self> {
+        let [a, b, c, d, _, _] = transform.as_coeffs();
+        if b != 0.0 || c != 0.0 || a <= 0.0 || d <= 0.0 {
+            return None;
+        }
+        Some(Self {
+            source: transform.transform_rect_bbox(self.source),
+            delta: Vec2::new(self.delta.x * a, self.delta.y * d),
+        })
+    }
+
+    /// The copy in a `width` × `height` target that `to_device` maps this
+    /// region's coordinates into: the whole device pixels of the source
+    /// that land inside the target, and where the destination is not
+    /// covered by them (its antialiased edges, what would land outside),
+    /// to repaint. `None` when the delta is not a whole number of device
+    /// pixels, `to_device` rotates or skews, or nothing lands.
+    pub fn device(
+        &self,
+        to_device: Affine,
+        (width, height): (u32, u32),
+    ) -> Option<(DeviceCopy, Vec<Rect>)> {
+        let moved = self.transformed(to_device)?;
+        let target = Rect::new(0.0, 0.0, f64::from(width), f64::from(height));
+        let (Some(dx), Some(dy)) = (
+            whole(moved.delta.x, target.width()),
+            whole(moved.delta.y, target.height()),
+        ) else {
+            return None;
+        };
+        if dx == 0 && dy == 0 {
+            return None;
+        }
+        let shift = Vec2::new(f64::from(dx), f64::from(dy));
+        let landed = (inner(moved.source.intersect(target)) + shift).intersect(target);
+        if empty(landed) {
+            return None;
+        }
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "whole, non-negative device pixels inside the target, which a u32 holds"
+        )]
+        let copy = DeviceCopy {
+            x: (landed.x0 - shift.x) as u32,
+            y: (landed.y0 - shift.y) as u32,
+            width: landed.width() as u32,
+            height: landed.height() as u32,
+            dx,
+            dy,
+        };
+        copy.destination(width, height)?;
+        let fringe = without(
+            (moved.source + shift)
+                .expand()
+                .intersect(target)
+                .union(landed),
+            landed,
+        );
+        Some((copy, fringe))
     }
 }
 

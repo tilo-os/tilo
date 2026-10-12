@@ -8575,6 +8575,7 @@ pub fn run() {
         backend.pixel_aligned_strip_pan(),
         backend.composites_strip_layers(),
     );
+    frame_builder.set_scroll_copy_presenter(backend.copies_scrolls());
     let clipboard_store = state.selection_store();
     frame_builder
         .host_mut()

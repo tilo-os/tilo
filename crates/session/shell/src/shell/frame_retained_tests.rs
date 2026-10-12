@@ -3492,3 +3492,7 @@ fn moving_to_another_strip_repaints_the_focus_and_the_strip_chrome() {
         }
     }
 }
+
+#[cfg(target_os = "linux")]
+#[path = "frame_scroll_copy_tests.rs"]
+mod scroll_copy;
