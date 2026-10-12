@@ -491,16 +491,6 @@ impl Widget for Capturing {
         self.rect = crate::widget::layout_rect(taffy, node, origin);
     }
 
-    fn draw(
-        &mut self,
-        _scene: &mut Scene,
-        _transform: Affine,
-        _text: &mut TextRenderer,
-        _theme: &Theme,
-        _presence: &PresenceCtx,
-    ) {
-    }
-
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         if matches!(event, WindowEvent::MouseInput { .. }) {
             self.events.set(self.events.get().saturating_add(1));
@@ -580,16 +570,6 @@ impl Widget for Filtered {
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         self.inner.apply_layout(taffy, node, origin);
-    }
-
-    fn draw(
-        &mut self,
-        _scene: &mut Scene,
-        _transform: Affine,
-        _text: &mut TextRenderer,
-        _theme: &Theme,
-        _presence: &PresenceCtx,
-    ) {
     }
 
     fn name(&self) -> &'static str {

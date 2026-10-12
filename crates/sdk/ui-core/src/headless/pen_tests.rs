@@ -32,16 +32,6 @@ impl Widget for Probe {
         );
     }
 
-    fn draw(
-        &mut self,
-        _scene: &mut Scene,
-        _transform: Affine,
-        _text_renderer: &mut TextRenderer,
-        _theme: &Theme,
-        _presence: &PresenceCtx,
-    ) {
-    }
-
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
         let kind = match event {
             WindowEvent::CursorMoved { .. } => "move",

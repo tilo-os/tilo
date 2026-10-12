@@ -10,7 +10,7 @@ use std::rc::Rc;
 
 use serde_json::json;
 use tilo_actions::{Action, ActionError, ActionParam, ActionSpec, OperationKind, ParamType};
-use tilo_app::advanced::{Affine, NodeId, Scene, TaffyTree};
+use tilo_app::advanced::{NodeId, TaffyTree};
 use tilo_app::automerge::transaction::Transactable;
 use tilo_app::automerge::{AutoCommit, ROOT, ReadDoc, ScalarValue, Value};
 use tilo_app::framework::EffectAnswer;
@@ -187,9 +187,6 @@ impl Widget for Jobs {
 
     fn apply_layout(&mut self, _: &TaffyTree<()>, _: NodeId, origin: Point) {
         self.rect = Rect::from_origin_size(origin, Size::ZERO);
-    }
-
-    fn draw(&mut self, _: &mut Scene, _: Affine, _: &mut TextRenderer, _: &Theme, _: &PresenceCtx) {
     }
 
     fn name(&self) -> &'static str {

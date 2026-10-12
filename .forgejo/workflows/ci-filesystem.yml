@@ -280,7 +280,7 @@ jobs:
       - name: Enforce named delivery and governed identity
         run: |
           bash scripts/ci-run.sh "authenticated named-share delivery" -- cargo test --locked -p tilo-fs named_share_delivery --lib -- --nocapture
-          bash scripts/ci-run.sh "named-share control wire" -- cargo test --locked -p collab-types share_control --lib -- --nocapture
+          bash scripts/ci-run.sh "named-share control wire" -- cargo test --locked -p fs-protocol share_control --lib -- --nocapture
           bash scripts/ci-run.sh "governed identity projection schema" -- cargo test --locked -p tilo-user-identity projection --lib -- --nocapture
           bash scripts/ci-run.sh "governed room identity projection" -- cargo test --locked -p shell root_signed_governance_projects_identity_and_additive_revocation --lib -- --nocapture
 

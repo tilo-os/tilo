@@ -1194,12 +1194,30 @@ impl RetainedGpuTarget {
             if !keep_going() {
                 return Ok(pixels);
             }
+            // A chrome texture that holds the drawing the chrome changed
+            // from takes only the tiles that changed (a clock tick).
+            let damaged = work
+                .chrome_tiles
+                .clone()
+                .filter(|_| layer == Layer::Chrome && self.renderer.sparse_fine_supported());
             shown.forget(layer);
             let (scene, base) = if layer == Layer::Backdrop {
                 (&cache.layers.backdrop, self.base_color)
             } else {
                 (&cache.layers.chrome, Color::TRANSPARENT)
             };
+            if let Some(rects) = damaged {
+                let area = rects
+                    .iter()
+                    .map(|rect| u64::from(rect.width).saturating_mul(u64::from(rect.height)))
+                    .fold(0, u64::saturating_add);
+                if !rects.is_empty() {
+                    self.render_layer(layer, scene, Some(rects), base, policy)?;
+                }
+                shown.record(layer, cache);
+                pixels = pixels.saturating_add(area);
+                continue;
+            }
             let done =
                 self.warm_whole(layer, (scene, base), bands.as_deref(), policy, keep_going)?;
             if !done {
@@ -1443,11 +1461,16 @@ impl RetainedGpuTarget {
             let base = self.base_color;
             self.render_layer(Layer::Backdrop, &cache.layers.backdrop, None, base, policy)?;
         }
-        if work.chrome {
+        // The chrome's changed tiles, or all of it.
+        let chrome_tiles = work
+            .chrome_tiles
+            .clone()
+            .filter(|_| self.renderer.sparse_fine_supported());
+        if work.chrome && chrome_tiles.as_ref().is_none_or(|tiles| !tiles.is_empty()) {
             self.render_layer(
                 Layer::Chrome,
                 &cache.layers.chrome,
-                None,
+                chrome_tiles,
                 transparent,
                 policy,
             )?;
@@ -6559,10 +6582,13 @@ mod tests {
                 dest_h: size.1.saturating_mul(2).checked_div(3).unwrap_or(0),
                 scroll_x,
             }],
+            generation: 1,
+            chrome_damage: None,
             layers: crate::shell::frame::FrameLayers {
                 backdrop: asymmetric_scene(size),
                 workspace: Scene::new(),
                 strips: vec![strip],
+                strip_parts: vec![None],
                 wheel: None,
                 chrome,
             },

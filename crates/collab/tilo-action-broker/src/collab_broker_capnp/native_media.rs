@@ -243,6 +243,9 @@ impl ProcessMonitor {
             let state = Arc::downgrade(state);
             let stop: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
                 checked.stop();
+                // Launcher custody ended: held committed-read waits re-check
+                // it now rather than on a clock.
+                tilo_identity_host::policy_change::announce();
                 if let Some(state) = state.upgrade() {
                     if let Some(service) = state.services.native_media.as_ref() {
                         service.disconnect(peer);

@@ -31,14 +31,14 @@ use ui::widget::{
     NavSection, NavShell, SidebarPlacement, Widget,
 };
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, Vec2};
+use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, KeyEvent, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use crate::detail_pane::{self, DetailKey};
 use crate::expand::ExpandModal;
 use crate::highlight;
-use crate::list_pane::{ListPane, ListState};
+use crate::list_pane::ListPane;
 use crate::model::{Language, Selection, SmartFolder, Snippet, SnippetId, SnippetPaths, Snippets};
 use crate::resource::{SnippetsView, snippets};
 use crate::{tr, tr_with};
@@ -110,16 +110,6 @@ impl Action {
             Self::More(_) => tr("snippets-more-actions"),
         }
     }
-
-    /// The control binding a painted control with this action publishes:
-    /// its semantic target, which the list answers as view state.
-    pub(crate) fn binding(&self) -> ui::widget::ControlBindingMetadata {
-        let control_id = self.semantic_id();
-        ui::widget::ControlBindingMetadata {
-            kind: ui::widget::ControlBindingKind::SemanticAction(control_id.clone()),
-            control_id,
-        }
-    }
 }
 
 /// A punctuation-safe key of a folder or tag name for semantic control ids.
@@ -165,7 +155,9 @@ pub(crate) struct Core {
     pub(crate) pointer: Point,
     /// The window, for dialogs and menus.
     pub(crate) window: Rect,
-    pub(crate) list: ListState,
+    /// The snippet whose row the list should scroll into view, though it
+    /// may already be the open one.
+    pub(crate) reveal: Option<SnippetId>,
     /// Where the header's overflow button is, for its menu.
     pub(crate) more_anchor: Rect,
     /// The language picker should open (taken by the picker).
@@ -193,7 +185,7 @@ impl Core {
             dispatch: None,
             pointer: Point::ZERO,
             window: Rect::ZERO,
-            list: ListState::default(),
+            reveal: None,
             more_anchor: Rect::ZERO,
             pick_language: false,
             show_pane: None,
@@ -220,7 +212,6 @@ impl Core {
             return;
         }
         self.selection = sel;
-        self.list.scroller.set_offset(Vec2::ZERO);
         self.recompute_visible();
     }
 
@@ -232,8 +223,8 @@ impl Core {
         if !self.visible.contains(&id) {
             self.select(Selection::default());
         }
+        self.reveal = Some(id.clone());
         self.open = Some(id);
-        self.list.reveal = true;
         // A narrow window pushes the content screen in; a wide one already
         // shows it.
         self.show_pane = Some(NavPane::Content);
@@ -265,7 +256,7 @@ impl Core {
             })
             .or_else(|| self.visible.first())
             .cloned();
-        self.list.reveal = true;
+        self.reveal.clone_from(&self.open);
     }
 
     /// The column title of the content: the open snippet's title.
@@ -536,7 +527,6 @@ impl Core {
         if let Some(dispatch) = &self.dispatch {
             dispatch.landed().set(None);
         }
-        self.list.reveal = true;
         self.show_pane = Some(NavPane::Content);
     }
 
@@ -693,11 +683,6 @@ impl Core {
                 self.toast(&tr("snippets-copied"));
             }
         }
-    }
-
-    /// Every painted row on screen.
-    pub(crate) fn hits(&self) -> impl Iterator<Item = &(Rect, Action)> {
-        self.list.hits.iter()
     }
 
     fn handle_keyboard_input(&mut self, ctx: &ui::widget::EventCtx<'_>, key: &Key) -> bool {
@@ -892,7 +877,7 @@ impl SnippetsApp {
                 detail_pane::header_actions(&core, &requests, detail.has_snippet()),
             );
         if !library_empty {
-            shell.set_overview(Some(Box::new(ListPane::new(&core))));
+            shell.set_overview(Some(Box::new(ListPane::new(&core, &requests))));
         }
         Self {
             core,
@@ -981,7 +966,8 @@ impl SnippetsApp {
         if self.overview_shown == library_empty {
             self.overview_shown = !library_empty;
             self.shell.set_overview(
-                (!library_empty).then(|| Box::new(ListPane::new(&self.core)) as Element),
+                (!library_empty)
+                    .then(|| Box::new(ListPane::new(&self.core, &self.requests)) as Element),
             );
         }
         if detail != self.detail {
@@ -1430,15 +1416,7 @@ impl ui::widget::Decorator for SnippetsApp {
                     ))
                 }
             } else {
-                let hit = core.hits().find_map(|(_, candidate)| {
-                    (candidate.semantic_id() == target).then(|| candidate.clone())
-                });
-                hit.map(|hit| {
-                    if matches!(action, ui::a11y::Action::Activate) {
-                        core.apply(hit);
-                    }
-                    matches!(action, ui::a11y::Action::Activate | ui::a11y::Action::Focus)
-                })
+                None
             }
         };
         if let Some(handled) = handled {

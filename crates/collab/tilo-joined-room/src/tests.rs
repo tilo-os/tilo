@@ -984,6 +984,39 @@ fn an_unchanged_committed_read_does_not_restore_the_room() {
     );
 }
 
+#[test]
+fn a_held_revision_is_checked_from_heads_with_the_read_permission() {
+    let joined = enrolled();
+    let member = member().verifying_key().to_bytes();
+    let stranger = SigningKey::from_bytes(&[99; 32]).verifying_key().to_bytes();
+    let Ok(DocumentRead::Captured(document)) = joined.owner.with_current(joined.room, |view| {
+        view.read_document(member, APP, "", None, usize::MAX, joined.now)
+    }) else {
+        panic!("the first read admits the document");
+    };
+    let holds = |reader, known| {
+        joined.owner.with_current(joined.room, |view| {
+            view.holds_revision(reader, APP, "", known, joined.now)
+        })
+    };
+    crate::document_read::reset_room_restores();
+    assert_eq!(holds(member, document.revision), Ok(Some(true)));
+    assert_eq!(
+        holds(member, [0; 32]),
+        Ok(Some(false)),
+        "another revision is not held"
+    );
+    assert_eq!(
+        crate::document_read::room_restores(),
+        0,
+        "answered from the admitted heads, without restoring the room"
+    );
+    assert!(
+        holds(stranger, document.revision).is_err(),
+        "the read permission is checked as a read checks it"
+    );
+}
+
 /// What a sealed write says, which no file of the keyless owner may hold.
 const SECRET: &str = "only key holders read this";
 

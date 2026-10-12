@@ -1546,16 +1546,6 @@ impl Widget for TooltipProbe {
             .new_leaf(taffy::Style::default())
             .unwrap_or_else(|_| NodeId::new(0))
     }
-    fn apply_layout(&mut self, _taffy: &TaffyTree<()>, _node: NodeId, _origin: Point) {}
-    fn draw(
-        &mut self,
-        _scene: &mut Scene,
-        _transform: Affine,
-        _tr: &mut TextRenderer,
-        _theme: &Theme,
-        _presence: &PresenceCtx,
-    ) {
-    }
     fn draw_overlay(
         &mut self,
         scene: &mut Scene,
@@ -1601,7 +1591,6 @@ impl Widget for ToastProbe {
             .new_leaf(taffy::Style::default())
             .unwrap_or_else(|_| NodeId::new(0))
     }
-    fn apply_layout(&mut self, _taffy: &TaffyTree<()>, _node: NodeId, _origin: Point) {}
     fn draw(
         &mut self,
         scene: &mut Scene,
@@ -1652,7 +1641,6 @@ impl Widget for ChromeProbe {
             .new_leaf(taffy::Style::default())
             .unwrap_or_else(|_| NodeId::new(0))
     }
-    fn apply_layout(&mut self, _taffy: &TaffyTree<()>, _node: NodeId, _origin: Point) {}
     fn draw(
         &mut self,
         scene: &mut Scene,

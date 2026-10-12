@@ -2992,21 +2992,8 @@ mod legacy_owner_routing_tests {
             nodes.insert(node, std::ptr::from_mut::<dyn Widget>(self));
             node
         }
-        fn apply_layout(&mut self, _: &taffy::TaffyTree<()>, _: NodeId, _: Point) {}
-        fn draw(
-            &mut self,
-            _: &mut Scene,
-            _: Affine,
-            _: &mut TextRenderer,
-            _: &Theme,
-            _: &PresenceCtx,
-        ) {
-        }
         fn name(&self) -> &'static str {
             "LegacyOwnerProbe"
-        }
-        fn get_rect(&self) -> KurboRect {
-            KurboRect::ZERO
         }
         fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
             use crate::a11y::{AccessNode, AccessState, Role};

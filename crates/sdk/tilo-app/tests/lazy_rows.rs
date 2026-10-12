@@ -7,7 +7,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use serde_json::json;
-use tilo_app::advanced::{Affine, NodeId, Scene, TaffyTree};
+use tilo_app::advanced::{NodeId, TaffyTree};
 use tilo_app::framework::EffectAnswer;
 use tilo_app::prelude::*;
 
@@ -68,9 +68,6 @@ impl Widget for Shelf {
 
     fn apply_layout(&mut self, _: &TaffyTree<()>, _: NodeId, origin: Point) {
         self.rect = Rect::from_origin_size(origin, Size::ZERO);
-    }
-
-    fn draw(&mut self, _: &mut Scene, _: Affine, _: &mut TextRenderer, _: &Theme, _: &PresenceCtx) {
     }
 
     fn name(&self) -> &'static str {
