@@ -531,6 +531,14 @@ impl Apply for SystemdApply {
         })
     }
 
+    fn slot_identity_environment(&mut self, user: &str) -> Result<String, DaemonError> {
+        let home = home_of(user).ok_or_else(|| DaemonError::Apply {
+            step: "resolve slot identity home".into(),
+            detail: format!("no home directory for {user}"),
+        })?;
+        crate::apply::slot_identity_environment(Path::new(&home))
+    }
+
     fn remove_user(&mut self, user: &str) -> Result<(), DaemonError> {
         if uid_of(user).is_none() {
             return Ok(());

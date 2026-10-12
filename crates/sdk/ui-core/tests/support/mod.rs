@@ -217,9 +217,6 @@ pub fn pump(relay: &mut MemoryRelay) {
             | CollabRequest::CancelPublishedInvocation { .. }
             | CollabRequest::LaunchPublishedApplication { .. }
             | CollabRequest::LaunchInstalledApplication { .. }
-            | CollabRequest::SubscribeEnrolledTasks { .. }
-            | CollabRequest::AcceptEnrolledTask { .. }
-            | CollabRequest::ReportEnrolledTask { .. }
             | CollabRequest::ReportTaskRun { .. }
             | CollabRequest::InvokeTaskAction { .. }
             | CollabRequest::ManagedInvocationAttempt { .. }

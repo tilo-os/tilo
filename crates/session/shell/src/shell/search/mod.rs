@@ -30,6 +30,61 @@ use ui::search::system::{self, query_input_is_bounded};
 /// Portable search vocabulary and provider page contract, retained at the native API path.
 pub use ui::search::system::{ResourceKind, SearchBudget, SearchCursor};
 pub type SearchPage = system::SearchPage<SearchResult>;
+
+/// One page of a retained [`tilo_search::SearchIndex`] query. The cursor
+/// carries the next offset, bound to `needle` and `revision`; rows fill the
+/// byte budget, and a hit `row` declines still advances the offset.
+pub(crate) fn index_page(
+    revision: String,
+    cursor: Option<&SearchCursor>,
+    needle: &str,
+    budget: SearchBudget,
+    search: impl FnOnce(tilo_search::Page) -> tilo_search::Hits,
+    mut row: impl FnMut(&tilo_search::Hit) -> Option<SearchResult>,
+) -> SearchPage {
+    let offset = match cursor {
+        None => 0,
+        Some(cursor) if cursor.revision != revision => return SearchPage::stale(revision),
+        Some(cursor) => match cursor
+            .token
+            .split_once('\u{1f}')
+            .filter(|(_, query)| *query == needle)
+            .and_then(|(offset, _)| offset.parse::<usize>().ok())
+        {
+            Some(offset) => offset,
+            None => return SearchPage::stale(revision),
+        },
+    };
+    let found = search(tilo_search::Page {
+        offset,
+        limit: budget.max_work.min(budget.max_results),
+    });
+    let mut considered = 0usize;
+    let mut bytes = 0usize;
+    let mut results = Vec::new();
+    for hit in &found.hits {
+        if let Some(row) = row(hit) {
+            let row_bytes = row
+                .id
+                .len()
+                .saturating_add(row.title.len())
+                .saturating_add(row.subtitle.as_ref().map_or(0, String::len));
+            if bytes.saturating_add(row_bytes) > budget.max_bytes {
+                break;
+            }
+            bytes = bytes.saturating_add(row_bytes);
+            results.push(row);
+        }
+        considered = considered.saturating_add(1);
+    }
+    let exhausted = !found.more && considered == found.hits.len();
+    let next = offset.saturating_add(considered);
+    SearchPage::continuing(
+        revision,
+        results,
+        (!exhausted).then(|| format!("{next}\u{1f}{needle}")),
+    )
+}
 pub type KindGroup = system::KindGroup<SearchResult>;
 
 /// Map a field rank onto the provider scale; see

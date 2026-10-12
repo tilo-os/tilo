@@ -24,7 +24,8 @@ HERE = Path(__file__).resolve().parent
 PREFIX = "scripts/vm-acceptance/"
 CHECKS = "acceptance/checks/"
 # Not part of a run: what they change cannot change a result.
-INERT = re.compile(r"^(README\.md|test_[a-z_]+\.py|prune_disks\.py|build-disk\.sh)$")
+INERT = re.compile(r"^(README\.md|test_[a-z_]+\.py|prune_disks\.py|build-disk\.sh|"
+                   r"component-replacement\.py|acceptance/replacement\.py)$")
 
 
 WORKFLOW = ".forgejo/workflows/vm-acceptance.yml"
