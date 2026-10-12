@@ -423,6 +423,7 @@ async fn native_person_installed_launch_keeps_host_origin_until_real_adoption() 
                     started,
                     receiver: Mutex::new(Some(receiver)),
                     requests: Mutex::new(vec![]),
+                    adoption: Mutex::new(None),
                     original: Mutex::new(None),
                 });
                 let rig = Rig::with_services(
