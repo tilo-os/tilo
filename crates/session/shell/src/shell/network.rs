@@ -1665,7 +1665,7 @@ impl ShellNetwork {
             &endpoint,
             &deferred_relays,
             runtime.handle().clone(),
-            rest_after,
+            Some(rest_after),
         );
         let mdns = if internet {
             init_lan_discovery(&endpoint)
