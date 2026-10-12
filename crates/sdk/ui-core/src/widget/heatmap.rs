@@ -114,19 +114,9 @@ impl Heatmap {
         }
     }
     #[must_use]
-    pub fn styled(mut self, style: HeatmapStyle) -> Self {
+    pub fn with_style(mut self, style: HeatmapStyle) -> Self {
         self.style = style;
         self
-    }
-    #[must_use]
-    pub fn with_style(self, style: HeatmapStyle) -> Self {
-        self.styled(style)
-    }
-    pub fn style(&self) -> &HeatmapStyle {
-        &self.style
-    }
-    pub fn style_mut(&mut self) -> &mut HeatmapStyle {
-        &mut self.style
     }
     #[must_use]
     pub fn titled(mut self, title: impl Into<String>) -> Self {
