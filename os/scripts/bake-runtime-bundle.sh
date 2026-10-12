@@ -144,13 +144,12 @@ if [ -n "$FONT_CATALOG_ROOT" ]; then
 fi
 # One copy per soname (tilo-runtime-bundle's BuildOptions::extra_libs): a
 # library at the top of lib/, where LD_LIBRARY_PATH finds it, is not signed
-# again in the loader set below it, and the loader only at its interpreter path.
+# again in the loader set below it. The loader alone is at both: its
+# interpreter paths for the launcher, lib/<name> for soname-following tools.
 for object in "$BUNDLE_DIR"/lib/*.so*; do
     [ -f "$object" ] || continue
     name=${object##*/}
-    case $name in
-        ld-linux*) die "the loader is signed at lib/$name as well as at its interpreter path" ;;
-    esac
+    case $name in ld-linux*) continue ;; esac
     for directory in lib64 lib usr/lib64 lib/x86_64-linux-gnu lib/aarch64-linux-gnu; do
         [ ! -e "$BUNDLE_DIR/lib/$directory/$name" ] \
             || die "$name is signed twice, at lib/$name and lib/$directory/$name"
