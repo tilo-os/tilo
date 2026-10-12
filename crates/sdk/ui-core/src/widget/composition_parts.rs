@@ -148,7 +148,7 @@ macro_rules! retained_parts {
         // not the whole box, so a hover or a caret elsewhere on the page
         // does not repaint the page.
         fn collect_damage(&self, regions: &mut Vec<vello::kurbo::Rect>) {
-            for child in &self.parts.children {
+            for child in &self.$($path).+.children {
                 child.collect_damage(regions);
             }
         }
