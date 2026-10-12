@@ -5403,18 +5403,20 @@ mod tests {
         }
         let chrome = chrome();
         let broker = broker_for(&chrome);
-        let provider = LiveAppActionsProvider::new_with_fixture_identity(broker.clone());
         let (cluster_id, actor) = {
             let chrome = chrome.borrow();
             let room = chrome.tree().desktop.workspaces[0].room;
             (room.to_string(), chrome.local_user_for_room(&room))
         };
+        // The provider retires pages cached for an earlier directory
+        // publication, so the roots are published before it exists.
         broker.replace_action_directory_roots_for_test(vec![ActionDirectoryRoot {
             peer_id: 9,
             app_id: "so.tilo.notes".into(),
             cluster_id,
             record_id: "notebook".into(),
         }]);
+        let provider = LiveAppActionsProvider::new_with_fixture_identity(broker.clone());
         provider.directory_pages.borrow_mut().insert(
             (9, actor.clone(), String::new(), Vec::new()),
             page(
