@@ -15,6 +15,7 @@ Prints `affected=true|false` and, with --github-output, appends it there.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import re
 from pathlib import Path
 import sys
@@ -56,6 +57,68 @@ GLOBAL_INPUTS = (
     "tools/web/",
     "vendor/",
 )
+
+# This module is compiled only by tilo-ui's native unit-test target, which the
+# affected-package lane retains. Its build script reads three fixed hex
+# fixtures, not Rust sources. Bind that audit to its exact bytes: any build
+# script change restores the SDK lanes until its inputs have been re-audited.
+AUDITED_UNIT_MODULES = {
+    "crates/sdk/ui-core/src/app/bound_component_tests.rs": (
+        "crates/sdk/ui-core/src/app/host.rs",
+        "crates/sdk/ui-core/build.rs",
+        "86a75673abed2b2ccb0d13b04af1248219614e292957c14055c39aae2fd3601f",
+    ),
+}
+
+
+def audited_unit_module_only(root: Path, path: str, packages: dict, by_dir: dict) -> bool:
+    """Omit SDK consumers only for an observed, isolated cfg(test) module."""
+    audit = AUDITED_UNIT_MODULES.get(path)
+    owner = owner_for(path, by_dir)
+    if audit is None or owner is None or owner in SDK_PACKAGES:
+        return False
+    declaration, script, digest = audit
+    changed = root / path
+    parent = root / declaration
+    build = root / script
+    try:
+        if any(item.is_symlink() for item in (changed, parent, build, *changed.parents)):
+            return False
+        changed.read_text()
+        if hashlib.sha256(build.read_bytes()).hexdigest() != digest:
+            return False
+        text = parent.read_text()
+        module = (r'^#\[cfg\(test\)\]\s*#\[path\s*=\s*"'
+                  + re.escape(changed.name) + r'"\]\s*mod\s+\w+\s*;')
+        if text.count(changed.name) != 1 or not re.search(module, text, re.MULTILINE):
+            return False
+        for package in packages.values():
+            directory = Path(package["manifest_path"]).parent
+            if any(target.get("kind") != ["test"] and
+                   Path(target["src_path"]).resolve() == changed.resolve()
+                   for target in package.get("targets", [])):
+                return False
+            roots = [directory / "src", directory / "examples"]
+            if package["name"] in SDK_PACKAGES:
+                roots.append(directory / "tests")
+            sources = set()
+            for source_root in roots:
+                if source_root.is_symlink() or any(
+                        item.is_symlink() for item in source_root.rglob("*")):
+                    return False
+                sources.update(source_root.rglob("*.rs"))
+            sources.update(Path(target["src_path"]) for target in package.get("targets", [])
+                           if target.get("kind") != ["test"])
+            for source in sources:
+                if source.is_symlink():
+                    return False
+                if source == changed or source == parent:
+                    continue
+                if source.resolve() == changed.resolve() or changed.name in source.read_text():
+                    return False
+    except (OSError, UnicodeError):
+        return False
+    return True
 
 
 
@@ -189,6 +252,8 @@ def affected(root: Path, changed: list[str], metadata: dict,
                      if closure([name], reverse) & native_seeds} if lane == "linux" else set()
     native_audits: dict[str, bool] = {}
     for path in changed:
+        if audited_unit_module_only(root, path, packages, by_dir):
+            continue
         if integration_only(root, path, packages, by_dir):
             continue
         if (lane == "linux" and calculator and

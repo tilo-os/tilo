@@ -230,6 +230,96 @@ class AppSdkAffectedTests(unittest.TestCase):
         consumer.write_text('const FIXTURE: &str = include_str!("peer_sync_test.rs");\n')
         self.assertTrue(self.check('crates/session/shell/tests/peer_sync_test.rs'))
 
+    def unit_module_fixture(self):
+        self.other_app()
+        ui = next(p for p in self.metadata['packages'] if p['name'] == 'ui')
+        directory = self.root / 'crates/sdk/ui-core'
+        directory.mkdir(parents=True)
+        manifest = directory / 'Cargo.toml'
+        manifest.write_text('[package]\nname = "ui"\n')
+        ui['manifest_path'] = str(manifest)
+        for member in self.metadata['packages']:
+            for dependency in member['dependencies']:
+                if dependency['name'] == 'ui':
+                    dependency['path'] = str(directory)
+        source = directory / 'src/lib.rs'
+        source.parent.mkdir()
+        source.write_text('#[path = "app/host.rs"]\nmod host;\n')
+        host = source.parent / 'app/host.rs'
+        host.parent.mkdir()
+        host.write_text('#[cfg(test)]\n#[path = "bound_component_tests.rs"]\n'
+                        'mod bound_component_tests;\n')
+        module = host.parent / 'bound_component_tests.rs'
+        module.write_text('#[test]\nfn primary_text() {}\n')
+        script = directory / 'build.rs'
+        script.write_bytes((ROOT / 'crates/sdk/ui-core/build.rs').read_bytes())
+        ui['targets'] = [{'kind': ['lib'], 'src_path': str(source)},
+                         {'kind': ['custom-build'], 'src_path': str(script)}]
+        return module.relative_to(self.root).as_posix(), host, script
+
+    def test_audited_unit_module_omits_sdk_but_keeps_native_consumers_and_tests(self):
+        from ci.affected_packages import make_plan
+        path, _, _ = self.unit_module_fixture()
+        self.assertFalse(self.check(path))
+        self.assertFalse(self.linux(path))
+        plan = make_plan(self.metadata, self.root, [path], 2)
+        self.assertTrue({'ui', 'shell', 'calculator'} <= set(plan['selected']))
+        self.assertIn('ui', plan['tested'])
+        self.assertFalse(plan['full'])
+
+    def test_unit_module_without_exact_test_guard_keeps_sdk(self):
+        path, host, _ = self.unit_module_fixture()
+        host.write_text('#[path = "bound_component_tests.rs"]\nmod production;\n')
+        self.assertTrue(self.check(path))
+        self.assertTrue(self.linux(path))
+
+    def test_unit_module_mixed_with_production_or_build_input_keeps_sdk(self):
+        path, _, _ = self.unit_module_fixture()
+        self.assertTrue(self.check(path, 'crates/sdk/ui-core/src/lib.rs'))
+        self.assertTrue(self.check(path, 'crates/sdk/ui-core/build.rs'))
+        self.assertTrue(self.check(path, 'crates/sdk/ui-core/tests/fixtures/test_image.png.hex'))
+
+    def test_changed_or_missing_audited_build_script_keeps_sdk(self):
+        path, _, script = self.unit_module_fixture()
+        script.write_text(script.read_text() + '\n// New inputs require a new audit.\n')
+        self.assertTrue(self.check(path))
+        script.unlink()
+        self.assertTrue(self.check(path))
+
+    def test_unit_module_as_non_test_target_keeps_sdk(self):
+        path, _, _ = self.unit_module_fixture()
+        ui = next(p for p in self.metadata['packages'] if p['name'] == 'ui')
+        ui['targets'].append({'kind': ['bin'], 'src_path': str(self.root / path)})
+        self.assertTrue(self.check(path))
+
+    def test_sdk_fixture_and_example_source_readers_keep_unit_module_affected(self):
+        path, _, _ = self.unit_module_fixture()
+        reader = self.root / 'crates/dev/tilo-app-cli/tests/read_module.rs'
+        reader.parent.mkdir()
+        reader.write_text('const DATA: &str = include_str!("bound_component_tests.rs");\n')
+        self.assertTrue(self.check(path))
+        reader.unlink()
+        reader = self.root / 'apps/calculator/examples/nested/reader.rs'
+        reader.parent.mkdir(parents=True)
+        reader.write_text('include!("bound_component_tests.rs");\n')
+        self.assertTrue(self.check(path))
+
+    def test_unit_module_alias_and_unobserved_input_keep_sdk(self):
+        path, _, _ = self.unit_module_fixture()
+        alias = self.root / 'crates/dev/tilo-app-cli/src/source_alias'
+        alias.symlink_to(self.root / path)
+        self.assertTrue(self.check(path))
+        alias.unlink()
+        (self.root / path).unlink()
+        self.assertTrue(self.check(path))
+        self.assertTrue(self.check('crates/sdk/ui-core/src/app/new_unit_tests.rs'))
+
+    def test_second_reference_in_declaration_file_keeps_sdk(self):
+        path, host, _ = self.unit_module_fixture()
+        host.write_text(host.read_text() + 'const DATA: &str = '
+                        'include_str!("bound_component_tests.rs");\n')
+        self.assertTrue(self.check(path))
+
     def standalone_fixture(self, name='calculator'):
         pkg = next(p for p in self.metadata['packages'] if p['name'] == name)
         path = Path(pkg['manifest_path']).parent / 'tests/native_flow.rs'
