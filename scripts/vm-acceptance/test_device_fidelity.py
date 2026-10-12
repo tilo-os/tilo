@@ -146,6 +146,9 @@ def make_ctx(vm: FakeVm, out: Path):
     ctx.settle = lambda *a: None
     ctx.shot = lambda name: None
     ctx.write = lambda name, text: (out / name).write_text(text)
+    # An unlocked desktop with nothing open: what the harness's after-check guards
+    # (`leave_unlocked`, `leave_no_dialog`) read between checks.
+    ctx.state = lambda: {"chrome": {}}
     return ctx
 
 
@@ -165,8 +168,6 @@ class AgentDoorChecks(unittest.TestCase):
         binary = fake_binary(self.root, kwargs.pop("apps", ["so.tilo.notes"]), kwargs.pop("extra", ()))
         vm = FakeVm(self.root, binary, **kwargs)
         ctx = make_ctx(vm, self.root)
-        # `_leave_unlocked` reads the state dump; there is none in a fake VM.
-        core.leave_unlocked = lambda *a, **k: None
         return vm, run_all(["M01", "M02", "M03", "M04"], ctx)
 
     def test_no_door_is_an_expected_failure_that_names_the_missing_socket(self):
