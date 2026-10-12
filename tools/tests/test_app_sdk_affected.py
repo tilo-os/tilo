@@ -1,9 +1,11 @@
 import importlib.util
+import hashlib
 from pathlib import Path
 import re
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / 'tools'))
@@ -233,7 +235,16 @@ class AppSdkAffectedTests(unittest.TestCase):
     def shell_unit_fixture(self):
         shell = next(p for p in self.metadata['packages'] if p['name'] == 'shell')
         directory = Path(shell['manifest_path']).parent
-        Path(shell['manifest_path']).write_bytes((ROOT / 'crates/session/shell/Cargo.toml').read_bytes())
+        manifest = Path(shell['manifest_path'])
+        manifest.write_text('[package]\nname = "shell"\nedition = "2024"\n')
+        # Exercise a known audited fixture, independently of later main
+        # manifest changes that intentionally restore the production lanes.
+        path = 'crates/session/shell/src/shell/frame_retained_tests.rs'
+        declaration, build, _ = selector.AUDITED_UNIT_MODULES[path]
+        audit = mock.patch.dict(selector.AUDITED_UNIT_MODULES, {
+            path: (declaration, build, hashlib.sha256(manifest.read_bytes()).hexdigest())})
+        audit.start()
+        self.addCleanup(audit.stop)
         host = directory / 'src/shell/frame.rs'
         host.parent.mkdir(parents=True)
         host.write_text('#[cfg(test)]\n#[path = "frame_retained_tests.rs"]\nmod retained_tests;\n')
