@@ -28,8 +28,6 @@ use crate::shell::search::{
     ResourceKind, SearchBudget, SearchContext, SearchCursor, SearchPage, SearchProvider,
     SearchResult,
 };
-#[cfg(test)]
-use tilo_search::Page;
 use tilo_search::{Document, FieldWeight, MatchTier, Matching, SearchIndex, Signals};
 
 /// Skip these paths anywhere in the tree — they explode the index without
@@ -1380,6 +1378,7 @@ fn display_path(home: &Path, path: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tilo_search::Page;
 
     thread_local! {
         /// Whole-index builds ([`NameIndex::from_entries`]).
