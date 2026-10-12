@@ -264,20 +264,9 @@ pub(crate) fn snapshot_spec(file: String) -> ActionSpec {
 
 fn snapshot_schema() -> &'static serde_json::Value {
     static SCHEMA: std::sync::OnceLock<serde_json::Value> = std::sync::OnceLock::new();
-    SCHEMA.get_or_init(|| serde_json::json!({
-        "type":"object", "additionalProperties":false,
-        "required":["version","record","basis","content","nextCursor"],
-        "properties":{
-            "version":{"type":"integer","enum":[1]},
-            "record":{"type":"object","additionalProperties":false,"required":["roomId","appId","recordId"],"properties":{
-                "roomId":{"type":["string","null"],"format":"uuid"},
-                "appId":{"type":"string","minLength":1,"maxLength":256},
-                "recordId":{"type":"string","maxLength":512}
-            }},
-            "basis":{"type":"object","additionalProperties":false,"required":["heads"],"properties":{
-                "heads":{"type":"array","maxItems":64,"uniqueItems":true,"items":{"type":"string","pattern":"^[0-9a-f]{64}$"}}
-            }},
-            "content":{"type":"object","additionalProperties":false,
+    SCHEMA.get_or_init(|| {
+        ui::semantic_document_read::result_schema(
+            serde_json::json!({"type":"object","additionalProperties":false,
                 "required":["file","position_units","text_sha256","total_chars","start_chars","next_chars","eof","text","before_context","after_context"],
                 "properties":{
                     "file":{"type":"string","minLength":1,"maxLength":256},
@@ -290,8 +279,8 @@ fn snapshot_schema() -> &'static serde_json::Value {
                     "before_context":{"type":"string","maxLength":32},
                     "after_context":{"type":"string","maxLength":32}
                 }
-            },
-            "nextCursor":{"type":"null"}
-        }
-    }))
+            }),
+            false,
+        )
+    })
 }

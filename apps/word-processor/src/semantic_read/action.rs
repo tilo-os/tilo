@@ -144,8 +144,7 @@ fn project(
         items: usize::from(request.page_size),
         ..tilo_doc::semantic_read::Limits::default()
     };
-    let page = super::read_text(document, heads, cursor.as_ref(), limits)
-        .map_err(|error| super::read_error(&error))?;
+    let page = super::read_text(document, heads, cursor.as_ref(), limits)?;
     let next_cursor = page
         .next
         .as_ref()
@@ -180,17 +179,7 @@ pub fn result_schema() -> &'static serde_json::Value {
             "markdown":{"type":"string"}
         }});
         let content = serde_json::json!({"oneOf":[markdown, segments]});
-        serde_json::json!({"type":"object","required":["version","record","basis","content","nextCursor"],"additionalProperties":false,"properties":{
-            "version":{"type":"integer","enum":[1]},
-            "record":{"type":"object","required":["roomId","appId","recordId"],"additionalProperties":false,"properties":{
-                "roomId":{"type":["string","null"],"format":"uuid"},"appId":{"type":"string","minLength":1,"maxLength":256},"recordId":{"type":"string","maxLength":512}
-            }},
-            "basis":{"type":"object","required":["heads"],"additionalProperties":false,"properties":{
-                "heads":{"type":"array","maxItems":64,"uniqueItems":true,"items":{"type":"string","pattern":"^[0-9a-f]{64}$"}}
-            }},
-            "content":content,
-            "nextCursor":{"type":["string","null"],"maxLength":1024}
-        }})
+        ui::semantic_document_read::result_schema(content, true)
     })
 }
 
