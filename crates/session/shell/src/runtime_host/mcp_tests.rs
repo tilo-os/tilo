@@ -286,13 +286,13 @@ async fn broker_queries_and_resources_are_live_and_authority_scoped() {
         let denied=McpServer::new(BrokerActionHost::new(fixture.broker.clone()),room,"outsider".into());
         let read=denied.handle(request("resources/read",&json!({"uri":"tilo://apps/71"})));
         let (reply,())=tokio::join!(read,async {tokio::task::yield_now().await;drain_directory_bridge(&fixture).await;});
+        // Admission to the room is not membership: an agent acting for
+        // someone who is not a member takes part in nothing there, so the
+        // read is refused and names nothing of the room.
         let reply = reply.unwrap();
-        let text = reply["result"]["contents"][0]["text"]
-            .as_str()
-            .expect("same-room outsider read returns the broker-filtered page");
-        let page: Value = serde_json::from_str(text).unwrap();
-        assert_eq!(page["rows"], json!([]), "{reply}");
-        assert!(!text.contains("workspace:atlas"), "{reply}");
+        assert!(reply.get("error").is_some(), "{reply}");
+        assert!(reply.get("result").is_none(), "{reply}");
+        assert!(!reply.to_string().contains("workspace:atlas"), "{reply}");
         let call=denied.handle(call("tilo_invoke",&json!({"peer_id":71,"revision":"directory-r1","resource":"workspace:atlas","action":"open","arguments":{}})));
         let (reply,())=tokio::join!(call,async {tokio::task::yield_now().await;drain_directory_bridge(&fixture).await;});
         assert_eq!(reply.unwrap()["result"]["isError"],true);
