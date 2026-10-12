@@ -492,6 +492,7 @@ impl App {
                 &mut self.state,
                 &self.permission_ctx,
                 &self.collaboration.local_author,
+                self.actions.action_transport.as_mut(),
             );
             if !restored.is_empty() {
                 self.needs_sync = true;
@@ -540,9 +541,10 @@ impl App {
             self.focused_node = None;
             let changed = history.service_restore(
                 &mut self.state,
-                self.root_widget.as_ref(),
+                self.root_widget.as_mut(),
                 &self.permission_ctx,
                 &self.collaboration.local_author,
+                self.actions.action_transport.as_mut(),
             );
             let restored = history.take_restored_source();
             if changed {

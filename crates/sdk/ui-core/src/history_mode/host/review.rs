@@ -22,6 +22,10 @@ pub(super) enum ReviewCommand {
 pub(super) struct ReviewPanel {
     pub(super) dialog: ModalDialog<Text>,
     token: Option<crate::history_mode::RestoreReview>,
+    native: Option<(
+        crate::history_mode::capability::NativeHistoryActions,
+        serde_json::Value,
+    )>,
 }
 impl HistoryHost {
     #[cfg(test)]
@@ -55,8 +59,16 @@ impl HistoryHost {
             } else {
                 ReviewCommand::Refresh
             };
+        // A refusal clears the confirmation token, not the native engine
+        // identity. Losing a capability must not downgrade a retry to the
+        // schema restore door. Only cancel/owner replacement ends the review.
+        let native = token
+            .is_none()
+            .then(|| self.review.as_ref().and_then(|panel| panel.native.clone()))
+            .flatten();
         self.review = Some(ReviewPanel {
             token,
+            native,
             dialog: ModalDialog::new(
                 I18nManager::format("history-review-title", &[("resource", title.into())]),
                 Text::new(message.as_ref()),
@@ -83,6 +95,171 @@ impl HistoryHost {
             }),
         });
     }
+    fn service_native_review(
+        &mut self,
+        state: &mut State,
+        root: &mut dyn Widget,
+        transport: &mut dyn tilo_actions::ActionTransport,
+        command: ReviewCommand,
+        actions: Option<crate::history_mode::capability::NativeHistoryActions>,
+    ) -> bool {
+        let result: Result<bool, String> = (|| {
+            let controller = self.controller.as_ref().ok_or("History is unavailable.")?;
+            if matches!(command, ReviewCommand::Open | ReviewCommand::Refresh) {
+                let actions = actions.ok_or("Native recovery is no longer available.")?;
+                let token = controller
+                    .review_restore()
+                    .map_err(|error| error.to_string())?;
+                let document = self
+                    .source()
+                    .document(&state.doc)
+                    .map_err(|error| error.to_string())?;
+                controller
+                    .validate_restore(&token, &document)
+                    .map_err(|error| error.to_string())?;
+                // Whole-version UI restoration is still an explicit exact-path
+                // selection. An empty diff is never an instruction to restore all.
+                let paths: Vec<_> = crate::history_source::steps::changed_items(
+                    &mut document.clone(),
+                    token.selected_heads(),
+                    token.reviewed_live_heads(),
+                )
+                .into_iter()
+                .map(|item| item.path)
+                .collect();
+                if paths.is_empty() {
+                    return Err("The selected version has no differing content.".into());
+                }
+                let version = token
+                    .selected_heads()
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join("+");
+                let output = self.invoke_native_history(
+                    state,
+                    root,
+                    transport,
+                    (
+                        &actions.review,
+                        serde_json::json!({"version": version, "paths": paths}),
+                        false,
+                    ),
+                )?;
+                let review = output
+                    .and_then(|value| value.get("review").cloned())
+                    .ok_or("Native recovery did not return a review.")?;
+                let title = token
+                    .selection()
+                    .first()
+                    .and_then(|id| controller.entries().iter().find(|entry| &entry.id == id))
+                    .map_or_else(
+                        || I18nManager::lookup_plain("history-review-selected-version"),
+                        |entry| entry.summary.clone(),
+                    );
+                self.show_review(
+                    Some(token),
+                    I18nManager::format("history-review-body", &[("version", title.into())]),
+                );
+                if let Some(panel) = &mut self.review {
+                    panel.native = Some((actions, review));
+                }
+                return Ok(false);
+            }
+            let panel = self.review.as_ref().ok_or("Review restoration again.")?;
+            let token = panel.token.as_ref().ok_or("Review restoration again.")?;
+            let (pinned, review) = panel.native.as_ref().ok_or("Review restoration again.")?;
+            let current = actions.ok_or("Native recovery is no longer available.")?;
+            if current.restore != pinned.restore || current.review != pinned.review {
+                return Err("Native recovery changed. Review restoration again.".into());
+            }
+            let document = self
+                .source()
+                .document(&state.doc)
+                .map_err(|error| error.to_string())?;
+            controller
+                .validate_restore(token, &document)
+                .map_err(|error| error.to_string())?;
+            let address = pinned.restore.clone();
+            let arguments = serde_json::json!({"review": review});
+            self.invoke_native_history(state, root, transport, (&address, arguments, true))?;
+            self.review = None;
+            self.restored_source = Some(self.source().clone());
+            Ok(true)
+        })();
+        match result {
+            Ok(changed) => changed,
+            Err(message) => {
+                self.show_review(None, message);
+                false
+            }
+        }
+    }
+
+    fn invoke_native_history(
+        &self,
+        state: &mut State,
+        root: &mut dyn Widget,
+        transport: &mut dyn tilo_actions::ActionTransport,
+        request: (&tilo_actions::ActionAddress, serde_json::Value, bool),
+    ) -> Result<Option<serde_json::Value>, String> {
+        let (address, arguments, confirmed) = request;
+        let HistorySourceRegistration::OwnedDocument { owner, .. } = self.source() else {
+            return Err("Native recovery requires a captured document owner.".into());
+        };
+        let crate::history_mode::owner::OwnerKind::Component(binding) = &owner.0 else {
+            return Err("Native recovery requires a native document owner.".into());
+        };
+        let snapshots =
+            crate::bound_dispatch::discover_bound_resources(root, &state.doc, Some(address))
+                .map_err(|error| format!("{error:?}"))?;
+        let snapshots: Vec<_> = snapshots
+            .into_iter()
+            .filter(|snapshot| snapshot.binding.same_component(binding))
+            .collect();
+        let resources = snapshots
+            .iter()
+            .flat_map(|snapshot| snapshot.resources().iter().cloned())
+            .collect::<Vec<_>>();
+        let (_, _, spec) = crate::bound_dispatch::resolve_resource_invocation(
+            &resources,
+            address,
+            None,
+            arguments.as_object(),
+            confirmed,
+        )
+        .map_err(|error| format!("{error:?}"))?;
+        if spec.contract.execution != tilo_actions::ExecutionMode::Immediate {
+            return Err("Native recovery must complete synchronously.".into());
+        }
+        let target = crate::bound_dispatch::select_bound_target(&snapshots, address, None)
+            .map_err(|error| format!("{error:?}"))?
+            .ok_or("The captured owner no longer publishes native recovery.")?;
+        let started = crate::bound_dispatch::invoke_resource_action(
+            root,
+            &mut state.doc,
+            &target,
+            transport,
+            crate::bound_dispatch::ResourceActionRequest {
+                argument: None,
+                arguments: arguments.as_object(),
+                actor: &binding.author.0,
+                confirmed,
+                broker_admitted: false,
+                invocation: tilo_actions::InvocationId::new(),
+                source_invocation: None,
+                ambient: None,
+                scope: None,
+                route: None,
+            },
+        )
+        .map_err(|error| format!("{error:?}"))?;
+        match started {
+            crate::widget::ResourceOperationStart::Completed(output) => Ok(output.value),
+            _ => Err("Native recovery must complete synchronously.".into()),
+        }
+    }
+
     pub(crate) fn take_restored_source(&mut self) -> Option<HistorySourceRegistration> {
         self.restored_source.take()
     }
@@ -92,9 +269,10 @@ impl HistoryHost {
     pub(crate) fn service_restore(
         &mut self,
         state: &mut State,
-        root: &dyn Widget,
+        root: &mut dyn Widget,
         authority: &PermissionContext,
         author: &UserId,
+        transport: &mut dyn tilo_actions::ActionTransport,
     ) -> bool {
         let Some(command) = self.review_request.take() else {
             return false;
@@ -148,6 +326,18 @@ impl HistoryHost {
         let Some(controller) = &self.controller else {
             return false;
         };
+        let native = crate::widget::capability::capability::<
+            dyn crate::history_mode::capability::DocumentHistory,
+        >(root)
+        .and_then(|history| history.native_history_actions(scope.key));
+        if native.is_some()
+            || self
+                .review
+                .as_ref()
+                .is_some_and(|panel| panel.native.is_some())
+        {
+            return self.service_native_review(state, root, transport, command, native);
+        }
         if matches!(command, ReviewCommand::Open | ReviewCommand::Refresh) {
             let review = controller.review_restore();
             let version = self

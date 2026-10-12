@@ -2985,9 +2985,10 @@ impl FrameHarness {
             if let Some(history) = &mut self.history {
                 let _ = history.service_restore(
                     &mut self.state,
-                    self.root.as_ref(),
+                    self.root.as_mut(),
                     &self.permissions,
                     &self.author,
+                    self.action_transport.as_mut(),
                 );
             }
             let _ = crate::history_mode::embedded::service_reviews(
@@ -2995,6 +2996,7 @@ impl FrameHarness {
                 &mut self.state,
                 &self.permissions,
                 &self.author,
+                self.action_transport.as_mut(),
             );
             return self.try_relayout();
         }

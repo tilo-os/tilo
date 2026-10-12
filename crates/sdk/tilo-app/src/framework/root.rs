@@ -1139,6 +1139,9 @@ pub fn with_surface<R: Resource, S: 'static, T>(
 /// of one), published as jobs: the invocation answers when what it queued
 /// has settled. Every other document action is deterministic and applies
 /// where it is invoked, at once.
+// `restore-reviewed` is deliberately absent: its exact-path CRDT patch
+// does not invoke verified inverses or enqueue outside compensation. Marking
+// it as a job would imply an external-effect guarantee it does not provide.
 fn mark_document_jobs(resource: &mut tilo_actions::Resource) {
     for spec in &mut resource.actions {
         let queues = spec.contract.kind == tilo_actions::ActionKind::Outside
@@ -2131,6 +2134,24 @@ impl ui_core::history_mode::capability::DocumentHistory for ResourceRoot {
             }
             None => ui_core::history_mode::capability::history_registration(self.content.as_ref()),
         }
+    }
+
+    fn native_history_actions(
+        &self,
+        _scope: &str,
+    ) -> Option<ui_core::history_mode::capability::NativeHistoryActions> {
+        (self.history && self.run.file_history.is_none()).then(|| {
+            ui_core::history_mode::capability::NativeHistoryActions {
+                review: tilo_actions::ActionAddress::new(
+                    self.dispatch.resource_id(),
+                    "review-restore",
+                ),
+                restore: tilo_actions::ActionAddress::new(
+                    self.dispatch.resource_id(),
+                    "restore-reviewed",
+                ),
+            }
+        })
     }
 
     fn history_restore_readiness(&self, scope: &str) -> Result<(), String> {

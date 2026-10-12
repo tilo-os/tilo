@@ -296,10 +296,11 @@ pub(crate) fn service_reviews(
     state: &mut crate::State,
     authority: &crate::permissions::PermissionContext,
     author: &crate::permissions::UserId,
+    transport: &mut dyn tilo_actions::ActionTransport,
 ) -> Vec<HistorySourceRegistration> {
     let mut restored = vec![];
     crate::history_mode::capability::visit_framework_history_mut(root, &mut |history, live| {
-        history.service_restore(state, live, authority, author);
+        history.service_restore(state, live, authority, author, transport);
         if let Some(source) = history.take_restored_source() {
             restored.push(source);
         }

@@ -6,6 +6,15 @@ use automerge::{AutoCommit, ObjId};
 use crate::widget::Widget;
 use crate::widget::capability::{capability, capability_mut};
 
+/// Optional registered action addresses for native causal recovery. These
+/// are declarations, not authority: the host resolves and admits every call
+/// on the exact captured document owner through the ordinary action door.
+#[derive(Clone)]
+pub struct NativeHistoryActions {
+    pub review: tilo_actions::ActionAddress,
+    pub restore: tilo_actions::ActionAddress,
+}
+
 /// A widget that owns a document's History: its registration, restore
 /// readiness and presentation.
 pub trait DocumentHistory {
@@ -20,6 +29,12 @@ pub trait DocumentHistory {
         &self,
     ) -> Result<Option<super::HistoryRegistration>, super::HistoryRegistrationError> {
         Ok(None)
+    }
+
+    /// Native recovery actions for this exact scope. Returning `None` retains
+    /// the schema/owned restore path, including legacy and standalone owners.
+    fn native_history_actions(&self, _scope: &str) -> Option<NativeHistoryActions> {
+        None
     }
 
     /// Additional read-only veto for uncommitted app-local drafts in this

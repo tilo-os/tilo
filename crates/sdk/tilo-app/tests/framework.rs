@@ -4,7 +4,10 @@
 //! undo reverts them, viewers are refused, state survives a relaunch, and
 //! the history of every action is attributed.
 
+use tilo_app::Role;
 use tilo_app::prelude::*;
+use ui_core::automerge::ReadDoc;
+use ui_core::automerge::transaction::Transactable;
 
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Checklist {
@@ -353,6 +356,14 @@ fn history_restores_a_past_version_through_the_host() {
     app.invoke(Checklist::RENAME.with("Hardware")).unwrap();
     app.invoke(Checklist::ADD.with("nails")).unwrap();
     assert_ne!(app.state(), past);
+    app.call("checkpoint", serde_json::json!({"name": "retained"}))
+        .unwrap();
+    let checkpoint = app.read_document(|doc| {
+        doc.get(ui_core::automerge::ROOT, "tilo:checkpoint:retained")
+            .unwrap()
+            .map(|(value, object)| (value.into_owned(), object))
+    });
+    assert!(checkpoint.is_some());
 
     let harness = app.harness();
     assert!(
@@ -378,11 +389,158 @@ fn history_restores_a_past_version_through_the_host() {
         .unwrap();
     harness.relayout();
     assert_eq!(app.state(), past);
+    assert_eq!(
+        app.read_document(|doc| doc
+            .get(ui_core::automerge::ROOT, "tilo:checkpoint:retained")
+            .unwrap()
+            .map(|(value, object)| (value.into_owned(), object))),
+        checkpoint
+    );
+    let restored = app
+        .history()
+        .into_iter()
+        .find_map(|entry| {
+            entry.action.filter(|action| {
+                action.type_id == "tilo.app.history-edit"
+                    && serde_json::from_slice::<serde_json::Value>(&action.payload)
+                        .unwrap()
+                        .get("restore-reviewed")
+                        .is_some()
+            })
+        })
+        .expect("UI restoration records a native history action");
+    let payload: serde_json::Value = serde_json::from_slice(&restored.payload).unwrap();
+    let paths = payload["restore-reviewed"]["review"]["paths"]
+        .as_array()
+        .unwrap_or_else(|| panic!("UI submits exact reviewed paths: {payload}"));
+    assert!(!paths.is_empty());
+    assert!(paths.iter().any(|path| path == "title"));
+    assert!(
+        paths
+            .iter()
+            .all(|path| !path.as_str().unwrap().starts_with("tilo:"))
+    );
 
     // Back in the live app, the restore is one undoable step.
     app.harness().click_named("history-back-live").unwrap();
     assert!(app.undo());
     assert_eq!(app.state().title, "Hardware");
+}
+
+fn open_restore_review(app: &mut TestApp<ChecklistApp>, version: ui_core::automerge::ChangeHash) {
+    let harness = app.harness();
+    harness.click_named("history-open").unwrap();
+    let entry = tilo_app::history_source::entry_id_from_hash(&version.to_string());
+    let target = format!(
+        "timeline-entry:{}",
+        tilo_app::widget::history_group::hex16(&entry)
+    );
+    harness
+        .perform_semantic_named(
+            "activity_timeline",
+            Some(&target),
+            &tilo_app::a11y::Action::Activate,
+        )
+        .unwrap();
+    harness.click_named("history-restore").unwrap();
+}
+
+#[test]
+fn native_ui_exact_diff_preserves_untouched_content() {
+    let mut app = TestApp::<ChecklistApp>::new().unwrap();
+    app.invoke(Checklist::RENAME.with("Peer title")).unwrap();
+    app.invoke(Checklist::ADD.with("sky")).unwrap();
+    app.invoke(Checklist::ADD.with("sea")).unwrap();
+    let version = app.versions().pop().unwrap().hash;
+    let item = app.state().items.ids().next().unwrap().clone();
+    app.invoke(typed(ChecklistAction::SetDone(checklist::SetDone {
+        item: item.clone(),
+        done: true,
+    })))
+    .unwrap();
+    open_restore_review(&mut app, version);
+    app.harness()
+        .click_named("history-restore-review.primary")
+        .unwrap();
+    assert_eq!(app.state().title, "Peer title");
+    assert_eq!(app.state().items.len(), 2);
+    assert!(!app.state().items.get(&item).unwrap().done);
+    let paths = app
+        .history()
+        .into_iter()
+        .find_map(|entry| {
+            let action = entry.action?;
+            if action.type_id != "tilo.app.history-edit" {
+                return None;
+            }
+            let payload: serde_json::Value = serde_json::from_slice(&action.payload).unwrap();
+            payload
+                .get("restore-reviewed")
+                .map(|review| review["review"]["paths"].clone())
+        })
+        .expect("UI restoration invokes restore-reviewed");
+    assert_eq!(
+        paths,
+        serde_json::json!([format!("items/{}", item.as_str())])
+    );
+}
+
+#[test]
+fn native_ui_review_is_pinned_until_explicit_refresh_and_persists() {
+    let mut app = TestApp::<ChecklistApp>::new().unwrap();
+    app.invoke(Checklist::RENAME.with("Early")).unwrap();
+    let version = app.versions().pop().unwrap().hash;
+    app.invoke(Checklist::RENAME.with("Later")).unwrap();
+    open_restore_review(&mut app, version);
+    app.invoke(Checklist::ADD.with("Peer work after review"))
+        .unwrap();
+    let before = app.peer_document().base_heads();
+    app.harness()
+        .click_named("history-restore-review.primary")
+        .unwrap();
+    assert_eq!(
+        app.peer_document().base_heads(),
+        before,
+        "stale confirmation writes nothing"
+    );
+    assert_eq!(app.state().title, "Later");
+    assert_eq!(app.state().items.len(), 1);
+    // The refused modal now offers refresh, not a regenerated confirmation.
+    app.harness()
+        .click_named("history-restore-review.primary")
+        .unwrap();
+    assert_eq!(
+        app.peer_document().base_heads(),
+        before,
+        "refresh only reviews"
+    );
+    app.harness()
+        .click_named("history-restore-review.primary")
+        .unwrap();
+    assert_eq!(app.state().title, "Early");
+    assert!(app.state().items.is_empty());
+    let mut reopened = app.reopen().unwrap();
+    assert_eq!(reopened.state().title, "Early");
+    assert!(reopened.state().items.is_empty());
+    assert!(reopened.undo());
+    assert_eq!(reopened.state().title, "Later");
+    assert_eq!(reopened.state().items.len(), 1);
+}
+
+#[test]
+fn native_ui_review_rechecks_revoked_permission_without_writes() {
+    let mut app = TestApp::<ChecklistApp>::new().unwrap();
+    app.invoke(Checklist::RENAME.with("Early")).unwrap();
+    let version = app.versions().pop().unwrap().hash;
+    app.invoke(Checklist::RENAME.with("Later")).unwrap();
+    open_restore_review(&mut app, version);
+    app.set_role(Role::Viewer);
+    let before = app.peer_document().base_heads();
+    app.harness()
+        .click_named("history-restore-review.primary")
+        .unwrap();
+    assert_eq!(app.peer_document().base_heads(), before);
+    assert_eq!(app.state().title, "Later");
 }
 
 #[test]

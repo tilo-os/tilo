@@ -1644,6 +1644,19 @@ mod component_adapter {
             .unwrap_or(Ok(None))
         }
 
+        fn native_history_actions(
+            &self,
+            scope: &str,
+        ) -> Option<crate::history_mode::capability::NativeHistoryActions> {
+            self.in_root(|root| {
+                crate::widget::capability::capability::<
+                    dyn crate::history_mode::capability::DocumentHistory,
+                >(root)?
+                .native_history_actions(scope)
+            })
+            .flatten()
+        }
+
         fn history_restore_readiness(&self, scope: &str) -> Result<(), String> {
             let binding = self.component.callback_binding();
             let _entry = binding

@@ -97,6 +97,7 @@ decoupled, so one can be hosted elsewhere and render locally. See `rooms.md`.
 | `overview.md` | component overview and system stack |
 | `resources.md` | the one app model: models, field edits, verbs, kinds, views, visible actions, history, evolution |
 | `permissions.md` | grants over the published tree: kinds, answers, delegation, enforcement at doors and on receipt |
+| `history-recovery.md` | History UI admission through native review actions, fallbacks and outside-effect boundary |
 | `compositor.md` | strips, window model, input |
 | `window-management.md` | one model for windows, strips and workspaces: chords, gestures, pointer, overlays, actions, motion |
 | `collaboration.md` | CRDT sync, presence, peers |
