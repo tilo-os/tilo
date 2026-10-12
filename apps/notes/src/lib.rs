@@ -49,6 +49,8 @@ pub mod note_header;
 pub mod notebook;
 pub mod read;
 pub mod resource;
+#[cfg(test)]
+mod surface_volume;
 pub use ui::num;
 pub mod scenario;
 pub mod search;
