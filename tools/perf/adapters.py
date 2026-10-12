@@ -6,8 +6,10 @@ Each adapter reads what a benchmark already prints and emits records through
 
 - `fs-gate LOG...`: the tilo-fs performance gate
   (`crates/system/fs/tests/performance_gate.rs`, `TILO_FS_PERF_GATE=1`) prints
-  `PERF <name>: <x> ms (SLO <= <y> ms)` per scenario. Each log is one run;
-  repeated runs become the samples of `fs.<name>`.
+  `PERF <name>: <x> ms (SLO <= <y> ms)` per scenario, and its heap footprint
+  test (`crates/system/fs/tests/document_media_footprint.rs`) prints the same
+  shape in `MiB`. Each log is one run; repeated runs become the samples of
+  `fs.<name>`, in the unit the line names.
 - `tapp-sizes ENTRIES_JSON`: the public app registry's signed `entries`
   index (`https://apps.tilo.so/entries`). The newest version of every app per
   architecture is one sample of `footprint.tapp.bytes.<arch>`: the bytes a
@@ -97,12 +99,14 @@ import tapp_size_ratchet  # noqa: E402
 
 # Searched, not anchored: with --nocapture, libtest's "test NAME ... " prefix can
 # share the line with the test's first stderr line when both streams are merged.
-FS_GATE_LINE = re.compile(r"(?:^|\s)PERF (?P<name>[a-z0-9][a-z0-9-]*): (?P<value>[0-9.]+) ms \(SLO <= [0-9.]+ ms\)$")
+FS_GATE_LINE = re.compile(r"(?:^|\s)PERF (?P<name>[a-z0-9][a-z0-9-]*): (?P<value>[0-9.]+) (?P<unit>ms|MiB) "
+                          r"\(SLO <= [0-9.]+ (?P=unit)\)$")
 
 
 def fs_gate(logs: list[str], env: dict[str, Any]) -> list[record.Record]:
     """Records for the scenarios of one or more tilo-fs gate runs."""
     samples: dict[str, list[float]] = {}
+    units: dict[str, str] = {}
     for log in logs:
         seen = set()
         for line in log.splitlines():
@@ -113,6 +117,8 @@ def fs_gate(logs: list[str], env: dict[str, Any]) -> list[record.Record]:
             if name in seen:
                 raise ValueError(f"fs gate scenario {name} printed twice in one run")
             seen.add(name)
+            if units.setdefault(name, match.group("unit")) != match.group("unit"):
+                raise ValueError(f"fs gate scenario {name} printed in both {units[name]} and {match.group('unit')}")
             samples.setdefault(name, []).append(float(match.group("value")))
     if not samples:
         raise ValueError("no `PERF <name>: <x> ms (SLO <= <y> ms)` lines: did the gate run with TILO_FS_PERF_GATE=1?")
@@ -121,7 +127,7 @@ def fs_gate(logs: list[str], env: dict[str, Any]) -> list[record.Record]:
         raise ValueError(f"fs gate scenarios ran unequal times: {counts}")
     meta = {**env.get("meta", {}), "runs": str(len(logs))}
     base = {name: value for name, value in env.items() if name != "meta"}
-    return [record.from_samples(f"fs.{name}", "ms", values, meta=meta, **base)
+    return [record.from_samples(f"fs.{name}", units[name], values, meta=meta, **base)
             for name, values in sorted(samples.items())]
 
 

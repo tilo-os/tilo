@@ -200,6 +200,39 @@ p99_tolerance = 2.0
 min_delta = 1.0
 source = "MEDIA_TAIL_READ_SLO"
 
+# fs daemon heap (tests/document_media_footprint.rs, which asserts the same
+# ceilings on every run): what storing a 64 MiB attachment leaves behind,
+# the peak of uploading one over the app capability (the app's client
+# included), and what many large loose-blob reads leave behind. Before the
+# blob cache was bounded by bytes and uploads streamed: 64 MiB left behind,
+# a peak past 64 MiB, and every blob read kept.
+[kpi."fs.document-media-store-64m-retained-heap"]
+unit = "MiB"
+max = 0.25
+enforce = true
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 1.0
+source = "STORE_RETAINED_HEAP_SLO"
+
+[kpi."fs.document-media-upload-64m-peak-heap"]
+unit = "MiB"
+max = 16.0
+enforce = true
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 1.0
+source = "UPLOAD_PEAK_HEAP_SLO"
+
+[kpi."fs.blob-cache-large-reads-retained-heap"]
+unit = "MiB"
+max = 33.0
+enforce = true
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 1.0
+source = "CACHE_RETAINED_HEAP_SLO"
+
 # App package size: bytes of the newest signed tapp per app in the public
 # registry index, over the apps of tools/perf/tapp-size-budget/ (the default
 # collection; runtime and provider stubs and withdrawn packages are not apps).
