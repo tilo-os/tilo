@@ -2004,8 +2004,9 @@ reach the connection. Tests stand in for the session with
 
 ### Localization
 
-`tilo-app new` creates `locales/en-US.ftl` and an embedded locale registry
-installed by the app's view. Add a catalog and wire it into that registry in one command:
+`tilo-app new` creates `locales/en-US.ftl` and a generated `src/locales.rs`
+whose `CATALOG` the app returns from `ResourceApp::catalog`; every host loads it
+before building the view. Add a catalog and wire it into that registry in one command:
 
 ```bash
 tilo-app add locale de-DE
@@ -2013,12 +2014,11 @@ tilo-app add locale de-DE
 
 The generated `src/locales.rs` uses `include_str!`, so packaging cannot omit a
 registered catalog. `tilo-app` only rewrites a registry carrying its generated
-header. It recognizes and migrates the previous generated inline
-`install_catalog` block, but an app-owned localization module is left untouched
-and must register additional catalogs in its own setup.
+header; an app-owned localization module is left untouched and must register
+additional catalogs in its own setup.
 
-Installation validates every locale and Fluent resource before replacing the
-live catalog. The process locale accepts BCP-47 and POSIX forms such as `de`,
+A host's live catalog is joined, never replaced; on a thread with none, the
+user's locale is selected. The process locale accepts BCP-47 and POSIX forms such as `de`,
 `de-DE`, and `de_DE.UTF-8`; lookup tries the active locale's language, then the
 source catalog, then exposes the untranslated key so missing messages remain
 debuggable.

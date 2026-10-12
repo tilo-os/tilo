@@ -16,10 +16,6 @@ pub const APP_TITLE: &str = "Bound Controls";
 
 pub mod locales;
 
-fn install_catalog() {
-    locales::install();
-}
-
 use locales::keys;
 use ui::i18n::I18nManager;
 use ui::prelude::*;
@@ -91,8 +87,11 @@ impl ResourceApp for App {
     const ID: &'static str = crate::APP_ID;
     const TITLE: &'static str = crate::APP_TITLE;
 
+    fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {
+        Some(&crate::locales::CATALOG)
+    }
+
     fn view(cx: &mut ViewCx<Preferences>) -> Element {
-        install_catalog();
         let p = cx.paths();
         // Text and booleans have dedicated bindings.
         let name = cx
