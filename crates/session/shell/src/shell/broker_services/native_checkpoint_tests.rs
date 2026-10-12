@@ -7,6 +7,7 @@ struct CheckpointDriver {
     host: std::sync::Arc<dyn tilo_actions::remote::ActionHost + Send + Sync>,
     caller: tilo_actions::remote::Caller,
     provider: String,
+    evidence: Vec<u8>,
 }
 impl CheckpointDriver {
     fn new(fixture: &NativeFixture) -> Self {
@@ -19,10 +20,22 @@ impl CheckpointDriver {
         key: &ed25519_dalek::SigningKey,
         certificate: &tilo_user_identity::DeviceCert,
     ) -> Self {
+        Self::certified_with_actions(
+            fixture.room,
+            key,
+            certificate,
+            fixture.broker.app_action_broker().unwrap(),
+        )
+    }
+    fn certified_with_actions(
+        room_id: crate::shell::state::RoomId,
+        key: &ed25519_dalek::SigningKey,
+        certificate: &tilo_user_identity::DeviceCert,
+        actions: tilo_action_broker::collab_broker::AppActionBroker,
+    ) -> Self {
         use ed25519_dalek::Signer as _;
-        let room = fixture.room.to_string();
-        let actions = fixture.broker.app_action_broker().unwrap();
-        let surface = wait_for_membership_surface(&actions, fixture.room);
+        let room = room_id.to_string();
+        let surface = wait_for_membership_surface(&actions, room_id);
         assert_eq!(
             surface
                 .actions
@@ -54,7 +67,35 @@ impl CheckpointDriver {
             actions,
             host,
             caller,
-            provider: surface.peer_id.to_string(),
+            provider: tilo_actions::remote::application_action_target(
+                &room,
+                "so.tilo.desktop",
+                "desktop:checkpoints",
+                "capture",
+            )
+            .provider,
+            evidence,
+        }
+    }
+    fn request(
+        &self,
+        action: &str,
+        arguments: serde_json::Value,
+        invocation: tilo_actions::InvocationId,
+    ) -> tilo_actions::remote::InvokeRequest {
+        use tilo_actions::remote::{InvokeArgument, InvokeRequest, RemoteActionTarget};
+        InvokeRequest {
+            invocation,
+            target: RemoteActionTarget {
+                provider: self.provider.clone(),
+                address: tilo_actions::ActionAddress::new("desktop:checkpoints", action),
+            },
+            argument: InvokeArgument::Json(serde_json::from_value(arguments).unwrap()),
+            context: None,
+            confirmation: None,
+            revision: None,
+            on_behalf_of: None,
+            wait_ms: None,
         }
     }
     fn invoke(
@@ -63,27 +104,10 @@ impl CheckpointDriver {
         arguments: serde_json::Value,
         invocation: tilo_actions::InvocationId,
     ) -> Result<serde_json::Value, String> {
-        use tilo_actions::remote::{
-            InvokeArgument, InvokeRequest, PendingPoll, RemoteActionTarget,
-        };
-        let mut pending = self.host.invoke(
-            &self.caller,
-            InvokeRequest {
-                invocation,
-                target: RemoteActionTarget {
-                    provider: self.provider.clone(),
-                    address: tilo_actions::ActionAddress::new("desktop:checkpoints", action),
-                },
-                argument: InvokeArgument::Json(
-                    serde_json::from_value(arguments).map_err(|error| error.to_string())?,
-                ),
-                context: None,
-                confirmation: None,
-                revision: None,
-                on_behalf_of: None,
-                wait_ms: None,
-            },
-        );
+        use tilo_actions::remote::PendingPoll;
+        let mut pending = self
+            .host
+            .invoke(&self.caller, self.request(action, arguments, invocation));
         let deadline = Instant::now().checked_add(Duration::from_secs(5)).unwrap();
         loop {
             match pending.poll_ready() {
@@ -448,6 +472,301 @@ fn assert_checkpoint_integrity_refusals(
     std::fs::write(block, retained).unwrap();
 }
 
+fn assert_checkpoint_admission_refused(
+    host: &std::sync::Arc<dyn tilo_actions::remote::ActionHost + Send + Sync>,
+    driver: &CheckpointDriver,
+    request: tilo_actions::remote::InvokeRequest,
+) {
+    use tilo_actions::remote::PendingPoll;
+    let mut pending = host.invoke(&driver.caller, request);
+    let deadline = Instant::now().checked_add(Duration::from_secs(5)).unwrap();
+    loop {
+        match pending.poll_ready() {
+            PendingPoll::Ready(receipt) => {
+                assert!(
+                    receipt.is_err(),
+                    "unauthorized replay must not acknowledge a retained result"
+                );
+                return;
+            }
+            PendingPoll::Abandoned => panic!("checkpoint refusal abandoned"),
+            PendingPoll::Waiting => yield_before(deadline),
+        }
+    }
+}
+
+#[test]
+fn native_checkpoint_agent_cannot_replay_or_observe_person_success_or_failure() {
+    let fixture = fixture();
+    let routes = prepare(&fixture);
+    let driver = CheckpointDriver::new(&fixture);
+    let capture = tilo_actions::InvocationId::new();
+    let requests = [
+        driver.request(
+            "capture",
+            serde_json::json!({"name":"private", "routes":routes}),
+            capture,
+        ),
+        driver.request(
+            "name-bind",
+            serde_json::json!({"name":"private-alias", "id":capture.0}),
+            tilo_actions::InvocationId::new(),
+        ),
+        driver.request(
+            "inspect",
+            serde_json::json!({"id":capture.0}),
+            tilo_actions::InvocationId::new(),
+        ),
+        driver.request(
+            "find",
+            serde_json::json!({"name":"private-alias"}),
+            tilo_actions::InvocationId::new(),
+        ),
+        driver.request(
+            "find",
+            serde_json::json!({"name":"private-missing"}),
+            tilo_actions::InvocationId::new(),
+        ),
+    ];
+    for (index, request) in requests.iter().enumerate() {
+        let tilo_actions::remote::InvokeArgument::Json(arguments) = &request.argument else {
+            panic!("checkpoint request must be JSON")
+        };
+        let result = driver.invoke(
+            &request.target.address.action,
+            serde_json::to_value(arguments).unwrap(),
+            request.invocation,
+        );
+        assert_eq!(result.is_ok(), index < 4);
+        assert!(
+            driver
+                .host
+                .observe(&driver.caller, &request.invocation)
+                .is_some()
+        );
+    }
+    let agent = driver
+        .actions
+        .certified_local_agent_host(&driver.caller, &driver.evidence, "checkpoint-agent")
+        .unwrap();
+    for request in requests {
+        assert!(
+            agent.observe(&driver.caller, &request.invocation).is_none(),
+            "agent must not receive a person's private success or error"
+        );
+        assert_checkpoint_admission_refused(&agent, &driver, request.clone());
+        assert!(
+            agent.observe(&driver.caller, &request.invocation).is_none(),
+            "refused replay must not expose the original terminal result"
+        );
+        assert!(
+            driver
+                .host
+                .observe(&driver.caller, &request.invocation)
+                .is_some(),
+            "agent refusal must not replace the person's original result"
+        );
+    }
+    drop(agent);
+    drop(driver);
+    drop(fixture);
+}
+
+struct CheckpointReaderAuthority {
+    native: NativeCertificates,
+    room: uuid::Uuid,
+    member: tilo_user_identity::DeviceCert,
+}
+impl tilo_action_broker::peer_actions::CertificateAuthority for CheckpointReaderAuthority {
+    fn policy_time(&self) -> Result<Option<tilo_action_broker::peer_actions::PolicyTime>, String> {
+        self.native.policy_time()
+    }
+    fn authorize_with_policy_time(
+        &self,
+        room: uuid::Uuid,
+        certificate: &tilo_user_identity::DeviceCert,
+        time: &tilo_action_broker::peer_actions::PolicyTime,
+    ) -> Result<(), String> {
+        if room == self.room && certificate == &self.member {
+            tilo_user_identity::verify_device_cert_at(
+                certificate,
+                time.now_ns().map_err(|e| e.to_string())?,
+            )
+            .map_err(|e| e.to_string())
+        } else {
+            self.native
+                .authorize_with_policy_time(room, certificate, time)
+        }
+    }
+    fn authorize(
+        &self,
+        room: uuid::Uuid,
+        certificate: &tilo_user_identity::DeviceCert,
+    ) -> Result<(), String> {
+        if room == self.room && certificate == &self.member {
+            Ok(())
+        } else {
+            self.native.authorize(room, certificate)
+        }
+    }
+}
+
+fn checkpoint_revocable_operations(
+    routes: &serde_json::Value,
+) -> [(&'static str, serde_json::Value, tilo_actions::InvocationId); 4] {
+    let capture = tilo_actions::InvocationId::new();
+    [
+        (
+            "capture",
+            serde_json::json!({"name":"revocable", "routes":routes}),
+            capture,
+        ),
+        (
+            "name-bind",
+            serde_json::json!({"name":"revocable-alias", "id":capture.0}),
+            tilo_actions::InvocationId::new(),
+        ),
+        (
+            "inspect",
+            serde_json::json!({"id":capture.0}),
+            tilo_actions::InvocationId::new(),
+        ),
+        (
+            "find",
+            serde_json::json!({"name":"revocable-alias"}),
+            tilo_actions::InvocationId::new(),
+        ),
+    ]
+}
+
+fn checkpoint_reader_services(
+    tree: crate::shell::state::WorkspaceTreeHandle,
+    room: crate::shell::state::RoomId,
+    member: &tilo_user_identity::DeviceCert,
+) -> tilo_action_broker::services::HostServices {
+    // Only certificate admission is explicit: checkpoint storage, custody,
+    // membership, policy and the local monotonic clock remain native.
+    let mut services = super::super::native_services(Some(tree), None);
+    services.native_certificates = Some(std::sync::Arc::new(CheckpointReaderAuthority {
+        native: NativeCertificates::default(),
+        room: uuid::Uuid::parse_str(&room.to_string()).unwrap(),
+        member: member.clone(),
+    }));
+    services
+}
+
+fn checkpoint_revocation_grant(
+    room: crate::shell::state::RoomId,
+    owner: &tilo_user_identity::DeviceCert,
+    member: &tilo_user_identity::DeviceCert,
+    revoke_write: bool,
+) -> tilo_action_policy::Grant {
+    let path = tilo_action_policy::TreePath::room(room.to_string());
+    tilo_action_policy::Grant::new(
+        "checkpoint-broker-revoked",
+        tilo_action_policy::Subject::person(hex::encode(member.user_public_key)),
+        if revoke_write {
+            path
+        } else {
+            path.app("so.tilo.chat")
+        },
+        if revoke_write {
+            tilo_action_policy::KindSet::UNDOABLE
+        } else {
+            tilo_action_policy::KindSet::READ
+        },
+        tilo_action_policy::Answer::Deny,
+        tilo_action_policy::Subject::person(hex::encode(owner.user_public_key)),
+    )
+}
+
+#[test]
+fn native_checkpoint_broker_rechecks_current_read_and_room_write_on_invoke_and_observe() {
+    for revoke_write in [false, true] {
+        let mut fixture = fixture();
+        let (member_key, member) = admit_checkpoint_reader(&mut fixture, false);
+        assert_ne!(member.user_public_key, fixture.certificate.user_public_key);
+        let tree = native_workspace_owner::test_tree_of(&fixture.owner);
+        let services = checkpoint_reader_services(tree.clone(), fixture.room, &member);
+        let routes = prepare(&fixture);
+        drop(fixture.broker);
+        let broker = tilo_action_broker::collab_broker::spawn_with_services(
+            fixture.home.runtime().join("checkpoint-reader.sock"),
+            Some(std::sync::Arc::new(super::super::NativeWorkspaceAuthority(
+                tree,
+            ))),
+            tilo_action_broker::collab_outbound::PeerPublisher::disabled(),
+            None,
+            services,
+            std::sync::Arc::new(std::sync::Mutex::new(
+                tilo_action_broker::collab_broker::BrokerChannels::default(),
+            )),
+            std::sync::Arc::new(tilo_action_broker::collab_broker::FanoutState::new()),
+        )
+        .unwrap();
+        let driver = CheckpointDriver::certified_with_actions(
+            fixture.room,
+            &member_key,
+            &member,
+            broker.app_action_broker().unwrap(),
+        );
+        let operations = checkpoint_revocable_operations(&routes);
+        for (action, arguments, invocation) in &operations {
+            driver
+                .invoke(action, arguments.clone(), *invocation)
+                .unwrap();
+            assert!(driver.host.observe(&driver.caller, invocation).is_some());
+        }
+        let grant =
+            checkpoint_revocation_grant(fixture.room, &fixture.certificate, &member, revoke_write);
+        let job = driver
+            .actions
+            .change_workspace_membership(
+                &fixture.room.to_string(),
+                &WorkspaceMembershipCommand::Grant { grant },
+                &fixture.certificate,
+            )
+            .unwrap();
+        let completion = job.completion.recv_timeout(Duration::from_secs(3)).unwrap();
+        assert!(completion.code.is_empty(), "{}", completion.message);
+        for (index, (action, arguments, invocation)) in operations.iter().enumerate() {
+            if revoke_write && index >= 2 {
+                assert!(
+                    driver.host.observe(&driver.caller, invocation).is_some(),
+                    "read-only results do not require room naming rights"
+                );
+                driver
+                    .invoke(action, arguments.clone(), *invocation)
+                    .unwrap();
+                driver
+                    .invoke(action, arguments.clone(), tilo_actions::InvocationId::new())
+                    .unwrap();
+                continue;
+            }
+            assert!(
+                driver.host.observe(&driver.caller, invocation).is_none(),
+                "{action} observation must recheck revoked rights"
+            );
+            assert_checkpoint_admission_refused(
+                &driver.host,
+                &driver,
+                driver.request(action, arguments.clone(), *invocation),
+            );
+            assert!(
+                driver
+                    .invoke(action, arguments.clone(), tilo_actions::InvocationId::new())
+                    .is_err(),
+                "fresh {action} must recheck revoked rights"
+            );
+            assert!(driver.host.observe(&driver.caller, invocation).is_none());
+        }
+        drop(driver);
+        drop(broker);
+        drop(fixture.owner);
+        drop(fixture.home);
+    }
+}
+
 #[test]
 fn native_checkpoint_service_rechecks_current_source_rights_for_reads_and_original_retry() {
     use tilo_action_broker::services::WorkspaceMemberships as _;
@@ -543,7 +862,6 @@ fn native_checkpoint_service_rechecks_current_source_rights_for_reads_and_origin
 
 #[test]
 fn native_checkpoint_broker_reopen_retries_original_capture_and_rejects_stale_admission() {
-    use ed25519_dalek::Signer as _;
     let mut fixture = fixture();
     let (member_key, member) = admit_checkpoint_reader(&mut fixture, true);
     let routes = prepare(&fixture);
@@ -556,6 +874,29 @@ fn native_checkpoint_broker_reopen_retries_original_capture_and_rejects_stale_ad
             invocation,
         )
         .unwrap();
+    let failed = tilo_actions::InvocationId::new();
+    let failed_arguments = serde_json::json!({"name":"initially-missing"});
+    let original_error = driver
+        .invoke("find", failed_arguments.clone(), failed)
+        .unwrap_err();
+    assert!(matches!(
+        driver.host.observe(&driver.caller, &failed).unwrap().update,
+        InvocationUpdate::Failed { .. }
+    ));
+    driver
+        .invoke(
+            "name-bind",
+            serde_json::json!({"name":"initially-missing", "id":invocation.0}),
+            tilo_actions::InvocationId::new(),
+        )
+        .unwrap();
+    assert_eq!(
+        driver
+            .invoke("find", failed_arguments.clone(), failed)
+            .unwrap_err(),
+        original_error,
+        "an exact failed retry must not rerun after the missing name is bound"
+    );
     drop(driver);
     drop(fixture.broker);
     crate::shell::persist::wait_for_saves();
@@ -567,7 +908,7 @@ fn native_checkpoint_broker_reopen_retries_original_capture_and_rejects_stale_ad
     fixture.broker =
         collab_broker::spawn_native(fixture.home.runtime().join("reopened.sock"), &None, tree)
             .unwrap();
-    let driver = CheckpointDriver::certified(&fixture, &member_key, &member);
+    let mut driver = CheckpointDriver::certified(&fixture, &member_key, &member);
     assert_eq!(
         driver
             .invoke(
@@ -578,10 +919,50 @@ fn native_checkpoint_broker_reopen_retries_original_capture_and_rejects_stale_ad
             .unwrap(),
         original
     );
+    assert_eq!(
+        driver.invoke("find", failed_arguments, failed).unwrap_err(),
+        original_error,
+        "reopening must retain the original failure rather than rerun find"
+    );
+    assert!(matches!(
+        driver.host.observe(&driver.caller, &failed).unwrap().update,
+        InvocationUpdate::Failed { .. }
+    ));
+    assert_eq!(
+        driver
+            .invoke(
+                "find",
+                serde_json::json!({"name":"initially-missing"}),
+                tilo_actions::InvocationId::new()
+            )
+            .unwrap(),
+        original,
+        "a fresh invocation sees the name that was bound after the failed invocation"
+    );
+    assert_checkpoint_provider_retry_identity(
+        &mut driver,
+        fixture.room,
+        invocation,
+        &routes,
+        &original,
+        (failed, &original_error),
+    );
+    assert_checkpoint_forged_evidence_refused(&driver, fixture.room, member, &member_key);
+    drop(driver);
+    drop(fixture);
+}
+
+fn assert_checkpoint_forged_evidence_refused(
+    driver: &CheckpointDriver,
+    room: crate::shell::state::RoomId,
+    member: tilo_user_identity::DeviceCert,
+    member_key: &ed25519_dalek::SigningKey,
+) {
+    use ed25519_dalek::Signer as _;
     // A caller cannot obtain the certified host with altered certificate evidence.
     let mut forged = member;
     forged.device_label.push_str(" substituted");
-    let room = fixture.room.to_string();
+    let room = room.to_string();
     let evidence = runtime_collab::CertifiedJoinIdentity {
         workspace_id: room.clone(),
         device_certificate: serde_json::to_vec(&forged).unwrap(),
@@ -598,8 +979,76 @@ fn native_checkpoint_broker_reopen_retries_original_capture_and_rejects_stale_ad
             .certified_local_action_host(&driver.caller, &evidence)
             .is_err()
     );
-    drop(driver);
-    drop(fixture);
+}
+
+fn assert_checkpoint_provider_retry_identity(
+    driver: &mut CheckpointDriver,
+    room: crate::shell::state::RoomId,
+    invocation: tilo_actions::InvocationId,
+    routes: &serde_json::Value,
+    original: &serde_json::Value,
+    failure: (tilo_actions::InvocationId, &str),
+) {
+    let (failed, original_error) = failure;
+    // Both provider spellings resolve to this service, but changing the
+    // spelling is not an exact retry of a retained invocation.
+    let canonical_provider = driver.provider.clone();
+    driver.provider = wait_for_membership_surface(&driver.actions, room)
+        .peer_id
+        .to_string();
+    assert_ne!(driver.provider, canonical_provider);
+    assert_checkpoint_admission_refused(
+        &driver.host,
+        driver,
+        driver.request(
+            "capture",
+            serde_json::json!({"name":"reopen", "routes":routes}),
+            invocation,
+        ),
+    );
+    assert_checkpoint_admission_refused(
+        &driver.host,
+        driver,
+        driver.request(
+            "find",
+            serde_json::json!({"name":"initially-missing"}),
+            failed,
+        ),
+    );
+    assert_eq!(
+        driver
+            .invoke(
+                "find",
+                serde_json::json!({"name":"initially-missing"}),
+                tilo_actions::InvocationId::new(),
+            )
+            .unwrap(),
+        *original,
+        "the alternate provider must work for a fresh invocation"
+    );
+    driver.provider = canonical_provider;
+    assert_eq!(
+        driver
+            .invoke(
+                "capture",
+                serde_json::json!({"name":"reopen", "routes":routes}),
+                invocation,
+            )
+            .unwrap(),
+        *original,
+        "a mismatched retry must not replace the original capture"
+    );
+    assert_eq!(
+        driver
+            .invoke(
+                "find",
+                serde_json::json!({"name":"initially-missing"}),
+                failed
+            )
+            .unwrap_err(),
+        original_error,
+        "a mismatched retry must not replace the original failure"
+    );
 }
 
 #[test]

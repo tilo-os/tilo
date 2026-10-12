@@ -18,6 +18,16 @@ pub(super) fn intent(
     Ok(serde_json::json!({"checkpoint_request": request.digest()?}))
 }
 
+/// Preserve the admitted route and arguments using the ledger's retry identity;
+/// a wait budget affects delivery, never the identity of an invocation.
+pub(super) fn remote_request(
+    request: &tilo_actions::remote::InvokeRequest,
+) -> Result<serde_json::Value, String> {
+    let mut request = request.clone();
+    request.wait_ms = None;
+    serde_json::to_value(request).map_err(|error| error.to_string())
+}
+
 pub(super) fn command(envelope: &InvocationEnvelope) -> Result<Option<CheckpointCommand>, String> {
     if envelope.resource != RESOURCE {
         return Ok(None);
@@ -117,11 +127,35 @@ impl super::CapnpBrokerState {
         caller: &tilo_actions::remote::Caller,
         request: &tilo_actions::remote::InvokeRequest,
     ) -> Result<(), String> {
-        let peer = request
-            .target
-            .provider
-            .parse::<u64>()
-            .map_err(|_| "checkpoint provider invalid")?;
+        let provider = &request.target.provider;
+        let peer = if let Some((target_room, app)) =
+            tilo_actions::remote::application_provider(provider)
+        {
+            if target_room != room || app != "so.tilo.desktop" {
+                return Err("checkpoint provider changed".into());
+            }
+            self.ready_publisher(app, room, None, &request.target.address)
+                .ok_or("checkpoint provider unavailable")?
+        } else if super::launchable::is_launchable_provider(provider) {
+            let surface = self
+                .launchable
+                .surface_for(provider)
+                .ok_or("checkpoint provider unavailable")?;
+            if surface.route.cluster_id != room || surface.app_id != "so.tilo.desktop" {
+                return Err("checkpoint provider changed".into());
+            }
+            self.ready_publisher(
+                &surface.app_id,
+                room,
+                Some(&surface.route.record_id),
+                &request.target.address,
+            )
+            .ok_or("checkpoint provider unavailable")?
+        } else {
+            provider
+                .parse::<u64>()
+                .map_err(|_| "checkpoint provider invalid")?
+        };
         if request.on_behalf_of.is_some() {
             return Err("checkpoint delegation is not supported".into());
         }
@@ -171,6 +205,13 @@ impl super::CapnpBrokerState {
         if request.target.address.resource.as_str() != RESOURCE {
             return Ok(None);
         }
+        if caller.principal()
+            != &tilo_actions::remote::CallerPrincipal::Person(super::principal_id_for_root(
+                certificate.user_public_key,
+            ))
+        {
+            return Err("checkpoint replay requires an authenticated person".into());
+        }
         self.authorize_checkpoint_request(room, caller, request)?;
         let envelope = InvocationEnvelope {
             id: 0,
@@ -188,7 +229,11 @@ impl super::CapnpBrokerState {
             actor: String::new(),
             context: None,
         };
-        let intent = intent(room, certificate, &envelope)?;
+        let mut intent = intent(room, certificate, &envelope)?;
+        intent
+            .as_object_mut()
+            .ok_or("checkpoint intent invalid")?
+            .insert("remote_request".into(), remote_request(request)?);
         let owner = super::InvocationOwner::Local {
             actor: super::principal_id_for_root(certificate.user_public_key),
         };
@@ -249,7 +294,46 @@ impl super::CapnpBrokerState {
         {
             return Ok(());
         }
-        let tilo_actions::InvocationUpdate::Succeeded { output, .. } = &record.update else {
+        let action = record
+            .intent
+            .get("action")
+            .and_then(serde_json::Value::as_str)
+            .ok_or("checkpoint result action missing")?;
+        let contract: tilo_actions::ActionContract = serde_json::from_value(
+            record
+                .intent
+                .get("contract")
+                .cloned()
+                .ok_or("checkpoint contract missing")?,
+        )
+        .map_err(|_| "checkpoint contract invalid")?;
+        self.authorize_checkpoint_update(room, certificate, action, &contract, &record.update)
+    }
+
+    fn authorize_checkpoint_update(
+        &self,
+        room: &str,
+        certificate: Option<&tilo_user_identity::DeviceCert>,
+        action: &str,
+        contract: &tilo_actions::ActionContract,
+        update: &tilo_actions::InvocationUpdate,
+    ) -> Result<(), String> {
+        let certificate =
+            certificate.ok_or("checkpoint result requires an authenticated person")?;
+        let now = self
+            .registered_policy_time()?
+            .ok_or("checkpoint policy time unavailable")?
+            .now_ns()
+            .map_err(|e| e.to_string())?
+            / 1_000_000_000;
+        self.authorize_invocation_permission(
+            room,
+            ("so.tilo.desktop", "workspace-checkpoint", RESOURCE, action),
+            &contract.need(),
+            &self.certified_person(room, certificate),
+            now,
+        )?;
+        let tilo_actions::InvocationUpdate::Succeeded { output, .. } = update else {
             return Ok(());
         };
         let id = output
@@ -259,12 +343,6 @@ impl super::CapnpBrokerState {
             .and_then(serde_json::Value::as_str)
             .ok_or("checkpoint result identity missing")?;
         let id = uuid::Uuid::parse_str(id).map_err(|_| "checkpoint result identity invalid")?;
-        let certificate = certificate.ok_or("checkpoint result caller custody unavailable")?;
-        let action = record
-            .intent
-            .get("action")
-            .and_then(serde_json::Value::as_str)
-            .ok_or("checkpoint result action missing")?;
         self.services
             .workspace_memberships
             .as_ref()
@@ -286,8 +364,23 @@ impl super::CapnpBrokerState {
         let Some(update) = self.invocation_status(job) else {
             return Ok(());
         };
-        if !matches!(update, tilo_actions::InvocationUpdate::Succeeded { .. }) {
-            return Ok(());
+        let checkpoint = self
+            .checkpoint_jobs
+            .lock()
+            .map_err(|_| "checkpoint registry unavailable")?
+            .get(&job)
+            .cloned();
+        if let Some((original_room, action, contract)) = checkpoint {
+            if original_room != room {
+                return Err("checkpoint result room changed".into());
+            }
+            return self.authorize_checkpoint_update(
+                room,
+                certificate,
+                &action,
+                &contract,
+                &update,
+            );
         }
         let owner = self
             .pending_invocations

@@ -357,7 +357,16 @@ impl ActionHost for CertifiedLocalActionHost {
         if !certified_provider(&request.target.provider) {
             return Pending::ready(Err(ActionHostError::UnknownAction));
         }
-        if let Some(certificate) = admitted.certificate.as_ref() {
+        if request.target.address.resource.as_str() == super::workspace_checkpoints::RESOURCE
+            && admitted.agent_id.is_some()
+        {
+            return Pending::ready(Err(ActionHostError::NotPermitted));
+        }
+        let person_certificate = admitted
+            .certificate
+            .as_ref()
+            .filter(|_| admitted.agent_id.is_none());
+        if let Some(certificate) = person_certificate {
             match self.state.checkpoint_replay(
                 &self.admission.room,
                 certificate,
@@ -370,11 +379,9 @@ impl ActionHost for CertifiedLocalActionHost {
             }
         }
         if let Some(job) = self.state.remote_job(&self.effective, &request.invocation)
-            && let Err(reason) = self.state.authorize_checkpoint_job(
-                &self.admission.room,
-                admitted.certificate.as_ref(),
-                job,
-            )
+            && let Err(reason) =
+                self.state
+                    .authorize_checkpoint_job(&self.admission.room, person_certificate, job)
         {
             return Pending::ready(Err(ActionHostError::Unavailable { reason }));
         }
@@ -398,7 +405,14 @@ impl ActionHost for CertifiedLocalActionHost {
         let admitted = self.check(caller).ok()?;
         let job = self.state.remote_job(&self.effective, id)?;
         self.state
-            .authorize_checkpoint_job(&self.admission.room, admitted.certificate.as_ref(), job)
+            .authorize_checkpoint_job(
+                &self.admission.room,
+                admitted
+                    .certificate
+                    .as_ref()
+                    .filter(|_| admitted.agent_id.is_none()),
+                job,
+            )
             .ok()?;
         self.state.action_observe(&self.effective, id)
     }

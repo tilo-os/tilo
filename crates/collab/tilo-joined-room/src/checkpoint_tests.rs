@@ -293,11 +293,32 @@ fn checkpoint_failed_publication_and_missing_route_leave_no_acknowledgement() {
 }
 
 #[test]
-fn checkpoint_missing_or_corrupt_second_snapshot_never_returns_partial_read_or_retry_ack() {
+fn checkpoint_missing_or_corrupt_second_snapshot_never_returns_read_find_or_retry_ack() {
+    use tilo_peer_state::workspace_checkpoint::{CheckpointCommand, CheckpointRequest};
     let fixture = fixture();
     prepare(&fixture);
     let id = uuid::Uuid::new_v4();
-    capture(&fixture.owner, &fixture, id, "retained", &routes()).unwrap();
+    let ack = capture(&fixture.owner, &fixture, id, "retained", &routes()).unwrap();
+    let find = CheckpointRequest {
+        room: testing::ROOM.into(),
+        invocation: uuid::Uuid::new_v4(),
+        caller: fixture.certificate.clone(),
+        command: CheckpointCommand::Find {
+            name: "retained".into(),
+        },
+    };
+    let resolve = || {
+        fixture
+            .owner
+            .resolve_checkpoint_name(room(), &fixture.certificate, "retained", fixture.now)
+    };
+    let execute_find = || {
+        fixture
+            .owner
+            .execute_checkpoint(&find, &fixture.key, fixture.now)
+    };
+    assert_eq!(resolve().unwrap(), ack);
+    assert_eq!(execute_find().unwrap(), serde_json::to_value(&ack).unwrap());
     let read = fixture
         .owner
         .read_checkpoint(room(), &fixture.certificate, id, fixture.now)
@@ -315,6 +336,8 @@ fn checkpoint_missing_or_corrupt_second_snapshot_never_returns_partial_read_or_r
     let path = fixture.directory.path().join("owner.json");
     let durable = std::fs::read(&path).unwrap();
     std::fs::remove_file(&block).unwrap();
+    assert!(resolve().is_err(), "resolution must require every snapshot");
+    assert!(execute_find().is_err(), "find must require every snapshot");
     assert!(
         fixture
             .owner
@@ -327,6 +350,8 @@ fn checkpoint_missing_or_corrupt_second_snapshot_never_returns_partial_read_or_r
         "restore must require every snapshot"
     );
     std::fs::write(&block, b"damaged retained snapshot").unwrap();
+    assert!(resolve().is_err(), "resolution must verify every snapshot");
+    assert!(execute_find().is_err(), "find must verify every snapshot");
     assert!(
         fixture
             .owner
@@ -340,6 +365,8 @@ fn checkpoint_missing_or_corrupt_second_snapshot_never_returns_partial_read_or_r
         "restore must verify every snapshot"
     );
     std::fs::write(block, original).unwrap();
+    assert_eq!(resolve().unwrap(), ack);
+    assert_eq!(execute_find().unwrap(), serde_json::to_value(&ack).unwrap());
     assert!(open_file(&path).is_ok());
     assert_eq!(
         fixture
