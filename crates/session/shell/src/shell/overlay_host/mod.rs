@@ -807,6 +807,8 @@ pub struct ShellOverlayHost {
     peer_stream_tabs: std::collections::HashMap<(u64, u64), u64>,
     /// Quick-settings root-page presentation, geometry and input state.
     qs_root: QuickSettingsRoot,
+    // Navigation can shrink the panel before the matching release arrives.
+    qs_navigation_release_pending: bool,
     /// Where the now-playing card beside the root page reads players and
     /// sends transport commands.
     now_playing_source: std::rc::Rc<dyn crate::shell::now_playing::NowPlayingSource>,
@@ -2430,6 +2432,7 @@ impl ShellOverlayHost {
             // live hardware snapshot when it paints.  Tests that construct a
             // root directly still receive deterministic defaults.
             qs_root: inputs.qs_root,
+            qs_navigation_release_pending: false,
             now_playing_source: inputs.now_playing,
             now_playing_card: crate::shell::quick_settings::now_playing::NowPlayingCard::new(),
             now_playing_preferred: None,
@@ -11611,6 +11614,19 @@ impl ShellOverlayHost {
         {
             desk.set_pointer(None);
         }
+        // Focus loss or a fresh press ends an abandoned navigation gesture.
+        // Escape alone keeps the matching release owned across page changes.
+        if matches!(
+            event,
+            WindowEvent::Focused(false)
+                | WindowEvent::MouseInput {
+                    state: ElementState::Pressed,
+                    button: winit::event::MouseButton::Left,
+                    ..
+                }
+        ) {
+            self.qs_navigation_release_pending = false;
+        }
         if let WindowEvent::CursorMoved { position, .. } = event {
             let p = Point::new(position.x / scale_factor, position.y / scale_factor);
             self.last_cursor = Some(p);
@@ -11675,8 +11691,20 @@ impl ShellOverlayHost {
         false
     }
 
-    /// Routes an in-progress root-page slider drag before modal absorption.
-    fn route_qs_slider_drag(&mut self, event: &WindowEvent, handled: &mut bool) -> bool {
+    /// Retains root navigation releases and slider drags before modal absorption.
+    fn route_qs_pointer_capture(&mut self, event: &WindowEvent, handled: &mut bool) -> bool {
+        if matches!(
+            event,
+            WindowEvent::MouseInput {
+                state: ElementState::Released,
+                button: winit::event::MouseButton::Left,
+                ..
+            }
+        ) && std::mem::take(&mut self.qs_navigation_release_pending)
+        {
+            *handled = true;
+            return true;
+        }
         if !self.qs_root.drag_active() {
             return false;
         }
@@ -15742,6 +15770,7 @@ impl ShellOverlayHost {
             let mut st = chrome.borrow_mut();
             self.qs_root.handle_click(p, panel, &mut st.quick_settings)
         };
+        self.qs_navigation_release_pending |= matches!(action, RootAction::Enter(_));
         self.apply_quick_settings_root_action(action, &chrome);
     }
 
@@ -18635,7 +18664,7 @@ impl Widget for ShellOverlayHost {
                 return;
             }
         }
-        if self.route_qs_slider_drag(event, ctx.handled) {
+        if self.route_qs_pointer_capture(event, ctx.handled) {
             return;
         }
         if self.route_room_activity_event(event, ctx.scale_factor, *ctx.modifiers, ctx.handled) {
