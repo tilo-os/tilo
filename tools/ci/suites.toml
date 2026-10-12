@@ -53,7 +53,7 @@ suites = ["os/tests/flight_recorder_test.py"]
 
 [[group]]
 name = "runtime-dependency-closure"
-inputs = ["os/scripts/collect-runtime-dependencies.py", "os/scripts/bake-runtime-bundle.sh", "dist/apps/package-apps.sh"]
+inputs = ["os/scripts/collect-runtime-dependencies.py", "os/scripts/bake-runtime-bundle.sh", "os/scripts/verify-runtime-bundle-closure.sh", "dist/apps/package-apps.sh"]
 suites = ["os/tests/test_runtime_dependency_closure.py"]
 
 [[group]]
