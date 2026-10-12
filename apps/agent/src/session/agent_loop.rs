@@ -826,8 +826,21 @@ impl Session {
                 .checked_add(Duration::from_millis(u64::from(budget.total_ms)))
                 .unwrap_or_else(ui::time::now)
         });
+        // Native tasks are separate permission scopes, not messages in the
+        // legacy conversation. Keep their memory empty for the entire execution;
+        // Conversation still retains this run's turns and authenticated steering.
+        let legacy_memory = self
+            .native_task
+            .is_some()
+            .then(|| std::mem::take(&mut self.memory));
         let result = self.run_task_loop_with(run, &mut state);
         self.task_deadline = None;
+        if let Some(memory) = legacy_memory {
+            // Restore before propagating any I/O error, cancellation or failure,
+            // and never remember native prompts, actions or replies globally.
+            self.memory = memory;
+            return result;
+        }
         let end = result?;
         let reply = match &end {
             LoopEnd::Finished(finish, _) => finish.reply.clone().unwrap_or_default(),
@@ -3468,8 +3481,74 @@ mod tests {
         fixture.run.instruction = Some(instruction.clone());
         fixture.session.run_task(&fixture.run).unwrap();
         let bodies = fixture.script.bodies.lock().unwrap();
+        assert_eq!(bodies.len(), 1);
         assert!(bodies[0].to_string().contains(instruction.trim()));
         drop(bodies);
+        assert!(fixture.session.memory.render().is_empty());
+    }
+
+    #[test]
+    fn native_tasks_isolate_private_memory_in_actual_model_requests() {
+        let mut fixture = native_fixture(0);
+        fixture.session.memory.remember(
+            "legacy-private-prompt-secret",
+            vec!["legacy-private-action-secret".into()],
+            "legacy-private-result-secret",
+        );
+        let legacy = fixture.session.memory.render();
+        let first_instruction = "first-native-private-instruction-secret";
+        fixture.run.instruction = Some(first_instruction.into());
+        *fixture.script.turns.lock().unwrap() = vec![turn(
+            &[finish("first-native-private-result-secret", true)],
+            24,
+        )]
+        .into();
+        fixture.session.run_task(&fixture.run).unwrap();
+        assert_eq!(fixture.session.memory.render(), legacy);
+
+        fixture.run.task_id = "task:second-private-scope".into();
+        fixture.run.run_id += 1;
+        fixture.run.action_context = serde_json::to_value(
+            tilo_actions::ActionContext::default()
+                .with_purpose(fixture.run.title.as_str())
+                .with_group(
+                    fixture.run.task_id.as_str(),
+                    fixture.run.title.as_str(),
+                    "task",
+                ),
+        )
+        .unwrap();
+        fixture
+            .world
+            .borrow_mut()
+            .native_control
+            .as_mut()
+            .unwrap()
+            .task_id = fixture.run.task_id.clone();
+        let second_instruction = "second-native-private-instruction-secret";
+        fixture.run.instruction = Some(second_instruction.into());
+        *fixture.script.turns.lock().unwrap() = vec![turn(
+            &[finish("second-native-private-result-secret", true)],
+            24,
+        )]
+        .into();
+        fixture.session.run_task(&fixture.run).unwrap();
+        assert_eq!(fixture.session.memory.render(), legacy);
+
+        let bodies = fixture.script.bodies.lock().unwrap();
+        assert_eq!(bodies.len(), 2, "both tasks must reach the model");
+        let first = bodies[0].to_string();
+        let second = bodies[1].to_string();
+        drop(bodies);
+        assert!(first.contains(first_instruction));
+        assert!(second.contains(second_instruction));
+        for request in [&first, &second] {
+            assert!(!request.contains("legacy-private-prompt-secret"));
+            assert!(!request.contains("legacy-private-action-secret"));
+            assert!(!request.contains("legacy-private-result-secret"));
+        }
+        assert!(!second.contains(first_instruction));
+        assert!(!second.contains("first-native-private-result-secret"));
     }
 
     #[test]

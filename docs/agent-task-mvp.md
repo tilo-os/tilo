@@ -18,7 +18,9 @@ The conversation names the selected task and run. Sending a message changes its
 instructions, including when the message is phrased as a question. **Saved**
 means the owner accepted that revision; **Applied** means this exact execution
 incorporated it. Reopening reads the durable instructions, directions and actual
-public execution updates. Hidden model reasoning is not published.
+public execution updates. Hidden model reasoning is not published. Each native
+execution starts with isolated conversation memory; another task's private
+instructions and results are not silently injected into it.
 
 **Stop** fences admission of new actions for that execution. The first receipt
 says **Stop requested**, not that every in-flight operation has disappeared.
