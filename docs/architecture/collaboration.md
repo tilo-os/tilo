@@ -374,7 +374,15 @@ This gives three deployments without three protocols:
   gap from when the previous move was due rather than from when its writer
   got to it, and a pointer does not wait the 5 ms batching window for
   company, so moves that already arrive a gap apart are forwarded as they
-  arrive and a late write never adds to the next move's wait.
+  arrive and a late write never adds to the next move's wait. The direct
+  (gossip) path paces the same way with the same `PointerPacer`, slot
+  classification (`pointer_pacing::slot_pacing`) and gap: the shell's network
+  actor hands every pointer move to the room's hosts at once (their writers
+  pace it) and holds it for gossip, broadcasting a slot at most every 50 ms,
+  the resting position always, carets and typing past a held move, and any
+  other message only after it. A peer-to-peer drag so costs each neighbour
+  20 packets a second instead of 30, and the acknowledgements they draw;
+  the actor arms no timer while nothing is held.
 - Remote actions (v1): versioned JSON `RemoteActionFrame`s (`tilo_actions::remote`).
   A caller follows an invocation with one waiting request at a time —
   `wait_ms` on `Invoke`, or on `Observe` with the `seen` update — which the

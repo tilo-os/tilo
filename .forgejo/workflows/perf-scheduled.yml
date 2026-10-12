@@ -575,6 +575,12 @@ jobs:
   # resident MiB and egress bytes per collaborator-hour and fan-out latency;
   # adapters.py prices them with tools/perf/prices.toml. Release build made
   # once here, with the agent and render jobs' Cargo environment.
+  #
+  # The relay runs on two CPUs (`--relay-cpus 2`), the shape of the priced
+  # 2-vCPU VM: its daemon runtime then starts two workers, as it does there,
+  # instead of the runner's four, and the collaborators run on the other CPUs.
+  # Records carry it as meta `relay_cpus`; the series before this change was
+  # measured on all of the runner's CPUs (kpi-budgets.toml, "Relay hosting cost").
   hosting:
     needs: [plan, builder]
     if: needs.plan.outputs.hosting == 'true'
@@ -609,8 +615,8 @@ jobs:
           mkdir -p perf
           python3 tools/perf/record.py env --profile release --renderer none \
             --virtualization kvm --runner runner > perf/env.json
-          target/release/examples/relay_load --collaborators 100 --minutes 10 --out perf/run \
-            | tee perf/hosting-load.log
+          target/release/examples/relay_load --collaborators 100 --minutes 10 --relay-cpus 2 \
+            --out perf/run | tee perf/hosting-load.log
           python3 tools/perf/adapters.py hosting-load --env-json perf/env.json \
             perf/run/hosting-load.json > perf/hosting.jsonl
           cat perf/hosting.jsonl

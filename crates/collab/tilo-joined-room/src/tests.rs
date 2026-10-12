@@ -18,6 +18,9 @@ use tilo_peer_state::{
     workspace_task::{WorkspaceTaskAuthority, WorkspaceTaskCommand, WorkspaceTaskCommandId},
 };
 
+#[path = "changes_read_tests.rs"]
+mod changes_read;
+
 struct Enrolled {
     _directory: tempfile::TempDir,
     path: PathBuf,
