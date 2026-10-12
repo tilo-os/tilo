@@ -405,6 +405,10 @@ impl Widget for ConflictBanner {
         "ConflictBanner"
     }
 
+    fn is_hidden(&self) -> bool {
+        self.conflict_count == 0
+    }
+
     /// Accessibility: a conflict alert banner. `Role::Group` named for the
     /// conflict family, with the count in the description ("3 conflicts"). When
     /// the count is 0 the banner paints nothing, so it is marked `hidden` so it
@@ -416,7 +420,7 @@ impl Widget for ConflictBanner {
                 .with_name(format!("{} conflicts", self.family_name))
                 .with_description(format!("{} unresolved", self.conflict_count))
                 .with_state(AccessState {
-                    hidden: self.conflict_count == 0,
+                    hidden: self.is_hidden(),
                     ..Default::default()
                 }),
         )

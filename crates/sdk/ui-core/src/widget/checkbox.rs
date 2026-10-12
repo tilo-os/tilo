@@ -82,7 +82,14 @@ pub struct Checkbox {
     /// paints: the checkbox needs a redraw only when they differ.
     painted: Option<Painted>,
     drawing: Option<Painted>,
+    /// What the last measure read besides the label and the theme (which
+    /// rebuilds the tree): the touch target and the catalogue the label
+    /// reads. The checkbox needs measuring again only when they changed.
+    measured: Option<Measured>,
 }
+
+/// What a checkbox's size depends on besides its label and the theme.
+type Measured = (u32, u64);
 
 /// What a checkbox's paint depends on besides its place and the theme:
 /// checked, hovered, focused, enabled, and the catalogue its label reads.
@@ -111,7 +118,15 @@ impl Checkbox {
             intrinsic: false,
             painted: None,
             drawing: None,
+            measured: None,
         }
+    }
+
+    fn measured_now(&self) -> Measured {
+        (
+            self.control.interaction.minimum_target().to_bits(),
+            crate::i18n::I18nManager::revision(),
+        )
     }
 
     fn painted_now(&self) -> Painted {
@@ -300,6 +315,7 @@ impl Widget for Checkbox {
         available_space: Size<taffy::AvailableSpace>,
         text_renderer: &mut TextRenderer,
     ) -> Size<f32> {
+        self.measured = Some(self.measured_now());
         let target = self.control.interaction.minimum_target();
         let Some(label) = self.label.as_ref() else {
             return Size {
@@ -409,6 +425,12 @@ impl Widget for Checkbox {
         if let Some(drawing) = self.drawing.take() {
             self.painted = Some(drawing);
         }
+    }
+
+    /// Its size changes only with what its last measure read: a long list
+    /// of checkboxes is not measured again for every relayout of the window.
+    fn is_layout_dirty(&self) -> bool {
+        self.control.rect == Rect::ZERO || self.measured != Some(self.measured_now())
     }
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {

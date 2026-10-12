@@ -515,6 +515,10 @@ pub struct FrameHarness {
     /// layout took it up: the next [`Self::take_composition_dirty`] still
     /// reports it.
     composition_replaced: bool,
+    /// The root's widgets reported a change they carry out in place
+    /// ([`crate::widget::StructureChange::Children`]): the next layout
+    /// remounts their children in the retained tree, unless it rebuilds.
+    remount: bool,
     layout_requested: bool,
     state: State,
     root: Box<dyn Widget>,
@@ -669,6 +673,9 @@ struct HostLayout {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct RelayoutStats {
     pub rebuilt: bool,
+    /// Widgets changed the retained tree in place
+    /// ([`crate::widget::StructureChange::Children`]); it was not rebuilt.
+    pub remounted: bool,
     pub measured: bool,
     pub marked_dirty: usize,
     pub marked_leaves: usize,
@@ -1165,14 +1172,63 @@ impl FrameHarness {
 
     /// The app root's structure flag, and framework History's: it is laid
     /// out as a separate root, so its replaced controls are not the app's.
+    ///
+    /// A change the root's widgets carry out in place leaves every admitted
+    /// pointer valid: it is left to the next layout, not reported.
     fn take_composition_dirty(&mut self) -> bool {
-        let root = self.root.take_structure_dirty();
+        let root = self.root.take_structure_change();
+        if root == crate::widget::StructureChange::Children {
+            self.remount = true;
+        }
         let history = self
             .history
             .as_mut()
             .is_some_and(|history| history.take_structure_dirty());
         let seen = std::mem::take(&mut self.composition_replaced);
-        root || history || seen
+        root > crate::widget::StructureChange::Children || history || seen
+    }
+
+    /// Carry out the change the root's widgets make in place
+    /// ([`crate::widget::StructureChange::Children`]) in the retained tree,
+    /// admitting what they mounted, and sync them. Returns `false` when it
+    /// could not be carried out in place, and the frame rebuilds the tree.
+    fn remount_in_place(&mut self) -> bool {
+        self.remount = false;
+        // History lays out its own chrome around the app; while it is live,
+        // the app's widgets change only what is theirs.
+        if !self.layout_built
+            || self.history.as_ref().is_some_and(|history| {
+                !history.live_interactive() || history.returning_live() || history.review_is_open()
+            })
+        {
+            return false;
+        }
+        let mut remount =
+            crate::widget::Remount::new(&mut self.taffy, &self.theme, &mut self.node_map);
+        let applied = self.root.remount_children(&mut remount);
+        let (mounted, unmounted) = remount.finish();
+        let after = self.root.take_structure_change();
+        // A change no widget carried out, or any other beside it, needs the
+        // whole tree.
+        if !applied || after != crate::widget::StructureChange::None {
+            return false;
+        }
+        self.bindings.forget(&unmounted);
+        for (parent, child) in mounted {
+            // SAFETY: the runner exclusively owns this tree, its maps and
+            // widgets; the remount above admitted `child` into both.
+            if !unsafe {
+                self.bindings
+                    .admit_mounted(parent, child, &self.taffy, &self.node_map)
+            } {
+                return false;
+            }
+        }
+        // The mounted widgets are synced before they are measured, as a
+        // rebuild syncs its fresh ones; a sync that replaces delegates needs
+        // the whole tree after all.
+        self.root.sync(&self.state.doc, &self.state.root);
+        !self.take_composition_dirty()
     }
 
     /// Whether a widget replaced children since the maps were admitted. The
@@ -1631,6 +1687,7 @@ impl FrameHarness {
             owner_wake_queue: None,
             owner_service_layout_retired: false,
             composition_replaced: false,
+            remount: false,
             layout_requested: false,
             state,
             root,
@@ -2990,15 +3047,24 @@ impl FrameHarness {
                 history_width,
                 None,
             );
-        let must_compute =
-            structure || standalone_history_changed || self.root.layout_needs_measure();
+        let must_compute = structure
+            || standalone_history_changed
+            || self.remount
+            || self.root.layout_needs_measure();
         let mut stats = RelayoutStats::default();
         // Captured lazily, immediately before a build replaces controls.
         let mut view = None;
+        // Whether the last pass asked for another only to remount in place.
+        let mut remount_next = false;
         settle_widget_composition(viewport_changed, |rebuild| {
             let t_build = self.profiler.as_ref().map(|_| crate::time::now());
             let mut rebuilt_this_pass = false;
-            if structure || rebuild {
+            let remount_only = rebuild && std::mem::take(&mut remount_next);
+            let in_place = self.remount && !structure && (!rebuild || remount_only);
+            let remounted = in_place && self.remount_in_place();
+            stats.remounted |= remounted;
+            if structure || (rebuild && !remount_only) || (in_place && !remounted) {
+                self.remount = false;
                 rebuilt_this_pass = true;
                 stats.rebuilt = true;
                 let view = view
@@ -3120,7 +3186,11 @@ impl FrameHarness {
             {
                 return Ok((None, true));
             }
-            if rebuilt_this_pass || must_compute || self.pending_app_activation.is_some() {
+            if rebuilt_this_pass
+                || must_compute
+                || remounted
+                || self.pending_app_activation.is_some()
+            {
                 if !rebuilt_this_pass {
                     // Taffy caches every node's measurement; a retained tree
                     // re-measures exactly the widgets that report a possible
@@ -3173,16 +3243,19 @@ impl FrameHarness {
             }
             let history_invalidated = self.invalidate_unsupported_history_owner();
             let dirty = self.take_composition_dirty() || history_invalidated;
+            // Rows a layout brought into view are remounted by another pass.
+            remount_next = !dirty && self.remount;
             let geometry = if viewport_changed {
                 composition_geometry(&self.taffy, self.root_node)?
             } else {
                 vec![]
             };
-            Ok((Some(geometry), dirty))
+            Ok((Some(geometry), dirty || remount_next))
         })?;
         self.last_layout_viewport = Some(self.viewport);
         self.last_relayout = stats;
         if stats.rebuilt
+            || stats.remounted
             || viewport_changed
             || resting_geometry.is_some_and(|before| {
                 before != crate::pointer_replay::widget_geometry(self.root.as_ref())
@@ -3747,7 +3820,7 @@ impl FrameHarness {
                 (
                     allowed && widget.is_focusable() && widget.is_enabled(),
                     allowed && widget.traps_focus(),
-                    widget.accessibility().is_some_and(|node| node.state.hidden),
+                    crate::focus_navigation::hidden(widget),
                 )
             })
             .unwrap_or((false, false, false))
@@ -7871,24 +7944,9 @@ impl FrameHarness {
             .keys()
             .copied()
             .filter(|&node| {
-                // Hidden layout subtrees are not measured by Taffy. Their
-                // widget flags can remain dirty until shown, so do not let
-                // them request work on every visible edit. Showing them
-                // recomposes the tree and performs the required measurement.
-                let mut ancestor = Some(node);
-                while let Some(current) = ancestor {
-                    if self
-                        .taffy
-                        .style(current)
-                        .is_ok_and(|style| style.display == taffy::Display::None)
-                    {
-                        return false;
-                    }
-                    ancestor = self.taffy.parent(current);
-                }
                 // SAFETY: these maps describe this exclusive runner's current
                 // admitted tree; the callback only reads widget flags.
-                unsafe {
+                let flagged = unsafe {
                     crate::bound_dispatch::inspect_bound_node(
                         &self.bindings,
                         &self.node_map,
@@ -7896,7 +7954,28 @@ impl FrameHarness {
                         |widget| widget.is_layout_dirty() || widget.layout_needs_measure(),
                     )
                 }
-                .unwrap_or(true)
+                .unwrap_or(true);
+                // Hidden layout subtrees are not measured by Taffy. Their
+                // widget flags can remain dirty until shown, so do not let
+                // them request work on every visible edit. Showing them
+                // recomposes the tree and performs the required measurement.
+                // Only a flagged node walks up: the walk is per node.
+                flagged && {
+                    let mut ancestor = Some(node);
+                    let mut shown = true;
+                    while let Some(current) = ancestor {
+                        if self
+                            .taffy
+                            .style(current)
+                            .is_ok_and(|style| style.display == taffy::Display::None)
+                        {
+                            shown = false;
+                            break;
+                        }
+                        ancestor = self.taffy.parent(current);
+                    }
+                    shown
+                }
             })
             .collect();
         let mut leaves = 0usize;

@@ -429,6 +429,10 @@ pub trait Decorator: Sized + 'static {
         self.inner().accessibility()
     }
 
+    fn is_hidden(&self) -> bool {
+        self.inner().is_hidden()
+    }
+
     fn synthetic_accessibility_rect(&self, path: &[usize]) -> Option<vello::kurbo::Rect> {
         self.inner().synthetic_accessibility_rect(path)
     }
@@ -633,6 +637,10 @@ pub trait Decorator: Sized + 'static {
     /// its inner widget's change by overriding this.
     fn take_structure_change(&mut self) -> super::StructureChange {
         super::StructureChange::of(Decorator::take_structure_dirty(self))
+    }
+
+    fn remount_children(&mut self, remount: &mut super::Remount<'_>) -> bool {
+        self.inner_mut().remount_children(remount)
     }
 
     fn has_pending_visual_work(&self) -> bool {
@@ -1057,6 +1065,10 @@ impl<T: Decorator> Widget for T {
         Decorator::accessibility(self)
     }
 
+    fn is_hidden(&self) -> bool {
+        Decorator::is_hidden(self)
+    }
+
     fn synthetic_accessibility_rect(&self, path: &[usize]) -> Option<vello::kurbo::Rect> {
         Decorator::synthetic_accessibility_rect(self, path)
     }
@@ -1254,6 +1266,10 @@ impl<T: Decorator> Widget for T {
 
     fn take_structure_change(&mut self) -> super::StructureChange {
         Decorator::take_structure_change(self)
+    }
+
+    fn remount_children(&mut self, remount: &mut super::Remount<'_>) -> bool {
+        Decorator::remount_children(self, remount)
     }
 
     fn has_pending_visual_work(&self) -> bool {

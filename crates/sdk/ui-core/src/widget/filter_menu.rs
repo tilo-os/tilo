@@ -556,12 +556,16 @@ impl<T: Clone + 'static> Widget for FilterMenu<T> {
         Some(winit::window::ImePurpose::Normal)
     }
 
+    // A closed menu is hidden so it collapses out of the focus/reading order.
+    fn is_hidden(&self) -> bool {
+        !self.visible_flag
+    }
+
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
         // Rows are drawn, not child widgets, so each visible row is a
-        // synthetic `MenuItem` selected at the highlight cursor. A closed
-        // menu is hidden so it collapses out of the focus/reading order.
-        if !self.visible_flag {
+        // synthetic `MenuItem` selected at the highlight cursor.
+        if self.is_hidden() {
             return Some(
                 AccessNode::new(Role::Menu)
                     .with_name(self.spec.access_name)

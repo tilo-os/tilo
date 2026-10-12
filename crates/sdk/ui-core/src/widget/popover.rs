@@ -1180,6 +1180,11 @@ impl<C: Widget + 'static> Widget for Popover<C> {
         }
     }
 
+    // Only an options menu has a node of its own; a closed one is hidden.
+    fn is_hidden(&self) -> bool {
+        self.options.is_some() && !self.open
+    }
+
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
         let options = self.options.as_ref()?;
@@ -1205,7 +1210,7 @@ impl<C: Widget + 'static> Widget for Popover<C> {
                 .with_optional_name(self.label.clone())
                 .with_state(AccessState {
                     expanded: Some(self.open),
-                    hidden: !self.open,
+                    hidden: self.is_hidden(),
                     ..Default::default()
                 })
                 .with_children(children),

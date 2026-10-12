@@ -834,7 +834,7 @@ impl App {
             damage.repaint("no layout");
             return true;
         };
-        let rebuilds = self.layout.rebuilds;
+        let rebuilds = (self.layout.rebuilds, self.layout.remounts);
         let Some((geometry_changed, _, _)) = run_layout_pass(
             self,
             root_node,
@@ -869,7 +869,7 @@ impl App {
         // was and is: what else is there is drawn by widgets that did not
         // move, and their own damage covers any change to them.
         // A layout pass that recomposed the tree may have replaced widgets.
-        let recomposed = self.layout.rebuilds != rebuilds;
+        let recomposed = (self.layout.rebuilds, self.layout.remounts) != rebuilds;
         let described = (structure_rebuilt || recomposed) && self.layout.frame_rebuilds_described;
         let relaid = !described && !recomposed && geometry_changed && !structure_rebuilt;
         let boxes_after = (described || relaid).then(|| widget_boxes(self.root_widget.as_ref()));

@@ -416,8 +416,11 @@ def run_render(ctx: RunContext) -> list[record.Record]:
          ctx.dir / "bench.log", ctx.repo)
     opening = ctx.dir / "framework-open.log"
     call([ctx.bins["framework-scaling"], "5000,50000", "open"], opening, ctx.repo)
-    return record.read(records) + adapters.framework_open(
-        [opening.read_text(encoding="utf-8", errors="replace")], ctx.env)
+    focusing = ctx.dir / "framework-focus.log"
+    call([ctx.bins["framework-scaling"], "500,1000,2500", "focus"], focusing, ctx.repo)
+    return (record.read(records)
+            + adapters.framework_open([opening.read_text(encoding="utf-8", errors="replace")], ctx.env)
+            + adapters.framework_focus([focusing.read_text(encoding="utf-8", errors="replace")], ctx.env))
 
 
 IDLE_WAKEUPS_TEST = "idle_wakeups::an_idle_desktop_with_two_apps_stays_within_its_wakeup_budget"

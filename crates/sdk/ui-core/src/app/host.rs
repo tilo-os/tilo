@@ -626,11 +626,21 @@ fn run_layout_pass(
     };
     let must_compute = structure_rebuilt
         || app.layout.structure_dirty
+        || app.layout.remount
         || viewport_changed
         || scroll_opt_disabled()
         || app.root_widget.layout_needs_measure();
+    // Whether the last pass asked for another only to remount in place.
+    let mut remount_next = false;
+    let mut remounted = false;
     let result = settle_widget_composition(viewport_changed, |rebuild| {
-        if rebuild || app.layout.structure_dirty {
+        let remount_only = rebuild && std::mem::take(&mut remount_next);
+        let in_place =
+            app.layout.remount && !app.layout.structure_dirty && (!rebuild || remount_only);
+        let remounted_now = in_place && app.remount_in_place();
+        remounted |= remounted_now;
+        if (rebuild && !remount_only) || app.layout.structure_dirty || (in_place && !remounted_now)
+        {
             recomposed = true;
             // Capture before build replaces controls. Shared view hooks carry
             // root-owned scroll/mode; persisted Scrollable offsets also survive.
@@ -682,7 +692,7 @@ fn run_layout_pass(
                 .root_node
                 .ok_or(crate::widget::WidgetLayoutError::CompositionDidNotSettle)?;
         }
-        if must_compute || rebuild {
+        if must_compute || rebuild || remounted_now {
             let start = crate::time::now();
             #[allow(
                 clippy::cast_possible_truncation,
@@ -708,13 +718,15 @@ fn run_layout_pass(
         app.apply_history_presentation(current_root);
         t_apply_us = t_apply_us.saturating_add(start.elapsed().as_micros());
         let dirty = app.take_composition_dirty();
+        // Rows a layout brought into view are remounted by another pass.
+        remount_next = !dirty && app.layout.remount;
         // Translation-only frames avoid both composition and a tree snapshot.
         let geometry = if viewport_changed {
             composition_geometry(&app.layout.taffy, current_root)?
         } else {
             vec![]
         };
-        Ok((Some(geometry), dirty))
+        Ok((Some(geometry), dirty || remount_next))
     });
     if let Err(error) = result {
         tracing::error!(?error, "widget layout did not settle; skipping frame");
@@ -734,7 +746,7 @@ fn run_layout_pass(
     }
     // NativeView measurement is independent of platform attachment. Mount only
     // the successfully settled tree; mount publishes its retained geometry.
-    if (structure_rebuilt || recomposed)
+    if (structure_rebuilt || recomposed || remounted)
         && app
             .history
             .as_ref()
@@ -752,7 +764,7 @@ fn run_layout_pass(
     }
     app.layout.last_layout_logical = Some(logical);
     app.layout.layout_dirty = false;
-    if must_compute || recomposed {
+    if must_compute || recomposed || remounted {
         app.update_focusable_order();
     }
     app.restore_history_focus();
@@ -779,6 +791,7 @@ fn run_layout_pass(
     // the publisher diffs the surface and checks broker connectivity.
     app.publish_action_surface();
     let geometry_changed = recomposed
+        || remounted
         || viewport_changed
         || geometry_before.is_none_or(|before| {
             before != crate::pointer_replay::widget_geometry(app.root_widget.as_ref())

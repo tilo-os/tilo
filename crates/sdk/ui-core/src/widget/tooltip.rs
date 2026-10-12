@@ -486,14 +486,18 @@ impl Widget for Tooltip {
         self.rect
     }
 
+    // Not on screen until the reveal delay elapses, so hidden until then.
+    fn is_hidden(&self) -> bool {
+        !self.is_visible
+    }
+
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
-        // Not on screen until the reveal delay elapses, so hidden until then.
         Some(
             AccessNode::new(Role::Tooltip)
                 .with_name(self.label.clone())
                 .with_state(AccessState {
-                    hidden: !self.is_visible,
+                    hidden: self.is_hidden(),
                     ..Default::default()
                 }),
         )

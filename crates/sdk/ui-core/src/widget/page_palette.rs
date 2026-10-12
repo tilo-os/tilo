@@ -661,9 +661,13 @@ impl Widget for PageJumpPalette {
         Some(winit::window::ImePurpose::Normal)
     }
 
+    fn is_hidden(&self) -> bool {
+        !self.visible_flag
+    }
+
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
-        if !self.visible_flag {
+        if self.is_hidden() {
             return Some(
                 AccessNode::new(Role::Dialog)
                     .with_name("Jump to note")

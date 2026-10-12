@@ -52,6 +52,22 @@ pub(crate) fn next(
 
 use crate::widget::Widget;
 use taffy::TaffyTree;
+
+/// Whether `widget` and what it holds stay out of the focus order: the
+/// `hidden` flag of its accessibility node, read through
+/// [`Widget::is_hidden`] so traversal does not build each node (and resolve
+/// its translated name) for one flag. Debug builds build the node anyway
+/// and check that the two agree.
+pub(crate) fn hidden(widget: &dyn Widget) -> bool {
+    let hidden = widget.is_hidden();
+    debug_assert_eq!(
+        hidden,
+        widget.accessibility().is_some_and(|node| node.state.hidden),
+        "{}: Widget::is_hidden disagrees with the hidden flag of its accessibility node",
+        widget.name(),
+    );
+    hidden
+}
 fn collect_focusable(
     node_id: NodeId,
     widget: &dyn Widget,
@@ -298,5 +314,58 @@ mod trap_tests {
             None
         );
         assert_eq!(before, None);
+    }
+}
+
+#[cfg(test)]
+mod hidden_tests {
+    use super::*;
+    use crate::widget::command_palette::CommandPalette;
+    use crate::widget::page_palette::PageJumpPalette;
+    use crate::widget::{Column, ConflictBanner, ContextMenu, ModalDialog, Tooltip};
+
+    /// `widget` answers [`Widget::is_hidden`] as its accessibility node's
+    /// `hidden` flag says; returns the flag.
+    fn agreed(widget: &dyn Widget) -> bool {
+        let hidden = widget.is_hidden();
+        assert_eq!(
+            hidden,
+            widget.accessibility().is_some_and(|node| node.state.hidden),
+            "{}",
+            widget.name()
+        );
+        hidden
+    }
+
+    #[test]
+    fn widgets_that_hide_answer_is_hidden_as_their_accessibility_node() {
+        assert!(agreed(&Tooltip::new("Tip")), "an unrevealed tooltip");
+
+        let mut menu = ContextMenu::new();
+        assert!(agreed(&menu), "a closed menu");
+        menu.open_at([0.0, 0.0]);
+        assert!(!agreed(&menu), "an open menu");
+
+        let mut banner = ConflictBanner::new("Edits");
+        assert!(agreed(&banner), "a banner without conflicts");
+        banner.set_conflict_count(2);
+        assert!(!agreed(&banner), "a banner with conflicts");
+
+        let mut dialog = ModalDialog::new("Title", Column::new());
+        assert!(agreed(&dialog), "a closed dialog");
+        dialog.set_open(true);
+        assert!(!agreed(&dialog), "an open dialog");
+
+        let mut pages = PageJumpPalette::new();
+        assert!(agreed(&pages), "a closed page palette");
+        pages.set_visible(true);
+        assert!(!agreed(&pages), "an open page palette");
+
+        let mut palette = CommandPalette::new();
+        assert!(agreed(&palette), "a closed command palette");
+        palette.open();
+        assert!(!agreed(&palette), "an open command palette");
+
+        assert!(!agreed(&Column::new()), "a container is never hidden");
     }
 }

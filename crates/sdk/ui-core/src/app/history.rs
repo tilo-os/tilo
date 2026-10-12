@@ -257,7 +257,7 @@ impl App {
                         (
                             allowed && widget.is_focusable() && widget.is_enabled(),
                             allowed && widget.traps_focus(),
-                            widget.accessibility().is_some_and(|node| node.state.hidden),
+                            crate::focus_navigation::hidden(widget),
                         )
                     })
                     .unwrap_or((false, false, false))

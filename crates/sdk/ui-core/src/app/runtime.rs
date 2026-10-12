@@ -34,6 +34,14 @@ pub(super) struct LayoutRuntime {
     /// rebuild before the next layout pass, runtime-spawned widgets have no
     /// `NodeId` and `apply_layout` skips them.
     pub(super) structure_dirty: bool,
+    /// Set when the root's widgets report a change they carry out in place
+    /// ([`crate::widget::StructureChange::Children`]): the next layout pass
+    /// remounts their children in the retained tree instead of rebuilding
+    /// it, unless something rebuilds it first.
+    pub(super) remount: bool,
+    /// How many times widgets changed the retained tree in place: like
+    /// [`Self::rebuilds`], the widgets compared across a frame changed.
+    pub(super) remounts: u64,
     /// Diffed against `inner_size()` to catch a resize without a `Resized` event.
     pub(super) last_frame_size: Option<winit::dpi::PhysicalSize<u32>>,
     /// Last settled logical content size (the window inside `safe_area`);
@@ -65,6 +73,8 @@ impl LayoutRuntime {
             node_map: std::collections::HashMap::new(),
             layout_dirty: true,
             structure_dirty: false,
+            remount: false,
+            remounts: 0,
             last_frame_size: None,
             last_layout_logical: None,
             safe_area: crate::scale::SafeArea::default(),

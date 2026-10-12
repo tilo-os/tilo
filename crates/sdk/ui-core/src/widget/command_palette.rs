@@ -2381,6 +2381,10 @@ impl Widget for CommandPalette {
         }
     }
 
+    fn is_hidden(&self) -> bool {
+        !self.is_open()
+    }
+
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
         let open = self.is_open();
@@ -2394,7 +2398,7 @@ impl Widget for CommandPalette {
                 // overlay. A closed dialog cannot be modal to AT.
                 modal: open && self.modal,
                 expanded: Some(open),
-                hidden: !open,
+                hidden: self.is_hidden(),
                 ..Default::default()
             });
         if !open {

@@ -677,6 +677,12 @@ pub enum StructureChange {
     /// Nothing was inserted or removed.
     #[default]
     None,
+    /// The widgets that reported it mount and unmount children of their own,
+    /// and every widget stays alive: they carry it out in the retained tree,
+    /// in place ([`Widget::remount_children`]), and their own damage this
+    /// frame covers every pixel that changed with it. A host that cannot
+    /// rebuilds its tree, as for [`Self::Described`].
+    Children,
     /// The host rebuilds its tree, but the frame's damage still describes it:
     /// the widget that reported it replaced only widgets of its own, and its
     /// own damage this frame covers every pixel that changed with them.
@@ -693,7 +699,8 @@ impl StructureChange {
         if dirty { Self::Rebuild } else { Self::None }
     }
 
-    /// Whether the host rebuilds its tree for it.
+    /// Whether the host rebuilds its tree for it, or (for
+    /// [`Self::Children`]) changes it in place.
     #[must_use]
     pub fn rebuilds(self) -> bool {
         self != Self::None
@@ -1628,6 +1635,15 @@ pub trait Widget {
         None
     }
 
+    /// The `hidden` flag of [`accessibility`](Widget::accessibility), without
+    /// building the node: focus traversal asks it of every widget, and the
+    /// node carries a translated name. A widget whose node can be hidden
+    /// answers here from the same state, and a widget whose node is another
+    /// widget's forwards this with it; debug builds check the two agree.
+    fn is_hidden(&self) -> bool {
+        false
+    }
+
     /// Geometry for an immediate-mode semantic child from
     /// [`AccessNode::children`](crate::a11y::AccessNode::children). The path is
     /// its child-index path beneath this widget's accessibility node. Returning
@@ -2251,6 +2267,19 @@ pub trait Widget {
         StructureChange::of(self.take_structure_dirty())
     }
 
+    /// Carry out a [`StructureChange::Children`] this widget or one under it
+    /// reported, in the retained layout tree, through `remount` (see
+    /// [`remount`](crate::widget::remount)). Returns `false` when it cannot be
+    /// carried out in place: the host then rebuilds its tree, and the change
+    /// is carried out by [`Self::build_layout`]. A widget reports such a
+    /// change until either has carried it out. The default carries out its
+    /// children's.
+    fn remount_children(&mut self, remount: &mut Remount<'_>) -> bool {
+        self.children_mut()
+            .into_iter()
+            .all(|child| child.remount_children(remount))
+    }
+
     /// Work already requested by this view whose completion will replace a
     /// placeholder. Unlike animations, this can be awaited by still captures.
     fn has_pending_visual_work(&self) -> bool {
@@ -2828,6 +2857,8 @@ pub use crate::pen::PenSample;
 pub use decorator::Decorator;
 
 pub(crate) mod layout;
+pub mod remount;
+pub use remount::Remount;
 #[cfg(test)]
 pub(crate) mod replaced_tripwire;
 pub use layout::{
