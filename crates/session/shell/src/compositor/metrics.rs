@@ -11,7 +11,7 @@
 //! private trace path so the final second before an abrupt reset remains measurable. [`summarize`]
 //! is pure — the same function the live binary and unit tests call, so they can't drift.
 
-mod cpu_trace;
+pub(crate) mod cpu_trace;
 pub(crate) use cpu_trace::{CpuPhase, CpuSnapshot};
 
 use std::io::Write;

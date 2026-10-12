@@ -39,7 +39,7 @@ min_delta = 0.0
 # Perf / scheduled (.forgejo/workflows/perf-scheduled.yml): one job per group,
 # selected by its `kpis` input; its `compare` job runs with the default lane.
 [lanes.perf-scheduled]
-groups = ["fs", "footprint", "agent", "latency", "render", "wakeups", "hosting"]
+groups = ["fs", "footprint", "agent", "latency", "render", "wakeups", "search", "hosting"]
 
 # Dev / VM acceptance (.forgejo/workflows/vm-acceptance.yml): the installed
 # desktop in a KVM guest. Its R04 measures compositor CPU per painted frame on
@@ -493,6 +493,64 @@ unit = "per_s"
 max = 1.0
 min_delta = 1.0
 source = "the frame loop parks while idle (TIL-136, TIL-614)"
+
+# Files search's name index under file changes (the shell unit test
+# a_watched_change_costs_one_record_not_a_rebuild, through adapters.py
+# files-name-index): process CPU in a debug lib-test build on the shared
+# `runner` class, with an index of 50,000 names (the walk's MAX_ENTRIES).
+# A watched change upserts or removes its own records and commits
+# incrementally; before, every change rebuilt the whole index, which
+# `rebuild_cpu_ms` still measures (a walk or rescan builds it so).
+# Measured in two Dev / focused test runs of the test at 50,000 names
+# (Oct 2026, 14 change samples): change 8.6-34.4 ms, unchanged 0.02-0.26 ms,
+# rename 10.1-36.0 ms, 64-file burst 19.9-28.7 ms, whole build 4,053-4,544 ms.
+# Enforced ceilings are about twice the measured maximum, as the tilo-fs
+# gate's are; a regression to whole rebuilds lands two orders above them.
+# The build's ceiling is twice its maximum too, reported only.
+
+[kpi."search.files_name_index.change_cpu_ms.50k"]
+unit = "ms"
+max = 70.0
+enforce = true
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 1.0
+source = "one watched new file, 50,000 names"
+
+[kpi."search.files_name_index.unchanged_cpu_ms.50k"]
+unit = "ms"
+max = 1.0
+enforce = true
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 0.5
+source = "one watched file growing within its recency band, 50,000 names"
+
+[kpi."search.files_name_index.rename_cpu_ms.50k"]
+unit = "ms"
+max = 75.0
+enforce = true
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 1.0
+source = "one watched rename (two paths), 50,000 names"
+
+[kpi."search.files_name_index.burst64_cpu_ms.50k"]
+unit = "ms"
+max = 60.0
+enforce = true
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 5.0
+source = "a watched folder of 64 new files in one batch, 50,000 names"
+
+[kpi."search.files_name_index.rebuild_cpu_ms.50k"]
+unit = "ms"
+max = 9100.0
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 50.0
+source = "a whole-index build of 50,000 names: a walk or rescan, and what every change cost before"
 
 # Latency on reference hardware (scripts/perf/device_latency_bench.py,
 # docs/benchmarks/reference-hardware.md): kernel input event to KMS
