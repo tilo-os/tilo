@@ -357,32 +357,32 @@ fn an_item_is_ticked_unticked_toggled_and_a_plain_line_is_refused() {
     let mut replica = seeded("- [ ] milk\n- eggs\nplain");
     let milk = id_of(&replica, "- [ ] milk");
     let eggs = id_of(&replica, "- eggs");
-    call(&mut replica, "set-block-done", json!({ "block": milk })).unwrap();
+    call(&mut replica, "set-block-kind", json!({ "block": milk })).unwrap();
     assert_eq!(page(&replica)[0], "- [x] milk");
-    call(&mut replica, "set-block-done", json!({ "block": milk })).unwrap();
+    call(&mut replica, "set-block-kind", json!({ "block": milk })).unwrap();
     assert_eq!(page(&replica)[0], "- [ ] milk");
     call(
         &mut replica,
-        "set-block-done",
+        "set-block-kind",
         json!({ "block": milk, "done": true }),
     )
     .unwrap();
     call(
         &mut replica,
-        "set-block-done",
+        "set-block-kind",
         json!({ "block": milk, "done": true }),
     )
     .unwrap();
     assert_eq!(page(&replica)[0], "- [x] milk");
     call(
         &mut replica,
-        "set-block-done",
+        "set-block-kind",
         json!({ "block": eggs, "done": true }),
     )
     .unwrap();
     assert_eq!(page(&replica)[1], "- [x] eggs");
     let plain = id_of(&replica, "plain");
-    let error = call(&mut replica, "set-block-done", json!({ "block": plain })).unwrap_err();
+    let error = call(&mut replica, "set-block-kind", json!({ "block": plain })).unwrap_err();
     assert!(error.contains("not a list item"), "{error}");
 }
 
@@ -407,11 +407,16 @@ fn an_item_is_indented_and_outdented_within_the_depth_drawn() {
     assert_eq!(page(&replica)[1], format!("{}- b", "  ".repeat(5)));
     call(
         &mut replica,
-        "outdent-block",
-        json!({ "block": b, "levels": 5 }),
+        "indent-block",
+        json!({ "block": b, "levels": -5 }),
     )
     .unwrap();
-    call(&mut replica, "outdent-block", json!({ "block": b })).unwrap();
+    call(
+        &mut replica,
+        "indent-block",
+        json!({ "block": b, "levels": -1 }),
+    )
+    .unwrap();
     assert_eq!(page(&replica), ["- a", "- b"]);
     assert!(
         call(
@@ -623,7 +628,7 @@ fn text_is_found_with_the_ids_to_edit_it_by() {
 #[test]
 fn the_declared_actions_are_published_with_typed_described_parameters() {
     let declared = RichText::declarations();
-    for id in block_actions::ANSWERING.iter().chain(&["outdent-block"]) {
+    for id in block_actions::ANSWERING.iter() {
         let decl = declared
             .iter()
             .find(|decl| decl.id == *id)
@@ -647,7 +652,7 @@ fn two_collaborators_editing_the_same_page_merge_by_block() {
     let (milk, eggs) = (id_of(&ada, "- [ ] milk"), id_of(&ada, "- [ ] eggs"));
     call(
         &mut ada,
-        "set-block-done",
+        "set-block-kind",
         json!({ "block": milk, "done": true }),
     )
     .unwrap();
@@ -661,7 +666,7 @@ fn two_collaborators_editing_the_same_page_merge_by_block() {
     call_as(
         &mut bob,
         "bob",
-        "set-block-done",
+        "set-block-kind",
         json!({ "block": eggs, "done": true }),
     )
     .unwrap();

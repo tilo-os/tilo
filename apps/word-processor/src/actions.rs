@@ -2931,9 +2931,11 @@ mod tests {
         }
     }
 
-    /// The host offers every Document operation of its workers as one grant
-    /// set, and withdraws the offer above 64. A fresh document's catalogue,
-    /// with both paragraph operations, stays well inside that bound.
+    /// A fresh document publishes a small catalogue of Document operations,
+    /// both paragraph operations among them: every operation is a tool an
+    /// agent must read and a grant a person must understand, so the count is a
+    /// design budget, kept down by folding near-duplicates into one
+    /// parameterised operation rather than by raising it.
     #[test]
     fn a_fresh_document_publishes_few_grantable_document_operations() {
         fn document_ops(resource: &Resource, out: &mut Vec<String>) {
