@@ -11,7 +11,7 @@
 //! the palette — through a handful of generic tools (`tools`). There are no
 //! agent-only recipes: every id it names is checked against what a tool
 //! showed it and against the catalogue again at dispatch, and the broker
-//! authorizes each step. Enrolled tasks run that as a step-by-step loop
+//! authorizes each step. Model tasks run that as a step-by-step loop
 //! (`session::agent_loop`). Without a model, a deterministic word match over
 //! the same live catalogue decides, and which path ran is recorded.
 //!
@@ -44,7 +44,6 @@
 #[cfg(test)]
 extern crate self as tilo_agent;
 
-pub mod live;
 pub mod memory;
 pub mod model;
 pub mod plan;

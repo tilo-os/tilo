@@ -1,16 +1,14 @@
 //! What a task asks its host without waiting in line for the answer.
 //!
-//! Live activity, progress lines and cancellation polls are round trips to
-//! the host, and none of them is on the work's critical path: the model call
-//! and the steps are. They are sent as detached requests
-//! ([`crate::wire::Link::send_detached`]) and their answers are read where
-//! they matter.
+//! Cancellation polls are round trips to the host, and none of them is on
+//! the work's critical path: the model call and the steps are. They are sent
+//! as detached requests ([`crate::wire::Link::send_detached`]) and their
+//! answers are read where they matter.
 //!
 //! Ordering is not given up by not waiting. The collaboration client
 //! dispatches requests to the broker one at a time, in the order they are
-//! sent, and answers them in that order — so a progress line still reaches
-//! the host before the step after it, and a cancellation poll sent before a
-//! step is answered before that step's reply.
+//! sent, and answers them in that order — so a cancellation poll sent before
+//! a step is answered before that step's reply.
 
 use ui::time::{Duration, Instant};
 
@@ -18,7 +16,7 @@ use anyhow::Result;
 use ui::collaboration::{CollabEvent, CollabRequest};
 
 use super::Session;
-use crate::wire::{Detached, Link};
+use crate::wire::Detached;
 
 /// How long a task waits for the broker to answer one cancellation poll.
 const CANCELLATION_WAIT: Duration = Duration::from_secs(5);
@@ -26,18 +24,7 @@ const CANCELLATION_WAIT: Duration = Duration::from_secs(5);
 /// Detached requests of the task in progress.
 #[derive(Debug, Default)]
 pub(super) struct Outstanding {
-    /// The latest live update sent and not yet answered. While it is out,
-    /// periodic updates coalesce in the publisher instead of queueing up
-    /// behind it.
-    live: Option<u64>,
     cancel: CancelWatch,
-}
-
-impl Outstanding {
-    /// Record the live update just sent.
-    pub(super) fn record_live(&mut self, request_id: u64) {
-        self.live = Some(request_id);
-    }
 }
 
 /// What this task knows about its own cancellation.
@@ -55,60 +42,14 @@ struct CancelWatch {
     polled_at: Option<Instant>,
 }
 
-/// Send one enrolled task update and return its request id without waiting
-/// for the host's answer; a refusal is read later with
-/// [`Link::take_refusals`].
-pub(super) fn report_enrolled_detached(
-    link: &mut Link,
-    next_request: &mut u64,
-    sequence: &mut u64,
-    acceptance: runtime_collab::EnrolledTaskAcceptance,
-    update: runtime_collab::TaskRunUpdate,
-) -> Result<u64> {
-    *sequence = sequence
-        .checked_add(1)
-        .ok_or_else(|| anyhow::anyhow!("enrolled sequence exhausted"))?;
-    let request_id = *next_request;
-    *next_request = request_id
-        .checked_add(1)
-        .ok_or_else(|| anyhow::anyhow!("request sequence exhausted"))?;
-    link.send_detached(&CollabRequest::ReportEnrolledTask {
-        request_id,
-        acceptance,
-        sequence: *sequence,
-        update,
-    })?;
-    Ok(request_id)
-}
-
 impl Session {
-    /// Start a task's watch afresh: an earlier task's polls and refusals say
-    /// nothing about this one.
+    /// Start a task's watch afresh: an earlier task's polls say nothing
+    /// about this one.
     pub(super) fn begin_task_watch(&mut self) {
         for (request_id, _) in std::mem::take(&mut self.outstanding.cancel.polls) {
             self.link.forget(request_id);
         }
         self.outstanding = Outstanding::default();
-        // Refusals of an earlier task's updates belong to that task.
-        for error in self.link.take_refusals() {
-            tracing::warn!(%error, "an earlier task's live update was refused");
-        }
-    }
-
-    /// Whether the latest live update is still unanswered.
-    pub(super) fn live_in_flight(&mut self) -> bool {
-        self.outstanding
-            .live
-            .is_some_and(|request_id| self.link.awaiting(request_id))
-    }
-
-    /// Apply refusals of detached updates as they arrive: live activity is
-    /// best effort, so a refusal turns it off and never stops the task.
-    pub(super) fn absorb_refusals(&mut self) {
-        for error in self.link.take_refusals() {
-            tracing::warn!(%error, "live update refused; live updates stop");
-            self.live.stop();
-        }
     }
 
     /// A step of the task settled: a cancellation answer from before it no
@@ -266,7 +207,6 @@ impl CancelWatch {
             Detached::Cancellation(Err(error)) => {
                 self.failed.get_or_insert(error);
             }
-            Detached::Report(_) => {}
         }
     }
 }
