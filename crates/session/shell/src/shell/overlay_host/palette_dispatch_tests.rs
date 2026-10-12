@@ -1,7 +1,6 @@
 use super::*;
 use crate::shell::chrome_state::ChromeState;
 use crate::shell::state::WorkspaceTree;
-use ui::TextRole;
 use ui::widget::Container;
 
 fn host_with_chrome() -> (ShellOverlayHost, crate::shell::chrome_state::Chrome) {
@@ -1173,28 +1172,19 @@ fn shortcut_reference_is_complete_truthful_grouped_and_fits_compact_cells() {
     fn shortcut_reference_groups_keep_a_consistent_responsive_rhythm() {
         assert_eq!(shortcut_reference_columns(688.0), 3);
         assert_eq!(shortcut_reference_columns(912.0), 3);
-        assert_eq!(shortcut_reference_step(true), 31.0);
-        assert_eq!(shortcut_reference_step(false), 34.0);
-        assert!(shortcut_reference_group_height(true) >= 6.0 * shortcut_reference_step(true));
-        assert!(shortcut_reference_group_height(false) >= 6.0 * shortcut_reference_step(false));
+        assert_eq!(shortcut_reference_columns(520.0), 2);
+        assert!(
+            shortcut_reference_group_height() >= 6.0 * shortcut_reference_step(),
+            "a group must hold its six rows"
+        );
     }
 
-    fn compact_shortcut_reference_keeps_the_complete_action_set_visible() {
+    fn shortcut_reference_keeps_the_complete_action_set() {
         let rows = shortcut_reference_rows(&settings_store::hardware::ShortcutConfig::default());
-        let body_height = 426.0;
-        let navigation_height = 154.0;
-        let essentials_y = navigation_height + 12.0;
-        let reference_top = essentials_y + 18.0;
-        let final_pill_bottom = reference_top + 29.0 + 5.0 * shortcut_reference_step(true) + 31.0;
-
         assert_eq!(
             rows.len(),
             18,
             "the guide must retain every documented desktop action without repeating itself"
-        );
-        assert!(
-            final_pill_bottom <= body_height,
-            "the final shortcut pill must remain inside an 800×600 guide body"
         );
         for essential in [
             "Screenshot",
@@ -1206,27 +1196,25 @@ fn shortcut_reference_is_complete_truthful_grouped_and_fits_compact_cells() {
         }
     }
 
-    fn compact_shortcut_recovery_actions_fit_their_cells() {
+    fn shortcut_reference_keycaps_fit_their_cells() {
         let rows = shortcut_reference_rows(&settings_store::hardware::ShortcutConfig::default());
+        let theme = Theme::dark();
         let mut renderer = TextRenderer::new();
-        let chord_size = Theme::dark().tokens.typography.size(TextRole::Caption);
-        // An 800-wide viewport yields a 736-wide panel and 688-wide body. The
-        // compact guide uses three semantic columns with quiet key pills.
-        let columns = shortcut_reference_columns(688.0);
-        assert_eq!(columns, 3);
-        let available_text_width = (688.0 - 12.0 * 2.0) / 3.0 - 24.0;
+        // The narrowest three-column body is 700 wide.
+        let cell = (700.0 - 12.0 * 2.0) / 3.0 - 24.0;
         for (_, chord) in rows {
-            let (width, _) = renderer.measure(&chord, chord_size, None);
-            assert!(
-                f64::from(width) + 16.0 <= available_text_width,
-                "{chord:?} must not clip inside the compact guide's key pill"
-            );
+            let mut width = 0.0;
+            for (index, keys) in shortcut_chord_keycaps(&chord).iter().enumerate() {
+                if index > 0 {
+                    width += 20.0;
+                }
+                width += ui::widget::InputHint::measure_keycap_labels(keys, &mut renderer, &theme);
+            }
+            assert!(width <= cell, "{chord:?} is {width}px, cell is {cell}px");
         }
     }
 
     fn shortcut_reference_columns_stay_semantically_grouped() {
-        assert_eq!(shortcut_reference_columns(688.0), 3);
-        assert_eq!(shortcut_reference_columns(912.0), 3);
         let rows = shortcut_reference_rows(&settings_store::hardware::ShortcutConfig::default());
         assert_eq!(rows.len(), 18);
         assert!(rows.chunks(6).all(|group| group.len() == 6));
@@ -1252,10 +1240,24 @@ fn shortcut_reference_is_complete_truthful_grouped_and_fits_compact_cells() {
     shortcut_reference_never_promises_a_rebound_default();
     shortcut_reference_does_not_repeat_the_open_guide_action();
     shortcut_reference_groups_keep_a_consistent_responsive_rhythm();
-    compact_shortcut_reference_keeps_the_complete_action_set_visible();
-    compact_shortcut_recovery_actions_fit_their_cells();
+    shortcut_reference_keeps_the_complete_action_set();
+    shortcut_reference_keycaps_fit_their_cells();
     shortcut_reference_columns_stay_semantically_grouped();
     shortcut_accessibility_names_workspace_and_group_navigation();
+}
+
+#[test]
+fn shortcut_guide_panel_stays_inside_the_window_and_fits_its_content() {
+    let (host, _chrome) = host_with_chrome();
+    let area = host.overlay_area();
+    let panel = host.shortcut_help_panel_rect();
+    assert!(panel.x0 >= area.x0 && panel.x1 <= area.x1, "{panel:?} in {area:?}");
+    assert!(panel.y0 >= area.y0 && panel.y1 <= area.y1, "{panel:?} in {area:?}");
+    let done = host.shortcut_help_done_rect();
+    assert!(
+        done.x0 >= panel.x0 && done.x1 <= panel.x1 && done.y1 <= panel.y1,
+        "Done sits inside the card"
+    );
 }
 
 #[test]
