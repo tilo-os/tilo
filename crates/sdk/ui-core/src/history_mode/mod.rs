@@ -191,6 +191,10 @@ pub struct HistoryController {
     window: usize,
     /// The projected history holds changes older than the window.
     has_earlier: bool,
+    /// For an app's own history, which of the session's lists of its rooms'
+    /// verified agents ([`crate::history_source::set_room_agents`]) the
+    /// source names; a newer list is named on the next refresh.
+    room_agents: Option<u64>,
 }
 
 /// How many of the newest changes a history view describes when it opens,
@@ -230,7 +234,14 @@ impl HistoryController {
     /// which only an open history view needs; the first [`Self::refresh`]
     /// against a document does it.
     pub(crate) fn unprojected(resource: HistoryResource, live_heads: Vec<ChangeHash>) -> Self {
-        Self::unprojected_with_source(resource, HistorySource::new(), live_heads)
+        // An app's own history names the agents the session verified for
+        // its rooms, as the workspace's Activity does.
+        let revision = crate::history_source::room_agents_revision();
+        let source = HistorySource::new()
+            .with_authors(crate::history_source::AuthorDirectory::with_room_agents());
+        let mut controller = Self::unprojected_with_source(resource, source, live_heads);
+        controller.room_agents = Some(revision);
+        controller
     }
 
     fn unprojected_with_source(
@@ -252,6 +263,7 @@ impl HistoryController {
             snapshots: HashMap::new(),
             window: HISTORY_PAGE,
             has_earlier: false,
+            room_agents: None,
         }
     }
 
@@ -309,6 +321,15 @@ impl HistoryController {
             .as_ref()
             .is_some_and(|selected| selected.after.heads != live_heads);
         self.observed_live_heads.clone_from(&live_heads);
+        if let Some(named) = self.room_agents {
+            let current = crate::history_source::room_agents_revision();
+            if current != named {
+                *self.source.authors_mut() =
+                    crate::history_source::AuthorDirectory::with_room_agents();
+                self.room_agents = Some(current);
+                self.projected_heads = None;
+            }
+        }
         if self.projected_heads.as_ref() == Some(&live_heads) {
             return Ok(());
         }

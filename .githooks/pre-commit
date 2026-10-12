@@ -27,6 +27,7 @@ if merge_head=$(git rev-parse -q --verify MERGE_HEAD); then
   export GIT_INDEX_FILE="$merge_index"
 fi
 python3 "$root/tools/policy/check_source_content.py" --staged || fail=1
+python3 "$root/tools/policy/check_public_references.py" --staged || fail=1
 note() { printf '  %s\n' "$*" >&2; }
 
 # Every crate on disk must be a workspace member.

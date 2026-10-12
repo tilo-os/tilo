@@ -94,6 +94,10 @@ fn initial_history_action_publication_waits_for_actual_owner_application() {
     assert!(app.collaboration.manager.is_connected());
     assert!(!app.collaboration.manager.document_route_ready(None));
     assert!(!app.published_action_history_ready());
+    let admission = app.native_admission_snapshot();
+    assert!(admission.connection.manager_connected);
+    assert!(!admission.history.action_history_ready);
+    assert!(!admission.directory.directory_enqueued);
     app.publish_action_surface();
     assert!(app.actions.last_published_actions.is_none());
     assert!(
@@ -123,6 +127,12 @@ fn initial_history_action_publication_waits_for_actual_owner_application() {
     );
     app.publish_action_surface();
     assert!(app.actions.last_published_actions.is_some());
+    let admission = app.native_admission_snapshot();
+    assert!(admission.history.action_history_ready);
+    assert!(admission.history.primary_history_ready);
+    assert!(admission.history.all_owner_histories_ready);
+    assert!(admission.connection.custody_reconciled);
+    assert!(admission.directory.directory_enqueued);
     let page = app.published_action_directory_page(initial_history_query());
     assert!(!page.rows.is_empty());
     assert!(matches!(

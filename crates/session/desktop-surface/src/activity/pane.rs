@@ -2308,6 +2308,11 @@ impl RoomActivityPane {
         }
         self.last_heads = heads;
         seed_roster_colours(self.source.authors_mut(), tree);
+        // A change an agent's own key signed reads as the agent's, for its
+        // person, once the host verified its delegation for that device.
+        for agent in tree.roster_agents() {
+            self.source.authors_mut().register_roster_agent(&agent);
+        }
         let local = self.local_user();
         if !local.is_empty() {
             // The reader's own changes read as theirs.
