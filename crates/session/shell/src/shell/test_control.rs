@@ -2294,6 +2294,7 @@ mod tests {
             active_tab,
             width: WindowWidth::Normal,
             maximized: false,
+            focus_history: Vec::new(),
         };
         let notes = || TileContent::Foreign {
             app_id: "so.tilo.notes".into(),

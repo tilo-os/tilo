@@ -2020,6 +2020,7 @@ mod tests {
             active_tab: tab_id,
             width: WindowWidth::Normal,
             maximized: false,
+            focus_history: Vec::new(),
         }
     }
 

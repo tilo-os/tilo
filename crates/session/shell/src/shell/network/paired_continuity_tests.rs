@@ -518,6 +518,7 @@ async fn paired_continuity_catchup_preserves_browser_checkpoint_and_launcher_ide
         active_tab: tab,
         width: WindowWidth::Normal,
         maximized: false,
+        focus_history: Vec::new(),
     });
     let source_group = workspace.strips[0].window_groups[0].id;
     tree.desktop
@@ -543,6 +544,7 @@ async fn paired_continuity_catchup_preserves_browser_checkpoint_and_launcher_ide
         active_tab: local_tab,
         width: WindowWidth::Normal,
         maximized: false,
+        focus_history: Vec::new(),
     });
     local_tree
         .desktop
@@ -926,6 +928,7 @@ impl NativeEditorPair {
                     active_tab: tab,
                     width: WindowWidth::Normal,
                     maximized: false,
+                    focus_history: Vec::new(),
                 });
             let mut local = WorkspaceTree::bootstrap_default();
             local.desktop.workspaces[0].room = room;

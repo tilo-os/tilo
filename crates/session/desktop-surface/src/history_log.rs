@@ -266,6 +266,7 @@ mod tests {
             tabs: vec![sheets],
             width: tilo_desktop_model::WindowWidth::Normal,
             maximized: false,
+            focus_history: Vec::new(),
         });
         // Tab opens are View and omitted from the explorer feed; rename so
         // Grace still authors a feed-visible Change.

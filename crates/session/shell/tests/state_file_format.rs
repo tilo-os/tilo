@@ -99,6 +99,7 @@ fn populated_tree() -> WorkspaceTree {
         active_tab: 5,
         width: WindowWidth::Fraction(420),
         maximized: true,
+        focus_history: Vec::new(),
     });
     strip.window_groups.push(WindowGroup {
         id: 6,
@@ -113,6 +114,7 @@ fn populated_tree() -> WorkspaceTree {
         active_tab: 8,
         width: WindowWidth::Normal,
         maximized: false,
+        focus_history: Vec::new(),
     });
     ws.strips.push(strip);
     tree.desktop.workspaces.push(ws);

@@ -6052,6 +6052,17 @@ fn x11_and_wayland_clients_trade_copies_in_both_directions() {
     assert_eq!(x11_paste(&compositor), "wayland one", "wayland -> x11");
     // It copies in turn; a Wayland client that maps later (the terminal) pastes.
     let owner = serve_x11_clipboard(conn, window, "x11 two".to_string());
+    // The copy lands while the X11 window is focused; wait for the compositor
+    // to hold it before another window opens and takes focus.
+    let end = Instant::now() + deadline();
+    while compositor.chrome_paste(false).as_deref() != Some("x11 two") {
+        assert!(
+            Instant::now() < end,
+            "the compositor never received the X11 copy\n{}",
+            compositor.recent_log()
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
     let mut terminal = TestClient::new(compositor.connect(), "org.tilo.test.trade-terminal");
     terminal.map_window(&compositor);
     assert_eq!(terminal.read_clipboard(None), "x11 two", "x11 -> wayland");
@@ -6366,10 +6377,21 @@ fn large_offers_cross_and_oversized_ones_are_dropped_with_a_logged_reason() {
     app2.map_window(&compositor);
     let serial = press_ctrl_c(&compositor, &mut app2);
     app2.copy_with_serial(&huge, serial);
-    compositor.wait_for_log(
-        &["selection source exceeded the mirror size limit"],
-        "an oversized selection was dropped silently",
-    );
+    // The source has to keep being dispatched: the compositor's pull is a
+    // `send` request it must answer.
+    let end = Instant::now() + deadline();
+    while !compositor
+        .full_log()
+        .contains("selection source exceeded the mirror size limit")
+    {
+        assert!(
+            Instant::now() < end,
+            "an oversized selection was dropped silently\n{}",
+            compositor.recent_log()
+        );
+        app2.pump();
+        std::thread::sleep(Duration::from_millis(20));
+    }
 }
 
 /// Electron destroys its data source once it is done with it. By then Tilo has
@@ -6529,7 +6551,6 @@ fn a_copy_with_an_empty_internal_format_survives_the_client_disconnecting() {
 /// Closing the focused window gives keyboard focus back to the window that
 /// had it before: the next keystrokes must go somewhere.
 #[test]
-#[ignore = "known gap: DesktopTree::remove_tab (desktop-model/src/topology.rs) activates the tab now at the closed tab's index, not the one that was active before it opened, so a window that opened beside a shell tab hands focus to that tab"]
 fn closing_a_wayland_window_returns_keyboard_focus_to_the_previous_one() {
     let compositor = Compositor::start();
     let mut a = TestClient::new(compositor.connect(), "org.tilo.test.focus-return-a");
@@ -6546,7 +6567,6 @@ fn closing_a_wayland_window_returns_keyboard_focus_to_the_previous_one() {
 
 /// Same, with an X11 window (through satellite) as the one that closes.
 #[test]
-#[ignore = "known gap: DesktopTree::remove_tab (desktop-model/src/topology.rs) activates the tab now at the closed tab's index, not the one that was active before it opened, so a window that opened beside a shell tab hands focus to that tab"]
 fn closing_an_x11_window_returns_keyboard_focus_to_the_previous_wayland_window() {
     assert!(
         Path::new("/usr/bin/xwayland-satellite").is_file(),

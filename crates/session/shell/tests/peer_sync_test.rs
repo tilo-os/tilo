@@ -282,6 +282,7 @@ fn room_push_tree(room: RoomId, salt: u16) -> WorkspaceTree {
             active_tab: id(100),
             width: WindowWidth::Normal,
             maximized: false,
+            focus_history: Vec::new(),
         }],
     });
     a.desktop.active = workspace.id;

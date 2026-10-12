@@ -338,6 +338,7 @@ mod tests {
             active_tab: other,
             width: WindowWidth::Normal,
             maximized: false,
+            focus_history: Vec::new(),
         });
         let strip_id = strip.id;
         tree.desktop.set_active_group(strip_id, group);

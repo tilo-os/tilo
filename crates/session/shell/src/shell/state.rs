@@ -3972,6 +3972,7 @@ impl WorkspaceTree {
                     active_tab: tab_notes,
                     width: WindowWidth::Wide,
                     maximized: false,
+                    focus_history: Vec::new(),
                 }],
             }],
             // One invented peer so the top-bar avatar stack has something
@@ -4624,6 +4625,7 @@ impl WorkspaceTree {
                         active_tab: 0,
                         width: WindowWidth::Normal,
                         maximized: false,
+                        focus_history: Vec::new(),
                     });
                 }
                 let group = &mut strip.window_groups[app.placement.group as usize];
@@ -4640,7 +4642,7 @@ impl WorkspaceTree {
                 if group.active_tab == 0 {
                     // This only defines the group's internal default when the
                     // person later enters it; it does not touch tree focus maps.
-                    group.active_tab = app.id.0;
+                    group.activate_tab(app.id.0);
                 }
                 changed = true;
             }
@@ -5970,6 +5972,7 @@ mod automerge_foundation_tests {
                         active_tab: tab_id,
                         width: WindowWidth::Normal,
                         maximized: false,
+                        focus_history: Vec::new(),
                     }],
                 }];
                 tree.sync_room_doc(room);
@@ -6150,6 +6153,7 @@ mod automerge_foundation_tests {
                     active_tab: tab_id,
                     width: WindowWidth::Normal,
                     maximized: false,
+                    focus_history: Vec::new(),
                 }],
             }];
             host.sync_room_doc(room);
@@ -6541,6 +6545,7 @@ mod automerge_foundation_tests {
                     active_tab: tab,
                     width: WindowWidth::Normal,
                     maximized: false,
+                    focus_history: Vec::new(),
                 }],
             }];
 
@@ -6769,6 +6774,7 @@ mod automerge_foundation_tests {
                 active_tab: tab,
                 width: WindowWidth::Normal,
                 maximized: false,
+                focus_history: Vec::new(),
             }],
         }];
         (strip, group, tab)
@@ -6822,6 +6828,7 @@ mod automerge_foundation_tests {
                 active_tab: tab_b,
                 width: WindowWidth::Normal,
                 maximized: false,
+                focus_history: Vec::new(),
             }],
         }];
         tree.desktop.active_strip.insert(ws, strip);
@@ -7672,6 +7679,7 @@ mod automerge_foundation_tests {
                     active_tab: 0,
                     width: WindowWidth::Normal,
                     maximized: false,
+                    focus_history: Vec::new(),
                 }],
             });
             tree_a.seed_doc_from_cache();
@@ -7756,6 +7764,7 @@ mod automerge_foundation_tests {
                     active_tab: expected[0],
                     width: WindowWidth::Normal,
                     maximized: false,
+                    focus_history: Vec::new(),
                 }],
             });
             tree_a.seed_doc_from_cache();
@@ -7864,6 +7873,7 @@ mod active_group_tests {
                     active_tab: 0,
                     width: WindowWidth::Normal,
                     maximized: false,
+                    focus_history: Vec::new(),
                 })
                 .collect(),
         };
