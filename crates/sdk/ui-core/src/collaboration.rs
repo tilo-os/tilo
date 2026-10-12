@@ -128,8 +128,8 @@ pub use runtime_collab::{
 pub use runtime_collab::{
     NearbyDestinationHandle, NearbyTargetHandle, NearbyTransferCommand, NearbyTransferDestination,
     NearbyTransferDirection, NearbyTransferHandle, NearbyTransferPhase, NearbyTransferReply,
-    NearbyTransferSnapshot, NearbyTransferStatus, NearbyTransferTarget, PortableWifiSecurity,
-    WifiContinuityCommand, WifiContinuityReply,
+    NearbyTransferSnapshot, NearbyTransferStatus, NearbyTransferTarget, NetworkWakeStatus,
+    PortableWifiSecurity, WifiContinuityCommand, WifiContinuityReply,
 };
 
 use crate::presence::PresenceKey;
@@ -632,6 +632,14 @@ pub enum CollabEvent {
         collaborators: Vec<Collaborator>,
         permissions: Vec<String>,
     },
+    /// The delegated agents on `cluster_id`'s roster whose person's root
+    /// signed the delegation for exactly that device, as the session
+    /// verified them: who the app's history names for changes their own
+    /// device keys signed. Session-local and presentation only.
+    HistoryAgents {
+        cluster_id: String,
+        agents: Vec<crate::history_source::RosterAgent>,
+    },
     /// Session chrome asked this app to bind its viewport/view mode to a
     /// participant, or release that binding. This is local session control:
     /// it is never published to collaboration peers.
@@ -873,6 +881,14 @@ pub enum PresencePayload {
         text: String,
         automatic: bool,
     },
+}
+
+/// Explicit correlation supplied by owner-backed membership, never decoded
+/// from a participant label or an actor-id prefix.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CertifiedAgentIdentity {
+    pub participant_id: String,
+    pub agent_key: String,
 }
 
 #[derive(Debug, Clone)]
@@ -1542,6 +1558,14 @@ impl CollaborationManager {
         {
             self.action_directory_published = true;
         }
+    }
+
+    pub(crate) fn action_directory_observation(&self) -> (bool, Option<(u64, u64)>) {
+        let counts = match &self.backend {
+            Backend::Transport(transport) => transport.action_directory_publication_counts(),
+            Backend::Disabled(_) => None,
+        };
+        (self.action_directory_published, counts)
     }
 
     /// Drain requests issued by the transport's `ActionDirectory` server.

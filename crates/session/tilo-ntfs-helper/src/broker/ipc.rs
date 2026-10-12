@@ -10,7 +10,7 @@ use std::{
     io::{self, Write},
     mem,
     os::{
-        fd::{AsRawFd, FromRawFd, OwnedFd},
+        fd::{AsRawFd, OwnedFd},
         unix::fs::{MetadataExt, OpenOptionsExt},
     },
     time::Instant,
@@ -58,18 +58,7 @@ fn listener(uid: u32) -> io::Result<(Runtime, OwnedFd)> {
     }
     let path = format!("/run/{}", name.to_str().map_err(io::Error::other)?);
     let runtime = Runtime { parent, name, path };
-    let address = socket::address(&format!("{}/read.sock", runtime.path))?;
-    let fd = socket::create()?;
-    if unsafe {
-        libc::bind(
-            fd.as_raw_fd(),
-            (&raw const address).cast(),
-            libc::socklen_t::try_from(mem::size_of_val(&address)).map_err(io::Error::other)?,
-        )
-    } != 0
-    {
-        return Err(io::Error::last_os_error());
-    }
+    let fd = socket::bind(&format!("{}/read.sock", runtime.path))?;
     let path = CString::new(format!("{}/read.sock", runtime.path)).map_err(io::Error::other)?;
     if unsafe { libc::chown(path.as_ptr(), uid, 0) } != 0
         || unsafe { libc::chmod(path.as_ptr(), 0o600) } != 0
@@ -100,19 +89,7 @@ pub(super) fn serve(mut session: ExclusiveReadSession, uid: u32) -> io::Result<(
         serde_json::json!({"schema":SCHEMA,"socket":format!("{}/read.sock",runtime.path),"nonce":session.nonce,"identity":session.identity,"backend":"native-exclusive-read","diagnostic_only":true})
     );
     io::stdout().flush()?;
-    socket::ready(&listener, libc::POLLIN, session.deadline(30)?)?;
-    let raw = unsafe {
-        libc::accept4(
-            listener.as_raw_fd(),
-            std::ptr::null_mut(),
-            std::ptr::null_mut(),
-            libc::SOCK_CLOEXEC | libc::SOCK_NONBLOCK,
-        )
-    };
-    if raw < 0 {
-        return Err(io::Error::last_os_error());
-    }
-    let connection = unsafe { OwnedFd::from_raw_fd(raw) };
+    let connection = socket::accept(&listener, session.deadline(30)?)?;
     drop(listener);
     if socket::peer_uid(&connection)? != uid {
         return Err(refusal("unauthorized peer UID"));

@@ -2,7 +2,7 @@
 use super::{
     AdmissionProvenance, BrokerActor, CapnpBrokerState, DurableContext, InvocationInputs,
     InvocationJob, InvocationKey, InvocationOwner, PendingTaskRun, TaskRunEnvelope,
-    WorkspaceTaskStatus, bounded_task_message, durable_local_invocation,
+    WorkspaceTaskStatus, durable_local_invocation,
 };
 use crate::services::NativeTaskBinding;
 use std::sync::Arc;
@@ -11,6 +11,15 @@ use tokio::sync::mpsc;
 #[cfg(test)]
 #[path = "native_task_tests.rs"]
 mod tests;
+
+fn bounded_public_task_message(message: &str) -> Result<String, String> {
+    if message.trim().is_empty()
+        || message.len() > tilo_desktop_model::MAX_WORKSPACE_TASK_SUMMARY_BYTES
+    {
+        return Err("public task update is empty or exceeds the retained text limit".into());
+    }
+    Ok(message.to_owned())
+}
 
 /// How often a held re-ask samples its run's cancellation. The task owner
 /// signals no change for it, so it is read in-process here, at the cadence
@@ -278,14 +287,10 @@ impl CapnpBrokerState {
         target: runtime_collab::TaskAction<'_>,
         caller: &durable_local_invocation::LocalCaller,
         invocation: tilo_actions::InvocationId,
+        offered: (super::PublishedSurface, super::PublishedAction),
     ) -> Result<InvocationJob, String> {
-        let offered = self
-            .surfaces
-            .lock()
-            .map_err(|_| "task target surface unavailable")?
-            .get(&target.peer_id)
-            .and_then(|surface| surface.action_projection(target.resource, target.action))
-            .ok_or("task target was removed")?;
+        // Dispatch the exact contract checked by native task admission. A
+        // concurrent publication must not replace it with a broader need.
         if offered.0.route.cluster_id != run.cluster_id {
             return Err("task target changed workspace".into());
         }
@@ -410,6 +415,12 @@ impl CapnpBrokerState {
             TaskRunEnvelope {
                 task_id: task_id.into(),
                 title: task.title.clone(),
+                instruction: Some(
+                    control
+                        .instruction
+                        .clone()
+                        .unwrap_or_else(|| task.title.clone()),
+                ),
                 run_id,
                 lease,
                 planning,
@@ -660,26 +671,36 @@ impl CapnpBrokerState {
                 sequence: 0,
                 phase: tilo_desktop_model::WorkspaceTaskExecutionPhase::Accepted,
             },
-            runtime_collab::TaskRunUpdate::Progress { .. } => {
-                WorkspaceTaskCommand::ExecutionPhase {
+            runtime_collab::TaskRunUpdate::Progress { message } => {
+                let snapshot = service.snapshot(&run.cluster_id)?;
+                let execution = snapshot
+                    .controls
+                    .get(&task_id)
+                    .and_then(|control| control.execution.as_ref())
+                    .filter(|execution| execution.run_epoch == binding.epoch)
+                    .ok_or("public progress requires accepted run")?;
+                WorkspaceTaskCommand::PublicProgress {
                     task_id,
                     run_epoch: binding.epoch,
-                    sequence: 1,
-                    phase: tilo_desktop_model::WorkspaceTaskExecutionPhase::Executing,
+                    sequence: execution
+                        .sequence
+                        .checked_add(1)
+                        .ok_or("task sequence exhausted")?,
+                    message: bounded_public_task_message(&message)?,
                 }
             }
             runtime_collab::TaskRunUpdate::Succeeded { message } => WorkspaceTaskCommand::Finish {
                 task_id,
                 run_epoch: binding.epoch,
                 outcome: WorkspaceTaskFinish::Done,
-                summary: bounded_task_message(&message)?,
+                summary: bounded_public_task_message(&message)?,
             },
             runtime_collab::TaskRunUpdate::Failed { message }
             | runtime_collab::TaskRunUpdate::Cancelled { message } => {
                 WorkspaceTaskCommand::Abandon {
                     task_id,
                     run_epoch: binding.epoch,
-                    reason: bounded_task_message(&message)?,
+                    reason: bounded_public_task_message(&message)?,
                 }
             }
         };

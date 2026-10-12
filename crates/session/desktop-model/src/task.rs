@@ -6,6 +6,10 @@ use serde::{Deserialize, Serialize};
 pub const MAX_WORKSPACE_TASK_INSTRUCTION_BYTES: usize = 32 * 1024;
 /// Largest direction a person may append to an active task.
 pub const MAX_WORKSPACE_TASK_DIRECTION_BYTES: usize = 8 * 1024;
+/// Maximum public progress notes retained per run.
+pub const MAX_WORKSPACE_TASK_PUBLIC_UPDATES: usize = 128;
+/// Largest public status/action update.
+pub const MAX_WORKSPACE_TASK_PROGRESS_BYTES: usize = 8 * 1024;
 /// Largest terminal or abandonment summary retained in task history.
 pub const MAX_WORKSPACE_TASK_SUMMARY_BYTES: usize = 8 * 1024;
 
@@ -143,6 +147,12 @@ impl WorkspaceTaskAuditEvent {
         self
     }
 
+    /// Whether this note belongs to the exact run, independent of timestamps.
+    pub fn for_run(&self, epoch: u64) -> bool {
+        matches!(&self.what, tilo_actions::Did::Verb(verb)
+            if verb.args.get("run_epoch") == Some(&tilo_actions::Scalar::text(&epoch.to_string())))
+    }
+
     /// The verb the event records.
     pub fn action(&self) -> &str {
         match &self.what {
@@ -227,6 +237,29 @@ pub struct WorkspaceTaskApproval {
     pub instruction_revision: u64,
 }
 
+/// Frozen starter authority, further capped to the task's attached resource or room.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WorkspaceTaskExecutionAuthority {
+    pub epoch: u64,
+    pub scope: tilo_action_policy::TreePath,
+    pub starter: tilo_action_policy::Standing,
+}
+
+impl WorkspaceTaskExecutionAuthority {
+    pub fn allows(
+        &self,
+        node: &tilo_action_policy::TreePath,
+        kind: tilo_action_policy::ActionKind,
+        now: web_time::SystemTime,
+    ) -> bool {
+        self.scope.covers(node)
+            && self
+                .starter
+                .answer(node, kind, &tilo_action_policy::Context::at_time(now))
+                == tilo_action_policy::Answer::Allow
+    }
+}
+
 /// Public execution milestones, not model reasoning or action output.
 /// A host-created run lease alone is not any of these milestones.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -305,6 +338,13 @@ pub struct WorkspaceTaskMutationReceipt {
 #[serde(deny_unknown_fields)]
 pub struct WorkspaceTaskControl {
     pub run_epoch: u64,
+    /// Owner-minted ceiling for this run; never accepted from task arguments.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution_authority: Option<WorkspaceTaskExecutionAuthority>,
+    /// Private instruction retained by the task owner. Public task projections
+    /// expose the bounded title, never this text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instruction: Option<String>,
     /// Owner-configured policy, frozen into a broker-minted run at dispatch.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub execution_budget: Option<collab_types::task_budget::TaskExecutionBudget>,
@@ -447,6 +487,7 @@ fn bounded_receipt_context(
 pub struct WorkspaceTask {
     pub id: String,
     pub title: String,
+    /// Default responsible person; distinct from the agent executing the work.
     pub created_by: String,
     pub assigned_agent: Option<String>,
     pub route: WorkspaceTaskRoute,
@@ -474,6 +515,46 @@ impl WorkspaceTask {
             }
         }
         context
+    }
+}
+
+#[cfg(test)]
+mod execution_authority_tests {
+    use super::WorkspaceTaskExecutionAuthority;
+    use tilo_action_policy::{ActionKind, RoomPolicy, Standing, TreePath};
+
+    #[test]
+    fn attached_scope_caps_even_a_workspace_owner() {
+        let room = TreePath::room("room");
+        let attached = room.clone().app("notes").kind("document").resource("one");
+        let bound = WorkspaceTaskExecutionAuthority {
+            epoch: 1,
+            scope: attached.clone(),
+            starter: Standing::person(RoomPolicy::new("room", "owner"), "owner"),
+        };
+        let now = web_time::SystemTime::now();
+        assert!(bound.allows(&attached.action("append"), ActionKind::Undoable, now));
+        assert!(
+            !bound.allows(
+                &room
+                    .app("notes")
+                    .kind("document")
+                    .resource("two")
+                    .action("append"),
+                ActionKind::Undoable,
+                now
+            )
+        );
+        assert!(
+            !bound.allows(
+                &TreePath::room("other")
+                    .app("notes")
+                    .kind("document")
+                    .resource("one"),
+                ActionKind::Read,
+                now
+            )
+        );
     }
 }
 

@@ -232,7 +232,7 @@ class BootOrdering(unittest.TestCase):
 
     def test_extension_activation_starts_only_when_the_helper_has_work(self):
         # It sits before the greeter, and its Python start alone cost 0.4-1.4 s per
-        # boot (TIL-767). The unit's triggering conditions are the helper's own
+        # boot. The unit's triggering conditions are the helper's own
         # early return: nothing turned on and no part left in /var/lib/extensions.
         unit = parse(shipped_units()["tilo-extension-activate.service"])
         self.assertEqual(unit["Unit"]["ConditionPathExistsGlob"], ["|/var/lib/tilo/extensions/*/enabled"])

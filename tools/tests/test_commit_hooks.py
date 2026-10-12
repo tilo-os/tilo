@@ -17,7 +17,7 @@ class CommitHookTests(unittest.TestCase):
         self.git("init", "-q", "-b", "main")
         for key, value in (("user.name", "Test"), ("user.email", "test@example.org"), ("commit.gpgsign", "false")):
             self.git("config", key, value)
-        paths = ["tools/policy/check_source_content.py", "tools/policy/check_commit_message.py", "tools/policy/check_commit_policy.py", "tools/ci/check_changed_rust_allows.py", "tools/dev/install-git-hooks.py", ".githooks/commit-msg"]
+        paths = ["tools/policy/check_source_content.py", "tools/policy/check_public_references.py", "tools/policy/check_commit_message.py", "tools/policy/check_commit_policy.py", "tools/ci/check_changed_rust_allows.py", "tools/dev/install-git-hooks.py", ".githooks/commit-msg"]
         for name in paths:
             dest = self.root / name
             dest.parent.mkdir(parents=True, exist_ok=True)
@@ -51,6 +51,40 @@ class CommitHookTests(unittest.TestCase):
 
     def ci(self):
         return subprocess.run(["python3", str(self.root / "tools/policy/check_commit_policy.py"), "", self.base], cwd=self.root, capture_output=True, text=True)
+
+    def test_merge_source_audit_uses_real_tree_when_branch_predates_manifest(self):
+        self.git("rm", "--", "tools/policy/source_content_exceptions.json")
+        self.git("commit", "--no-verify", "-qm", "test: branch predating content policy")
+        old_base = self.git("rev-parse", "HEAD").stdout.strip()
+        self.git("switch", "-qc", "policy-parent")
+        self.manifest([])
+        self.git("commit", "--no-verify", "-qm", "test: introduce content manifest")
+        self.git("switch", "-qc", "old-task", old_base)
+        self.stage("source", b"task text\n")
+        self.git("commit", "--no-verify", "-qm", "test: task source")
+        self.git("merge", "--no-commit", "policy-parent")
+
+        # Run the production audit and merge-index setup through Git, rather
+        # than the content-only test hook. Other hook checks have their own
+        # fixtures; this prefix is exactly the code whose index ordering matters.
+        prefix = (ROOT / ".githooks/pre-commit").read_text().split("note() {", 1)[0]
+        pre = self.root / ".githooks/pre-commit"
+        pre.write_text(prefix + '\nexit "$fail"\n')
+        pre.chmod(0o755)
+        self.stage("bad", b"forbidden\0resolution")
+        before = self.git("write-tree").stdout
+        refused = self.git("commit", "--no-edit", check=False)
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn("bad: non-text content", refused.stderr)
+        self.assertEqual(self.git("write-tree").stdout, before)
+        self.git("rm", "-f", "--", "bad")
+        self.git("commit", "--no-edit")
+        self.assertEqual(self.git("show", "HEAD:source").stdout, "task text\n")
+        self.assertEqual(
+            json.loads(self.git("show", "HEAD:tools/policy/source_content_exceptions.json").stdout),
+            [],
+        )
+        self.assertEqual(len(self.git("rev-list", "--parents", "-n", "1", "HEAD").stdout.split()), 3)
 
     def test_subject_scope_breaking_marker_and_multiline_body(self):
         self.stage("source", b"text\n")
@@ -174,6 +208,37 @@ class CommitHookTests(unittest.TestCase):
         self.stage("main", b"again\n")
         self.git("commit", "--fixup=HEAD", "-q")
         self.assertEqual(self.ci().returncode, 0)
+
+    def test_internal_tracker_references_are_rejected_in_authored_messages(self):
+        # Built from parts so this file passes the check it exercises.
+        key, link = "TIL" + "-512", "https://linear" + ".app/tilo/issue/x"
+        self.stage("source", b"text\n")
+        for message in ("fix(shell): keep focus (" + key + ")", "fix(shell): keep focus\n\nSee " + link + "."):
+            with self.subTest(message=message):
+                result = self.git("commit", "-qm", message, check=False)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("internal issue tracker", result.stderr)
+        self.git("commit", "--no-verify", "-qm", "fix(shell): keep focus (" + key + ")")
+        result = self.ci()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("internal issue tracker", result.stderr)
+
+    def test_generated_merge_subjects_keep_historical_references(self):
+        branch = "bob/" + "til" + "-136-focus"
+        self.git("switch", "-qc", branch)
+        self.stage("feature", b"feature\n")
+        self.git("commit", "-qm", "feat(ui): add feature")
+        self.git("switch", "-q", "main")
+        self.git("merge", "--no-ff", branch, "-m", "Merge branch '" + branch + "'")
+        self.assertEqual(self.ci().returncode, 0)
+
+    def test_pull_request_title_check(self):
+        script = str(self.root / "tools/policy/check_commit_message.py")
+        title = lambda text: subprocess.run(["python3", script, "--title", text], capture_output=True, text=True)
+        self.assertEqual(title("WIP: fix(shell): keep focus while typing").returncode, 0)
+        result = title("fix(shell): keep focus (" + "TIL" + "-512)")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("internal issue tracker", result.stderr)
 
     def test_unobservable_new_history_fails_instead_of_passing(self):
         self.stage("source", b"text\n")

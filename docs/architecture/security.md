@@ -187,6 +187,13 @@ agent's colour, and keeps who acted and for whom as data
 file versions the same way from the identity projection, which marks a
 device governance admitted as an agent (after verifying its person's
 delegation) and keeps agent devices out of the devices sharing encrypts to.
+The workspace's Activity and every app's own history name the same agents
+by the same check (`WorkspaceTree::verified_agents`): the compositor reads
+them into Activity, and the broker tells each app's context stream its
+room's verified agents when it subscribes and whenever they change
+(`ChannelContext.historyAgents`). A device whose delegation does not verify
+for exactly that device stays an unknown participant. These lists are
+presentation only; nothing is admitted by them.
 
 ### Load hints beside local records
 

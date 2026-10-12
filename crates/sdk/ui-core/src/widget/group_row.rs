@@ -3031,6 +3031,12 @@ impl FloatingSurfaceProvider for GroupRow {
         }
     }
 
+    fn on_floating_surface_ime_source_changed(&mut self, id: Option<&str>) {
+        for group in &mut self.groups {
+            FloatingSurfaceProvider::on_floating_surface_ime_source_changed(group, id);
+        }
+    }
+
     fn on_floating_surface_event_source(&mut self, id: Option<&str>) {
         for group in &mut self.groups {
             FloatingSurfaceProvider::on_floating_surface_event_source(group, id);
@@ -3103,6 +3109,28 @@ impl FloatingSurfaceProvider for GroupRow {
                 presence,
             );
         }
+    }
+
+    fn draw_floating_surface(
+        &mut self,
+        id: &str,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) -> bool {
+        self.groups.iter_mut().any(|group| {
+            FloatingSurfaceProvider::draw_floating_surface(
+                group,
+                id,
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                presence,
+            )
+        })
     }
 
     fn set_floating_surface_bounds(&mut self, bounds: Rect) {
@@ -3296,7 +3324,11 @@ impl Widget for GroupRow {
             group.set_reduce_motion(theme.reduce_motion);
             let lane = lane_of.get(i).copied().unwrap_or(0);
             let dest_fits = snap_lane.get(lane).copied().unwrap_or(false);
-            if dest_fits || group.width_target_is_stale() {
+            if group.is_closing() && !theme.reduce_motion {
+                // A closing slot owns its width spring even when its destination
+                // fits the viewport. Snapping to zero would remove the animation.
+                group.step_width_spring();
+            } else if dest_fits || group.width_target_is_stale() {
                 group.snap_width_spring();
             } else {
                 group.step_width_spring();
@@ -6641,7 +6673,18 @@ mod tests {
 
             let (mut row, taffy, root) = make_row_with_groups_with_taffy(&[&[1], &[2]]);
             // Already-elapsed timestamp: ready-to-prune on the very next tick.
-            row.groups[0].set_closing_at_for_tests(earlier(crate::time::now(), 200));
+            row.groups[0].set_closing_at_for_tests(
+                crate::time::now()
+                    .checked_sub(
+                        Theme::dark()
+                            .tokens
+                            .motion
+                            .durations
+                            .base()
+                            .saturating_add(std::time::Duration::from_millis(40)),
+                    )
+                    .expect("representable close deadline"),
+            );
             assert_eq!(row.groups.len(), 2, "precondition: two groups before prune");
 
             let event = WindowEvent::CursorMoved {

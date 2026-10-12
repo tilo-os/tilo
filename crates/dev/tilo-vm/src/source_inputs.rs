@@ -18,6 +18,8 @@ struct Inputs {
 pub(crate) struct Snapshot {
     pub file: tempfile::NamedTempFile,
     pub digest: String,
+    pub provenance: tilo_vm_protocol::Provenance,
+    paths: Vec<String>,
 }
 
 fn input_hash(root: &Path, path: &Path) -> Result<String, CliError> {
@@ -57,7 +59,14 @@ fn input_hash(root: &Path, path: &Path) -> Result<String, CliError> {
 
 impl Snapshot {
     pub(crate) fn unchanged(&self, root: &Path) -> Result<(), CliError> {
-        if verify(root, self.file.path())? != self.digest {
+        let worktree = Worktree {
+            root: root.to_owned(),
+            branch: None,
+        };
+        if worktree.head() != self.provenance.source_commit
+            || listed_paths(root)? != self.paths
+            || verify(root, self.file.path())? != self.digest
+        {
             return Err(CliError::InvalidInput(
                 "source inventory changed during delivery".into(),
             ));
@@ -66,46 +75,18 @@ impl Snapshot {
     }
 
     pub(crate) fn create(worktree: &Worktree, component: &str) -> Result<Self, CliError> {
-        let listed = Command::new("git")
-            .arg("-C")
-            .arg(&worktree.root)
-            .args(["ls-files", "-z", "-co", "--exclude-standard"])
-            .output()
-            .map_err(CliError::io("list source inputs"))?;
-        if !listed.status.success() {
-            return Err(CliError::InvalidInput(
-                "cannot enumerate source inputs".into(),
-            ));
-        }
+        let paths = listed_paths(&worktree.root)?;
         let mut files = BTreeMap::new();
-        for raw in listed
-            .stdout
-            .split(|byte| *byte == 0)
-            .filter(|raw| !raw.is_empty())
-        {
-            let path = std::str::from_utf8(raw)
-                .map_err(|_| CliError::InvalidInput("source path is not UTF-8".into()))?;
-            if path.split('/').any(|part| part == ".git")
-                || path.starts_with("target/")
-                || path.starts_with(".tilo-vm-inputs-")
-            {
-                continue;
-            }
+        for path in &paths {
             let full = worktree.root.join(path);
-            if !full
-                .try_exists()
-                .map_err(CliError::io("stat source input"))?
-            {
-                continue;
-            }
-            files.insert(path.to_owned(), input_hash(&worktree.root, &full)?);
+            files.insert(path.clone(), input_hash(&worktree.root, &full)?);
         }
-        let inputs = Inputs {
-            provenance: build::source_provenance(worktree, component, "remote"),
+        let provenance = build::source_provenance(worktree, component, "remote");
+        let bytes = serde_json::to_vec(&Inputs {
+            provenance: provenance.clone(),
             files,
-        };
-        let bytes =
-            serde_json::to_vec(&inputs).map_err(|e| CliError::InvalidInput(e.to_string()))?;
+        })
+        .map_err(|error| CliError::InvalidInput(error.to_string()))?;
         let file = tempfile::Builder::new()
             .prefix(".tilo-vm-inputs-")
             .suffix(".json")
@@ -115,8 +96,46 @@ impl Snapshot {
         Ok(Self {
             file,
             digest: build::sha256_hex(&bytes),
+            provenance,
+            paths,
         })
     }
+}
+
+fn listed_paths(root: &Path) -> Result<Vec<String>, CliError> {
+    let listed = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["ls-files", "-z", "-co", "--exclude-standard"])
+        .output()
+        .map_err(CliError::io("list source inputs"))?;
+    if !listed.status.success() {
+        return Err(CliError::InvalidInput(
+            "cannot enumerate source inputs".into(),
+        ));
+    }
+    let mut paths = Vec::new();
+    for raw in listed
+        .stdout
+        .split(|byte| *byte == 0)
+        .filter(|raw| !raw.is_empty())
+    {
+        let path = std::str::from_utf8(raw)
+            .map_err(|_| CliError::InvalidInput("source path is not UTF-8".into()))?;
+        if path.split('/').any(|part| part == ".git")
+            || path.starts_with("target/")
+            || path.starts_with(".tilo-vm-inputs-")
+        {
+            continue;
+        }
+        if !root.join(path).exists() {
+            continue;
+        }
+        paths.push(path.to_owned());
+    }
+    paths.sort();
+    paths.dedup();
+    Ok(paths)
 }
 
 pub(crate) fn verify(root: &Path, inventory: &Path) -> Result<String, CliError> {
@@ -191,6 +210,28 @@ mod tests {
         let snapshot = Snapshot::create(&worktree, "app:terminal").unwrap();
         let path = snapshot.file.path().to_path_buf();
         assert_eq!(verify(root.path(), &path).unwrap(), snapshot.digest);
+        snapshot.unchanged(root.path()).unwrap();
+        std::fs::write(root.path().join("new-input.rs"), "new source").unwrap();
+        assert!(
+            snapshot.unchanged(root.path()).is_err(),
+            "new source files must not enter a frozen cohort"
+        );
+        std::fs::remove_file(root.path().join("new-input.rs")).unwrap();
+        git(&[
+            "-c",
+            "user.name=fixture",
+            "-c",
+            "user.email=fixture@example.test",
+            "commit",
+            "--allow-empty",
+            "-qm",
+            "different head",
+        ]);
+        assert!(
+            snapshot.unchanged(root.path()).is_err(),
+            "source commit changes must invalidate the cohort"
+        );
+        git(&["reset", "--soft", "HEAD~1"]);
         snapshot.unchanged(root.path()).unwrap();
         let original = std::fs::read(&path).unwrap();
         let mut altered: serde_json::Value = serde_json::from_slice(&original).unwrap();

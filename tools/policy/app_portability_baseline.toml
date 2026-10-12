@@ -53,7 +53,6 @@ D2 = 6
 [apps.file-explorer]
 D1 = 2
 D2 = 11
-R1 = 1
 R3 = 3
 
 [apps.firewall]
@@ -140,7 +139,7 @@ D2 = 5
 D1 = 4
 D2 = 3
 R1 = 45
-R2 = 54
+R2 = 53
 R3 = 3
 
 [apps.totp]
