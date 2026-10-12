@@ -12,6 +12,7 @@ use tilo_app::a11y::{AccessNode, Action as A11yAction, Role};
 use tilo_app::framework::{Dispatcher, SurfaceCx};
 use tilo_app::prelude::*;
 
+use tilo_app::advanced::{NodeId, TaffyTree};
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Ballot {
     pub yes: i64,
@@ -56,8 +57,8 @@ impl Booth {
             return false;
         };
         match target {
-            "approve" => dispatch.invoke(Ballot::APPROVE.invoke()),
-            "reject" => dispatch.invoke(Ballot::REJECT.invoke()),
+            "approve" => dispatch.submit(Ballot::APPROVE.invoke()),
+            "reject" => dispatch.submit(Ballot::REJECT.invoke()),
             _ => return false,
         }
         true
@@ -83,9 +84,6 @@ impl Widget for Booth {
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         self.rect = tilo_app::widget::layout_rect(taffy, node, origin);
-    }
-
-    fn draw(&mut self, _: &mut Scene, _: Affine, _: &mut TextRenderer, _: &Theme, _: &PresenceCtx) {
     }
 
     fn name(&self) -> &'static str {

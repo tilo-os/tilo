@@ -1111,10 +1111,10 @@ mod interaction_tests {
             // live first run shows, not a half-cleared sample.
             let capture =
                 ui::prelude::TestApp::<crate::WeatherShell>::capture(Some("onboarding")).unwrap();
-            assert!(capture.state().locations.is_empty());
+            assert!(capture.state().model().locations.is_empty());
             let mut detail =
                 ui::prelude::TestApp::<crate::WeatherShell>::capture(Some("detail")).unwrap();
-            assert_eq!(detail.state().locations.len(), 4);
+            assert_eq!(detail.state().model().locations.len(), 4);
             assert!(
                 detail
                     .harness()
@@ -2040,7 +2040,7 @@ mod framework_tests {
     #[test]
     fn places_are_edited_through_the_resource_and_the_default_follows_the_document() {
         let mut app = TestApp::<crate::WeatherShell>::capture(Some("detail")).unwrap();
-        let state = app.state();
+        let state = app.state().model();
         assert_eq!(state.locations.len(), 4);
         assert_eq!(state.selected, 0);
         let tokyo: LocationId = state.locations[1].id;
@@ -2050,15 +2050,15 @@ mod framework_tests {
             serde_json::json!({}),
         )
         .unwrap();
-        assert_eq!(app.state().selected_location().unwrap().id, tokyo);
+        assert_eq!(app.state().model().selected_location().unwrap().id, tokyo);
         app.call_on(
             &location_resource_id(tokyo),
             "move-to-top",
             serde_json::json!({}),
         )
         .unwrap();
-        assert_eq!(app.state().locations[0].id, tokyo);
-        let removed = app.state().locations[3].id;
+        assert_eq!(app.state().model().locations[0].id, tokyo);
+        let removed = app.state().model().locations[3].id;
         assert!(
             app.call_on(
                 &location_resource_id(removed),
@@ -2068,7 +2068,46 @@ mod framework_tests {
             .is_err(),
             "removing a place asks for confirmation"
         );
-        assert_eq!(app.state().locations.len(), 4);
+        assert_eq!(app.state().model().locations.len(), 4);
+    }
+
+    /// What an agent does to the places is history a person can read.
+    #[test]
+    fn history_says_what_happened_to_each_place() {
+        let mut app = TestApp::<crate::WeatherShell>::capture(Some("detail")).unwrap();
+        let tokyo: LocationId = app.state().model().locations[1].id;
+        app.call_on(
+            &location_resource_id(tokyo),
+            "move-to-top",
+            serde_json::json!({}),
+        )
+        .unwrap();
+        app.call(
+            "save-location",
+            serde_json::json!({
+                "place": { "name": "Auckland", "country": "New Zealand",
+                           "latitude": -36.85, "longitude": 174.76 }
+            }),
+        )
+        .unwrap();
+        let catalogue =
+            tilo_history::Catalogue::new("en-US", &[include_str!("../locales/en-US.ftl")]);
+        let reader = tilo_history::Reader::new("en-US").with_app(&catalogue);
+        let sentences: Vec<String> = app
+            .versions()
+            .into_iter()
+            .filter_map(|version| version.context)
+            .filter(|entry| entry.what.is_some())
+            .map(|entry| reader.sentence(&entry))
+            .collect();
+        assert_eq!(
+            sentences.get(sentences.len().saturating_sub(2)..),
+            Some(
+                ["Moved Tokyo to the top", "Saved a place to follow"]
+                    .map(String::from)
+                    .as_slice()
+            )
+        );
     }
 
     /// A live window answers the weather effects through the door: with no

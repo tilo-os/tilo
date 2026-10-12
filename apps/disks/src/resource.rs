@@ -1,4 +1,4 @@
-//! Disks as a [`tilo_resource::Resource`].
+//! Disks as a resource.
 //!
 //! The block devices of this machine are live device state: the surface
 //! probes them and publishes each drive and partition as a
@@ -13,100 +13,71 @@
 use std::collections::BTreeMap;
 use std::rc::Rc;
 
-use serde::{Deserialize, Serialize};
 use ui::framework::{
     EffectAnswer, EffectCx, EffectStatus, Fixture, LiveRow, ResourceApp, ResourceSurface,
     SurfaceCx, ViewCx,
 };
-use ui::tilo_actions::{
-    Action, ActionError, ActionParam, ActionRegistry, ConfirmationPolicy, ParamType,
-};
-use ui::tilo_resource::{self, ActionDecl, Doc, Effect, Invoke, ModelError, Resource};
+use ui::tilo_actions::ConfirmationPolicy;
+use ui::tilo_resource::{self, Atom, Effect, Invoke, Model, Refusal, resource};
 use ui::widget::Element;
 
 use crate::app::{ActionKind, DisksApp};
-use crate::doc::DisksDoc;
 use crate::model::{Drive, Partition, Topology};
 
-/// The one edit the document takes: a drive's name.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum DisksAction {
-    /// Name the drive with `serial`, or forget its name (`None` or blank).
-    NameDrive {
-        serial: String,
-        name: Option<String>,
-    },
+/// What the person authors about their storage devices.
+#[derive(Model, Default, Debug, Clone, PartialEq)]
+#[model(check = Disks::valid)]
+pub struct Disks {
+    /// Drive serial number to the name the person gave it. A name is written
+    /// whole: two people naming one drive at once keep one of the names.
+    pub names: BTreeMap<String, Atom>,
 }
 
-impl Action for DisksAction {
-    fn apply(&self, doc: &mut ui::tilo_actions::Doc) -> Result<(), ActionError> {
-        match self {
-            Self::NameDrive { serial, name } => {
-                let name = name
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|name| !name.is_empty());
-                DisksDoc::set_name(doc, serial, name)?;
-            }
+impl Disks {
+    /// A name is shown on one line: never blank, never padded.
+    fn valid(&self) -> Result<(), Refusal> {
+        if self
+            .names
+            .values()
+            .any(|name| name.0.trim().is_empty() || name.0.trim() != name.0)
+        {
+            return Err(Refusal::new("a drive's name is not blank and not padded"));
         }
         Ok(())
     }
+
+    /// Every named drive's name, by serial number.
+    pub fn names(&self) -> BTreeMap<String, String> {
+        self.names
+            .iter()
+            .map(|(serial, name)| (serial.clone(), name.0.clone()))
+            .collect()
+    }
 }
 
-/// What the document holds.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct DisksState {
-    /// Drive serial number to the name the person gave it.
-    pub names: BTreeMap<String, String>,
-}
-
-/// The storage-devices resource.
-pub struct Disks;
-
-impl Resource for Disks {
-    const KIND: &'static str = "disks.system";
-    const LABEL: &'static str = "Storage devices";
-    const ACTION_TYPE: &'static str = "disks.action";
-
-    type State = DisksState;
-    type Action = DisksAction;
-
-    fn register(registry: &mut ActionRegistry) {
-        registry.register::<DisksAction>(Self::ACTION_TYPE);
-    }
-
-    fn read(doc: &Doc) -> Result<DisksState, ModelError> {
-        Ok(DisksState {
-            names: DisksDoc::names(doc),
-        })
-    }
-
-    fn declarations() -> Vec<ActionDecl<Self>> {
-        vec![
-            ActionDecl::new(
-                "name-drive",
-                "Name drive",
-                vec![
-                    ActionParam::required("serial", ParamType::Text, "The drive's serial number"),
-                    ActionParam::optional(
-                        "name",
-                        ParamType::Text,
-                        "The name to show, or omit to forget it",
-                    ),
-                ],
-                |args, _| {
-                    let serial = args
-                        .text("serial")
-                        .ok_or_else(|| "missing serial number".to_owned())?
-                        .to_owned();
-                    Ok(DisksAction::NameDrive {
-                        serial,
-                        name: args.text("name").map(str::to_owned),
-                    })
-                },
-            )
-            .describe("Give a drive a name that follows it to every device."),
-        ]
+#[resource(kind = "disks.system", label = "Storage devices")]
+impl Disks {
+    /// Name a drive, or forget its name.
+    ///
+    /// The name follows the drive to every device it is plugged into.
+    #[action]
+    pub fn name_drive(
+        &mut self,
+        #[param("The drive's serial number")] serial: String,
+        #[param("The name to show; none or blank forgets it")] name: Option<String>,
+    ) {
+        match name
+            .as_deref()
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+        {
+            Some(name) => {
+                self.names.insert(serial, Atom(name.to_owned()));
+            }
+            None => {
+                self.names.remove(&serial);
+            }
+        }
     }
 }
 
@@ -117,46 +88,46 @@ impl Resource for Disks {
 #[effect(operation = "disks.device", device_only)]
 pub enum DisksEffect {
     /// Rescan storage devices.
-    #[effect(permission = "read")]
+    #[effect(kind = "read")]
     Rescan,
     /// Select.
-    #[effect(permission = "read")]
+    #[effect(kind = "read")]
     Select {
         #[param("Kernel name of a drive or partition, e.g. sda or sda1")]
         device: String,
     },
     /// Show detail tab.
-    #[effect(permission = "read")]
+    #[effect(kind = "read")]
     ShowTab {
         #[param("overview | smart | partitions")]
         tab: String,
     },
     /// Mount.
-    #[effect(job, permission = "admin")]
+    #[effect(job)]
     Mount {
         #[param("Kernel name of the partition")]
         device: String,
     },
     /// Unmount.
-    #[effect(job, permission = "admin")]
+    #[effect(job)]
     Unmount {
         #[param("Kernel name of the partition")]
         device: String,
     },
     /// Format.
-    #[effect(job, destructive, permission = "admin")]
+    #[effect(job, destructive)]
     Format {
         #[param("Kernel name of the drive or partition to erase")]
         device: String,
     },
     /// Benchmark.
-    #[effect(job, permission = "admin")]
+    #[effect(job)]
     Benchmark {
         #[param("Kernel name of the drive or partition")]
         device: String,
     },
     /// Eject.
-    #[effect(job, permission = "admin")]
+    #[effect(job)]
     Eject {
         #[param("Kernel name of the removable drive")]
         device: String,
@@ -300,22 +271,18 @@ impl ResourceApp for DisksShell {
         if name != Some("named") {
             return Vec::new();
         }
-        Invoke::apply(&DisksAction::NameDrive {
-            serial: "S6Z1NJ0T934217X".into(),
-            name: Some("Workstation".into()),
-        })
-        .into_iter()
-        .collect()
+        vec![Disks::NAME_DRIVE.with(("S6Z1NJ0T934217X".to_owned(), Some("Workstation".to_owned())))]
     }
 
     fn view(cx: &mut ViewCx<Disks>) -> Element {
+        crate::locales::install();
         cx.surface(DisksApp::new())
     }
 }
 
 impl ResourceSurface<Disks, DisksEffect> for DisksApp {
-    fn present(&mut self, state: &Rc<DisksState>) {
-        self.adopt_names(&state.names);
+    fn present(&mut self, state: &Rc<Disks>) {
+        self.adopt_names(&state.names());
     }
 
     fn attach(&mut self, cx: SurfaceCx<Disks>) {
@@ -351,30 +318,6 @@ impl ResourceSurface<Disks, DisksEffect> for DisksApp {
         ]
     }
 
-    fn bound_declarations(&self) -> Vec<ActionDecl<Disks>> {
-        let Some(serial) = self.selected_serial() else {
-            return Vec::new();
-        };
-        vec![
-            ActionDecl::new(
-                "name-selected-drive",
-                "Name this drive",
-                vec![ActionParam::optional(
-                    "name",
-                    ParamType::Text,
-                    "The name to show, or omit to forget it",
-                )],
-                move |args, _| {
-                    Ok(DisksAction::NameDrive {
-                        serial: serial.clone(),
-                        name: args.text("name").map(str::to_owned),
-                    })
-                },
-            )
-            .describe("Give the selected drive a name that follows it to every device."),
-        ]
-    }
-
     /// Every drive on this machine with its partitions; a handful at most,
     /// so the whole set is published.
     fn live_rows(&self) -> Vec<LiveRow> {
@@ -387,6 +330,7 @@ mod tests {
     use super::*;
     use ui::framework::testing::TestApp;
     use ui::tilo_actions::OperationKind;
+    use ui::tilo_resource::Resource;
 
     /// A live window over the sample machine: effects run, devices are
     /// never touched.
@@ -555,17 +499,18 @@ mod tests {
     #[test]
     fn drive_names_are_document_state_shown_on_the_rows() {
         let mut app = TestApp::<SampleDisks>::new().unwrap();
-        app.invoke(
-            Invoke::apply(&DisksAction::NameDrive {
-                serial: "S6Z1NJ0T934217X".into(),
-                name: Some("Workstation".into()),
-            })
-            .unwrap(),
-        )
+        app.invoke(Disks::NAME_DRIVE.with((
+            "S6Z1NJ0T934217X".to_owned(),
+            Some(" Workstation ".to_owned()),
+        )))
         .unwrap();
         assert_eq!(
-            app.state().names.get("S6Z1NJ0T934217X").map(String::as_str),
-            Some("Workstation")
+            app.state()
+                .names()
+                .get("S6Z1NJ0T934217X")
+                .map(String::as_str),
+            Some("Workstation"),
+            "a name is trimmed"
         );
         let resources = app.harness().resources();
         assert_eq!(
@@ -575,13 +520,67 @@ mod tests {
         assert!(app.undo(), "naming a drive is an undo step");
         assert!(app.state().names.is_empty());
 
-        // The selected drive (the first) is named through its bound action.
-        app.call("name-selected-drive", serde_json::json!({ "name": "Fast" }))
-            .unwrap();
+        // An agent names a drive in one call.
+        app.call(
+            "name-drive",
+            serde_json::json!({ "serial": "S6Z1NJ0T934217X", "name": "Fast" }),
+        )
+        .unwrap();
         assert_eq!(
-            app.state().names.get("S6Z1NJ0T934217X").map(String::as_str),
+            app.state()
+                .names()
+                .get("S6Z1NJ0T934217X")
+                .map(String::as_str),
             Some("Fast")
         );
+        app.call(
+            "name-drive",
+            serde_json::json!({ "serial": "S6Z1NJ0T934217X", "name": " " }),
+        )
+        .unwrap();
+        assert!(app.state().names.is_empty(), "a blank name forgets it");
+        let padded = Disks::paths()
+            .names
+            .key("S6Z1NJ0T934217X")
+            .set(Atom(" Fast".into()));
+        assert!(
+            app.invoke(Invoke::edit(&padded).unwrap()).is_err(),
+            "a field edit is held to the same rule"
+        );
+    }
+
+    #[test]
+    fn history_names_the_drive_named() {
+        let mut app = TestApp::<SampleDisks>::new().unwrap();
+        app.call(
+            "name-drive",
+            serde_json::json!({ "serial": "S6Z1NJ0T934217X", "name": "Workstation" }),
+        )
+        .unwrap();
+        let catalogue =
+            tilo_history::Catalogue::new("en-US", &[include_str!("../locales/en-US.ftl")]);
+        let reader = tilo_history::Reader::new("en-US").with_app(&catalogue);
+        let sentences: Vec<String> = app
+            .history()
+            .into_iter()
+            .filter(|entry| entry.what.is_some())
+            .map(|entry| reader.sentence(&entry))
+            .collect();
+        assert_eq!(sentences, ["Named a drive “Workstation”"]);
+    }
+
+    #[test]
+    fn two_devices_naming_different_drives_keep_both_names() {
+        let mut left = ui::prelude::Replica::<Disks>::new();
+        let mut right = left.fork();
+        left.apply(Disks::NAME_DRIVE.with(("A".to_owned(), Some("Work".to_owned()))))
+            .unwrap();
+        right
+            .apply(Disks::NAME_DRIVE.with(("B".to_owned(), Some("Backups".to_owned()))))
+            .unwrap();
+        left.sync_with(&mut right).unwrap();
+        assert_eq!(left.state().unwrap(), right.state().unwrap());
+        assert_eq!(left.state().unwrap().names().len(), 2);
     }
 
     #[test]

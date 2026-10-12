@@ -23,6 +23,7 @@
 //! high contrast. A step that is not a whole number of device pixels
 //! repaints the viewport instead, and still matches.
 
+use tilo_app::advanced::{Scene, WindowEvent};
 use tilo_app::app::{AppSurface, SurfaceDamage};
 use tilo_app::framework::testing::drive_live_window;
 use tilo_app::i18n::EmbeddedCatalog;
@@ -36,7 +37,6 @@ use tilo_app::winit::window::CursorIcon;
 static CATALOG: EmbeddedCatalog = EmbeddedCatalog::new(
     "en-US",
     &[("en-US", "copy-draft = Next task\ncopy-done = Completed\n")],
-    "copy-draft",
 );
 
 #[derive(Model, Default, Debug, Clone, PartialEq)]
@@ -131,27 +131,16 @@ impl ResourceApp for ShortWindow {
 
 /// The draft over the scrolled list of tasks.
 fn checklist(cx: &ViewCx<Checklist>) -> Element {
-    let draft = cx
-        .input(|list| list.draft.clone(), Checklist::DRAFT)
-        .with_id("draft");
-    let rows = cx.each(
-        |list| &list.tasks,
-        |row| {
-            let Some(id) = row.item().cloned() else {
-                return Box::new(Column::new()) as Element;
-            };
-            Box::new(tilo_app::row![
-                row.text(|task| task.title.clone()),
-                row.checkbox(
-                    "copy-done",
-                    |task| task.done,
-                    Checklist::SET_DONE.map(move |done| (id.clone(), done))
-                ),
-            ]) as Element
-        },
-    );
+    let draft = cx.input(cx.paths().draft).with_id("draft");
+    let rows = cx.each(|list| &list.tasks, task_row);
     let list = Scrollable::new_vertical().with_child(Box::new(rows));
     Box::new(tilo_app::column![draft, list])
+}
+
+/// One task: its title and whether it is done.
+fn task_row(row: &mut ViewCx<Checklist, Task>) -> Element {
+    let done = row.checkbox("copy-done", row.paths().done);
+    Box::new(tilo_app::row![row.text(|task| task.title.clone()), done])
 }
 
 /// The window's surface: 800×600 logical pixels at `scale`, presented by a

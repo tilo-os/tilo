@@ -20,7 +20,6 @@ use winit::event::{ElementState, KeyEvent, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use crate::paint::PaintCtx;
-use crate::presence::PresenceCtx;
 use crate::query_text::{QueryComposition, QueryEventChange, QueryInk, QueryView};
 use crate::text_render::TextRenderer;
 use crate::text_selection::Selection;
@@ -638,16 +637,6 @@ impl Widget for PageJumpPalette {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         taffy.widget_leaf(Style::default(), node_map, self)
-    }
-    fn apply_layout(&mut self, _taffy: &TaffyTree<()>, _node: NodeId, _origin: Point) {}
-    fn draw(
-        &mut self,
-        _scene: &mut Scene,
-        _transform: Affine,
-        _text_renderer: &mut TextRenderer,
-        _theme: &Theme,
-        _presence: &PresenceCtx,
-    ) {
     }
     fn name(&self) -> &'static str {
         "PageJumpPalette"

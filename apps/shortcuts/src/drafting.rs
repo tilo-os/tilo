@@ -47,10 +47,12 @@ pub fn catalogue_summary(catalog: &ActionCatalog) -> String {
             continue;
         }
         let line = json!({
-            "app_id": row.app_id,
+            "action": {
+                "app": row.app_id,
+                "kind": row.resource.kind,
+                "action": descriptor.address.action,
+            },
             "resource": row.resource.id,
-            "resource_kind": row.resource.kind,
-            "action": descriptor.address.action,
             "label": descriptor.action_label,
             "params": descriptor.params,
             "result": descriptor.contract.result,
@@ -84,8 +86,9 @@ pub fn schema() -> Value {
 const INSTRUCTIONS: &str = "Write a Tilo shortcut that does what the person describes, using \
 only the actions listed in the input (one JSON object per line). Answer with the shortcut as \
 JSON: {\"name\", \"inputs\"?, \"steps\", \"output\"?}. Each step has a unique \"id\" (letters, \
-digits, - or _) and a \"step\" kind: \"invoke\" with \"app_id\", \"resource\": {\"fixed\": \
-resource id}, \"action\" and \"args\" mapping parameter names to bindings; \"if\" with \
+digits, - or _) and a \"step\" kind: \"invoke\" with \"action\" (the listed action's \
+{\"app\", \"kind\", \"action\"} as given), \"resource\": {\"fixed\": resource id} and \
+\"args\" mapping parameter names to bindings; \"if\" with \
 \"cond\": {\"truthy\": binding} or {\"equals\": {\"left\", \"right\"}}, \"then\" and \"else\" \
 step lists; \"for_each\" with \"items\" binding, \"item\" variable name and \"body\"; \
 \"set_var\" with \"name\" and \"value\"; \"ask\" with \"param\": {\"name\", \"ty\", \
@@ -135,7 +138,7 @@ pub fn adopt(value: Value, saved: &[Shortcut], catalog: &ActionCatalog) -> Resul
         other => return Err(format!("the agent answered {other}, not a shortcut")),
     };
     object.insert("id".to_owned(), Value::String("drafted".to_owned()));
-    for authority in ["grant", "triggers", "consents", "saved_by"] {
+    for authority in ["grant", "triggers", "saved_by"] {
         object.remove(authority);
     }
     let mut shortcut: Shortcut = serde_json::from_value(Value::Object(object))
@@ -204,13 +207,13 @@ mod tests {
             "id": "tidy",
             "name": "Tidy notes",
             "steps": [
-                {"id": "list", "step": "invoke", "app_id": "so.tilo.notes",
-                 "resource": {"fixed": "notes.folder:inbox"}, "action": "list"},
-                {"id": "note", "step": "invoke", "app_id": "so.tilo.notes",
-                 "resource": {"fixed": "notes.folder:inbox"}, "action": "create",
+                {"id": "list", "step": "invoke", "action": {"app": "so.tilo.notes", "kind": "notes.folder", "action": "list"},
+                 "resource": {"fixed": "notes.folder:inbox"}},
+                {"id": "note", "step": "invoke", "action": {"app": "so.tilo.notes", "kind": "notes.folder", "action": "create"},
+                 "resource": {"fixed": "notes.folder:inbox"},
                  "args": {"title": {"literal": "Digest"}}}
             ],
-            "grant": [{"scope": "Any", "effect": "Grant", "verb": "Admin"}],
+            "grant": [{"node": "**", "kinds": ["read", "undoable", "outside"], "answer": "allow"}],
             "triggers": [{"trigger": "keyboard", "chord": "Super+X"}]
         });
         let drafted = adopt(answer, &saved, &catalog).unwrap();

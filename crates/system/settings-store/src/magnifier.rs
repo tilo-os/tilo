@@ -43,6 +43,7 @@ pub fn zoom_from_label(label: &str) -> Option<u8> {
 
 /// How the magnified image is shown. Persisted as [`Self::as_str`]; an unknown value reads
 /// as the lens.
+#[cfg_attr(feature = "model", derive(tilo_resource::Model))]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(from = "String", into = "&'static str")]
 pub enum MagnifierView {

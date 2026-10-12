@@ -61,8 +61,8 @@ struct WorkspacePolicy {
     room: tilo_desktop_model::RoomId,
     owner: Option<tilo_desktop_model::UserId>,
     collaborators: Vec<tilo_desktop_model::Collaborator>,
-    capabilities: Vec<collab_types::caps::CapOverride>,
-    permission_profiles: Vec<collab_types::PermissionProfile>,
+    policy: tilo_action_policy::RoomPolicy,
+    sandbox: Vec<collab_types::caps::CapOverride>,
     tasks: Vec<tilo_desktop_model::WorkspaceTask>,
     pending_ownership_transfer: Option<collab_types::OwnershipTransferProposalV1>,
 }
@@ -77,10 +77,10 @@ impl PolicySnapshot {
                 .map(|workspace| WorkspacePolicy {
                     id: workspace.id,
                     room: workspace.room,
-                    owner: workspace.owner.clone(),
+                    owner: workspace.owner().cloned(),
                     collaborators: workspace.collaborators.clone(),
-                    capabilities: workspace.capabilities.clone(),
-                    permission_profiles: workspace.permission_profiles.clone(),
+                    policy: workspace.policy.clone(),
+                    sandbox: workspace.sandbox.clone(),
                     tasks: workspace.tasks.clone(),
                     pending_ownership_transfer: workspace.pending_ownership_transfer.clone(),
                 })
@@ -104,10 +104,10 @@ impl PolicySnapshot {
                 .all(|(seen, workspace)| {
                     seen.id == workspace.id
                         && seen.room == workspace.room
-                        && seen.owner == workspace.owner
+                        && seen.owner.as_ref() == workspace.owner()
                         && seen.collaborators == workspace.collaborators
-                        && seen.capabilities == workspace.capabilities
-                        && seen.permission_profiles == workspace.permission_profiles
+                        && seen.policy == workspace.policy
+                        && seen.sandbox == workspace.sandbox
                         && seen.tasks == workspace.tasks
                         && seen.pending_ownership_transfer == workspace.pending_ownership_transfer
                 })

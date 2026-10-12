@@ -1,13 +1,12 @@
 use super::*;
-use crate::feedback::{FeedbackAction, TriageUpdate};
+use crate::feedback::TriageUpdate;
 use automerge::transaction::Transactable;
 use tilo_automerge::ApplyIncoming as _;
 
 #[test]
 fn concurrent_full_triage_histories_still_have_a_bounded_public_status_read() {
-    let mut doc = automerge::AutoCommit::new();
-    crate::doc::ChatDoc::seed_if_empty(&mut doc);
-    let channel = crate::doc::ChatDoc::list_channels(&doc)
+    let mut doc = crate::testing::demo_doc();
+    let channel = crate::testing::channels(&doc)
         .into_iter()
         .find(|channel| channel.kind == crate::model::ChannelKind::Text)
         .unwrap();
@@ -24,27 +23,23 @@ fn concurrent_full_triage_histories_still_have_a_bounded_public_status_read() {
             screenshot: None,
         },
     };
-    crate::actions::apply_as(
+    crate::testing::apply_as(
         &mut doc,
         "visitor",
-        &crate::actions::ChatAction::Feedback(FeedbackAction::Submit {
-            submission: submission.clone(),
-            ts: 0,
-        }),
+        crate::testing::submit_feedback(&submission),
     )
     .unwrap();
     doc.commit();
     let mut other = doc.fork();
     for (author, branch) in [("one", &mut doc), ("two", &mut other)] {
         for ts in 1..=128 {
-            crate::actions::apply_as(
+            crate::testing::apply_at(
                 branch,
                 author,
-                &crate::actions::ChatAction::Feedback(FeedbackAction::Triage {
-                    id: submission.id.clone(),
-                    channel: submission.destination.channel.clone(),
-                    update: TriageUpdate::Investigating,
-                    ts,
+                ts * 1000,
+                crate::resource::Chat::TRIAGE.with(crate::record::chat::Triage {
+                    report: ui::tilo_resource::Id::from_raw(submission.id.clone()),
+                    update: serde_json::to_value(TriageUpdate::Investigating).unwrap(),
                 }),
             )
             .unwrap();
@@ -57,7 +52,7 @@ fn concurrent_full_triage_histories_still_have_a_bounded_public_status_read() {
         .unwrap()
         .unwrap();
     assert_eq!(report.triage.len(), 256);
-    let resource = crate::feedback::publish(&report);
+    let resource = crate::testing::report_resource(&submission.id, &submission.feedback.text);
     let operation = tilo_actions::door::encode_json(
         std::slice::from_ref(&resource),
         &tilo_actions::ActionAddress::new(resource.id.as_str(), "read-feedback-status"),

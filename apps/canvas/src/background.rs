@@ -70,8 +70,10 @@ impl Pictures {
         });
         worker.renderer.pictures.read_from(content);
         let result = match op {
-            ViewOp::Look(look) => view_ops::look(&mut worker.renderer, &mut worker.text, art, look),
-            ViewOp::Export(export) => {
+            ViewOp::Look { look } => {
+                view_ops::look(&mut worker.renderer, &mut worker.text, art, look)
+            }
+            ViewOp::Export { export } => {
                 let mut export = export.clone();
                 // Resolve a path's format before removing the file write.
                 if export.format.is_none() {

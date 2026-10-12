@@ -111,7 +111,7 @@ fn media_basis_matches_original_malformed_container_conflict_and_certificate_rej
                 doc.put(ROOT, "owner", "wrong key").unwrap();
             }
             1 => {
-                doc.put_object(ROOT, "capabilities", ObjType::List).unwrap();
+                doc.put_object(ROOT, "grants", ObjType::List).unwrap();
             }
             2 => {
                 doc.put(ROOT, "peers", "wrong shape").unwrap();
@@ -242,22 +242,34 @@ fn media_basis_collection_and_json_limits_refuse_without_mutating_original_docum
 use super::super::{canonical_key, strict_bytes, strict_map, strict_string};
 use std::collections::{BTreeMap, BTreeSet};
 use tilo_user_identity::canonical::canonical_bytes;
+#[allow(
+    clippy::too_many_lines,
+    reason = "the frozen oracle stays one readable copy of the original algorithm"
+)]
 fn historical_basis(
     doc: &AutoCommit,
     extra_revocations: &[tilo_user_identity::RevocationEntry],
 ) -> Result<[u8; 32], MediaPolicyError> {
     let owner = strict_string(doc, &ROOT, "owner")?;
     let owner_key = canonical_key(&owner)?;
-    let caps = strict_map(doc, &ROOT, "capabilities")?;
-    let mut capabilities = BTreeMap::new();
-    for key in doc.keys(&caps) {
-        let bytes = strict_bytes(doc, &caps, &key)?;
-        let value: collab_types::caps::CapOverride =
+    let grant_map = strict_map(doc, &ROOT, "grants")?;
+    let mut grants = BTreeMap::new();
+    for key in doc.keys(&grant_map) {
+        let bytes = strict_bytes(doc, &grant_map, &key)?;
+        let value: tilo_action_policy::Grant =
             serde_json::from_slice(&bytes).map_err(|_| MediaPolicyError::Malformed)?;
-        capabilities.insert(
+        grants.insert(
             key,
             canonical_bytes(&value).map_err(|_| MediaPolicyError::Malformed)?,
         );
+    }
+    let member_map = strict_map(doc, &ROOT, "members")?;
+    let mut members = BTreeMap::new();
+    for key in doc.keys(&member_map) {
+        let bytes = strict_bytes(doc, &member_map, &key)?;
+        let role: tilo_action_policy::Role =
+            serde_json::from_slice(&bytes).map_err(|_| MediaPolicyError::Malformed)?;
+        members.insert(key, role);
     }
     let peers = strict_map(doc, &ROOT, "peers")?;
     let mut roster = BTreeSet::new();
@@ -338,7 +350,7 @@ fn historical_basis(
         .iter()
         .map(|entry| (entry.revoked_device_public_key, entry))
         .collect::<BTreeMap<_, _>>();
-    let bytes = canonical_bytes(&(owner_key, capabilities, roster, rows, revocations))
+    let bytes = canonical_bytes(&(owner_key, members, grants, roster, rows, revocations))
         .map_err(|_| MediaPolicyError::Malformed)?;
     let mut hasher = blake3::Hasher::new();
     hasher.update(b"tilo-room-media-auth-basis-v1\0");

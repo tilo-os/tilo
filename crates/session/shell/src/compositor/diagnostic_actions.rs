@@ -32,7 +32,7 @@ fn resources() -> Vec<Resource> {
             payload: b"configure".to_vec(),
         },
     );
-    configure.contract.permission = tilo_actions::PermissionRequirement::Admin;
+    configure.contract.kind = tilo_actions::ActionKind::Outside;
     let mut inspect = ActionSpec::typed_operation(
         "inspect",
         crate::shell::i18n::t("session-diagnostics-inspect"),
@@ -50,7 +50,7 @@ fn resources() -> Vec<Resource> {
     };
     configure.contract.result = result.clone();
     inspect.contract.result = result;
-    inspect.contract.permission = tilo_actions::PermissionRequirement::Read;
+    inspect.contract.kind = tilo_actions::ActionKind::Read;
     vec![
         Resource::new(
             PROVIDER,

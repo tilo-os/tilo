@@ -481,6 +481,14 @@ impl App {
                 &mut handled,
                 &mut focus_target,
             );
+            // The event may have replaced widgets (a dialog closing on its
+            // own button): forget their nodes before the fallbacks below look
+            // the focused node up. A focus target named by the old map is
+            // gone with it; the next frame lays the new widgets out.
+            if app.forget_replaced_widgets() {
+                focus_target = None;
+                window.request_redraw();
+            }
             let presentation_is_floating =
                 !app.root_widget.floating_surface_presentations().is_empty();
             // Even a document-free interaction may switch which resources a

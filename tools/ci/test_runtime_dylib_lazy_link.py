@@ -256,6 +256,26 @@ class RealLink(unittest.TestCase):
                                   capture_output=True, text=True).stdout
         self.assertNotIn(LAZY.SECTION, sections)
 
+    def test_code_nothing_exported_reaches_and_macro_only_crates_are_left_out(self):
+        # rustc links a dylib without collecting sections and exports the
+        # public items of every crate in it, syn's included.
+        (self.directory / "leaf.c").write_text(
+            "int kept(void) { return 7; }\n"
+            "int _RNvCsabc_3syn10parse_file(void) { return 8; }\n"
+            "int unreached(void) { return 9; }\n")
+        (self.directory / "list").write_text(
+            "{\n  global:\n    kept;\n    _RNvCsabc_3syn10parse_file;\n  local:\n    *;\n};\n")
+        result = subprocess.run([sys.executable, str(SCRIPT), "-shared", "-fPIC", "-ffunction-sections",
+                                 "leaf.c", "-Wl,--version-script=list", "-o", "libleaf.so"],
+                                cwd=self.directory, capture_output=True, text=True,
+                                env=dict(os.environ, TILO_LAZY_LINK_CC="cc"))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        symbols = subprocess.run(["nm", str(self.directory / "libleaf.so")],
+                                 capture_output=True, text=True).stdout
+        self.assertIn(" kept", symbols)
+        self.assertNotIn("3syn", symbols)
+        self.assertNotIn("unreached", symbols)
+
 
 if __name__ == "__main__":
     unittest.main()

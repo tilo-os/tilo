@@ -31,11 +31,11 @@ pub struct CollaborationActionDefinition {
 /// Canonical descriptors used by native, Cloud, and normal-OS action brokers.
 pub fn action_definitions() -> Vec<CollaborationActionDefinition> {
     use tilo_actions::{
-        ActionContract, ActionParam, ConfirmationPolicy, ParamType, PermissionRequirement,
-        ResultSpec, RetryPolicy, RiskLevel,
+        ActionContract, ActionKind, ActionParam, ConfirmationPolicy, ParamType, ResultSpec,
+        RetryPolicy, RiskLevel,
     };
     let contract = |risk| ActionContract {
-        permission: PermissionRequirement::Admin,
+        kind: ActionKind::Outside,
         risk,
         confirmation: ConfirmationPolicy::None,
         retry: RetryPolicy::RetryWithInvocationId,

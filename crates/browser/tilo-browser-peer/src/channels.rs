@@ -178,6 +178,7 @@ pub(crate) struct Channels {
     candidates: Vec<(String, [u8; 32], MlsGovernanceFrameV1)>,
     /// Restored member state, waiting for its route to open.
     saved: HashMap<ChannelId, SavedMember>,
+    saved_requests: HashMap<ChannelId, MlsAccessRequestV1>,
     dirty: bool,
 }
 
@@ -196,6 +197,7 @@ impl Channels {
             host: None,
             candidates: Vec::new(),
             saved: HashMap::new(),
+            saved_requests: HashMap::new(),
             dirty: false,
         }
     }
@@ -245,6 +247,37 @@ impl Channels {
             members,
         });
         self.dirty = true;
+    }
+
+    /// Restore requests with their sealed member state, so a reload cannot
+    /// race an earlier request with an unnecessary replacement key package.
+    pub(crate) fn restore_requests(&mut self, requests: Vec<MlsAccessRequestV1>) {
+        self.saved_requests = requests
+            .into_iter()
+            .filter(|request| {
+                request.device == self.device && self.saved.contains_key(&request.channel)
+            })
+            .map(|request| (request.channel, request))
+            .collect();
+    }
+
+    pub(crate) fn pending_requests(&self) -> Vec<MlsAccessRequestV1> {
+        let mut requests = self.saved_requests.clone();
+        for (channel, route) in &self.routes {
+            if let Some(request) = &route.request
+                && route
+                    .member
+                    .as_ref()
+                    .is_some_and(|member| matches!(member.access(), Access::Waiting))
+            {
+                requests.insert(*channel, request.clone());
+            } else {
+                requests.remove(channel);
+            }
+        }
+        let mut requests: Vec<_> = requests.into_values().collect();
+        requests.sort_by_key(|request| request.channel.0);
+        requests
     }
 
     /// Have the next [`Self::export_if_changed`] export.
@@ -556,6 +589,10 @@ impl Channels {
                 )
                 .ok()
             });
+        let request = restored
+            .as_ref()
+            .filter(|member| matches!(member.access(), Access::Waiting))
+            .and_then(|_| self.saved_requests.remove(&channel));
         let member = match restored {
             Some(member) => member,
             None => match ChannelMember::in_memory(channel, self.device, steward) {
@@ -574,6 +611,7 @@ impl Channels {
             }
         }
         route.member = Some(member);
+        route.request = request;
         route.next_request_ms = now_ms;
         route.request_delay_ms = REQUEST_FIRST_MS;
         self.dirty = true;
@@ -968,5 +1006,87 @@ mod tests {
         assert_eq!(requests(&changes), 0, "a migrated page does not ask again");
         let (_, restored) = changes.keys.into_iter().next().expect("keys are back");
         assert_eq!(restored.epoch(), keys.epoch());
+    }
+    /// A steward may receive the request queued by the old page before the
+    /// reloaded page's request. Both admissions reach the reload in order.
+    #[test]
+    fn a_pending_reload_survives_the_old_request_being_admitted_first() {
+        let user = SigningKey::from_bytes(&[1; 32]);
+        let browser = SigningKey::from_bytes(&[3; 32]);
+        let laptop = SigningKey::from_bytes(&[4; 32]);
+        let note = route("note-pending-reload");
+        let channel = Channels::channel(&note);
+        let vault = VaultKey::new([9; 32]);
+        let dir = tempfile::tempdir().unwrap();
+        let mut steward =
+            ChannelSteward::open_or_create(dir.path(), channel, laptop.clone(), &vault).unwrap();
+        let mut first = Channels::new(device(&browser), device(&user), [4; 32]);
+        first.open(&note, 0);
+        first.note_cert(
+            device(&laptop),
+            cert(&user, &laptop, DeviceCapabilities::primary()),
+            0,
+        );
+        let first_changes = first.receive_frame(
+            device(&laptop),
+            ROOM,
+            steward.journal().frames()[0].clone(),
+            0,
+        );
+        let saved = first.export_if_changed().expect("waiting member is stored");
+        let pending = first.pending_requests();
+        let mut reload = Channels::new(device(&browser), device(&user), [4; 32]);
+        reload.restore(saved);
+        reload.restore_requests(pending);
+        let reload_changes = reload.open(&note, 1);
+        let allowed = BTreeSet::from([
+            Ed25519PublicKey::from_bytes(device(&laptop)),
+            Ed25519PublicKey::from_bytes(device(&browser)),
+        ]);
+        for changes in [first_changes, reload_changes] {
+            for outgoing in changes.outgoing {
+                if let Outgoing::Request { mut request, .. } = outgoing {
+                    request.signature = collab_types::Signature::from_bytes(
+                        browser.sign(&request.signing_bytes().unwrap()).to_bytes(),
+                    );
+                    steward
+                        .reconcile(
+                            &allowed,
+                            &BTreeMap::from([(request.device, request)]),
+                            &vault,
+                        )
+                        .unwrap();
+                }
+            }
+        }
+        for outgoing in steward.outbox() {
+            for frame in outgoing.frames {
+                reload.receive_frame(device(&laptop), ROOM, frame, 2);
+            }
+        }
+        let keys = reload.routes[&channel]
+            .member
+            .as_ref()
+            .unwrap()
+            .content_keys()
+            .expect("the reload keeps its admitted channel keys");
+        let artifact =
+            collab_types::document_artifact_id(&note.app_id, &note.cluster_id, &note.record);
+        let (metadata, sealed) = keys
+            .seal_content(
+                artifact,
+                collab_types::ContentRetention::Checkpoint,
+                b"before the reload",
+            )
+            .unwrap();
+        assert_eq!(
+            steward
+                .content_keys()
+                .unwrap()
+                .open_content(artifact, &metadata, &sealed)
+                .unwrap()
+                .to_vec(),
+            b"before the reload",
+        );
     }
 }

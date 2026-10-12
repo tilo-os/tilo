@@ -12,15 +12,27 @@ use icu_datetime::{
 };
 use icu_decimal::{DecimalFormatter, input::Decimal};
 use icu_locale::Locale;
-use ui::i18n::ArgValue;
+use ui::i18n::{ArgValue, EmbeddedCatalog};
 use unic_langid::LanguageIdentifier;
 
-#[cfg(test)]
 const SOURCE_FTL: &str = include_str!("../locales/en-US.ftl");
-#[cfg(test)]
 const DE_FTL: &str = include_str!("../locales/de-DE.ftl");
 
-ui::embedded_catalog!(pub fn, "files-menu-open", ["en-US", "de-DE"]);
+/// Region variants such as de-AT and de-CH negotiate to the complete German
+/// catalog, while ICU and Fluent keep the requested locale for number,
+/// plural and date rules.
+pub(crate) static CATALOG: EmbeddedCatalog = catalog();
+
+const fn catalog() -> EmbeddedCatalog {
+    let catalog = EmbeddedCatalog::new("en-US", &[("en-US", SOURCE_FTL), ("de-DE", DE_FTL)])
+        .with_system_locale();
+    // Unit tests assert source-copy behavior throughout the widget. Keep them
+    // deterministic across developer/CI host locales; catalog negotiation
+    // itself is exercised through explicit-locale helpers below.
+    #[cfg(test)]
+    let catalog = catalog.with_pinned_locale("en-US");
+    catalog
+}
 
 fn source_lang() -> LanguageIdentifier {
     "en-US".parse().unwrap_or_default()
@@ -166,6 +178,14 @@ fn format_bytes_for(locale: &LanguageIdentifier, bytes: u64) -> String {
 /// per-language table.
 pub fn format_bytes(bytes: u64) -> String {
     format_bytes_for(&active_locale(), bytes)
+}
+
+pub fn t(key: &str) -> String {
+    CATALOG.t(key)
+}
+
+pub fn t_args(key: &str, args: &[(&str, ArgValue)]) -> String {
+    CATALOG.t_args(key, args)
 }
 
 pub fn arg<V: Into<ArgValue>>(name: &str, value: V) -> (&str, ArgValue) {

@@ -36,7 +36,7 @@ use super::migration_worker::{
 };
 use super::view::system_folder_reason;
 // Page rhythm (HIG §7b): the crate's steps and the shared page sections.
-use crate::resource::{Imager, ImagerState};
+use crate::resource::Imager;
 
 use ui::framework::{
     EffectAnswer, EffectCx, EffectReply, EffectStatus, Effected, LiveRow, ResourceSurface,
@@ -3146,7 +3146,7 @@ pub const SCENARIOS: &[&str] = &[
 ];
 
 impl ResourceSurface<Imager, ImportEffect> for ImportApp {
-    fn present(&mut self, _state: &Rc<ImagerState>) {}
+    fn present(&mut self, _state: &Rc<Imager>) {}
 
     fn attach(&mut self, cx: SurfaceCx<Imager>) {
         if cx.mode().is_live() && self.opens_when_live {

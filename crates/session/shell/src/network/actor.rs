@@ -1127,6 +1127,9 @@ struct ActorState {
     )>,
     connecting_hosts: HashSet<(WorkspaceId, EndpointId)>,
     content_discovery_tasks: HashMap<(WorkspaceId, EndpointId), tokio::task::JoinHandle<()>>,
+    /// Approver sessions that put this person's agents' questions on the
+    /// sheet, one per connected host.
+    agent_questions: super::agent_questions::Answering,
     peers_seen: HashMap<(WorkspaceId, EndpointId), PeerMembership>,
     next_membership_epoch: u64,
     /// Inbound ALPN connections are bound once to the membership active on
@@ -1793,6 +1796,8 @@ impl ActorState {
                     tracing::warn!(peer = %id, "cannot connect workspace host without a device certificate");
                     return true;
                 };
+                self.agent_questions
+                    .start(&self.endpoint, addr.clone(), identity);
                 let mut routes = HostRouteScheduler {
                     endpoint: &self.endpoint,
                     identity,
@@ -1825,6 +1830,7 @@ impl ActorState {
     /// is reserved for an explicit enrolled-home-peer removal: an address
     /// refresh must never revoke a still-valid Files hydration source.
     fn teardown_host(&mut self, id: EndpointId, remove_content: bool) {
+        self.agent_questions.stop(id);
         let enrolled_home_peer = self
             .hosts
             .remove(&id)
@@ -3921,6 +3927,7 @@ async fn run(
         action_broker: None,
         connecting_hosts: HashSet::new(),
         content_discovery_tasks: HashMap::new(),
+        agent_questions: super::agent_questions::Answering::default(),
         peers_seen: HashMap::new(),
         next_membership_epoch: 0,
         personal_fabric_ingress: HashMap::new(),
@@ -6940,7 +6947,7 @@ mod tests {
             artifact,
             collab_types::Ed25519PublicKey::from_bytes(b_device),
             collab_types::AttestationId::default(),
-            collab_types::OpClass::Splice,
+            collab_types::OpKind::Change,
             std::time::SystemTime::now(),
             1,
         );
@@ -7166,7 +7173,7 @@ mod tests {
             artifact,
             collab_types::Ed25519PublicKey::from_bytes(a_device),
             collab_types::AttestationId::default(),
-            collab_types::OpClass::Splice,
+            collab_types::OpKind::Change,
             std::time::SystemTime::now(),
             1,
         );
@@ -7286,7 +7293,7 @@ mod tests {
             collab_types::document_artifact_id("so.tilo.tube", &cluster, "history"),
             collab_types::Ed25519PublicKey::from_bytes(a_key.verifying_key().to_bytes()),
             collab_types::document_attestation_id("so.tilo.tube", &cluster, "history"),
-            collab_types::OpClass::Splice,
+            collab_types::OpKind::Change,
             std::time::SystemTime::now(),
             1,
         );
@@ -7896,7 +7903,7 @@ mod tests {
             artifact,
             device(&a_key),
             collab_types::AttestationId::default(),
-            collab_types::OpClass::Splice,
+            collab_types::OpKind::Change,
             std::time::SystemTime::now(),
             1,
             metadata,

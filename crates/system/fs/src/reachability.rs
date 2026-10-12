@@ -155,7 +155,7 @@ impl Reachability {
 mod tests {
     use std::time::{Duration, Instant};
 
-    use collab_types::{CapOverride, Ed25519PublicKey, Effect, Principal, Scope, Subject, Verb};
+    use collab_types::{Access, CapOverride, Ed25519PublicKey, Effect, Principal, Scope, Subject};
     use iroh::endpoint::presets;
     use iroh::{RelayMap, RelayMode, RelayUrl};
 
@@ -202,7 +202,7 @@ mod tests {
             subject,
             Scope::FsPath("/".into()),
             Effect::Grant,
-            Verb::Write,
+            Access::Write,
         )
     }
 

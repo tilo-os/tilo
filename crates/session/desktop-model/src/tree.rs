@@ -103,14 +103,14 @@ impl DesktopTree {
         self.workspaces.iter().find(|w| w.id == self.active)
     }
 
-    /// The first instant after `now` (Unix seconds) at which a capability of
-    /// any workspace stops being live
-    /// ([`Workspace::next_capability_expiry_after`]): a policy decision read
-    /// from this tree at `now` holds until then, or until the tree is written.
-    pub fn next_capability_expiry_after(&self, now: u64) -> Option<u64> {
+    /// The first instant after `now` (Unix seconds) at which a grant of any
+    /// workspace stops being live ([`Workspace::next_grant_expiry_after`]): a
+    /// policy decision read from this tree at `now` holds until then, or
+    /// until the tree is written.
+    pub fn next_grant_expiry_after(&self, now: u64) -> Option<u64> {
         self.workspaces
             .iter()
-            .filter_map(|workspace| workspace.next_capability_expiry_after(now))
+            .filter_map(|workspace| workspace.next_grant_expiry_after(now))
             .min()
     }
 

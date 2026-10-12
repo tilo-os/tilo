@@ -20,7 +20,7 @@ use ui::framework::{
 use ui::widget::{AppModel, Decorator, ModelPath, Widget};
 
 use crate::actions::{OskEffect, SetPreference};
-use crate::learned::{Learned, LearnedAction};
+use crate::learned::{Learned, learned};
 use crate::resource::{
     HIT_OVERLAY_FLAG, INPUT_METHOD_FLAG, NO_INPUT_METHOD_FLAG, Osk, OskPreferences, PURPOSE_OPTION,
 };
@@ -121,8 +121,8 @@ impl OskSurface {
         self.keyboard.present_preferences(&current);
         if !current.personalization
             && let Some((learned, _)) = &self.learned
-            && !learned.with(crate::learned::LearnedTyping::is_empty)
-            && let Err(error) = learned.apply(&LearnedAction::Forget)
+            && !learned.with(Learned::is_empty)
+            && let Err(error) = learned.invoke(&Learned::FORGET.invoke())
         {
             tracing::warn!(%error, "osk: what the keyboard learned could not be forgotten");
         }
@@ -141,10 +141,10 @@ impl OskSurface {
             return;
         };
         let saved = if forget {
-            learned.apply(&LearnedAction::Forget)
+            learned.invoke(&Learned::FORGET.invoke())
         } else {
             lesson.map_or(Ok(()), |lesson| {
-                learned.apply(&LearnedAction::Learn(lesson))
+                learned.invoke(&Learned::LEARN.with(learned::Learn { lesson }))
             })
         };
         if let Err(error) = saved {
@@ -277,7 +277,7 @@ impl Decorator for OskSurface {
 }
 
 impl ResourceSurface<Osk, OskEffect> for OskSurface {
-    fn present(&mut self, _state: &Rc<()>) {}
+    fn present(&mut self, _state: &Rc<Osk>) {}
 
     fn attach(&mut self, cx: SurfaceCx<Osk>) {
         if cx.mode().is_live() {

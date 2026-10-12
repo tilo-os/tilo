@@ -2,6 +2,7 @@
 use super::*;
 use crate::admission_tests::seeded;
 use crate::{InputDisposition, TransportOrigin, peer_handle};
+use collab_types::CommitNamed as _;
 
 const APP: &str = "test.app";
 const RECORD: &str = "tab:1";
@@ -37,7 +38,7 @@ fn sealed(peer: &StatePeer, key: &SigningKey, seq: u64, ciphertext: &[u8]) -> Ne
         collab_types::document_artifact_id(APP, peer.room(), RECORD),
         author,
         collab_types::document_attestation_id(APP, peer.room(), RECORD),
-        OpClass::Splice,
+        OpKind::Change,
         peer_time(),
         seq,
         collab_types::EncryptionMetadata::mls_application(1, channel),
@@ -292,7 +293,7 @@ fn edit(peer: &StatePeer, value: &str) -> Vec<u8> {
     let mut doc = AutoCommit::load(&peer.document(APP, RECORD).unwrap()).unwrap();
     let heads = doc.get_heads();
     doc.put(ROOT, "value", value).unwrap();
-    doc.commit();
+    doc.commit_edit("fixture", "value");
     DocumentMutation::Incremental(doc.save_after(&heads))
         .encode()
         .unwrap()

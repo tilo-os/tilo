@@ -1,12 +1,12 @@
-//! Pure data model for the Contacts app.
+//! The address book's records: a contact and its repeated rows.
 //!
-//! The in-memory [`ContactStore`] is the working set the UI reads and
-//! mutates; it is mirrored into the Automerge document (see
-//! [`crate::doc`]) so two peers editing the same address book converge.
-//! Nothing here touches the CRDT, the renderer, or the filesystem — it
-//! is plain, unit-testable logic.
+//! [`Contact`] is stored as it is: every text field merges per character,
+//! every phone, email, address and group row is stored under its own id so
+//! two people editing different rows of one contact both keep their edit.
+//! The window reads the book as it is presented: [`crate::resource::Contacts`].
 
 use serde::{Deserialize, Serialize};
+use ui::tilo_resource::{self, Id, Identified, JsonSchema, Model, Ordered, Refusal};
 use unicode_normalization::UnicodeNormalization;
 use uuid::Uuid;
 
@@ -25,6 +25,32 @@ pub fn group_names_equal(left: &str, right: &str) -> bool {
     normalize_text(left.trim()) == normalize_text(right.trim())
 }
 
+/// One deterministic display spelling for every logical group of
+/// `contacts`, in the order of their identity. The key is the same
+/// NFC/case-folded identity filtering and resource addressing use; choosing
+/// the lexical spelling makes separate peers publish the same label even
+/// when Automerge projects rows in a different order.
+pub fn ordered_groups(contacts: &[Contact]) -> Vec<String> {
+    let mut groups = std::collections::BTreeMap::<String, String>::new();
+    for contact in contacts {
+        for entry in &contact.groups {
+            let name = entry.value.trim();
+            if name.is_empty() {
+                continue;
+            }
+            groups
+                .entry(normalize_text(name))
+                .and_modify(|existing| {
+                    if name < existing.as_str() {
+                        *existing = name.to_string();
+                    }
+                })
+                .or_insert_with(|| name.to_string());
+        }
+    }
+    groups.into_values().collect()
+}
+
 /// Stable identifier for a single contact record. Backs every
 /// cross-reference and the CRDT map key.
 pub type ContactId = Uuid;
@@ -32,11 +58,22 @@ pub type ContactId = Uuid;
 /// A typed, repeatable single-value field — a phone number or an email
 /// address. `label` is a free-form type tag (home / work / mobile / …);
 /// `value` is the actual number or address.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Model, Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Labeled {
+    /// The row's identity, the same on every replica.
+    #[model(readonly)]
     pub id: Uuid,
+    /// Type
     pub label: String,
+    /// Value
+    #[model(label)]
     pub value: String,
+}
+
+impl Identified for Labeled {
+    fn id(&self) -> Id {
+        Id::from_raw(self.id.to_string())
+    }
 }
 
 impl Labeled {
@@ -59,21 +96,47 @@ impl Default for Labeled {
 /// A typed postal address. Components map onto the vCard `ADR` structured
 /// value (`PO;EXT;STREET;CITY;REGION;POSTAL;COUNTRY`) — we keep the four
 /// fields that matter for a daily address book plus a free type label.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Model, Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Address {
+    /// The row's identity, the same on every replica.
+    #[model(readonly)]
     pub id: Uuid,
+    /// Type
     pub label: String,
+    /// Street
+    #[model(label)]
     pub street: String,
+    /// City
     pub city: String,
+    /// Region
     pub region: String,
+    /// Postal code
     pub postal: String,
+    /// Country
     pub country: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+impl Identified for Address {
+    fn id(&self) -> Id {
+        Id::from_raw(self.id.to_string())
+    }
+}
+
+/// One group a contact belongs to.
+#[derive(Model, Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct GroupEntry {
+    /// The row's identity, the same on every replica.
+    #[model(readonly)]
     pub id: Uuid,
+    /// Group
+    #[model(label)]
     pub value: String,
+}
+
+impl Identified for GroupEntry {
+    fn id(&self) -> Id {
+        Id::from_raw(self.id.to_string())
+    }
 }
 
 impl GroupEntry {
@@ -131,11 +194,19 @@ impl Address {
 /// be surfaced in Calendar and reasoned about by day/month/year. Either a
 /// full date, or a month/day with the year unknown (people often record a
 /// birthday without the year; the vCard spec models this as `--MMDD`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub enum Birthday {
     Full { year: i32, month: u32, day: u32 },
     MonthDay { month: u32, day: u32 },
 }
+
+impl Default for Birthday {
+    fn default() -> Self {
+        Self::MonthDay { month: 1, day: 1 }
+    }
+}
+
+tilo_resource::json_model!(Birthday);
 
 impl Birthday {
     /// The year, or `None` for a year-less birthday.
@@ -157,6 +228,14 @@ impl Birthday {
     pub fn day(&self) -> u32 {
         match self {
             Birthday::Full { day, .. } | Birthday::MonthDay { day, .. } => *day,
+        }
+    }
+
+    /// Whether the date is one the calendar has.
+    pub fn is_valid(&self) -> bool {
+        match *self {
+            Birthday::Full { year, month, day } => Self::full(year, month, day).is_some(),
+            Birthday::MonthDay { month, day } => Self::month_day(month, day).is_some(),
         }
     }
 
@@ -272,30 +351,117 @@ impl Birthday {
     }
 }
 
-/// One person or organization. Text fields are plain strings here; the
-/// CRDT layer stores the collaborative ones as Automerge `Text` objects
-/// so concurrent edits merge.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+/// How much text one field of a contact may hold.
+pub const MAX_CONTACT_FIELD_BYTES: usize = 32 * 1024;
+/// How many rows one repeated field of a contact may hold.
+pub const MAX_CONTACT_ROWS: usize = 256;
+
+/// One person or organization.
+#[derive(Model, Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[model(check = Contact::valid)]
 pub struct Contact {
+    /// The contact's identity, the same on every replica and in its vCard.
+    #[model(readonly)]
     pub id: ContactId,
+    /// First name
+    #[model(label)]
     pub first: String,
+    /// Last name
     pub last: String,
+    /// Organization
     pub org: String,
+    /// Title
     pub title: String,
+    /// Website
     pub website: String,
-    /// Structured birthday with day/month/year accessible (so Calendar can
-    /// surface it). `None` when unset. Round-trips through the vCard `BDAY`
-    /// field; a year-less birthday is kept as [`Birthday::MonthDay`].
+    /// Birthday
+    ///
+    /// A full date or a month and day; Calendar shows it.
     pub birthday: Option<Birthday>,
+    /// Notes
     pub notes: String,
-    pub phones: Vec<Labeled>,
-    pub emails: Vec<Labeled>,
-    pub addresses: Vec<Address>,
-    pub groups: Vec<GroupEntry>,
+    /// Phone numbers
+    pub phones: Ordered<Labeled>,
+    /// Email addresses
+    pub emails: Ordered<Labeled>,
+    /// Postal addresses
+    pub addresses: Ordered<Address>,
+    /// Groups
+    pub groups: Ordered<GroupEntry>,
+    /// Favorite
     pub favorite: bool,
 }
 
+impl Identified for Contact {
+    fn id(&self) -> Id {
+        Id::from_raw(self.id.to_string())
+    }
+}
+
 impl Contact {
+    /// Whether every field is bounded, every row has an id and the birthday
+    /// is a date the calendar has.
+    fn valid(&self) -> Result<(), Refusal> {
+        let address_text = self.addresses.iter().flat_map(|address| {
+            [
+                &address.label,
+                &address.street,
+                &address.city,
+                &address.region,
+                &address.postal,
+                &address.country,
+            ]
+        });
+        let row_text = self
+            .phones
+            .iter()
+            .chain(self.emails.iter())
+            .flat_map(|row| [&row.label, &row.value])
+            .chain(self.groups.iter().map(|group| &group.value))
+            .chain(address_text);
+        if [
+            &self.first,
+            &self.last,
+            &self.org,
+            &self.title,
+            &self.website,
+            &self.notes,
+        ]
+        .into_iter()
+        .chain(row_text)
+        .any(|text| text.len() > MAX_CONTACT_FIELD_BYTES)
+        {
+            return Err(Refusal::new(format!(
+                "a contact's field holds at most {MAX_CONTACT_FIELD_BYTES} bytes"
+            )));
+        }
+        if [
+            self.phones.len(),
+            self.emails.len(),
+            self.addresses.len(),
+            self.groups.len(),
+        ]
+        .into_iter()
+        .any(|rows| rows > MAX_CONTACT_ROWS)
+        {
+            return Err(Refusal::new("a contact has too many repeated fields"));
+        }
+        let row_ids = self
+            .phones
+            .iter()
+            .chain(self.emails.iter())
+            .map(|row| row.id)
+            .chain(self.addresses.iter().map(|address| address.id))
+            .chain(self.groups.iter().map(|group| group.id));
+        if self.id.is_nil() || row_ids.into_iter().any(|id| id.is_nil()) {
+            return Err(Refusal::new("a contact and each of its rows has an id"));
+        }
+        if self.birthday.is_some_and(|birthday| !birthday.is_valid()) {
+            return Err(Refusal::new("a birthday is a date the calendar has"));
+        }
+        Ok(())
+    }
+
     pub fn new() -> Self {
         Self {
             id: Uuid::new_v4(),
@@ -406,72 +572,14 @@ impl SortKey {
     }
 }
 
-/// The complete address book held in memory. Order in `contacts` is not
-/// significant — every read path sorts on demand.
-#[derive(Clone, Debug, Default)]
-pub struct ContactStore {
-    pub contacts: Vec<Contact>,
-}
-
-impl ContactStore {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn get(&self, id: ContactId) -> Option<&Contact> {
-        self.contacts.iter().find(|c| c.id == id)
-    }
-
-    pub fn get_mut(&mut self, id: ContactId) -> Option<&mut Contact> {
-        self.contacts.iter_mut().find(|c| c.id == id)
-    }
-
-    /// Insert a new contact or replace the existing one with the same id.
-    /// Returns the id for convenience.
-    pub fn upsert(&mut self, contact: Contact) -> ContactId {
-        let id = contact.id;
-        if let Some(existing) = self.contacts.iter_mut().find(|c| c.id == id) {
-            *existing = contact;
-        } else {
-            self.contacts.push(contact);
-        }
-        id
-    }
-
-    /// Remove a contact. Returns true if it existed.
-    pub fn delete(&mut self, id: ContactId) -> bool {
-        let before = self.contacts.len();
-        self.contacts.retain(|c| c.id != id);
-        self.contacts.len() != before
-    }
-
-    /// Every distinct group across all contacts, sorted alphabetically.
+/// What the window reads of the address book: its contacts in the orders
+/// and groupings the list shows. Order in `contacts` is not significant —
+/// every read path sorts on demand.
+impl crate::resource::Contacts {
+    /// Every distinct group across all contacts, sorted alphabetically
+    /// ([`ordered_groups`]).
     pub fn all_groups(&self) -> Vec<String> {
-        let mut set: Vec<String> = Vec::new();
-        for c in &self.contacts {
-            for g in &c.groups {
-                let g = g.value.trim();
-                if g.is_empty() {
-                    continue;
-                }
-                if let Some(existing) = set.iter_mut().find(|x| group_names_equal(x, g)) {
-                    // CRDT/map arrival order is not a presentation contract.
-                    // Pick one deterministic spelling for equivalent Unicode
-                    // group names so separate peers expose the same filter.
-                    if g < existing.as_str() {
-                        *existing = g.to_string();
-                    }
-                } else {
-                    set.push(g.to_string());
-                }
-            }
-        }
-        set.sort_by(|left, right| {
-            normalize_text(left)
-                .cmp(&normalize_text(right))
-                .then_with(|| left.cmp(right))
-        });
-        set
+        ordered_groups(&self.contacts)
     }
 
     /// Ids of the contacts that pass `query` (cross-field) and the
@@ -506,7 +614,7 @@ impl ContactStore {
     }
 }
 
-/// Case-insensitive comparison used by [`ContactStore::filtered_sorted`].
+/// Case-insensitive comparison the list sorts by.
 pub(crate) fn sort_cmp(a: &Contact, b: &Contact, sort: SortKey) -> std::cmp::Ordering {
     use std::cmp::Ordering;
     let key = |c: &Contact| -> (String, String) {
@@ -579,7 +687,7 @@ fn make_sample(spec: SampleSpec<'_>) -> Contact {
             .iter()
             .map(|(l, v)| Labeled::new(l, v))
             .collect(),
-        addresses: spec.addresses,
+        addresses: spec.addresses.into(),
         groups: spec
             .groups
             .iter()
@@ -914,20 +1022,24 @@ mod tests {
         }
     }
 
-    /// The book filters and sorts by name and group, dedups groups case- and Unicode-insensitively and upserts in place.
+    fn book(contacts: Vec<Contact>) -> crate::resource::Contacts {
+        crate::resource::Contacts {
+            contacts: contacts.into(),
+            ..crate::resource::Contacts::default()
+        }
+    }
+
+    /// The book filters and sorts by name and group, and dedups groups case- and Unicode-insensitively.
     #[test]
-    fn book_filters_sorts_groups_and_upserts() {
+    fn book_filters_sorts_and_groups() {
         // --- phase: filtered_sorted_by_name_and_group ---
         {
-            let mut store = ContactStore::new();
-            for c in sample_contacts() {
-                store.upsert(c);
-            }
+            let store = book(sample_contacts());
             // Name sort puts "Berners-Lee" before "Hopper" before "Lovelace".
             let ids = store.filtered_sorted("", None, SortKey::Name);
             let names: Vec<String> = ids
                 .iter()
-                .map(|id| store.get(*id).unwrap().last.clone())
+                .map(|id| store.contact(*id).unwrap().last.clone())
                 .collect();
             let pos = |n: &str| names.iter().position(|x| x == n).unwrap();
             assert!(pos("Berners-Lee") < pos("Hopper"));
@@ -937,7 +1049,7 @@ mod tests {
             let friends = store.filtered_sorted("", Some("Friends"), SortKey::Name);
             assert!(friends.iter().all(|id| {
                 store
-                    .get(*id)
+                    .contact(*id)
                     .unwrap()
                     .groups
                     .iter()
@@ -948,44 +1060,30 @@ mod tests {
 
         // --- phase: all_groups_dedupes_case_insensitively ---
         {
-            let mut store = ContactStore::new();
             let mut a = Contact::new();
             a.groups = vec![
                 GroupEntry::new("Work"),
                 GroupEntry::new("work"),
                 GroupEntry::new("Family"),
-            ];
-            store.upsert(a);
+            ]
+            .into();
+            let store = book(vec![a]);
             let groups = store.all_groups();
             assert_eq!(groups.len(), 2, "Work/work collapse: {groups:?}");
         }
 
         // --- phase: groups_and_search_handle_canonically_equivalent_unicode ---
         {
-            let mut store = ContactStore::new();
             let mut first = Contact::new();
             first.groups.push(GroupEntry::new("Cafe\u{301}"));
             let mut second = Contact::new();
             second.groups.push(GroupEntry::new("CAFÉ"));
-            store.upsert(first.clone());
-            store.upsert(second.clone());
+            let store = book(vec![first.clone(), second]);
 
             assert_eq!(store.all_groups(), vec!["CAFÉ".to_string()]);
             let visible = store.filtered_sorted("", Some("café"), SortKey::Name);
             assert_eq!(visible.len(), 2);
             assert!(first.matches("CAFÉ"));
-        }
-
-        // --- phase: upsert_replaces_in_place ---
-        {
-            let mut store = ContactStore::new();
-            let mut a = Contact::new();
-            a.first = "A".into();
-            let id = store.upsert(a.clone());
-            a.first = "B".into();
-            store.upsert(a);
-            assert_eq!(store.len(), 1);
-            assert_eq!(store.get(id).unwrap().first, "B");
         }
     }
 }

@@ -80,7 +80,7 @@ async function open(device) {
 
 async function action(tab, name, gesture = false) {
   const response = await tab.send('Runtime.evaluate', {expression:
-    `mount.invokeAction('chat.call:' + fixture.voiceChannel, ${JSON.stringify(name)})`,
+    `mount.invokeAction(fixture.callRow, ${JSON.stringify(name)})`,
     returnByValue:true, userGesture:gesture});
   assert.equal(response.result?.exceptionDetails, undefined, 'public Chat action failed');
   const result = response.result.result.value;
@@ -114,7 +114,7 @@ try {
   const first = await open({});
   const second = await open(fixture.secondDevice);
   for (const tab of pages) {
-    const controls = await tab.evaluate("mount.actions('chat.call:' + fixture.voiceChannel).map(a=>a.address.action)");
+    const controls = await tab.evaluate("mount.actions(fixture.callRow).map(a=>a.address.action)");
     for (const name of ['join-call','call-status','mute','unmute','leave-call']) assert.ok(controls.includes(name), `public ${name} missing`);
     await action(tab, 'join-call');
   }

@@ -1,0 +1,346 @@
+# The app's public surface, written by `tilo-app surface`: its resources' verbs
+# and stored fields. Review changes to it like an API change; `tilo-app check`
+# fails when the code and this file disagree.
+
+[[resources]]
+kind = "files.folder"
+label = "Folder"
+version = 1
+
+[[resources.fields]]
+owner = "file-explorer"
+path = "places"
+stored = "collection"
+title = "The bookmarked places, in order"
+type = "Collection<Bookmark>"
+
+[[resources.fields]]
+label = true
+owner = "bookmark"
+path = "places.*.place"
+readonly = true
+stored = "value"
+title = "Place"
+type = "Atom"
+
+[[resources.fields]]
+owner = "file-explorer"
+path = "ops"
+stored = "value"
+title = "Filesystem changes, each settled by its device with what it changed"
+type = "Outbox<FileTask, Vec<Change>>"
+
+[[resources.verbs]]
+description = "Pin a folder to the Favourites in the sidebar."
+id = "add-bookmark"
+kind = "undoable"
+label = "Add to Favourites"
+
+[[resources.verbs.params]]
+name = "place"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "at"
+required = false
+
+[resources.verbs.params.schema]
+minimum = 0
+type = [
+    "integer",
+    "null",
+]
+
+[[resources.verbs]]
+description = "Unpin a folder from the Favourites."
+id = "remove-bookmark"
+kind = "undoable"
+label = "Remove from Favourites"
+
+[[resources.verbs.params]]
+name = "place"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs]]
+id = "new-folder"
+kind = "outside"
+label = "Create a folder"
+
+[[resources.verbs.params]]
+name = "device"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "parent"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "name"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs]]
+id = "rename"
+kind = "outside"
+label = "Rename an entry"
+
+[[resources.verbs.params]]
+name = "device"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "folder"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "entry"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "name"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs]]
+description = "Move entries to Trash; undo puts them back."
+id = "trash"
+kind = "outside"
+label = "Move to Trash"
+
+[[resources.verbs.params]]
+name = "device"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "folder"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "entries"
+required = true
+
+[resources.verbs.params.schema]
+type = "array"
+
+[resources.verbs.params.schema.items]
+type = "string"
+
+[[resources.verbs]]
+description = "Move entries into another folder in one step, keeping their names."
+id = "move"
+kind = "outside"
+label = "Move entries to folder"
+
+[[resources.verbs.params]]
+name = "device"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "from"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "entries"
+required = true
+
+[resources.verbs.params.schema]
+type = "array"
+
+[resources.verbs.params.schema.items]
+type = "string"
+
+[[resources.verbs.params]]
+name = "to"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "create"
+required = false
+
+[resources.verbs.params.schema]
+type = [
+    "boolean",
+    "null",
+]
+
+[[resources.verbs]]
+description = "one."
+id = "copy-into"
+kind = "outside"
+label = "Copy entries into a folder; a copy whose name is taken gets a free"
+
+[[resources.verbs.params]]
+name = "device"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "from"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "entries"
+required = true
+
+[resources.verbs.params.schema]
+type = "array"
+
+[resources.verbs.params.schema.items]
+type = "string"
+
+[[resources.verbs.params]]
+name = "to"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs]]
+description = "Record a paste the native clipboard host already carried out, so it is in history and undoable like any change: undo asks the host to take back exactly what it transferred."
+id = "record-clipboard-transfer"
+kind = "outside"
+label = "Paste files"
+
+[[resources.verbs.params]]
+name = "device"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "receipt"
+required = true
+
+[resources.verbs.params.schema]
+additionalProperties = false
+description = "What the native host reports of a transfer it carried out. Settled metadata only: it grants no authority."
+required = [
+    "operation",
+    "completed",
+    "cut",
+]
+type = "object"
+
+[resources.verbs.params.schema.properties.completed]
+minimum = 0
+type = "integer"
+
+[resources.verbs.params.schema.properties.cut]
+type = "boolean"
+
+[resources.verbs.params.schema.properties.error]
+type = [
+    "string",
+    "null",
+]
+
+[resources.verbs.params.schema.properties.operation]
+type = "string"
+
+[resources.verbs.params.schema.properties.restore]
+type = "boolean"
+
+[[resources.verbs]]
+description = "Record a restore from Trash the native host already carried out, so it is in history and undoable."
+id = "record-trash-restore"
+kind = "outside"
+label = "Restore file"
+
+[[resources.verbs.params]]
+name = "device"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "receipt"
+required = true
+
+[resources.verbs.params.schema]
+additionalProperties = false
+description = "What the native host reports of a transfer it carried out. Settled metadata only: it grants no authority."
+required = [
+    "operation",
+    "completed",
+    "cut",
+]
+type = "object"
+
+[resources.verbs.params.schema.properties.completed]
+minimum = 0
+type = "integer"
+
+[resources.verbs.params.schema.properties.cut]
+type = "boolean"
+
+[resources.verbs.params.schema.properties.error]
+type = [
+    "string",
+    "null",
+]
+
+[resources.verbs.params.schema.properties.operation]
+type = "string"
+
+[resources.verbs.params.schema.properties.restore]
+type = "boolean"
+
+[[resources.verbs]]
+description = "what it recorded, in reverse order."
+id = "revert"
+kind = "outside"
+label = "Take back a filesystem change: the device that made it compensates"
+
+[[resources.verbs.params]]
+name = "op"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"

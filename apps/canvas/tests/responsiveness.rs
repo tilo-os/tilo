@@ -105,12 +105,11 @@ fn edited_svg_geometry_and_undo_never_use_a_stale_cached_outline() {
 #[test]
 fn repeated_artwork_publication_keeps_the_same_action_contract() {
     let art = canvas::Artwork::default();
-    let expected = ui::tilo_resource::publish::<canvas::ArtworkResource>("art", "Artwork", &art);
+    let expected = ui::tilo_resource::publish::<canvas::Artwork>("art", "Artwork", &art);
     let mut samples = Vec::new();
     for _ in 0..40 {
         let start = std::time::Instant::now();
-        let published =
-            ui::tilo_resource::publish::<canvas::ArtworkResource>("art", "Artwork", &art);
+        let published = ui::tilo_resource::publish::<canvas::Artwork>("art", "Artwork", &art);
         samples.push(start.elapsed().as_secs_f64() * 1000.0);
         let actual: Vec<_> = published
             .actions

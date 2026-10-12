@@ -850,8 +850,6 @@ pub struct ShellOverlayHost {
     history_narrator: Option<crate::shell::history_narrative::LocalHistoryNarrator>,
     status_narrator: crate::shell::history_narrative::LocalHistoryNarrator,
     status_narrative_request: Option<ui::NarrativeRequest>,
-    /// Open/close curve for the room-activity sheet.
-    room_activity_transition: ui::Transition,
     /// Whether the sheet was open last frame, to invalidate derived rows
     /// on the rising edge.
     room_activity_was_open: bool,
@@ -981,6 +979,12 @@ pub struct PannedSections {
     /// Every strip with a row on screen, top to bottom, each drawn on its
     /// own in canvas coordinates, with the surfaces floating over it.
     pub strips: Vec<(StripId, Scene)>,
+    /// The damage parts each of `strips` marked, in the same order: each
+    /// window group is one ([`ui::widget::GroupRow::draw_apart`]),
+    /// so a presenter keeping a strip's pixels rasterises only where a
+    /// group's drawing changed. `None` for a strip whose parts were not
+    /// well nested.
+    pub strip_parts: Vec<Option<ui::scene_parts::SectionParts>>,
     /// The docked wheel, drawn on its own.
     pub wheel: Option<PannedWheel>,
     /// A strip's floating surfaces drew something. On screen they are drawn
@@ -1580,16 +1584,16 @@ fn grounded_intent_fallback(entries: &[ui::widget::history::HistoryEntry]) -> St
             return t_args("host-activity-working-in", &[("app", app.into())]);
         }
     }
-    match entry.op_class {
-        collab_types::OpClass::Splice => t("host-activity-editing"),
-        collab_types::OpClass::Move => t("host-activity-organizing"),
-        collab_types::OpClass::EditMeta => t("host-activity-updating-details"),
-        collab_types::OpClass::Comment => t("host-activity-reviewing-discussion"),
-        collab_types::OpClass::Tombstone => t("host-activity-cleaning-up"),
-        collab_types::OpClass::Restore => t("host-activity-restoring"),
-        collab_types::OpClass::Govern => t("host-activity-managing-access"),
-        collab_types::OpClass::Compaction => t("host-activity-maintaining-history"),
-        collab_types::OpClass::Redact => t("host-activity-reviewing-sensitive"),
+    match entry.entry_kind {
+        ui::widget::EntryKind::Text => t("host-activity-editing"),
+        ui::widget::EntryKind::Move => t("host-activity-organizing"),
+        ui::widget::EntryKind::Details => t("host-activity-updating-details"),
+        ui::widget::EntryKind::Comment => t("host-activity-reviewing-discussion"),
+        ui::widget::EntryKind::Delete => t("host-activity-cleaning-up"),
+        ui::widget::EntryKind::Restore => t("host-activity-restoring"),
+        ui::widget::EntryKind::Access => t("host-activity-managing-access"),
+        ui::widget::EntryKind::Compaction => t("host-activity-maintaining-history"),
+        ui::widget::EntryKind::Redaction => t("host-activity-reviewing-sensitive"),
     }
 }
 
@@ -1661,7 +1665,7 @@ impl ShellOverlayHost {
                 workspace_settings: self.workspace_settings_overlay.is_animating(now),
                 palette: self.palette_transition.is_animating(now),
                 power_menu: self.layers.power_menu.is_animating(now),
-                room_activity: self.room_activity_transition.is_animating(now),
+                room_activity: self.room_activity.needs_animation_frame(now),
                 follow: self.follow_transition.is_animating(now),
                 room_replay: self.room_activity.replay_is_playing(),
                 projection: self.projection_overlay.needs_animation_frame(now),
@@ -1764,13 +1768,17 @@ impl ShellOverlayHost {
             // A blurred surface drawn into a strip is recorded as drawn into
             // the workspace, so the frame producer sees it.
             ui::backdrop::layer_scene(&scene, backdrop_layer::WORKSPACE);
-            // SAFETY: as above.
-            unsafe {
-                let row = &mut *row;
-                row.draw_apart(&mut scene, text_renderer, theme, presence);
-                row.set_drawn_apart(false);
-            }
+            // Each window group is a damage part of the strip's drawing.
+            let ((), parts) = ui::scene_parts::record(&mut scene, |scene| {
+                // SAFETY: as above.
+                unsafe {
+                    let row = &mut *row;
+                    row.draw_apart(scene, text_renderer, theme, presence);
+                    row.set_drawn_apart(false);
+                }
+            });
             panned.strips.push((strip, scene));
+            panned.strip_parts.push(parts);
         }
         ui::backdrop::layer_scene(workspace, backdrop_layer::WORKSPACE);
         if unbaked {
@@ -2438,7 +2446,6 @@ impl ShellOverlayHost {
             history_narrator: inputs.history_narrator,
             status_narrator: inputs.status_narrator,
             status_narrative_request: None,
-            room_activity_transition: ui::Transition::closed(),
             room_activity_was_open: false,
             activity_awareness_workspace: None,
             activity_refresh: ActivityRefreshGate::default(),
@@ -2797,9 +2804,7 @@ impl ShellOverlayHost {
 
     pub fn set_capture_recording_paused(&mut self, paused: bool) {
         self.capture_studio.set_recording_paused(paused);
-        if let Some(chrome) = self.chrome.as_ref() {
-            chrome.borrow_mut().bump();
-        }
+        self.bump_chrome();
     }
 
     pub fn set_capture_recording_state_transition_progress(&mut self, permille: u16) {
@@ -2814,9 +2819,7 @@ impl ShellOverlayHost {
 
     pub fn set_capture_recording_finished(&mut self) {
         self.capture_studio.set_recording_finished();
-        if let Some(chrome) = self.chrome.as_ref() {
-            chrome.borrow_mut().bump();
-        }
+        self.bump_chrome();
     }
 
     pub fn set_capture_screenshot_finished(
@@ -2844,23 +2847,17 @@ impl ShellOverlayHost {
 
     pub fn set_capture_screenshot_pin_pending(&mut self, pending: bool) {
         self.capture_studio.set_screenshot_pin_pending(pending);
-        if let Some(chrome) = self.chrome.as_ref() {
-            chrome.borrow_mut().bump();
-        }
+        self.bump_chrome();
     }
 
     pub fn set_capture_screenshot_pinned(&mut self) {
         self.capture_studio.set_screenshot_pinned();
-        if let Some(chrome) = self.chrome.as_ref() {
-            chrome.borrow_mut().bump();
-        }
+        self.bump_chrome();
     }
 
     pub fn set_capture_replay_active(&mut self, active: bool, audio: ui::widget::AudioCaptureMode) {
         self.capture_studio.set_replay_active(active, audio);
-        if let Some(chrome) = self.chrome.as_ref() {
-            chrome.borrow_mut().bump();
-        }
+        self.bump_chrome();
     }
 
     pub fn set_capture_replay_buffered_seconds(&mut self, seconds: u8) {
@@ -2869,16 +2866,12 @@ impl ShellOverlayHost {
 
     pub fn set_capture_replay_saved(&mut self) {
         self.capture_studio.set_replay_saved();
-        if let Some(chrome) = self.chrome.as_ref() {
-            chrome.borrow_mut().bump();
-        }
+        self.bump_chrome();
     }
 
     pub fn set_capture_audio_available(&mut self, system: bool, microphone: bool) {
         self.capture_studio.set_audio_available(system, microphone);
-        if let Some(chrome) = self.chrome.as_ref() {
-            chrome.borrow_mut().bump();
-        }
+        self.bump_chrome();
     }
 
     /// Render selected live apps in their virtual strip coordinates, without
@@ -3169,9 +3162,7 @@ impl ShellOverlayHost {
                 &crate::shell::i18n::current_locale(),
             );
         }
-        if let Some(chrome) = self.chrome.as_ref() {
-            chrome.borrow_mut().bump();
-        }
+        self.bump_chrome();
     }
 
     pub fn emoji_picker_open(&self) -> bool {
@@ -3444,6 +3435,13 @@ impl ShellOverlayHost {
             chrome
                 .borrow_mut()
                 .request_transition_paints(TRANSITION_PAINT_RUN);
+        }
+    }
+
+    /// Mark the shared chrome state changed so its readers repaint.
+    fn bump_chrome(&self) {
+        if let Some(chrome) = self.chrome.as_ref() {
+            chrome.borrow_mut().bump();
         }
     }
 
@@ -3952,9 +3950,7 @@ impl ShellOverlayHost {
         self.layers
             .display_confirm
             .show(transaction, tool, Instant::now());
-        if let Some(chrome) = self.chrome.as_ref() {
-            chrome.borrow_mut().bump();
-        }
+        self.bump_chrome();
     }
 
     /// Tell the person `tool` applied a display layout again right after
@@ -10033,9 +10029,7 @@ impl ShellOverlayHost {
         } else if index >= self.qs_clipboard_history_start.saturating_add(visible) {
             self.qs_clipboard_history_start = index.saturating_add(1).saturating_sub(visible);
         }
-        if let Some(chrome) = self.chrome.as_ref() {
-            chrome.borrow_mut().bump();
-        }
+        self.bump_chrome();
     }
 
     fn scroll_qs_clipboard_history(&mut self, movement: isize) -> bool {
@@ -10052,9 +10046,7 @@ impl ShellOverlayHost {
             return false;
         }
         self.qs_clipboard_history_start = next;
-        if let Some(chrome) = self.chrome.as_ref() {
-            chrome.borrow_mut().bump();
-        }
+        self.bump_chrome();
         true
     }
 
@@ -10122,9 +10114,7 @@ impl ShellOverlayHost {
                 self.qs_clipboard_history_start = 0;
                 let history = self.filtered_clipboard_history();
                 self.qs_selected_clipboard = history.first().map(|item| item.id);
-                if let Some(chrome) = self.chrome.as_ref() {
-                    chrome.borrow_mut().bump();
-                }
+                self.bump_chrome();
             }
             return true;
         }
@@ -10220,9 +10210,7 @@ impl ShellOverlayHost {
             return false;
         }
         self.qs_device_fabric_start = next;
-        if let Some(chrome) = self.chrome.as_ref() {
-            chrome.borrow_mut().bump();
-        }
+        self.bump_chrome();
         true
     }
 
@@ -10875,20 +10863,18 @@ impl ShellOverlayHost {
         &mut self.room_activity
     }
 
-    /// Skip the room-activity sheet's open animation so a screenshot or a
-    /// click-driven test sees the settled panel rather than a frame of its
-    /// entry curve. Mirrors [`Self::force_ws_settings_settled`].
+    /// Treat the tiled recap as already open and lay it out now, so a
+    /// screenshot or a click-driven test sees the settled window on the very
+    /// next paint. It draws exactly as a live session does: the recap has no
+    /// entry animation for a capture to skip.
     pub fn force_room_activity_settled(&mut self) {
-        self.room_activity_transition = ui::Transition::open();
         self.room_activity_was_open = true;
         self.refresh_room_activity();
     }
 
-    /// Settle the room-activity sheet in its closed state after a shot driver
-    /// action closes it, preventing the following capture from containing the
-    /// tail of the dismissal animation.
+    /// Forget that the recap was open after a shot driver action closes it,
+    /// so a later open is a fresh rising edge.
     pub fn force_room_activity_closed_for_shots(&mut self) {
-        self.room_activity_transition = ui::Transition::closed();
         self.room_activity_was_open = false;
     }
 
@@ -11084,9 +11070,7 @@ impl ShellOverlayHost {
         self.overview_window_selection = None;
         self.overview_window_interrupted = false;
         self.scroll_overview_selection_into_view();
-        if let Some(chrome) = self.chrome.as_ref() {
-            chrome.borrow_mut().bump();
-        }
+        self.bump_chrome();
         true
     }
 
@@ -12497,9 +12481,7 @@ impl ShellOverlayHost {
                 };
                 if let Some(intent) = instant {
                     self.instant_captures.push(intent);
-                    if let Some(chrome) = self.chrome.as_ref() {
-                        chrome.borrow_mut().bump();
-                    }
+                    self.bump_chrome();
                 } else {
                     let _ = self.open_capture_studio(ui::widget::CaptureMode::Screenshot);
                 }
@@ -12628,9 +12610,7 @@ impl ShellOverlayHost {
             } else {
                 self.capture_shortcut_chord(action, logical_key, modifiers);
             }
-            if let Some(chrome) = self.chrome.as_ref() {
-                chrome.borrow_mut().bump();
-            }
+            self.bump_chrome();
             *handled = true;
             return true;
         }
@@ -12734,9 +12714,7 @@ impl ShellOverlayHost {
                 }
                 _ => {}
             }
-            if let Some(chrome) = self.chrome.as_ref() {
-                chrome.borrow_mut().bump();
-            }
+            self.bump_chrome();
             *handled = true;
             return true;
         }
@@ -13209,9 +13187,7 @@ impl ShellOverlayHost {
                     A::DictationCancel => self.layers.dictation.request_cancel(),
                     _ => {}
                 }
-                if let Some(chrome) = self.chrome.as_ref() {
-                    chrome.borrow_mut().bump();
-                }
+                self.bump_chrome();
             }
             return true;
         }
@@ -13387,9 +13363,7 @@ impl ShellOverlayHost {
         self.overview_window_interrupted = false;
         self.overview_selection = self.overview_here_index();
         self.scroll_overview_selection_into_view();
-        if let Some(chrome) = self.chrome.as_ref() {
-            chrome.borrow_mut().bump();
-        }
+        self.bump_chrome();
     }
 
     /// Navigate the overview before input reaches content. Arrows keep the
@@ -13451,9 +13425,7 @@ impl ShellOverlayHost {
             _ => self.step_overview_selection(logical_key, shift, count),
         }
         self.scroll_overview_selection_into_view();
-        if let Some(chrome) = self.chrome.as_ref() {
-            chrome.borrow_mut().bump();
-        }
+        self.bump_chrome();
         *handled = true;
         true
     }
@@ -14079,9 +14051,7 @@ impl ShellOverlayHost {
                 self.shortcut_rebind = Some(action);
                 self.shortcut_rebind_message = None;
                 self.shortcut_guide_focus = Some(ShortcutGuideFocus::Binding(action));
-                if let Some(chrome) = self.chrome.as_ref() {
-                    chrome.borrow_mut().bump();
-                }
+                self.bump_chrome();
                 *handled = true;
                 return true;
             }
@@ -14092,9 +14062,7 @@ impl ShellOverlayHost {
             {
                 self.reset_shortcut_pair(first, second);
                 self.shortcut_guide_focus = Some(ShortcutGuideFocus::Binding(first));
-                if let Some(chrome) = self.chrome.as_ref() {
-                    chrome.borrow_mut().bump();
-                }
+                self.bump_chrome();
                 *handled = true;
                 return true;
             }
@@ -14475,9 +14443,7 @@ impl ShellOverlayHost {
         if let Some(hit) = self.collaborators_overlay.key(logical_key, shift_down) {
             self.apply_collaborators_hit(hit, handled);
         } else {
-            if let Some(chrome) = self.chrome.as_ref() {
-                chrome.borrow_mut().bump();
-            }
+            self.bump_chrome();
             *handled = true;
         }
         true
@@ -14963,9 +14929,7 @@ impl ShellOverlayHost {
                 self.qs_selected_media = None;
                 self.qs_selected_gamepad = None;
                 self.qs_selected_remote_capture = None;
-                if let Some(chrome) = self.chrome.as_ref() {
-                    chrome.borrow_mut().bump();
-                }
+                self.bump_chrome();
                 return;
             }
             DeviceFabricPaneRow::SpeakerConsent(consent) => {
@@ -15086,9 +15050,7 @@ impl ShellOverlayHost {
                 self.qs_selected_realtime = None;
                 self.qs_selected_media = None;
                 self.qs_selected_gamepad = None;
-                if let Some(chrome) = self.chrome.as_ref() {
-                    chrome.borrow_mut().bump();
-                }
+                self.bump_chrome();
                 return;
             }
             DeviceFabricPaneRow::RemoteCaptureSession(session) => {
@@ -15148,9 +15110,7 @@ impl ShellOverlayHost {
                 self.qs_selected_gamepad = None;
                 self.qs_selected_remote_capture = None;
                 self.qs_selected_remote_audio = None;
-                if let Some(chrome) = self.chrome.as_ref() {
-                    chrome.borrow_mut().bump();
-                }
+                self.bump_chrome();
                 return;
             }
             DeviceFabricPaneRow::BluetoothAuthorization(authorization) => {
@@ -15259,9 +15219,7 @@ impl ShellOverlayHost {
                     self.qs_selected_realtime = None;
                     self.qs_selected_remote_audio = None;
                     self.qs_selected_remote_capture = None;
-                    if let Some(chrome) = self.chrome.as_ref() {
-                        chrome.borrow_mut().bump();
-                    }
+                    self.bump_chrome();
                     return;
                 }
             }
@@ -15299,9 +15257,7 @@ impl ShellOverlayHost {
                 self.qs_selected_gamepad = None;
                 self.qs_selected_remote_audio = None;
                 self.qs_selected_remote_capture = None;
-                if let Some(chrome) = self.chrome.as_ref() {
-                    chrome.borrow_mut().bump();
-                }
+                self.bump_chrome();
                 return;
             }
             DeviceFabricPaneRow::LocalOutput(output) if !output.is_default => Some((
@@ -15704,9 +15660,7 @@ impl ShellOverlayHost {
             {
                 self.qs_selected_clipboard = history.first().map(|item| item.id);
             }
-            if let Some(chrome) = self.chrome.as_ref() {
-                chrome.borrow_mut().bump();
-            }
+            self.bump_chrome();
             return;
         }
         let history = self.filtered_clipboard_history();
@@ -15747,9 +15701,7 @@ impl ShellOverlayHost {
                 }
                 return;
             }
-            if let Some(chrome) = self.chrome.as_ref() {
-                chrome.borrow_mut().bump();
-            }
+            self.bump_chrome();
             return;
         }
     }
@@ -16342,6 +16294,24 @@ impl ShellOverlayHost {
         *handled = true;
     }
 
+    /// Whether the person here may take the governance action `action` in
+    /// the active workspace, which this device governs: whether a sheet
+    /// offering it is drawn. The action itself decides again.
+    fn may_govern_active(&self, action: &str) -> bool {
+        let Some(chrome) = self.chrome.as_ref() else {
+            return false;
+        };
+        let state = chrome.borrow();
+        if let Some(forced) = state.test_only_owner_override {
+            return forced;
+        }
+        let user = state.active_local_user();
+        let tree = state.tree();
+        tree.desktop.active_workspace().is_some_and(|ws| {
+            tree.governs_room(ws.room) && ws.may_govern_at(&user, action, tilo_clock::unix_now())
+        })
+    }
+
     #[allow(
         clippy::too_many_lines,
         reason = "typed settings outcomes are intentionally applied in one exhaustive policy boundary"
@@ -16383,7 +16353,7 @@ impl ShellOverlayHost {
                 self.last_search_query = "\0workspace-permission-roles\0".to_string();
             }
             WorkspaceSettingsOutcome::MemberRole(user) => {
-                if is_owner {
+                if self.may_govern_active(tilo_action_policy::roles::governance::SET_ROLE) {
                     let current = self.chrome.as_ref().and_then(|chrome| {
                         chrome
                             .borrow()
@@ -16396,18 +16366,14 @@ impl ShellOverlayHost {
                         user,
                         current.unwrap_or(crate::shell::state::CapRole::Viewer),
                     );
-                    if let Some(chrome) = self.chrome.as_ref() {
-                        chrome.borrow_mut().bump();
-                    }
+                    self.bump_chrome();
                 }
             }
             WorkspaceSettingsOutcome::RemoveMember(user) => {
-                if is_owner {
+                if self.may_govern_active(tilo_action_policy::roles::governance::REMOVE_MEMBER) {
                     self.workspace_settings_overlay
                         .open_remove_member_sheet(user);
-                    if let Some(chrome) = self.chrome.as_ref() {
-                        chrome.borrow_mut().bump();
-                    }
+                    self.bump_chrome();
                 }
             }
             WorkspaceSettingsOutcome::ManageOwnership => {
@@ -16416,11 +16382,9 @@ impl ShellOverlayHost {
                 self.last_search_query = "\0workspace-ownership\0".to_string();
             }
             WorkspaceSettingsOutcome::Revoke(cap_id) => {
-                if is_owner {
+                if self.may_govern_active(tilo_action_policy::roles::governance::REVOKE) {
                     self.workspace_settings_overlay.open_revoke_sheet(cap_id);
-                    if let Some(chrome) = self.chrome.as_ref() {
-                        chrome.borrow_mut().bump();
-                    }
+                    self.bump_chrome();
                 }
             }
             // Authority comes from the same function the `member.role.set` /
@@ -16478,7 +16442,7 @@ impl ShellOverlayHost {
             }
             WorkspaceSettingsOutcome::RemoveAgent(agent) => {
                 if is_owner && let Some(chrome) = self.chrome.clone() {
-                    let _ = crate::shell::membership::edit_active_workspace_caps(
+                    let _ = crate::shell::membership::edit_active_workspace_policy(
                         &mut chrome.borrow_mut(),
                         move |ws, actor| {
                             tilo_desktop::workspace_settings::remove_agent(ws, actor, &agent)
@@ -16488,7 +16452,7 @@ impl ShellOverlayHost {
             }
             WorkspaceSettingsOutcome::ConfirmRevoke(cap_id) => {
                 if is_owner && let Some(chrome) = self.chrome.clone() {
-                    let _ = crate::shell::membership::edit_active_workspace_caps(
+                    let _ = crate::shell::membership::edit_active_workspace_policy(
                         &mut chrome.borrow_mut(),
                         move |ws, actor| {
                             tilo_desktop::workspace_settings::apply_revoke(ws, actor, &cap_id)
@@ -16510,9 +16474,7 @@ impl ShellOverlayHost {
             }
             WorkspaceSettingsOutcome::DismissMemberSheet => {
                 self.workspace_settings_overlay.dismiss_member_sheet();
-                if let Some(chrome) = self.chrome.as_ref() {
-                    chrome.borrow_mut().bump();
-                }
+                self.bump_chrome();
             }
             WorkspaceSettingsOutcome::SelectTab(tab) => {
                 if let Some(chrome) = self.chrome.clone() {
@@ -16847,7 +16809,6 @@ impl ShellOverlayHost {
         ctx: &mut ui::widget::EventCtx<'_>,
         palette_child: Option<NodeId>,
     ) -> bool {
-        let state = &mut ctx.state;
         if !self.palette_visible {
             return false;
         }
@@ -16869,7 +16830,7 @@ impl ShellOverlayHost {
                 if !self.active_kind_filter.is_empty() {
                     self.active_kind_filter.clear();
                     self.last_search_query.clear(); // force a refresh
-                    self.refresh_search_results(state, ctx.path);
+                    self.refresh_search_results(&ctx.state, ctx.path);
                 }
                 *ctx.handled = true;
                 return true;
@@ -16886,7 +16847,7 @@ impl ShellOverlayHost {
                     if let Some(kind) = kinds.get(idx).cloned() {
                         toggle_kind(&mut self.active_kind_filter, kind);
                         self.last_search_query.clear(); // force a refresh
-                        self.refresh_search_results(state, ctx.path);
+                        self.refresh_search_results(&ctx.state, ctx.path);
                     }
                     *ctx.handled = true;
                     return true;
@@ -16904,7 +16865,7 @@ impl ShellOverlayHost {
             && let Some(row) = self.palette.row_at(p)
         {
             self.palette.set_cursor(row);
-            self.activate_selected_result(state, ctx.path);
+            self.activate_selected_result(&mut ctx.state, ctx.path);
             *ctx.handled = true;
             return true;
         }
@@ -16922,7 +16883,7 @@ impl ShellOverlayHost {
         } = event
         {
             if !repeat {
-                self.activate_selected_result(state, ctx.path);
+                self.activate_selected_result(&mut ctx.state, ctx.path);
             }
             *ctx.handled = true;
             return true;
@@ -16930,22 +16891,11 @@ impl ShellOverlayHost {
         // Let the palette own the character/backspace/arrow keys.
         if let Some(palette_child) = palette_child {
             let query_before = self.palette.query().to_string();
-            self.palette.handle_event(
-                event,
-                &mut ui::widget::EventCtx {
-                    scale_factor: ctx.scale_factor,
-                    modifiers: ctx.modifiers,
-                    state: state.reborrow(),
-                    path: ctx.path,
-                    handled: ctx.handled,
-                    focus_target: ctx.focus_target,
-                    node_id: palette_child,
-                    taffy: ctx.taffy,
-                },
-            );
+            self.palette
+                .handle_event(event, &mut ctx.reborrow(ctx.path, palette_child));
             // Recompute results when a character/backspace changes the query.
             if self.palette.query() != query_before && self.pending_palette_action.is_none() {
-                self.refresh_search_results(state, ctx.path);
+                self.refresh_search_results(&ctx.state, ctx.path);
             }
             if *ctx.handled {
                 return true;
@@ -16964,7 +16914,6 @@ impl ShellOverlayHost {
         ctx: &mut ui::widget::EventCtx<'_>,
         children: &[NodeId],
     ) {
-        let state = &mut ctx.state;
         // First dibs so wheel-content precedes the desktop underneath.
         // Gated on the sidebar's rect for pointer events — otherwise it can
         // overlap the topbar band and swallow the overview-toggle click.
@@ -16979,19 +16928,7 @@ impl ShellOverlayHost {
                 _ => true,
             };
             if forward_pointer_to_sidebar {
-                sidebar.handle_event(
-                    event,
-                    &mut ui::widget::EventCtx {
-                        scale_factor: ctx.scale_factor,
-                        modifiers: ctx.modifiers,
-                        state: state.reborrow(),
-                        path: ctx.path,
-                        handled: ctx.handled,
-                        focus_target: ctx.focus_target,
-                        node_id: sidebar_child,
-                        taffy: ctx.taffy,
-                    },
-                );
+                sidebar.handle_event(event, &mut ctx.reborrow(ctx.path, sidebar_child));
                 if *ctx.handled {
                     return;
                 }
@@ -17028,19 +16965,8 @@ impl ShellOverlayHost {
             }
         }
         if let Some(&content_child) = children.first() {
-            self.content.handle_event(
-                event,
-                &mut ui::widget::EventCtx {
-                    scale_factor: ctx.scale_factor,
-                    modifiers: ctx.modifiers,
-                    state: state.reborrow(),
-                    path: ctx.path,
-                    handled: ctx.handled,
-                    focus_target: ctx.focus_target,
-                    node_id: content_child,
-                    taffy: ctx.taffy,
-                },
-            );
+            self.content
+                .handle_event(event, &mut ctx.reborrow(ctx.path, content_child));
             // A visible tab/maximized close button begins its animation in
             // the widget above. Commit that exact tab before this input
             // dispatch returns so no revision or crash can restore it.
@@ -17355,9 +17281,7 @@ impl ShellOverlayHost {
             LayerIntent::FocusWindow(address) => self.focus_switcher_window(address),
             LayerIntent::Dictation(request) => {
                 self.layers.dictation.enqueue(request);
-                if let Some(chrome) = self.chrome.as_ref() {
-                    chrome.borrow_mut().bump();
-                }
+                self.bump_chrome();
                 true
             }
             LayerIntent::DictationSetup => {
@@ -17376,9 +17300,7 @@ impl ShellOverlayHost {
                 }
             }
             LayerIntent::Repaint => {
-                if let Some(chrome) = self.chrome.as_ref() {
-                    chrome.borrow_mut().bump();
-                }
+                self.bump_chrome();
                 true
             }
         }
@@ -18393,7 +18315,6 @@ impl Widget for ShellOverlayHost {
         reason = "event routing stays linear so modal gates retain their security-sensitive order"
     )]
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
-        let state = &mut ctx.state;
         // MouseInput carries no coordinates. Keep the host's pointer cache
         // current before any modal can return early, because onboarding and
         // the other compositor-owned gates hit-test the following button edge
@@ -18419,19 +18340,7 @@ impl Widget for ShellOverlayHost {
             return;
         }
         if !self.overlay_flags().collaborators
-            && self.route_collaborators_event(
-                event,
-                &mut ui::widget::EventCtx {
-                    scale_factor: ctx.scale_factor,
-                    modifiers: ctx.modifiers,
-                    state: state.reborrow(),
-                    path: ctx.path,
-                    handled: ctx.handled,
-                    focus_target: ctx.focus_target,
-                    node_id: ctx.node_id,
-                    taffy: ctx.taffy,
-                },
-            )
+            && self.route_collaborators_event(event, &mut ctx.reborrow(ctx.path, ctx.node_id))
         {
             return;
         }
@@ -18447,19 +18356,8 @@ impl Widget for ShellOverlayHost {
         // surface, then returns them to the intact workflow on Escape.
         if self.capture_studio.is_open() {
             if let Some(capture_node) = self.capture_node {
-                self.capture_studio.handle_event(
-                    event,
-                    &mut ui::widget::EventCtx {
-                        scale_factor: ctx.scale_factor,
-                        modifiers: ctx.modifiers,
-                        state: state.reborrow(),
-                        path: ctx.path,
-                        handled: ctx.handled,
-                        focus_target: ctx.focus_target,
-                        node_id: capture_node,
-                        taffy: ctx.taffy,
-                    },
-                );
+                self.capture_studio
+                    .handle_event(event, &mut ctx.reborrow(ctx.path, capture_node));
             }
             if !self.capture_studio.is_open()
                 && let Some(chrome) = self.chrome.as_ref()
@@ -18474,23 +18372,11 @@ impl Widget for ShellOverlayHost {
         // nothing behind it may be clicked into agreeing, and no desktop
         // shortcut runs while it waits.
         if self.onboarding.is_none()
-            && self.pairing.handle_event(
-                event,
-                &mut ui::widget::EventCtx {
-                    scale_factor: ctx.scale_factor,
-                    modifiers: ctx.modifiers,
-                    state: state.reborrow(),
-                    path: ctx.path,
-                    handled: ctx.handled,
-                    focus_target: ctx.focus_target,
-                    node_id: ctx.node_id,
-                    taffy: ctx.taffy,
-                },
-            )
+            && self
+                .pairing
+                .handle_event(event, &mut ctx.reborrow(ctx.path, ctx.node_id))
         {
-            if let Some(chrome) = self.chrome.as_ref() {
-                chrome.borrow_mut().bump();
-            }
+            self.bump_chrome();
             return;
         }
         // A display tool's change waits for Keep or Revert, possibly with a
@@ -18498,16 +18384,7 @@ impl Widget for ShellOverlayHost {
         if self.route_layer_band(
             Band::Session,
             event,
-            &mut ui::widget::EventCtx {
-                scale_factor: ctx.scale_factor,
-                modifiers: ctx.modifiers,
-                state: state.reborrow(),
-                path: ctx.path,
-                handled: &mut *ctx.handled,
-                focus_target: &mut *ctx.focus_target,
-                node_id: ctx.node_id,
-                taffy: ctx.taffy,
-            },
+            &mut ctx.reborrow(ctx.path, ctx.node_id),
         ) {
             return;
         }
@@ -18518,19 +18395,7 @@ impl Widget for ShellOverlayHost {
         // left untouched, so onboarding resumes where it was once the sheet
         // is answered or dismissed.
         if self.onboarding.is_some()
-            && self.route_portal_dialog_event(
-                event,
-                &mut ui::widget::EventCtx {
-                    scale_factor: ctx.scale_factor,
-                    modifiers: ctx.modifiers,
-                    state: state.reborrow(),
-                    path: ctx.path,
-                    handled: &mut *ctx.handled,
-                    focus_target: &mut *ctx.focus_target,
-                    node_id: ctx.node_id,
-                    taffy: ctx.taffy,
-                },
-            )
+            && self.route_portal_dialog_event(event, &mut ctx.reborrow(ctx.path, ctx.node_id))
         {
             return;
         }
@@ -18542,19 +18407,7 @@ impl Widget for ShellOverlayHost {
             // using `children.first()` here sends contextual-tour pointer
             // events through the desktop's taffy subtree instead.
             let child_node = self.onboarding_node.unwrap_or(ctx.node_id);
-            onboarding.handle_event(
-                event,
-                &mut ui::widget::EventCtx {
-                    scale_factor: ctx.scale_factor,
-                    modifiers: ctx.modifiers,
-                    state: state.reborrow(),
-                    path: ctx.path,
-                    handled: ctx.handled,
-                    focus_target: ctx.focus_target,
-                    node_id: child_node,
-                    taffy: ctx.taffy,
-                },
-            );
+            onboarding.handle_event(event, &mut ctx.reborrow(ctx.path, child_node));
             // First-login is a modal machine surface. Even an event the
             // current control does not consume must never fall through to
             // hidden desktop chrome. Leave the one standard Tab path
@@ -18680,19 +18533,7 @@ impl Widget for ShellOverlayHost {
         if let (Some(markup), Some(markup_node)) =
             (self.screenshot_markup.as_mut(), self.screenshot_markup_node)
         {
-            markup.handle_event(
-                event,
-                &mut ui::widget::EventCtx {
-                    scale_factor: ctx.scale_factor,
-                    modifiers: ctx.modifiers,
-                    state: state.reborrow(),
-                    path: ctx.path,
-                    handled: ctx.handled,
-                    focus_target: ctx.focus_target,
-                    node_id: markup_node,
-                    taffy: ctx.taffy,
-                },
-            );
+            markup.handle_event(event, &mut ctx.reborrow(ctx.path, markup_node));
             // This is a real editing workspace, not a translucent status
             // overlay: drawing and shortcuts must never leak to the app below.
             *ctx.handled = true;
@@ -18703,53 +18544,16 @@ impl Widget for ShellOverlayHost {
             .capture_mirrors
             .iter()
             .any(|(_, mirror)| mirror.wants_pointer_capture())
-            && self.route_capture_mirror_event(
-                event,
-                &mut ui::widget::EventCtx {
-                    scale_factor: ctx.scale_factor,
-                    modifiers: ctx.modifiers,
-                    state: state.reborrow(),
-                    path: ctx.path,
-                    handled: &mut *ctx.handled,
-                    focus_target: &mut *ctx.focus_target,
-                    node_id: ctx.node_id,
-                    taffy: ctx.taffy,
-                },
-            )
+            && self.route_capture_mirror_event(event, &mut ctx.reborrow(ctx.path, ctx.node_id))
         {
             return;
         }
 
-        if self.route_portal_dialog_event(
-            event,
-            &mut ui::widget::EventCtx {
-                scale_factor: ctx.scale_factor,
-                modifiers: ctx.modifiers,
-                state: state.reborrow(),
-                path: ctx.path,
-                handled: &mut *ctx.handled,
-                focus_target: &mut *ctx.focus_target,
-                node_id: ctx.node_id,
-                taffy: ctx.taffy,
-            },
-        ) {
+        if self.route_portal_dialog_event(event, &mut ctx.reborrow(ctx.path, ctx.node_id)) {
             return;
         }
 
-        if self.route_layer_band(
-            Band::Chord,
-            event,
-            &mut ui::widget::EventCtx {
-                scale_factor: ctx.scale_factor,
-                modifiers: ctx.modifiers,
-                state: state.reborrow(),
-                path: ctx.path,
-                handled: &mut *ctx.handled,
-                focus_target: &mut *ctx.focus_target,
-                node_id: ctx.node_id,
-                taffy: ctx.taffy,
-            },
-        ) {
+        if self.route_layer_band(Band::Chord, event, &mut ctx.reborrow(ctx.path, ctx.node_id)) {
             return;
         }
 
@@ -18759,19 +18563,8 @@ impl Widget for ShellOverlayHost {
         // the pointer and leave the live surface stranded or one event behind.
         if self.content.wants_pointer_capture() {
             if let Some(content_node) = self.content_node {
-                self.content.handle_event(
-                    event,
-                    &mut ui::widget::EventCtx {
-                        scale_factor: ctx.scale_factor,
-                        modifiers: ctx.modifiers,
-                        state: state.reborrow(),
-                        path: ctx.path,
-                        handled: ctx.handled,
-                        focus_target: ctx.focus_target,
-                        node_id: content_node,
-                        taffy: ctx.taffy,
-                    },
-                );
+                self.content
+                    .handle_event(event, &mut ctx.reborrow(ctx.path, content_node));
                 // A right-click that lands while a drag still owns the
                 // pointer is a request like any other; opened here, not on
                 // whichever later event happens to run the fallback.
@@ -18780,19 +18573,7 @@ impl Widget for ShellOverlayHost {
             return;
         }
 
-        if self.route_modal_absorbing_overlays(
-            event,
-            &mut ui::widget::EventCtx {
-                scale_factor: ctx.scale_factor,
-                modifiers: ctx.modifiers,
-                state: state.reborrow(),
-                path: ctx.path,
-                handled: &mut *ctx.handled,
-                focus_target: &mut *ctx.focus_target,
-                node_id: ctx.node_id,
-                taffy: ctx.taffy,
-            },
-        ) {
+        if self.route_modal_absorbing_overlays(event, &mut ctx.reborrow(ctx.path, ctx.node_id)) {
             return;
         }
         // Menus and flyouts sit below the genuinely modal sheets above (a
@@ -18801,32 +18582,11 @@ impl Widget for ShellOverlayHost {
         if self.route_layer_band(
             Band::Popover,
             event,
-            &mut ui::widget::EventCtx {
-                scale_factor: ctx.scale_factor,
-                modifiers: ctx.modifiers,
-                state: state.reborrow(),
-                path: ctx.path,
-                handled: &mut *ctx.handled,
-                focus_target: &mut *ctx.focus_target,
-                node_id: ctx.node_id,
-                taffy: ctx.taffy,
-            },
+            &mut ctx.reborrow(ctx.path, ctx.node_id),
         ) {
             return;
         }
-        if self.route_capture_mirror_event(
-            event,
-            &mut ui::widget::EventCtx {
-                scale_factor: ctx.scale_factor,
-                modifiers: ctx.modifiers,
-                state: state.reborrow(),
-                path: ctx.path,
-                handled: &mut *ctx.handled,
-                focus_target: &mut *ctx.focus_target,
-                node_id: ctx.node_id,
-                taffy: ctx.taffy,
-            },
-        ) {
+        if self.route_capture_mirror_event(event, &mut ctx.reborrow(ctx.path, ctx.node_id)) {
             return;
         }
         if let Some(chrome) = self.chrome.clone() {
@@ -18840,19 +18600,9 @@ impl Widget for ShellOverlayHost {
                     && self.notification_center.is_reading()
             };
             if reading
-                && self.notification_center.reader_event(
-                    event,
-                    &mut ui::widget::EventCtx {
-                        scale_factor: ctx.scale_factor,
-                        modifiers: ctx.modifiers,
-                        state: state.reborrow(),
-                        path: ctx.path,
-                        handled: &mut *ctx.handled,
-                        focus_target: &mut *ctx.focus_target,
-                        node_id: ctx.node_id,
-                        taffy: ctx.taffy,
-                    },
-                )
+                && self
+                    .notification_center
+                    .reader_event(event, &mut ctx.reborrow(ctx.path, ctx.node_id))
             {
                 chrome.borrow_mut().bump();
             }
@@ -18876,55 +18626,19 @@ impl Widget for ShellOverlayHost {
             return;
         }
         if Self::is_pointer_event(event)
-            && self.route_wifi_password_event(
-                event,
-                &mut ui::widget::EventCtx {
-                    scale_factor: ctx.scale_factor,
-                    modifiers: ctx.modifiers,
-                    state: state.reborrow(),
-                    path: ctx.path,
-                    handled: &mut *ctx.handled,
-                    focus_target: &mut *ctx.focus_target,
-                    node_id: ctx.node_id,
-                    taffy: ctx.taffy,
-                },
-            )
+            && self.route_wifi_password_event(event, &mut ctx.reborrow(ctx.path, ctx.node_id))
         {
             return;
         }
         if (Self::is_pointer_event(event) || matches!(event, WindowEvent::Focused(false)))
-            && self.route_collaborators_event(
-                event,
-                &mut ui::widget::EventCtx {
-                    scale_factor: ctx.scale_factor,
-                    modifiers: ctx.modifiers,
-                    state: state.reborrow(),
-                    path: ctx.path,
-                    handled: ctx.handled,
-                    focus_target: ctx.focus_target,
-                    node_id: ctx.node_id,
-                    taffy: ctx.taffy,
-                },
-            )
+            && self.route_collaborators_event(event, &mut ctx.reborrow(ctx.path, ctx.node_id))
         {
             return;
         }
         if self.route_absorbable_pointer_and_toast_click(event, ctx.scale_factor, ctx.handled) {
             return;
         }
-        if self.route_permission_prompt_event(
-            event,
-            &mut ui::widget::EventCtx {
-                scale_factor: ctx.scale_factor,
-                modifiers: ctx.modifiers,
-                state: state.reborrow(),
-                path: ctx.path,
-                handled: &mut *ctx.handled,
-                focus_target: &mut *ctx.focus_target,
-                node_id: ctx.node_id,
-                taffy: ctx.taffy,
-            },
-        ) {
+        if self.route_permission_prompt_event(event, &mut ctx.reborrow(ctx.path, ctx.node_id)) {
             return;
         }
         if self.route_dropped_file_event(event, ctx.handled) {
@@ -18964,36 +18678,12 @@ impl Widget for ShellOverlayHost {
         // a `k` in one must not open search instead.
         if !Self::is_pointer_event(event)
             && !self.keyboard_held_ahead_of_wifi_password()
-            && self.route_wifi_password_event(
-                event,
-                &mut ui::widget::EventCtx {
-                    scale_factor: ctx.scale_factor,
-                    modifiers: ctx.modifiers,
-                    state: state.reborrow(),
-                    path: ctx.path,
-                    handled: &mut *ctx.handled,
-                    focus_target: &mut *ctx.focus_target,
-                    node_id: ctx.node_id,
-                    taffy: ctx.taffy,
-                },
-            )
+            && self.route_wifi_password_event(event, &mut ctx.reborrow(ctx.path, ctx.node_id))
         {
             return;
         }
         if !Self::is_pointer_event(event)
-            && self.route_collaborators_event(
-                event,
-                &mut ui::widget::EventCtx {
-                    scale_factor: ctx.scale_factor,
-                    modifiers: ctx.modifiers,
-                    state: state.reborrow(),
-                    path: ctx.path,
-                    handled: ctx.handled,
-                    focus_target: ctx.focus_target,
-                    node_id: ctx.node_id,
-                    taffy: ctx.taffy,
-                },
-            )
+            && self.route_collaborators_event(event, &mut ctx.reborrow(ctx.path, ctx.node_id))
         {
             return;
         }
@@ -19017,7 +18707,7 @@ impl Widget for ShellOverlayHost {
                 logical_key,
                 *ctx.modifiers,
                 *repeat,
-                state,
+                &ctx.state,
                 ctx.path,
                 ctx.handled,
             )
@@ -19065,16 +18755,7 @@ impl Widget for ShellOverlayHost {
         };
         if self.route_palette_event(
             event,
-            &mut ui::widget::EventCtx {
-                scale_factor: ctx.scale_factor,
-                modifiers: ctx.modifiers,
-                state: state.reborrow(),
-                path: ctx.path,
-                handled: &mut *ctx.handled,
-                focus_target: &mut *ctx.focus_target,
-                node_id: ctx.node_id,
-                taffy: ctx.taffy,
-            },
+            &mut ctx.reborrow(ctx.path, ctx.node_id),
             children.get(1).copied(),
         ) {
             return;
@@ -19087,16 +18768,7 @@ impl Widget for ShellOverlayHost {
         }
         self.dispatch_pointer_and_content_event(
             event,
-            &mut ui::widget::EventCtx {
-                scale_factor: ctx.scale_factor,
-                modifiers: ctx.modifiers,
-                state: state.reborrow(),
-                path: ctx.path,
-                handled: &mut *ctx.handled,
-                focus_target: &mut *ctx.focus_target,
-                node_id: ctx.node_id,
-                taffy: ctx.taffy,
-            },
+            &mut ctx.reborrow(ctx.path, ctx.node_id),
             &children,
         );
     }
@@ -20474,8 +20146,7 @@ impl ShellOverlayHost {
         let ws_settings_in_flight = self.workspace_settings_overlay.is_animating(now);
         let palette_in_flight = self.palette_transition.is_animating(now);
         let layers_in_flight = self.layers.is_animating(now);
-        let room_activity_in_flight = self.room_activity_transition.is_animating(now)
-            || self.room_activity.needs_animation_frame(now);
+        let room_activity_in_flight = self.room_activity.needs_animation_frame(now);
         let follow_in_flight = self.follow_transition.is_animating(now);
         let room_replay_in_flight = self.room_activity.replay_is_playing();
         let capture_in_flight = self.capture_studio.needs_animation_frame();
@@ -20612,7 +20283,7 @@ fn apply_composer_hit(chrome: &Chrome, hit: ComposerHit) {
     match hit {
         ComposerHit::Submit => {
             let draft = chrome.borrow().ws_grant_draft;
-            let _ = crate::shell::membership::edit_active_workspace_caps(
+            let _ = crate::shell::membership::edit_active_workspace_policy(
                 &mut chrome.borrow_mut(),
                 move |ws, actor| {
                     tilo_desktop::workspace_settings::apply_grant_draft(ws, actor, &draft)
@@ -21713,43 +21384,11 @@ impl ShellOverlayHost {
         if visible {
             self.refresh_room_activity();
             self.apply_pending_history_action();
-            let ra_now = Instant::now();
-            let openness = self.room_activity_transition.value(ra_now);
-            draw_modal_scrim_at(scene, transform, self.rect, openness, theme);
-            let alpha = openness;
-            let in_flight = alpha < 1.0;
-            let sheet = self.room_activity.rect();
-            if in_flight {
-                scene.push_layer(
-                    vello::peniko::Fill::NonZero,
-                    BlendMode::default(),
-                    alpha,
-                    transform,
-                    &self.rect,
-                );
-            }
-            // Slides in from its anchored edge rather than scaling about
-            // its centre — scaling a full-height panel reads as the whole
-            // desktop breathing.
-            let slide = (1.0 - f64::from(openness)) * (sheet.width() * 0.25);
-            let sheet_xform = if slide > 0.0 {
-                transform.pre_translate((slide, 0.0).into())
-            } else {
-                transform
-            };
-            // A Panel casts `e4` (HIG §9.1), following the outline the
-            // sheet paints itself with (`radii.control` in `room_activity.rs`);
-            // the token's own colour, not a ramp slot, and its strength
-            // fades in with the sheet.
-            let mut sheet_shadow = theme.tokens.elevation.floating;
-            sheet_shadow.color = sheet_shadow.color.with_alpha_factor(alpha);
-            ui::surface::shadow(
-                scene,
-                sheet_xform,
-                sheet,
-                f64::from(theme.tokens.radii.control),
-                &sheet_shadow,
-            );
+            // The recap is a tiled window: it has no scrim, entry fade or
+            // floating shadow of its own, and it must open no layer here.
+            // A layer left open leaks past this draw: every later overlay
+            // lands in it, and with several displays the next display's
+            // whole pass nests inside this display's clip and draws nothing.
             self.room_activity.set_review_clip(self.rect);
             self.room_activity
                 .draw(scene, transform, text_renderer, theme, presence);
@@ -26550,7 +26189,7 @@ impl ShellOverlayHost {
     fn new_wifi_password_input() -> TextInput {
         TextInput::local()
             .with_id("qs-wifi-password")
-            .with_placeholder(&t("portal-network-password"))
+            .with_placeholder(t("portal-network-password"))
             .with_secret(true)
             .with_enter_submits(true)
     }

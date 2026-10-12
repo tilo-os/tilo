@@ -136,10 +136,11 @@ percent-encoding.workspace = true
 # XML escaping for the recent-files bookmarks.
 quick-xml.workspace = true
 
-ui = { package = "tilo-ui", path = "../../sdk/ui-core", features = ["dmabuf-import"] }
+ui = { package = "tilo-ui", path = "../../sdk/ui-core", features = ["dmabuf-import", "ux-bench"] }
 tilo-identity-ceremony = { version = "0.1.0", path = "../../collab/tilo-identity-ceremony" }
 
 tilo-actions = { path = "../../collab/actions" }
+tilo-action-policy = { path = "../../collab/action-policy" }
 tilo-app = { path = "../../sdk/tilo-app" }
 chat = { path = "../../../apps/chat", default-features = false }
 console-control = { path = "../console-control" }
@@ -299,6 +300,9 @@ tilo-relay-protocol = { path = "../../hosting/tilo-relay-protocol" }
 # provider host, plus room administration and the workspace join client.
 # The relay daemon itself (`tilo-relay`) is a dev-dependency only.
 tilo-relay-session = { path = "../../hosting/tilo-relay-session" }
+# The approver session that answers the questions this person's agents on
+# their hosts put to them.
+tilo-relay-client = { path = "../../hosting/tilo-relay-client" }
 tilo-delivery-protocol = { path = "../../hosting/tilo-delivery-protocol" }
 # The native durable owner of enrolled rooms, kept inside the state file.
 tilo-joined-room = { path = "../../collab/tilo-joined-room" }
@@ -329,6 +333,8 @@ tilo-search = { path = "../../sdk/search", features = ["disk"] }
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
+# Signs the installed-package fixtures the launch path reads surfaces from.
+tilo-app-package = { path = "../../packaging/tilo-app-package" }
 # Native Store publication through the same certified session fixture as Browser.
 store = { path = "../../../apps/store" }
 # Private feedback acceptance invokes the actual Chat action and receipt adapter.

@@ -33,3 +33,19 @@ totp-add-cancel = Cancel
 totp-add-save-add = Add account
 totp-add-save-edit = Save changes
 totp-add-save-provision = Set up
+
+## History
+
+totp-stored-account-issuer = Renamed the account { $item }
+totp-stored-account-label = Changed the account name of { $item }
+totp-stored-account-color = Recoloured { $item }
+totp-stored-account-algorithm = Changed how { $item } computes its codes
+totp-stored-account-digits = { $item } now shows { $new }-digit codes
+totp-stored-account-period = { $item } now changes its code every { $new } seconds
+totp-totp-accounts = { $op ->
+    [insert] Added an account
+   *[other] Changed the accounts
+}
+totp-move-up = Moved { $item } up
+totp-move-down = Moved { $item } down
+totp-delete = Deleted the account { $item }

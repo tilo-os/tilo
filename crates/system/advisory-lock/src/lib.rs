@@ -43,6 +43,16 @@
 //! no retry or timeout: a caller that cannot wait uses a `try` variant and
 //! reports the busy owner.
 
+// The browser has no files: there `std::fs::File` is an uninhabited stub, no
+// `FileLock` can be built, and its accessors are never reached.
+#![cfg_attr(
+    target_arch = "wasm32",
+    allow(
+        clippy::uninhabited_references,
+        reason = "std::fs::File is uninhabited on wasm32-unknown-unknown; no guard exists there"
+    )
+)]
+
 use std::fs::{File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::ops::{Deref, DerefMut};

@@ -2407,8 +2407,10 @@ fn action_bindings_own_edits_and_accessibility_set_value() {
         let object = doc
             .put_object(&automerge::ROOT, "legacy", ObjType::Text)
             .unwrap();
+        let changes = std::rc::Rc::new(std::cell::RefCell::new(Vec::<String>::new()));
+        let captured = std::rc::Rc::clone(&changes);
         let mut input = TextInput::local()
-            .on_change(|_| panic!("legacy callback must be suppressed"))
+            .on_change(move |value| captured.borrow_mut().push(value.to_owned()))
             .on_action(crate::widget::test_string_action_binding());
         input.bind_text(object.clone());
         crate::widget::controls::refresh_control_action_availability(
@@ -2438,9 +2440,46 @@ fn action_bindings_own_edits_and_accessibility_set_value() {
                 .arguments["value"],
             "Project Atlas"
         );
+        assert_eq!(
+            *changes.borrow(),
+            ["Project Atlas"],
+            "the local callback runs beside the bound action"
+        );
         doc.splice_text(&object, 0, 0, "Remote title").unwrap();
         Widget::sync(&mut input, &doc, &automerge::ROOT);
         assert_eq!(input.value(), "Remote title");
+        assert_eq!(changes.borrow().len(), 1, "remote text is not a user edit");
+    }
+
+    // Case `change_callback_and_action_both_fire_in_either_order`.
+    {
+        let mut doc = AutoCommit::new();
+        let changes = std::rc::Rc::new(std::cell::RefCell::new(Vec::<String>::new()));
+        let captured = std::rc::Rc::clone(&changes);
+        let mut input = TextInput::local()
+            .on_action(crate::widget::test_string_action_binding())
+            .on_change(move |value| captured.borrow_mut().push(value.to_owned()));
+        crate::widget::controls::refresh_control_action_availability(
+            &mut input,
+            &std::collections::HashSet::from([tilo_actions::ActionAddress::new(
+                "test:control",
+                "set",
+            )]),
+        );
+        assert!(Widget::perform_action(
+            &mut input,
+            &crate::a11y::Action::SetValue("Atlas".into()),
+            &[],
+            &mut crate::widget::Edits::lend(&mut doc),
+            &automerge::ROOT
+        ));
+        assert_eq!(
+            crate::widget::controls::take_control_invocation(&mut input)
+                .unwrap()
+                .arguments["value"],
+            "Atlas"
+        );
+        assert_eq!(*changes.borrow(), ["Atlas"]);
     }
 }
 
@@ -4554,6 +4593,71 @@ fn single_line_batch_metrics_preserve_graphemes_preedit_and_theme_geometry() {
                     "{text:?}, scale={scale}, preedit_at={preedit_at:?}"
                 );
             }
+        }
+    }
+}
+
+#[test]
+fn forced_color_idle_field_boundary_has_rendered_non_text_contrast() {
+    let mut renderer = crate::offscreen::OffscreenRenderer::new(160, 64);
+    for theme in [
+        Theme::high_contrast(),
+        Theme::preset(crate::theme::Preset::HighContrastLight),
+    ] {
+        assert!(theme.colors_are_forced());
+        let mut scene = Scene::new();
+        paint_field_chrome(
+            &mut scene,
+            Affine::IDENTITY,
+            &theme,
+            &RoundedRect::from_rect(Rect::new(12.0, 12.0, 148.0, 52.0), 8.0),
+            FieldState::default(),
+        );
+        let pixels = renderer.render(&scene, theme.tokens.colors.surfaces.content);
+        let pixel = |x: usize, y: usize| {
+            let offset = (y * 160 + x) * 4;
+            vello::peniko::Color::from_rgba8(
+                pixels[offset],
+                pixels[offset + 1],
+                pixels[offset + 2],
+                pixels[offset + 3],
+            )
+        };
+        let ground = pixel(80, 24);
+        for edge in [pixel(80, 12), pixel(12, 32)] {
+            assert!(
+                crate::a11y::contrast_ratio(edge, ground)
+                    >= crate::tokens::colors::NON_TEXT_MIN_CONTRAST,
+                "actual idle field edge must remain visible when forced surfaces coincide"
+            );
+        }
+        let enabled_contrast = crate::a11y::contrast_ratio(pixel(80, 12), ground);
+        let mut disabled_scene = Scene::new();
+        paint_field_chrome(
+            &mut disabled_scene,
+            Affine::IDENTITY,
+            &theme,
+            &RoundedRect::from_rect(Rect::new(12.0, 12.0, 148.0, 52.0), 8.0),
+            FieldState {
+                disabled: true,
+                ..FieldState::default()
+            },
+        );
+        let disabled_pixels =
+            renderer.render(&disabled_scene, theme.tokens.colors.surfaces.content);
+        for (x, y) in [(80, 12), (12, 32)] {
+            let offset = (y * 160 + x) * 4;
+            let edge = vello::peniko::Color::from_rgba8(
+                disabled_pixels[offset],
+                disabled_pixels[offset + 1],
+                disabled_pixels[offset + 2],
+                disabled_pixels[offset + 3],
+            );
+            let contrast = crate::a11y::contrast_ratio(edge, ground);
+            assert!(
+                contrast > 1.5 && contrast < enabled_contrast,
+                "the actual disabled group must dim the forced outline while keeping it visible"
+            );
         }
     }
 }

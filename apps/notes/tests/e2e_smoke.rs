@@ -4,7 +4,7 @@
 //! reload path do.
 
 use crate::framework_support::{notes, surface};
-use notes::doc::NotesDoc;
+use notes::read;
 use notes::sidebar::OutEvent;
 use ui::widget::BlockKind;
 
@@ -42,15 +42,14 @@ fn full_lifecycle_round_trips_through_the_record() {
     }
 
     let mut app = app.reopen().unwrap();
-    let page = app
-        .state()
+    let page = crate::framework_support::shown(&app)
         .pages()
         .iter()
         .find(|page| page.id == target)
         .cloned()
         .expect("Test Page still in the notebook");
     assert_eq!(page.title, "Test Page");
-    let stored = app.read_document(|doc| NotesDoc::page_blocks(doc, target));
+    let stored = app.read_document(|doc| read::page_blocks(doc, target));
     assert_eq!(stored.len(), 4, "{stored:?}");
 
     surface(&mut app, |notes| notes.navigate_to(target));

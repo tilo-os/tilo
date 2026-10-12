@@ -118,17 +118,20 @@ fn workspace_settings_tabs_edit_the_name_roster_and_capabilities() {
 
     // Phase `workspace_settings_members_tab_reads_the_real_roster`.
     {
-        // What a member may do is the verb on their membership capability,
+        // What a member may do is their role in the room,
         // and that is what the Members pane renders.
-        use shell::shell::state::{CapOverride, CapRole, Subject, Verb, Workspace, WorkspaceId};
+        use shell::shell::state::{CapRole, Workspace, WorkspaceId};
         use tilo_desktop::workspace_settings::{WsTab, members_pane_rows};
         let host_str = "host".to_string();
         let mut ws = Workspace::new(WorkspaceId::new(), "Design");
         ws.set_owner("host");
-        let room = ws.id.raw().to_string();
-        ws.grant_as(
+        ws.govern_as_at(
             &host_str,
-            CapOverride::membership(Subject::person("viewer-user"), room, Verb::Read),
+            tilo_action_policy::Change::AddMember {
+                person: ("viewer-user").to_string(),
+                role: tilo_action_policy::Role::Viewer,
+            },
+            tilo_clock::unix_now(),
         )
         .expect("the owner may write a membership");
 
@@ -149,7 +152,7 @@ fn workspace_settings_tabs_edit_the_name_roster_and_capabilities() {
     // Phase `workspace_settings_permissions_tab_lists_granted_capabilities`.
     {
         use shell::shell::state::{
-            CapOverride, Expiry, Scope, Subject, Verb, Workspace, WorkspaceId,
+            Access, CapOverride, Expiry, Scope, Subject, Workspace, WorkspaceId,
         };
         use tilo_desktop::workspace_settings::{SubjectKind, WsTab, permissions_pane_layout};
         let host_str = "host".to_string();
@@ -160,7 +163,7 @@ fn workspace_settings_tabs_edit_the_name_roster_and_capabilities() {
             CapOverride::grant(
                 Subject::app("Terminal"),
                 Scope::FsPath("/var/workspace".into()),
-                Verb::Write,
+                Access::Write,
             )
             .expiring(Expiry::EndOfSession),
         )

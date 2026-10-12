@@ -8,8 +8,6 @@
 
 use std::time::{Duration, Instant};
 
-use settings_store::accessibility::{AccessibilitySettings, SwitchKeyPair};
-
 use winit::event::{ElementState, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
@@ -19,24 +17,46 @@ pub enum SwitchAction {
     Activate,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum KeyPair {
+    F6F7,
+    F9F10,
+    Digits12,
+}
+
 #[derive(Clone, Copy, Debug)]
 struct Config {
     enabled: bool,
-    pair: SwitchKeyPair,
+    pair: KeyPair,
     scan: Option<Duration>,
 }
 
 impl Config {
     fn from_settings(settings: &settings_store::live::Snapshot) -> Self {
-        Self::from_section(&settings.section(settings_store::accessibility::SECTION))
+        Self::from_section(&settings.section("accessibility"))
     }
 
     fn from_section(section: &serde_json::Map<String, serde_json::Value>) -> Self {
-        let settings = AccessibilitySettings::from_section(section);
+        let pair = match section
+            .get("switch_key_pair")
+            .and_then(serde_json::Value::as_str)
+        {
+            Some("f9_f10") => KeyPair::F9F10,
+            Some("digits12") => KeyPair::Digits12,
+            _ => KeyPair::F6F7,
+        };
+        let scan = section
+            .get("switch_scan_ms")
+            .and_then(serde_json::Value::as_u64)
+            .filter(|ms| (500..=5_000).contains(ms))
+            .map(Duration::from_millis);
         Self {
-            enabled: settings.switch_control,
-            pair: settings.switch_key_pair,
-            scan: settings.switch_scan(),
+            enabled: section
+                .get("switch_control")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false),
+            pair,
+            scan,
         }
     }
 }
@@ -102,12 +122,12 @@ impl SwitchControlRuntime {
             return None;
         };
         let action = match (self.config.pair, &event.logical_key) {
-            (SwitchKeyPair::F6F7, Key::Named(NamedKey::F6))
-            | (SwitchKeyPair::F9F10, Key::Named(NamedKey::F9)) => SwitchAction::Next,
-            (SwitchKeyPair::Digits12, Key::Character(c)) if c == "1" => SwitchAction::Next,
-            (SwitchKeyPair::F6F7, Key::Named(NamedKey::F7))
-            | (SwitchKeyPair::F9F10, Key::Named(NamedKey::F10)) => SwitchAction::Activate,
-            (SwitchKeyPair::Digits12, Key::Character(c)) if c == "2" => SwitchAction::Activate,
+            (KeyPair::F6F7, Key::Named(NamedKey::F6))
+            | (KeyPair::F9F10, Key::Named(NamedKey::F9)) => SwitchAction::Next,
+            (KeyPair::Digits12, Key::Character(c)) if c == "1" => SwitchAction::Next,
+            (KeyPair::F6F7, Key::Named(NamedKey::F7))
+            | (KeyPair::F9F10, Key::Named(NamedKey::F10)) => SwitchAction::Activate,
+            (KeyPair::Digits12, Key::Character(c)) if c == "2" => SwitchAction::Activate,
             _ => return None,
         };
         if action == SwitchAction::Next && event.state == ElementState::Pressed {
@@ -261,7 +281,7 @@ mod tests {
             let mut runtime = fixed(
                 Config {
                     enabled: false,
-                    pair: SwitchKeyPair::F6F7,
+                    pair: KeyPair::F6F7,
                     scan: Some(Duration::from_secs(1)),
                 },
                 None,
@@ -274,7 +294,7 @@ mod tests {
             let mut runtime = fixed(
                 Config {
                     enabled: true,
-                    pair: SwitchKeyPair::F6F7,
+                    pair: KeyPair::F6F7,
                     scan: Some(Duration::from_secs(2)),
                 },
                 Some(now + Duration::from_secs(2)),
@@ -296,7 +316,7 @@ mod tests {
             let mut runtime = fixed(
                 Config {
                     enabled: true,
-                    pair: SwitchKeyPair::F9F10,
+                    pair: KeyPair::F9F10,
                     scan: None,
                 },
                 None,
@@ -320,7 +340,7 @@ mod tests {
             let mut runtime = fixed(
                 Config {
                     enabled: false,
-                    pair: SwitchKeyPair::F6F7,
+                    pair: KeyPair::F6F7,
                     scan: None,
                 },
                 None,

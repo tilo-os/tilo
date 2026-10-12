@@ -112,9 +112,10 @@ fn desktop_packages_ship_one_executable_under_a_signed_target() {
             Some(target.runtime.as_str()),
             manifest.package.runtime.as_deref()
         );
+        // One executable, beside the public surface the app committed.
         assert_eq!(
             read.meta.collection.entries.keys().collect::<Vec<_>>(),
-            [module]
+            [module, "surface.toml"]
         );
     }
 

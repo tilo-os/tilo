@@ -16,7 +16,7 @@ mod task_review_view;
 //
 // A row's `[Revert]` writes the delta back as a **new forward change**;
 // history is appended to, never rewritten. Governance rows
-// ([`OpClass::Govern`]) are non-revertible — an owner counters a
+// ([`EntryKind::Access`]) are non-revertible — an owner counters a
 // governance act with another one rather than rewinding it.
 
 use super::replay::{ReplayPointer, WorkspaceReplayFrame};
@@ -35,11 +35,11 @@ use ui::time::{Duration, Instant, SystemTime};
 
 use automerge::transaction::Transactable;
 use automerge::{ChangeHash, Prop, ReadDoc, ScalarValue, Value};
-use collab_types::OpClass;
-use collab_types::caps::{CapOverride, Effect, Principal, Scope, Subject, Verb};
+use collab_types::caps::{Access, CapOverride, Effect, Principal, Scope, Subject};
 use ui::paint::PaintCtx;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
+use ui::widget::EntryKind;
 use ui::widget::{
     ArtifactKind, HistoryClassification, HistoryEntry, HistoryEntryId, HistoryFilter,
 };
@@ -399,7 +399,7 @@ fn others_work(rows: Vec<&WorkspaceHistoryEntry>, local: &str) -> Vec<HistoryEnt
 
 fn is_feed_change(entry: &HistoryEntry) -> bool {
     !entry.context.as_ref().is_some_and(|context| {
-        context.is_housekeeping()
+        !context.is_activity()
             || context
                 .facets
                 .iter()
@@ -2309,6 +2309,10 @@ impl RoomActivityPane {
         self.last_heads = heads;
         seed_roster_colours(self.source.authors_mut(), tree);
         let local = self.local_user();
+        if !local.is_empty() {
+            // The reader's own changes read as theirs.
+            self.source.authors_mut().set_reader(local.clone());
+        }
         if !local.is_empty() && self.explicit_local_user.is_none() {
             let handle = automerge::ActorId::from(local.as_bytes()).to_hex_string();
             self.host.local_author(self.source.authors_mut(), &handle);
@@ -2399,17 +2403,14 @@ impl RoomActivityPane {
                         ui::history_source::short_id(&actor),
                         self.source.authors().colour_for(&actor),
                     ),
-                    op_class: OpClass::EditMeta,
+                    entry_kind: EntryKind::Details,
                     artifact_kind: ArtifactKind::Cluster,
                     timestamp: SystemTime::UNIX_EPOCH
                         .checked_add(Duration::from_secs(
                             u64::try_from(receipt.completed_at).unwrap_or_default(),
                         ))
                         .unwrap_or(SystemTime::UNIX_EPOCH),
-                    summary: receipt
-                        .context
-                        .summary()
-                        .unwrap_or_else(|| receipt_status_label(&receipt.status)),
+                    summary: receipt_summary(&receipt.context, &receipt.status),
                     text_delta: None,
                     diff_payload: None,
                     redaction: None,
@@ -2418,15 +2419,16 @@ impl RoomActivityPane {
                 tags.push(Some(workspace.id.raw()));
             }
         }
-        // Housekeeping stays in the room document's history, out of the feed.
+        // Housekeeping and what came from outside stay in the room
+        // document's history, out of the feed.
         self.derived = entries
             .into_iter()
             .zip(tags)
             .filter(|(entry, _)| {
-                !entry
+                entry
                     .context
                     .as_ref()
-                    .is_some_and(ui::tilo_actions::ActionContext::is_housekeeping)
+                    .is_none_or(ui::tilo_actions::ActionContext::is_activity)
             })
             .collect();
         self.derived.sort_by_key(|(entry, _)| entry.timestamp);
@@ -2585,13 +2587,7 @@ impl RoomActivityPane {
                             .cloned()
                             .unwrap_or_else(|| t("activity-removed-workspace"));
                         e.summary = format!("{label} \u{00b7} {}", e.summary);
-                        let mut context =
-                            e.context
-                                .take()
-                                .unwrap_or_else(|| ui::tilo_actions::ActionContext {
-                                    action_label: e.summary.clone(),
-                                    ..ui::tilo_actions::ActionContext::default()
-                                });
+                        let mut context = e.context.take().unwrap_or_default();
                         context
                             .facets
                             .push(ui::tilo_actions::ActionFacet::new("workspace", label));
@@ -2762,12 +2758,7 @@ impl RoomActivityPane {
                     {
                         let label = labels.join(" + ");
                         projected.summary = format!("{label} \u{00b7} {}", projected.summary);
-                        let mut context = projected.context.take().unwrap_or_else(|| {
-                            ui::tilo_actions::ActionContext {
-                                action_label: projected.summary.clone(),
-                                ..ui::tilo_actions::ActionContext::default()
-                            }
-                        });
+                        let mut context = projected.context.take().unwrap_or_default();
                         context
                             .facets
                             .push(ui::tilo_actions::ActionFacet::new("workspace", label));
@@ -3637,7 +3628,7 @@ impl RoomActivityPane {
             y += 18.0;
             tr.draw_style(
                 scene,
-                &step.summary,
+                &step.sentence(),
                 theme.tokens.colors.text_dim,
                 at(transform, x + 10.0, y),
                 Some((width - 10.0).max(0.0)),
@@ -7171,7 +7162,7 @@ impl RoomActivityPane {
                 &[
                     ("app", humanize_app_id(&step.app).into()),
                     ("record", (&step.record).into()),
-                    ("summary", (&step.summary).into()),
+                    ("summary", step.sentence().into()),
                 ],
             ));
         }
@@ -7718,10 +7709,19 @@ fn task_audit_line(
     event_time: SystemTime,
     now: SystemTime,
 ) -> String {
+    crate::i18n::ensure();
+    let what = ui::history_source::sentence::sentence(&event.entry());
+    let what = match &event.note {
+        Some(note) => t_args(
+            "activity-task-audit-noted",
+            &[("what", what.into()), ("note", note.as_str().into())],
+        ),
+        None => what,
+    };
     format!(
         "{} · {} · {}",
         participant_display_label(&event.actor),
-        event.summary,
+        what,
         format_relative_time(event_time, now)
     )
 }
@@ -8848,11 +8848,11 @@ fn describe_room_changes(
             .entry(hash)
             .or_insert_with(|| RoomChange::read(doc, deps, hash));
         *tag = change.workspace;
-        if let Some((summary, op_class)) = change.counts.describe() {
+        if let Some((summary, entry_kind)) = change.counts.describe() {
             if entry.context.is_none() {
                 entry.summary = summary;
             }
-            entry.op_class = op_class;
+            entry.entry_kind = entry_kind;
             if !change.counts.feed_kind().belongs_in_feed() {
                 let mut context = entry.context.take().unwrap_or_default();
                 if !context
@@ -8998,18 +8998,31 @@ impl PatchCounts {
     fn record(&mut self, p: &automerge::Patch) {
         let container = path_tail(p);
         match (&p.action, container.as_str()) {
-            (automerge::PatchAction::PutMap { key, value, .. }, "capabilities") => {
-                let _ = key;
-                if let Value::Scalar(s) = &value.0
-                    && let ScalarValue::Bytes(blob) = s.as_ref()
-                    && let Ok(cap) = serde_json::from_slice::<CapOverride>(blob)
-                {
-                    self.grants.push(describe_capability(&cap));
-                } else {
-                    self.grants.push(t("activity-capability-unknown"));
-                }
+            (
+                automerge::PatchAction::PutMap { key, value, .. },
+                map @ ("grants" | "sandbox" | "members"),
+            ) => {
+                let described = match (&value.0, map) {
+                    (Value::Scalar(s), _) => match s.as_ref() {
+                        ScalarValue::Bytes(blob) => match map {
+                            "grants" => serde_json::from_slice::<tilo_action_policy::Grant>(blob)
+                                .ok()
+                                .map(|grant| describe_grant(&grant)),
+                            "sandbox" => serde_json::from_slice::<CapOverride>(blob)
+                                .ok()
+                                .map(|cap| describe_capability(&cap)),
+                            _ => serde_json::from_slice::<tilo_action_policy::Role>(blob)
+                                .ok()
+                                .map(|role| describe_member(key, role)),
+                        },
+                        _ => None,
+                    },
+                    (Value::Object(_), _) => None,
+                };
+                self.grants
+                    .push(described.unwrap_or_else(|| t("activity-capability-unknown")));
             }
-            (automerge::PatchAction::DeleteMap { .. }, "capabilities") => {
+            (automerge::PatchAction::DeleteMap { .. }, "grants" | "sandbox" | "members") => {
                 self.revokes = self.revokes.saturating_add(1);
             }
             // A room's `contents` map: a window is an entry of a group's
@@ -9080,11 +9093,11 @@ impl PatchCounts {
     /// noise, and a whole-list write (the first `seed_doc_from_cache`) is
     /// recognised before the per-field cases, or a flush that granted
     /// nothing reads as "granted 4 capabilities".
-    fn describe(&self) -> Option<(String, OpClass)> {
+    fn describe(&self) -> Option<(String, EntryKind)> {
         if self.workspaces_removed > 0 && self.workspaces_added == 0 {
             return Some((
                 counted("activity-event-removed-workspaces", self.workspaces_removed),
-                OpClass::Tombstone,
+                EntryKind::Delete,
             ));
         }
         if self.workspaces_added > 0 {
@@ -9102,7 +9115,7 @@ impl PatchCounts {
                     ],
                 ),
             };
-            return Some((s, OpClass::Splice));
+            return Some((s, EntryKind::Text));
         }
         // A room document's first change names the room, its owner and its
         // name at once: that is the workspace being made.
@@ -9111,7 +9124,7 @@ impl PatchCounts {
                 Some(name) => t_args("activity-event-created-named", &[("name", name.into())]),
                 None => t("activity-event-created"),
             };
-            return Some((s, OpClass::Govern));
+            return Some((s, EntryKind::Access));
         }
 
         if !self.grants.is_empty() {
@@ -9126,19 +9139,19 @@ impl PatchCounts {
             } else {
                 counted("activity-event-granted-capabilities", self.grants.len())
             };
-            return Some((s, OpClass::Govern));
+            return Some((s, EntryKind::Access));
         }
         if self.revokes > 0 {
             return Some((
                 counted("activity-event-revoked-capabilities", self.revokes),
-                OpClass::Govern,
+                EntryKind::Access,
             ));
         }
         if self.owner_set {
-            return Some((t("activity-event-owner"), OpClass::Govern));
+            return Some((t("activity-event-owner"), EntryKind::Access));
         }
         if self.room_set {
-            return Some((t("activity-event-identity"), OpClass::Govern));
+            return Some((t("activity-event-identity"), EntryKind::Access));
         }
         if let Some(name) = self.names.first() {
             let s = if name.is_empty() {
@@ -9146,7 +9159,7 @@ impl PatchCounts {
             } else {
                 t_args("activity-event-named", &[("name", name.into())])
             };
-            return Some((s, OpClass::EditMeta));
+            return Some((s, EntryKind::Details));
         }
         if self.tabs_added > 0 {
             let s = if self.tab_titles.is_empty() {
@@ -9157,19 +9170,19 @@ impl PatchCounts {
                     &[("titles", join_titles(&self.tab_titles).into())],
                 )
             };
-            return Some((s, OpClass::Splice));
+            return Some((s, EntryKind::Text));
         }
         if self.tabs_removed > 0 {
             return Some((
                 counted("activity-event-closed-windows", self.tabs_removed),
-                OpClass::Tombstone,
+                EntryKind::Delete,
             ));
         }
         if self.groups_moved > 0 {
-            return Some((t("activity-event-rearranged"), OpClass::Move));
+            return Some((t("activity-event-rearranged"), EntryKind::Move));
         }
         if self.geometry > 0 {
-            return Some((t("activity-event-resized"), OpClass::EditMeta));
+            return Some((t("activity-event-resized"), EntryKind::Details));
         }
         if self.active_switched {
             return Some((
@@ -9178,7 +9191,7 @@ impl PatchCounts {
                 // workspace-switch confirmation to truncate at accessibility
                 // text sizes.
                 t("activity-event-switched"),
-                OpClass::EditMeta,
+                EntryKind::Details,
             ));
         }
         None
@@ -9254,14 +9267,88 @@ fn scalar_string(v: &Value<'_>) -> Option<String> {
     }
 }
 
-/// A capability in one short phrase: what, over what, to whom.
+/// A grant in one short phrase: its answer, for which kinds of action, on
+/// what, to whom.
+fn describe_grant(grant: &tilo_action_policy::Grant) -> String {
+    use tilo_action_policy::{ActionKind, Answer};
+    let answer = match grant.answer {
+        Answer::Allow => "allow",
+        Answer::Ask => "ask",
+        Answer::Deny => "deny",
+    };
+    let kinds = grant.kinds;
+    let kinds = match (
+        kinds.contains(ActionKind::Read),
+        kinds.contains(ActionKind::Undoable),
+        kinds.contains(ActionKind::Outside),
+    ) {
+        (true, true, true) => "all",
+        (true, true, false) => "read-undoable",
+        (true, false, true) => "read-outside",
+        (false, true, true) => "undoable-outside",
+        (true, false, false) => "read",
+        (false, true, false) => "undoable",
+        (false, false, true) => "outside",
+        (false, false, false) => "none",
+    };
+    t_args(
+        "activity-grant",
+        &[
+            ("answer", answer.into()),
+            ("kinds", kinds.into()),
+            (
+                "node",
+                tilo_action_policy::describe_node(&grant.node, &tilo_action_policy::Ids).into(),
+            ),
+            ("subject", describe_grantee(&grant.subject).into()),
+        ],
+    )
+}
+
+fn describe_grantee(subject: &tilo_action_policy::Subject) -> String {
+    use tilo_action_policy::Subject as Grantee;
+    match subject {
+        Grantee::Person(id) => short(id),
+        Grantee::Role(role) => t_args(
+            "activity-capability-role",
+            &[("role", role_key(*role).into())],
+        ),
+        Grantee::Agent(agent) => t_args("activity-capability-agent", &[("agent", agent.into())]),
+        Grantee::Task(task) => t_args("activity-grant-task", &[("task", short(task).into())]),
+        Grantee::Shortcut(shortcut) => {
+            t_args("activity-grant-shortcut", &[("shortcut", shortcut.into())])
+        }
+        Grantee::App(app) => app.clone(),
+        Grantee::ForeignDevice => t("activity-grant-foreign-device"),
+    }
+}
+
+/// The catalogue selector of a role.
+fn role_key(role: tilo_action_policy::Role) -> &'static str {
+    match role {
+        tilo_action_policy::Role::Owner => "owner",
+        tilo_action_policy::Role::Editor => "editor",
+        tilo_action_policy::Role::Commenter => "commenter",
+        tilo_action_policy::Role::Viewer => "viewer",
+    }
+}
+
+/// A member admitted to the room, or their role changed.
+fn describe_member(person: &str, role: tilo_action_policy::Role) -> String {
+    t_args(
+        "activity-member",
+        &[
+            ("person", short(person).into()),
+            ("role", role_key(role).into()),
+        ],
+    )
+}
+
+/// A sandbox capability in one short phrase: what, over what, to whom.
 fn describe_capability(cap: &CapOverride) -> String {
-    let verb = match cap.verb {
-        Verb::Read => "read",
-        Verb::Comment => "comment",
-        Verb::Write => "write",
-        Verb::Invite => "invite",
-        Verb::Admin => "admin",
+    let verb = match cap.access {
+        Access::Read => "read",
+        Access::Write => "write",
     };
     let effect = match cap.effect {
         Effect::Grant => "grant",
@@ -9280,51 +9367,17 @@ fn describe_capability(cap: &CapOverride) -> String {
 
 fn describe_scope(scope: &Scope) -> String {
     match scope {
-        Scope::Workspace | Scope::Room(_) => t("activity-capability-this-workspace"),
-        Scope::App(a) => a.clone(),
-        Scope::ResourceType(k) => t_args(
-            "activity-capability-every-type",
-            &[("kind", format!("{k:?}").into())],
-        ),
-        Scope::ResourceInstance(_) => t("activity-capability-one-artifact"),
         Scope::FsPath(p) => p.clone(),
         // Record authority intentionally has no path: it follows the file
         // across rename/move and the stable id is not useful activity copy.
         Scope::FsRecord(_) => t("activity-capability-one-shared-file"),
         Scope::Device(d) => d.clone(),
         Scope::NetHost(h) => t_args("activity-capability-network", &[("host", h.into())]),
-        Scope::Action {
-            app,
-            resource,
-            action,
-        } => format!("{app}:{resource}:{action}"),
-        Scope::ActionOnKind { app, kind, action } => t_args(
-            "activity-capability-action-on-kind",
-            &[
-                ("app", app.into()),
-                ("kind", kind.into()),
-                ("action", action.into()),
-            ],
-        ),
     }
 }
 
 fn describe_subject(subject: &Subject) -> String {
     match subject {
-        Subject::Role(role) => t_args(
-            "activity-capability-role",
-            &[(
-                "role",
-                match role {
-                    collab_types::role::Role::Owner => "owner",
-                    collab_types::role::Role::Editor => "editor",
-                    collab_types::role::Role::Commenter => "commenter",
-                    collab_types::role::Role::Viewer => "viewer",
-                    collab_types::role::Role::Denied => "denied",
-                }
-                .into(),
-            )],
-        ),
         Subject::User(_) => t("activity-capability-a-person"),
         Subject::Principal(p) => describe_principal(p),
     }
@@ -9392,6 +9445,28 @@ fn task_route_label(route: WorkspaceTaskRoute) -> String {
 }
 
 /// How an action with no summary of its own ended.
+/// What an effect's receipt says: what the effect did, with how it ended
+/// when it did not complete.
+fn receipt_summary(
+    context: &tilo_actions::ActionContext,
+    status: &tilo_actions::EffectReceiptStatus,
+) -> String {
+    crate::i18n::ensure();
+    let Some(what) = ui::history_source::sentence::step_summary(context) else {
+        return receipt_status_label(status);
+    };
+    match status {
+        tilo_actions::EffectReceiptStatus::Succeeded => what,
+        _ => t_args(
+            "activity-receipt-ended",
+            &[
+                ("status", receipt_status_label(status).into()),
+                ("what", what.into()),
+            ],
+        ),
+    }
+}
+
 fn receipt_status_label(status: &tilo_actions::EffectReceiptStatus) -> String {
     t(match status {
         tilo_actions::EffectReceiptStatus::Succeeded => "activity-receipt-completed",

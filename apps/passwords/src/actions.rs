@@ -18,7 +18,7 @@ pub const ITEM_PREFIX: &str = "passwords:item:";
 #[effect(operation = "passwords.effect", device_only)]
 pub enum PasswordsEffect {
     /// Show the current private credential permissions.
-    #[effect(view, idempotent, permission = "read", label = "passwords-show-access")]
+    #[effect(view, idempotent, kind = "read", label = "passwords-show-access")]
     ShowAccess,
     /// Revoke one current credential relationship by its opaque permission ID.
     #[effect(destructive, idempotent, label = "passwords-revoke-access")]
@@ -27,17 +27,17 @@ pub enum PasswordsEffect {
     #[effect(privileged, label = "passwords-approve-access")]
     ApproveAccess { proposal: String, lifetime: String },
     /// Decline one pending request without granting access.
-    #[effect(idempotent, permission = "read", label = "passwords-deny-access")]
+    #[effect(idempotent, kind = "read", label = "passwords-deny-access")]
     DenyAccess { proposal: String },
     /// New item.
-    #[effect(permission = "read")]
+    #[effect(kind = "read")]
     Add,
     /// Save.
     ///
     /// Saves the item open in the editor to the vault.
     Save,
     /// Cancel editing.
-    #[effect(permission = "read")]
+    #[effect(kind = "read")]
     Cancel,
     /// Generate strong password.
     ///
@@ -52,13 +52,13 @@ pub enum PasswordsEffect {
     ///
     /// Copies the item's password, key or note to the clipboard, which
     /// clears after 30 seconds.
-    #[effect(privileged, permission = "read")]
+    #[effect(privileged, kind = "read")]
     Copy {
         #[param("Opaque id of the vault item")]
         item: String,
     },
     /// Reveal secret for 10 seconds.
-    #[effect(privileged, permission = "read")]
+    #[effect(privileged, kind = "read")]
     Reveal {
         #[param("Opaque id of the vault item")]
         item: String,
@@ -79,7 +79,7 @@ pub enum PasswordsEffect {
     /// the person chooses.
     Export,
     /// Filter vault.
-    #[effect(permission = "read")]
+    #[effect(kind = "read")]
     Filter {
         #[param("all | favorites | login | api-key | note | wifi | other")]
         filter: String,
@@ -87,7 +87,7 @@ pub enum PasswordsEffect {
     /// Open.
     ///
     /// Shows the item in the window, clearing a filter that hides it.
-    #[effect(permission = "read")]
+    #[effect(row, kind = "read")]
     Open {
         #[param("Opaque id of the vault item")]
         item: String,
@@ -133,11 +133,6 @@ pub(crate) fn grant_row(grant: &accounts::CredentialGrant) -> LiveRow {
 /// The published id of the vault item `id`.
 pub fn item_resource_id(id: &str) -> String {
     format!("{ITEM_PREFIX}{id}")
-}
-
-/// The action a search hit for `id` runs: show the item.
-pub fn open_item_address(id: &accounts::SecretId) -> ui::tilo_actions::ActionAddress {
-    ui::tilo_actions::ActionAddress::new(item_resource_id(&id.0), PasswordsEffect::OPEN.id)
 }
 
 /// One vault item as a live row. Rows feed system-wide search and

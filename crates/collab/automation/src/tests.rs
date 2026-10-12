@@ -6,8 +6,9 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::task::{Context, Poll, Waker};
 
-use collab_types::{PermissionProfileRule, Scope, Verb};
 use serde_json::{Value, json};
+use tilo_action_policy::{Answer, KindSet, Level, Rule, TreePath};
+use tilo_actions::ActionKey;
 use tilo_actions::action::{ExecutionLocus, OperationKind};
 use tilo_actions::contract::{ActionContract, ConfirmationPolicy, ResultSpec, RiskLevel};
 use tilo_actions::door::{ActionAddress, ActionDescriptor, InputSpec};
@@ -24,8 +25,8 @@ use crate::{
     AskRequest, Binding, CatchUp, CheckErrorKind, Condition, ConfirmationRequest, NoShortcuts,
     RunHooks, RunId, RunMode, RunOutcome, RunReport, RunRequest, RunTrigger,
     SHORTCUT_RESOURCE_KIND, SHORTCUT_RUN_ACTION, SHORTCUTS_APP_ID, Schedule, Selector, Shortcut,
-    Step, StepFailure, StepKind, StepPath, TimeOfDay, TriggerSpec, UnattendedConsent, Weekday,
-    check, run, shortcut_resource_id,
+    Step, StepFailure, StepKind, StepPath, TimeOfDay, TriggerSpec, Weekday, check, run,
+    shortcut_resource_id,
 };
 
 const NOTES: &str = "so.tilo.notes";
@@ -117,7 +118,7 @@ impl FakeHost {
                 "list",
                 Vec::new(),
                 ActionContract {
-                    permission: tilo_actions::contract::PermissionRequirement::Read,
+                    kind: tilo_actions::contract::ActionKind::Read,
                     ..returning(ResultSpec::Json {
                         schema: list_schema(),
                     })
@@ -321,11 +322,16 @@ fn caller() -> Caller {
     Caller::local_person("ada")
 }
 
-fn notes_grant() -> Vec<PermissionProfileRule> {
-    vec![PermissionProfileRule::grant(
-        Scope::App(NOTES.into()),
-        Verb::Write,
-    )]
+fn app_rule(app: &str) -> Rule {
+    Rule::new(
+        TreePath::root().any(Level::Room).app(app),
+        KindSet::ALL,
+        Answer::Allow,
+    )
+}
+
+fn notes_grant() -> Vec<Rule> {
+    vec![app_rule(NOTES)]
 }
 
 fn shortcut(id: &str, steps: Vec<Step>) -> Shortcut {
@@ -337,18 +343,19 @@ fn shortcut(id: &str, steps: Vec<Step>) -> Shortcut {
         output: None,
         grant: notes_grant(),
         triggers: Vec::new(),
-        consents: Vec::new(),
         saved_by: None,
     }
 }
 
+/// A step invoking `action` of `app` on the resource `resource` selects. Its
+/// key names the app's root kind, so it reaches any kind the app publishes.
 fn invoke(id: &str, app: &str, resource: Selector, action: &str, args: &[(&str, Binding)]) -> Step {
+    let kind = app.rsplit('.').next().unwrap_or(app);
     Step::new(
         id,
         StepKind::Invoke {
-            app_id: app.into(),
+            action: ActionKey::new(app, kind, action),
             resource,
-            action: action.into(),
             args: args
                 .iter()
                 .map(|(name, binding)| ((*name).to_string(), binding.clone()))
@@ -368,17 +375,6 @@ fn run_with(
     run_id: RunId,
     mode: RunMode,
 ) -> RunReport {
-    run_consented(host, hooks, shortcut, run_id, mode, Vec::new())
-}
-
-fn run_consented(
-    host: &FakeHost,
-    hooks: &Hooks,
-    shortcut: &Shortcut,
-    run_id: RunId,
-    mode: RunMode,
-    consents: Vec<UnattendedConsent>,
-) -> RunReport {
     block_on(run(
         host,
         hooks,
@@ -389,7 +385,6 @@ fn run_consented(
             mode,
             trigger: RunTrigger::Manual,
             inputs: serde_json::Map::new(),
-            consents,
         },
     ))
 }
@@ -644,14 +639,24 @@ fn an_unattended_run_takes_only_the_exact_actions_consented_to() {
             &[],
         )],
     );
-    let elsewhere = UnattendedConsent::new(NOTES, "notes.note:other", "delete");
-    let report = run_consented(
+    let consented = |resource: &str| {
+        let mut shortcut = purge.clone();
+        shortcut.grant.push(crate::action_rule(
+            NOTES,
+            "notes.note",
+            Some(resource),
+            "delete",
+            KindSet::ALL,
+            Answer::Allow,
+        ));
+        shortcut
+    };
+    let report = run_with(
         &host,
         &Hooks::default(),
-        &purge,
+        &consented("notes.note:other"),
         RunId::new(),
         RunMode::Unattended,
-        vec![elsewhere],
     );
     assert!(
         matches!(
@@ -663,29 +668,17 @@ fn an_unattended_run_takes_only_the_exact_actions_consented_to() {
     assert!(host.started().is_empty());
 
     let hooks = Hooks::default();
-    let report = run_consented(
+    let report = run_with(
         &host,
         &hooks,
-        &purge,
+        &consented(NOTE),
         RunId::new(),
         RunMode::Unattended,
-        vec![UnattendedConsent::new(NOTES, NOTE, "delete")],
     );
     assert_eq!(report.outcome, RunOutcome::Completed, "{report:?}");
     assert!(
         hooks.confirmations.lock().unwrap().is_empty(),
         "nobody is asked in an unattended run"
-    );
-    let mut stray = purge;
-    stray.consents = vec![UnattendedConsent::new(NOTES, NOTE, "archive")];
-    assert!(
-        matches!(
-            check(&stray, &host.catalog(), &NoShortcuts)
-                .as_ref()
-                .map_err(Vec::as_slice),
-            Err([error]) if matches!(error.kind, CheckErrorKind::UnusedConsent { .. })
-        ),
-        "a consent no step can use is refused at save time"
     );
     let started = host.started();
     assert_eq!(started.len(), 1);
@@ -839,8 +832,7 @@ fn for_each_runs_its_body_per_item_and_if_takes_one_branch() {
 #[test]
 fn a_shortcut_that_could_run_itself_is_refused() {
     let host = FakeHost::new();
-    let shortcuts_grant =
-        PermissionProfileRule::grant(Scope::App(SHORTCUTS_APP_ID.into()), Verb::Write);
+    let shortcuts_grant = app_rule(SHORTCUTS_APP_ID);
     let calling = |id: &str, callee: &str| {
         let mut shortcut = shortcut(
             id,
@@ -919,10 +911,7 @@ fn an_ai_step_is_an_invocation_of_the_agent_transform() {
             },
         )],
     );
-    digest.grant.push(PermissionProfileRule::grant(
-        Scope::App(AGENT_APP_ID.into()),
-        Verb::Write,
-    ));
+    digest.grant.push(app_rule(AGENT_APP_ID));
     digest.output = Some(Binding::step("sum", ""));
     assert_eq!(check(&digest, &host.catalog(), &NoShortcuts), Ok(()));
 
@@ -960,10 +949,7 @@ fn an_ai_step_never_reads_a_secret() {
         ParamType::Secret,
         "An API token",
     )];
-    leak.grant.push(PermissionProfileRule::grant(
-        Scope::App(AGENT_APP_ID.into()),
-        Verb::Write,
-    ));
+    leak.grant.push(app_rule(AGENT_APP_ID));
     let errors = check(&leak, &host.catalog(), &NoShortcuts).unwrap_err();
     assert!(
         errors.iter().any(|error| matches!(
@@ -986,7 +972,6 @@ fn an_ai_step_never_reads_a_secret() {
             mode: RunMode::Unattended,
             trigger: RunTrigger::Manual,
             inputs,
-            consents: Vec::new(),
         },
     ));
     assert!(
@@ -1340,7 +1325,6 @@ fn archive_run<'a>(
             mode: RunMode::Unattended,
             trigger: RunTrigger::Manual,
             inputs: serde_json::Map::new(),
-            consents: Vec::new(),
         },
     )
 }
@@ -1391,4 +1375,24 @@ fn a_host_without_next_change_still_completes_via_settle() {
     // then the one that finds it finished: each after a poll interval.
     assert_eq!(host.observes(), 4);
     assert_eq!(hooks.settles.load(Ordering::Relaxed), 3);
+}
+
+#[test]
+fn a_step_reaches_only_the_app_and_kind_its_key_names() {
+    let catalog = ActionCatalog::new(vec![row(
+        NOTES,
+        INBOX,
+        "notes.folder",
+        "list",
+        Vec::new(),
+        ActionContract::default(),
+    )]);
+    let inbox = crate::ResourceTarget::Id(INBOX);
+    let found = |key: ActionKey| catalog.find(&key, inbox).is_some();
+    assert!(found(ActionKey::new(NOTES, "notes.folder", "list")));
+    assert!(found(ActionKey::new(NOTES, "notes", "list")), "a sub-kind");
+    assert!(!found(ActionKey::new(NOTES, "notes.note", "list")));
+    assert!(!found(ActionKey::new(NOTES, "notes.folderish", "list")));
+    assert!(!found(ActionKey::new(MAIL, "notes.folder", "list")));
+    assert!(!found(ActionKey::new(NOTES, "notes.folder", "delete")));
 }

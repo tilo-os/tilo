@@ -37,28 +37,32 @@ fn destination() -> tilo_desktop::feedback::Destination {
 }
 fn answer(connection: &Connection) -> FeedbackAnswer {
     let room = crate::shell::state::RoomId::parse(&connection.destination.room).unwrap();
-    let (role, caps, person) = connection
+    let (standing, sandbox) = connection
         .network
         .native_owner()
         .unwrap()
         .with_current(room, |view| {
-            view.peer().permissions(
-                connection.reporter.device_public_key,
-                std::time::SystemTime::now(),
-            )
+            let standing = view
+                .peer()
+                .permissions(
+                    connection.reporter.device_public_key,
+                    std::time::SystemTime::now(),
+                )?
+                .standing();
+            Ok((standing, view.peer().governed_sandbox()?))
         })
         .unwrap();
+    let person = standing.person.clone();
     assert_eq!(person, hex::encode(connection.reporter.user_public_key));
     FeedbackAnswer {
         admission: FeedbackAdmission {
             destination: connection.destination.clone(),
-            publication: FeedbackPublication::Write,
             owner_user: hex::encode(connection.owner.user_public_key),
             owner_device: hex::encode(connection.owner.device_public_key),
             reporter_user: person,
             reporter_device: hex::encode(connection.reporter.device_public_key),
-            role: serde_json::to_value(role).unwrap(),
-            caps: serde_json::to_value(caps).unwrap(),
+            standing: serde_json::to_value(standing).unwrap(),
+            sandbox: serde_json::to_value(sandbox).unwrap(),
             unix_time: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
@@ -165,6 +169,41 @@ fn native_producer_uses_committed_selected_custody_and_reopens_without_enrollmen
     );
     assert!(Delivery::new(restored, destination(), &author).is_err());
 }
+/// An admission stands only while the room's sandbox is the one it was
+/// given under, as well as the reporter's standing.
+#[test]
+fn an_admission_under_another_sandbox_is_not_current() {
+    let (_directory, owner, room, _, key) = native_workspace_owner::test_enrolled_owner();
+    let (network, _commands) = fixture_network(&owner, &key);
+    let (reporter, _) = network.feedback_custody(room).unwrap();
+    let author = hex::encode(reporter.user_public_key);
+    let delivery = Delivery::new(network, destination(), &author).unwrap();
+    admit(&delivery);
+    let mut connection = delivery.connection.borrow_mut();
+    let mut changed = answer(&connection);
+    let mut sandbox: Vec<collab_types::caps::CapOverride> =
+        serde_json::from_value(changed.admission.sandbox.clone()).unwrap();
+    sandbox.push(
+        collab_types::caps::CapOverride::grant(
+            collab_types::caps::Subject::User(collab_types::crypto::Ed25519PublicKey(
+                reporter.user_public_key,
+            )),
+            collab_types::caps::Scope::Device("camera".into()),
+            collab_types::caps::Access::Read,
+        )
+        .with_id("feedback-test-camera"),
+    );
+    changed.admission.sandbox = serde_json::to_value(sandbox).unwrap();
+    let admission = connection.admit(&changed).unwrap();
+    connection.admission = Some((admission, Instant::now()));
+    let current = connection.current();
+    drop(connection);
+    assert!(
+        current.is_err(),
+        "an admission given under another sandbox is not current"
+    );
+}
+
 #[test]
 fn native_configuration_cannot_supply_role_or_reporter_authority() {
     let profile = tempfile::tempdir().unwrap();
@@ -203,29 +242,48 @@ fn prepare_existing_chat(owner: &NativeWorkspaceOwner, key: &ed25519_dalek::Sign
                 .map_err(|error| error.to_string())?;
                 let heads = document.get_heads();
                 let person = hex::encode(view.device().user_public_key);
-                chat::doc::ChatDoc::seed_workspace(
+                let workspace = room.to_string();
+                // The room's seed holds a voice channel its media binding names.
+                // The chat's first state is written over what the record holds,
+                // keeping that channel's objects, so the binding still resolves.
+                {
+                    use tilo_resource::{Fields as _, Resource as _};
+                    let held = chat::Chat::read_fields(&document, &automerge::ROOT)
+                        .map_err(|error| error.to_string())?;
+                    held.write_fields(&mut document, &automerge::ROOT)
+                        .map_err(|error| error.to_string())?;
+                    tilo_resource::evolution::write_version(&mut document, chat::Chat::VERSION)
+                        .map_err(|error| error.to_string())?;
+                    document.commit_with(
+                        automerge::transaction::CommitOptions::default()
+                            .with_message(tilo_actions::FrameworkChange::Genesis.change_message()),
+                    );
+                }
+                chat::demo::start_in(
                     &mut document,
-                    &room.to_string(),
-                    "Fixture",
                     &person,
+                    (&workspace, "Fixture"),
                     "Fixture",
                     "F",
-                    0,
-                )?;
-                chat::doc::ChatDoc::insert_category(
+                )
+                .map_err(|error| error.to_string())?;
+                chat::demo::insert_category(
                     &mut document,
+                    &person,
                     "feedback-category",
-                    &room.to_string(),
+                    &workspace,
                     "Feedback",
-                );
-                chat::doc::ChatDoc::insert_channel(
+                )
+                .map_err(|error| error.to_string())?;
+                chat::demo::insert_channel(
                     &mut document,
+                    &person,
                     "feedback",
-                    &room.to_string(),
-                    "feedback-category",
+                    (&workspace, "feedback-category"),
                     "Feedback",
                     chat::model::ChannelKind::Text,
-                );
+                )
+                .map_err(|error| error.to_string())?;
                 let message = view.peer().clone().publish_incremental(
                     "so.tilo.chat",
                     "",
@@ -391,7 +449,8 @@ fn assert_retained_once(
                 )
                 .map_err(|error| error.to_string())?;
                 assert_eq!(
-                    chat::doc::ChatDoc::list_messages(&document, "feedback")
+                    chat::projection::read(&document)
+                        .message_rows("feedback")
                         .iter()
                         .filter(|message| message.id == format!("m_feedback_{}", submission.id))
                         .count(),
@@ -413,7 +472,11 @@ fn publish_twice(
     submission: &Submission,
     room: crate::shell::state::RoomId,
 ) {
-    let address = tilo_actions::ActionAddress::new("chat.channel:feedback", "submit-feedback");
+    use tilo_app::feedback::destination;
+    let address = tilo_actions::ActionAddress::new(
+        destination::item(destination::CHANNELS, "feedback"),
+        destination::SUBMIT,
+    );
     let arguments = serde_json::json!({"submission":submission});
     let deadline = std::time::Instant::now()
         .checked_add(tilo_test_env::hang_bound())

@@ -33,13 +33,12 @@
     )
 )]
 
-pub mod actions;
 pub mod app;
 pub mod config;
 pub mod device;
-pub mod doc;
 pub mod effects;
 pub mod import;
+pub mod locales;
 pub mod model;
 pub mod net;
 pub mod probe;

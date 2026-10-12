@@ -7,14 +7,15 @@
 
 use std::collections::BTreeMap;
 
-use collab_types::PermissionProfileRule;
 use serde::{Deserialize, Serialize};
+use tilo_action_policy::Rule;
+use tilo_actions::ActionKey;
 use tilo_actions::door::ActionAddress;
 use tilo_actions::params::{ActionParam, ParamType};
 
 use crate::{
-    AGENT_CLASSIFY_ACTION, AGENT_EXTRACT_ACTION, AGENT_FREEFORM_ACTION, AGENT_SUMMARISE_ACTION,
-    SHORTCUT_RUN_ACTION, shortcut_resource_id,
+    AGENT_APP_ID, AGENT_CLASSIFY_ACTION, AGENT_EXTRACT_ACTION, AGENT_FREEFORM_ACTION,
+    AGENT_SUMMARISE_ACTION, AGENT_TRANSFORM_KIND, SHORTCUT_RUN_ACTION, shortcut_resource_id,
 };
 
 /// One saved shortcut.
@@ -33,21 +34,17 @@ pub struct Shortcut {
     /// The value a finished run reports back to whoever started it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output: Option<Binding>,
-    /// The most the shortcut may do. A run acts with the intersection of this
-    /// and the authority of the person who started it: a step outside the
-    /// grant is refused here, a step outside the person's authority is refused
-    /// by the host.
+    /// The most the shortcut may do, shown when it is imported. A run acts
+    /// with the stricter of this and the authority of the person who started
+    /// it: a step outside the grant is refused here, a step outside the
+    /// person's authority is refused by the host. A run nobody is present at
+    /// refuses what the grant would ask about, and passes a confirmation only
+    /// for an action a rule names exactly.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub grant: Vec<PermissionProfileRule>,
+    pub grant: Vec<Rule>,
     /// When the system may start it without being asked.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub triggers: Vec<TriggerSpec>,
-    /// Confirmations given in advance for runs nobody is present at: a
-    /// triggered run may take exactly these actions although their contract
-    /// asks for confirmation. They are the saving person's, so a host honours
-    /// them only in runs that person started.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub consents: Vec<UnattendedConsent>,
     /// Policy id of the person who saved it. Set by the host that stored it,
     /// whatever the saved JSON claimed; its triggers fire on that person's
     /// behalf only.
@@ -60,36 +57,6 @@ impl Shortcut {
     #[must_use]
     pub fn action_address(&self) -> ActionAddress {
         ActionAddress::new(shortcut_resource_id(&self.id), SHORTCUT_RUN_ACTION)
-    }
-}
-
-/// Advance confirmation of one exact action: `action` on resource
-/// `resource` of application `app_id`.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct UnattendedConsent {
-    pub app_id: String,
-    pub resource: String,
-    pub action: String,
-}
-
-impl UnattendedConsent {
-    #[must_use]
-    pub fn new(
-        app_id: impl Into<String>,
-        resource: impl Into<String>,
-        action: impl Into<String>,
-    ) -> Self {
-        Self {
-            app_id: app_id.into(),
-            resource: resource.into(),
-            action: action.into(),
-        }
-    }
-
-    /// Whether this consent names `address` on `app_id`.
-    #[must_use]
-    pub fn covers(&self, app_id: &str, address: &ActionAddress) -> bool {
-        self.app_id == app_id && self.resource == address.resource && self.action == address.action
     }
 }
 
@@ -116,11 +83,11 @@ impl Step {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "step", rename_all = "snake_case")]
 pub enum StepKind {
-    /// Invoke one published action.
+    /// Invoke one published action: the app, the resource kind that
+    /// publishes it and its public id, on the resource `resource` selects.
     Invoke {
-        app_id: String,
+        action: ActionKey,
         resource: Selector,
-        action: String,
         #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
         args: BTreeMap<String, Binding>,
     },
@@ -239,6 +206,12 @@ pub enum AiTransform {
 
 impl AiTransform {
     /// The agent transform action this lowers to.
+    #[must_use]
+    pub fn key(&self) -> ActionKey {
+        ActionKey::new(AGENT_APP_ID, AGENT_TRANSFORM_KIND, self.action())
+    }
+
+    /// The public id of the agent transform action this lowers to.
     #[must_use]
     pub const fn action(&self) -> &'static str {
         match self {

@@ -1,6 +1,7 @@
 use super::*;
 use automerge::ReadDoc as _;
 use automerge::transaction::Transactable;
+use collab_types::CommitNamed as _;
 use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitRequest, OwnerCommitService};
 #[allow(
     clippy::too_many_lines,
@@ -20,7 +21,7 @@ async fn native_owner_service_offline_receipt_follows_actual_state_file_barrier(
         let before_heads = doc.get_heads();
         doc.put(automerge::ROOT, "native_owner_commit_test", true)
             .unwrap();
-        doc.commit();
+        doc.commit_edit("fixture", "native_owner_commit_test");
         let changes = doc
             .get_changes(&before_heads)
             .into_iter()

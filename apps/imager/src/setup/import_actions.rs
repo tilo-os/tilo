@@ -23,28 +23,28 @@ pub enum ImportEffect {
     /// Read current import status.
     ///
     /// For the person at this computer it includes the chosen folders.
-    #[effect(returns, permission = "read")]
+    #[effect(returns, kind = "read")]
     ReadStatus,
     /// Open Accounts to explicitly connect providers after trusted identity setup.
-    #[effect(view, returns, permission = "read")]
+    #[effect(view, returns, kind = "read")]
     OpenAccounts,
     /// Open Store to choose apps; installation remains a separate action.
-    #[effect(view, returns, permission = "read")]
+    #[effect(view, returns, kind = "read")]
     OpenStore,
     /// Choose source folder.
-    #[effect(returns, permission = "read")]
+    #[effect(returns, kind = "read")]
     ChooseSource,
     /// Choose destination folder.
-    #[effect(returns, permission = "read")]
+    #[effect(returns, kind = "read")]
     ChooseDestination,
     /// Clear folder selection.
-    #[effect(returns, permission = "read")]
+    #[effect(returns, kind = "read")]
     ClearSelection,
     /// Prepare copy review.
     #[effect(job)]
     PrepareReview,
     /// Check identity setup.
-    #[effect(returns, permission = "read")]
+    #[effect(returns, kind = "read")]
     CheckIdentity,
     /// Copy reviewed folders.
     #[effect(job, cancellable)]
@@ -71,19 +71,19 @@ pub enum ImportEffect {
         operation_id: String,
     },
     /// Show or hide copy details.
-    #[effect(returns, permission = "read")]
+    #[effect(returns, kind = "read")]
     ToggleDetails {
         #[param("Id of the copy")]
         operation_id: String,
     },
     /// Load next issue page.
-    #[effect(returns, permission = "read")]
+    #[effect(returns, kind = "read")]
     NextIssues {
         #[param("Id of the copy")]
         operation_id: String,
     },
     /// Return to first issue page.
-    #[effect(returns, permission = "read")]
+    #[effect(returns, kind = "read")]
     FirstIssues {
         #[param("Id of the copy")]
         operation_id: String,

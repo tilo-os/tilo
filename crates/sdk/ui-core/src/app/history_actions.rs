@@ -16,13 +16,13 @@ use automerge::{AutoCommit, ChangeHash};
 use serde::{Deserialize, Serialize};
 use tilo_actions::{
     ActionContract, ActionOutput, ActionParam, ActionSpec, DoorError, EncodedAction, OperationKind,
-    ParamType, PermissionRequirement, Resource, ResultSpec, RetryPolicy, RiskLevel,
+    ParamType, Resource, ResultSpec, RetryPolicy, RiskLevel,
 };
 
 use super::App;
 use crate::history_source::{AuthorDirectory, DEFAULT_MAX_ENTRIES, committed_heads};
 use crate::i18n::I18nManager;
-use crate::permissions::{PermissionScope, UserId, Verb};
+use crate::permissions::{ActionKind, PermissionScope, UserId};
 use crate::standalone_history::{
     HistoryError, HistoryReadContext, HistoryTarget, StandaloneHistory,
 };
@@ -115,9 +115,9 @@ fn lookup(key: &str) -> String {
     I18nManager::lookup_plain(key)
 }
 
-fn json_contract(permission: PermissionRequirement, retry: RetryPolicy) -> ActionContract {
+fn json_contract(kind: ActionKind, retry: RetryPolicy) -> ActionContract {
     ActionContract {
-        permission,
+        kind,
         risk: RiskLevel::None,
         retry,
         result: ResultSpec::Json {
@@ -212,7 +212,7 @@ pub(crate) fn resource() -> Resource {
                 lookup("history-action-param-cursor"),
             ),
         ],
-        json_contract(PermissionRequirement::Read, RetryPolicy::Idempotent),
+        json_contract(ActionKind::Read, RetryPolicy::Idempotent),
         |args| Command::List {
             resource: text(args, "resource"),
             cursor: text(args, "cursor"),
@@ -222,7 +222,7 @@ pub(crate) fn resource() -> Resource {
         VIEW_AT,
         "history-action-view-at",
         vec![resource_param(), entry_param()],
-        json_contract(PermissionRequirement::Write, RetryPolicy::AtMostOnce),
+        json_contract(ActionKind::Undoable, RetryPolicy::AtMostOnce),
         |args| Command::ViewAt {
             resource: text(args, "resource"),
             entry: text(args, "entry").unwrap_or_default(),
@@ -244,7 +244,7 @@ pub(crate) fn resource() -> Resource {
                 "items": {"type": "string", "pattern": "^[0-9a-f]{32}$"},
             })),
         ],
-        json_contract(PermissionRequirement::Write, RetryPolicy::Idempotent),
+        json_contract(ActionKind::Undoable, RetryPolicy::Idempotent),
         |args| Command::Compare {
             resource: text(args, "resource"),
             entries: strings(args, "entries"),
@@ -261,7 +261,7 @@ pub(crate) fn resource() -> Resource {
             )
             .with_schema(serde_json::json!({"format": "uuid"})),
         ],
-        json_contract(PermissionRequirement::Write, RetryPolicy::Idempotent),
+        json_contract(ActionKind::Undoable, RetryPolicy::Idempotent),
         |args| Command::Close {
             session: text(args, "session").unwrap_or_default(),
         },
@@ -286,7 +286,7 @@ pub(crate) fn resource() -> Resource {
         ActionContract {
             risk: RiskLevel::Low,
             reversible: true,
-            ..json_contract(PermissionRequirement::Write, RetryPolicy::AtMostOnce)
+            ..json_contract(ActionKind::Undoable, RetryPolicy::AtMostOnce)
         },
         |args| Command::Restore {
             resource: text(args, "resource"),
@@ -432,7 +432,7 @@ impl App {
     fn require_history_write(&self) -> Result<(), DoorError> {
         if self.permission_ctx.check(&PermissionScope::app(
             crate::collaboration::local_app_id(),
-            Verb::Write,
+            ActionKind::Undoable,
         )) {
             Ok(())
         } else {

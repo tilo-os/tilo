@@ -520,7 +520,6 @@ impl<T: Clone + 'static> Widget for FilterMenu<T> {
     ) -> NodeId {
         taffy.widget_leaf(Style::default(), node_map, self)
     }
-    fn apply_layout(&mut self, _taffy: &TaffyTree<()>, _node: NodeId, _origin: Point) {}
     fn draw(
         &mut self,
         _scene: &mut Scene,

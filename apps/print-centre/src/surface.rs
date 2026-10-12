@@ -5,6 +5,7 @@ use ui::framework::{
     Dispatcher, Effect as _, EffectAnswer, EffectCx, EffectStatus, Effected, LiveRow,
 };
 
+use ui::tilo_resource::Atom;
 use ui::widget::{AppModel, ModelPath};
 use ui::widget::{CropSelection, Widget};
 
@@ -279,27 +280,39 @@ impl Door {
             UiCommand::ApplyScanCrop => E::CropScanPage,
             UiCommand::RecognizeCurrentPage => E::RecognizeText,
             UiCommand::SetTwoSided(value) => {
-                dispatcher.invoke(PrintDefaults::SET_TWO_SIDED.with(value));
+                dispatcher.submit(PrintDefaults::paths().two_sided.set(value));
                 return Ok(());
             }
             UiCommand::SetScanResolution(index) => {
                 let dpi = SCAN_RESOLUTIONS.get(index).ok_or("invalid resolution")?;
-                dispatcher.invoke(PrintDefaults::SET_SCAN_RESOLUTION.with(*dpi));
+                dispatcher.submit(PrintDefaults::paths().scan_resolution.set(*dpi));
                 return Ok(());
             }
             UiCommand::SetScanColor(index) => {
                 let value = SCAN_COLORS.get(index).ok_or("invalid color")?;
-                dispatcher.invoke(PrintDefaults::SET_SCAN_COLOR.with((*value).to_owned()));
+                dispatcher.submit(
+                    PrintDefaults::paths()
+                        .scan_color
+                        .set(Atom((*value).to_owned())),
+                );
                 return Ok(());
             }
             UiCommand::SetScanSource(index) => {
                 let value = SCAN_SOURCES.get(index).ok_or("invalid source")?;
-                dispatcher.invoke(PrintDefaults::SET_SCAN_SOURCE.with((*value).to_owned()));
+                dispatcher.submit(
+                    PrintDefaults::paths()
+                        .scan_source
+                        .set(Atom((*value).to_owned())),
+                );
                 return Ok(());
             }
             UiCommand::SetOcrLanguage(index) => {
                 let (value, _) = OCR_LANGUAGES.get(index).ok_or("invalid language")?;
-                dispatcher.invoke(PrintDefaults::SET_OCR_LANGUAGE.with((*value).to_owned()));
+                dispatcher.submit(
+                    PrintDefaults::paths()
+                        .ocr_language
+                        .set(Atom((*value).to_owned())),
+                );
                 return Ok(());
             }
         };
@@ -2074,7 +2087,7 @@ mod tests {
                 "find-printers",
                 "print-document",
                 "scan-document",
-                "set-scan-resolution",
+                "field-edit",
             ] {
                 assert!(
                     actions.contains(&expected),
@@ -2207,7 +2220,7 @@ mod tests {
             )
             .unwrap();
             app.settle();
-            assert_eq!(app.state().ocr_language, "deu");
+            assert_eq!(app.state().ocr_language.0, "deu");
         }
 
         eprintln!("phase backend_failures_remain_distinct_from_legitimate_empty_results");

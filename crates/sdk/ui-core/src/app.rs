@@ -744,9 +744,7 @@ impl AppConstructionInputs {
             presence_ctx: ConstructionValue::Lazy(App::initial_presence_context),
             screen_reader: || {
                 if crate::host::environment().accessibility.screen_reader
-                    || settings_store::accessibility::AccessibilitySettings::load()
-                        .screen_reader()
-                        .enabled
+                    || settings_store::screen_reader::ScreenReaderSettings::load().enabled
                 {
                     Some(App::configured_screen_reader())
                 } else {
@@ -2114,7 +2112,7 @@ impl App {
         // Screen reader is a device/personal setting, not a per-application
         // opt-in. Every Tilo app watches the same file and changes its real
         // narrator lifecycle when Personal Settings changes it.
-        let settings = settings_store::accessibility::AccessibilitySettings::load().screen_reader();
+        let settings = settings_store::screen_reader::ScreenReaderSettings::load();
         self.set_screen_reader_enabled(
             settings.enabled || crate::host::environment().accessibility.screen_reader,
         );
@@ -2410,6 +2408,9 @@ impl App {
         );
         self.bindings.clear();
         self.layout.node_map.clear();
+        // The map built now describes the tree as it is: a replacement the
+        // widgets reported before is part of it, not a change after it.
+        self.take_composition_dirty();
         tilo_startup_metrics::span("init-layout-history", || self.build_history_presentation());
         tilo_startup_metrics::span("init-layout-focus-order", || {
             self.update_focusable_order();
@@ -2479,7 +2480,10 @@ impl App {
     pub fn rebuild_structure(&mut self) {
         let _entry = self.enter_wake_scope();
         // A reported mutation can already have invalidated old widget pointers.
-        let topology_changed = self.layout.structure_dirty || self.take_composition_dirty();
+        // Always take the widgets' report, so it is not mistaken later for a
+        // change after the map this rebuild makes.
+        let reported = self.take_composition_dirty();
+        let topology_changed = self.layout.structure_dirty || reported;
         // Whether this rebuild is one the widgets describe, for a frame that
         // compares itself with the last; none is outstanding after it.
         self.layout.frame_rebuilds_described &= self.layout.rebuild_described;
@@ -2988,21 +2992,8 @@ mod legacy_owner_routing_tests {
             nodes.insert(node, std::ptr::from_mut::<dyn Widget>(self));
             node
         }
-        fn apply_layout(&mut self, _: &taffy::TaffyTree<()>, _: NodeId, _: Point) {}
-        fn draw(
-            &mut self,
-            _: &mut Scene,
-            _: Affine,
-            _: &mut TextRenderer,
-            _: &Theme,
-            _: &PresenceCtx,
-        ) {
-        }
         fn name(&self) -> &'static str {
             "LegacyOwnerProbe"
-        }
-        fn get_rect(&self) -> KurboRect {
-            KurboRect::ZERO
         }
         fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
             use crate::a11y::{AccessNode, AccessState, Role};
@@ -3709,10 +3700,7 @@ pub(crate) mod ordinary_confirmation_tests {
         fn revoke(&self) {
             if let Self::Component { binding, .. } = self {
                 *binding.permissions.borrow_mut() =
-                    crate::permissions::PermissionContext::from_capabilities(
-                        crate::permissions::Actor::person(None, "fixture"),
-                        vec![],
-                    );
+                    crate::permissions::PermissionContext::stranger("fixture");
             }
         }
     }
@@ -3922,10 +3910,7 @@ pub(crate) mod ordinary_confirmation_tests {
             }
         }
         fn revoke(&mut self) {
-            let denied = crate::permissions::PermissionContext::from_capabilities(
-                crate::permissions::Actor::person(None, "fixture"),
-                vec![],
-            );
+            let denied = crate::permissions::PermissionContext::stranger("fixture");
             match self {
                 Self::Native(app) => app.set_permission_ctx(denied),
                 Self::FrameHarness(driver) => driver.set_permission_ctx(denied),
@@ -4536,7 +4521,7 @@ pub(crate) mod ordinary_confirmation_tests {
             assert_ne!(entry.after, entry.before);
             assert_eq!(entry.author.as_ref(), Some(&author));
             let committed = state.doc.get_heads();
-            assert!(state.undo_for_author(&author, None, None).is_some());
+            assert!(state.undo_as(Some(&author), None, None, None).is_some());
             assert!(
                 state
                     .doc
