@@ -112,7 +112,7 @@ class TiloVm:
     def state(self) -> dict:
         return self.control_json("state-dump")
 
-    def actions(self, query: str = "") -> list[dict]:
+    def actions(self, query: str = "", *, programmatic: bool = False) -> list[dict]:
         """Every row the desktop lists for `query`, page after page. A page holds 200 rows
         unless asked for more, and an open app's own actions can push the window closers
         past it: a caller reading one page saw a window with no close action and left it
@@ -120,7 +120,8 @@ class TiloVm:
         for _ in range(LISTING_ATTEMPTS):
             rows, cursor = [], None
             while True:
-                args = ["actions", "list", *([query] if query else []), "--json",
+                args = ["actions", "list", *([query] if query else []),
+                        *(["--programmatic"] if programmatic else []), "--json",
                         "--limit", str(LISTING_PAGE)]
                 try:
                     page = self.control_json(*args, *(["--cursor", cursor] if cursor else []))

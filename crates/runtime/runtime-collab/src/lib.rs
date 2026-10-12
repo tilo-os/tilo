@@ -388,6 +388,11 @@ pub enum PortableWifiSecurity {
 #[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "command", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum WifiContinuityCommand {
+    /// Local wake configuration, never shared as a credential or fleet state.
+    NetworkWake {
+        profile_uuid: String,
+        enabled: Option<bool>,
+    },
     Lookup {
         ssid: String,
         security: PortableWifiSecurity,
@@ -406,6 +411,14 @@ pub enum WifiContinuityCommand {
 impl std::fmt::Debug for WifiContinuityCommand {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::NetworkWake {
+                profile_uuid,
+                enabled,
+            } => formatter
+                .debug_struct("NetworkWake")
+                .field("profile_uuid", profile_uuid)
+                .field("enabled", enabled)
+                .finish(),
             Self::Lookup { ssid, security } => formatter
                 .debug_struct("Lookup")
                 .field("ssid", ssid)
@@ -428,6 +441,7 @@ impl std::fmt::Debug for WifiContinuityCommand {
 #[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "result", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum WifiContinuityReply {
+    NetworkWake { status: NetworkWakeStatus },
     Password { password: String },
     NotFound,
     Shared { ssid: String },
@@ -437,6 +451,10 @@ pub enum WifiContinuityReply {
 impl std::fmt::Debug for WifiContinuityReply {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::NetworkWake { status } => formatter
+                .debug_struct("NetworkWake")
+                .field("status", status)
+                .finish(),
             Self::Password { .. } => formatter
                 .debug_struct("Password")
                 .field("password", &"<redacted>")
@@ -464,7 +482,9 @@ impl WifiContinuityCommand {
                     && !password.is_empty()
                     && password.len() <= MAX_WIFI_PASSWORD_BYTES
             }
-            Self::ShareSavedProfile { profile_uuid } => valid_uuid(profile_uuid),
+            Self::NetworkWake { profile_uuid, .. } | Self::ShareSavedProfile { profile_uuid } => {
+                valid_uuid(profile_uuid)
+            }
         }
     }
 }
@@ -472,6 +492,7 @@ impl WifiContinuityCommand {
 impl WifiContinuityReply {
     pub fn valid(&self) -> bool {
         match self {
+            Self::NetworkWake { status } => status.valid(),
             Self::Password { password } => {
                 !password.is_empty() && password.len() <= MAX_WIFI_PASSWORD_BYTES
             }
@@ -479,6 +500,36 @@ impl WifiContinuityReply {
             Self::Shared { ssid } => !ssid.is_empty() && ssid.len() <= MAX_WIFI_SSID_BYTES,
             Self::Rejected { reason } => !reason.is_empty() && reason.len() <= 512,
         }
+    }
+}
+
+/// Bounded local observations; no field claims verified physical recovery.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NetworkWakeStatus {
+    pub profile: String,
+    pub interface: Option<String>,
+    pub configured: bool,
+    pub supported: Option<bool>,
+    pub applied: Option<bool>,
+    pub problem: Option<String>,
+}
+
+impl NetworkWakeStatus {
+    fn valid(&self) -> bool {
+        valid_uuid(&self.profile)
+            && self.interface.as_ref().is_none_or(|name| {
+                !name.is_empty()
+                    && name.len() <= 15
+                    && !name.starts_with('-')
+                    && name
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
+            })
+            && self
+                .problem
+                .as_ref()
+                .is_none_or(|problem| !problem.is_empty() && problem.len() <= 512)
     }
 }
 

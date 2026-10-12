@@ -1803,6 +1803,15 @@ net-sim-pin-caption = Enter the PIN for the selected SIM to unlock mobile broadb
 net-ipv4-caption = Use automatic addressing unless your network requires a fixed address.
 net-vpn-caption = Choose a saved VPN to connect. Add connections in VPN Studio.
 
+net-wake-network = Wake over { $name }
+net-wake-disabled = Enable magic-packet wake for this connection. Whether this machine resumes must be tested separately.
+net-wake-unverified = Magic-packet wake is saved and enabled in the driver. Waking this machine has not been verified.
+net-wake-connect-first = Connect to this network to check its device and apply wake settings.
+net-wake-unsupported = This connection's driver does not report magic-packet wake support.
+net-wake-unavailable = Wake settings could not be read.
+net-wake-pending = The wake setting is saved, but applying it to this connection needs attention.
+net-wake-saved = Wake configuration saved. Physical wake remains unverified.
+
 # Copy used by Settings panes and their status/error branches.
 a11y-mouse-keys-caption = Use the numeric keypad to move the pointer and click.
 a11y-shared-caption = Tilo apps use these shared accessibility settings.

@@ -288,6 +288,56 @@ mod device_continuity_service_boundary_tests {
     }
 
     #[test]
+    fn network_wake_uses_only_the_certified_settings_capability() {
+        let service = Arc::new(RecordingWifi::default());
+        let services = HostServices {
+            wifi_continuity: Some(service.clone()),
+            ..Default::default()
+        };
+        let command = runtime_collab::WifiContinuityCommand::NetworkWake {
+            profile_uuid: "11111111-1111-4111-8111-111111111111".into(),
+            enabled: Some(true),
+        };
+        let wire = serde_json::to_vec(&command).unwrap();
+        delegate_wifi_continuity_command(
+            &services,
+            WIFI_CONTINUITY_APP_ID,
+            WIFI_CONTINUITY_APP_ID,
+            &wire,
+        )
+        .unwrap();
+        assert_eq!(service.calls.lock().unwrap().as_slice(), [command]);
+        assert!(
+            delegate_wifi_continuity_command(
+                &services,
+                "so.tilo.browser",
+                WIFI_CONTINUITY_APP_ID,
+                &wire
+            )
+            .is_err()
+        );
+        assert!(
+            delegate_wifi_continuity_command(
+                &services,
+                WIFI_CONTINUITY_APP_ID,
+                "so.tilo.browser",
+                &wire
+            )
+            .is_err()
+        );
+        assert!(
+            delegate_wifi_continuity_command(
+                &services,
+                WIFI_CONTINUITY_APP_ID,
+                WIFI_CONTINUITY_APP_ID,
+                br#"{"command":"network-wake","profile_uuid":"--injection","enabled":true}"#
+            )
+            .is_err()
+        );
+        assert_eq!(service.calls.lock().unwrap().len(), 1);
+    }
+
+    #[test]
     fn wifi_continuity_delegates_only_the_certified_settings_route() {
         let service = Arc::new(RecordingWifi::default());
         let services = HostServices {
@@ -8462,18 +8512,31 @@ impl channel_handle::Server for CapnpChannelHandle {
             Ok(bytes) => bytes,
             Err(error) => return Promise::err(error),
         };
-        match delegate_wifi_continuity_command(
-            &self.state.services,
-            &route.app_id,
-            claimed_app,
-            command,
-        ) {
-            Ok(reply) => {
-                results.get().set_reply_json(&reply);
-                Promise::ok(())
-            }
-            Err(error) => Promise::err(error),
+        if route.app_id != WIFI_CONTINUITY_APP_ID || claimed_app != route.app_id {
+            return Promise::err(capnp::Error::failed(
+                "Wi-Fi continuity requires the certified Settings connection route".into(),
+            ));
         }
+        if command.len() > runtime_collab::MAX_WIFI_CONTINUITY_WIRE_BYTES {
+            return Promise::err(capnp::Error::failed(
+                "Wi-Fi continuity command exceeds the local protocol bound".into(),
+            ));
+        }
+        let services = self.state.services.clone();
+        let claimed_app = claimed_app.to_owned();
+        let command = command.to_vec();
+        Promise::from_future(async move {
+            // NetworkManager and nl80211 queries are bounded blocking work.
+            // Keep them off the broker's event loop and preserve the same
+            // certified Settings validation used by every local command.
+            let reply = tokio::task::spawn_blocking(move || {
+                delegate_wifi_continuity_command(&services, &route.app_id, &claimed_app, &command)
+            })
+            .await
+            .map_err(|error| capnp::Error::failed(error.to_string()))??;
+            results.get().set_reply_json(&reply);
+            Ok(())
+        })
     }
 
     fn nearby_transfer_command(
@@ -14323,6 +14386,67 @@ pub mod tests {
             .await;
     }
 
+    #[tokio::test(flavor = "current_thread")]
+    async fn network_wake_rpc_keeps_host_queries_outside_the_settings_sandbox() {
+        struct HostNetwork(Mutex<Vec<std::thread::ThreadId>>);
+        impl crate::services::WifiContinuityServices for HostNetwork {
+            fn command(
+                &self,
+                command: runtime_collab::WifiContinuityCommand,
+            ) -> runtime_collab::WifiContinuityReply {
+                self.0.lock().unwrap().push(std::thread::current().id());
+                let runtime_collab::WifiContinuityCommand::NetworkWake { profile_uuid, .. } =
+                    command
+                else {
+                    panic!("the RPC must preserve the typed wake request");
+                };
+                runtime_collab::WifiContinuityReply::NetworkWake {
+                    status: runtime_collab::NetworkWakeStatus {
+                        profile: profile_uuid,
+                        interface: Some("wlp1s0".into()),
+                        configured: true,
+                        supported: Some(true),
+                        applied: Some(true),
+                        problem: None,
+                    },
+                }
+            }
+        }
+        tokio::task::LocalSet::new().run_until(async {
+            let service = Arc::new(HostNetwork(Mutex::new(Vec::new())));
+            let base = local_directory_fixture();
+            let mut fixture = local_directory_fixture_with_authority(
+                base.membership.as_ref().unwrap().authority(),
+                HostServices { wifi_continuity: Some(service.clone()), ..Default::default() },
+                Some(71), None,
+            );
+            fixture.route = CrdtRoute::app(WIFI_CONTINUITY_APP_ID, collab_types::person_room(&[0; 32]).to_string());
+            let client = fixture.invocation_channel();
+            let command = serde_json::to_vec(&runtime_collab::WifiContinuityCommand::NetworkWake {
+                profile_uuid: "11111111-1111-4111-8111-111111111111".into(), enabled: Some(true),
+            }).unwrap();
+            let mut request = client.wifi_continuity_command_request();
+            request.get().set_app_id(WIFI_CONTINUITY_APP_ID);
+            request.get().set_command_json(&command);
+            let response = request.send().promise.await.unwrap();
+            let reply: runtime_collab::WifiContinuityReply = serde_json::from_slice(response.get().unwrap().get_reply_json().unwrap()).unwrap();
+            assert!(reply.valid());
+            assert!(matches!(reply, runtime_collab::WifiContinuityReply::NetworkWake { status } if status.applied == Some(true)));
+            assert_ne!(service.0.lock().unwrap().as_slice(), [std::thread::current().id()]);
+            let mut spoofed = client.wifi_continuity_command_request();
+            spoofed.get().set_app_id("so.tilo.browser");
+            spoofed.get().set_command_json(&command);
+            assert!(spoofed.send().promise.await.is_err());
+            fixture.route.app_id = "so.tilo.browser".into();
+            let mut forbidden = fixture.invocation_channel().wifi_continuity_command_request();
+            forbidden.get().set_app_id(WIFI_CONTINUITY_APP_ID);
+            forbidden.get().set_command_json(&command);
+            assert!(forbidden.send().promise.await.is_err());
+            assert_eq!(service.0.lock().unwrap().len(), 1);
+        }).await;
+    }
+
+    #[cfg(test)]
     #[tokio::test(flavor = "current_thread")]
     async fn file_clipboard_raw_admitted_channel_cannot_mint_local_custody() {
         tokio::task::LocalSet::new()

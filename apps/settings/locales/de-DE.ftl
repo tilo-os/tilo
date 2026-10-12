@@ -1803,6 +1803,15 @@ net-sim-pin-caption = Gib die PIN der ausgewählten SIM ein, um Mobilfunk zu ent
 net-ipv4-caption = Verwende automatische Adressen, sofern dein Netzwerk keine feste Adresse erfordert.
 net-vpn-caption = Wähle ein gespeichertes VPN zum Verbinden. Füge Verbindungen in VPN Studio hinzu.
 
+net-wake-network = Aufwecken über { $name }
+net-wake-disabled = Magic-Packet-Aufwecken für diese Verbindung aktivieren. Ob dieser Computer dadurch aufwacht, muss separat getestet werden.
+net-wake-unverified = Magic-Packet-Aufwecken ist gespeichert und im Treiber aktiviert. Das Aufwecken dieses Computers wurde noch nicht überprüft.
+net-wake-connect-first = Verbinde dich mit diesem Netzwerk, um das Gerät zu prüfen und Aufweckeinstellungen anzuwenden.
+net-wake-unsupported = Der Treiber dieser Verbindung meldet keine Unterstützung für Magic-Packet-Aufwecken.
+net-wake-unavailable = Aufweckeinstellungen konnten nicht gelesen werden.
+net-wake-pending = Die Aufweckeinstellung ist gespeichert, muss aber noch auf diese Verbindung angewendet werden.
+net-wake-saved = Aufweckkonfiguration gespeichert. Das tatsächliche Aufwecken wurde noch nicht überprüft.
+
 # Copy used by Settings panes and their status/error branches.
 a11y-mouse-keys-caption = Mit dem Ziffernblock kannst du den Zeiger bewegen und klicken.
 a11y-shared-caption = Tilo-Apps verwenden diese gemeinsamen Einstellungen zur Barrierefreiheit.
