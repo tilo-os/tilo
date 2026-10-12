@@ -1,3 +1,4 @@
+# Measurement: a change to one of Tilo's units.
 [Unit]
 Description=Decide whether this boot reached a usable session
 Documentation=file:///usr/share/doc/tilo/recovery.md
