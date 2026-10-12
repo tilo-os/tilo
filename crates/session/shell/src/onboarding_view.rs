@@ -4263,7 +4263,7 @@ mod tests {
         // joined from its identity record alone.
         runtime_identity::set_active_identity(&identity_dir, "identity-joined")
             .expect("select the joined identity");
-        let (mut resumed, _) = view();
+        let (mut resumed, _) = self::view();
         resumed.identity_dir = Some(identity_dir.clone());
         resumed.restore_pending_progress_from_disk();
         assert_eq!(resumed.flow.screen(), Screen::Done);
