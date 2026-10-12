@@ -30,7 +30,7 @@ use taffy::{Dimension, LengthPercentage, NodeId, Size, Style, TaffyTree};
 use ui::widget::TaffyTreeExt;
 use vello::Scene;
 use vello::kurbo::{Affine, Circle, Point, Rect};
-use vello::peniko::{Blob, Color, Fill, ImageAlphaType, ImageData as PenikoImage, ImageFormat};
+use vello::peniko::{Color, Fill, ImageData as PenikoImage};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
@@ -652,13 +652,7 @@ impl FileView {
         if let Some(img) = ctx.imgs.borrow().get(&key) {
             return img.clone();
         }
-        let img = PenikoImage {
-            data: Blob::new(Arc::new(rgba.rgba.clone())),
-            format: ImageFormat::Rgba8,
-            alpha_type: ImageAlphaType::Alpha,
-            width: rgba.width,
-            height: rgba.height,
-        };
+        let img = ui::raster::rgba8(rgba.rgba.clone(), rgba.width, rgba.height);
         ctx.imgs.borrow_mut().insert(key, img.clone());
         img
     }

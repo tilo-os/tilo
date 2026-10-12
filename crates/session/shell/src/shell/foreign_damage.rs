@@ -200,18 +200,11 @@ pub(crate) fn normalize_images(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
     use vello::kurbo::Affine;
-    use vello::peniko::{Blob, Fill, ImageAlphaType, ImageBrush, ImageFormat};
+    use vello::peniko::{Fill, ImageAlphaType, ImageBrush, ImageFormat};
 
     fn scene(texel: [u8; 4]) -> (Scene, Vec<DrawnImage>) {
-        let image = ImageData {
-            data: Blob::new(Arc::new(texel.repeat(4))),
-            format: ImageFormat::Rgba8,
-            alpha_type: ImageAlphaType::AlphaPremultiplied,
-            width: 2,
-            height: 2,
-        };
+        let image = ui::raster::rgba8_premultiplied(texel.repeat(4), 2, 2);
         let bounds = Rect::new(0.0, 0.0, 2.0, 2.0);
         let recording = Recording::begin();
         record(37, &image, 0, Affine::IDENTITY, bounds);
@@ -291,8 +284,7 @@ mod tests {
 #[cfg(test)]
 mod capture_tests {
     use super::*;
-    use std::sync::Arc;
-    use vello::peniko::{Blob, Fill, ImageAlphaType, ImageBrush, ImageFormat};
+    use vello::peniko::{Fill, ImageBrush};
 
     fn captured_scene(
         surface: SurfaceId,
@@ -310,13 +302,7 @@ mod capture_tests {
         brush: Affine,
         size: (u32, u32),
     ) -> (Scene, Vec<DrawnImage>) {
-        let image = ImageData {
-            data: Blob::new(Arc::new(rgba.to_vec())),
-            width: size.0,
-            height: size.1,
-            format: ImageFormat::Rgba8,
-            alpha_type: ImageAlphaType::AlphaPremultiplied,
-        };
+        let image = ui::raster::rgba8_premultiplied(rgba.to_vec(), size.0, size.1);
         let extent = Rect::new(0.0, 0.0, f64::from(size.0), f64::from(size.1));
         let recording = Recording::begin();
         record(

@@ -338,7 +338,6 @@ impl<K: LevelKey> TileCache<K> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use vello::peniko::{Blob, ImageAlphaType, ImageFormat};
 
     #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
     struct Key(Level, u32);
@@ -349,13 +348,7 @@ mod tests {
     }
 
     fn image(side: u32) -> PenikoImage {
-        PenikoImage {
-            data: Blob::new(std::sync::Arc::new(vec![0u8; (side * side * 4) as usize])),
-            format: ImageFormat::Rgba8,
-            alpha_type: ImageAlphaType::Alpha,
-            width: side,
-            height: side,
-        }
+        ui::raster::rgba8(vec![0u8; (side * side * 4) as usize], side, side)
     }
 
     #[test]
