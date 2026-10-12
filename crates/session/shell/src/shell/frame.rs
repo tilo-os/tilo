@@ -3295,14 +3295,32 @@ impl FrameBuilder {
             let y0 = scene_px(dest.y0.floor()).min(screen_h);
             let x1 = scene_px(dest.x1.ceil()).min(screen_w);
             let y1 = scene_px(dest.y1.ceil()).min(screen_h);
+            let dest_w = x1.saturating_sub(x0);
+            let dest_h = y1.saturating_sub(y0);
+            // A clipped-away strip has no retained destination. Keep the
+            // complete scene instead of fabricating a one-pixel blit.
+            if dest_w == 0 || dest_h == 0 {
+                return Some(StripPlan::baked(screen_w));
+            }
             plan.strips.push(StripBlit {
                 dest_x: x0,
                 dest_y: y0,
-                dest_w: x1.saturating_sub(x0).max(1),
-                dest_h: y1.saturating_sub(y0).max(1),
+                dest_w,
+                dest_h,
                 scroll_x: scene_px(shift.round()),
             });
             plan.ids.push(strip);
+        }
+        // Overlapping destinations cannot sample different pan offsets from
+        // the same screen pixel. Draw those strips in the full scene.
+        let overlapping = plan.strips.iter().enumerate().any(|(index, a)| {
+            plan.strips
+                .iter()
+                .skip(index.saturating_add(1))
+                .any(|b| strip_blits_overlap(a, b))
+        });
+        if overlapping {
+            return Some(StripPlan::baked(screen_w));
         }
         Some(plan)
     }
@@ -5672,6 +5690,111 @@ pub fn walk_widget<S1: std::hash::BuildHasher, S2: std::hash::BuildHasher>(
 )]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "linux")]
+    fn rasterized_pan_scene(scene: &Scene, size: (u32, u32)) -> Vec<u8> {
+        let stride = usize::try_from(size.0).unwrap().saturating_mul(4);
+        let mut pixels = vec![0; stride.saturating_mul(usize::try_from(size.1).unwrap())];
+        let mut target = tilo_cpu_raster::Target::new(&mut pixels, size.0, size.1, stride).unwrap();
+        tilo_cpu_raster::CpuRasterizer::new(tilo_cpu_raster::Options::default()).render(
+            scene.encoding(),
+            &mut target,
+            None,
+            Color::TRANSPARENT,
+        );
+        pixels
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn retained_strip_plan_clips_shadow_bounds_to_the_viewport() {
+        let _env_lock = tilo_test_env::lock();
+        for size in [(1920, 1080), (640, 480)] {
+            let mut frame = FrameBuilder::new(size);
+            frame.set_retained_layer_width(Some(8192));
+            frame.host.set_pixel_aligned_strip_pan(true);
+            frame.relayout();
+            let outside = frame
+                .host
+                .strip_scroll_offsets()
+                .iter()
+                .find_map(|(id, _, _)| {
+                    frame
+                        .host
+                        .strip_pan_rect(crate::shell::state::StripId(*id))
+                        .filter(|rect| rect.y1 > f64::from(size.1))
+                })
+                .expect("the real row shadow extends beyond the output");
+            let plan = frame
+                .strip_plan()
+                .expect("identity output can retain strips");
+            assert!(!plan.strips.is_empty(), "visible strips must remain panned");
+            for strip in &plan.strips {
+                assert!(strip.dest_w > 0 && strip.dest_h > 0);
+                assert!(
+                    strip.dest_x.saturating_add(strip.dest_w) <= size.0,
+                    "{strip:?}"
+                );
+                assert!(
+                    strip.dest_y.saturating_add(strip.dest_h) <= size.1,
+                    "{strip:?}"
+                );
+                assert!(
+                    strip
+                        .dest_x
+                        .saturating_add(strip.scroll_x)
+                        .saturating_add(strip.dest_w)
+                        <= plan.width
+                );
+            }
+            let mut unclipped = plan.strips.clone();
+            let strip = unclipped
+                .iter_mut()
+                .find(|strip| strip.dest_y == scene_px(outside.y0))
+                .expect("the visible strip with an offscreen shadow");
+            strip.dest_h = scene_px(outside.y1).saturating_sub(strip.dest_y);
+            assert!(strip.dest_y.saturating_add(strip.dest_h) > size.1);
+            let mut workspace = Scene::new();
+            workspace.fill(
+                Fill::NonZero,
+                Affine::IDENTITY,
+                Color::from_rgb8(180, 40, 10),
+                None,
+                &Rect::new(0.0, 0.0, f64::from(plan.width), outside.y1),
+            );
+            workspace.fill(
+                Fill::NonZero,
+                Affine::IDENTITY,
+                Color::from_rgba8(10, 70, 210, 120),
+                None,
+                &Rect::new(
+                    0.0,
+                    f64::from(size.1) - 3.5,
+                    f64::from(plan.width),
+                    outside.y1,
+                ),
+            );
+            let mut retained = Scene::new();
+            crate::shell::render::strip_layers::append_panned(
+                &mut retained,
+                &workspace,
+                &plan.strips,
+                frame.scene_size,
+            );
+            let mut dense = Scene::new();
+            crate::shell::render::strip_layers::append_panned(
+                &mut dense,
+                &workspace,
+                &unclipped,
+                frame.scene_size,
+            );
+            assert_eq!(
+                rasterized_pan_scene(&retained, size),
+                rasterized_pan_scene(&dense, size),
+                "clipping the real shadow bounds must preserve every visible pixel"
+            );
+        }
+    }
 
     /// The terminal a hosted Terminal tab shows, inside its app.
     fn hosted_terminal(widget: &mut dyn Widget) -> Option<&mut terminal::TerminalWidget> {
@@ -9760,6 +9883,16 @@ fn without_contained_regions(regions: &[FineDamageRect]) -> Vec<FineDamageRect> 
         })
         .map(|(_, region)| *region)
         .collect()
+}
+
+/// Whether the destinations of `a` and `b` share a pixel.
+fn strip_blits_overlap(a: &StripBlit, b: &StripBlit) -> bool {
+    let span = |start: u32, length: u32| (start, start.saturating_add(length));
+    let (ax0, ax1) = span(a.dest_x, a.dest_w);
+    let (ay0, ay1) = span(a.dest_y, a.dest_h);
+    let (bx0, bx1) = span(b.dest_x, b.dest_w);
+    let (by0, by1) = span(b.dest_y, b.dest_h);
+    ax0 < bx1 && bx0 < ax1 && ay0 < by1 && by0 < ay1
 }
 
 /// A whole scene coordinate, possibly negative (off screen to the left or

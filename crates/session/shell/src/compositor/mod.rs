@@ -47,6 +47,10 @@ pub mod foreign;
 pub mod frame;
 pub mod frame_stall;
 #[cfg(target_os = "linux")]
+pub(crate) mod gnome_display_observation;
+#[cfg(target_os = "linux")]
+pub(crate) mod gnome_input_capture;
+#[cfg(target_os = "linux")]
 pub mod gpu_health;
 pub mod gpu_import;
 #[cfg(target_os = "linux")]

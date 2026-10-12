@@ -678,6 +678,22 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
         self.env.dispatch.clone()
     }
 
+    /// Descriptive metadata captured at this invocation's bound dispatch.
+    /// The original custody must still be live. This grants no permission
+    /// and does not establish successful execution or presentation.
+    ///
+    /// # Errors
+    /// Refuses cancelled, replaced or revoked invocation custody.
+    pub fn locus_basis(
+        &self,
+    ) -> Result<Option<ui_core::invocation_scope::InvocationLocusBasis>, String> {
+        self.custody
+            .as_ref()
+            .map(ResourceInvocationScope::locus_basis)
+            .transpose()
+            .map(Option::flatten)
+    }
+
     /// Submit one typed action, as [`Dispatcher::apply`].
     pub fn apply(&self, action: &R::Action) {
         self.env.dispatch.apply(action);

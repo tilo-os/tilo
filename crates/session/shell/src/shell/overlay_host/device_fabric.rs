@@ -89,6 +89,11 @@ pub struct DeviceFabricView {
     pub gamepad_authorizations: Vec<GamepadAuthorizationView>,
     pub local_gamepads: Vec<crate::shell::physical_gamepad::LocalPhysicalGamepadView>,
     pub devices: Vec<FabricDeviceView>,
+    /// Target-issued authority for exact-nonce semantic cleanup. This view
+    /// projects the existing lease registry; it does not own another registry.
+    pub issued_input_leases: Vec<crate::shell::device_fabric::InputLease>,
+    /// Result of this bridge invocation only; never retained in snapshot cache.
+    pub input_control_receipt: Option<InputControlReceipt>,
     pub local_media: Vec<FabricMediaView>,
     pub media_handoffs: Vec<crate::shell::device_fabric_runtime::MediaHandoffStatusView>,
     pub local_outputs: Vec<LocalMediaOutputView>,
@@ -103,6 +108,16 @@ pub struct DeviceFabricView {
     pub(crate) remote_capture: crate::shell::remote_capture::runtime::RemoteCaptureView,
     /// Boots of the person's devices waiting for `device.unlock` here.
     pub device_unlocks: Vec<crate::shell::device_unlock_runtime::DeviceUnlockConsentView>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum InputControlReceipt {
+    Granted(crate::shell::device_fabric::InputLease),
+    Revoked {
+        controller: crate::shell::personal_continuity::DeviceId,
+        nonce: [u8; 16],
+        removed: bool,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -248,6 +263,13 @@ pub enum DeviceFabricUiAction {
     },
     GrantControl {
         controller: crate::shell::personal_continuity::DeviceId,
+    },
+    GrantControlBounded {
+        controller: crate::shell::personal_continuity::DeviceId,
+    },
+    RevokeControlBound {
+        controller: crate::shell::personal_continuity::DeviceId,
+        nonce: [u8; 16],
     },
     RevokeControl {
         controller: crate::shell::personal_continuity::DeviceId,
