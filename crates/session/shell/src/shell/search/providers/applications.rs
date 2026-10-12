@@ -1035,7 +1035,7 @@ impl SearchProvider for ApplicationsProvider {
 
     fn refresh_search_index(&self, _ctx: &SearchContext<'_>) {
         self.index
-            .refresh(&self.source_generation(), self.builder());
+            .refresh(|| self.source_generation(), self.builder());
     }
 
     fn search_revision(&self, _ctx: &SearchContext<'_>) -> String {

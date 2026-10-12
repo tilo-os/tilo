@@ -361,7 +361,7 @@ impl SearchProvider for HostApplicationsProvider {
 
     fn refresh_search_index(&self, _ctx: &SearchContext<'_>) {
         self.index
-            .refresh(&self.source_generation(), self.builder());
+            .refresh(|| self.source_generation(), self.builder());
     }
 
     /// An address is looked up in the whole snapshot. An empty query's first

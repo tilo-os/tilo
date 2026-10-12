@@ -3,6 +3,7 @@
 use std::fmt;
 
 use serde::{Deserialize, Serialize};
+use web_time::{SystemTime, UNIX_EPOCH};
 
 use crate::{KindSet, TreePath};
 
@@ -302,9 +303,9 @@ impl<'a> Context<'a> {
 
     /// At the wall-clock time `now`; the Unix epoch for a time before it.
     #[must_use]
-    pub fn at_time(now: std::time::SystemTime) -> Self {
+    pub fn at_time(now: SystemTime) -> Self {
         Self::at(
-            now.duration_since(std::time::UNIX_EPOCH)
+            now.duration_since(UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_millis()
                 .try_into()

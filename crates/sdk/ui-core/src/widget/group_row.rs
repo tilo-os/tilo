@@ -3035,6 +3035,12 @@ impl FloatingSurfaceProvider for GroupRow {
         }
     }
 
+    fn on_floating_surface_ime_source_changed(&mut self, id: Option<&str>) {
+        for group in &mut self.groups {
+            FloatingSurfaceProvider::on_floating_surface_ime_source_changed(group, id);
+        }
+    }
+
     fn on_floating_surface_event_source(&mut self, id: Option<&str>) {
         for group in &mut self.groups {
             FloatingSurfaceProvider::on_floating_surface_event_source(group, id);
@@ -3107,6 +3113,28 @@ impl FloatingSurfaceProvider for GroupRow {
                 presence,
             );
         }
+    }
+
+    fn draw_floating_surface(
+        &mut self,
+        id: &str,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) -> bool {
+        self.groups.iter_mut().any(|group| {
+            FloatingSurfaceProvider::draw_floating_surface(
+                group,
+                id,
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                presence,
+            )
+        })
     }
 
     fn set_floating_surface_bounds(&mut self, bounds: Rect) {

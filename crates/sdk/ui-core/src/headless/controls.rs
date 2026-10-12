@@ -1017,6 +1017,80 @@ mod locus_tests {
     }
 
     #[test]
+    fn painted_marker_export_tracks_live_geometry_and_retires_with_roster() {
+        let (frame, calls) = fixture();
+        let (tree, bindings) = frame.retained_action_geometry().unwrap();
+        let mut presence = crate::presence::PresenceCtx::empty();
+        let mut event = interaction("first");
+        event.actor.id = "opaque-software".into();
+        event.actor.kind = tilo_actions::ActorKind::Agent;
+        let at = crate::time::now();
+        presence.apply_interaction_at(event.clone(), at).unwrap();
+        let theme = crate::theme::Theme::dark();
+        let viewport = vello::kurbo::Rect::new(0.0, 0.0, 400.0, 240.0);
+        let mut scene = vello::Scene::new();
+        let mut text = crate::text_render::TextRenderer::new();
+        let mut paint = |presence: &mut crate::presence::PresenceCtx, now| {
+            scene.reset();
+            let markers = crate::action_locus::draw_action_presence(
+                &mut crate::paint::PaintCtx::new(
+                    &mut scene,
+                    vello::kurbo::Affine::IDENTITY,
+                    &mut text,
+                    &theme,
+                ),
+                presence,
+                &tree,
+                &bindings,
+                viewport,
+                "native-primary",
+                now,
+            );
+            assert!(
+                !scene.encoding().draw_tags.is_empty(),
+                "the production painter emits pixels"
+            );
+            markers
+        };
+        let first = paint(&mut presence, at);
+        let arrived = paint(&mut presence, at + crate::time::Duration::from_millis(500));
+        assert_eq!(first.len(), 1);
+        assert_eq!(arrived.len(), 1);
+        assert_eq!(first[0].interaction, event);
+        assert_eq!(
+            first[0].locus,
+            crate::floating_surface::protocol_rect_array(frame.targets()["first"])
+        );
+        assert_ne!(
+            first[0].marker, arrived[0].marker,
+            "published bounds follow the animated paint, not the target"
+        );
+        // Complete empty certified rosters remove their participants through
+        // this same PresenceCtx retirement path.
+        presence.unregister_peer(&event.actor.id);
+        let retired = crate::action_locus::draw_action_presence(
+            &mut crate::paint::PaintCtx::new(
+                &mut scene,
+                vello::kurbo::Affine::IDENTITY,
+                &mut text,
+                &theme,
+            ),
+            &mut presence,
+            &tree,
+            &bindings,
+            viewport,
+            "native-primary",
+            at,
+        );
+        assert!(retired.is_empty());
+        assert_eq!(
+            calls.get(),
+            0,
+            "publication never executes the underlying action"
+        );
+    }
+
+    #[test]
     fn action_locus_uses_exact_binding_without_input_or_state_change() {
         let (mut frame, calls) = fixture();
         let before = frame.state.doc.get_heads();

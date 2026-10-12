@@ -189,17 +189,23 @@ impl CapnpBrokerState {
                         workspace.room.to_string(),
                         workspace.name.clone(),
                         membership_actions(workspace, now / 1_000_000_000),
+                        workspace
+                            .agent_members_at(now / 1_000_000_000)
+                            .into_iter()
+                            .map(|(agent, _)| agent)
+                            .collect::<std::collections::BTreeSet<_>>(),
                     )
                 })
                 .collect::<Vec<_>>()
         })?;
-        for (room, name, mut actions) in rooms {
+        for (room, name, mut actions, current_agents) in rooms {
             if !service.requires_room(&room) {
                 continue;
             }
             actions.extend(super::workspace_tasks::actions(
                 &service.task_snapshot(&room)?,
                 &name,
+                &current_agents,
             ));
 
             let existing = self
@@ -305,7 +311,26 @@ impl CapnpBrokerState {
                 return Err("task inspection room changed".into());
             }
             service.health()?;
-            return super::workspace_tasks::inspect(&service.task_snapshot(room)?, envelope);
+            let snapshot = service.task_snapshot(room)?;
+            if let Some(agent) = super::workspace_tasks::inspection_agent(&snapshot, envelope)? {
+                let now = self.policy_now_ns()? / 1_000_000_000;
+                let membership = self
+                    .membership
+                    .as_ref()
+                    .ok_or("task inspection workspace authority unavailable")?;
+                let current = membership.decide_in_room(room, |workspace| {
+                    workspace.is_some_and(|workspace| {
+                        workspace
+                            .agent_members_at(now)
+                            .iter()
+                            .any(|(current, _)| current == &agent)
+                    })
+                })?;
+                if !current {
+                    return Err("task inspection agent is not a current room member".into());
+                }
+            }
+            return super::workspace_tasks::inspect(&snapshot, envelope);
         }
         let key = pending
             .journal_key
@@ -665,7 +690,7 @@ mod tests {
                 assert_eq!(state.published_surfaces_generation(), 0);
                 state.refresh_workspace_membership_services().unwrap();
                 assert_eq!(state.published_surfaces_generation(), 1);
-                assert_eq!(membership_surface_counts(&state, &room), (1, 6));
+                assert_eq!(membership_surface_counts(&state, &room), (1, 8));
                 let mut expected = vec![
                     (WORKSPACE, "add-agent"),
                     (WORKSPACE, "grant-app-authorship"),
@@ -673,6 +698,8 @@ mod tests {
                     (WORKSPACE, "revoke"),
                     (WORKSPACE, "create-task"),
                     (WORKSPACE, "queue-agent-task"),
+                    ("desktop:tasks", "queue"),
+                    ("desktop:tasks", "read-current-tasks"),
                 ];
                 assert_membership_action_set(&state, &room, &expected);
                 state.refresh_workspace_membership_services().unwrap();
@@ -692,7 +719,7 @@ mod tests {
                 }
                 state.refresh_workspace_membership_services().unwrap();
                 assert_eq!(state.published_surfaces_generation(), 2);
-                assert_eq!(membership_surface_counts(&state, &room), (1, 7));
+                assert_eq!(membership_surface_counts(&state, &room), (1, 9));
                 expected.push(("desktop:agent:scribe", "remove"));
                 assert_membership_action_set(&state, &room, &expected);
                 state.refresh_workspace_membership_services().unwrap();

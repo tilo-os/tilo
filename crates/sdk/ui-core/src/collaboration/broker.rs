@@ -4713,20 +4713,20 @@ async fn spawn_context_stream(
                     if !tx.send_durable(CollabEvent::DocumentSnapshotRequested {
                         route: route.clone(),
                     }) {
-                        break;
+                        return;
                     }
                     continue;
                 }
                 if let Some(peer_id) = context.follow_changed {
                     if !tx.send_durable(CollabEvent::FollowChanged { peer_id }) {
-                        break;
+                        return;
                     }
                     continue;
                 }
                 if let Some(message) = context.handoff {
                     if let Some(request) = super::handoff::HandoffRequest::decode(&message) {
                         if !tx.send_durable(CollabEvent::Handoff { request }) {
-                            break;
+                            return;
                         }
                     } else {
                         tracing::warn!("collab: malformed handoff request dropped");
@@ -4771,9 +4771,15 @@ async fn spawn_context_stream(
                     collaborators,
                     permissions: context.permissions,
                 }) {
-                    break;
+                    return;
                 }
             }
+            // Context is a complete owner-backed membership snapshot. Losing
+            // that source must withdraw it rather than retain stale people.
+            let _ = tx.send_durable(CollabEvent::Context {
+                collaborators: Vec::new(),
+                permissions: Vec::new(),
+            });
         });
     }
 }
@@ -7555,6 +7561,7 @@ mod tests {
 
     struct FakeContextStream {
         backlog: Rc<RefCell<Vec<SeedContext>>>,
+        terminate_after_backlog: bool,
     }
 
     impl context_stream::Server for FakeContextStream {
@@ -7565,6 +7572,11 @@ mod tests {
         ) -> Promise<(), capnp::Error> {
             let mut backlog = self.backlog.borrow_mut();
             if backlog.is_empty() {
+                if self.terminate_after_backlog {
+                    return Promise::err(capnp::Error::disconnected(
+                        "fixture context source gone".into(),
+                    ));
+                }
                 return Promise::from_future(std::future::pending::<Result<(), capnp::Error>>());
             }
             let seed = backlog.remove(0);
@@ -7596,6 +7608,7 @@ mod tests {
         op_backlog: OpBacklog,
         presence_backlog: Rc<RefCell<Vec<SeedPresence>>>,
         context_backlog: Rc<RefCell<Vec<SeedContext>>>,
+        terminate_context_stream: bool,
         scrollback_response: Rc<RefCell<Option<SeedScrollback>>>,
     }
 
@@ -8092,6 +8105,7 @@ mod tests {
         ) -> Promise<(), capnp::Error> {
             let client: context_stream::Client = capnp_rpc::new_client(FakeContextStream {
                 backlog: self.context_backlog.clone(),
+                terminate_after_backlog: self.terminate_context_stream,
             });
             results.get().set_stream(client);
             Promise::ok(())
@@ -8167,6 +8181,7 @@ mod tests {
         op_backlog: Vec<(Vec<u8>, String)>,
         presence_backlog: Vec<SeedPresence>,
         context_backlog: Vec<SeedContext>,
+        terminate_context_stream: bool,
         scrollback_response: Option<SeedScrollback>,
     }
 
@@ -8212,6 +8227,7 @@ mod tests {
                 op_backlog: Rc::new(RefCell::new(self.op_backlog.clone())),
                 presence_backlog: Rc::new(RefCell::new(self.presence_backlog.clone())),
                 context_backlog: Rc::new(RefCell::new(self.context_backlog.clone())),
+                terminate_context_stream: self.terminate_context_stream,
                 scrollback_response: Rc::new(RefCell::new(self.scrollback_response.clone())),
             };
             let client: channel_handle::Client = capnp_rpc::new_client(chan);
@@ -8986,6 +9002,7 @@ mod tests {
             presence_backlog: vec![],
             context_backlog: vec![],
             scrollback_response: None,
+            terminate_context_stream: false,
         };
         let (fd, captures, thread) = stand_up_fake_broker(broker);
         let mut manager = CollaborationManager::from_sdk_fd_for_test(fd, "worker", Uuid::new_v4());
@@ -11565,6 +11582,7 @@ mod tests {
             op_backlog: vec![],
             presence_backlog: vec![],
             context_backlog: vec![],
+            terminate_context_stream: false,
             scrollback_response: None,
         };
         let (scope, wakes) = wake_channel();
@@ -12287,6 +12305,7 @@ mod tests {
                     ],
                     permissions: vec!["edit".to_owned(), "share".to_owned()],
                 }],
+                terminate_context_stream: true,
                 ..FakeBroker::default()
             };
             let (fd, _captures, _th) = stand_up_fake_broker(broker);
@@ -12294,27 +12313,32 @@ mod tests {
             let events = poll_until(&mut mgr, |events| {
                 events
                     .iter()
-                    .any(|e| matches!(e, CollabEvent::Context { .. }))
+                    .filter(|event| matches!(event, CollabEvent::Context { .. }))
+                    .count()
+                    == 2
             });
 
-            let ctx = events
+            let contexts = events
                 .iter()
-                .find_map(|e| match e {
+                .filter_map(|e| match e {
                     CollabEvent::Context {
                         collaborators,
                         permissions,
                     } => Some((collaborators.clone(), permissions.clone())),
                     _ => None,
                 })
-                .expect("must receive a Context event");
-            let (collabs, perms) = ctx;
+                .collect::<Vec<_>>();
+            assert_eq!(contexts.len(), 2, "source loss must withdraw its context");
+            let (collabs, perms) = &contexts[0];
             assert_eq!(collabs.len(), 2);
             assert_eq!(collabs[0].id, "alice");
             assert_eq!(collabs[0].name, "Alice");
             // 0x00FF8000 is an orange; 0 says no colour.
             assert_eq!(collabs[0].colour, Some(crate::tokens::PresenceHue::Orange));
             assert_eq!(collabs[1].colour, None);
-            assert_eq!(perms, vec!["edit".to_owned(), "share".to_owned()]);
+            assert_eq!(perms, &["edit".to_owned(), "share".to_owned()]);
+            assert!(contexts[1].0.is_empty());
+            assert!(contexts[1].1.is_empty());
         }
 
         // Case `presence_stream_translates_cursor_and_all_other_variants`.

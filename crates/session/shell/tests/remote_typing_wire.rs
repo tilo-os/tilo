@@ -924,14 +924,13 @@ fn authenticated_window_harness() -> (Harness, shell::shell::state::RoomId, u32,
         .unwrap();
     let h = Harness::with_identity(|state| {
         state.workspace_tree.write().workspaces[0].room = room;
-        Arc::new(shell::compositor::state::ClientState {
-            package_id: Some("so.tilo.calculator".into()),
-            workspace_id: Some(room.to_string()),
-            enforce_package_id: true,
-            pid: Some(pid),
-            pid_start_time: Some(start),
-            ..Default::default()
-        })
+        let mut client = shell::compositor::state::ClientState::default();
+        client.package_id = Some("so.tilo.calculator".into());
+        client.workspace_id = Some(room.to_string());
+        client.enforce_package_id = true;
+        client.pid = Some(pid);
+        client.pid_start_time = Some(start);
+        Arc::new(client)
     });
     (h, room, pid, start)
 }

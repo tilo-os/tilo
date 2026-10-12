@@ -57,6 +57,17 @@ pub struct FanoutState {
     peer_id_counter: AtomicU64,
     capnp: Mutex<Option<Arc<CapnpBrokerState>>>,
     local_subs: Mutex<Vec<Arc<RoomSubscription>>>,
+    certified_people: Mutex<Vec<std::sync::Weak<CertifiedPeopleSubscription>>>,
+}
+
+/// Host-local observer of complete, owner-certified room membership. This is
+/// intentionally separate from ordinary app Context fanout: only the broker's
+/// native membership refresh can publish it.
+pub type CertifiedPeopleSink =
+    Arc<dyn Fn(String, Vec<ui::collaboration::Collaborator>) + Send + Sync>;
+
+pub struct CertifiedPeopleSubscription {
+    sink: CertifiedPeopleSink,
 }
 
 /// A subscriber inside the shell process, addressed by room — how the
@@ -111,6 +122,7 @@ impl FanoutState {
             peer_id_counter: AtomicU64::new(0),
             capnp: Mutex::new(None),
             local_subs: Mutex::new(Vec::new()),
+            certified_people: Mutex::new(Vec::new()),
         }
     }
 
@@ -139,6 +151,38 @@ impl FanoutState {
             .lock()
             .map(|g| g.clone())
             .unwrap_or_default()
+    }
+
+    pub(crate) fn subscribe_certified_people(
+        &self,
+        sink: CertifiedPeopleSink,
+    ) -> Arc<CertifiedPeopleSubscription> {
+        let subscription = Arc::new(CertifiedPeopleSubscription { sink });
+        let state = self.capnp_state();
+        if let Ok(mut observers) = self.certified_people.lock() {
+            observers.push(Arc::downgrade(&subscription));
+            if let Some(state) = state {
+                for (room, people) in state.certified_people_for_shell() {
+                    (subscription.sink)(room, people);
+                }
+            }
+        }
+        subscription
+    }
+
+    pub(crate) fn publish_certified_people(&self, room: &str) {
+        let people = self
+            .capnp_state()
+            .map_or_else(Vec::new, |state| state.certified_people_in_room(room));
+        if let Ok(mut observers) = self.certified_people.lock() {
+            observers.retain(|observer| {
+                let Some(observer) = observer.upgrade() else {
+                    return false;
+                };
+                (observer.sink)(room.to_owned(), people.clone());
+                true
+            });
+        }
     }
 
     /// Mint the next typed connection id, reserving zero for the broker root
@@ -191,6 +235,11 @@ impl FanoutState {
     /// fanout. The broker releases its journal before this method detaches it,
     /// and a replacement can never be cleared by the old thread's guard.
     pub(crate) fn shutdown_capnp(&self, state: &Arc<CapnpBrokerState>) {
+        let certified_rooms = state
+            .certified_people_for_shell()
+            .into_iter()
+            .map(|(room, _)| room)
+            .collect::<Vec<_>>();
         self.request_shutdown();
         state.stop();
         let mut guard = match self.capnp.lock() {
@@ -205,6 +254,17 @@ impl FanoutState {
         }
         match self.local_subs.lock() {
             Ok(mut subscribers) => subscribers.clear(),
+            Err(poisoned) => poisoned.into_inner().clear(),
+        }
+        match self.certified_people.lock() {
+            Ok(mut observers) => {
+                for observer in observers.iter().filter_map(std::sync::Weak::upgrade) {
+                    for room in &certified_rooms {
+                        (observer.sink)(room.clone(), Vec::new());
+                    }
+                }
+                observers.clear();
+            }
             Err(poisoned) => poisoned.into_inner().clear(),
         }
     }
@@ -340,6 +400,18 @@ impl WeakAppActionBroker {
 }
 
 impl AppActionBroker {
+    /// Exact current owner-backed agent identity while the session is live.
+    pub fn certified_agent_identity(
+        &self,
+        room: &str,
+        actor: &str,
+    ) -> Option<ui::collaboration::CertifiedAgentIdentity> {
+        self.state
+            .while_live(|state| Ok(state.certified_agent_identity(room, actor)))
+            .ok()
+            .flatten()
+    }
+
     /// Retain discovery without extending the owning session's lifetime.
     #[must_use]
     pub fn downgrade(&self) -> WeakAppActionBroker {
@@ -913,6 +985,26 @@ impl BrokerHandle {
     /// the reader thread that decoded the frame: keep it short.
     pub fn subscribe_rooms(&self, rooms: Vec<String>, sink: FanoutSink) -> Arc<RoomSubscription> {
         self.fanout.subscribe_rooms(rooms, sink)
+    }
+
+    /// Observe complete native room membership after broker admission. The
+    /// callback never receives ordinary application Context fanout.
+    pub fn observe_certified_people(
+        &self,
+        sink: CertifiedPeopleSink,
+    ) -> Arc<CertifiedPeopleSubscription> {
+        self.fanout.subscribe_certified_people(sink)
+    }
+
+    /// Exact current owner-backed agent identity for a native participant.
+    pub fn certified_agent_identity(
+        &self,
+        room: &str,
+        actor: &str,
+    ) -> Option<ui::collaboration::CertifiedAgentIdentity> {
+        self.fanout
+            .capnp_state()?
+            .certified_agent_identity(room, actor)
     }
 
     /// The bound Cap'n Proto socket.

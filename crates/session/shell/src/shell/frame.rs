@@ -732,7 +732,7 @@ pub struct FrameBuilder {
     peer_windows_quiet_at: Option<TreeRevisions>,
     taffy: TaffyTree<()>,
     /// Widget-pointer map captured during `build_layout`, kept alive so the
-    /// measure closure in `compute_layout_with_measure` can re-borrow each frame.
+    /// admitted shared layout solver can re-borrow each frame.
     node_map: HashMap<NodeId, *mut dyn Widget>,
     ime_stamp_key: zeroize::Zeroizing<[u8; 32]>,
     /// Inner node — the host's own root child, target of `apply_layout` so
@@ -742,6 +742,8 @@ pub struct FrameBuilder {
     /// explicit root size (Taffy needs a definite extent; the host itself is
     /// `percent(1.0)`).
     root_node: Option<NodeId>,
+    #[cfg(test)]
+    layout_tree_builds: u64,
     text_renderer: TextRenderer,
     theme: Theme,
     /// The theme the settings document describes, before the active
@@ -834,6 +836,9 @@ pub struct FrameBuilder {
     /// matching `ui::App`; an explicit focus-reset ignores it and starts the
     /// replacement wizard step at its first enabled control.
     native_focus_ordinal: Option<usize>,
+    /// Return to the same named control, not a node id from a discarded tree.
+    palette_focus_return: Option<(Option<crate::shell::state::TabId>, Vec<String>)>,
+    palette_focus_active: bool,
     /// Latest produced sections, not an acknowledgement. A skipped presenter therefore creates a
     /// revision mismatch at the bridge and safely selects its dense path.
     last_produced_sections: Option<ProducedSections>,
@@ -1089,6 +1094,8 @@ impl FrameBuilder {
             },
             host_node: None,
             root_node: None,
+            #[cfg(test)]
+            layout_tree_builds: 0,
             text_renderer: presentation.text_renderer,
             last_room_epoch: 0,
             peer_windows_quiet_at: None,
@@ -1136,6 +1143,8 @@ impl FrameBuilder {
             lock_keyboard_keys: Vec::new(),
             focus_tree_changed: true,
             native_focus_ordinal: None,
+            palette_focus_return: None,
+            palette_focus_active: false,
             last_produced_sections: None,
             next_scene_revision: 1,
             retained_layer_width: None,
@@ -1277,6 +1286,13 @@ impl FrameBuilder {
     }
 
     fn rebuild_layout_tree(&mut self) {
+        #[cfg(test)]
+        {
+            self.layout_tree_builds = self
+                .layout_tree_builds
+                .checked_add(1)
+                .expect("test layout-tree build counter exhausted");
+        }
         self.taffy = TaffyTree::new();
         self.node_map.clear();
         // Push display geometry before the tree is built: the strips read it
@@ -1389,12 +1405,19 @@ impl FrameBuilder {
         target: Option<NodeId>,
         reveal: bool,
     ) {
-        if *focus == target {
+        if *focus == target
+            && self.node_map.iter().all(|(&node, &widget)| {
+                // SAFETY: every pointer belongs to the current live tree.
+                (unsafe { (*widget).is_focused() }) == (Some(node) == target)
+            })
+        {
             return;
         }
-        if let Some(old) = *focus
-            && let Some(&widget) = self.node_map.get(&old)
-        {
+        // Rebuilt overlays can retain their own focus while the compositor
+        // still names a desktop control. Only one live widget may own the
+        // keyboard and its accessibility cursor, even when ids are replaced.
+        for &widget in self.node_map.values() {
+            // SAFETY: every pointer belongs to the current live tree.
             unsafe { (*widget).set_focus(false) };
         }
         if let Some(new) = target
@@ -1599,7 +1622,17 @@ impl FrameBuilder {
             .find_map(|(&id, &widget)| (widget.cast::<()>().cast_const() == pointer).then_some(id))
     }
 
+    fn has_focus_trap(&self) -> bool {
+        fn contains_trap(widget: &dyn Widget) -> bool {
+            widget.traps_focus() || widget.children().into_iter().any(contains_trap)
+        }
+        contains_trap(self.host.as_ref())
+    }
+
     fn initial_focus_target(&self, order: &[NodeId]) -> Option<NodeId> {
+        if let Some(palette) = self.palette_focus_target() {
+            return Some(palette);
+        }
         // A focused Terminal must receive typing, including Space and Enter.
         // Chrome controls come first in DFS and used to steal initial focus;
         // Activate then opened workspace settings instead of sending CR.
@@ -1645,7 +1678,9 @@ impl FrameBuilder {
         let order = self.focusable_order();
         // Opening a Terminal rebuilds the tree. Restoring the previous
         // chrome ordinal leaves Space/Enter on the workspace pill.
-        let target = if self.active_tile_is_terminal() {
+        let target = if let Some(palette) = self.palette_focus_target() {
+            Some(palette)
+        } else if self.active_tile_is_terminal() {
             self.initial_focus_target(&order)
         } else {
             self.native_focus_ordinal.map_or_else(
@@ -1666,17 +1701,134 @@ impl FrameBuilder {
     /// widget tree. Called after layout as well as before input so initial
     /// focus and wizard-step focus are visible without a sacrificial key.
     pub(crate) fn reconcile_native_focus(&mut self, focus: &mut Option<NodeId>) {
+        if self.restore_focus_after_palette(focus) {
+            return;
+        }
         let reset = self.host.take_focus_reset();
         if reset {
             self.relayout();
         }
         if reset {
             self.focus_first(focus);
+        } else if let Some(palette) = self.palette_focus_target() {
+            self.set_native_focus(focus, Some(palette));
+            self.focus_tree_changed = false;
         } else if self.focus_tree_changed {
             self.restore_focus_after_tree_change(focus);
         } else if focus.is_none() {
             self.focus_first(focus);
         }
+    }
+
+    fn palette_focus_target(&self) -> Option<NodeId> {
+        // The anchored composer is a shared popover, and its editor owns
+        // typing instead of the mode picker that precedes it in DFS.
+        if self.host.agent_quick_composer_open() && !self.host.modal_sheet_owns_keyboard() {
+            return self.node_map.iter().find_map(|(&node, &widget)| {
+                // SAFETY: this map belongs to the current live tree.
+                (unsafe { (*widget).test_id() } == Some("agent-quick-editor")).then_some(node)
+            });
+        }
+        if !self.host.palette_visible() || self.has_focus_trap() {
+            return None;
+        }
+        self.node_map.iter().find_map(|(&node, &widget)| {
+            // SAFETY: the map belongs to this frame's current live tree.
+            (unsafe { (*widget).test_id() } == Some("command_palette_input")).then_some(node)
+        })
+    }
+
+    fn settle_palette_focus(&mut self, palette: NodeId) {
+        if !self.palette_focus_active {
+            let previous = self
+                .native_focus_ordinal
+                .and_then(|ordinal| self.focusable_order().get(ordinal).copied())
+                .filter(|&node| {
+                    node != palette
+                        && self.node_map.get(&node).is_some_and(|&widget| {
+                            // SAFETY: the map belongs to the current live tree.
+                            unsafe { (*widget).is_focused() }
+                        })
+                });
+            self.palette_focus_return = previous.and_then(|node| {
+                self.native_focus_path(node)
+                    .map(|path| (self.chrome().active_tab_id(), path))
+            });
+            self.palette_focus_active = true;
+        }
+        let needs_focus = self.node_map.iter().any(|(&node, &widget)| {
+            // SAFETY: all pointers belong to this exclusively owned live tree.
+            (unsafe { (*widget).is_focused() }) != (node == palette)
+        });
+        if needs_focus {
+            let mut focus = None;
+            self.set_native_focus(&mut focus, Some(palette));
+        }
+    }
+
+    fn native_focus_path(&self, node: NodeId) -> Option<Vec<String>> {
+        fn walk(
+            widget: &dyn Widget,
+            target: *const (),
+            mut path: Vec<String>,
+        ) -> Option<Vec<String>> {
+            let key = widget
+                .test_id()
+                .filter(|id| !id.is_empty())
+                .map(|id| format!("named:{id}"))
+                .or_else(|| {
+                    widget
+                        .accessibility()
+                        .and_then(|node| node.semantic_key)
+                        .map(|key| format!("semantic:{key}"))
+                });
+            let named = key.is_some();
+            if let Some(key) = key {
+                path.push(key);
+            }
+            if std::ptr::eq(std::ptr::from_ref(widget).cast::<()>(), target) {
+                return named.then_some(path);
+            }
+            widget
+                .children()
+                .into_iter()
+                .find_map(|child| walk(child, target, path.clone()))
+        }
+        let target = self.node_map.get(&node)?.cast::<()>();
+        walk(self.host.as_ref(), target, Vec::new())
+    }
+
+    fn restore_focus_after_palette(&mut self, focus: &mut Option<NodeId>) -> bool {
+        if !self.palette_focus_active
+            || self.host.palette_visible()
+            || self.host.agent_quick_composer_open()
+        {
+            return false;
+        }
+        self.palette_focus_active = false;
+        let Some((tab, path)) = self.palette_focus_return.take() else {
+            return false;
+        };
+        if self.has_focus_trap()
+            || self.host.modal_sheet_owns_keyboard()
+            || tab != self.chrome().active_tab_id()
+        {
+            return false;
+        }
+        // Closing search may have changed topology. Retire/rebuild through
+        // the production path before resolving this identity in the live map.
+        self.relayout();
+        let mut matches = self
+            .focusable_order()
+            .into_iter()
+            .filter(|&node| self.native_focus_path(node).as_deref() == Some(path.as_slice()));
+        let target = matches.next();
+        if matches.next().is_some() {
+            return false;
+        }
+        self.set_native_focus(focus, target);
+        self.focus_tree_changed = false;
+        true
     }
 
     fn focus_tab(&mut self, focus: &mut Option<NodeId>, backwards: bool) -> bool {
@@ -1735,28 +1887,39 @@ impl FrameBuilder {
             width: AvailableSpace::Definite(w as f32),
             height: AvailableSpace::Definite(h as f32),
         };
-        let layout_result = self.taffy.compute_layout_with_measure(
-            outer,
-            available_space,
-            |known, available, node_id, _, _| {
-                if let Some(&ptr) = measure_map.get(&node_id) {
-                    unsafe { (*ptr).measure(known, available, tr) }
-                } else {
-                    taffy::Size::ZERO
-                }
-            },
-        );
+        let mut admitted = ui::bound_dispatch::BoundNodeMap::new();
+        // Empty bound text starts at Display::None. Intrinsic remeasurement
+        // alone cannot restore its flow when it gains content; the shared
+        // solver settles allocation-dependent styles as well as measurements.
+        // SAFETY: this frame exclusively owns the exact stable host, Taffy
+        // topology and matching pointers for admission and the whole solve.
+        let layout_result = unsafe {
+            admitted.rebuild(self.host.as_ref(), &self.taffy, child, measure_map);
+            ui::widget::compute_widget_layout(
+                &mut self.taffy,
+                outer,
+                available_space,
+                measure_map,
+                &admitted,
+                tr,
+            )
+        };
         if let Err(err) = layout_result {
             // Same "should be structurally impossible" situation as
             // `rebuild_layout_tree`'s node-creation call: log and skip this
             // frame's apply_layout rather than aborting the session.
             tracing::error!(
                 %err,
-                "frame-builder: compute_layout failed; skipping apply_layout this frame"
+                "frame-builder: widget layout did not settle; skipping apply_layout this frame"
             );
             return;
         }
         self.host.apply_layout(&self.taffy, child, Point::ORIGIN);
+        // Semantic search can open during the pump, before input dispatch
+        // attaches the external cursor. Settle its owner before painting.
+        if let Some(palette) = self.palette_focus_target() {
+            self.settle_palette_focus(palette);
+        }
         self.layout_osk_overlay();
     }
 
@@ -4475,6 +4638,40 @@ impl FrameBuilder {
         None
     }
 
+    pub(crate) fn foreign_surfaces_for_app_room(
+        &mut self,
+        app_id: &str,
+        room: &str,
+    ) -> Vec<(u64, vello::kurbo::Rect)> {
+        let candidates = {
+            let tree = self.chrome.borrow();
+            tree.tree()
+                .desktop
+                .workspaces
+                .iter()
+                .filter(|workspace| workspace.room.to_string() == room)
+                .flat_map(|workspace| &workspace.strips)
+                .flat_map(|strip| &strip.window_groups)
+                .flat_map(|group| &group.tabs)
+                .filter_map(|tab| match &tab.tile {
+                    crate::shell::state::TileContent::Foreign {
+                        app_id: candidate,
+                        surface_id,
+                    } if candidate == app_id => Some(*surface_id),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        candidates
+            .into_iter()
+            .filter_map(|surface| {
+                self.host
+                    .foreign_surface_rect(surface)
+                    .map(|rect| (surface, rect))
+            })
+            .collect()
+    }
+
     /// Install/remove the trusted keyboard mirror and anchor it to the output
     /// containing the currently focused field.
     pub fn set_osk_surface(
@@ -4514,9 +4711,22 @@ impl FrameBuilder {
     /// presentation pass. Widgets are retained by surface id so a geometry
     /// update never resets buffer sequence, mapping state, or opening chrome.
     pub fn set_floating_surfaces(&mut self, surfaces: &[(u64, String, Rect)]) {
+        let surfaces = surfaces
+            .iter()
+            .map(|(id, app, rect)| (*id, app.clone(), *rect, None))
+            .collect::<Vec<_>>();
+        self.set_floating_surfaces_with_input(&surfaces);
+    }
+
+    /// Reconcile exact authenticated interactive bounds separately from the
+    /// transparent native allocation that contains the surface's shadow.
+    pub fn set_floating_surfaces_with_input(
+        &mut self,
+        surfaces: &[(u64, String, Rect, Option<Rect>)],
+    ) {
         self.floating_overlays
-            .retain(|(surface_id, _)| surfaces.iter().any(|(id, _, _)| id == surface_id));
-        for (surface_id, app_id, rect) in surfaces {
+            .retain(|(surface_id, _)| surfaces.iter().any(|(id, _, _, _)| id == surface_id));
+        for (surface_id, app_id, rect, input_rect) in surfaces {
             let index = self
                 .floating_overlays
                 .iter()
@@ -4529,6 +4739,7 @@ impl FrameBuilder {
                     self.floating_overlays.len().saturating_sub(1)
                 });
             if let Some((_, surface)) = self.floating_overlays.get_mut(index) {
+                surface.set_floating_input_rect(*input_rect);
                 surface.place_floating(*rect);
             }
         }
@@ -4677,7 +4888,10 @@ impl FrameBuilder {
             .rev()
             .find_map(|(surface_id, surface)| {
                 let rect = surface.get_rect();
-                (surface.is_mapped() && rect.contains(point)).then_some((*surface_id, rect))
+                (surface.is_mapped()
+                    && rect.contains(point)
+                    && surface.floating_input_contains(point))
+                .then_some((*surface_id, rect))
             })
     }
 
@@ -4713,6 +4927,14 @@ impl FrameBuilder {
             .iter()
             .find(|(id, surface)| *id == surface_id && surface.is_mapped())
             .map(|(_, surface)| surface.get_rect())
+    }
+
+    pub fn floating_surface_input_rects(&self) -> Vec<(u64, Rect)> {
+        self.floating_overlays
+            .iter()
+            .filter(|(_, surface)| surface.is_mapped())
+            .filter_map(|(id, surface)| surface.floating_input_rect().map(|rect| (*id, rect)))
+            .collect()
     }
 
     pub fn floating_surface_rects(&self) -> Vec<(u64, Rect)> {
@@ -5248,6 +5470,14 @@ impl FrameBuilder {
         if self.host.take_focus_reset() {
             self.relayout();
             self.focus_first(focus);
+        } else if self.host.palette_visible()
+            || self.host.agent_quick_composer_open()
+            || self.palette_focus_active
+        {
+            // Opening or closing an overlay must update the external seat
+            // cursor too, not just the widget's internal focus during layout.
+            self.relayout();
+            self.reconcile_native_focus(focus);
         }
         // Native/DRM chrome does not run through `ui::App`, whose event loop
         // normally turns Enter/Space on the focused widget into an
@@ -6336,6 +6566,380 @@ mod tests {
         a_peers_changes_landing_make_the_frame_rebuild();
         widget_registry_is_idempotent_between_calls();
         external_scene_append_is_an_unversioned_retained_boundary();
+    }
+
+    fn native_click_named_control(
+        frame: &mut FrameBuilder,
+        doc: &mut AutoCommit,
+        focus: &mut Option<NodeId>,
+        name: &str,
+    ) {
+        let center = frame
+            .widget_registry()
+            .get(name)
+            .expect("the real control is addressable")
+            .center();
+        for event in [
+            WindowEvent::CursorMoved {
+                device_id: winit::event::DeviceId::dummy(),
+                position: winit::dpi::PhysicalPosition::new(center.x, center.y),
+            },
+            WindowEvent::MouseInput {
+                device_id: winit::event::DeviceId::dummy(),
+                state: winit::event::ElementState::Pressed,
+                button: winit::event::MouseButton::Left,
+            },
+            WindowEvent::MouseInput {
+                device_id: winit::event::DeviceId::dummy(),
+                state: winit::event::ElementState::Released,
+                button: winit::event::MouseButton::Left,
+            },
+        ] {
+            frame.dispatch_event(
+                &event,
+                &Modifiers::default(),
+                &mut ui::widget::Edits::lend(doc),
+                &automerge::ROOT,
+                focus,
+            );
+        }
+    }
+
+    fn native_type_literal(
+        frame: &mut FrameBuilder,
+        doc: &mut AutoCommit,
+        focus: &mut Option<NodeId>,
+        text: &str,
+    ) {
+        let mut event = key_press(Key::Character(text.into()));
+        if let WindowEvent::KeyboardInput { event, .. } = &mut event {
+            event.text = Some(text.into());
+        }
+        assert!(frame.dispatch_event(
+            &event,
+            &Modifiers::default(),
+            &mut ui::widget::Edits::lend(doc),
+            &automerge::ROOT,
+            focus
+        ));
+    }
+
+    #[test]
+    fn native_overlay_palette_returns_to_the_named_editor_after_escape() {
+        for viewport in [(1600, 900), (800, 600)] {
+            let first = ui::LocalState::new(String::new());
+            let second = ui::LocalState::new(String::new());
+            let content = ui::widget::Column::new()
+                .with_id("focus-return-form")
+                .push(Box::new(
+                    ui::widget::TextInput::from_state(&first)
+                        .with_id("return-editor")
+                        .with_accessible_name("Return editor"),
+                ))
+                .push(Box::new(
+                    ui::widget::TextInput::from_state(&second)
+                        .with_id("other-editor")
+                        .with_accessible_name("Other editor"),
+                ));
+            let mut frame = FrameBuilder::new(viewport);
+            frame.node_map.clear();
+            *frame.host = ShellOverlayHost::with_fixture_content(Box::new(content));
+            frame.rebuild_layout_tree();
+            let mut doc = AutoCommit::new();
+            frame.host.sync(&doc, &automerge::ROOT);
+            let _ = frame.paint_settled();
+            let mut focus = None;
+            native_click_named_control(&mut frame, &mut doc, &mut focus, "return-editor");
+            assert!(frame.dispatch_event(
+                &key_press(Key::Named(NamedKey::Space)),
+                &Modifiers::from(ModifiersState::SUPER),
+                &mut ui::widget::Edits::lend(&mut doc),
+                &automerge::ROOT,
+                &mut focus
+            ));
+            native_type_literal(&mut frame, &mut doc, &mut focus, "h");
+            assert_eq!(frame.host.palette_query(), "h");
+            // Rebuild through the actual viewport path while search owns focus.
+            frame.set_viewport(viewport);
+            frame.relayout();
+            assert!(frame.dispatch_event(
+                &key_press(Key::Named(NamedKey::Escape)),
+                &Modifiers::default(),
+                &mut ui::widget::Edits::lend(&mut doc),
+                &automerge::ROOT,
+                &mut focus
+            ));
+            assert!(!frame.host.palette_visible());
+            let _ = frame.paint_settled();
+            frame.reconcile_native_focus(&mut focus);
+            let update = frame.build_a11y_tree_update(focus, 1.0);
+            let focused = update
+                .nodes
+                .iter()
+                .find(|(id, _)| *id == update.focus)
+                .expect("the returned editor is published to accessibility");
+            assert_eq!(focused.1.role(), ui::accesskit::Role::TextInput);
+            assert_eq!(focused.1.label(), Some("Return editor"));
+            native_type_literal(&mut frame, &mut doc, &mut focus, "z");
+            assert_eq!(
+                first.with(Clone::clone),
+                "z",
+                "typing resumes in the original named editor"
+            );
+            assert_eq!(
+                second.with(Clone::clone),
+                "",
+                "the other editor must receive no draft or focus transfer"
+            );
+            let editor = focus
+                .and_then(|node| frame.node_map.get(&node))
+                .expect("native focus remains on an editor");
+            assert_eq!(unsafe { (**editor).test_id() }, Some("return-editor"));
+        }
+    }
+
+    #[test]
+    fn native_agent_composer_owns_typing_and_returns_to_the_original_editor() {
+        let draft = ui::LocalState::new(String::new());
+        let content = ui::widget::TextInput::from_state(&draft)
+            .with_id("composer-return-editor")
+            .with_accessible_name("Original editor");
+        let mut frame = FrameBuilder::new((800, 600));
+        frame.node_map.clear();
+        *frame.host = ShellOverlayHost::with_fixture_content(Box::new(content));
+        frame.rebuild_layout_tree();
+        let mut doc = AutoCommit::new();
+        frame.host.sync(&doc, &automerge::ROOT);
+        let _ = frame.paint_settled();
+        let mut focus = None;
+        native_click_named_control(&mut frame, &mut doc, &mut focus, "composer-return-editor");
+        assert!(
+            frame.node_map.values().all(|&widget| {
+                // SAFETY: these pointers belong to the current live layout tree.
+                unsafe { (*widget).test_id() != Some("agent-quick-editor") }
+            }),
+            "a closed composer has no editor in the measured/control tree"
+        );
+        frame.host.agent_quick_composer_mut().open(
+            crate::shell::agent_quick_composer::ComposerOwner {
+                room: "fixture-room".into(),
+                agent: "fixture-agent".into(),
+                person: "fixture-person".into(),
+                identity_revision: 1,
+            },
+            "Tide",
+            crate::shell::agent_quick_composer::AgentQuickComposerOrigin {
+                marker: Rect::new(100.0, 100.0, 132.0, 132.0),
+                protected: Rect::new(90.0, 90.0, 210.0, 150.0),
+                context: "Reviewing the document".into(),
+            },
+            Rect::new(0.0, 0.0, 800.0, 600.0),
+        );
+        frame.host.sync(&doc, &automerge::ROOT);
+        frame.relayout();
+        frame.reconcile_native_focus(&mut focus);
+        native_type_literal(&mut frame, &mut doc, &mut focus, "hello");
+        assert_eq!(draft.get(), "", "the background editor receives no typing");
+        assert_eq!(
+            frame
+                .node_map
+                .get(&focus.expect("composer editor owns focus"))
+                .map(|widget| unsafe { (**widget).test_id() }),
+            Some(Some("agent-quick-editor")),
+        );
+        assert!(frame.focused_ime_field(focus).is_some());
+        assert!(frame.dispatch_event(
+            &key_press(Key::Named(NamedKey::Escape)),
+            &Modifiers::default(),
+            &mut ui::widget::Edits::lend(&mut doc),
+            &automerge::ROOT,
+            &mut focus,
+        ));
+        frame.relayout();
+        frame.reconcile_native_focus(&mut focus);
+        assert!(!frame.host.agent_quick_composer_open());
+        assert!(
+            frame.node_map.values().all(|&widget| {
+                // SAFETY: dismissal rebuilt the map against the live tree.
+                unsafe { (*widget).test_id() != Some("agent-quick-editor") }
+            }),
+            "dismissal retires the composer's layout and metadata nodes"
+        );
+        native_type_literal(&mut frame, &mut doc, &mut focus, "returned");
+        assert_eq!(draft.get(), "returned");
+    }
+
+    #[test]
+    fn native_overlay_palette_keeps_focus_across_result_rebuilds() {
+        for viewport in [(1600, 900), (800, 600)] {
+            let mut fb = FrameBuilder::new(viewport);
+            let mut doc = AutoCommit::new();
+            let mut focus = None;
+            fb.relayout();
+            assert!(fb.dispatch_event(
+                &key_press(Key::Named(NamedKey::Space)),
+                &Modifiers::from(ModifiersState::SUPER),
+                &mut ui::widget::Edits::lend(&mut doc),
+                &automerge::ROOT,
+                &mut focus,
+            ));
+            assert!(fb.host().palette_visible());
+            assert_eq!(
+                focus,
+                fb.palette_focus_target(),
+                "the opening key hands off focus"
+            );
+            for (character, expected) in [("h", "h"), ("i", "hi")] {
+                // Both output changes and refreshed results replace node ids.
+                // The next character must still reach the visible query.
+                fb.set_viewport(viewport);
+                fb.pump_apps(&mut doc, &automerge::ROOT);
+                fb.relayout();
+                assert!(fb.focus_tree_changed, "search results rebuild their layout");
+                let mut typed = key_press(Key::Character(character.into()));
+                if let WindowEvent::KeyboardInput { event, .. } = &mut typed {
+                    event.text = Some(character.into());
+                }
+                assert!(fb.dispatch_event(
+                    &typed,
+                    &Modifiers::default(),
+                    &mut ui::widget::Edits::lend(&mut doc),
+                    &automerge::ROOT,
+                    &mut focus,
+                ));
+                assert_eq!(fb.host().palette_query(), expected);
+                assert_eq!(focus, fb.palette_focus_target());
+                assert_eq!(
+                    fb.node_map
+                        .values()
+                        .filter(|widget| unsafe { (***widget).is_focused() })
+                        .count(),
+                    1,
+                    "only the current query owns native keyboard focus"
+                );
+                let _ = fb.paint_settled();
+                fb.reconcile_native_focus(&mut focus);
+                let field = fb.focused_ime_field(focus).expect("search owns the IME");
+                assert!(field.width > 0 && field.height > 0);
+                let update = fb.build_a11y_tree_update(focus, 1.0);
+                let focused = update
+                    .nodes
+                    .iter()
+                    .find(|(id, _)| *id == update.focus)
+                    .expect("the focused input is published");
+                assert_eq!(focused.1.role(), ui::accesskit::Role::TextInput);
+                assert_eq!(
+                    update
+                        .nodes
+                        .iter()
+                        .filter(|(_, node)| node.role() == ui::accesskit::Role::TextInput)
+                        .count(),
+                    1,
+                    "assistive technology sees the same single query input"
+                );
+            }
+        }
+    }
+
+    fn assert_retained_bound_text(frame: &FrameBuilder, expected: &str, body_width: f32) {
+        let label = frame
+            .node_map
+            .values()
+            .find_map(|&widget| {
+                // SAFETY: this production frame still owns the admitted live tree.
+                let widget = unsafe { &*widget };
+                (widget.test_id() == Some("retained-overlay-text")).then_some(widget)
+            })
+            .expect("the retained bound Text stays mounted");
+        let rect = label.get_rect();
+        if expected.is_empty() {
+            assert_eq!(rect.height(), 0.0, "empty bound text leaves the flow");
+            return;
+        }
+        let style = frame
+            .theme
+            .text(ui::tokens::TextRole::Body)
+            .with_wrap_mode(ui::text_render::TextWrapMode::WordOrGlyph);
+        // The allocation is independent of the label's rectangle, so zero or
+        // one-glyph wrapping cannot validate its own broken measurement.
+        let (width, height) =
+            TextRenderer::new().measure_style(expected, Some(body_width + 1.0), &style);
+        assert!(
+            rect.width() + 0.5 >= f64::from(body_width),
+            "{rect:?} must fill its body allocation"
+        );
+        // Text::draw shapes with a one-logical-pixel wrap guard. The ink
+        // bound must obey that same guard, not a smaller rounding margin.
+        assert!(
+            rect.width() + 1.0 >= f64::from(width),
+            "{rect:?} must fit the complete text width {width}"
+        );
+        assert!(
+            (rect.height() - f64::from(height)).abs() < 1.0,
+            "{rect:?} must fit the complete wrapped height {height}"
+        );
+        assert!(rect.x0 >= 0.0);
+        assert!(rect.x1 <= frame.viewport.0);
+        assert!(rect.y0 >= 0.0);
+        assert!(rect.y1 <= frame.viewport.1);
+        assert_eq!(
+            label.accessibility().and_then(|node| node.name),
+            Some(expected.into())
+        );
+    }
+
+    #[test]
+    fn native_overlay_retained_bound_text_reenters_flow_without_rebuilding() {
+        for theme in [Theme::dark(), Theme::high_contrast().with_text_scale(2.0)] {
+            for viewport in [(1600, 900), (800, 600)] {
+                let text = ui::LocalState::new(String::new());
+                let body_width = if viewport.0 == 800 { 240.0 } else { 400.0 };
+                let content = ui::widget::Container::new()
+                    .with_no_padding()
+                    .with_width(body_width)
+                    .with_child(Box::new(
+                        ui::widget::Column::new()
+                            .with_no_padding()
+                            .with_intrinsic_height()
+                            .push(Box::new(
+                                ui::widget::Text::from_state(&text, Clone::clone)
+                                    .with_wrap_mode(ui::text_render::TextWrapMode::WordOrGlyph)
+                                    .with_id("retained-overlay-text"),
+                            )),
+                    ));
+                let mut frame = FrameBuilder::new(viewport);
+                // Replacing fixture content retires the old map before any
+                // measurement, focus or draw can dereference its pointers.
+                frame.node_map.clear();
+                *frame.host = ShellOverlayHost::with_fixture_content(Box::new(content));
+                frame.theme = theme.clone();
+                frame.rebuild_layout_tree();
+                let doc = AutoCommit::new();
+                // Materialize the shell's first synchronized presentation
+                // while the bound text is still empty, before retaining it.
+                frame.host.sync(&doc, &automerge::ROOT);
+                frame.relayout();
+                let _ = frame.paint_settled();
+                let builds = frame.layout_tree_builds;
+                assert_retained_bound_text(&frame, "", body_width);
+                for expected in [
+                    "The collaborator is reviewing the current document and checking every change against the requested task before proceeding.",
+                    "A longer observation replaces the first one without replacing this tree. It must wrap cleanly within the existing panel, preserving the complete accessible text and usable allocation.",
+                    "",
+                    "The retained label returns after being empty, without stale Display::None or one-character wrapping.",
+                ] {
+                    text.set(expected.into());
+                    frame.host.sync(&doc, &automerge::ROOT);
+                    frame.relayout();
+                    let _ = frame.paint();
+                    assert_eq!(
+                        frame.layout_tree_builds, builds,
+                        "sync, relayout and paint retain the original tree"
+                    );
+                    assert_retained_bound_text(&frame, expected, body_width);
+                }
+            }
+        }
     }
 
     #[test]
