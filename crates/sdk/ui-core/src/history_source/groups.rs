@@ -28,9 +28,10 @@
 //! given its own row in the history surfaces — see [`is_group_marker`].
 
 use crate::time::{Duration, UNIX_EPOCH};
+use tilo_automerge::ReadTyped as _;
 
 use automerge::transaction::Transactable;
-use automerge::{AutoCommit, ObjId, ObjType, PatchAction, Prop, ReadDoc, ScalarValue, Value};
+use automerge::{AutoCommit, ObjType, PatchAction, Prop, ReadDoc, Value};
 
 use crate::history_source::authors::AuthorDirectory;
 use crate::widget::history::HistoryEntryId;
@@ -60,16 +61,17 @@ pub fn read_named_ranges(doc: &AutoCommit, authors: &AuthorDirectory) -> Vec<Nam
         let Ok(Some((Value::Object(ObjType::Map), rec))) = doc.get(automerge::ROOT, &key) else {
             continue;
         };
-        let Some(label) = str_at(doc, &rec, "label") else {
+        let Some(label) = doc.str_at(&rec, "label") else {
             continue;
         };
-        let end = str_at(doc, &rec, "end").and_then(|s| from_hex16(&s));
-        let by = str_at(doc, &rec, "by");
+        let end = doc.str_at(&rec, "end").and_then(|s| from_hex16(&s));
+        let by = doc.str_at(&rec, "by");
         // `filter` above guarantees `ms > 0` by the time the cast below runs,
         // so the conversion never loses a sign; `checked_add` only guards
         // the (unreachable for an out-of-range timestamp) case of overflowing
         // `SystemTime`'s own representation.
-        let created = int_at(doc, &rec, "at")
+        let created = doc
+            .int_at(&rec, "at")
             .filter(|ms| *ms > 0)
             .and_then(|ms| u64::try_from(ms).ok())
             .and_then(|ms| UNIX_EPOCH.checked_add(Duration::from_millis(ms)))
@@ -264,7 +266,7 @@ fn named_range_record(
     let Ok(Some((Value::Object(ObjType::Map), rec))) = doc.get(automerge::ROOT, record_id) else {
         return None;
     };
-    let end = str_at(doc, &rec, "end").and_then(|value| from_hex16(&value));
+    let end = doc.str_at(&rec, "end").and_then(|value| from_hex16(&value));
     Some((start, end))
 }
 
@@ -272,7 +274,7 @@ fn str_at_record(doc: &AutoCommit, record_id: &str, field: &str) -> Option<Strin
     let Ok(Some((Value::Object(ObjType::Map), rec))) = doc.get(automerge::ROOT, record_id) else {
         return None;
     };
-    str_at(doc, &rec, field)
+    doc.str_at(&rec, field)
 }
 
 /// True when every patch in `patches` lands inside the named-range map — used
@@ -292,27 +294,6 @@ pub fn is_group_marker(patches: &[automerge::Patch]) -> bool {
                 _ => false,
             },
         })
-}
-
-fn str_at(doc: &AutoCommit, obj: &ObjId, key: &str) -> Option<String> {
-    match doc.get(obj, key) {
-        Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
-            ScalarValue::Str(t) => Some(t.to_string()),
-            _ => None,
-        },
-        _ => None,
-    }
-}
-
-fn int_at(doc: &AutoCommit, obj: &ObjId, key: &str) -> Option<i64> {
-    match doc.get(obj, key) {
-        Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
-            ScalarValue::Int(n) => Some(*n),
-            ScalarValue::Uint(n) => Some(i64::try_from(*n).unwrap_or(i64::MAX)),
-            _ => None,
-        },
-        _ => None,
-    }
 }
 
 #[cfg(test)]

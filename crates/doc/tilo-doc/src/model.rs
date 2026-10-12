@@ -26,6 +26,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::ops::Bound;
 use std::sync::Arc;
 use tilo_automerge::ApplyIncoming;
+use tilo_automerge::ReadTyped as _;
 use tilo_content::{ContentInputs, ContentMeta, ContentSource};
 
 mod bulk;
@@ -868,19 +869,13 @@ pub fn comment_ids(doc: &AutoCommit, c: &Containers) -> Vec<String> {
 /// A comment's author display name (empty if unset / unknown id).
 pub fn comment_author(doc: &AutoCommit, c: &Containers, id: &str) -> Option<String> {
     let comment = comment_obj(doc, c, id)?;
-    match doc.get(&comment, COMMENT_AUTHOR) {
-        Ok(Some((v, _))) => v.as_str().map(std::string::ToString::to_string),
-        _ => None,
-    }
+    doc.str_at(&comment, COMMENT_AUTHOR)
 }
 
 /// A comment's date / timestamp string (empty if unset / unknown id).
 pub fn comment_date(doc: &AutoCommit, c: &Containers, id: &str) -> Option<String> {
     let comment = comment_obj(doc, c, id)?;
-    match doc.get(&comment, COMMENT_DATE) {
-        Ok(Some((v, _))) => v.as_str().map(std::string::ToString::to_string),
-        _ => None,
-    }
+    doc.str_at(&comment, COMMENT_DATE)
 }
 
 /// The ordered block ids of a comment's content (empty if absent).
@@ -941,10 +936,7 @@ pub fn comment_reply_author(
     reply_id: &str,
 ) -> Option<String> {
     let reply = comment_reply_obj(doc, c, comment_id, reply_id)?;
-    match doc.get(&reply, COMMENT_REPLY_AUTHOR) {
-        Ok(Some((v, _))) => v.as_str().map(std::string::ToString::to_string),
-        _ => None,
-    }
+    doc.str_at(&reply, COMMENT_REPLY_AUTHOR)
 }
 
 pub fn comment_reply_date(
@@ -954,10 +946,7 @@ pub fn comment_reply_date(
     reply_id: &str,
 ) -> Option<String> {
     let reply = comment_reply_obj(doc, c, comment_id, reply_id)?;
-    match doc.get(&reply, COMMENT_REPLY_DATE) {
-        Ok(Some((v, _))) => v.as_str().map(std::string::ToString::to_string),
-        _ => None,
-    }
+    doc.str_at(&reply, COMMENT_REPLY_DATE)
 }
 
 pub fn comment_reply_blocks_in_order(
@@ -1143,19 +1132,13 @@ pub fn change_ids(doc: &AutoCommit, c: &Containers) -> Vec<String> {
 /// A change's author display name (empty if unset / unknown id).
 pub fn change_author(doc: &AutoCommit, c: &Containers, id: &str) -> Option<String> {
     let change = change_obj(doc, c, id)?;
-    match doc.get(&change, CHANGE_AUTHOR) {
-        Ok(Some((v, _))) => v.as_str().map(std::string::ToString::to_string),
-        _ => None,
-    }
+    doc.str_at(&change, CHANGE_AUTHOR)
 }
 
 /// A change's date / timestamp string (empty if unset / unknown id).
 pub fn change_date(doc: &AutoCommit, c: &Containers, id: &str) -> Option<String> {
     let change = change_obj(doc, c, id)?;
-    match doc.get(&change, CHANGE_DATE) {
-        Ok(Some((v, _))) => v.as_str().map(std::string::ToString::to_string),
-        _ => None,
-    }
+    doc.str_at(&change, CHANGE_DATE)
 }
 
 /// A change's kind (`Ins`/`Del`), or `None` if the id is unknown.
@@ -1433,10 +1416,7 @@ pub fn block_order_key_lengths(doc: &AutoCommit, c: &Containers) -> Vec<usize> {
 
 /// Read a document-level meta string (e.g. the serialized stylesheet).
 pub fn meta_str(doc: &AutoCommit, c: &Containers, key: &str) -> Option<String> {
-    match doc.get(&c.meta, key) {
-        Ok(Some((v, _))) => v.as_str().map(std::string::ToString::to_string),
-        _ => None,
-    }
+    doc.str_at(&c.meta, key)
 }
 
 /// The document-wide multi-column layout: `(column_count, optional_gap_px)`. Reads the `meta.columns` /
@@ -1492,10 +1472,7 @@ fn props_obj(doc: &AutoCommit, c: &Containers) -> Option<ObjId> {
 /// Read a single document property (`title`/`author`/… — see [`DOC_PROP_KEYS`](crate::schema::DOC_PROP_KEYS)), or any other string property name a codec stashed. `None` if unset.
 pub fn doc_prop(doc: &AutoCommit, c: &Containers, name: &str) -> Option<String> {
     let props = props_obj(doc, c)?;
-    match doc.get(&props, name) {
-        Ok(Some((v, _))) => v.as_str().map(std::string::ToString::to_string),
-        _ => None,
-    }
+    doc.str_at(&props, name)
 }
 
 /// All document properties (`name → value`) as a sorted map, empty if none are set.
@@ -1515,10 +1492,7 @@ pub fn doc_props(doc: &AutoCommit, c: &Containers) -> BTreeMap<String, String> {
 
 pub fn block_kind(doc: &AutoCommit, c: &Containers, id: &str) -> Option<String> {
     let obj = block_obj(doc, &c.blocks, id)?;
-    match doc.get(&obj, BLOCK_KIND) {
-        Ok(Some((v, _))) => v.as_str().map(std::string::ToString::to_string),
-        _ => None,
-    }
+    doc.str_at(&obj, BLOCK_KIND)
 }
 
 pub fn block_text(doc: &AutoCommit, c: &Containers, id: &str) -> Option<String> {
@@ -1723,13 +1697,7 @@ fn preserved_segments(
     let Ok(Some((Value::Object(ObjType::Map), part_obj))) = doc.get(&c.preserved, key) else {
         return None;
     };
-    let bytes_at = |obj: &ObjId, prop: &str| match doc.get(obj, prop) {
-        Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
-            ScalarValue::Bytes(b) => Some(b.clone()),
-            _ => None,
-        },
-        _ => None,
-    };
+    let bytes_at = |obj: &ObjId, prop: &str| doc.bytes_at(obj, prop);
     let mut segs: Vec<(Vec<u8>, String, Vec<u8>)> = doc
         .keys(&part_obj)
         .filter_map(|sid| {
@@ -2040,13 +2008,7 @@ impl DocMut<'_> {
             let hi = run.hi.clone();
             return Some((between_salted(Some(&run.key), hi.as_deref(), salt), hi));
         }
-        let order_of = |doc: &AutoCommit, obj: &ObjId| match doc.get(obj, BLOCK_ORDER) {
-            Ok(Some((Value::Scalar(value), _))) => match value.as_ref() {
-                ScalarValue::Bytes(key) => Some(key.clone()),
-                _ => None,
-            },
-            _ => None,
-        };
+        let order_of = |doc: &AutoCommit, obj: &ObjId| doc.bytes_at(obj, BLOCK_ORDER);
         let after_key = order_of(self.doc, &block_obj(self.doc, container, after)?)?;
         let mut next: Option<(Vec<u8>, String)> = None;
         for item in self.doc.map_range(container, ..) {
@@ -2169,13 +2131,7 @@ impl DocMut<'_> {
         let container = region_obj(self.c, region).clone();
         let key_of = |doc: &AutoCommit, id: &str| {
             let obj = block_obj(doc, &container, id)?;
-            match doc.get(&obj, BLOCK_ORDER) {
-                Ok(Some((Value::Scalar(value), _))) => match value.as_ref() {
-                    ScalarValue::Bytes(key) => Some(key.clone()),
-                    _ => None,
-                },
-                _ => None,
-            }
+            doc.bytes_at(&obj, BLOCK_ORDER)
         };
         let bounds = match (self.bulk_active(), next) {
             (false, Some(next)) => key_of(self.doc, after).zip(key_of(self.doc, next)),
