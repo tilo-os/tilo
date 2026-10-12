@@ -1100,7 +1100,7 @@ impl AppHandler {
             }
         }
         #[cfg(any(windows, target_os = "linux"))]
-        if let Some(mut preparation) = self.app.startup_renderer.take() {
+        if let Some(preparation) = self.app.startup_renderer.take() {
             // How long the first redraw still waits on the preparation.
             match tilo_startup_metrics::span("native-render-prepare-wait", || preparation.wait()) {
                 Ok(Ok(startup)) => {
