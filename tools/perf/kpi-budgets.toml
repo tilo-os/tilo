@@ -1325,6 +1325,46 @@ p50 = 10900000.0
 enforce = true
 source = "relay_load: framed bytes written to peer sessions per active collaborator-hour"
 
+# Packets (the levers after bytes): a change that sends the same bytes in more
+# packets passes every byte budget, and costs egress, relay CPU and client
+# radio time all the same. Counted on the collaborators' QUIC connections
+# (`Connection::stats`; loopback, so what they received is what the relay
+# sent). The relay's ACK-only datagrams answer client packets that carried
+# nothing to acknowledge back, so a client sending more packets shows twice.
+#
+# Measured in Perf / scheduled A/B runs 97792 and 97793 (8 rounds each): client
+# packets 23,838-23,923, of which data 6,188-6,210; relay datagrams
+# 26,652-26,736, of which ACK-only 7,790-8,103 (p99 up to 8,230). The first
+# three vary by under 1 % between rounds, so their ceilings sit about 15 %
+# above, as the byte budgets do; ACK-only datagrams follow timing (which
+# packets an ACK can ride) and vary by about 5 %, so theirs sits about 20 %
+# above. Run 97792's base, the bench on the commit before client pointer
+# pacing, measured 27,753 client packets, 9,086 data packets and 10,995
+# ACK-only datagrams: undoing that pacing fails three of the four at once.
+[kpi."hosting.relay.client_packets_per_collab_hour.n100"]
+unit = "count"
+p50 = 27500.0
+enforce = true
+source = "relay_load: UDP datagrams the collaborators sent the relay per active collaborator-hour"
+
+[kpi."hosting.relay.client_data_packets_per_collab_hour.n100"]
+unit = "count"
+p50 = 7150.0
+enforce = true
+source = "relay_load: collaborator datagrams carrying stream data per active collaborator-hour"
+
+[kpi."hosting.relay.datagrams_per_collab_hour.n100"]
+unit = "count"
+p50 = 30700.0
+enforce = true
+source = "relay_load: UDP datagrams the relay sent the collaborators per active collaborator-hour"
+
+[kpi."hosting.relay.ack_only_datagrams_per_collab_hour.n100"]
+unit = "count"
+p50 = 9700.0
+enforce = true
+source = "relay_load: relay datagrams carrying only acknowledgements per active collaborator-hour"
+
 [kpi."hosting.relay.fanout_ms.n100"]
 unit = "ms"
 p50 = 30.0

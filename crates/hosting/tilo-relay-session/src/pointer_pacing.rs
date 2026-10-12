@@ -1,12 +1,16 @@
-//! A session's own pointer presence, paced to the rate the relay forwards it.
+//! Pointer presence, paced to the rate the relay forwards it, on every path.
 //!
 //! The shell and the toolkit publish a moving pointer at about 30 Hz, and the
 //! relay forwards each pointer slot to every other member at most every
-//! [`POINTER_GAP`] (20 Hz). Without pacing here a third of the pointer packets
-//! a client sends are coalesced away on arrival, after costing an upstream
-//! packet and, on a short path, an acknowledgement-only packet back.
+//! [`POINTER_GAP`] (20 Hz). Receivers glide over the gap between two samples,
+//! so a third of those moves buy nothing a receiver can show: on the relay
+//! path they are coalesced away on arrival, after costing an upstream packet
+//! and, on a short path, an acknowledgement-only packet back; on the direct
+//! (gossip) path they cost every neighbour a packet and an acknowledgement.
 //!
-//! The session writer therefore holds pointer presence per slot:
+//! Both paths therefore hold pointer presence per slot, with one
+//! [`PointerPacer`] and one classification ([`slot_pacing`]): the session
+//! writer for the relay, the shell's network actor for gossip.
 //!
 //! - **Leading edge.** A move of a slot that has not been written within the
 //!   gap is written at once.
@@ -35,15 +39,16 @@ use std::time::Duration;
 
 use n0_future::time::Instant;
 
-use crate::coedit::{AttributedPresence, POINTER_GAP, presence_slot};
+pub use crate::coedit::POINTER_GAP;
+use crate::coedit::{AttributedPresence, presence_slot};
 use crate::transport::Envelope;
 
 /// One pointer slot of one room: `(workspace_id, slot id)`.
-pub(crate) type PointerKey = (u64, u64);
+pub type PointerKey = (u64, u64);
 
-/// How the session writer treats one outbound state envelope.
+/// How an outbound message is paced.
 #[derive(Debug, PartialEq, Eq)]
-pub(crate) enum Pacing {
+pub enum Pacing {
     /// A pointer move: held in its slot.
     Pointer(PointerKey),
     /// A delta or latest-state presence other than a pointer: written now,
@@ -53,51 +58,69 @@ pub(crate) enum Pacing {
     Ordered,
 }
 
-/// How `envelope` is paced.
+/// How presence with `slot` in room `workspace_id` is paced: a motion slot is
+/// held, any other slot passes, and a message without one is an event.
+#[must_use]
+pub fn slot_pacing(workspace_id: u64, slot: Option<tilo_peer_state::PresenceSlot>) -> Pacing {
+    match slot {
+        Some(slot) if slot.motion => Pacing::Pointer((workspace_id, slot.id)),
+        Some(_) => Pacing::Passes,
+        None => Pacing::Ordered,
+    }
+}
+
+/// How the session writer paces `envelope`.
 pub(crate) fn pacing(envelope: &Envelope) -> Pacing {
     match envelope {
         Envelope::Delta { .. } => Pacing::Passes,
         Envelope::Presence {
             workspace_id,
             payload,
-        } => match AttributedPresence::decode(payload)
-            .and_then(|presence| presence_slot(&presence.body))
-        {
-            Some(slot) if slot.motion => Pacing::Pointer((*workspace_id, slot.id)),
-            Some(_) => Pacing::Passes,
-            None => Pacing::Ordered,
-        },
+        } => slot_pacing(
+            *workspace_id,
+            AttributedPresence::decode(payload).and_then(|presence| presence_slot(&presence.body)),
+        ),
         _ => Pacing::Ordered,
     }
 }
 
 /// The longest a held move that has gone stale waits past the end of its gap
 /// for a fresher one its producer is about to publish.
-pub(crate) const FRESHER_WAIT: Duration = Duration::from_millis(15);
+pub const FRESHER_WAIT: Duration = Duration::from_millis(15);
 /// How late a producer's next move may be against its own rhythm and still
 /// be waited for.
-const ARRIVAL_SLACK: Duration = Duration::from_millis(3);
+pub const ARRIVAL_SLACK: Duration = Duration::from_millis(3);
 
 /// A move held back, with its posting order and when it was posted.
-struct Held {
+struct Held<T> {
     order: u64,
-    envelope: Envelope,
+    item: T,
     posted: Instant,
 }
 
-#[derive(Default)]
-struct Slot {
+struct Slot<T> {
     /// When this slot was last written.
     sent: Option<Instant>,
     /// The newest move not yet written.
-    held: Option<Held>,
+    held: Option<Held<T>>,
     /// When the newest move was posted, and how long after the one before
     /// it: the producer's rhythm while it moves faster than the gap.
     posted: Option<Instant>,
     rhythm: Option<Duration>,
 }
 
-impl Slot {
+impl<T> Default for Slot<T> {
+    fn default() -> Self {
+        Self {
+            sent: None,
+            held: None,
+            posted: None,
+            rhythm: None,
+        }
+    }
+}
+
+impl<T> Slot<T> {
     /// When the held move falls due, if one is held.
     ///
     /// At the end of its gap, unless the producer's next move is due within
@@ -132,11 +155,20 @@ fn later(at: Instant, by: Duration) -> Instant {
     at.checked_add(by).unwrap_or(at)
 }
 
-/// The pointer moves a session writer holds back, per slot.
-#[derive(Default)]
-pub(crate) struct PointerPacer {
-    slots: HashMap<PointerKey, Slot>,
+/// The pointer moves a writer holds back, per slot: envelopes in the relay
+/// session writer, encoded gossip messages in the shell's network actor.
+pub struct PointerPacer<T> {
+    slots: HashMap<PointerKey, Slot<T>>,
     posted: u64,
+}
+
+impl<T> Default for PointerPacer<T> {
+    fn default() -> Self {
+        Self {
+            slots: HashMap::new(),
+            posted: 0,
+        }
+    }
 }
 
 /// What the writer does with one outbound state envelope.
@@ -151,7 +183,7 @@ pub(crate) enum Admitted {
     },
 }
 
-impl PointerPacer {
+impl PointerPacer<Envelope> {
     /// Admit one outbound state envelope at `now`: hold a pointer move, or
     /// say what to write, with the held pointers it must not overtake.
     pub(crate) fn admit(&mut self, envelope: Envelope, now: Instant) -> Admitted {
@@ -165,10 +197,12 @@ impl PointerPacer {
         };
         Admitted::Write { ahead, envelope }
     }
+}
 
-    /// Hold `envelope`, posted at `now`, as the newest move of `key`,
-    /// replacing an older one.
-    pub(crate) fn hold(&mut self, key: PointerKey, envelope: Envelope, now: Instant) {
+impl<T> PointerPacer<T> {
+    /// Hold `item`, posted at `now`, as the newest move of `key`, replacing
+    /// an older one.
+    pub fn hold(&mut self, key: PointerKey, item: T, now: Instant) {
         let order = self.posted;
         self.posted = self.posted.wrapping_add(1);
         let slot = self.slots.entry(key).or_default();
@@ -179,19 +213,20 @@ impl PointerPacer {
         slot.posted = Some(now);
         slot.held = Some(Held {
             order,
-            envelope,
+            item,
             posted: now,
         });
     }
 
     /// When the next held move falls due, if any is held.
-    pub(crate) fn next_due(&self) -> Option<Instant> {
+    #[must_use]
+    pub fn next_due(&self) -> Option<Instant> {
         self.slots.values().filter_map(Slot::due).min()
     }
 
     /// Take every held move that is due at `now`, in posting order, and mark
     /// those slots written. Idle slots are forgotten.
-    pub(crate) fn take_due(&mut self, now: Instant) -> Vec<Envelope> {
+    pub fn take_due(&mut self, now: Instant) -> Vec<T> {
         let mut due = Vec::new();
         self.slots.retain(|_, slot| {
             if slot.due().is_some_and(|at| at <= now) {
@@ -204,9 +239,9 @@ impl PointerPacer {
     }
 
     /// Take every held move, due or not, in posting order, and mark those
-    /// slots written: what goes ahead of an envelope that must not overtake
+    /// slots written: what goes ahead of a message that must not overtake
     /// them.
-    pub(crate) fn take_all(&mut self, now: Instant) -> Vec<Envelope> {
+    pub fn take_all(&mut self, now: Instant) -> Vec<T> {
         let mut all = Vec::new();
         for slot in self.slots.values_mut() {
             if let Some(held) = slot.held.take() {
@@ -218,9 +253,9 @@ impl PointerPacer {
     }
 }
 
-fn in_order(mut moves: Vec<Held>) -> Vec<Envelope> {
+fn in_order<T>(mut moves: Vec<Held<T>>) -> Vec<T> {
     moves.sort_by_key(|held| held.order);
-    moves.into_iter().map(|held| held.envelope).collect()
+    moves.into_iter().map(|held| held.item).collect()
 }
 
 #[cfg(test)]
@@ -447,5 +482,55 @@ pub(crate) mod tests {
         assert_eq!(pacer.slots.len(), 100);
         assert!(pacer.take_due(t0 + POINTER_GAP).is_empty());
         assert!(pacer.slots.is_empty());
+    }
+
+    #[test]
+    fn the_slot_alone_decides_and_any_item_can_be_held() {
+        use collab_types::PeerPresencePayload as P;
+
+        // The direct path classifies the message it is about to broadcast
+        // with the same function the session writer uses.
+        let moved = NeighbourMsg::PresenceMoved {
+            peer: 3,
+            user: "someone".into(),
+            key: "tile".into(),
+            point: (1.0, 0.0),
+            ts: 0,
+            colour: None,
+        };
+        let slot = moved.presence_slot();
+        assert_eq!(
+            slot_pacing(ROOM, slot),
+            Pacing::Pointer((ROOM, slot.unwrap().id))
+        );
+        assert_eq!(
+            slot_pacing(ROOM, slot),
+            pacing(&pointer("tile", 1.0)),
+            "both paths key a pointer alike"
+        );
+        let caret = NeighbourMsg::AppPresenceV2 {
+            peer: 3,
+            app_id: "so.tilo.word-processor".into(),
+            cluster_id: "room".into(),
+            presence: collab_types::PeerPresence {
+                key: b"field".to_vec(),
+                payload: P::Caret { pos: 1 },
+            },
+            colour: None,
+        };
+        assert_eq!(slot_pacing(ROOM, caret.presence_slot()), Pacing::Passes);
+        assert_eq!(slot_pacing(ROOM, None), Pacing::Ordered);
+
+        // Held items need not be envelopes: the gossip path holds encoded
+        // messages, paced exactly alike.
+        let t0 = Instant::now();
+        let mut pacer = PointerPacer::<&str>::default();
+        pacer.hold((ROOM, 1), "first", t0);
+        assert_eq!(pacer.take_due(t0), vec!["first"]);
+        pacer.hold((ROOM, 1), "second", t0 + ms(40));
+        pacer.hold((ROOM, 1), "third", t0 + ms(45));
+        assert!(pacer.take_due(t0 + ms(45)).is_empty());
+        assert_eq!(pacer.next_due(), Some(t0 + POINTER_GAP));
+        assert_eq!(pacer.take_due(t0 + POINTER_GAP), vec!["third"]);
     }
 }
