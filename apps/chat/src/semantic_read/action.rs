@@ -109,7 +109,6 @@ fn project(
     heads: &[automerge::ChangeHash],
     payload: &[u8],
 ) -> Result<ReadPage, SemanticReadError> {
-    use tilo_doc::semantic_read::ReadError;
     let request: Request =
         serde_json::from_slice(payload).map_err(|_| SemanticReadError::InvalidRequest)?;
     let cursor = request
@@ -122,14 +121,7 @@ fn project(
         items: usize::from(request.page_size),
         ..tilo_doc::semantic_read::Limits::default()
     };
-    let page = super::read_messages(document, heads, &request.channel, cursor.as_ref(), limits)
-        .map_err(|error| match error {
-            ReadError::Pending => SemanticReadError::Pending,
-            ReadError::StaleCursor => SemanticReadError::StaleCursor,
-            ReadError::InvalidCursor => SemanticReadError::InvalidRequest,
-            ReadError::Limit => SemanticReadError::Limit,
-            ReadError::Malformed => SemanticReadError::Malformed,
-        })?;
+    let page = super::read_messages(document, heads, &request.channel, cursor.as_ref(), limits)?;
     let messages: Vec<serde_json::Value> = page
         .messages
         .iter()
@@ -168,17 +160,7 @@ pub fn result_schema() -> &'static serde_json::Value {
                 "id":{"type":"string","maxLength":128},"author":{"type":"string","maxLength":256},"ts":{"type":"string","pattern":"^-?[0-9]+$"},"parent":{"type":"string","maxLength":128},"edited":{"type":"boolean"},"text":{"type":"string"},"complete":{"type":"boolean"}
             }}}
         }});
-        serde_json::json!({"type":"object","required":["version","record","basis","content","nextCursor"],"additionalProperties":false,"properties":{
-            "version":{"type":"integer","enum":[1]},
-            "record":{"type":"object","required":["roomId","appId","recordId"],"additionalProperties":false,"properties":{
-                "roomId":{"type":["string","null"],"format":"uuid"},"appId":{"type":"string","minLength":1,"maxLength":256},"recordId":{"type":"string","maxLength":512}
-            }},
-            "basis":{"type":"object","required":["heads"],"additionalProperties":false,"properties":{
-                "heads":{"type":"array","maxItems":64,"uniqueItems":true,"items":{"type":"string","pattern":"^[0-9a-f]{64}$"}}
-            }},
-            "content":content,
-            "nextCursor":{"type":["string","null"],"maxLength":1024}
-        }})
+        ui::semantic_document_read::result_schema(content, true)
     })
 }
 

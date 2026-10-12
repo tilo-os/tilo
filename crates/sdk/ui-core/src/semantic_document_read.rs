@@ -61,6 +61,42 @@ impl SemanticReadError {
     }
 }
 
+impl From<tilo_doc::semantic_read::ReadError> for SemanticReadError {
+    fn from(error: tilo_doc::semantic_read::ReadError) -> Self {
+        use tilo_doc::semantic_read::ReadError;
+        match error {
+            ReadError::Pending => Self::Pending,
+            ReadError::StaleCursor => Self::StaleCursor,
+            ReadError::InvalidCursor => Self::InvalidRequest,
+            ReadError::Limit => Self::Limit,
+            ReadError::Malformed => Self::Malformed,
+        }
+    }
+}
+
+/// The exact result schema of a read whose projection yields `content`: the
+/// SDK stamps `version`, `record` and `basis` around it. A `paged` read
+/// returns an opaque `nextCursor` or null; any other read always returns null.
+#[must_use]
+pub fn result_schema(content: serde_json::Value, paged: bool) -> serde_json::Value {
+    let next_cursor = if paged {
+        serde_json::json!({"type":["string","null"],"maxLength":1024})
+    } else {
+        serde_json::json!({"type":"null"})
+    };
+    serde_json::json!({"type":"object","required":["version","record","basis","content","nextCursor"],"additionalProperties":false,"properties":{
+        "version":{"type":"integer","enum":[1]},
+        "record":{"type":"object","required":["roomId","appId","recordId"],"additionalProperties":false,"properties":{
+            "roomId":{"type":["string","null"],"format":"uuid"},"appId":{"type":"string","minLength":1,"maxLength":256},"recordId":{"type":"string","maxLength":512}
+        }},
+        "basis":{"type":"object","required":["heads"],"additionalProperties":false,"properties":{
+            "heads":{"type":"array","maxItems":64,"uniqueItems":true,"items":{"type":"string","pattern":"^[0-9a-f]{64}$"}}
+        }},
+        "content":content,
+        "nextCursor":next_cursor
+    }})
+}
+
 /// One page an app's projection produced at the heads it was given.
 pub struct ReadPage {
     pub content: serde_json::Value,
