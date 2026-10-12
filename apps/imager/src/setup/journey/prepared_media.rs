@@ -2,8 +2,8 @@
 //! Prepared setup is ciphertext; optional home export retains its password in
 //! private zeroizing custody until the streaming writer finishes.
 mod delivery_retirement;
-#[cfg(all(test, feature = "native-capture-qualification"))]
-mod native_retained;
+#[cfg(test)]
+pub(in crate::setup) mod native_retained;
 pub(in crate::setup) fn retain_read_medium(
     key: String,
     child: std::process::Child,

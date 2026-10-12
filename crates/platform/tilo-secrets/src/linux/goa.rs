@@ -1,6 +1,9 @@
 //! Existing owner GOA object and exact Secret Service item; no refresh or mutation.
 use super::chromium::{fixed_proxy, owner_bus, service_owner, unlock_item};
-use super::*;
+use super::{
+    Connection, HashMap, OwnedObjectPath, OwnedValue, Proxy, SERVICE_PATH, Secret, SecretError,
+    Value, WireSecret, on_bus,
+};
 use crate::owner_migration::{GoaCredentials, GoaProvider, GoaRegistration};
 const GOA: &str = "org.gnome.OnlineAccounts";
 fn goa_owner(bus: &Proxy<'_>, uid: u32) -> Result<Option<String>, SecretError> {
@@ -103,7 +106,7 @@ fn selected_item(
         .or_else(|| locked.first())
         .ok_or(SecretError::Denied)?;
     if !locked.is_empty() {
-        unlock_item(&connection, &owner, &service, item)?;
+        unlock_item(connection, owner, service, item)?;
     }
     let selected = Proxy::new(
         connection,

@@ -1,4 +1,4 @@
-//! The existing Linux OSCrypt password for one explicitly selected owner profile.
+//! The existing Linux `OSCrypt` password for one explicitly selected owner profile.
 use crate::{Secret, SecretError};
 use std::{fs::File, os::unix::fs::MetadataExt};
 
@@ -7,7 +7,7 @@ use std::{fs::File, os::unix::fs::MetadataExt};
 pub enum ChromiumBrand {
     Chrome,
     Chromium,
-    /// Public Slack 4.52.178 / Electron 44.4.5 OSCrypt contract; callers must
+    /// Public Slack 4.52.178 / Electron 44.4.5 `OSCrypt` contract; callers must
     /// authenticate its exact public application before selected capture.
     Slack452178,
 }

@@ -3,6 +3,71 @@
 //! rules, so the Imager refuses exactly what the installer would ask to
 //! repair.
 
+/// Purpose changes defaults, never the OS image or collaboration authority.
+pub const PURPOSES: [&str; 2] = ["computer", "server"];
+
+#[must_use]
+pub fn valid_purpose(purpose: &str) -> bool {
+    PURPOSES.contains(&purpose)
+}
+
+pub fn default_purpose() -> String {
+    "computer".into()
+}
+
+/// Public binding to an opaque encrypted setup package, never its contents.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields, try_from = "RawPreparedSetupExpectation")]
+pub struct PreparedSetupExpectation {
+    pub schema: u32,
+    pub sealed_bytes: u64,
+    pub ciphertext_sha256: String,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawPreparedSetupExpectation {
+    schema: u32,
+    sealed_bytes: u64,
+    ciphertext_sha256: String,
+}
+
+impl TryFrom<RawPreparedSetupExpectation> for PreparedSetupExpectation {
+    type Error = &'static str;
+    fn try_from(raw: RawPreparedSetupExpectation) -> Result<Self, Self::Error> {
+        let value = Self {
+            schema: raw.schema,
+            sealed_bytes: raw.sealed_bytes,
+            ciphertext_sha256: raw.ciphertext_sha256,
+        };
+        value
+            .valid()
+            .then_some(value)
+            .ok_or("invalid prepared setup expectation")
+    }
+}
+
+impl PreparedSetupExpectation {
+    #[must_use]
+    pub fn valid(&self) -> bool {
+        self.schema == 1
+            && (48..=32 * 1024 * 1024 + 16384).contains(&self.sealed_bytes)
+            && self.ciphertext_sha256.len() == 64
+            && self
+                .ciphertext_sha256
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+    }
+}
+
+/// Empty means no friendly label; supplied labels are bounded UTF-8 text.
+#[must_use]
+pub fn valid_device_label(label: &str) -> bool {
+    (label.is_empty() || !label.trim().is_empty())
+        && label.len() <= 64
+        && !label.chars().any(char::is_control)
+}
+
 /// Locale choices supported end to end by the Imager, live installer and OS.
 const LOCALE_CATALOG: &str = include_str!("../locales.txt");
 
@@ -91,6 +156,15 @@ pub fn valid_timezone_name(timezone: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn purpose_selects_only_defaults_for_one_os() {
+        assert_eq!(default_purpose(), "computer");
+        assert!(valid_purpose("computer"));
+        assert!(valid_purpose("server"));
+        assert!(!valid_purpose("desktop-os"));
+        assert!(!valid_purpose("server\n"));
+    }
 
     #[test]
     fn locale_catalog_is_unique_safe_and_contains_the_default() {

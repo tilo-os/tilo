@@ -112,8 +112,8 @@ class AuthenticatedStagingPlan:
 def bind_service_candidate(attested, candidate, setup_binding):
     """Bind observations to the native-authenticated manifest, not source hints.
 
-    This is not installed consumer admission. Native import continues to refuse
-    an unqualified receiver until a separate exact-scope native door exists.
+    This is not installed consumer admission. The temporary native door is
+    root-owned, namespace/actor bound and independently checks the sealed person.
     """
     from service_sessions import selections
     if (type(candidate) is not dict or type(candidate.get('required_protocol')) is not int

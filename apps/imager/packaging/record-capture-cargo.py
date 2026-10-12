@@ -28,9 +28,11 @@ ROLES = {
     'control': ('crates/session/control-cli', 'tilo-control', 'bin', False),
     'files': ('apps/file-explorer', 'file-explorer', 'bin', False),
     'writer': ('apps/word-processor', 'word-processor', 'bin', False),
+    'browser': ('apps/browser', 'browser', 'bin', False),
     'app_package': ('crates/packaging/tilo-app-package-cli', 'tilo-app-package', 'bin', False),
     'runtime_bundle': ('crates/packaging/runtime-bundle', 'tilo-runtime-bundle', 'bin', False),
     'install': ('crates/packaging/install', 'tilo-install', 'bin', False),
+    'installer': ('crates/session/installer', 'tilo-installer', 'bin', False),
 }
 
 
@@ -58,18 +60,22 @@ def facts(path, maximum=1024 ** 3):
 
 def sources():
     names = {'Cargo.toml', 'Cargo.lock', 'apps/imager/build.rs',
+             'apps/imager/capture-service.json', 'apps/imager/desktop-catalog.json',
+             'apps/imager/release-catalog.json',
              'apps/imager/src/setup/home_capture/native_tests/signed_export.rs',
              'apps/imager/packaging/qualify-capture-release.py',
              'tools/ci/native-stores.sh', 'tools/ci/native-store-autoclear.py',
              'tools/apps/pack-runtime-package.sh', 'tools/apps/stage_sdk_services.py',
-             'scripts/headless-examples/_control.py'}
+             'scripts/headless-examples/_control.py',
+             'scripts/browser/cef-lock.json', 'scripts/browser/build-host.py',
+             'tools/apps/browser_runtime_release.py', 'tools/apps/app_package_isa.py'}
     listed = subprocess.check_output(['git', 'ls-files', '-z', '--cached', '--others', '--exclude-standard'], cwd=ROOT)
     for item in listed.split(b'\0'):
         if not item:
             continue
         name = item.decode('utf-8')
         if (name.endswith(('.rs', '.toml', '.ftl')) or name == 'Cargo.lock'
-                or name.startswith(('apps/imager/packaging/', 'os/scripts/', 'os/usr/libexec/'))):
+                or name.startswith(('apps/imager/packaging/', 'apps/browser/chromium/', 'os/scripts/', 'os/usr/libexec/'))):
             names.add(name)
     require(1 <= len(names) <= 65536, 'build source inventory exceeds bounds')
     return {name: facts(ROOT / name) for name in sorted(names)}

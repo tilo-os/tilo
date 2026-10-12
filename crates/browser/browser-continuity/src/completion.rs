@@ -303,23 +303,26 @@ fn file_entry(
     if stamp.length > limit {
         return Err(failed());
     }
+    let total_limit = crate::snapshot::MAX_SNAPSHOT_BYTES
+        .checked_add(u64::try_from(crate::MAX_PLAN_BYTES).map_err(|_| failed())?)
+        .ok_or_else(failed)?;
     *budget = budget
         .checked_add(stamp.length)
-        .filter(|total| {
-            *total <= crate::snapshot::MAX_SNAPSHOT_BYTES + crate::MAX_PLAN_BYTES as u64
-        })
+        .filter(|total| *total <= total_limit)
         .ok_or_else(failed)?;
     let mut hasher = blake3::Hasher::new();
-    let mut input = file.take(limit + 1);
+    let mut input = file.take(limit.checked_add(1).ok_or_else(failed)?);
     let mut bytes = 0u64;
-    let mut buffer = [0; 65536];
+    let mut buffer = vec![0; 65_536];
     loop {
         let count = input.read(&mut buffer)?;
         if count == 0 {
             break;
         }
-        bytes += count as u64;
-        hasher.update(&buffer[..count]);
+        bytes = bytes
+            .checked_add(u64::try_from(count).map_err(|_| failed())?)
+            .ok_or_else(failed)?;
+        hasher.update(buffer.get(..count).ok_or_else(failed)?);
     }
     if bytes != stamp.length
         || Stamp::of(&input.into_inner())? != stamp
@@ -388,7 +391,9 @@ fn capture_entries(projection: &Path, plan: &Plan) -> io::Result<Vec<Entry>> {
             return Err(failed());
         }
     }
-    if directory_entry(&root, vec![])? != entries[0] || entries.len() > 128 {
+    if directory_entry(&root, vec![])? != *entries.first().ok_or_else(failed)?
+        || entries.len() > 128
+    {
         return Err(failed());
     }
     Ok(entries)

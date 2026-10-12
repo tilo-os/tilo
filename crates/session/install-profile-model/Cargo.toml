@@ -5,7 +5,8 @@ edition = "2024"
 publish = false
 license.workspace = true
 
-# Dependency-free: the isolated tools/imager-profile workspace builds it too.
+[dependencies]
+serde = { version = "1", features = ["derive"] }
 
 [lints]
 workspace = true

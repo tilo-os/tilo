@@ -38,6 +38,9 @@ command -v zstd >/dev/null
 command -v jq >/dev/null
 test -s "$input"
 provenance="$(python3 "$(dirname "${BASH_SOURCE[0]}")/media-provenance.py" validate "$input" "$arch" "$profile")"
+# Installed facts observed in the immutable native OCI root are bound to this
+# exact qcow2. The existing release signer authenticates their enclosing catalog.
+consumers="$(python3 "$(dirname "${BASH_SOURCE[0]}")/media-provenance.py" consumer-facts "$input" "$arch" "$profile")"
 
 mkdir -p "$out"
 suffix=""
@@ -69,10 +72,11 @@ jq -n \
   --arg arch "$arch" \
   --arg hardware_profile "$profile" \
   --argjson provenance "$provenance" \
+  --argjson consumers "$consumers" \
   --arg url "${release_server}/${release_repository}/releases/download/${release_tag}/$(basename "$archive")" \
   --arg archive_sha256 "$archive_sha256" \
   --argjson archive_size "$archive_size" \
   --arg image_sha256 "$image_sha256" \
   --argjson image_size "$image_size" \
-  '{name:$name,version:$version,channel:$channel,arch:$arch,hardware_profile:$hardware_profile,provenance:$provenance,url:$url,archive_sha256:$archive_sha256,archive_size:$archive_size,image_sha256:$image_sha256,image_size:$image_size}' \
+  '{name:$name,version:$version,channel:$channel,arch:$arch,hardware_profile:$hardware_profile,provenance:$provenance,url:$url,archive_sha256:$archive_sha256,archive_size:$archive_size,image_sha256:$image_sha256,image_size:$image_size} + $consumers' \
   >"$out/catalog-${arch}${suffix}.json"

@@ -114,12 +114,11 @@ fn sibling_names(
                 }
             }
             for mount in mounts {
-                if let Ok(relative) = mount.strip_prefix(location) {
-                    if let Some(Component::Normal(name)) = relative.components().next() {
-                        if !names.iter().any(|present| present == name) {
-                            names.push(name.to_owned());
-                        }
-                    }
+                if let Ok(relative) = mount.strip_prefix(location)
+                    && let Some(Component::Normal(name)) = relative.components().next()
+                    && !names.iter().any(|present| present == name)
+                {
+                    names.push(name.to_owned());
                 }
             }
             Ok(names)

@@ -73,6 +73,13 @@ impl StorageDirectory {
     /// This grants no publication authority and changes no ownership or policy.
     /// `OwnerOnly` requires private DAC/ACL mode; `Inherit` requires owner control.
     /// The caller must obtain the owner and handle on an authenticated channel.
+    ///
+    /// # Errors
+    ///
+    /// Returns `PermissionDenied` when the caller is not root, the held directory
+    /// has a different owner, or its permissions violate the requested privacy.
+    /// Returns `Unsupported` for an unsupported permission profile, or the native
+    /// error when the held directory cannot be inspected.
     #[cfg(target_os = "linux")]
     pub fn validate_observed_owner(&self, owner: u32, privacy: Privacy) -> io::Result<()> {
         self.inner.validate_observed_owner(owner, privacy)
@@ -224,7 +231,7 @@ mod retained_foundation_tests {
             .publish_with_permissions(
                 OsStr::new("record"),
                 b"actual held publication",
-                PublishMode::CreateNew,
+                PublishMode::IfAbsent,
                 Privacy::Inherit,
                 0o640,
             )
@@ -243,7 +250,7 @@ mod retained_foundation_tests {
         let result = store.publish_with_permissions(
             OsStr::new("record"),
             b"must remain unpublished",
-            PublishMode::CreateNew,
+            PublishMode::IfAbsent,
             Privacy::OwnerOnly,
             0o644,
         );

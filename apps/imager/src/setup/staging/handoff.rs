@@ -47,8 +47,9 @@ pub struct Handoff {
 
 /// Keys of the installer's secret-free media profile
 /// (`InstallProfile::to_media_profile_json`).
-const PROFILE_KEYS: [&str; 10] = [
+const PROFILE_KEYS: [&str; 11] = [
     "schema",
+    "purpose",
     "hostname",
     "username",
     "full_name",
@@ -73,6 +74,9 @@ pub fn validate_profile(
         }
         let ok = match key.as_str() {
             "schema" => value.as_u64() == Some(1),
+            "purpose" => value
+                .as_str()
+                .is_some_and(install_profile_model::valid_purpose),
             "device_label" => value.as_str().is_some_and(|label| {
                 label.is_empty()
                     || (!label.trim().is_empty()

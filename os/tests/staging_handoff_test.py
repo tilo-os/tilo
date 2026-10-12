@@ -331,6 +331,17 @@ class InternalModeGuardTests(unittest.TestCase):
             self.assertRefused(self.fixture.check(**{'root-size-bytes': shorter}),
                                'end exactly where the staged installer begins')
 
+    def test_purpose_is_strict_and_preserved(self):
+        document = handoff_document()
+        document['profile']['purpose'] = 'server'
+        self.fixture.set_handoff(document)
+        result = self.fixture.check()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        for purpose in ('other-os', None, True, 'server\n'):
+            document['profile']['purpose'] = purpose
+            self.fixture.set_handoff(document)
+            self.assertRefused(self.fixture.check(), 'purpose')
+
     def test_device_label_strict_utf8_bound_and_legacy_omission(self):
         document = handoff_document()
         document['profile']['device_label'] = 'Quinten’s computer'

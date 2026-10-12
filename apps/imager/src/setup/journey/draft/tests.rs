@@ -13,6 +13,7 @@ fn choices() -> PublicChoices {
         browser_domains: [true, false],
         excluded_flatpak_apps: Default::default(),
         device_label: "My laptop".into(),
+        purpose: install_profile_model::default_purpose(),
     }
 }
 fn namespace(root: &Path) -> PathBuf {
@@ -47,6 +48,7 @@ fn closed_preparation_reopens_exact_identity_photo_and_public_choices_without_se
     store.acknowledge(&reserved, &prepared, None).unwrap();
     let changed = PublicChoices {
         device_label: "Another device".into(),
+        purpose: install_profile_model::default_purpose(),
         ..choices()
     };
     store.update_choices_for(&prepared, &changed).unwrap();
@@ -349,6 +351,7 @@ fn queued_public_choice_update_is_bound_to_its_original_retained_preparation() {
     store.retire().unwrap();
     let newest_choices = PublicChoices {
         device_label: "Current device".into(),
+        purpose: install_profile_model::default_purpose(),
         ..choices()
     };
     let second = store.reserve(&newest_choices, IdentityKind::New).unwrap();
@@ -365,6 +368,7 @@ fn queued_public_choice_update_is_bound_to_its_original_retained_preparation() {
     let before = fs::read(store.root.join(INDEX)).unwrap();
     let stale = PublicChoices {
         device_label: "Old queued choice".into(),
+        purpose: install_profile_model::default_purpose(),
         ..choices()
     };
     assert!(store.update_choices_for(&old, &stale).is_err());

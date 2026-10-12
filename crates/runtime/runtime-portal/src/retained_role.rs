@@ -38,7 +38,7 @@ fn installed_program(path: &str, parent: &str) -> io::Result<File> {
     }
     Ok(helper)
 }
-/// Opaque root-local role minted from a genuine ExecutingPeer and the one
+/// Opaque root-local role minted from a genuine `ExecutingPeer` and the one
 /// protected installed helper image. No PID, program or UID wire constructor.
 #[cfg(target_os = "linux")]
 pub struct VerifiedHelperPeer {
@@ -98,7 +98,7 @@ impl VerifiedHelperPeer {
     }
 }
 
-/// Opaque root-local role minted from a genuine ExecutingPeer and the one
+/// Opaque root-local role minted from a genuine `ExecutingPeer` and the one
 /// protected installed filesystem daemon image. No PID, program or UID wire constructor.
 #[cfg(target_os = "linux")]
 pub struct VerifiedDaemonPeer {
@@ -257,7 +257,7 @@ mod tests {
         let record = record();
         let bytes = record.encode().unwrap();
         assert_eq!(NativeHistoryVerifierRecord::decode(&bytes).unwrap(), record);
-        let mut padded = bytes.clone();
+        let mut padded = bytes;
         padded.push(b' ');
         assert!(NativeHistoryVerifierRecord::decode(&padded).is_err());
         let mut unknown = serde_json::to_value(&record).unwrap();

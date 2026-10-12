@@ -1,4 +1,4 @@
-//! Private Browser sessions through the existing certified native Read route.
+//! Private Browser sessions through the certified native route: Read or Admin.
 use super::NativeOwnerCommitService;
 use accounts::{AccountId, AccountStore};
 use runtime_collab::{
@@ -25,8 +25,8 @@ impl NativeBrowserServiceSessions {
         Self { owner }
     }
 }
-impl BrowserServiceSessionServices for NativeBrowserServiceSessions {
-    fn authorize(&self, context: &Context) -> Result<(), String> {
+impl NativeBrowserServiceSessions {
+    fn authorize_selection(&self, context: &Context, admin: bool) -> Result<(), String> {
         context.revalidate()?;
         let person = collab_types::caps::Principal::person_from_key(
             collab_types::crypto::Ed25519PublicKey::from_bytes(context.identity_public_key()),
@@ -48,6 +48,10 @@ impl BrowserServiceSessionServices for NativeBrowserServiceSessions {
                 return Err("Selected Browser certificate changed".into());
             }
             let now = std::time::SystemTime::now();
+            if admin {
+                view.peer()
+                    .check_workspace_administration(certificate.device_public_key, now)?;
+            }
             let member = view
                 .peer()
                 .permissions(certificate.device_public_key, now)?;
@@ -58,17 +62,18 @@ impl BrowserServiceSessionServices for NativeBrowserServiceSessions {
             let application = tilo_action_policy::Authority::person(member.policy.party_of(
                 tilo_action_policy::Subject::App(context.app_id().to_owned()),
             ));
-            if !member.allows(&node, tilo_action_policy::ActionKind::Read, now)
+            let kind = if admin {
+                tilo_action_policy::ActionKind::Outside
+            } else {
+                tilo_action_policy::ActionKind::Read
+            };
+            if !member.allows(&node, kind, now)
                 || application
-                    .decide(
-                        &node,
-                        tilo_action_policy::ActionKind::Read,
-                        &tilo_action_policy::Context::at_time(now),
-                    )
+                    .decide(&node, kind, &tilo_action_policy::Context::at_time(now))
                     .answer
                     != tilo_action_policy::Answer::Allow
             {
-                return Err("Selected Browser Read permission changed".into());
+                return Err("Selected Browser permission changed".into());
             }
             Ok(())
         })?;
@@ -79,14 +84,22 @@ impl BrowserServiceSessionServices for NativeBrowserServiceSessions {
         }
         context.revalidate()
     }
+}
+impl BrowserServiceSessionServices for NativeBrowserServiceSessions {
+    fn authorize(&self, context: &Context) -> Result<(), String> {
+        self.authorize_selection(context, false)
+    }
+    fn authorize_command(&self, context: &Context, command: &Command) -> Result<(), String> {
+        self.authorize_selection(context, matches!(command, Command::Forget { .. }))
+    }
     fn command(&self, context: &Context, command: Command) -> Result<Reply, String> {
-        self.authorize(context)?;
+        self.authorize_command(context, &command)?;
         if !command.valid() {
             return Err("Invalid website session request".into());
         }
         let root = accounts::config_root().ok_or(UNAVAILABLE)?;
-        let reply = resolve(&root, context.identity_public_key(), command)?;
-        self.authorize(context)?;
+        let reply = resolve(&root, context.identity_public_key(), command.clone())?;
+        self.authorize_command(context, &command)?;
         Ok(reply)
     }
     fn disconnect(&self, _peer_id: u64) {}
@@ -105,6 +118,12 @@ fn resolve(root: &Path, identity: [u8; 32], command: Command) -> Result<Reply, S
         > runtime_collab::MAX_BROWSER_SERVICE_SESSIONS
     {
         return Err("Too many selected website sessions".into());
+    }
+    if let Command::Forget { id, setup_binding } = command {
+        custodian
+            .forget_service_session(&AccountId::from(id.clone()), identity, &setup_binding)
+            .map_err(|_| UNAVAILABLE)?;
+        return Ok(Reply::Forgotten { id, setup_binding });
     }
     let reply = match command {
         Command::List => {
@@ -146,6 +165,7 @@ fn resolve(root: &Path, identity: [u8; 32], command: Command) -> Result<Reply, S
                 .map_err(|_| UNAVAILABLE)?;
             Reply::Resolved { session }
         }
+        Command::Forget { .. } => unreachable!("Forget handled before read snapshot validation"),
     };
     if read_store(root).map_err(|_| UNAVAILABLE)? != store {
         return Err("Selected website sessions changed".into());
@@ -311,6 +331,38 @@ mod tests {
             std::fs::read(root.path().join("accounts/vault/vault.enc")).unwrap(),
             before
         );
+        let forget = Command::Forget {
+            id: id.as_str().into(),
+            setup_binding: "prepared-operation".into(),
+        };
+        assert!(resolve(root.path(), [8; 32], forget.clone()).is_err());
+        assert_eq!(
+            std::fs::read(root.path().join("accounts/vault/vault.enc")).unwrap(),
+            before
+        );
+        let forgotten = resolve(root.path(), [7; 32], forget.clone()).unwrap();
+        assert!(forgotten.matches(&forget));
+        assert!(AccountStore::load_in(root.path()).get(&id).is_none());
+        assert!(
+            resolve(
+                root.path(),
+                [7; 32],
+                Command::Resolve {
+                    id: id.as_str().into(),
+                    setup_binding: "prepared-operation".into(),
+                }
+            )
+            .is_err()
+        );
+        assert!(
+            resolve(root.path(), [7; 32], forget.clone())
+                .unwrap()
+                .matches(&forget)
+        );
+        let Reply::List { sessions } = resolve(root.path(), [7; 32], Command::List).unwrap() else {
+            panic!("Expected list after revocation");
+        };
+        assert!(sessions.is_empty());
     }
 
     #[test]

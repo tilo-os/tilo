@@ -7831,12 +7831,16 @@ fn delegate_browser_service_session_command(
         .browser_service_sessions
         .as_ref()
         .ok_or_else(refused)?;
-    service.authorize(context).map_err(|_| refused())?;
+    service
+        .authorize_command(context, &command)
+        .map_err(|_| refused())?;
     let reply = service
         .command(context, command.clone())
         .map_err(|_| refused())?;
     context.revalidate().map_err(|_| refused())?;
-    service.authorize(context).map_err(|_| refused())?;
+    service
+        .authorize_command(context, &command)
+        .map_err(|_| refused())?;
     if !reply.matches(&command) {
         return Err(refused());
     }

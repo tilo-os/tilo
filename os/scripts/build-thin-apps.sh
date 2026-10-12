@@ -17,8 +17,8 @@ case "$BUILD_PHASE" in all|build|verify) ;; *) echo "invalid thin build phase" >
 case "$BUILD_ROLE" in apps|home-capture) ;; *) echo "invalid thin build role" >&2; exit 1 ;; esac
 if [ "$BUILD_ROLE" = home-capture ]; then
     case "$BUILD_PACKAGES" in
-        " imager "|" imager file-explorer word-processor ") ;;
-        *) echo "home capture selects the Imager worker and optional ordinary Files/Writer" >&2; exit 1 ;;
+        " imager "|" imager file-explorer word-processor "|" imager file-explorer word-processor browser ") ;;
+        *) echo "home capture selects the Imager worker and optional ordinary Files/Writer/Browser" >&2; exit 1 ;;
     esac
 fi
 TARGET_DIR="${TARGET_DIR:-${CARGO_TARGET_DIR:-$REPO/target}}"

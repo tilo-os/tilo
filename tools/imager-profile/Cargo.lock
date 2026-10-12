@@ -162,6 +162,9 @@ dependencies = [
 [[package]]
 name = "install-profile-model"
 version = "0.1.0"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "itoa"

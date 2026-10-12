@@ -12,9 +12,14 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <openssl/evp.h>
 #include "retained-helper-facts.h"
-static void refuse(void) { _exit(121); }
+static void refuse_at(int line) {
+  dprintf(STDERR_FILENO,"owned retained bridge refused at line %d (errno %d)\n",line,errno);
+  _exit(121);
+}
+#define refuse() refuse_at(__LINE__)
 static void directory(int fd, uid_t owner) {
   struct stat s;
   if (fstat(fd,&s) || !S_ISDIR(s.st_mode) || s.st_uid!=owner || (s.st_mode&0777)!=0700) refuse();
@@ -71,7 +76,7 @@ int main(int argc,char **argv) {
   if(setgroups(0,NULL) || setgid(0) || setuid(0) || getuid()!=0 || geteuid()!=0 || getgid()!=0 || getegid()!=0) refuse();
   if(prctl(PR_SET_PDEATHSIG,SIGKILL) || getppid()!=parent) refuse();
   /* This is fixed from the actual authenticated kernel caller above, never argv. */
-  if(clearenv() || setenv("PKEXEC_UID","1000",1)) refuse();
+  if(clearenv() || setenv("PKEXEC_UID","1000",1) || setenv("TILO_NATIVE_CAPTURE_DIAGNOSTICS","1",1)) refuse();
   if(fd!=3) { if(dup3(fd,3,O_CLOEXEC)<0) refuse(); close(fd); }
   if(syscall(SYS_close_range,4u,~0u,0)) refuse();
   char *args[]={HELPER_PROGRAM,"--tilo-home-capture-helper",argv[3],NULL};

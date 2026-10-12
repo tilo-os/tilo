@@ -19,24 +19,50 @@ pub fn encode(target: &[u8]) -> io::Result<[u8; SIZE]> {
     {
         return Err(io::ErrorKind::InvalidInput.into());
     }
+    let len = u16::try_from(target.len()).map_err(|_| io::ErrorKind::InvalidInput)?;
+    let end = 8usize
+        .checked_add(target.len())
+        .ok_or(io::ErrorKind::InvalidInput)?;
     let mut out = [0; SIZE];
-    out[..4].copy_from_slice(&MAGIC);
-    out[4..6].copy_from_slice(&(target.len() as u16).to_le_bytes());
-    out[8..8 + target.len()].copy_from_slice(target);
+    out.get_mut(..4)
+        .ok_or(io::ErrorKind::InvalidInput)?
+        .copy_from_slice(&MAGIC);
+    out.get_mut(4..6)
+        .ok_or(io::ErrorKind::InvalidInput)?
+        .copy_from_slice(&len.to_le_bytes());
+    out.get_mut(8..end)
+        .ok_or(io::ErrorKind::InvalidInput)?
+        .copy_from_slice(target);
     Ok(out)
 }
 /// Rejects unknown versions, extensions, padding and escaped components.
 /// # Errors
-/// Returns InvalidData or InvalidInput for any noncanonical marker.
+/// Returns `InvalidData` or `InvalidInput` for any noncanonical marker.
 pub fn decode(bytes: &[u8]) -> io::Result<&[u8]> {
-    if bytes.len() != SIZE || bytes[..4] != MAGIC || bytes[6..8] != [0; 2] {
+    if bytes.len() != SIZE
+        || bytes.get(..4) != Some(MAGIC.as_slice())
+        || bytes.get(6..8) != Some([0; 2].as_slice())
+    {
         return Err(io::ErrorKind::InvalidData.into());
     }
-    let len = u16::from_le_bytes([bytes[4], bytes[5]]) as usize;
-    if len == 0 || len > 255 || bytes[8 + len..].iter().any(|v| *v != 0) {
+    let length_bytes = bytes
+        .get(4..6)
+        .ok_or(io::ErrorKind::InvalidData)?
+        .try_into()
+        .map_err(|_| io::ErrorKind::InvalidData)?;
+    let len = usize::from(u16::from_le_bytes(length_bytes));
+    let end = 8usize.checked_add(len).ok_or(io::ErrorKind::InvalidData)?;
+    if len == 0
+        || len > 255
+        || bytes
+            .get(end..)
+            .ok_or(io::ErrorKind::InvalidData)?
+            .iter()
+            .any(|v| *v != 0)
+    {
         return Err(io::ErrorKind::InvalidData.into());
     }
-    let target = &bytes[8..8 + len];
+    let target = bytes.get(8..end).ok_or(io::ErrorKind::InvalidData)?;
     if encode(target)?.as_slice() != bytes {
         return Err(io::ErrorKind::InvalidData.into());
     }
@@ -48,8 +74,13 @@ pub fn decode(bytes: &[u8]) -> io::Result<&[u8]> {
 pub(crate) fn arm(file: &File, target: &[u8]) -> io::Result<()> {
     let mut magic = [0u8; 4];
     // SAFETY: restricted fixed-size output points to four writable live bytes.
-    let result =
-        unsafe { libc::ioctl(file.as_raw_fd(), PROBE as libc::c_ulong, magic.as_mut_ptr()) };
+    let result = unsafe {
+        libc::ioctl(
+            file.as_raw_fd(),
+            libc::c_ulong::from(PROBE),
+            magic.as_mut_ptr(),
+        )
+    };
     if result < 0 {
         let error = io::Error::last_os_error();
         if matches!(error.raw_os_error(), Some(libc::ENOTTY | libc::ENOSYS)) {
@@ -62,7 +93,7 @@ pub(crate) fn arm(file: &File, target: &[u8]) -> io::Result<()> {
     }
     let input = encode(target)?;
     // SAFETY: restricted command's encoded size is exactly SIZE live input bytes.
-    let result = unsafe { libc::ioctl(file.as_raw_fd(), ARM as libc::c_ulong, input.as_ptr()) };
+    let result = unsafe { libc::ioctl(file.as_raw_fd(), libc::c_ulong::from(ARM), input.as_ptr()) };
     if result < 0 {
         return Err(io::Error::last_os_error());
     }
@@ -87,6 +118,37 @@ mod tests {
             assert!(encode(target).is_err());
         }
     }
+    #[test]
+    fn marker_layout_and_component_limits_match_protocol() {
+        let mut expected = [0u8; SIZE];
+        expected[..8].copy_from_slice(b"TAS1\x02\x00\x00\x00");
+        expected[8..10].copy_from_slice(&[0xff, b'x']);
+        assert_eq!(encode(&[0xff, b'x']).unwrap(), expected);
+
+        let target = [0xff; 255];
+        let encoded = encode(&target).unwrap();
+        assert_eq!(&encoded[..8], b"TAS1\xff\x00\x00\x00");
+        assert_eq!(encoded[263], 0);
+        assert_eq!(decode(&encoded).unwrap(), target);
+        assert!(encode(&[b'x'; 256]).is_err());
+        assert!(encode(b".").is_err());
+
+        for length in [0u16, 256, u16::MAX] {
+            let mut changed = encoded;
+            changed[4..6].copy_from_slice(&length.to_le_bytes());
+            assert_eq!(
+                decode(&changed).unwrap_err().kind(),
+                io::ErrorKind::InvalidData
+            );
+        }
+        for length in 0..SIZE {
+            assert!(decode(&encoded[..length]).is_err());
+        }
+        let mut extended = encoded.to_vec();
+        extended.push(0);
+        assert!(decode(&extended).is_err());
+    }
+
     #[test]
     fn ordinary_native_stage_unsupported_probe_preserves_existing_path() {
         let directory = tempfile::tempdir().unwrap();

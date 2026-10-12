@@ -12,6 +12,7 @@ pub const MAX_BROWSER_SERVICE_SESSIONS: usize = 128;
 pub enum BrowserServiceSessionCommand {
     List,
     Resolve { id: String, setup_binding: String },
+    Forget { id: String, setup_binding: String },
 }
 impl<'de> Deserialize<'de> for BrowserServiceSessionCommand {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
@@ -23,10 +24,12 @@ impl<'de> Deserialize<'de> for BrowserServiceSessionCommand {
         enum Wire {
             List {},
             Resolve { id: String, setup_binding: String },
+            Forget { id: String, setup_binding: String },
         }
         Ok(match Wire::deserialize(deserializer)? {
             Wire::List {} => Self::List,
             Wire::Resolve { id, setup_binding } => Self::Resolve { id, setup_binding },
+            Wire::Forget { id, setup_binding } => Self::Forget { id, setup_binding },
         })
     }
 }
@@ -46,6 +49,10 @@ pub enum BrowserServiceSessionReply {
     Resolved {
         session: SessionCookies,
     },
+    Forgotten {
+        id: String,
+        setup_binding: String,
+    },
 }
 impl std::fmt::Debug for BrowserServiceSessionReply {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -64,6 +71,10 @@ impl BrowserServiceSessionCommand {
         match self {
             Self::List => true,
             Self::Resolve {
+                id: value,
+                setup_binding,
+            }
+            | Self::Forget {
                 id: value,
                 setup_binding,
             } => id(value) && binding(setup_binding),
@@ -104,6 +115,10 @@ impl BrowserServiceSessionReply {
                         .all(|s| id(&s.id) && binding(&s.setup_binding) && ids.insert(&s.id))
             }
             Self::Resolved { session } => session.validate().is_ok(),
+            Self::Forgotten {
+                id: value,
+                setup_binding,
+            } => id(value) && binding(setup_binding),
         }
     }
     pub fn matches(&self, command: &BrowserServiceSessionCommand) -> bool {
@@ -115,6 +130,13 @@ impl BrowserServiceSessionReply {
             ) => {
                 self.valid() && &session.session_id == id && &session.setup_binding == setup_binding
             }
+            (
+                Self::Forgotten {
+                    id: forgotten,
+                    setup_binding: binding,
+                },
+                BrowserServiceSessionCommand::Forget { id, setup_binding },
+            ) => self.valid() && forgotten == id && binding == setup_binding,
             _ => false,
         }
     }
@@ -169,6 +191,45 @@ impl crate::ChannelHandle {
 }
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn forget_wire_requires_exact_selection_and_reply_binding() {
+        let command = super::BrowserServiceSessionCommand::Forget {
+            id: "selected-slack".into(),
+            setup_binding: "operation".into(),
+        };
+        assert_eq!(
+            super::BrowserServiceSessionCommand::decode(&command.encode().unwrap()).unwrap(),
+            command
+        );
+        let reply = super::BrowserServiceSessionReply::Forgotten {
+            id: "selected-slack".into(),
+            setup_binding: "operation".into(),
+        };
+        assert!(
+            super::BrowserServiceSessionReply::decode(&reply.encode().unwrap())
+                .unwrap()
+                .matches(&command)
+        );
+        assert!(
+            !reply.matches(&super::BrowserServiceSessionCommand::Resolve {
+                id: "selected-slack".into(),
+                setup_binding: "operation".into(),
+            })
+        );
+        assert!(
+            !reply.matches(&super::BrowserServiceSessionCommand::Forget {
+                id: "selected-slack".into(),
+                setup_binding: "foreign".into(),
+            })
+        );
+        for bytes in [
+            br#"{"kind":"forget","id":"selected-slack","setup_binding":"operation","person":"foreign"}"#.as_slice(),
+            br#"{"kind":"forget","id":"selected-slack","setup_binding":""}"#.as_slice(),
+            br#"{"kind":"forget","id":"../foreign","setup_binding":"operation"}"#.as_slice(),
+        ] {
+            assert!(super::BrowserServiceSessionCommand::decode(bytes).is_err());
+        }
+    }
     use super::*;
     #[test]
     fn rejects_identity_injection_and_redacts_malformed_credentials() {

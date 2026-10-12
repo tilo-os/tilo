@@ -1198,7 +1198,11 @@ FROM ${BASE_REF} AS component-files
 ARG SOURCE_DATE_EPOCH=0
 COPY os/components.toml os/scripts/install-components.py /tilo-components/
 COPY os/scripts/verify-account-consumer-capability.py \
-    os/scripts/service-consumer-capability.py /tilo-components/scripts/
+    os/scripts/service-consumer-capability.py \
+    os/scripts/verify-home-consumer-capability.py \
+    os/scripts/verify-applications-consumer-capability.py \
+    os/scripts/installed-data-consumer.py \
+    os/scripts/data-consumer-catalog-facts.py /tilo-components/scripts/
 COPY os/usr/libexec/tilo-firstboot-home-seeds.py \
     os/usr/libexec/tilo-installer-prepared-setup-extract.py \
     os/usr/libexec/tilo-session os/usr/libexec/tilo-image-trust-staged \
@@ -3124,7 +3128,9 @@ RUN chmod 0755 /usr/bin/tilo-relay /usr/bin/tilo-relay-admin /usr/bin/tilo-enrol
     # Observe the installed helper and exact signed SDK through its own loader.
     # Optional service-session artifacts absent means no service_sessions proof.
     && /usr/libexec/tilo-verify-account-consumer-capability \
-    && /usr/libexec/tilo-verify-account-consumer-capability --check >/dev/null
+    && /usr/libexec/tilo-verify-account-consumer-capability --check >/dev/null \
+    && /usr/libexec/tilo-verify-home-consumer-capability \
+    && /usr/libexec/tilo-verify-home-consumer-capability --check >/dev/null
 
 # Validate.
 #

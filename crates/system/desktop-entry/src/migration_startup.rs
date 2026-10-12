@@ -19,8 +19,10 @@ pub const REQUIRED_NAME: &str = "migration-startup-required";
 pub const RECORD_NAME: &str = "migration-startup.json";
 pub const REQUIRED_PATH: &str = ".config/tilo/migration-startup-required";
 pub const RECORD_PATH: &str = ".config/tilo/migration-startup.json";
-const MAX_RECORD_BYTES: u64 = 4 * 1024 * 1024;
-const MAX_ENTRY_BYTES: u64 = 1024 * 1024;
+mod native;
+
+const MAX_RECORD_BYTES: usize = 4 * 1024 * 1024;
+const MAX_ENTRY_BYTES: usize = 1024 * 1024;
 const MAX_ENTRIES: usize = 4096;
 
 /// Durable marker binding the required policy to one migration operation.
@@ -48,6 +50,10 @@ pub struct RecordBuilder {
     paths: BTreeSet<Vec<u8>>,
 }
 impl RecordBuilder {
+    /// Start a bounded policy record for one migration operation.
+    ///
+    /// # Errors
+    /// Returns an error for an invalid operation or failed serialization.
     pub fn new(operation: String) -> io::Result<Self> {
         if !valid_operation(&operation) {
             return Err(invalid("invalid migration startup operation"));
@@ -64,11 +70,15 @@ impl RecordBuilder {
             paths: BTreeSet::new(),
         })
     }
+    /// Add an imported identity within the consumer's count and byte limits.
+    ///
+    /// # Errors
+    /// Refuses duplicate paths, oversized entries or records, and serialization errors.
     pub fn push(&mut self, entry: Entry) -> io::Result<()> {
         if self.record.entries.len() >= MAX_ENTRIES {
             return Err(invalid("migration startup entries exceed consumer policy"));
         }
-        if entry.relative.len() > MAX_ENTRY_BYTES as usize {
+        if entry.relative.len() > MAX_ENTRY_BYTES {
             return Err(invalid("migration startup path exceeds bounds"));
         }
         let mut encoded = EncodedSize(0);
@@ -80,7 +90,7 @@ impl RecordBuilder {
         let bytes = self
             .bytes
             .checked_add(additional)
-            .filter(|n| *n <= MAX_RECORD_BYTES as usize)
+            .filter(|n| *n <= MAX_RECORD_BYTES)
             .ok_or_else(|| invalid("migration startup record exceeds consumer policy"))?;
         if !self.paths.insert(entry.relative.clone()) {
             return Err(invalid("duplicate imported autostart path"));
@@ -92,6 +102,10 @@ impl RecordBuilder {
     pub fn is_empty(&self) -> bool {
         self.record.entries.is_empty()
     }
+    /// Validate the collected imported identities.
+    ///
+    /// # Errors
+    /// Refuses malformed paths, duplicate entries, or an invalid operation or schema.
     pub fn finish(self) -> io::Result<Record> {
         self.record.validate()?;
         Ok(self.record)
@@ -104,7 +118,7 @@ impl Write for EncodedSize {
         self.0 = self
             .0
             .checked_add(bytes.len())
-            .filter(|n| *n <= MAX_RECORD_BYTES as usize)
+            .filter(|n| *n <= MAX_RECORD_BYTES)
             .ok_or_else(|| invalid("migration startup record exceeds consumer policy"))?;
         Ok(bytes.len())
     }
@@ -179,6 +193,10 @@ fn directory(parent: &File, name: &str) -> io::Result<File> {
 
 impl Entry {
     /// Capture one native immediate autostart name without following any links.
+    ///
+    /// # Errors
+    /// Refuses unsafe traversal, unsupported types, oversized content, or entries
+    /// that change during capture; also propagates filesystem errors.
     pub fn capture(root: &File, relative: &Path) -> io::Result<Option<Self>> {
         if !entry_path(relative) && !boundary_path(relative) {
             return Ok(None);
@@ -216,25 +234,7 @@ impl Entry {
             return Ok(None);
         }
         let digest = if metadata.file_type().is_symlink() {
-            // Empty-path readlinkat reads the pinned link, even if its name changes.
-            let mut bytes = vec![0u8; MAX_ENTRY_BYTES as usize + 1];
-            // SAFETY: the buffer is writable and the empty C string is terminated.
-            let count = unsafe {
-                libc::readlinkat(
-                    pin.as_raw_fd(),
-                    c"".as_ptr(),
-                    bytes.as_mut_ptr().cast(),
-                    bytes.len(),
-                )
-            };
-            if count < 0 {
-                return Err(io::Error::last_os_error());
-            }
-            let count = usize::try_from(count).map_err(|_| invalid("invalid link length"))?;
-            if count > MAX_ENTRY_BYTES as usize {
-                return Err(invalid("autostart link exceeds limit"));
-            }
-            bytes.truncate(count);
+            let bytes = native::read_pinned_link(&pin, MAX_ENTRY_BYTES)?;
             *blake3::hash(&bytes).as_bytes()
         } else if metadata.is_file() {
             let file = open_at(parent, Path::new(name), libc::O_RDONLY | libc::O_NONBLOCK)?;
@@ -278,8 +278,8 @@ impl Record {
         let mut paths = BTreeSet::new();
         for entry in &self.entries {
             let path = Path::new(std::ffi::OsStr::from_bytes(&entry.relative));
-            if (!entry_path(path)
-                && !(boundary_path(path) && entry.mode & libc::S_IFMT == libc::S_IFLNK))
+            if !(entry_path(path)
+                || (boundary_path(path) && entry.mode & libc::S_IFMT == libc::S_IFLNK))
                 || !paths.insert(&entry.relative)
             {
                 return Err(invalid("invalid or duplicate imported autostart path"));
@@ -290,6 +290,10 @@ impl Record {
 
     /// Refuse exactly a recorded imported entry; identity changes fail closed.
     /// Absolute names must lie under the pinned home directory.
+    ///
+    /// # Errors
+    /// Refuses an invalid record or a protected entry whose identity changed or
+    /// disappeared, and propagates filesystem errors while checking it.
     pub fn blocks(&self, root: &File, path: &Path) -> io::Result<bool> {
         self.validate()?;
         let home;
@@ -319,10 +323,14 @@ impl Record {
     }
 }
 
-fn bounded(file: File, limit: u64) -> io::Result<Vec<u8>> {
+fn bounded(file: File, limit: usize) -> io::Result<Vec<u8>> {
     let mut bytes = Vec::new();
-    file.take(limit + 1).read_to_end(&mut bytes)?;
-    if bytes.len() as u64 > limit {
+    let read_limit = limit
+        .checked_add(1)
+        .and_then(|value| u64::try_from(value).ok())
+        .ok_or_else(|| invalid("migration startup read limit overflow"))?;
+    file.take(read_limit).read_to_end(&mut bytes)?;
+    if bytes.len() > limit {
         return Err(invalid("migration startup data exceeds limit"));
     }
     Ok(bytes)
@@ -396,11 +404,19 @@ fn read_root(root: &File) -> io::Result<Option<Record>> {
 }
 
 /// Read the canonical target-user policy. A required policy must be complete.
+///
+/// # Errors
+/// Refuses incomplete, malformed, oversized, or insecure policy files, operation
+/// mismatches, and unsafe home traversal; propagates filesystem errors.
 pub fn read(home: &Path) -> io::Result<Option<Record>> {
     read_root(&home_file(home)?)
 }
 
 /// Return permitted input names; a required policy error refuses the whole set.
+///
+/// # Errors
+/// Returns an error if the required policy cannot be read securely or any
+/// protected identity changed or disappeared, even if absent from the input.
 pub fn filter(home: &Path, paths: &[PathBuf]) -> io::Result<BTreeSet<PathBuf>> {
     let root = home_file(home)?;
     let Some(record) = read_root(&root)? else {

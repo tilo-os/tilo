@@ -34,6 +34,11 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         other => return Err(format!("unsupported filesystem: {other}").into()),
     };
     let profile = InstallProfile {
+        purpose: if args.iter().any(|arg| arg == "--purpose") {
+            value(args, "--purpose")?
+        } else {
+            install_profile_model::default_purpose()
+        },
         hostname: value(args, "--hostname")?,
         user: crate::model::UserAccount {
             full_name: value(args, "--full-name")?,

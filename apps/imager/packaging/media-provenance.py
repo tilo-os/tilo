@@ -7,6 +7,7 @@ The release catalog/signatures authenticate the packaged media independently.
 
 import argparse
 import hashlib
+import importlib.util
 import json
 from pathlib import Path
 import re
@@ -25,16 +26,43 @@ from hardware_profile import (  # noqa: E402
 FIELDS = {"schema_version", "source_image_id", "architecture", "hardware_profile",
           "profile_json", "profile_sha256", "definition", "qcow2_sha256", "qcow2_size"}
 CONTAINER_READ = """
-import json, sys
+import json, os, subprocess, sys
 from pathlib import Path
 sys.path.insert(0, '/run/tilo-media-validation')
 from hardware_profile import read_profile, read_definition, trusted_path, PROFILE_PATH, DEFINITION_PATH
 profile = read_profile(Path('/'))
+exporter = Path('/usr/libexec/tilo-data-consumer-catalog-facts')
+# Legacy images may lack this capability; an installed exporter must succeed.
+facts = None
+if os.path.lexists(exporter):
+    trusted_path(Path('/'), exporter.relative_to('/'), regular=True)
+    result = subprocess.run([str(exporter)], check=True, capture_output=True, timeout=140,
+                            env={'PATH':'/usr/bin:/bin','LANG':'C','LC_ALL':'C'})
+    if len(result.stdout) > 16384 or len(result.stderr) > 4096:
+        raise ValueError('installed consumer facts exceed bound')
+    facts = json.loads(result.stdout)
 print(json.dumps({
+    'data_consumers': facts,
     'profile_json': (Path('/') / PROFILE_PATH).read_bytes().decode('utf-8') if profile is not None else None,
     'definition': read_definition(trusted_path(Path('/'), DEFINITION_PATH, regular=True)) if profile is not None else None,
 }))
 """
+
+
+def validate_consumers(value):
+    spec = importlib.util.spec_from_file_location('installed_consumers', REPO / 'os/scripts/installed-data-consumer.py')
+    consumer = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(consumer)
+    if not isinstance(value, dict) or set(value) not in ({'home_archive'}, {'home_archive', 'applications', 'original_source'}):
+        raise ValueError('unknown or incomplete installed consumer facts')
+    consumer.shape(value['home_archive'], consumer.HOME_KEYS,
+                   {'schema': 1, 'archive_protocol': 2, 'seed_protocol': 1})
+    if 'applications' in value:
+        consumer.shape(value['applications'], consumer.APPS_KEYS, {'schema': 1, 'subset_protocol': 2})
+        original = value['original_source']
+        if not isinstance(original, dict) or type(original.get('original_source_protocol')) is not int or original['original_source_protocol'] != 6:
+            raise ValueError('application facts lack the qualified source6 consumer')
+    return value
 
 
 def digest(path):
@@ -97,6 +125,8 @@ def create(image, qcow):
         "definition": snapshot["definition"],
         "qcow2_sha256": digest(qcow), "qcow2_size": qcow.stat().st_size,
     }
+    if snapshot.get("data_consumers") is not None:
+        record["data_consumers"] = validate_consumers(snapshot["data_consumers"])
     sidecar = Path(str(qcow) + ".hardware.json")
     if sidecar.is_symlink():
         raise ValueError("media provenance destination must not be a symlink")
@@ -119,8 +149,10 @@ def validate(qcow, architecture, name):
     if not sidecar.is_file() or sidecar.stat().st_size > 131072:
         raise ValueError("board media requires a bounded regular .hardware.json provenance sidecar")
     record = json.loads(sidecar.read_text())
-    if not isinstance(record, dict) or set(record) != FIELDS or type(record["schema_version"]) is not int or record["schema_version"] != 1:
+    if not isinstance(record, dict) or set(record) not in (FIELDS, FIELDS | {"data_consumers"}) or type(record["schema_version"]) is not int or record["schema_version"] != 1:
         raise ValueError("invalid media provenance schema")
+    if 'data_consumers' in record:
+        validate_consumers(record['data_consumers'])
     actual_name, profile_hash, origin = snapshot_profile(record, architecture)
     if record["architecture"] != architecture or record["hardware_profile"] != name or actual_name != name:
         raise ValueError("packaging profile does not match the final installer image")
@@ -146,10 +178,19 @@ def main():
     check.add_argument("qcow", type=Path)
     check.add_argument("architecture")
     check.add_argument("profile")
+    facts = sub.add_parser("consumer-facts")
+    facts.add_argument("qcow", type=Path)
+    facts.add_argument("architecture")
+    facts.add_argument("profile")
     args = parser.parse_args()
     try:
         if args.command == "create":
             print(create(args.image, args.qcow))
+        elif args.command == "consumer-facts":
+            validate(args.qcow, args.architecture, args.profile)
+            sidecar = Path(str(args.qcow) + ".hardware.json")
+            record = json.loads(sidecar.read_text()) if sidecar.exists() else {}
+            print(json.dumps(record.get("data_consumers", {})))
         else:
             print(json.dumps(validate(args.qcow, args.architecture, args.profile)))
     except (OSError, ValueError, TypeError, KeyError, subprocess.CalledProcessError) as error:

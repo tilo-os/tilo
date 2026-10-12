@@ -134,7 +134,8 @@ fn executing_peer_pins_child_not_socket_launcher_and_rejects_reused_launch_start
         "owned parent pidfd: {}",
         io::Error::last_os_error()
     );
-    let parent_fd = unsafe { OwnedFd::from_raw_fd(parent_fd as i32) };
+    let parent_fd = i32::try_from(parent_fd).expect("kernel pidfd fits a file descriptor");
+    let parent_fd = unsafe { OwnedFd::from_raw_fd(parent_fd) };
     assert!(
         peer.matches_transferred_pidfd(parent_fd.as_fd()).is_err(),
         "different live kernel task refused"

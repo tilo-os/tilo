@@ -15,6 +15,8 @@ try:
     sys.path.insert(0, str(FIXTURE))
     import service_contract as contract
     import delivery
+    import service_sessions as sessions
+    import service_processes
 finally:
     sys.path[:] = saved_path
 
@@ -55,6 +57,58 @@ class ServiceCandidateBridge(unittest.TestCase):
         encoded = json.dumps(value).encode()
         self.assertLessEqual(len(encoded), 16 * 1024)
         self.assertEqual(contract.decode(encoded), value)
+
+    def test_native_scope_refuses_ordinary_root_namespace_before_artifact_work(self):
+        import os
+        original_open = os.open
+        def namespace_only(path, flags, *args):
+            self.assertEqual(path, '/owned/initial-pidns')
+            return original_open('/proc/self/ns/pid', flags & ~os.O_NOFOLLOW)
+        with patch.object(contract.os, 'getuid', return_value=0), \
+             patch.object(contract.os, 'geteuid', return_value=0), \
+             patch.object(contract.os, 'open', side_effect=namespace_only), \
+             patch.object(contract, 'admit_request') as inspect, \
+             patch.object(contract, 'bounded_command') as execute:
+            with self.assertRaisesRegex(RuntimeError, 'disposable owned PID namespace'):
+                contract.install_native_scope(request(), 'receiver', Path(delivery.PREPARED), Mock(),
+                    authenticated={'identity_public_key': [1] * 32, 'setup_binding': 'native-person'})
+            inspect.assert_not_called()
+            execute.assert_not_called()
+
+    def test_native_scope_refuses_unprivileged_actor_before_namespace_work(self):
+        with patch.object(contract.os, 'getuid', return_value=1000), \
+             patch.object(contract.os, 'geteuid', return_value=1000), \
+             patch.object(contract.os, 'open') as opened:
+            with self.assertRaisesRegex(RuntimeError, 'owned root'):
+                contract.install_native_scope(request(), 'source', Path('/tmp/imager'), Mock())
+            opened.assert_not_called()
+
+    def test_revocation_rejects_local_cleanup_and_unobserved_backend(self):
+        selected = {'id': 'selected-slack', 'service': 'slack', 'setup_binding': 'native-person'}
+        report = dict(session_id=selected['id'], status='forgotten', custody_revoked=True,
+                      custody_backend_needed=False, local_only=False, engine_shutdown_confirmed=True)
+        self.assertTrue(sessions.revoked(report, selected))
+        for changed in (dict(report, custody_revoked=False), dict(report, local_only=True),
+                        dict(report, engine_shutdown_confirmed=False),
+                        dict(report, custody_backend_needed=True), dict(report, status='local-forgotten'),
+                        dict(report, session_id='different-slack')):
+            with self.assertRaises(RuntimeError):
+                sessions.revoked(changed, selected)
+        self.assertFalse(sessions.revoked(dict(report, status='forgetting', custody_revoked=False), selected))
+
+    def test_profile_removal_is_observed_on_held_directory_not_report_flags(self):
+        import os
+        import tempfile
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / 'selected-slack'
+            path.mkdir()
+            descriptor = os.open(root, os.O_PATH | os.O_DIRECTORY)
+            try:
+                self.assertFalse(service_processes.profile_removed(descriptor, {'id': path.name}))
+                path.rmdir()
+                self.assertTrue(service_processes.profile_removed(descriptor, {'id': path.name}))
+            finally:
+                os.close(descriptor)
 
     def test_candidate_scope_never_contains_consumer_completion(self):
         scope = contract.candidate_scope({'request': request(), 'subjects': {}})

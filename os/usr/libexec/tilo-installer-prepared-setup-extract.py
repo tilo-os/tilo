@@ -102,8 +102,18 @@ def preflight_profile(source_path):
                 if len(data) != before.st_size or snapshot(os.fstat(fd)) != snapshot(before):
                     raise ValueError('installation profile changed')
                 profile = json.loads(data)
-                if not isinstance(profile, dict):
-                    raise ValueError('installation profile is not an object')
+                fields = {'schema', 'purpose', 'hostname', 'username', 'full_name',
+                          'device_label', 'locale', 'keyboard', 'timezone', 'filesystem',
+                          'prepared_setup'}
+                if (not isinstance(profile, dict) or not set(profile) <= fields
+                        or type(profile.get('schema')) is not int or profile['schema'] != 1
+                        or profile.get('purpose', 'computer') not in ('computer', 'server')):
+                    raise ValueError('installation profile envelope is malformed')
+                label = profile.get('device_label', '')
+                if (not isinstance(label, str) or (label and not label.strip())
+                        or len(label.encode('utf-8')) > 64
+                        or any(ord(c) < 32 or 127 <= ord(c) <= 159 for c in label)):
+                    raise ValueError('installation profile device label is malformed')
                 if 'prepared_setup' in profile:
                     receipt = profile['prepared_setup']
                     # A present malformed expectation must not become absence.

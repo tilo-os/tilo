@@ -959,6 +959,20 @@ impl BrowserServiceSessionRequestContext {
 pub trait BrowserServiceSessionServices: Send + Sync {
     /// Recheck current route Read permission and the session's own person.
     fn authorize(&self, context: &BrowserServiceSessionRequestContext) -> Result<(), String>;
+    /// Mutations require a provider's explicit live Admin authorization.
+    fn authorize_command(
+        &self,
+        context: &BrowserServiceSessionRequestContext,
+        command: &runtime_collab::BrowserServiceSessionCommand,
+    ) -> Result<(), String> {
+        if matches!(
+            command,
+            runtime_collab::BrowserServiceSessionCommand::Forget { .. }
+        ) {
+            return Err("Website session Admin authorization unavailable".into());
+        }
+        self.authorize(context)
+    }
     fn command(
         &self,
         context: &BrowserServiceSessionRequestContext,

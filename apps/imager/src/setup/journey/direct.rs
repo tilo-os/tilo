@@ -50,6 +50,7 @@ impl InstallerPreview {
             .take(100)
             .collect();
         profile.device_label.clone_from(&self.journey.device_name);
+        profile.purpose.clone_from(&self.journey.purpose);
         profile.user.password.clear();
         profile.encryption_passphrase.clear();
         profile.prepared_setup = None;

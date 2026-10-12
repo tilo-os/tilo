@@ -334,7 +334,12 @@ impl RootSession {
                             let selected = retained.as_ref().ok_or_else(|| {
                                 failure("This RPC route has no retained source grant")
                             })?;
-                            let input = channel.receive_retained_home()?;
+                            let input = channel.receive_retained_home().map_err(|error| {
+                                io::Error::new(
+                                    error.kind(),
+                                    format!("retained source descriptor: {error}"),
+                                )
+                            })?;
                             let home = selected.home.decode().map_err(io::Error::other)?;
                             Some(
                                 super::Store::system(&selected.plan.operation_id)?
@@ -344,7 +349,13 @@ impl RootSession {
                                         &channel,
                                         &selected.setup_binding,
                                         &selected.identity_public_key,
-                                    )?,
+                                    )
+                                    .map_err(|error| {
+                                        io::Error::new(
+                                            error.kind(),
+                                            format!("retained source registration: {error}"),
+                                        )
+                                    })?,
                             )
                         } else {
                             None

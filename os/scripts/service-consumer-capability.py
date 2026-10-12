@@ -63,6 +63,12 @@ def native_origin_completion(output):
 
 
 def native_qualify(command, env):
+    # The image producer is root, not the Browser user. Exercise CEF as an
+    # unprivileged synthetic actor so its native sandbox remains enabled;
+    # neither a --no-sandbox flag nor root credentials belong in this probe.
+    if os.geteuid() == 0:
+        command = ['/usr/bin/setpriv', '--reuid=65534', '--regid=65534',
+                   '--clear-groups', '--', *command]
     result = subprocess.run(command, env=env, capture_output=True, check=True, timeout=300)
     require(len(result.stdout) <= 4096 and len(result.stderr) <= 4096,
             'native service qualification exceeded output bound')

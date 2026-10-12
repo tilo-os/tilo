@@ -54,7 +54,7 @@ MAX_LBA = 1 << 62
 GUID_RE = re.compile(r'^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$')
 BOOT_ID_RE = re.compile(r'^[0-9A-F]{4}$')
 PROFILE_KEYS = {'schema', 'hostname', 'username', 'full_name', 'locale', 'keyboard',
-                'timezone', 'filesystem', 'prepared_setup', 'device_label'}
+                'timezone', 'filesystem', 'prepared_setup', 'device_label', 'purpose'}
 HANDOFF_KEYS = {'schema', 'operation_id', 'host_os', 'disk_guid', 'disk_size_bytes',
                 'staging_esp', 'staging_root', 'target_extent', 'owned_boot_entry',
                 'original_boot_order', 'profile'}
@@ -305,6 +305,9 @@ def validate_handoff(raw):
         if key == 'schema':
             if type(value) is not int:
                 raise Refusal('handoff profile schema is not an integer')
+        elif key == 'purpose':
+            if value not in ('computer', 'server'):
+                raise Refusal('handoff purpose is malformed')
         elif key == 'device_label':
             if (not isinstance(value, str) or (value and not value.strip())
                     or len(value.encode('utf-8')) > 64
@@ -313,7 +316,7 @@ def validate_handoff(raw):
         elif key == 'prepared_setup':
             if (not isinstance(value, dict) or set(value) != {'schema', 'sealed_bytes', 'ciphertext_sha256'}
                     or type(value['schema']) is not int or value['schema'] != 1
-                    or type(value['sealed_bytes']) is not int or not 48 <= value['sealed_bytes'] <= 40 * 1024 * 1024
+                    or type(value['sealed_bytes']) is not int or not 48 <= value['sealed_bytes'] <= 32 * 1024 * 1024 + 16384
                     or not isinstance(value['ciphertext_sha256'], str)
                     or not re.fullmatch(r'[0-9a-f]{64}', value['ciphertext_sha256'])):
                 raise Refusal('handoff prepared setup expectation is malformed')

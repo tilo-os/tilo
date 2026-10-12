@@ -162,7 +162,9 @@ containerfile="$repo/os/Containerfile"
 # and prepared extraction helpers, the prepared-setup component and the selected
 # runtime version marker. Atomic firstboot file provisioning adds one helper
 # to the existing libexec COPY. All previous payload mappings are retained.
-expected_contract=36dd54dcfc1fd314354e8d1ae2a43652ca5a9c30f1a22dbdc1b49ad5f1023853
+# Home and application capability verification adds four scripts to the
+# component-files payload; existing installed mappings remain unchanged.
+expected_contract=69c92489d32661115165955b24f6cd5bd735414c2ebddf26b02399d6d2f2ff78
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {

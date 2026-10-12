@@ -3571,9 +3571,10 @@ impl InstallerPreview {
 
     fn choice(&self, key: &str, selected: bool) -> Card {
         let commands = self.commands.clone();
-        let choice = key.to_string();
+        let choice = key.strip_prefix("purpose-").unwrap_or(key).to_string();
         let icon = match key {
-            "computer" => Icon::Monitor,
+            "computer" | "purpose-computer" => Icon::Monitor,
+            "purpose-server" => Icon::Monitor,
             "another" => Icon::Usb,
             "desktop" | "device" | "current" => Icon::MonitorSmartphone,
             "migrate" => Icon::Folder,
@@ -3987,6 +3988,15 @@ impl InstallerPreview {
                         "installer-identity-route-unavailable",
                     ))));
                 }
+            }
+            Page::Purpose => {
+                body = body
+                    .push(Box::new(
+                        self.choice("purpose-computer", j.purpose == "computer"),
+                    ))
+                    .push(Box::new(
+                        self.choice("purpose-server", j.purpose == "server"),
+                    ));
             }
             Page::Devices => {
                 let identity_label = if j.identity == Some(Identity::Existing) && !self.live {
@@ -4657,6 +4667,14 @@ impl InstallerPreview {
                     }
                 }
                 let destination = j.destination.unwrap_or(Destination::Computer);
+                if destination != Destination::Desktop {
+                    body = body.push(Box::new(self.review_selection_row(
+                        "purpose",
+                        "purpose",
+                        t(&format!("installer-preview-purpose-{}-title", j.purpose)),
+                        t(&format!("installer-preview-purpose-{}-body", j.purpose)),
+                    )));
+                }
                 let setup = page::related()
                     .push(Box::new(
                         Text::new(&t("installer-review-setup"))
@@ -5645,6 +5663,9 @@ fn review_source_label(label: &str) -> String {
         .take(128)
         .collect()
 }
+
+#[cfg(all(test, unix))]
+mod purpose_tests;
 
 #[cfg(test)]
 mod tests {
@@ -8668,6 +8689,11 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn same_computer_permission_accepts_semantic_grant_and_persists_review_before_advancing() {
+        if !prepared_media::native_retained::enter_owned_journey(
+            "setup::journey::tests::same_computer_permission_accepts_semantic_grant_and_persists_review_before_advancing",
+        ) {
+            return;
+        }
         use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
         // Hold the real capture worker at its input boundary so refusal of
         // concurrent navigation is deterministic, without inventing its result.
@@ -8684,9 +8710,8 @@ mod tests {
             release
                 .recv_timeout(tilo_test_env::hang_bound())
                 .map_err(std::io::Error::other)?;
-            // This supplies discovery facts only. It does not stand in for
-            // retained-caller registration during actual media preparation.
-            super::super::migration_handoff::capture_fixture(home, operation, categories)
+            // Discovery and registration must agree on the actual owned GPT.
+            super::super::migration_handoff::capture(home, operation, categories)
         }
         let (started, ready) = std::sync::mpsc::channel();
         let (release, wait) = std::sync::mpsc::channel();
@@ -8694,7 +8719,7 @@ mod tests {
             .get_or_init(|| std::sync::Mutex::new(None))
             .lock()
             .unwrap() = Some((started, wait));
-        let root = tempfile::tempdir().unwrap();
+        let root = prepared_media::native_retained::journey_directory();
         std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
         let home = root.path().join("home");
         std::fs::create_dir(&home).unwrap();
@@ -8720,6 +8745,9 @@ mod tests {
         wait_for_personal(&mut app);
         app.effect(&InstallerPreviewEffect::ContinuePreview)
             .unwrap();
+        assert_eq!(status(&mut app)["page"], "purpose");
+        choose(&mut app, "computer");
+        assert_eq!(status(&mut app)["purpose"], "computer");
         assert_eq!(status(&mut app)["page"], "belongings");
         app.with_widget::<InstallerPreview, _>(|preview| {
             preview.live = true;
@@ -8774,19 +8802,15 @@ mod tests {
             }
             assert_ne!(
                 snapshot["media_preparation"]["state"], "failed",
-                "Positive writable-Files consent requires the real retained-caller \
-                 registration through pkexec and the standalone Imager --tilo-home-capture-helper \
-                 entry point, not the libtest executable. capture_fixture supplies discovery \
-                 facts only, not an owned GPT source or helper admission. See \
-                 prepared_media::native_retained::full_prepare_shared_files_via_owned_gpt_and_actual_root_helper \
-                 for the owned native source and matched compiler-artifact prerequisites. \
-                 The worker cause is printed above; do not substitute a helper receipt. {snapshot}"
+                "The owned GPT consent must prepare through the actual standalone root helper. \
+                 The worker cause is printed above; no substitute receipt is admitted. {snapshot}"
             );
             assert!(std::time::Instant::now() < deadline, "{snapshot}");
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
         app.with_widget::<InstallerPreview, _>(|preview| {
             assert!(!preview.migration_selection.choosing());
+            prepared_media::native_retained::assert_journey_registration(preview);
             let intent = preview.migration_selection.reviewed_intent().unwrap();
             let plan = intent.source_plan();
             let metadata = std::fs::metadata(&home).unwrap();

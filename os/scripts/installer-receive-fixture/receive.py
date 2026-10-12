@@ -178,6 +178,7 @@ def receiving(candidate, evidence, delivery_context):
         context_fields.remove('service_qualification')
         context_fields.remove('service_subjects')
         context_fields.remove('service_candidate')
+        context_fields.remove('service_request')
     if context_fields != {'package_directory', 'password', 'source_operation',
                                  'applications_stage', 'source', 'baseline_etc_fd',
                                  'dav', 'source_observations', 'tls_ca_certificate', 'tls_server_name',
@@ -336,6 +337,10 @@ def target_child(candidate, evidence, delivery_context, target, parent_control):
             services.start_system((source.disk, source.partition, target.partition),
                                   time.monotonic() + 45)
             reviewed, account = delivery.prepare(package_directory, password, target_var, log)
+            if delivery_context.get('service_qualification') is True:
+                import service_contract
+                service_contract.install_native_scope(delivery_context['service_request'],
+                    'receiver', Path(delivery.PREPARED), log, authenticated=reviewed)
             pending = reviewed['pending_computer_applications_scope']
             if (pending['source_operation'] != source_operation
                     or pending['staging_operation'] != applications_stage):
@@ -479,13 +484,15 @@ def main():
     def deliver(context):
         if service_admission is not None:
             context = dict(context, service_qualification=True,
-                           service_subjects=service_admission['subjects'])
+                           service_subjects=service_admission['subjects'],
+                           service_request=service_admission['request'])
         return receiving(args.candidate, args.evidence, context)
     if service_admission is None:
         result = source.run(args.candidate, args.evidence, deliver)
     else:
         result = source.run(args.candidate, args.evidence, deliver, service_qualification=True,
-                            service_candidate=service_contract.candidate_scope(service_admission))
+                            service_candidate=service_contract.candidate_scope(service_admission),
+                            service_request=service_admission['request'])
     if (result['cloud'].get('server_upload_observed') is not True
             or result.get('receiving_namespace_retired') is not True
             or result.get('receiving_services_retired') is not True

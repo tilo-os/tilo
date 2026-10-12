@@ -1387,15 +1387,19 @@ fn unmount_udisks_filesystems(
             .iter()
             .map(|partition| partition.name.as_str()),
     ) {
-        let usage = udisks
-            .id_usage(name)
+        let usage: String = udisks
+            .block(name)
+            .and_then(|proxy| proxy.get_property("IdUsage"))
             .map_err(|error| io::Error::other(format!("UDisks2 safety query failed: {error}")))?;
         if usage != "filesystem" {
             continue;
         }
-        let mount_points = udisks.mount_points(name).map_err(|error| {
-            io::Error::other(format!("UDisks2 mount-state query failed: {error}"))
-        })?;
+        let mount_points: Vec<Vec<u8>> = udisks
+            .filesystem(name)
+            .and_then(|proxy| proxy.get_property("MountPoints"))
+            .map_err(|error| {
+                io::Error::other(format!("UDisks2 mount-state query failed: {error}"))
+            })?;
         if mount_points.is_empty() {
             continue;
         }

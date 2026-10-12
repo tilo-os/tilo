@@ -21,12 +21,29 @@ fn refused() -> io::Error {
     io::ErrorKind::PermissionDenied.into()
 }
 
+fn current_uid() -> u32 {
+    // SAFETY: getuid takes no arguments and returns the process's real UID.
+    unsafe { libc::getuid() }
+}
+
 /// Each caller supplies its existing held directory ancestry, preserving its
 /// original admission/validation rather than deriving custody from a pathname.
 pub trait DirectoryPin: Send + Sync {
     fn file(&self) -> &File;
+    /// Open a readable handle to the held directory.
+    ///
+    /// # Errors
+    /// Refuses unavailable directory evidence or failure to open a readable handle.
     fn readable_file(&self) -> io::Result<File>;
+    /// Revalidate the caller's held directory ancestry.
+    ///
+    /// # Errors
+    /// Refuses changed or unavailable held namespace evidence.
     fn validate(&self) -> io::Result<()>;
+    /// Revalidate the held destination before publishing caller-private files.
+    ///
+    /// # Errors
+    /// Refuses an inadmissible destination or changed held namespace evidence.
     fn validate_destination(&self) -> io::Result<()>;
 }
 
@@ -50,7 +67,7 @@ impl NativePath {
     }
 }
 
-/// Exact existing request wire representation; caller_pid is only a claim
+/// Exact existing request wire representation; `caller_pid` is only a claim
 /// until the receiving root helper compares it with the actual QPE sender.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -68,7 +85,7 @@ impl Rendezvous {
     pub fn create(directory: &Path, parent: Arc<dyn DirectoryPin>) -> io::Result<(Self, Listener)> {
         parent.validate_destination()?;
         let facts = parent.file().metadata()?;
-        if facts.uid() != unsafe { libc::getuid() } || facts.mode() & 0o077 != 0 {
+        if facts.uid() != current_uid() || facts.mode() & 0o077 != 0 {
             return Err(refused());
         }
         let address = format!("/proc/self/fd/{}/capture.sock", parent.file().as_raw_fd());
@@ -120,6 +137,10 @@ impl Listener {
     pub fn socket(&self) -> &UnixListener {
         &self.socket
     }
+    /// Revalidate the listener's held directory ancestry.
+    ///
+    /// # Errors
+    /// Refuses changed or unavailable held namespace evidence.
     pub fn validate(&self) -> io::Result<()> {
         self.parent.validate()
     }

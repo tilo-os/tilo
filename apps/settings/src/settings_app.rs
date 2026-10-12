@@ -711,7 +711,19 @@ impl SettingsApp {
     }
 }
 
+impl ui::widget::Collaborative for SettingsApp {
+    fn take_collab_requests(&mut self) -> Vec<ui::collaboration::CollabRequest> {
+        self.accounts.remote.take_collab_requests()
+    }
+
+    fn handle_collab_event(&mut self, event: &ui::collaboration::CollabEvent) {
+        self.accounts.remote.handle_collab_event(event);
+    }
+}
+
 impl Widget for SettingsApp {
+    ui::provides!(dyn ui::widget::Collaborative);
+
     fn native_input_snapshot(
         &self,
         state: &AppModel,

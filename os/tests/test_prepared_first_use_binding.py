@@ -2,6 +2,8 @@
 """Boundary regressions; these do not establish authenticated installer provenance."""
 import copy
 import importlib.util
+import hashlib
+import json
 import os
 from pathlib import Path
 import tempfile
@@ -17,6 +19,40 @@ class FirstUseBinding(unittest.TestCase):
     def origin(self):
         return dict(schema=1, identity_public_key=[1] * 32, setup_binding='setup-actual-person',
                     sealed_bytes=48, ciphertext_sha256='a' * 64)
+
+    def test_prepared_profile_binding_is_preserved_and_mutations_fail_closed(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            ciphertext = b'TILOMIG1' + b'encrypted-transport-fixture' * 3
+            sealed = root / transport.FILE
+            sealed.write_bytes(ciphertext)
+            sealed.chmod(0o600)
+            expected = dict(schema=1, sealed_bytes=len(ciphertext),
+                            ciphertext_sha256=hashlib.sha256(ciphertext).hexdigest())
+            profile = dict(schema=1, purpose='server', device_label='Travel computer',
+                           prepared_setup=expected)
+            (root / 'profile.json').write_text(json.dumps(profile))
+            transport.preflight_profile(root)
+            self.assertEqual(json.loads((root / transport.RECEIPT_FILE).read_text()), expected)
+            for mutation in (dict(purpose='other-os'), dict(password='never-log'),
+                             dict(device_label='bad\nlabel'), dict(prepared_setup=None)):
+                changed = dict(profile, **mutation)
+                (root / 'profile.json').write_text(json.dumps(changed))
+                with self.subTest(fields=list(mutation)), self.assertRaises(ValueError):
+                    transport.preflight_profile(root)
+                self.assertEqual(json.loads((root / transport.RECEIPT_FILE).read_text()), expected)
+            (root / 'profile.json').write_text(json.dumps(profile))
+            sealed.write_bytes(b'x' * len(ciphertext))
+            with self.assertRaises(ValueError):
+                transport.preflight_profile(root)
+            self.assertEqual(json.loads((root / transport.RECEIPT_FILE).read_text()), expected)
+
+    def test_legacy_profile_without_preparation_still_passes(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / 'profile.json').write_text(json.dumps(dict(schema=1, hostname='legacy')))
+            transport.preflight_profile(root)
+            self.assertFalse((root / transport.RECEIPT_FILE).exists())
 
     def test_closed_intended_person_and_ciphertext_shape(self):
         original = self.origin()

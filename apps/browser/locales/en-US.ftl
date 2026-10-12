@@ -58,5 +58,5 @@ browser-service-forget-open-first = Open the selected account in this window fir
 browser-service-forget-wait = Wait for the selected account to finish opening.
 browser-service-forget-fence-failed = The selected account could not be fenced for forgetting.
 
-browser-service-forget-retry = Retry local account deletion
-browser-service-forget-retry-failed = Local deletion could not be retried. The account remains fenced; canonical credentials have not been revoked.
+browser-service-forget-retry = Retry forgetting this account
+browser-service-forget-retry-failed = Account deletion could not be completed. Saved credentials have not been revoked; retry forgetting this account.

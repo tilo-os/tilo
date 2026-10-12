@@ -387,6 +387,10 @@ bins = ["tilo-prepared-setup"]
 layer = "desktop-binaries"
 files = [
   { from = "tilo-prepared-setup", to = "/usr/libexec/tilo-prepared-setup", mode = "0755" },
+  { from = "@manifest/scripts/verify-home-consumer-capability.py", to = "/usr/libexec/tilo-verify-home-consumer-capability", mode = "0755" },
+  { from = "@manifest/scripts/verify-applications-consumer-capability.py", to = "/usr/libexec/tilo-verify-applications-consumer-capability", mode = "0755" },
+  { from = "@manifest/scripts/installed-data-consumer.py", to = "/usr/libexec/tilo-installed-data-consumer.py", mode = "0755" },
+  { from = "@manifest/scripts/data-consumer-catalog-facts.py", to = "/usr/libexec/tilo-data-consumer-catalog-facts", mode = "0755" },
 ]
 
 [[component]]

@@ -18,8 +18,13 @@ impl MigrationIntent {
         super::super::migration::check_cancel(cancel)?;
         let plan = self.for_media()?;
         let home = self.grant.source.decode().map_err(io::Error::other)?;
-        let directory = tempfile::tempdir()?;
-        let (channel, listener) = Rendezvous::create(directory.path())?;
+        use std::os::unix::fs::PermissionsExt;
+        let directory = tempfile::Builder::new()
+            .permissions(std::fs::Permissions::from_mode(0o700))
+            .tempdir()?;
+        let (channel, listener) = Rendezvous::create(directory.path()).map_err(|error| {
+            io::Error::new(error.kind(), format!("retained caller rendezvous: {error}"))
+        })?;
         let request =
             RetainedRequest::new(&home, plan.clone(), channel, setup_binding.into(), *person)?;
         let _request = publish_retained_request(directory.path(), &request)?;
@@ -30,7 +35,7 @@ impl MigrationIntent {
             .arg(directory.path().join("request.json"))
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
+            .stderr(registration_stderr())
             .spawn()?;
         let mut controller =
             Controller::attach_with_rpc(child, directory, &plan.operation_id, listener)?;
@@ -40,7 +45,9 @@ impl MigrationIntent {
             let mut released = false;
             loop {
                 super::super::migration::check_cancel(cancel)?;
-                if let Some(status) = controller.poll()? {
+                if let Some(status) = controller.poll().map_err(|error| {
+                    io::Error::new(error.kind(), format!("retained helper status: {error}"))
+                })? {
                     if status.expires_unix.is_some()
                         || !matches!(status.state, State::Intended | State::Released)
                     {
@@ -51,7 +58,9 @@ impl MigrationIntent {
                     released |= status.state == State::Released;
                 }
                 if declaration.is_none()
-                    && let Some(reply) = ticket.poll()?
+                    && let Some(reply) = ticket.poll().map_err(|error| {
+                        io::Error::new(error.kind(), format!("retained helper RPC: {error}"))
+                    })?
                 {
                     match reply {
                         RpcReply::RetainedCallerRegistered {
@@ -71,6 +80,14 @@ impl MigrationIntent {
         })();
         controller.cancel_now();
         let stopped = controller.cancel_and_wait();
+        #[cfg(all(test, target_os = "linux"))]
+        if std::env::var_os("TILO_NATIVE_SHARED_FILES_ACTOR_ROOT").is_some() {
+            eprintln!(
+                "native retained result: {:?}; retirement: {:?}",
+                result.as_ref().map(|_| ()),
+                stopped
+            );
+        }
         // Always retire the owned helper before returning a receipt or error.
         let declaration = result?;
         stopped?;
@@ -80,6 +97,15 @@ impl MigrationIntent {
         }
         Ok(declaration)
     }
+}
+
+fn registration_stderr() -> Stdio {
+    #[cfg(all(test, target_os = "linux"))]
+    if std::env::var_os("TILO_NATIVE_SHARED_FILES_ACTOR_ROOT").is_some() {
+        // The native owner bounds the actor's combined diagnostic output.
+        return Stdio::inherit();
+    }
+    Stdio::null()
 }
 
 fn registration_executable() -> std::io::Result<std::path::PathBuf> {

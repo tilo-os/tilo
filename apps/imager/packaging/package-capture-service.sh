@@ -8,7 +8,7 @@ build_packages=imager
 # Explicit separate cohort; assemble-only must prove its actual binary matches.
 if [ "${1:-}" = --applications-worker ]; then expected_worker=6; shift; fi
 # Full shared-file qualification uses the ordinary Writer from the same graph.
-if [ "${1:-}" = --with-writer ]; then build_packages="imager file-explorer word-processor"; shift; fi
+if [ "${1:-}" = --with-writer ]; then build_packages="imager file-explorer word-processor browser"; shift; fi
 case "${1:-}" in
     --build-only) phase=build; shift ;;
     --assemble-only) phase=assemble; shift ;;

@@ -1,6 +1,6 @@
 //! Exact GOA owner consent. Key schema and runtime registration are upstream:
-//! https://github.com/GNOME/gnome-online-accounts/blob/master/src/goabackend/goautils.c
-//! https://github.com/GNOME/gnome-online-accounts/blob/master/data/dbus-interfaces.xml
+//! <https://github.com/GNOME/gnome-online-accounts/blob/master/src/goabackend/goautils.c>
+//! <https://github.com/GNOME/gnome-online-accounts/blob/master/data/dbus-interfaces.xml>
 use crate::{Secret, SecretError};
 use std::{fs::File, os::unix::fs::MetadataExt};
 use zeroize::Zeroizing;

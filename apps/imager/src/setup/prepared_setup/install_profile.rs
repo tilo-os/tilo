@@ -7,6 +7,8 @@ use std::io;
 #[serde(deny_unknown_fields)]
 pub struct PublicInstallProfile {
     pub schema: u32,
+    #[serde(default = "install_profile_model::default_purpose")]
+    pub purpose: String,
     pub username: String,
     pub full_name: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -35,6 +37,7 @@ impl PublicInstallProfile {
         let filesystem =
             crate::model::Filesystem::from_key(&self.filesystem).ok_or_else(super::invalid)?;
         let mut draft = crate::model::InstallProfile {
+            purpose: self.purpose.clone(),
             hostname: self.hostname.clone(),
             device_label: self.device_label.clone(),
             locale: self.locale.clone(),
@@ -60,6 +63,7 @@ impl PublicInstallProfile {
             locale: self.locale.clone(),
             keyboard: self.keyboard.clone(),
             timezone: self.timezone.clone(),
+            purpose: self.purpose.clone(),
             filesystem: crate::model::Filesystem::from_key(&self.filesystem)
                 .ok_or_else(super::invalid)?,
             ..Default::default()

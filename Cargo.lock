@@ -121,6 +121,7 @@ dependencies = [
  "test-http",
  "tilo-clock",
  "tilo-crypto",
+ "tilo-files",
  "tilo-net",
  "tilo-oauth",
  "tilo-test-env",
@@ -7152,6 +7153,9 @@ dependencies = [
 [[package]]
 name = "install-profile-model"
 version = "0.1.0"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "installer"

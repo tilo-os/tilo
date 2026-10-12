@@ -176,7 +176,12 @@ impl Store {
         let (home, input) = selection;
         let pin = PinnedDirectory::open_absolute(home)?;
         input.validate(peer, &pin.file)?;
-        let original = peer.original_caller_facts()?;
+        let original = peer.original_caller_facts().map_err(|error| {
+            io::Error::new(
+                error.kind(),
+                format!("original session credentials: {error}"),
+            )
+        })?;
         original.validate(plan.home_uid())?;
         let records = self
             .records_path
@@ -190,9 +195,11 @@ impl Store {
         )?;
         let record = RetainedRecord {
             schema: 2,
-            original_home_alias: Some(launcher::retained_view::OriginalHomeAlias::capture(
-                home, &pin.file,
-            )?),
+            original_home_alias: Some(
+                launcher::retained_view::OriginalHomeAlias::capture(home, &pin.file).map_err(
+                    |error| io::Error::new(error.kind(), format!("original Home alias: {error}")),
+                )?,
+            ),
             purpose: "retained-source-groups".into(),
             plan: plan.clone(),
             setup_binding: setup.into(),
