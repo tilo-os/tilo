@@ -28,7 +28,9 @@ use crate::shell::search::{
     ResourceKind, SearchBudget, SearchContext, SearchCursor, SearchPage, SearchProvider,
     SearchResult,
 };
-use tilo_search::{Document, FieldWeight, MatchTier, Matching, Page, SearchIndex, Signals};
+#[cfg(test)]
+use tilo_search::Page;
+use tilo_search::{Document, FieldWeight, MatchTier, Matching, SearchIndex, Signals};
 
 /// Skip these paths anywhere in the tree — they explode the index without
 /// adding user-visible files. A pattern with a `/` matches that many
@@ -567,17 +569,17 @@ impl FilesProvider {
         let revision = index.generation.to_string();
         let needle = ctx.needle.to_lowercase();
         let needle_len = needle.len();
-        super::page_hits(
+        crate::shell::search::index_page(
             revision,
-            &needle,
             cursor,
+            &needle,
             budget,
-            |offset| {
+            |page| {
                 index.index.search_scored(
                     &needle,
-                    Page {
-                        offset,
+                    tilo_search::Page {
                         limit: budget.max_work,
+                        ..page
                     },
                     move |signals| name_score(needle_len, signals),
                 )
@@ -2698,6 +2700,49 @@ mod tests {
     /// linear scan would still exceed it by far; the 100k case itself is
     /// covered by the shared search provider tests in `ui`.
     const LARGE_CORPUS: usize = 4_000;
+
+    #[test]
+    fn filtered_name_pages_consume_hits_and_respect_the_result_budget() {
+        let provider = provider_with_index(vec![
+            ("~/a-needle", true),
+            ("~/b-needle", true),
+            ("~/c-needle", true),
+            ("~/d-needle", true),
+            ("~/e-needle", true),
+        ]);
+        let chrome = empty_chrome();
+        let state = chrome.borrow();
+        let doc = automerge::AutoCommit::new();
+        let budget = SearchBudget {
+            max_results: 1,
+            max_bytes: 8_192,
+            max_work: 5,
+        };
+        let filtered = provider.query_page(
+            ctx_for("needle", &[ResourceKind::File], &state, &doc),
+            None,
+            budget,
+        );
+        assert!(filtered.results.is_empty());
+        assert!(
+            filtered.exhausted,
+            "all five declined hits must be consumed"
+        );
+
+        let mut cursor = None;
+        let mut ids = std::collections::HashSet::new();
+        for _ in 0..5 {
+            let page = provider.query_page(
+                ctx_for("needle", &[ResourceKind::Folder], &state, &doc),
+                cursor.as_ref(),
+                budget,
+            );
+            assert_eq!(page.results.len(), 1);
+            assert!(ids.insert(page.results[0].id.clone()), "a hit was repeated");
+            cursor = page.next_cursor;
+        }
+        assert!(cursor.is_none(), "the last emitted hit exhausts the page");
+    }
 
     #[test]
     #[allow(

@@ -21,7 +21,7 @@ use std::collections::HashSet;
 #[cfg(test)]
 use std::sync::{Arc, Mutex};
 use tilo_desktop::notifications::{Notification, NotificationSeverity};
-use tilo_search::{Document, FieldWeight, Matching, Page, SearchIndex};
+use tilo_search::{Document, FieldWeight, Matching, SearchIndex};
 
 /// Chip label / group header, mirroring [`ResourceKind::HostApplication`].
 pub const HOST_APPLICATIONS_KIND: &str = "Host Apps";
@@ -175,7 +175,7 @@ impl HostApplicationsProvider {
             .collect();
         let index = index_apps(apps, &installed_ids);
         index
-            .search(needle, Page::first(apps.len()))
+            .search(needle, tilo_search::Page::first(apps.len()))
             .hits
             .iter()
             .filter_map(|hit| {
@@ -403,20 +403,12 @@ impl SearchProvider for HostApplicationsProvider {
         let Some(snapshot) = self.snapshot() else {
             return SearchPage::exhausted(revision, Vec::new());
         };
-        super::page_hits(
+        crate::shell::search::index_page(
             revision,
-            ctx.needle,
             cursor,
+            ctx.needle,
             budget,
-            |offset| {
-                snapshot.index.search(
-                    ctx.needle,
-                    Page {
-                        offset,
-                        limit: budget.max_work.min(budget.max_results),
-                    },
-                )
-            },
+            |page| snapshot.index.search(ctx.needle, page),
             |hit| {
                 let app = usize::try_from(hit.key)
                     .ok()

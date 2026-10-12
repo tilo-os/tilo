@@ -26,7 +26,7 @@ use crate::shell::search::{
     SearchResult,
 };
 use tilo_desktop::notifications::{Notification, NotificationSeverity};
-use tilo_search::{Document, Matching, Page, SearchIndex};
+use tilo_search::{Document, Matching, SearchIndex};
 
 /// Chip label / group header for launchable apps; also the provider's `name()`.
 pub const APPLICATIONS_KIND: &str = "Applications";
@@ -1064,30 +1064,18 @@ impl SearchProvider for ApplicationsProvider {
         let Some(snapshot) = self.snapshot() else {
             return SearchPage::exhausted(revision, Vec::new());
         };
-        super::page_hits(
+        crate::shell::search::index_page(
             revision,
-            ctx.needle,
             cursor,
+            ctx.needle,
             budget,
-            |offset| {
-                snapshot.index.search(
-                    ctx.needle,
-                    Page {
-                        offset,
-                        limit: budget.max_work.min(budget.max_results),
-                    },
-                )
-            },
+            |page| snapshot.index.search(ctx.needle, page),
             |hit| {
                 let entry = usize::try_from(hit.key)
                     .ok()
                     .and_then(|at| snapshot.entries.get(at))?;
-                self.entry_row(
-                    &ctx,
-                    &snapshot,
-                    entry,
-                    provider_score(hit.rank.unwrap_or(0)),
-                )
+                let score = provider_score(hit.rank.unwrap_or(0));
+                self.entry_row(&ctx, &snapshot, entry, score)
             },
         )
     }
