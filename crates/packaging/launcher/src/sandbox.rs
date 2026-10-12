@@ -197,6 +197,13 @@ pub fn push_clean_environment(argv: &mut Vec<String>) {
         argv.push((*key).to_string());
         argv.push(value.to_string_lossy().into_owned());
     }
+    // Every launch: no transparent huge pages in its heap. A hardened one
+    // overrides this with [`push_runtime_hardening`].
+    argv.extend([
+        "--setenv".into(),
+        "GLIBC_TUNABLES".into(),
+        crate::hardening::tunables(false),
+    ]);
     push_accessibility_environment(argv);
     // Fixed content-free presentation/GPU timing booleans, never an input
     // injector or output path. Keep arbitrary profiling/scenario environment stripped.
@@ -247,7 +254,7 @@ pub fn push_runtime_hardening(
         // a shadow stack request.
         argv.push("--setenv".to_string());
         argv.push("GLIBC_TUNABLES".to_string());
-        argv.push("glibc.cpu.hwcaps=SHSTK".to_string());
+        argv.push(crate::hardening::tunables(true));
     }
 }
 
@@ -1234,7 +1241,7 @@ mod tests {
             assert!(
                 argv.windows(3).any(|w| w[0] == "--setenv"
                     && w[1] == "GLIBC_TUNABLES"
-                    && w[2] == "glibc.cpu.hwcaps=SHSTK"),
+                    && w[2] == crate::hardening::tunables(true)),
                 "shadow stacks were not requested for a listed package: {argv:?}"
             );
         }
@@ -1248,8 +1255,14 @@ mod tests {
                 "an ordinary app must not carry the hardened allocator: {argv:?}"
             );
             assert!(
-                !argv.iter().any(|a| a == "GLIBC_TUNABLES"),
+                !argv.iter().any(|a| a.contains("SHSTK")),
                 "an ordinary app must not carry the shadow-stack tunable: {argv:?}"
+            );
+            assert!(
+                argv.windows(3).any(|w| w[0] == "--setenv"
+                    && w[1] == "GLIBC_TUNABLES"
+                    && w[2] == crate::hardening::NO_HUGE_PAGES_TUNABLES),
+                "an app's heap must stay out of transparent huge pages: {argv:?}"
             );
         }
     }

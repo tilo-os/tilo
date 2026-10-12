@@ -213,6 +213,12 @@ impl Desktop {
             // A `paint-tick:` line per loop iteration (see `LoopStats`).
             .env("TILO_PAINT_STATS", "ticks")
             .env("RUST_LOG", "warn")
+            // As the session starts the compositor (os/usr/libexec/tilo-session):
+            // glibc reads its tunables when a process starts.
+            .env(
+                "GLIBC_TUNABLES",
+                launcher::hardening::NO_HUGE_PAGES_TUNABLES,
+            )
             .env_remove("WAYLAND_DISPLAY")
             .env_remove("DISPLAY")
             .stdout(Stdio::piped())

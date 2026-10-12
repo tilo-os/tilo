@@ -87,6 +87,15 @@ XDG_SESSION_DESKTOP=tilo
 XDG_SESSION_TYPE=wayland
 export XDG_CURRENT_DESKTOP XDG_SESSION_DESKTOP XDG_SESSION_TYPE
 
+# Fedora's glibc backs every heap and thread stack with transparent huge pages,
+# so each thread's 2 MiB malloc arena is resident the moment it allocates: an
+# idle compositor held 180 MiB for 34 MiB of live data. The compositor and
+# every service of this session start without them. glibc reads tunables only
+# when a process starts, so this is where they are set; the launcher gives
+# sandboxed apps the same value (`launcher::hardening::NO_HUGE_PAGES_TUNABLES`,
+# which a test holds to this line).
+export GLIBC_TUNABLES=glibc.malloc.hugetlb=0:glibc.pthread.stack_hugetlb=0
+
 stop_target() {
   if [ "$target_started" = 1 ]; then
     "$SYSTEMCTL" --user stop "$SESSION_TARGET" >/dev/null 2>&1 || true
@@ -95,10 +104,10 @@ stop_target() {
   if [ "$environment_imported" = 1 ]; then
     "$DBUS_UPDATE" --systemd \
       WAYLAND_DISPLAY= DISPLAY= XAUTHORITY= XDG_CURRENT_DESKTOP= \
-      XDG_SESSION_DESKTOP= XDG_SESSION_TYPE= >/dev/null 2>&1 || true
+      XDG_SESSION_DESKTOP= XDG_SESSION_TYPE= GLIBC_TUNABLES= >/dev/null 2>&1 || true
     "$SYSTEMCTL" --user unset-environment \
       DISPLAY WAYLAND_DISPLAY XAUTHORITY DESKTOP_SESSION GDMSESSION \
-      XDG_CURRENT_DESKTOP XDG_SESSION_DESKTOP XDG_SESSION_TYPE \
+      XDG_CURRENT_DESKTOP XDG_SESSION_DESKTOP XDG_SESSION_TYPE GLIBC_TUNABLES \
       >/dev/null 2>&1 || true
     environment_imported=0
   fi
@@ -184,8 +193,8 @@ fi
   DISPLAY WAYLAND_DISPLAY XAUTHORITY DESKTOP_SESSION GDMSESSION \
   XDG_SESSION_DESKTOP >/dev/null 2>&1 || true
 environment_imported=1
-"$DBUS_UPDATE" --systemd XDG_CURRENT_DESKTOP XDG_SESSION_TYPE
-"$SYSTEMCTL" --user import-environment XDG_CURRENT_DESKTOP XDG_SESSION_TYPE
+"$DBUS_UPDATE" --systemd XDG_CURRENT_DESKTOP XDG_SESSION_TYPE GLIBC_TUNABLES
+"$SYSTEMCTL" --user import-environment XDG_CURRENT_DESKTOP XDG_SESSION_TYPE GLIBC_TUNABLES
 # pam_gnome_keyring starts the login keyring daemon inside the PAM session and
 # publishes its control socket in GNOME_KEYRING_CONTROL.  Hand that to the user
 # bus and manager: tilo-secret-service, which owns org.freedesktop.secrets, is
