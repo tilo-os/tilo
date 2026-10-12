@@ -6363,6 +6363,31 @@ impl ShellOverlayHost {
         row.groups.get_mut(group_idx)
     }
 
+    /// Resolve native keyboard ownership through the active tab, never through
+    /// an arbitrary app elsewhere in the widget tree. A stale live row refuses.
+    pub(crate) fn active_app_host(&self) -> Option<&ui::widget::TileHost> {
+        let chrome = self.chrome.as_ref()?;
+        let (strip, group, tab) = {
+            let state = chrome.borrow();
+            let tree = state.tree();
+            let strip = *tree.desktop.active_strip.get(&tree.desktop.active)?;
+            (
+                strip,
+                tree.desktop.active_group_for(strip)?,
+                state.active_tab_id()?,
+            )
+        };
+        let &pointer = self.group_row_ptrs.get(&strip)?;
+        // SAFETY: this row is owned by the live host tree, as in
+        // active_window_control_rects. The immutable host borrow keeps it live.
+        let row = unsafe { &*pointer };
+        let group = row.groups.iter().find(|candidate| candidate.id == group)?;
+        if group.active_tab_id() != tab {
+            return None;
+        }
+        group.active_host()
+    }
+
     /// Live pointer targets for the active group's maximize/restore actions.
     ///
     /// This is read-only presentation state. The developer control transport
