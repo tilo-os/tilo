@@ -292,6 +292,13 @@ impl WorkspaceAuthority for NativeWorkspaceAuthority {
     fn announces_policy_changes(&self) -> bool {
         true
     }
+    /// The room's agents whose delegation the room's governance verified for
+    /// exactly their device ([`super::state::WorkspaceTree::verified_agents`]).
+    fn history_agents(&self, room: &str) -> Vec<ui::history_source::RosterAgent> {
+        super::state::RoomId::parse(room)
+            .map(|room| self.0.read().verified_agents(room))
+            .unwrap_or_default()
+    }
 }
 impl LegacyWorkspaceProjection for NativeWorkspaceAuthority {
     fn record_effect(
