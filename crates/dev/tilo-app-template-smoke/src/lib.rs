@@ -17,33 +17,11 @@ starter-greeting = Hallo, { $name }!\n\
 starter-greeting-empty = Wen sollen wir begrüßen?\n\
 starter-clear = Leeren\n";
 
-    pub const IDS: &[&str] = &["de-DE", "en-US"];
-
-    /// [`EN_US`] without the templates' history messages: `tilo-app new`
-    /// names those after the app it makes, and two templates' verbs share
-    /// names, so the combined catalog would hold them twice.
-    fn en_us() -> String {
-        let mut catalog = String::with_capacity(EN_US.len());
-        for line in EN_US.lines().filter(|line| !line.starts_with("generated-")) {
-            catalog.push_str(line);
-            catalog.push('\n');
-        }
-        catalog
-    }
-
-    pub fn install() {
-        let en_us = en_us();
-        if let Err(error) = ui::i18n::I18nManager::install_system(
-            "en-US",
-            &[("de-DE", DE_DE), ("en-US", en_us.as_str())],
-        ) {
-            eprintln!("localization catalog: {error}");
-        }
-    }
-}
-
-fn install_catalog() {
-    locales::install();
+    /// Two templates' history verbs share a message id; the first one wins,
+    /// as when a catalog repeats a message.
+    pub static CATALOG: ui::i18n::EmbeddedCatalog =
+        ui::i18n::EmbeddedCatalog::new("en-US", &[("de-DE", DE_DE), ("en-US", EN_US)])
+            .with_system_locale();
 }
 
 /// The application id every included template runs under.
