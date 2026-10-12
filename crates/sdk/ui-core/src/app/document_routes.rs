@@ -287,6 +287,50 @@ impl App {
             })
     }
 
+    pub(crate) fn native_admission_snapshot(
+        &self,
+    ) -> tilo_startup_metrics::NativeAdmissionSnapshot {
+        let manager = &self.collaboration.manager;
+        let witness = self.document_routes.witness.as_ref();
+        let route = witness.map(|witness| &witness.route);
+        let (enqueued, counts) = manager.action_directory_observation();
+        let installed = self
+            .document_routes
+            .owners
+            .iter()
+            .map(|entry| entry.owners.len())
+            .sum();
+        let continuity = crate::host::environment()
+            .identity
+            .continuity_instance
+            .as_deref()
+            .and_then(|value| value.parse().ok());
+        tilo_startup_metrics::NativeAdmissionSnapshot {
+            process_id: std::process::id(),
+            continuity_instance: continuity,
+            connection: tilo_startup_metrics::NativeAdmissionConnection {
+                manager_connected: manager.is_connected(),
+                custody_reconciled: witness == self.bound_broker_route(),
+            },
+            live_document_owners: live_document_owners(self.root_widget.as_ref()).len(),
+            installed_document_owners: installed,
+            history: tilo_startup_metrics::NativeAdmissionHistory {
+                primary_history_ready: manager.document_route_ready(route),
+                all_owner_histories_ready: self
+                    .document_routes
+                    .owners
+                    .iter()
+                    .all(|entry| manager.document_route_ready(Some(&entry.route))),
+                action_history_ready: self.published_action_history_ready_after_refresh(),
+            },
+            directory: tilo_startup_metrics::NativeAdmissionDirectory {
+                directory_enqueued: enqueued,
+                transport_directory_rpc_successes: counts.map(|counts| counts.0),
+                transport_directory_rpc_failures: counts.map(|counts| counts.1),
+            },
+        }
+    }
+
     fn send_owned_document(
         &mut self,
         route: RouteSpec,
