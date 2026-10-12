@@ -3,6 +3,7 @@
 // in as modules (`pub`, so what each file exported stays exported). nextest
 // still runs each test in its own process.
 
+#[cfg(target_os = "linux")]
 #[path = "typed_peer.rs"]
 mod typed_peer;
 
