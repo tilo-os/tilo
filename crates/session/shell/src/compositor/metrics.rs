@@ -720,6 +720,15 @@ impl FrameRecorder {
         }
     }
 
+    /// Close the pending input measurement without a frame: the loop is
+    /// going idle having handled it, with nothing on screen to change (a key
+    /// release, a press nothing reacts to). Its latency ends here; left
+    /// pending, it would be charged to the next painted frame, however much
+    /// later and whichever input that frame answers.
+    pub fn settle_unpainted_input(&mut self) {
+        self.pending_input = None;
+    }
+
     /// Age of the oldest input that has not yet reached a submitted frame.
     /// The async presenter attaches this clock to the exact frame serial it
     /// accepts, rather than mistaking queue hand-off for physical retirement.
@@ -1366,6 +1375,36 @@ mod tests {
             assert!(
                 s[2].present_async,
                 "a queued (threaded) submit must be flagged so readers don't mistake it for photons"
+            );
+        }
+        // Phase `an_input_settled_without_a_frame_is_not_charged_to_the_next_one`.
+        {
+            // A key release paints nothing and the loop parks; seconds later
+            // another key paints. That frame answers the later key only.
+            let mut r = FrameRecorder::disabled();
+            r.enabled = true;
+            let base = Instant::now();
+            r.begin_tick(base);
+            r.note_input(base);
+            r.settle_unpainted_input();
+            r.end_tick();
+            assert_eq!(r.pending_input_age(base + Duration::from_secs(7)), None);
+            let later = base + Duration::from_millis(7_500);
+            r.begin_tick(later);
+            r.note_input(later);
+            r.mark_submit(
+                Duration::from_millis(1),
+                false,
+                later + Duration::from_micros(2_400),
+                None,
+            );
+            r.end_tick();
+            let s = r.samples();
+            assert_eq!(s[0].input_latency_us, None);
+            assert_eq!(
+                s[1].input_latency_us,
+                Some(2_400),
+                "the frame's latency must run from its own input, not from one settled before it"
             );
         }
         // Phase `pending_input_age_exposes_the_oldest_unpresented_input`.

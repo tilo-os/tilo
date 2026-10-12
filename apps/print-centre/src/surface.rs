@@ -404,7 +404,7 @@ fn scanned_document_pdf(pages: &[ScannedPage]) -> Vec<u8> {
 fn save_scanned_page(path: &std::path::Path, bytes: &[u8]) -> Result<(), String> {
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create(true).truncate(true);
-    private_fs::owner_only(&mut options);
+    tilo_files::native::private::owner_only(&mut options);
     let mut file = options
         .open(path)
         .map_err(|error| format!("could not create the scanned page: {error}"))?;

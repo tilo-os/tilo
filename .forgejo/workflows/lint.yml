@@ -113,7 +113,7 @@ jobs:
           python3 tools/perf/tapp_size_ratchet.py check-budget --base "${base:-HEAD~1}"
 
       # The same rule for the shared app runtime's size and load-cost budgets
-      # (tools/perf/runtime-size-budget/; DEVELOPMENT.md, "Runtime size").
+      # (tools/perf/runtime-size-budget/; docs/measurements/runtime-size.md).
       - name: Runtime size budgets only decrease
         shell: bash
         run: |
