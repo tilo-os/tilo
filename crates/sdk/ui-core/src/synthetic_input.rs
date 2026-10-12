@@ -1,6 +1,9 @@
 //! Deterministic window input shared by native scenarios, headless driving,
 //! test control and tests: what they deliver in place of a device.
 
+pub mod pointer;
+pub use pointer::PointerAction;
+
 use serde::{Deserialize, Serialize};
 use winit::event::{DeviceId, ElementState, KeyEvent, MouseButton, RawKeyEvent, WindowEvent};
 use winit::keyboard::{Key, KeyLocation, NamedKey, NativeKeyCode, PhysicalKey, SmolStr};
