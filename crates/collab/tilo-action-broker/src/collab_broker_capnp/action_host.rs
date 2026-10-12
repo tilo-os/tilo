@@ -544,11 +544,16 @@ impl CapnpBrokerState {
         match caller.room() {
             // Confinement says which room a connection was admitted to, not
             // that an agent still belongs to it: an agent whose membership
-            // was removed must lose its catalogue and authority at once.
+            // was removed must lose its catalogue and authority at once. It
+            // takes part as the unconfined branch decides: an enrolled agent
+            // through its own grant, an agent a person's device handed this
+            // session to (`Caller::delegated_to`) through that person's.
             Some(confined) => {
                 confined == workspace.room.to_string()
                     && match caller.principal() {
-                        CallerPrincipal::Agent(id) => workspace.agent_role_at(id, now).is_some(),
+                        CallerPrincipal::Agent(_) => {
+                            BrokerActor::for_caller(caller).reads_in(workspace, now)
+                        }
                         CallerPrincipal::Person(_) | CallerPrincipal::App(_) => true,
                     }
             }
