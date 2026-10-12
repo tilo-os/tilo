@@ -1,6 +1,6 @@
 //! What this crate provides on each target, as data an app can query.
 
-pub use tilo_platform_caps::Availability;
+pub use tilo_platform_caps::{Availability, availability};
 
 /// A feature this target, or this particular host, cannot provide.
 pub type Unsupported = tilo_platform_caps::Unsupported<Feature>;
@@ -32,65 +32,32 @@ pub(crate) const WEB_WORKSPACE: &str = "Browsers have no mounted workspace.";
 pub(crate) const WEB_FONTS: &str = "The web bundle delivers its fonts as data, not a folder.";
 pub(crate) const WEB_NATIVE_PATHS: &str = "Browser storage has no file system paths.";
 
-/// Every feature with its availability on Linux, macOS and the web, in that
-/// order. A host may provide less at run time (no `$XDG_RUNTIME_DIR`, no
-/// workspace mounted), never more.
-pub const CAPABILITIES: &[(Feature, [Availability; 3])] = {
-    use Availability::{Available, Unsupported};
-    &[
-        (Feature::AppStorage, [Available, Available, Available]),
-        (Feature::Runtime, [Available, Available, Available]),
-        (
-            Feature::UserDirs,
-            [Available, Available, Unsupported(WEB_USER_DIRS)],
-        ),
-        (
-            Feature::WorkspaceRoot,
-            [Available, Available, Unsupported(WEB_WORKSPACE)],
-        ),
-        (
-            Feature::FontRoot,
-            [Available, Available, Unsupported(WEB_FONTS)],
-        ),
-        (
-            Feature::NativePaths,
-            [Available, Available, Unsupported(WEB_NATIVE_PATHS)],
-        ),
-    ]
-};
-
-/// Whether `feature` can be used on this target.
-pub fn availability(feature: Feature) -> Availability {
-    tilo_platform_caps::availability(CAPABILITIES, feature)
+impl tilo_platform_caps::Feature for Feature {
+    /// The feature's availability on Linux, macOS and the web, in that
+    /// order. A host may provide less at run time (no `$XDG_RUNTIME_DIR`, no
+    /// workspace mounted), never more.
+    fn targets(self) -> [Availability; 3] {
+        use Availability::{Available, Unsupported};
+        match self {
+            Self::AppStorage | Self::Runtime => [Available, Available, Available],
+            Self::UserDirs => [Available, Available, Unsupported(WEB_USER_DIRS)],
+            Self::WorkspaceRoot => [Available, Available, Unsupported(WEB_WORKSPACE)],
+            Self::FontRoot => [Available, Available, Unsupported(WEB_FONTS)],
+            Self::NativePaths => [Available, Available, Unsupported(WEB_NATIVE_PATHS)],
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn every_feature_is_listed_once() {
-        for feature in [
-            Feature::AppStorage,
-            Feature::Runtime,
-            Feature::UserDirs,
-            Feature::WorkspaceRoot,
-            Feature::FontRoot,
-            Feature::NativePaths,
-        ] {
-            let rows = CAPABILITIES.iter().filter(|(listed, _)| *listed == feature);
-            assert_eq!(rows.count(), 1, "{feature:?}");
-        }
-    }
+    use tilo_platform_caps::Feature as _;
 
     #[test]
     fn this_target_reads_its_own_column() {
         assert_eq!(availability(Feature::AppStorage), Availability::Available);
-        let web = CAPABILITIES
-            .iter()
-            .find(|(feature, _)| *feature == Feature::UserDirs)
-            .map(|(_, targets)| targets[2]);
-        assert_eq!(web, Some(Availability::Unsupported(WEB_USER_DIRS)));
+        let web = Feature::UserDirs.targets()[2];
+        assert_eq!(web, Availability::Unsupported(WEB_USER_DIRS));
         assert_eq!(availability(Feature::UserDirs), Availability::Available);
     }
 }
