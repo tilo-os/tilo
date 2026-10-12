@@ -20,8 +20,8 @@
 //!   each `invoke` runs the moment its call is complete, while the model is
 //!   still writing the next one, and argument text streams into the live
 //!   preview as it is written;
-//! * an `invoke` the model marks `independent` of the steps before it is
-//!   started without waiting for them to settle in their applications when
+//! * an `invoke` the model marks `standalone` (independent of the steps
+//!   before it) is started without waiting for them to settle in their applications when
 //!   it acts on another record than every step still running
 //!   ([`Session::start_independent`]); everything else waits for them first,
 //!   so a step that reads what an earlier one wrote stays after it;
@@ -102,7 +102,7 @@ there with an operation (for example post in the Chat channel); never only in yo
 application). The task finishes only when each part has a successful operation or is listed \
 under `unable` with the reason.
 - Be quick: call `invoke` for every step you already know (steps go in the same turn and run \
-in order; set `independent` on a step that neither needs nor reports what the steps before it \
+in order; set `standalone` on a step that neither needs nor reports what the steps before it \
 do, and it runs alongside them), and put your reply on the last one. Only look things up \
 first when you truly cannot tell which operation to use.
 - An `invoke` result says what happened, how your own view changed and which operations \
@@ -5310,7 +5310,7 @@ mod tests {
             "parameters": arguments,
         });
         if independent {
-            input[tools::INVOKE_INDEPENDENT] = Value::Bool(true);
+            input[tools::INVOKE_STANDALONE] = Value::Bool(true);
         }
         (tools::INVOKE, input)
     }
