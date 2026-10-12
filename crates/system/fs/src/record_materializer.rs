@@ -968,6 +968,7 @@ mod tests {
 
     use crate::namespace::ROOT_INO;
     use crate::record_access::RecordAccessSessionId;
+    use crate::record_replication::test_authorizers::{AllowActor, AllowAll};
 
     struct Fixture {
         workspace: Uuid,
@@ -1097,17 +1098,7 @@ mod tests {
     fn materialization_uses_current_signed_state_and_refuses_unknown_records() {
         // Phase `delayed_materialization_uses_current_repository_not_captured_snapshot`.
         {
-            use crate::record_replication::{RecordAction, RecordAuthorizer};
             use crate::record_repository::RecordRepositoryKey;
-            struct Allow;
-            impl RecordAuthorizer for Allow {
-                fn actor_is_certified(&self, _: &FileActor) -> bool {
-                    true
-                }
-                fn allows(&self, _: &FileActor, _: FileRecordId, _: RecordAction) -> bool {
-                    true
-                }
-            }
             let fixture = Fixture::new();
             let repository =
                 RecordRepository::open(fixture.temp.path().join("delayed-records")).unwrap();
@@ -1128,8 +1119,8 @@ mod tests {
                 properties: None,
             };
             let old_envelope = fixture.envelope(1, RecordOperationV1::SetMetadata(old.clone()));
-            repository.apply(key, &old_envelope, &Allow).unwrap();
-            let captured = repository.snapshot(key, &fixture.actor, &Allow).unwrap();
+            repository.apply(key, &old_envelope, &AllowAll).unwrap();
+            let captured = repository.snapshot(key, &fixture.actor, &AllowAll).unwrap();
             let current = FileMetadataV1 {
                 content_hash: Some(ContentHash([42; 32])),
                 byte_len: 42,
@@ -1151,7 +1142,7 @@ mod tests {
                         .unwrap();
                 });
                 wait.recv_timeout(tilo_test_env::hang_bound()).unwrap();
-                repository.apply(key, &current_envelope, &Allow).unwrap();
+                repository.apply(key, &current_envelope, &AllowAll).unwrap();
                 drop(namespace);
                 worker.join().unwrap();
             });
@@ -1393,17 +1384,7 @@ mod tests {
     fn conflicts_project_repository_resolution_into_typed_history() {
         // Phase `delayed_open_conflict_projects_repository_resolution`.
         {
-            use crate::record_replication::{RecordAction, RecordAuthorizer};
             use crate::record_repository::RecordRepositoryKey;
-            struct Allow;
-            impl RecordAuthorizer for Allow {
-                fn actor_is_certified(&self, _: &FileActor) -> bool {
-                    true
-                }
-                fn allows(&self, _: &FileActor, _: FileRecordId, _: RecordAction) -> bool {
-                    true
-                }
-            }
             let fixture = Fixture::new();
             let repository =
                 RecordRepository::open(fixture.temp.path().join("conflict-race")).unwrap();
@@ -1465,11 +1446,11 @@ mod tests {
             let mut captured = None;
             for (index, operation) in operations.into_iter().enumerate() {
                 let envelope = fixture.envelope(index as u64 + 1, operation);
-                repository.apply(key, &envelope, &Allow).unwrap();
+                repository.apply(key, &envelope, &AllowAll).unwrap();
                 if index == 2 {
                     captured = Some((
                         envelope,
-                        repository.snapshot(key, &fixture.actor, &Allow).unwrap(),
+                        repository.snapshot(key, &fixture.actor, &AllowAll).unwrap(),
                     ));
                 }
             }
@@ -1564,24 +1545,7 @@ mod tests {
     fn remote_transactions_and_merges_materialize_exactly_and_heal_after_restart() {
         // Phase `startup_reconciliation_heals_committed_but_unprojected_operations`.
         {
-            use crate::record_replication::{RecordAction, RecordAuthorizer};
             use crate::record_repository::{RecordRepository, RecordRepositoryKey};
-
-            struct Allow(FileActor);
-            impl RecordAuthorizer for Allow {
-                fn actor_is_certified(&self, actor: &FileActor) -> bool {
-                    *actor == self.0
-                }
-
-                fn allows(
-                    &self,
-                    actor: &FileActor,
-                    _record_id: FileRecordId,
-                    _action: RecordAction,
-                ) -> bool {
-                    *actor == self.0
-                }
-            }
 
             let fixture = Fixture::new();
             let repository =
@@ -1631,13 +1595,13 @@ mod tests {
                 .unwrap()
                 .enable_signed_content_authority();
             repository
-                .apply(key, &version_envelope, &Allow(fixture.actor))
+                .apply(key, &version_envelope, &AllowActor(fixture.actor))
                 .unwrap();
             repository
-                .apply(key, &revision_envelope, &Allow(fixture.actor))
+                .apply(key, &revision_envelope, &AllowActor(fixture.actor))
                 .unwrap();
             repository
-                .apply(key, &metadata_envelope, &Allow(fixture.actor))
+                .apply(key, &metadata_envelope, &AllowActor(fixture.actor))
                 .unwrap();
 
             assert!(
@@ -1699,26 +1663,7 @@ mod tests {
         // persisted independently with the same signed prepare+commit pair, and
         // the materializer runs after every received stream batch.
         {
-            use crate::record_replication::{RecordAction, RecordAuthorizer};
             use crate::record_repository::{RecordRepository, RecordRepositoryKey};
-
-            #[derive(Clone, Copy)]
-            struct AllowActor(FileActor);
-
-            impl RecordAuthorizer for AllowActor {
-                fn actor_is_certified(&self, actor: &FileActor) -> bool {
-                    *actor == self.0
-                }
-
-                fn allows(
-                    &self,
-                    actor: &FileActor,
-                    _record_id: FileRecordId,
-                    _action: RecordAction,
-                ) -> bool {
-                    *actor == self.0
-                }
-            }
 
             for source_first in [true, false] {
                 let temp = tempfile::tempdir().unwrap();
@@ -2215,24 +2160,7 @@ mod tests {
         reason = "The shared UTF-8 and Automerge merge fixture checks exact revision projection, history resolution, journal cleanup, and restart replay."
     )] // Shared end-to-end merge/restart scenario helper.
     fn remote_completed_merge_case(codec: ConflictMergeCodecV1) {
-        use crate::record_replication::{RecordAction, RecordAuthorizer};
         use crate::record_repository::{RecordRepository, RecordRepositoryKey};
-
-        #[derive(Clone, Copy)]
-        struct AllowActor(FileActor);
-        impl RecordAuthorizer for AllowActor {
-            fn actor_is_certified(&self, actor: &FileActor) -> bool {
-                *actor == self.0
-            }
-            fn allows(
-                &self,
-                actor: &FileActor,
-                _record_id: FileRecordId,
-                _action: RecordAction,
-            ) -> bool {
-                *actor == self.0
-            }
-        }
 
         let temp = tempfile::tempdir().unwrap();
         let workspace = Uuid::new_v4();
