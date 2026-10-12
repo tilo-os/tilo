@@ -166,6 +166,7 @@ pub const DOCUMENT_EXTENSIONS: &[&str] = &["md", "markdown", "odt", "docx", "rtf
 
 /// The extension and media type an office package stores picture `bytes`
 /// under: PNG, JPEG and GIF as themselves, anything else as a binary part.
+#[cfg(any(feature = "docx", feature = "odt"))]
 pub(crate) fn office_image_part(bytes: &[u8]) -> (&'static str, &'static str) {
     tilo_content::image_format(bytes)
         .filter(|format| matches!(format.extension, "png" | "jpg" | "gif"))
