@@ -1185,40 +1185,36 @@ jobs:
           ./os/dev/verify-kernel-provenance.sh "$ref"
           echo "KERNEL_RPMS_REF=$ref" >> "$GITHUB_ENV"
 
-      # Deterministic timestamp for reproducible builds: the HEAD commit time.
-      # buildkit stamps the image config and history with SOURCE_DATE_EPOCH.
-      # File mtimes are another matter: COPY keeps the checkout's and RUN
-      # leaves the build's wall clock, so every OCI export below sets
-      # rewrite-timestamp=true to clamp them to it as well.
+      # Deterministic timestamp for reproducible builds. buildkit stamps the
+      # image config and history with SOURCE_DATE_EPOCH. File mtimes are
+      # another matter: COPY keeps the checkout's and RUN leaves the build's
+      # wall clock, so every OCI export below sets rewrite-timestamp=true to
+      # clamp them to it as well.
       #
-      # Build / OS dev is not reproduced, and every stage that declares
-      # SOURCE_DATE_EPOCH carries it in its cache key: the commit time would
-      # rebuild the whole package rootfs on every push. It takes the newest
-      # creation time of its base and package images instead, which moves only
-      # when those do (and never precedes an RPM signature the offline dnf
-      # clock checks). The commit time stays in image.created.
-      - name: Compute SOURCE_DATE_EPOCH (HEAD commit time)
-        env:
-          DEV_BUILD: ${{ github.event_name == 'workflow_call' }}
+      # Every lane takes the newest creation time of its base and package
+      # images, which moves only when those do (and never precedes an RPM
+      # signature the offline dnf clock checks), not the commit time. Content
+      # embeds the epoch: dracut's cpio times in the 116 MB UKI, the rpmdb's
+      # install times, the fontconfig caches of directories pinned to it. With
+      # the commit time each release re-sent those although nothing in them
+      # changed. A publication and its independent rebuild compute the same
+      # value from the same pinned refs. Every stage that declares
+      # SOURCE_DATE_EPOCH also carries it in its cache key, so the commit time
+      # rebuilt the whole package rootfs on every push of Build / OS dev. The
+      # commit time stays in image.created.
+      - name: Compute SOURCE_DATE_EPOCH (base and package images)
         run: |
           set -euo pipefail
-          epoch="$(git log -1 --format=%ct)"
           # metadata-action stamps image.created with the time it runs. The
           # publication and its independent rebuild run in separate jobs, so
           # both take the commit time instead and their configs can agree.
-          echo "SOURCE_DATE_ISO=$(date -u -d "@$epoch" +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_ENV"
-          if [[ $DEV_BUILD == true ]]; then
-            # Every rootfs step is keyed on the epoch, and the kernel enters
-            # only near the end of it: with the kernel snapshot (refreshed
-            # several times a day) in the epoch, each refresh rebuilt the
-            # whole rootfs and the dev build toolchain on every slot.
-            epoch=0
-            for ref in "$BASE_REF" "$RPMS_REF"; do
-              created="$(date -u -d "$(skopeo inspect "docker://$ref" | jq -er .Created)" +%s)"
-              if (( created > epoch )); then epoch=$created; fi
-            done
-            (( epoch > 0 ))
-          fi
+          committed="$(git log -1 --format=%ct)"
+          echo "SOURCE_DATE_ISO=$(date -u -d "@$committed" +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_ENV"
+          # Every rootfs step is keyed on the epoch, and the kernel enters
+          # only near the end of it: with the kernel snapshot (refreshed
+          # several times a day) in the epoch, each refresh rebuilt the whole
+          # rootfs and the dev build toolchain on every slot.
+          epoch="$(./os/dev/image-epoch.sh "$BASE_REF" "$RPMS_REF")"
           echo "SOURCE_DATE_EPOCH=$epoch" >> "$GITHUB_ENV"
 
       - name: Select build, validation, or publication mode
@@ -2073,9 +2069,9 @@ jobs:
       # image: the dev lane's tilo-ci series name, or the archive in place
       # (before the builder is cleared, and its own rechunk after the
       # independent rebuild). The install gate then seals the rechunked tree.
-      # The epoch caps the time of files no package owns; like the dev lane's
-      # SOURCE_DATE_EPOCH it moves only with the base and the RPM snapshot,
-      # so consecutive builds share every unchanged layer.
+      # The epoch caps the time of files no package owns; it is the build's
+      # SOURCE_DATE_EPOCH, which moves only with the base and the RPM
+      # snapshot, so consecutive builds share every unchanged layer.
       - name: Rechunk the image
         id: rechunk
         if: steps.release-mode.outputs.rechunk == 'true' && (steps.build.outcome == 'success' || steps.build-uncached.outcome == 'success')
@@ -2088,12 +2084,8 @@ jobs:
           BUILD_DIGEST: ${{ steps.build.outputs.digest || steps.build-uncached.outputs.digest }}
         run: |
           set -euo pipefail
-          epoch=0
-          for ref in "$BASE_REF" "$RPMS_REF"; do
-            created="$(date -u -d "$(skopeo inspect "docker://$ref" | jq -er .Created)" +%s)"
-            if (( created > epoch )); then epoch=$created; fi
-          done
-          (( epoch > 0 ))
+          epoch="$SOURCE_DATE_EPOCH"
+          [[ $epoch == "$(./os/dev/image-epoch.sh "$BASE_REF" "$RPMS_REF")" ]]
           report="$RUNNER_TEMP/rechunk-$ARCH.json"
           if [[ $DEV_FAST == true ]]; then
             # BuildKit pushed the raw image as <series>-<arch>-layered.
@@ -3681,12 +3673,14 @@ jobs:
 
           cosign sign --yes --key "$COSIGN_KEY_REF" "$index_image"
           export RELEASE_DIGEST="$index_digest" TILO_GENERATION="$generation"
-          export SOURCE_DATE_EPOCH="$(git show -s --format=%ct HEAD)"
           export TILO_RELEASE_CHILDREN_JSON="$child_dependencies"
           source <(grep '^BASE_REF=' os/base-snapshot.env)
           RPMS_REF="$(./os/dev/resolve-rpm-snapshot.sh)"
           . os/kernel-snapshot.env
           export BASE_REF RPMS_REF
+          # The epoch the children were built with (Compute SOURCE_DATE_EPOCH).
+          SOURCE_DATE_EPOCH="$(./os/dev/image-epoch.sh "$BASE_REF" "$RPMS_REF")"
+          export SOURCE_DATE_EPOCH
           export TILO_KERNEL_REFS_JSON="$(jq -cn \
             --arg x86_64 "$KERNEL_RPMS_X86_64_REF" \
             --arg aarch64 "$KERNEL_RPMS_AARCH64_REF" \
