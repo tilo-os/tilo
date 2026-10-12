@@ -83,8 +83,9 @@ use shortcuts::{
     SHORTCUT_NAVIGATION_STEP, configured_shortcut_action, shortcut_action_label,
     shortcut_action_rows, shortcut_action_summary, shortcut_chord_from_event,
     shortcut_chord_keycaps, shortcut_guide_chord, shortcut_guide_content_height,
-    shortcut_navigation_columns, shortcut_navigation_height, shortcut_reference_columns,
-    shortcut_reference_group_height, shortcut_reference_rows, shortcut_reference_step,
+    shortcut_navigation_columns, shortcut_navigation_height, shortcut_note_lines,
+    shortcut_reference_columns, shortcut_reference_group_height, shortcut_reference_rows,
+    shortcut_reference_step,
 };
 #[cfg(test)]
 use std::path::PathBuf;
@@ -21797,9 +21798,10 @@ impl ShellOverlayHost {
             self.shortcut_help_modality(),
             ui::InputModality::Keyboard | ui::InputModality::Pointer
         ) {
-            let note_lines = 1
-                + usize::from(shortcut_action_summary(&self.shortcut_config).is_some())
-                + usize::from(self.desktop_controls.config().vim_mode);
+            let note_lines = shortcut_note_lines(
+                shortcut_action_summary(&self.shortcut_config).is_some(),
+                self.desktop_controls.config().vim_mode,
+            );
             98.0 + shortcut_guide_content_height(
                 width - 48.0,
                 SHORTCUT_GUIDE_ROWS.len(),
@@ -22317,7 +22319,7 @@ impl ShellOverlayHost {
                 let references = shortcut_reference_rows(shortcuts);
                 let summary = shortcut_action_summary(shortcuts);
                 let vim_mode = self.desktop_controls.config().vim_mode;
-                let note_lines = 1 + usize::from(summary.is_some()) + usize::from(vim_mode);
+                let note_lines = shortcut_note_lines(summary.is_some(), vim_mode);
                 // Everything below is laid out in content coordinates and
                 // shifted by `scroll`; the body clips it. The panel is as
                 // tall as this content, so scrolling only exists when the
@@ -22364,15 +22366,12 @@ impl ShellOverlayHost {
                         .with_weight(TextWeight::Semibold),
                 );
                 for (index, (label, previous, next)) in rows.iter().enumerate() {
-                    let column = index % nav_columns;
-                    let row = index / nav_columns;
-                    #[allow(
-                        clippy::cast_precision_loss,
-                        reason = "at most two navigation columns convert exactly"
-                    )]
-                    let column_width =
-                        (navigation_surface.width() - 28.0 - 8.0 * (nav_columns - 1) as f64)
-                            / nav_columns as f64;
+                    let column = index.checked_rem(nav_columns).unwrap_or_default();
+                    let row = index.checked_div(nav_columns).unwrap_or_default();
+                    let column_width = (navigation_surface.width()
+                        - 28.0
+                        - 8.0 * f64_of_usize(nav_columns.saturating_sub(1)))
+                        / f64_of_usize(nav_columns);
                     let x = navigation_surface.x0
                         + 14.0
                         + f64_of_usize(column) * (column_width + 8.0);
@@ -22403,7 +22402,8 @@ impl ShellOverlayHost {
                         let hit =
                             Rect::new(rect.x0 - 5.0, rect.y0 - 5.0, rect.x1 + 5.0, rect.y1 + 5.0);
                         // Pointer hit-testing runs in screen space.
-                        let screen_hit = hit - vello::kurbo::Vec2::new(0.0, scroll);
+                        let screen_hit =
+                            Rect::new(hit.x0, hit.y0 - scroll, hit.x1, hit.y1 - scroll);
                         let active = self.shortcut_rebind == Some(action);
                         let focused =
                             self.shortcut_guide_focus == Some(ShortcutGuideFocus::Binding(action));
@@ -22434,7 +22434,8 @@ impl ShellOverlayHost {
                         shortcuts.bindings.get(&action) != defaults.bindings.get(&action)
                     });
                     if changed {
-                        let screen_reset = reset - vello::kurbo::Vec2::new(0.0, scroll);
+                        let screen_reset =
+                            Rect::new(reset.x0, reset.y0 - scroll, reset.x1, reset.y1 - scroll);
                         let hovered = self
                             .last_cursor
                             .is_some_and(|point| screen_reset.contains(point));
@@ -22516,9 +22517,14 @@ impl ShellOverlayHost {
                     .chunks(shortcuts::SHORTCUT_REFERENCE_GROUP_ROWS)
                     .enumerate()
                 {
-                    let column = group_index % reference_columns;
-                    let band = group_index / reference_columns;
-                    let x = body.x0 + f64_of_usize(column) * (reference_width + reference_gap);
+                    let column = group_index
+                        .checked_rem(reference_columns)
+                        .unwrap_or_default();
+                    let band = group_index
+                        .checked_div(reference_columns)
+                        .unwrap_or_default();
+                    let x =
+                        body.x0 + f64_of_usize(column) * (reference_width + reference_gap);
                     let y = reference_top
                         + f64_of_usize(band) * (reference_height + reference_gap);
                     let group = Rect::new(x, y, x + reference_width, y + reference_height);

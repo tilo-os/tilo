@@ -245,7 +245,7 @@ pub(super) fn shortcut_action_summary(shortcuts: &ShortcutConfig) -> Option<Stri
 /// width. Fewer columns on a narrow body keep every chord inside its cell
 /// instead of clipping it.
 pub(super) fn shortcut_reference_columns(body_width: f64) -> usize {
-    if body_width >= 700.0 {
+    if body_width >= 640.0 {
         3
     } else if body_width >= 460.0 {
         2
@@ -294,6 +294,14 @@ pub(super) fn shortcut_navigation_height(pairs: usize, columns: usize) -> f64 {
 }
 
 pub(super) const SHORTCUT_NAVIGATION_STEP: f64 = 44.0;
+
+/// Lines of pointer notes: the fixed pointer line, your action chords and the
+/// vim-mode hint when present.
+pub(super) fn shortcut_note_lines(has_summary: bool, vim_mode: bool) -> usize {
+    1_usize
+        .saturating_add(usize::from(has_summary))
+        .saturating_add(usize::from(vim_mode))
+}
 
 /// Height of the pointer notes under the reference: a rule, then one line per
 /// note.

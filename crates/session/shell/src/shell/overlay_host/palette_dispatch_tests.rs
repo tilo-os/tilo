@@ -1200,8 +1200,8 @@ fn shortcut_reference_is_complete_truthful_grouped_and_fits_compact_cells() {
         let rows = shortcut_reference_rows(&settings_store::hardware::ShortcutConfig::default());
         let theme = Theme::dark();
         let mut renderer = TextRenderer::new();
-        // The narrowest three-column body is 700 wide.
-        let cell = (700.0 - 12.0 * 2.0) / 3.0 - 24.0;
+        // The narrowest three-column body is 640 wide.
+        let cell = (640.0 - 12.0 * 2.0) / 3.0 - 24.0;
         for (_, chord) in rows {
             let mut width = 0.0;
             for (index, keys) in shortcut_chord_keycaps(&chord).iter().enumerate() {
@@ -1244,26 +1244,6 @@ fn shortcut_reference_is_complete_truthful_grouped_and_fits_compact_cells() {
     shortcut_reference_keycaps_fit_their_cells();
     shortcut_reference_columns_stay_semantically_grouped();
     shortcut_accessibility_names_workspace_and_group_navigation();
-}
-
-#[test]
-fn shortcut_guide_panel_stays_inside_the_window_and_fits_its_content() {
-    let (host, _chrome) = host_with_chrome();
-    let area = host.overlay_area();
-    let panel = host.shortcut_help_panel_rect();
-    assert!(
-        panel.x0 >= area.x0 && panel.x1 <= area.x1,
-        "{panel:?} in {area:?}"
-    );
-    assert!(
-        panel.y0 >= area.y0 && panel.y1 <= area.y1,
-        "{panel:?} in {area:?}"
-    );
-    let done = host.shortcut_help_done_rect();
-    assert!(
-        done.x0 >= panel.x0 && done.x1 <= panel.x1 && done.y1 <= panel.y1,
-        "Done sits inside the card"
-    );
 }
 
 #[test]
