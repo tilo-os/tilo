@@ -5,7 +5,7 @@
 //!
 //! The stand-in `ssh` runs the remote line in a local shell after it checks
 //! the options tilo-vm passes; the stand-in `sudo` accepts only the
-//! non-interactive form tilo-vm uses, and refuses like sudo without a grant
+//! non-interactive forms tilo-vm uses (`sudo -n -- CMD`, and the probe's `sudo -n true`), and refuses like sudo without a grant
 //! while a `deny` file exists.
 #![allow(
     clippy::unwrap_used,
@@ -69,10 +69,11 @@ impl Device {
             &bin.join("sudo"),
             &format!(
                 "#!/bin/sh\n\
-                 if [ -e {deny} ] || [ \"$1\" != -n ] || [ \"$2\" != -- ]; then\n\
+                 if [ -e {deny} ] || [ \"$1\" != -n ]; then\n\
                  \x20 echo 'sudo: a password is required' >&2; exit 1\n\
                  fi\n\
-                 shift 2\n\
+                 shift\n\
+                 if [ \"$1\" = -- ]; then shift; fi\n\
                  exec \"$@\"\n",
                 deny = bin.join("deny").display(),
             ),
