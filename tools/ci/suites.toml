@@ -843,7 +843,7 @@ package = "tilo-imager-profile"
 # Compiles the imager's profile modules, whose rules include the locale list.
 inputs = [
   "apps/imager/src/model.rs", "apps/imager/src/profile.rs", "apps/imager/src/profile_cli.rs",
-  "apps/install-profile-model/src/lib.rs", "apps/install-profile-model/locales.txt",
+  "crates/session/install-profile-model/src/lib.rs", "crates/session/install-profile-model/locales.txt",
   "os/usr/libexec/tilo-installer-profile-extract",
 ]
 readers = ["tools/imager-profile/src/main.rs", "tools/imager-profile/tests/embed.rs"]
