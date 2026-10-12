@@ -10,7 +10,7 @@ use tilo_actions::{
     ResultSpec,
 };
 use ui::semantic_document_read::{
-    MAX_REQUEST_BYTES, ReadPage, RegisteredSemanticReader, SemanticReadError,
+    ReadPage, RegisteredSemanticReader, SemanticReadError, decode_request,
 };
 
 const OPERATION: &str = "chat.feedback.read";
@@ -30,15 +30,15 @@ pub(super) struct Request {
 }
 
 pub(super) fn validate(resource: &Resource, payload: &[u8]) -> Result<(), SemanticReadError> {
-    if payload.len() > MAX_REQUEST_BYTES {
-        return Err(SemanticReadError::Limit);
-    }
-    let request: Request =
-        serde_json::from_slice(payload).map_err(|_| SemanticReadError::InvalidRequest)?;
+    let request: Request = decode_request(payload)?;
     if request.id.len() != 32
         || !request.id.bytes().all(|c| c.is_ascii_hexdigit())
-        || resource.kind != "chat.feedback"
-        || resource.id.as_str() != format!("chat.feedback:{}", request.id)
+        || resource.kind != "chat.workspace.feedback"
+        || resource.id.as_str()
+            != ui::tilo_resource::items::item_resource_id::<crate::resource::Chat>(
+                "feedback",
+                &ui::tilo_resource::Id::from_raw(request.id),
+            )
     {
         return Err(SemanticReadError::InvalidRequest);
     }
@@ -50,33 +50,29 @@ pub(super) fn validate(resource: &Resource, payload: &[u8]) -> Result<(), Semant
     Ok(())
 }
 
-pub(super) fn spec(id: &str) -> ActionSpec {
-    let id = id.to_owned();
+/// A feedback read published on a chat item: the semantic read `operation`
+/// with `params`, answering with JSON of `schema`, its request built from the
+/// invocation's arguments.
+pub(super) fn read_spec<R: Serialize>(
+    (id, label, description): (&str, &str, &str),
+    operation: &'static str,
+    params: Vec<ActionParam>,
+    schema: fn() -> &'static serde_json::Value,
+    request: impl Fn(&tilo_actions::ActionArgs) -> R + Send + Sync + 'static,
+) -> ActionSpec {
     ActionSpec::typed_operation(
-        "read-feedback-receipt",
-        "Read feedback receipt",
-        "Read this report from its canonical destination",
+        id,
+        label,
+        description,
         OperationKind::Effect,
-        OPERATION,
-        vec![ActionParam::optional(
-            "expectedAuthor",
-            ParamType::Text,
-            "Require the attributed reporter root",
-        )],
+        operation,
+        params,
         move |args| {
-            let expected_author = args
-                .get("expectedAuthor")
-                .and_then(|value| value.to_json().as_str().map(str::to_owned));
-            EncodedAction::encode_operation(
-                OPERATION,
-                &Request {
-                    id: id.clone(),
-                    expected_author,
-                },
-            )
-            .unwrap_or_else(|_| EncodedAction {
-                type_id: OPERATION.into(),
-                payload: Vec::new(),
+            EncodedAction::encode_operation(operation, &request(args)).unwrap_or_else(|_| {
+                EncodedAction {
+                    type_id: operation.into(),
+                    payload: Vec::new(),
+                }
             })
         },
     )
@@ -86,6 +82,40 @@ pub(super) fn spec(id: &str) -> ActionSpec {
         },
         ..ActionContract::view()
     })
+}
+
+/// What a receipt read is invoked with.
+#[derive(Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Params {
+    expected_author: Option<String>,
+}
+
+pub(crate) fn spec(id: &str) -> ActionSpec {
+    let id = id.to_owned();
+    read_spec(
+        (
+            ui::feedback::destination::READ_RECEIPT,
+            "Read feedback receipt",
+            "Read this report from its canonical destination",
+        ),
+        OPERATION,
+        vec![ActionParam::optional(
+            "expectedAuthor",
+            ParamType::Text,
+            "Require the attributed reporter root",
+        )],
+        schema,
+        move |args| {
+            let Params { expected_author } =
+                serde_json::from_value(serde_json::Value::Object(args.to_json()))
+                    .unwrap_or_default();
+            Request {
+                id: id.clone(),
+                expected_author,
+            }
+        },
+    )
 }
 
 fn project(
@@ -105,8 +135,7 @@ pub(super) fn snapshot(
     heads: &[automerge::ChangeHash],
     payload: &[u8],
 ) -> Result<(ui::feedback::Receipt, Vec<super::TriageEntry>), SemanticReadError> {
-    let request: Request =
-        serde_json::from_slice(payload).map_err(|_| SemanticReadError::InvalidRequest)?;
+    let request: Request = decode_request(payload)?;
     let document = document
         .clone()
         .fork_at(heads)
@@ -133,15 +162,7 @@ pub(super) fn snapshot(
 pub(super) fn schema() -> &'static serde_json::Value {
     static SCHEMA: OnceLock<serde_json::Value> = OnceLock::new();
     SCHEMA.get_or_init(|| {
-        let mut schema = crate::semantic_read::action::result_schema().clone();
-        let Some(properties) = schema
-            .get_mut("properties")
-            .and_then(serde_json::Value::as_object_mut)
-        else {
-            return serde_json::json!(false);
-        };
-        properties.insert(
-            "content".into(),
+        ui::semantic_document_read::result_schema(
             serde_json::json!({
                 "type":"object", "additionalProperties":false,
                 "required":["id","digest","destination","report"], "properties":{
@@ -156,9 +177,8 @@ pub(super) fn schema() -> &'static serde_json::Value {
                         }}
                 }
             }),
-        );
-        properties.insert("nextCursor".into(), serde_json::json!({"type":"null"}));
-        schema
+            false,
+        )
     })
 }
 

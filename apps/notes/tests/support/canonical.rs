@@ -2,12 +2,12 @@
 //! and the storage owner that holds it. No app/widget construction.
 use notes::{
     PageId, Workspace,
-    actions::{self, NotesAction},
+    actions::{self, Action},
     model::{PageMeta, TagAssignment, TagMeta, WorkspaceData},
 };
 use std::{cell::RefCell, collections::HashMap, path::PathBuf, rc::Rc};
 use ui::{
-    permissions::{Actor, PermissionContext, Role, UserId},
+    permissions::{PermissionContext, Role, UserId},
     record::{RecordCheckout, RecordId, RecordKind, RecordOwners, RecordStore},
 };
 use uuid::Uuid;
@@ -49,19 +49,16 @@ impl NotebookFixture {
                         id: root,
                         title: "Projects".into(),
                         parent: None,
-                        order: "a".into(),
                     },
                     PageMeta {
                         id: child,
                         title: "Launch".into(),
                         parent: Some(root),
-                        order: "a".into(),
                     },
                     PageMeta {
                         id: empty,
                         title: "Empty".into(),
                         parent: None,
-                        order: "b".into(),
                     },
                 ],
                 tags: vec![TagMeta {
@@ -87,11 +84,7 @@ impl NotebookFixture {
             tag,
             author: UserId("notes-fixture-author".into()),
             authority: Rc::new(RefCell::new(
-                PermissionContext::from_capabilities(
-                    Actor::person(Some(Role::Owner), "notes-fixture-author"),
-                    vec![],
-                )
-                .at_unix_time(100),
+                PermissionContext::member("notes-fixture-author", Role::Owner).at_unix_time(100),
             )),
             workspace,
             bodies: RefCell::new(bodies),
@@ -107,7 +100,7 @@ impl NotebookFixture {
     }
 
     /// The actions that write the fixture's notebook.
-    pub fn actions(&self) -> Vec<NotesAction> {
+    pub fn actions(&self) -> Vec<Action> {
         let titles = self
             .workspace
             .pages()
@@ -118,7 +111,7 @@ impl NotebookFixture {
             .workspace
             .pages()
             .iter()
-            .map(actions::upsert_page_action)
+            .map(|page| actions::create_page_action(page.id, page.parent, &page.title))
             .collect::<Vec<_>>();
         for page in self.workspace.pages() {
             let Some(body) = self.bodies.borrow().get(&page.id).cloned() else {
@@ -128,7 +121,7 @@ impl NotebookFixture {
             out.push(actions::write_body_action(page.id, &blocks));
         }
         for tag in self.workspace.tags() {
-            out.push(actions::upsert_tag_action(tag));
+            out.push(actions::new_tag_action(tag.id, &tag.name));
         }
         for assignment in &self.workspace.data.tag_assignments {
             out.push(actions::set_tag_assignment_action(
@@ -150,7 +143,8 @@ impl NotebookFixture {
             .reserve_record(&checkout)
             .unwrap()
             .initialize(|doc| {
-                notes::notebook::initialize_empty(doc)?;
+                <notes::Notebook as ui::tilo_resource::Resource>::initialize(doc)
+                    .map_err(|error| error.to_string())?;
                 for action in &actions {
                     tilo_actions::apply_local(doc, action, actions::encode(action))
                         .map_err(|error| error.to_string())?;

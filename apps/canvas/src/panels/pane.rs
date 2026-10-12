@@ -96,24 +96,4 @@ impl ui::widget::Decorator for Band {
         self.content
             .draw(scene, transform, text_renderer, theme, presence);
     }
-
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        permissions: &ui::permissions::PermissionContext,
-    ) {
-        self.ground(scene, transform, theme);
-        self.content.draw_with_presence(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            presence,
-            permissions,
-        );
-    }
 }

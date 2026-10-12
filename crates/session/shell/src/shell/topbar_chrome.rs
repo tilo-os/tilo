@@ -135,13 +135,13 @@ fn refresh_clock_activity(state: &mut chrome_state::ChromeState, poll: &mut Cloc
 /// pins the palette: a screenshot harness comparing whole frames needs every
 /// part still. Unset (every real session) reads the wall clock.
 fn clock_snapshot() -> ClockSnapshot {
-    let now = chrono::Local::now();
+    let now = ui::clock::local_now();
     ClockSnapshot {
         unix_seconds: now.timestamp(),
         clock: std::env::var("TILO_CLOCK")
             .ok()
             .filter(|pinned| !pinned.is_empty())
-            .unwrap_or_else(|| now.format("%H:%M").to_string()),
+            .unwrap_or_else(|| ui::clock::time_of_day(&now)),
         weekday: now.format("%a").to_string(),
         date: now.format("%-d %B").to_string(),
     }

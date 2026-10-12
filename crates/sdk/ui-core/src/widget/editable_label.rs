@@ -247,6 +247,17 @@ impl EditableLabel {
         self.editing
     }
 
+    /// What the last draw painted outside the label's rect: while it is
+    /// being edited, what its field painted beyond it (a correction chip).
+    #[must_use]
+    pub fn overhang(&self) -> Option<Rect> {
+        if self.editing {
+            self.input.overhang()
+        } else {
+            None
+        }
+    }
+
     /// Selects the whole value so the first keystroke replaces it (native
     /// rename behaviour).
     pub fn begin_edit(&mut self) {
@@ -588,12 +599,14 @@ impl Widget for EditableLabel {
         state: &mut crate::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
-        self.semantic_target.as_deref() == Some(target) && self.perform_action(action, state, path)
+        self.semantic_target.as_deref() == Some(target)
+            && self.perform_action(action, &[], state, path)
     }
 
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
+        _key_path: &[u64],
         state: &mut crate::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
@@ -612,7 +625,7 @@ impl Widget for EditableLabel {
                 _ => return false,
             }
         }
-        Widget::perform_action(&mut self.input, action, state, path)
+        Widget::perform_action(&mut self.input, action, &[], state, path)
     }
 }
 

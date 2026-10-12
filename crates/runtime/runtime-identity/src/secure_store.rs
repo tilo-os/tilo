@@ -98,14 +98,6 @@ fn secret_key(locator: &str) -> String {
     format!("{PURPOSE_ATTRIBUTE}.{}", locator.to_ascii_lowercase())
 }
 
-// Attribute names recorded by secret-tool before the platform store existed.
-fn legacy_attributes(locator: &str) -> [(&str, &str); 2] {
-    [
-        ("tilo-purpose", PURPOSE_ATTRIBUTE),
-        ("tilo-identity-key", locator),
-    ]
-}
-
 fn store_error(error: SecretError) -> io::Error {
     match error {
         SecretError::Unavailable(_) | SecretError::Denied | SecretError::Unsupported(_) => {
@@ -170,7 +162,7 @@ impl SecretProvider for SecretServiceProvider {
         validate_software_locator(locator)?;
         let stored = self
             .store
-            .get_with_legacy_blocking(&secret_key(locator), &legacy_attributes(locator))
+            .get_blocking(&secret_key(locator))
             .map_err(store_error)?
             .ok_or_else(crate::secret_service_unavailable_error)?;
         // Corruption must surface; never mask it by generating a replacement key.
@@ -190,7 +182,7 @@ impl SecretProvider for SecretServiceProvider {
     fn remove(&self, locator: &str) -> io::Result<()> {
         validate_software_locator(locator)?;
         self.store
-            .delete_with_legacy_blocking(&secret_key(locator), &legacy_attributes(locator))
+            .delete_blocking(&secret_key(locator))
             .map_err(store_error)
     }
 }

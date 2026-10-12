@@ -41,7 +41,6 @@
 use std::collections::HashMap;
 
 use taffy::prelude::*;
-use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
@@ -1336,7 +1335,6 @@ fn run_bench_scroll(
     let run_pass = |force_compute: bool| -> ScrollBenchPass {
         let theme = Theme::dark();
         let presence = PresenceCtx::empty();
-        let permission = PermissionContext::permissive();
         let mut tr = TextRenderer::new();
         let mut taffy: TaffyTree<()> = TaffyTree::new();
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
@@ -1395,14 +1393,7 @@ fn run_bench_scroll(
         widget.apply_layout(&taffy, child, Point::ORIGIN);
         {
             let mut scene = Scene::new();
-            widget.draw_with_presence(
-                &mut scene,
-                Affine::IDENTITY,
-                &mut tr,
-                &theme,
-                &presence,
-                &permission,
-            );
+            widget.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
             widget.mark_drawn();
         }
 
@@ -1468,14 +1459,7 @@ fn run_bench_scroll(
                 f64::from(w),
                 f64::from(h),
             ));
-            widget.draw_with_presence(
-                &mut scene,
-                Affine::IDENTITY,
-                &mut tr,
-                &theme,
-                &presence,
-                &permission,
-            );
+            widget.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
             presence.pop_viewport(prev);
             widget.mark_drawn();
             draw.push(t.elapsed().as_micros());
@@ -1549,42 +1533,22 @@ fn run_bench_scroll(
     Ok(())
 }
 
-/// Parse a route specification into a starting [`tube::model::Route`] for a
-/// screen-specific shot. Recognises `home`, `trending`, `subs`/
-/// `subscriptions`, `history`, `settings`, `watch:<video_id>`, and
-/// `queue`, `search:<query>`.
-/// Run one offscreen frame against `widget` and write RGBA to `out` as PNG.
-/// Mirrors `ui::App`'s cycle: sync → `build_layout` → `compute_layout` → `apply_layout` → draw.
+/// Render `widget` offscreen through the live window's frame lifecycle,
+/// settled (animations finished, images loaded), and write it to `out` as PNG.
 #[cfg(all(feature = "live", feature = "media"))]
 fn render_shot_to_png(
-    mut widget: Box<dyn Widget>,
+    widget: Box<dyn Widget>,
     viewport: (u32, u32),
     out: &std::path::Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    use ui::launch::{ShotFrame, ShotLayout};
-
-    // `TILO_SHOTS_THEME=light|high-contrast` renders the shot under that theme so
-    // theme-driven chrome can be proven across palettes; defaults to dark.
-    let theme = match std::env::var("TILO_SHOTS_THEME").ok().as_deref() {
-        Some("light") => Theme::light(),
-        Some("high-contrast") => Theme::high_contrast(),
-        _ => Theme::dark(),
-    };
-    let mut frame = ShotFrame::new(viewport, theme).with_layout(ShotLayout::Measured);
-    frame.sync(widget.as_mut());
-    frame.layout(widget.as_mut())?;
-
-    // Lazy image widgets (thumbnails, avatars, banners) resolve their decoded
-    // image in `sync`, but the FIRST sync above ran before `build_layout`, when
-    // those widgets didn't exist yet. In the live app the persistent tree
-    // re-syncs every frame while images are pending, so a prewarmed image folds
-    // in on a later frame; a single-frame shot must sync the now-built tree once
-    // more so a prewarmed thumbnail/avatar actually paints instead of the
-    // gradient/initials fallback.
-    frame.sync(widget.as_mut());
-
-    let scene = frame.draw(widget.as_mut());
-    frame.write_png(&scene, out);
+    let mut frame = ui::headless::FrameHarness::new_with_theme(
+        ui::State::new(),
+        widget,
+        viewport,
+        ui::launch::shot_theme_from_env()?,
+    );
+    frame.settle_for_capture(ui::launch::CAPTURE_SETTLE_BOUND);
+    frame.render_png(out);
     println!("tube: wrote shot to {}", out.display());
     Ok(())
 }

@@ -746,8 +746,11 @@ pub(crate) fn submit_feedback(
             &ui::bound_dispatch::BoundActionAddress {
                 instance_id: 1,
                 address: tilo_actions::ActionAddress::new(
-                    format!("chat.channel:{}", admission.destination.channel),
-                    "submit-feedback",
+                    tilo_app::feedback::destination::item(
+                        tilo_app::feedback::destination::CHANNELS,
+                        &admission.destination.channel,
+                    ),
+                    tilo_app::feedback::destination::SUBMIT,
                 ),
             },
             serde_json::json!({"submission": submission})

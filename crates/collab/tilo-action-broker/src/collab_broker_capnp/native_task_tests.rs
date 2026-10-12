@@ -10,10 +10,11 @@ use crate::services::{
     WorkspaceTaskExecution,
 };
 use ed25519_dalek::{Signer as _, SigningKey};
+use tilo_action_policy::roles::AgentPreset;
 use tilo_peer_state::owner_commit::{
     CommitFuture, CommitOperation, OwnerCommitRequest, OwnerCommitService,
 };
-use tilo_peer_state::workspace_membership::{AgentMembershipPreset, WorkspaceMembershipCommand};
+use tilo_peer_state::workspace_membership::WorkspaceMembershipCommand;
 use tilo_peer_state::workspace_task::{
     WorkspaceTaskAuthority, WorkspaceTaskCommand, WorkspaceTaskSnapshot,
 };
@@ -48,14 +49,13 @@ impl WorkspaceAuthority for Native {
                 .peer()
                 .admitted_room()
                 .ok_or("native document unavailable")?;
-            let (_, owner, capabilities) = tilo_peer_state::room::extract_governed_fields(doc);
             let mut workspace = tilo_desktop_model::Workspace::new(
                 tilo_desktop_model::WorkspaceId(1),
                 "Native execution",
             );
             workspace.room = room();
-            workspace.owner = owner;
-            workspace.capabilities = capabilities;
+            workspace.policy =
+                tilo_desktop_model::projection::room_policy_of(doc, &room().to_string());
             workspace.tasks = tilo_peer_state::workspace_task::snapshot(doc)?.tasks;
             let mut tree = tilo_desktop_model::DesktopTree {
                 active: workspace.id,
@@ -261,7 +261,9 @@ impl Fixture {
                 caller: native.certificate.clone(),
                 command: WorkspaceMembershipCommand::AddAgent {
                     agent: "scribe".into(),
-                    preset: AgentMembershipPreset::Operator,
+                    // Reading only: the agent may use a tool when the
+                    // room grants it, never because its run was approved.
+                    preset: AgentPreset::Observer,
                 },
             },
         };
@@ -477,7 +479,7 @@ async fn notes_target(f: &Fixture) -> (channel_handle::Client, invocation_stream
         row.set_operation_kind("effect");
         row.set_params_json("[]");
         let contract = tilo_actions::ActionContract {
-            permission: tilo_actions::PermissionRequirement::Write,
+            kind: tilo_actions::ActionKind::Undoable,
             execution: tilo_actions::ExecutionMode::Background { cancellable: true },
             result: tilo_actions::ResultSpec::Job,
             ..Default::default()
@@ -502,7 +504,38 @@ fn grant_notes(f: &Fixture) {
     set_notes_permission(f, true);
 }
 fn set_notes_permission(f: &Fixture, may_write: bool) {
-    use collab_types::caps::{CapOverride, Effect, Scope, Subject, Verb};
+    use tilo_action_policy::{Answer, Grant, KindSet, Subject, TreePath};
+    let room_id = room().to_string();
+    let append = tilo_actions::action_node(
+        &TreePath::room(&room_id),
+        "so.tilo.notes",
+        "document",
+        "notes:release",
+        None,
+        "append",
+    );
+    let grant = if may_write {
+        Grant::new(
+            "fixture-notes-append",
+            Subject::agent("scribe"),
+            append,
+            KindSet::UNDOABLE,
+            Answer::Allow,
+            Subject::person(hex::encode(f.native.certificate.user_public_key)),
+        )
+    } else {
+        Grant::new(
+            "fixture-notes-restrict",
+            Subject::agent("scribe"),
+            append,
+            KindSet::ALL,
+            Answer::Deny,
+            Subject::person(hex::encode(f.native.certificate.user_public_key)),
+        )
+    };
+    put_grant(f, grant);
+}
+fn put_grant(f: &Fixture, grant: tilo_action_policy::Grant) {
     let now = std::time::SystemTime::now();
     let messages = f
         .native
@@ -510,29 +543,7 @@ fn set_notes_permission(f: &Fixture, may_write: bool) {
         .with_current(room(), |view| {
             let before = view.peer().clone();
             let mut next = before.clone();
-            next.put_governed_capabilities(
-                &[CapOverride::new(
-                    Subject::agent("scribe"),
-                    Scope::Action {
-                        app: "so.tilo.notes".into(),
-                        resource: "notes:release".into(),
-                        action: "append".into(),
-                    },
-                    if may_write {
-                        Effect::Grant
-                    } else {
-                        Effect::Restrict
-                    },
-                    if may_write { Verb::Write } else { Verb::Read },
-                )
-                .with_id(if may_write {
-                    "fixture-notes-append"
-                } else {
-                    "fixture-notes-restrict"
-                })],
-                &f.native.key,
-                now,
-            )?;
+            next.put_governed_grants(&[grant], &f.native.key, now)?;
             next.durable_mutation_messages(
                 &before,
                 &f.native.key,
@@ -621,6 +632,52 @@ async fn native_live_owner_revocation_fences_new_and_retained_actions_with_stale
             assert!(
                 control.send().promise.await.is_err(),
                 "removed agent must not read pending directions through a stale projection"
+            );
+            drop(f);
+        })
+        .await;
+}
+
+/// The agent may append to the notes, but the task it runs only reads:
+/// the run is held to its task's grant set.
+#[tokio::test(flavor = "current_thread")]
+async fn a_native_run_is_held_to_its_tasks_grant_set() {
+    use tilo_action_policy::{Answer, Grant, KindSet, Lifetime, Subject, TreePath};
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let f = Fixture::new();
+            f.approve();
+            let agent = f.channel(100, true);
+            let run = delivered(&agent).await;
+            let (_target, stream) = notes_target(&f).await;
+            grant_notes(&f);
+            put_grant(
+                &f,
+                Grant::new(
+                    "task-reads-only",
+                    Subject::Task(f.task.clone()),
+                    TreePath::room(room().to_string()),
+                    KindSet::READ,
+                    Answer::Allow,
+                    Subject::person(hex::encode(f.native.certificate.user_public_key)),
+                )
+                .with_lifetime(Lifetime::Task(f.task.clone())),
+            );
+            assert!(
+                invoke(&agent, &run, uuid::Uuid::from_u128(8100))
+                    .await
+                    .unwrap_err()
+                    .to_string()
+                    .contains("owner")
+            );
+            assert!(
+                tokio::time::timeout(
+                    Duration::from_millis(30),
+                    stream.read_request().send().promise
+                )
+                .await
+                .is_err(),
+                "the refused action never reached the app"
             );
             drop(f);
         })

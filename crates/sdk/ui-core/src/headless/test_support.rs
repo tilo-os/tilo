@@ -1,5 +1,5 @@
 //! Helpers shared by application tests that drive a root under framework
-//! History through the headless [`Driver`].
+//! History through the headless [`FrameHarness`].
 #![cfg(any(test, feature = "test-support"))]
 #![allow(
     clippy::panic,
@@ -8,14 +8,14 @@
     reason = "test helpers report a broken fixture by panicking the test that called them"
 )]
 
-use super::{Driver, InspectionNode};
+use super::{FrameHarness, InspectionNode};
 use crate::a11y::AccessNode;
 
 /// Every semantic node of the current frame, paired with the inspection path
-/// of the widget that owns it (the owner [`Driver::perform_semantic_named`]
+/// of the widget that owns it (the owner [`FrameHarness::perform_semantic_named`]
 /// routes to).
 #[must_use]
-pub fn semantic_nodes(driver: &Driver) -> Vec<(String, AccessNode)> {
+pub fn semantic_nodes(driver: &FrameHarness) -> Vec<(String, AccessNode)> {
     fn access(node: &AccessNode, owner: &str, out: &mut Vec<(String, AccessNode)>) {
         out.push((owner.to_owned(), node.clone()));
         for child in &node.children {
@@ -38,7 +38,10 @@ pub fn semantic_nodes(driver: &Driver) -> Vec<(String, AccessNode)> {
 
 /// The first semantic node matching `matches`, if any.
 #[must_use]
-pub fn find_semantic(driver: &Driver, matches: impl Fn(&AccessNode) -> bool) -> Option<AccessNode> {
+pub fn find_semantic(
+    driver: &FrameHarness,
+    matches: impl Fn(&AccessNode) -> bool,
+) -> Option<AccessNode> {
     semantic_nodes(driver)
         .into_iter()
         .map(|(_, node)| node)
@@ -47,7 +50,7 @@ pub fn find_semantic(driver: &Driver, matches: impl Fn(&AccessNode) -> bool) -> 
 
 /// Every published resource as `(id, label, action ids)`, depth first.
 #[must_use]
-pub fn resource_snapshot(driver: &Driver) -> Vec<(String, String, Vec<String>)> {
+pub fn resource_snapshot(driver: &FrameHarness) -> Vec<(String, String, Vec<String>)> {
     fn collect(
         resource: &crate::tilo_actions::Resource,
         out: &mut Vec<(String, String, Vec<String>)>,

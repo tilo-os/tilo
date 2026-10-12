@@ -61,12 +61,13 @@ impl Rooms {
         route: &DocumentRoute,
         create: bool,
     ) -> Result<ChannelContentKeys, String> {
-        let host = &self.inner.host;
         let workspace_id = room.workspace_id();
         if route.workspace_id().ok() != Some(workspace_id) {
             return Err("the record is not in this room".into());
         }
-        let workspace = host
+        let workspace = self
+            .inner
+            .host
             .workspaces
             .lock()
             .await
@@ -74,16 +75,16 @@ impl Rooms {
             .cloned()
             .ok_or("this relay does not hold the room")?;
         let own = crate::auth::AuthenticatedPeer {
-            cert: host.cert.clone(),
-            user_public_key: host.cert.user_public_key,
-            device_public_key: host.cert.device_public_key,
-            role: crate::auth::PeerRole::from_cert(&host.cert),
+            cert: self.inner.host.cert.clone(),
+            user_public_key: self.inner.host.cert.user_public_key,
+            device_public_key: self.inner.host.cert.device_public_key,
+            role: crate::auth::PeerRole::from_cert(&self.inner.host.cert),
         };
         let trust = RelayTrust {
-            revocations: &host.revocations,
-            policy: &host.trust_policy,
-            own_user: &host.cert.user_public_key,
-            agents: &host.agents,
+            revocations: &self.inner.host.revocations,
+            policy: &self.inner.host.trust_policy,
+            own_user: &self.inner.host.cert.user_public_key,
+            agents: &self.inner.host.agents,
         };
         let decision = room_access::decide(
             &*workspace.lock().await,

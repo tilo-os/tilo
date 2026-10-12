@@ -7,6 +7,7 @@
 //! its toggle, the find band, the status bar, the property list, the empty
 //! state and the toast.
 
+use ui::num::f32_of_f64;
 use ui::paint::PaintCtx;
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextKind, TextRenderer, TextStyle};
@@ -155,7 +156,7 @@ impl HexView {
         let inset = f64::from(theme.tokens.spacing.s4);
         let style = theme.text(TextRole::Title).with_kind(TextKind::Identifier);
         let room = (g.mode.x0 - g.header.x0 - inset - f64::from(theme.tokens.spacing.s3)).max(0.0);
-        let name = tr.elide_to_width_style(&self.file_name, narrow(room), &style);
+        let name = tr.elide_to_width_style(&self.file_name, f32_of_f64(room), &style);
         let (_, line) = tr.measure_style(&name, None, &style);
         tr.draw_style(
             scene,
@@ -635,13 +636,4 @@ impl HexView {
             );
         }
     }
-}
-
-/// Narrows a bounded on-screen width to the renderer's `f32`.
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "a title room is a few thousand logical pixels at most, exact in f32"
-)]
-fn narrow(px: f64) -> f32 {
-    px as f32
 }

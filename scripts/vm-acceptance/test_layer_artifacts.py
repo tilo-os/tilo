@@ -116,6 +116,7 @@ class HandoffTests(unittest.TestCase):
     def test_consumer_uses_only_artifact_command_and_keeps_slot_readback(self):
         class Vm:
             slot = "acceptance"
+            binary = "tilo-vm"
             def __init__(self):
                 self.calls = []
             def run(self, *args, **kwargs):
@@ -135,6 +136,22 @@ class HandoffTests(unittest.TestCase):
         for call in vm.calls[:-1]:
             self.assertIn(self.digest, call)
             self.assertNotIn("--builder", call)
+
+    def test_named_consumer_runs_every_artifact_swap_in_the_ref_checkout(self):
+        def fake(binary):
+            vm = unittest.mock.Mock(slot="acceptance", binary=binary)
+            vm.run.return_value = json.dumps(dict(slot=dict(components={name: "d" * 64 for name in artifacts.COHORT})))
+            return vm
+        vm, consumer = fake("ref-tilo-vm"), fake("workflow-tilo-vm")
+        with patch.object(run, "git", return_value=SOURCE), \
+                patch.object(run, "component_scopes", return_value={}):
+            result = run.swap_components(vm, ["apps+runtime"], "ref", self.root,
+                                         dict(self.handoff(), consumer=consumer))
+        swaps = [call for call in consumer.run.call_args_list if call.args[1] == "swap-artifact"]
+        self.assertEqual(len(swaps), 4)
+        self.assertTrue(all(call.kwargs["cwd"] == self.root for call in swaps))
+        self.assertTrue(all(call.args[1] != "swap-artifact" for call in vm.run.call_args_list))
+        self.assertTrue(all(entry["consumer"] == "workflow-tilo-vm" for entry in result["components"]))
 
     def test_invalid_handoff_fails_before_any_vm_action(self):
         vm = unittest.mock.Mock(slot="acceptance")
@@ -207,6 +224,10 @@ class HandoffTests(unittest.TestCase):
         self.assertEqual(workflow.count("name: vm-cohort-${{ github.run_id }}-${{ github.run_attempt }}-${{ steps.plan.outputs.target }}"), 2)
         self.assertIn("RECEIPT_SHA256: ${{ steps.cohort.outputs.receipt-sha256 }}", workflow)
         self.assertIn('--artifact-receipt-sha256 "$RECEIPT_SHA256"', workflow)
+        # The verifier is the workflow's own tilo-vm, never the ref's under test.
+        self.assertIn("--artifact-tilo-vm /usr/local/bin/tilo-vm-artifact", workflow)
+        self.assertLess(workflow.index("Build the artifact consumer from the workflow checkout"),
+                        workflow.index("Produce exact-source signed cohort layers"))
         self.assertIn("if-no-files-found: error", workflow)
         self.assertLess(workflow.index("Verify the same-run cohort handoff"), workflow.index("Prepare the libvirt session user"))
         producer = workflow.split("Produce exact-source signed cohort layers", 1)[1].split("Build the fixture-matching", 1)[0]

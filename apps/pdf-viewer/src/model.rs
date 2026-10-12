@@ -10,6 +10,7 @@
 //! the PDF engine; [`sample_document`] is the bundled demonstration used by the
 //! screenshot harness and tests, laid out from its blocks.
 
+use ui::tilo_resource::{self, JsonSchema, Model};
 use uuid::Uuid;
 
 /// US-Letter page geometry, in PDF points.
@@ -174,8 +175,9 @@ impl Tool {
 // Annotation colour swatches (resolved against the OS theme at draw time)
 // ----------------------------------------------------------------------
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Swatch {
+    #[default]
     Yellow,
     Green,
     Pink,
@@ -246,12 +248,36 @@ impl Swatch {
     }
 }
 
+/// A swatch is stored and carried as its key: `yellow`, … or `#rrggbb`.
+impl serde::Serialize for Swatch {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.key())
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for Swatch {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        String::deserialize(deserializer).map(|key| Swatch::parse(&key))
+    }
+}
+
+impl JsonSchema for Swatch {
+    fn json_schema() -> serde_json::Value {
+        serde_json::json!({
+            "type": "string",
+            "description": "yellow, green, pink, blue, purple, or an exact colour #rrggbb",
+        })
+    }
+}
+
 // ----------------------------------------------------------------------
 // Geometry
 // ----------------------------------------------------------------------
 
 /// A rectangle in page-point space (origin top-left of the page).
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize, JsonSchema,
+)]
 pub struct PtRect {
     pub x: f64,
     pub y: f64,
@@ -290,7 +316,8 @@ impl PtRect {
 // ----------------------------------------------------------------------
 
 /// How text markup is drawn and exported.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
 pub enum MarkupStyle {
     Highlight,
     Underline,
@@ -348,7 +375,9 @@ pub fn free_text_height(text: &str, size: f64, width: f64) -> f64 {
     lines * size * 1.2 + 4.0
 }
 
-#[derive(Clone, Debug)]
+/// What an annotation marks: its kind and its geometry.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "lowercase")]
 pub enum AnnoKind {
     /// Text markup (highlight, underline, strike-through) over one band per
     /// line it covers.
@@ -410,7 +439,19 @@ impl AnnoKind {
 /// (exact however the page is displayed); records written before that stored
 /// the reader's page-point space. Everything the reader holds for drawing is
 /// in page-point space.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    Model,
+    serde::Serialize,
+    serde::Deserialize,
+    JsonSchema,
+)]
+#[serde(rename_all = "lowercase")]
 pub enum GeomSpace {
     #[default]
     Page,
@@ -519,8 +560,10 @@ impl Comment {
 /// The visible content of a placed signature: either the signer's typed name
 /// (rendered in a signature script) or freehand strokes, normalised into the
 /// field's `0..1` box so it scales to any placement size.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize, JsonSchema)]
+#[serde(tag = "ink", rename_all = "lowercase")]
 pub enum SignatureInk {
+    #[default]
     /// Render the signer's name as a script-style typed signature.
     Typed,
     /// The signer drew this by hand: one or more polylines in normalised
@@ -769,11 +812,19 @@ impl PageMap {
 
 /// A form field value held in the document's record, keyed by the field's
 /// fully qualified name.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, JsonSchema)]
+#[serde(tag = "kind", content = "value", rename_all = "lowercase")]
 pub enum FormEntry {
     Text(String),
     Checked { on: bool, export: Option<String> },
     Choice(String),
+}
+
+/// An empty text value: what a field holds before anyone fills it.
+impl Default for FormEntry {
+    fn default() -> Self {
+        FormEntry::Text(String::new())
+    }
 }
 
 // ----------------------------------------------------------------------

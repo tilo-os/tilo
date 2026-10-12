@@ -410,8 +410,7 @@ impl Widget for DatePicker {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).copied().unwrap_or_default();
-        self.set_rect(crate::widget::placed(&l, origin));
+        self.set_rect(crate::widget::layout_rect(taffy, node, origin));
     }
 
     fn draw(
@@ -590,6 +589,7 @@ impl Widget for DatePicker {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
+        _key_path: &[u64],
         _state: &mut crate::widget::Edits<'_>,
         _root: &ModelPath,
     ) -> bool {
@@ -1020,6 +1020,7 @@ mod tests {
             assert!(Widget::perform_action(
                 &mut picker,
                 &crate::a11y::Action::SetValue("2026-11-23".into()),
+                &[],
                 &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
@@ -1029,6 +1030,7 @@ mod tests {
             assert!(!Widget::perform_action(
                 &mut picker,
                 &crate::a11y::Action::SetValue("2026-02-30".into()),
+                &[],
                 &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
@@ -1077,7 +1079,7 @@ mod tests {
         let narrow = picker.intrinsic_height(168.0);
         let wide = picker.intrinsic_height(224.0);
         assert!(narrow < wide, "cells follow the column's width");
-        let app = crate::headless::Driver::new(
+        let app = crate::headless::FrameHarness::new(
             crate::State::new(),
             Box::new(crate::column![picker.with_accessible_name("Month")]),
             (200, 600),

@@ -3,7 +3,7 @@ use super::{AutoCommit, ChangeHash, PeerDocumentReadError, PeerRead, SystemTime}
 use crate::resources::native::NativeBatch;
 use crate::state::Route;
 use crate::state::backend::{BoundedNative, PeerDocument};
-use collab_types::{DocumentMutation, Ed25519PublicKey, OpClass, SealedCompaction, SignedOp};
+use collab_types::{DocumentMutation, Ed25519PublicKey, OpKind, SealedCompaction, SignedOp};
 
 /// Complete history bytes and heads from one bounded, currently permitted read.
 /// It carries data only, with no owner credential or mutable peer.
@@ -137,7 +137,7 @@ impl PeerRead<'_> {
         let compaction = document
             .sealed
             .first()
-            .filter(|op| op.op_class == OpClass::Compaction)
+            .filter(|op| op.kind == OpKind::Compaction)
             .map(SealedCompaction::parse)
             .transpose()
             .map_err(|error| PeerDocumentReadError::Opening(error.to_string()))?;

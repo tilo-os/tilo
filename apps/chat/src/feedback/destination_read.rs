@@ -2,11 +2,9 @@
 use std::sync::OnceLock;
 
 use serde::{Deserialize, Serialize};
-use tilo_actions::{
-    ActionContract, ActionSpec, EncodedAction, OperationKind, Resource, ResultSpec,
-};
+use tilo_actions::{ActionSpec, Resource};
 use ui::semantic_document_read::{
-    MAX_REQUEST_BYTES, ReadPage, RegisteredSemanticReader, SemanticReadError,
+    ReadPage, RegisteredSemanticReader, SemanticReadError, decode_request,
 };
 
 const OPERATION: &str = "chat.feedback.destination";
@@ -20,15 +18,15 @@ struct Request {
 }
 
 fn validate(resource: &Resource, payload: &[u8]) -> Result<(), SemanticReadError> {
-    if payload.len() > MAX_REQUEST_BYTES {
-        return Err(SemanticReadError::Limit);
-    }
-    let request: Request =
-        serde_json::from_slice(payload).map_err(|_| SemanticReadError::InvalidRequest)?;
+    let request: Request = decode_request(payload)?;
+    let named =
+        ui::tilo_resource::items::item_of_resource::<crate::resource::Chat>(resource.id.as_str());
     if request.channel.is_empty()
         || request.channel.len() > 256
-        || resource.kind != "chat.channel"
-        || resource.id.as_str() != format!("chat.channel:{}", request.channel)
+        || resource.kind != "chat.workspace.channels"
+        || !named.is_some_and(|(field, channel)| {
+            field == "channels" && channel.as_str() == request.channel
+        })
     {
         return Err(SemanticReadError::InvalidRequest);
     }
@@ -37,32 +35,19 @@ fn validate(resource: &Resource, payload: &[u8]) -> Result<(), SemanticReadError
 
 pub(crate) fn spec(channel: &str) -> ActionSpec {
     let channel = channel.to_owned();
-    ActionSpec::typed_operation(
-        "read-feedback-destination",
-        "Read feedback destination",
-        "Inspect this existing text channel",
-        OperationKind::Effect,
+    super::receipt_read::read_spec(
+        (
+            ui::feedback::destination::READ_DESTINATION,
+            "Read feedback destination",
+            "Inspect this existing text channel",
+        ),
         OPERATION,
         Vec::new(),
-        move |_| {
-            EncodedAction::encode_operation(
-                OPERATION,
-                &Request {
-                    channel: channel.clone(),
-                },
-            )
-            .unwrap_or_else(|_| EncodedAction {
-                type_id: OPERATION.into(),
-                payload: Vec::new(),
-            })
+        schema,
+        move |_| Request {
+            channel: channel.clone(),
         },
     )
-    .with_contract(ActionContract {
-        result: ResultSpec::Json {
-            schema: schema().clone(),
-        },
-        ..ActionContract::view()
-    })
 }
 
 fn project(
@@ -70,13 +55,13 @@ fn project(
     heads: &[automerge::ChangeHash],
     payload: &[u8],
 ) -> Result<ReadPage, SemanticReadError> {
-    let request: Request =
-        serde_json::from_slice(payload).map_err(|_| SemanticReadError::InvalidRequest)?;
+    let request: Request = decode_request(payload)?;
     let document = document
         .clone()
         .fork_at(heads)
         .map_err(|_| SemanticReadError::Malformed)?;
-    if !crate::doc::ChatDoc::list_channels(&document)
+    if !crate::projection::read(&document)
+        .channel_rows()
         .iter()
         .any(|channel| {
             channel.id == request.channel && channel.kind != crate::model::ChannelKind::Voice
@@ -93,11 +78,7 @@ fn project(
 fn schema() -> &'static serde_json::Value {
     static SCHEMA: OnceLock<serde_json::Value> = OnceLock::new();
     SCHEMA.get_or_init(|| {
-        let mut schema = crate::semantic_read::action::result_schema().clone();
-        let Some(properties) = schema.get_mut("properties").and_then(serde_json::Value::as_object_mut) else { return serde_json::json!(false); };
-        properties.insert("content".into(), serde_json::json!({"type":"object","additionalProperties":false,"required":["channel","kind"],"properties":{"channel":{"type":"string","minLength":1,"maxLength":256},"kind":{"const":"text"}}}));
-        properties.insert("nextCursor".into(),serde_json::json!({"type":"null"}));
-        schema
+        ui::semantic_document_read::result_schema(serde_json::json!({"type":"object","additionalProperties":false,"required":["channel","kind"],"properties":{"channel":{"type":"string","minLength":1,"maxLength":256},"kind":{"const":"text"}}}), false)
     })
 }
 
@@ -108,10 +89,9 @@ mod tests {
 
     #[test]
     fn destination_read_requires_an_existing_text_channel() {
-        let mut document = automerge::AutoCommit::new();
-        crate::doc::ChatDoc::seed_if_empty(&mut document);
+        let mut document = crate::testing::demo_doc();
         document.commit();
-        let channels = crate::doc::ChatDoc::list_channels(&document);
+        let channels = crate::testing::channels(&document);
         let text = channels
             .iter()
             .find(|channel| channel.kind == crate::model::ChannelKind::Text)

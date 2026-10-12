@@ -17,6 +17,15 @@ impl<T: Read + Write + Send> BrokerIo for T {}
 /// certificate. Host handoff authentication and downstream certificate/route
 /// admission remain mandatory. `Debug` never prints the stream or certificate.
 pub struct BrokerSigningIdentity {
+    metadata: BrokerMetadata,
+    stream: Mutex<Box<dyn BrokerIo>>,
+}
+
+/// Public identity metadata the host reports for a broker connection.
+///
+/// Receiving it authenticates nothing: the certificate is opaque and
+/// unchecked. Deliberately not `Debug`, so the certificate is never printed.
+pub struct BrokerMetadata {
     display_name: String,
     avatar_color: [u8; 3],
     group_public_key: [u8; 32],
@@ -25,7 +34,6 @@ pub struct BrokerSigningIdentity {
     threshold: u16,
     total_shares: u16,
     share_index: u16,
-    stream: Mutex<Box<dyn BrokerIo>>,
 }
 
 impl std::fmt::Debug for BrokerSigningIdentity {
@@ -56,77 +64,16 @@ impl BrokerSigningIdentity {
         S: Read + Write + Send + 'static,
     {
         write_frame(&mut stream, &wire::Request::Metadata)?;
-        match read_frame::<wire::Response>(&mut stream)? {
-            wire::Response::Metadata {
-                display_name,
-                avatar_color,
-                group_public_key,
-                signing_public_key,
-                device_certificate,
-                threshold,
-                total_shares,
-                share_index,
-            } => Ok(Self {
-                display_name,
-                avatar_color,
-                group_public_key,
-                signing_public_key,
-                device_certificate,
-                threshold,
-                total_shares,
-                share_index,
-                stream: Mutex::new(Box::new(stream)),
-            }),
-            wire::Response::Denied(reason) | wire::Response::Error(reason) => {
-                Err(NotAvailable::ConnectionFailed(io::Error::new(
-                    io::ErrorKind::PermissionDenied,
-                    reason,
-                )))
-            }
-            wire::Response::Signature(_) | wire::Response::ChannelKeys { .. } => {
-                Err(NotAvailable::ConnectionFailed(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "identity broker returned an invalid metadata response",
-                )))
-            }
-        }
+        let metadata = BrokerMetadata::from_reply(read_frame(&mut stream)?)?;
+        Ok(Self {
+            metadata,
+            stream: Mutex::new(Box::new(stream)),
+        })
     }
 
-    /// Human-picked name supplied by the host.
-    pub fn display_name(&self) -> &str {
-        &self.display_name
-    }
-    /// Avatar RGB supplied by the host.
-    pub fn avatar_color(&self) -> [u8; 3] {
-        self.avatar_color
-    }
-    /// Root/group public key supplied by the host.
-    pub fn group_public_key(&self) -> [u8; 32] {
-        self.group_public_key
-    }
-    /// Device public key supplied by the host.
-    pub fn signing_public_key(&self) -> [u8; 32] {
-        self.signing_public_key
-    }
-    /// Opaque certificate bytes; receiving them does not validate the chain.
-    pub fn device_certificate(&self) -> Option<&[u8]> {
-        self.device_certificate.as_deref()
-    }
-    /// Threshold in the host's t-of-n metadata.
-    pub fn threshold(&self) -> u16 {
-        self.threshold
-    }
-    /// Total shares in the host's t-of-n metadata.
-    pub fn total_shares(&self) -> u16 {
-        self.total_shares
-    }
-    /// Share index supplied by the host.
-    pub fn share_index(&self) -> u16 {
-        self.share_index
-    }
-    /// Whether the host reports a 1-of-1 identity.
-    pub fn is_single_device(&self) -> bool {
-        self.threshold == 1 && self.total_shares == 1
+    /// The public metadata the host reported when this connection opened.
+    pub fn metadata(&self) -> &BrokerMetadata {
+        &self.metadata
     }
 
     /// Request the existing generic action grant; no local signing fallback.
@@ -212,7 +159,77 @@ impl BrokerSigningIdentity {
             NotAvailable::ConnectionFailed(io::Error::other("identity broker lock poisoned"))
         })?;
         write_frame(&mut **stream, request)?;
-        read_signature_response(&mut **stream)
+        signature_reply(read_frame(&mut **stream)?)
+    }
+}
+
+impl BrokerMetadata {
+    /// Parse the host's answer to [`wire::Request::Metadata`].
+    pub(super) fn from_reply(response: wire::Response) -> Result<Self, NotAvailable> {
+        match response {
+            wire::Response::Metadata {
+                display_name,
+                avatar_color,
+                group_public_key,
+                signing_public_key,
+                device_certificate,
+                threshold,
+                total_shares,
+                share_index,
+            } => Ok(Self {
+                display_name,
+                avatar_color,
+                group_public_key,
+                signing_public_key,
+                device_certificate,
+                threshold,
+                total_shares,
+                share_index,
+            }),
+            wire::Response::Denied(reason) | wire::Response::Error(reason) => {
+                Err(permission_denied(reason))
+            }
+            wire::Response::Signature(_) | wire::Response::ChannelKeys { .. } => Err(invalid_data(
+                "identity broker returned an invalid metadata response",
+            )),
+        }
+    }
+
+    /// Human-picked name supplied by the host.
+    pub fn display_name(&self) -> &str {
+        &self.display_name
+    }
+    /// Avatar RGB supplied by the host.
+    pub fn avatar_color(&self) -> [u8; 3] {
+        self.avatar_color
+    }
+    /// Root/group public key supplied by the host.
+    pub fn group_public_key(&self) -> [u8; 32] {
+        self.group_public_key
+    }
+    /// Device public key supplied by the host.
+    pub fn signing_public_key(&self) -> [u8; 32] {
+        self.signing_public_key
+    }
+    /// Opaque certificate bytes; receiving them does not validate the chain.
+    pub fn device_certificate(&self) -> Option<&[u8]> {
+        self.device_certificate.as_deref()
+    }
+    /// Threshold in the host's t-of-n metadata.
+    pub fn threshold(&self) -> u16 {
+        self.threshold
+    }
+    /// Total shares in the host's t-of-n metadata.
+    pub fn total_shares(&self) -> u16 {
+        self.total_shares
+    }
+    /// Share index supplied by the host.
+    pub fn share_index(&self) -> u16 {
+        self.share_index
+    }
+    /// Whether the host reports a 1-of-1 identity.
+    pub fn is_single_device(&self) -> bool {
+        self.threshold == 1 && self.total_shares == 1
     }
 }
 
@@ -229,40 +246,27 @@ pub(super) fn channel_keys_reply(
             generation,
             keys: (!keys.is_empty()).then_some(keys),
         }),
-        wire::Response::Denied(reason) => Err(NotAvailable::ConnectionFailed(io::Error::new(
-            io::ErrorKind::PermissionDenied,
-            reason,
-        ))),
+        wire::Response::Denied(reason) => Err(permission_denied(reason)),
         wire::Response::Error(reason) => {
             Err(NotAvailable::ConnectionFailed(io::Error::other(reason)))
         }
-        _ => Err(NotAvailable::ConnectionFailed(io::Error::new(
-            io::ErrorKind::InvalidData,
+        _ => Err(invalid_data(
             "identity broker returned an invalid channel-keys response",
-        ))),
+        )),
     }
 }
 
-fn read_signature_response(
-    stream: &mut (impl Read + Write + ?Sized),
-) -> Result<[u8; 64], NotAvailable> {
-    match read_frame::<wire::Response>(stream)? {
-        wire::Response::Signature(bytes) if bytes.len() == 64 => {
-            let mut signature = [0_u8; 64];
-            signature.copy_from_slice(&bytes);
-            Ok(signature)
-        }
-        wire::Response::Denied(reason) => Err(NotAvailable::ConnectionFailed(io::Error::new(
-            io::ErrorKind::PermissionDenied,
-            reason,
-        ))),
+pub(super) fn signature_reply(response: wire::Response) -> Result<[u8; 64], NotAvailable> {
+    match response {
+        wire::Response::Signature(bytes) => <[u8; 64]>::try_from(bytes.as_slice())
+            .map_err(|_| invalid_data("identity broker returned an invalid signature response")),
+        wire::Response::Denied(reason) => Err(permission_denied(reason)),
         wire::Response::Error(reason) => {
             Err(NotAvailable::ConnectionFailed(io::Error::other(reason)))
         }
-        _ => Err(NotAvailable::ConnectionFailed(io::Error::new(
-            io::ErrorKind::InvalidData,
+        _ => Err(invalid_data(
             "identity broker returned an invalid signature response",
-        ))),
+        )),
     }
 }
 
@@ -288,6 +292,14 @@ pub(super) fn read_frame<T: serde::de::DeserializeOwned>(
 
 pub(super) fn connection_failed(error: FrameError) -> NotAvailable {
     NotAvailable::ConnectionFailed(error.into())
+}
+
+pub(super) fn permission_denied(reason: String) -> NotAvailable {
+    NotAvailable::ConnectionFailed(io::Error::new(io::ErrorKind::PermissionDenied, reason))
+}
+
+pub(super) fn invalid_data(message: &'static str) -> NotAvailable {
+    NotAvailable::ConnectionFailed(io::Error::new(io::ErrorKind::InvalidData, message))
 }
 
 #[cfg(test)]
@@ -442,23 +454,23 @@ mod tests {
                 wire::Response::Signature(vec![13; 64]),
             ]);
             let identity = BrokerSigningIdentity::from_connected_io(stream).expect("metadata");
-            assert_eq!(identity.display_name(), "Fixture");
-            assert_eq!(identity.avatar_color(), [1, 2, 3]);
-            assert_eq!(identity.group_public_key(), [4; 32]);
-            assert_eq!(identity.signing_public_key(), [5; 32]);
+            assert_eq!(identity.metadata().display_name(), "Fixture");
+            assert_eq!(identity.metadata().avatar_color(), [1, 2, 3]);
+            assert_eq!(identity.metadata().group_public_key(), [4; 32]);
+            assert_eq!(identity.metadata().signing_public_key(), [5; 32]);
             assert_eq!(
-                identity.device_certificate(),
+                identity.metadata().device_certificate(),
                 Some(b"opaque fixture certificate".as_slice())
             );
             assert_eq!(
                 (
-                    identity.threshold(),
-                    identity.total_shares(),
-                    identity.share_index()
+                    identity.metadata().threshold(),
+                    identity.metadata().total_shares(),
+                    identity.metadata().share_index()
                 ),
                 (1, 1, 1)
             );
-            assert!(identity.is_single_device());
+            assert!(identity.metadata().is_single_device());
             assert_eq!(
                 identity
                     .sign_for("document.save", b"message")

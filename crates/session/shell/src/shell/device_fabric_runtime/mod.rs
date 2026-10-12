@@ -5,6 +5,9 @@
 //! history, not the live Wayland selection, until explicitly activated.
 
 mod display_auto_leases;
+mod display_refresh;
+#[cfg(test)]
+mod display_refresh_tests;
 pub(crate) mod person_layout;
 mod receive_recovery;
 mod remote_capture;
@@ -1601,7 +1604,11 @@ pub struct LocalFabricCapabilities {
 pub struct DeviceFabricRuntime {
     counter: u64,
     last_sample: Option<Instant>,
+    display_refresh: display_refresh::DisplayRefresh,
     last_publish: Option<Instant>,
+    /// What the display files last said, so a sample that changed nothing
+    /// leaves them (and every watcher of their directory) alone.
+    published_displays: Option<PublishedDisplays>,
     local_fingerprint: Option<[u8; 32]>,
     merged_settings_fingerprint: Option<[u8; 32]>,
     roaming_provenance_fingerprint: Option<[u8; 32]>,
@@ -1618,6 +1625,7 @@ pub struct DeviceFabricRuntime {
     inbound_gamepads: BTreeMap<[u8; 16], InboundGamepadForwarding>,
     local_app_focus: Option<crate::shell::physical_gamepad::PhysicalGamepadBinding>,
     policy: Option<ContinuityPolicySnapshot>,
+    policy_cache: Option<ContinuityPolicySnapshot>,
     policy_store_stamp: Option<SystemTime>,
     last_policy_store_check: Option<Instant>,
 }
@@ -1631,7 +1639,9 @@ impl DeviceFabricRuntime {
         Self {
             counter,
             last_sample: None,
+            display_refresh: display_refresh::DisplayRefresh::new(network.loop_waker()),
             last_publish: None,
+            published_displays: None,
             local_fingerprint: None,
             merged_settings_fingerprint: None,
             roaming_provenance_fingerprint: None,
@@ -1653,6 +1663,7 @@ impl DeviceFabricRuntime {
             inbound_gamepads: BTreeMap::new(),
             local_app_focus: None,
             policy: None,
+            policy_cache: None,
             policy_store_stamp: None,
             last_policy_store_check: None,
         }
@@ -1702,17 +1713,17 @@ impl DeviceFabricRuntime {
     }
 
     fn current_policy(&mut self, now: Instant) -> ContinuityPolicySnapshot {
-        if self.policy.is_some() && self.policy_cache_fresh(now) {
-            return self.policy.unwrap_or_default();
+        if self.policy_cache.is_some() && self.policy_cache_fresh(now) {
+            return self.policy_cache.unwrap_or_default();
         }
         self.last_policy_store_check = Some(now);
         let stamp = settings_store::settings_path()
             .and_then(|path| std::fs::metadata(path).ok()?.modified().ok());
-        if self.policy.is_none() || stamp != self.policy_store_stamp {
-            self.policy = Some(ContinuityPolicySnapshot::load());
+        if self.policy_cache.is_none() || stamp != self.policy_store_stamp {
+            self.policy_cache = Some(ContinuityPolicySnapshot::load());
             self.policy_store_stamp = stamp;
         }
-        self.policy.unwrap_or_default()
+        self.policy_cache.unwrap_or_default()
     }
 
     fn policy_cache_fresh(&self, now: Instant) -> bool {
@@ -1757,6 +1768,15 @@ impl DeviceFabricRuntime {
         selection: &SharedSelection,
         local: LocalFabricCapabilities,
     ) {
+        let changes = self.display_refresh.take_changes(local);
+        if changes.resample {
+            self.last_sample = None;
+        }
+        if changes.policy {
+            // Keep the last enforced policy: teardown compares against it.
+            self.policy_cache = None;
+            self.last_policy_store_check = None;
+        }
         let policy = self.current_policy(Instant::now());
         self.enforce_policy(network, selection, policy);
         // Always drain Bluetooth worker completions. Policy teardown removes
@@ -1828,7 +1848,7 @@ impl DeviceFabricRuntime {
             crate::shell::mpris::withdraw_handoff_reports();
         }
         let Some((device, label)) = network.local_device_fabric_identity() else {
-            publish_device_displays(network, policy);
+            publish_device_displays(network, policy, &mut self.published_displays);
             return;
         };
         if !self.settings_origin_initialized {
@@ -1889,10 +1909,12 @@ impl DeviceFabricRuntime {
             );
         }
         let fingerprint = local_observation_fingerprint(&candidate, rich_outputs.as_deref());
-        publish_device_displays(network, policy);
-        let heartbeat_due = self
-            .last_publish
-            .is_none_or(|published| now.duration_since(published) >= PRESENCE_HEARTBEAT);
+        // A heartbeat tells the person's connected devices this one is still
+        // here; with none connected it would only rewrite the checkpoint on
+        // disk every beat. The first device to connect gets one at once.
+        let heartbeat_due = self.last_publish.is_none_or(|published| {
+            now.duration_since(published) >= PRESENCE_HEARTBEAT && network.has_personal_routes()
+        });
         if fingerprint != self.local_fingerprint || heartbeat_due {
             self.counter = tentative_stamp.counter;
             if fingerprint == self.local_fingerprint {
@@ -1922,6 +1944,7 @@ impl DeviceFabricRuntime {
             tracing::debug!(%error, "could not publish rich display observations");
         }
         self.merge_remote_state(network, selection, &device, policy);
+        publish_device_displays(network, policy, &mut self.published_displays);
         crate::shell::device_unlock_runtime::refresh(network);
         if policy.permits(ContinuityCapability::WifiSettings)
             && let Err(error) = network.refresh_wifi_credential_recipients()
@@ -7297,16 +7320,6 @@ pub fn take_spatial_input() -> Vec<(
     )
 }
 
-/// Drain controllers whose target-issued lease was revoked, expired, or lost
-/// with the device. The compositor releases only input actually attributed to
-/// that controller, so cleanup cannot release a sibling controller's keys.
-pub fn take_spatial_input_releases() -> Vec<crate::shell::personal_continuity::DeviceId> {
-    spatial_input_state().lock().map_or_else(
-        |_| Vec::new(),
-        |mut spatial| spatial.release_controllers.drain(..).collect(),
-    )
-}
-
 fn native_display_connectors(
     snapshot: &settings_store::hardware::DisplayHardwareSnapshot,
 ) -> Vec<crate::shell::device_fabric::DisplayConnectorPlacement> {
@@ -7445,7 +7458,16 @@ pub fn observed_device_displays(
         .collect()
 }
 
-fn publish_device_displays(network: &ShellNetwork, policy: ContinuityPolicySnapshot) {
+type PublishedDisplays = (
+    settings_store::device_displays::DeviceDisplaySnapshot,
+    settings_store::person_displays::PersonDisplays,
+);
+
+fn publish_device_displays(
+    network: &ShellNetwork,
+    policy: ContinuityPolicySnapshot,
+    published: &mut Option<PublishedDisplays>,
+) {
     person_layout::refresh(network, policy);
     let Ok((publisher_pid, publisher_start_ticks)) = settings_store::hardware::publisher_identity()
     else {
@@ -7474,9 +7496,6 @@ fn publish_device_displays(network: &ShellNetwork, policy: ContinuityPolicySnaps
                     .is_ok_and(|owner| network.current_personal_route(&owner).is_some());
         }
     }
-    if let Err(error) = snapshot.save() {
-        tracing::debug!(%error, "could not publish device display observations");
-    }
     let view = settings_store::person_displays::PersonDisplays {
         schema_version: settings_store::person_displays::SCHEMA_VERSION,
         publisher_pid,
@@ -7489,9 +7508,27 @@ fn publish_device_displays(network: &ShellNetwork, policy: ContinuityPolicySnaps
             .filter(|_| policy.permits(ContinuityCapability::DisplayInput))
             .map_or_else(Vec::new, |local| network.person_display_devices(local)),
     };
-    if let Err(error) = view.save() {
-        tracing::debug!(%error, "could not publish person display observations");
+    if let Some((saved_snapshot, saved_view)) = published.as_ref()
+        && *saved_snapshot == snapshot
+        && *saved_view == view
+    {
+        return;
     }
+    let saved = match snapshot.save() {
+        Ok(()) => true,
+        Err(error) => {
+            tracing::debug!(%error, "could not publish device display observations");
+            false
+        }
+    };
+    let saved = match view.save() {
+        Ok(()) => saved,
+        Err(error) => {
+            tracing::debug!(%error, "could not publish person display observations");
+            false
+        }
+    };
+    *published = saved.then_some((snapshot, view));
 }
 
 fn build_local_snapshot(

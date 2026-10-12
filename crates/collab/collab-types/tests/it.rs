@@ -22,8 +22,6 @@ mod compaction;
 mod invite;
 #[path = "replay_defence.rs"]
 mod replay_defence;
-#[path = "role_table.rs"]
-mod role_table;
 #[path = "signing.rs"]
 mod signing;
 #[path = "validator.rs"]

@@ -280,7 +280,10 @@ The frame builder (`crates/session/shell/src/compositor/frame.rs`) produces one 
 
 `FrameBuilder::paint_with_damage` records the shell in ordered sections and
 proves which pixels changed since the previous frame; `None` means "redraw
-everything". The top bar and Quick Settings are bounded sections. The
+everything". The top bar and Quick Settings are bounded sections; Quick
+Settings also has parts (its panel, the strip ribbon and the strip rail), so
+moving focus to another strip repaints the ribbon and the rail rather than
+everything between them. The
 workspace, its overlays and everything above Quick Settings are split into
 keyed **damage parts** (`ui::scene_parts`): a draw site marks a stretch of
 commands with a key and the bounds those commands can paint, and every
@@ -314,21 +317,77 @@ between and where, and its chrome and the layers over its widgets are
 window-sized parts. A frame compared with the one that painted the generation
 before repaints only that damage (a tooltip repaints its chip); any other
 change to the app (it moved, repainted whole, a frame was skipped) repaints
-its tile. A tile's edge and the tab list's focus ring are parts too. Foreign
+its tile. A tile's edge and the tab list's focus ring are parts too; the
+edge's bounds are a square at each rounded corner and a band as thin as the
+stroke along each side, so a focus change repaints the outline, not a band as
+deep as the corners. Foreign
 buffer swaps keep their
 client-reported damage, from `wl_surface.damage_buffer` as from
 `wl_surface.damage` (scaled to buffer pixels unless a viewport crops or
 scales the buffer). A strip pan moves pixels instead of repainting them:
-while a strip pans, the producer draws the desktop as three layers
-(`FramePaint::cache`: what is behind the windows, the strips in canvas
-coordinates, the chrome above), pans land on whole pixels, and the DRM GPU
-presenter keeps each layer in a texture of the output's size
-(`render/strip_layers.rs`). A pure pan copies the part of each strip still on
-screen to where it moved, rasterises only the columns it uncovered, and
-composites the moved strip from the three textures; a layer is rasterised
-again only when its scene changes. Frames at rest keep the screen-space damage
-above, and a scaled, rotated, calibrated, HDR, blurred or multi-display output
-renders the scene as before. Night light and the
+while a strip pans, the producer draws the desktop as layers
+(`FramePaint::cache`: what is behind the windows, each strip on its own in
+canvas coordinates, the docked wheel on its own, the chrome above), in device
+pixels, and the DRM GPU presenter keeps the backdrop, the strips and the
+chrome in textures of the output's size and the wheel in one of its own size
+(`render/strip_layers.rs`). A pure pan copies the pixels whose strips all
+moved by the same distance, rasterises only the columns it uncovered and the
+band where a moving strip's shadows meet a strip that stayed, and composites
+from the textures; the wheel, which rides the top strip over the strips below,
+is only composited at its new place, and a layer is rasterised again only when
+its scene changes. Each window group of a strip is a damage part of the
+strip's drawing (`GroupRow::draw_group_apart`, bounded by its sprites' reach
+and the lane's clip), so a strip whose drawing changed is rasterised only
+where a changed group shows now (`strip_layers::strip_change`): a window off
+screen that changed unseen (an app the canvas draw drew for the first time
+presenting its content, an animation that ran on the clock) rasterises none
+of the screen, and a strip drawn without well-nested parts is rasterised in
+its whole row.
+While it pans, a strip draws only the windows the screen shows: a window
+wholly off screen replays its last drawing at the same canvas place
+(`GroupRow::draw_group_apart`), which no pixel shows, and is drawn afresh in
+every frame that shows any of it, so the strip's scene stays byte for byte
+the same while only the pan moves (a window carrying a blurred material or a
+client's GPU buffer is drawn every frame).
+On a scaled display pans step by one device pixel: the drawn pan is the
+gesture's rounded to a device pixel (a layout pixel at 100 %, half of one at
+200 %, two thirds at 150 %, four fifths at 125 %). A pan then moves strip
+pixels by whole pixels without resampling them, as finely as the panel shows,
+and the panned frame is what the desktop drawn without layers shows: what
+rides the strip moves by exactly the pan (the docked wheel replays its cached
+drawing under the exact change of its place, not a rounded one), so nothing
+lands a fraction of a pixel apart and twitches when the pan ends. Layout and
+input use the same drawn pan. A rotated, calibrated or HDR output composites
+the layers the same way and then turns, calibrates or PQ-encodes the result
+in its final pass, as it would a render of the scene. Frames at rest keep the
+screen-space damage above, so the layers fall behind while the desktop
+changes at rest; once it has rested a second after such a frame
+(`LAYER_WARM_SETTLE`), the loop draws the desktop as layers once
+(`FrameBuilder::layers_at_rest`, which is no frame: revisions, damage and the
+pans' motion stay as the frames left them) and hands them to the render
+thread as idle work (`PresentPipe::warm`). The presenter rasterises only the
+layers whose scenes changed into their textures, the strips only where a
+changed group shows, the chrome only in the tiles that changed since the
+drawing its texture holds (`FrameCache::chrome_damage`, measured from the
+previous drawing at rest by the same section damage frames use, so a clock
+tick re-warms the clock's tiles), and anything else whole in bands of about
+four million pixels; it stops between two bands as soon as a frame is
+handed over (`RetainedGpuTarget::warm_layers`); nothing reaches KMS. The next
+pan's first frame then copies and composites like any other instead of
+rasterising every layer. When a pan ends, the first frame drawn in screen
+space again also carries the layers, so it is composited from the textures
+that already show it rather than rendered whole, and an unchanged frame kept
+after it keeps them current. A blurred surface, an HDR surface or several
+displays render the scene as before. Layers on several displays are not
+worth it yet: each display draws its own view of the desktop at its own
+place and scale, so every display would need its own drawing of each strip
+as layers (a strip spans displays as one lane per display, each panned on its
+own), its own three output-sized textures (about 100 MB at 4K) and its own
+warm, and the frame producer, the planner and the DRM presenter assume one
+view throughout (`FrameBuilder::lone_output`, `DrmPresenter::warm`). Until a
+measured multi-display pan shows the cost, such a desktop keeps its
+screen-space damage: a pan repaints what moved on its display.
+Night light and the
 colour filters are per-pixel tints drawn into the same scene, so frames under
 them stay sparse while the tint is unchanged; the magnifier and the
 crosshair, which follow the pointer, keep every frame dense.

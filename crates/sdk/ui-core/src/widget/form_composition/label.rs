@@ -37,7 +37,12 @@ impl Widget for FieldLabel {
             measure_owned(label.as_mut(), available.width, text)
         })
     }
-    fn adjust_layout_style(&mut self, tree: &mut TaffyTree<()>, node: NodeId) -> bool {
+    fn adjust_layout_style(
+        &mut self,
+        tree: &mut TaffyTree<()>,
+        node: NodeId,
+        _text: &mut crate::text_render::TextRenderer,
+    ) -> bool {
         let Ok(current) = tree.style(node) else {
             return false;
         };

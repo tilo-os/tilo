@@ -136,6 +136,10 @@ impl Transport {
         self.reachability.wake("a Messages account receives texts");
         Ok(())
     }
+    /// Whether an account is bound, so its contacts may dial this device.
+    pub(crate) fn is_bound(&self) -> bool {
+        self.registry.account().is_ok()
+    }
     /// The caller pins both recipient root and device from the selected route.
     /// A timeout is uncertain and must never cause an automatic resend.
     pub(crate) async fn send(

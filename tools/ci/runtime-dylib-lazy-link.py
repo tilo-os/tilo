@@ -28,7 +28,18 @@ linker cargo chose, else `cc`) with these changes:
 
 The finished file is checked: no DT_NEEDED on a dropped library and no
 undefined dynamic symbol one of them exports. A link with none of the
-libraries on its line is passed through unchanged.
+libraries on its line keeps them as they are.
+
+Every link, lazy libraries or not, also sheds code no app can reach:
+
+- rustc links a dylib without `--gc-sections`, so every function of every
+  crate in it stays, used or not. The link collects sections: what nothing
+  exported reaches goes. The crate metadata (`.rustc`) is not an allocated
+  section, so it stays for the apps that compile against the runtime;
+- rustc's export list names every public item of every crate in the dylib,
+  so syn, quote and proc-macro2 (linked because zvariant_utils carries macro
+  helpers) were exported and kept. Only proc macros use them, never an app;
+  they leave the list, and with it the file.
 """
 
 from __future__ import annotations
@@ -52,6 +63,10 @@ MIRRORED = {GSTREAMER: {"gst_memory_alignment"}}
 # Functions the loader defines itself (to refresh the copies above).
 WRAPPED = {GSTREAMER: {"gst_init", "gst_init_check"}}
 INPUT_SUFFIXES = (".o", ".rlib", ".a")
+GC = ["-Wl,--gc-sections"]
+# The crates only proc macros use, by their v0-mangled crate roots, and the
+# zvariant_utils module that links them in.
+COMPILE_TIME_ONLY = re.compile(r"C(?:s[0-9A-Za-z]*_)?(?:3syn|11proc_macro2|5quote)|14zvariant_utils6macros")
 NM_BATCH = 64
 PROGRAM = "runtime-dylib-lazy-link"
 
@@ -551,6 +566,21 @@ def compile_objects(compiler: str, arch: str, libraries: list[Library], stubs: l
     return [str(path) for path in objects]
 
 
+def narrow_exports(arguments: list[str]) -> int:
+    """Leave the compile-time-only crates out of rustc's export list; how many were left out."""
+    removed = 0
+    for argument in arguments:
+        for option in argument.split(","):
+            if not option.startswith("--version-script="):
+                continue
+            script = pathlib.Path(option.removeprefix("--version-script="))
+            lines = script.read_text(encoding="utf-8").splitlines(keepends=True)
+            kept = [line for line in lines if not COMPILE_TIME_ONLY.search(line)]
+            removed += len(lines) - len(kept)
+            script.write_text("".join(kept), encoding="utf-8")
+    return removed
+
+
 def link(linker: str, arguments: list[str], response: bool, directory: pathlib.Path) -> int:
     if response:
         file = directory / "linker-arguments"
@@ -565,9 +595,12 @@ def main(argv: list[str]) -> int:
     linker = os.environ.get("TILO_LAZY_LINK_CC") or "cc"
     compiler = os.environ.get("TILO_LAZY_LINK_COMPILER") or "cc"
     arguments, response = expand(argv)
+    hidden = narrow_exports(arguments)
+    if os.environ.get("TILO_LAZY_LINK_VERBOSE"):
+        print(f"{PROGRAM}: {hidden} compile-time-only symbols not exported", file=sys.stderr)
     kept, names = split_libraries(arguments)
     if not names:
-        return subprocess.run([linker, *argv]).returncode
+        return subprocess.run([linker, *argv, *GC]).returncode
     try:
         directories = search_directories(arguments)
         libraries = [library(name, directories, compiler) for name in names]
@@ -578,7 +611,7 @@ def main(argv: list[str]) -> int:
         with tempfile.TemporaryDirectory(prefix="tilo-lazy-link-") as scratch:
             directory = pathlib.Path(scratch)
             objects = compile_objects(compiler, architecture(compiler), libraries, stubs, directory)
-            status = link(linker, kept + objects, response, directory)
+            status = link(linker, kept + objects + GC, response, directory)
         if status != 0:
             return status
         problems = check_output(output, libraries)

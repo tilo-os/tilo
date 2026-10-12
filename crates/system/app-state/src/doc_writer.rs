@@ -591,7 +591,10 @@ impl DocWriter {
         let len = bytes.len();
         let hint = load_hint::encode(&bytes, doc.committed_document().change_hashes());
         self.submit(WriteOp::Replace(bytes), heads)?;
+        // Only the primary writer keeps one: shared writers' hints would race
+        // for one file.
         if let (Some(owner), Some(hint)) = (&self.owner, hint)
+            && owner.is_primary()
             && let Err(error) = owner.store.write_hint(&owner.key, &hint)
         {
             // Only the next open's speed depends on it.

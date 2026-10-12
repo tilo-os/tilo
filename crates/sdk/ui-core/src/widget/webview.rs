@@ -14,6 +14,7 @@
 //! [`crate::webview::WebViewEvent`]s from the engine during `sync` and
 //! owns that state in its CRDT.
 
+use crate::num::f32_of_f64;
 use crate::widget::{AppModel, ModelPath};
 use std::sync::Arc;
 
@@ -35,16 +36,6 @@ use crate::widget::Widget;
 /// Pixels scrolled per mouse-wheel line tick, in logical units (scaled
 /// by the display factor before being sent to the engine).
 const WHEEL_LINE_PX: f64 = 40.0;
-
-/// Narrows a screen-space `f64` (view-relative pointer/scroll coordinate) to
-/// the `f32` the engine's command protocol expects.
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "on-screen physical coordinates never approach f32::MAX; f32 precision is sufficient for engine screen coordinates and device scale"
-)]
-fn to_f32(v: f64) -> f32 {
-    v as f32
-}
 
 /// Rounds a physical pixel extent to `u32`, clamping to `[0, u32::MAX]`
 /// first so a negative or absurdly large rect (a transient layout glitch)
@@ -206,8 +197,8 @@ impl WebView {
     /// Engine-space (physical, view-relative) coordinates for a logical point.
     fn to_engine(&self, p: Point) -> (f32, f32) {
         (
-            to_f32((p.x - self.rect.x0) * f64::from(self.scale_factor)),
-            to_f32((p.y - self.rect.y0) * f64::from(self.scale_factor)),
+            f32_of_f64((p.x - self.rect.x0) * f64::from(self.scale_factor)),
+            f32_of_f64((p.y - self.rect.y0) * f64::from(self.scale_factor)),
         )
     }
 
@@ -293,7 +284,7 @@ impl crate::widget::NativeViewLifecycle for WebView {
     fn mount_native_view(&mut self, host: &crate::widget::NativeViewHost<'_>) {
         let first_mount = !self.native_mounted;
         self.native_mounted = true;
-        let host_scale = to_f32(host.scale_factor());
+        let host_scale = f32_of_f64(host.scale_factor());
         // A freshly rebuilt Browser WebView is seeded from the device-scale
         // draw that requested the rebuild. Some macOS startup windows still
         // report 1 here until their first visible frame. Preserve the larger
@@ -533,7 +524,7 @@ impl Widget for WebView {
         // First layout can precede all window/input events. The host's draw
         // transform already carries the actual device scale at that point.
         let coefficients = transform.as_coeffs();
-        let device_scale = to_f32(coefficients[0].hypot(coefficients[1]));
+        let device_scale = f32_of_f64(coefficients[0].hypot(coefficients[1]));
         if device_scale.is_finite()
             && device_scale > 0.0
             && device_scale.to_bits() != self.scale_factor.to_bits()
@@ -657,7 +648,7 @@ impl Widget for WebView {
             self.engine.presented();
         }
         if (f64::from(self.scale_factor) - ctx.scale_factor).abs() > f64::EPSILON {
-            self.scale_factor = to_f32(ctx.scale_factor);
+            self.scale_factor = f32_of_f64(ctx.scale_factor);
             // Force a resize eagerly, to keep engine DPI in step without a re-layout.
             self.last_sent_size = (0, 0);
             self.send_resize_if_needed();
@@ -744,11 +735,11 @@ impl Widget for WebView {
                 }
                 let (dx, dy) = match delta {
                     MouseScrollDelta::LineDelta(x, y) => (
-                        to_f32(f64::from(*x) * WHEEL_LINE_PX * ctx.scale_factor),
-                        to_f32(f64::from(*y) * WHEEL_LINE_PX * ctx.scale_factor),
+                        f32_of_f64(f64::from(*x) * WHEEL_LINE_PX * ctx.scale_factor),
+                        f32_of_f64(f64::from(*y) * WHEEL_LINE_PX * ctx.scale_factor),
                     ),
                     // PixelDelta is already physical.
-                    MouseScrollDelta::PixelDelta(p) => (to_f32(p.x), to_f32(p.y)),
+                    MouseScrollDelta::PixelDelta(p) => (f32_of_f64(p.x), f32_of_f64(p.y)),
                 };
                 let (x, y) = self.to_engine(self.last_mouse);
                 crate::webview::profile::record_input("scroll");
@@ -1610,13 +1601,12 @@ mod tests {
                     });
                 }
                 let mut scene = Scene::new();
-                root.draw_with_presence(
+                root.draw(
                     &mut scene,
                     Affine::IDENTITY,
                     &mut TextRenderer::new(),
                     &Theme::dark(),
                     &PresenceCtx::default(),
-                    &crate::permissions::PermissionContext::permissive(),
                 );
                 assert!(
                     scene

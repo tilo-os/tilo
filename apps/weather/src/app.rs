@@ -26,20 +26,17 @@
 //! provides, and a past version shows the places without forecasts.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
 use std::rc::Rc;
 use ui::time::Instant;
 use ui::widget::{AppModel, ModelPath};
 
-use taffy::{NodeId, TaffyTree};
 use ui::a11y::{AccessNode, Politeness, Role};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
+use vello::kurbo::Affine;
 use winit::event::WindowEvent;
 
 use ui::framework::{EffectCx, EffectStatus, Effected, LiveRow, RunMode, SurfaceCx};
 use ui::icons::Icon;
-use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
@@ -203,12 +200,24 @@ impl WeatherApp {
 
     /// Each saved place, offering to open and refresh its forecast.
     pub(crate) fn location_rows(&self) -> Vec<LiveRow> {
-        self.core
-            .borrow()
-            .model
+        let core = self.core.borrow();
+        core.model
             .locations
             .iter()
-            .map(crate::actions::location_row)
+            .map(|location| {
+                let row = crate::actions::location_row(location);
+                core.model.snapshot_for(location.id).map_or_else(
+                    || row.clone(),
+                    |snapshot| {
+                        row.clone()
+                            .presentation(crate::presentation::morning_preview(
+                                snapshot,
+                                core.units,
+                                core.notice(),
+                            ))
+                    },
+                )
+            })
             .collect()
     }
 
@@ -572,28 +581,21 @@ impl Default for WeatherApp {
     }
 }
 
-impl Widget for WeatherApp {
+impl ui::widget::Decorator for WeatherApp {
+    type Inner = NavShell;
+
+    fn inner(&self) -> &NavShell {
+        &self.nav
+    }
+
+    fn inner_mut(&mut self) -> &mut NavShell {
+        &mut self.nav
+    }
+
     fn update(&mut self, _state: &AppModel, _path: &ModelPath) -> bool {
         // Semantic actions reach the owning pane directly, so finish their
         // navigation here as well as on pointer input.
         self.follow_core()
-    }
-
-    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
-        self.nav.sync(state, path);
-    }
-
-    fn build_layout(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        theme: &Theme,
-        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        self.nav.build_layout(taffy, theme, node_map)
-    }
-
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.nav.apply_layout(taffy, node, origin);
     }
 
     fn draw(
@@ -610,39 +612,6 @@ impl Widget for WeatherApp {
         self.stage_pending_scenario();
     }
 
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        permissions: &PermissionContext,
-    ) {
-        self.tick_network();
-        self.nav.draw_with_presence(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            presence,
-            permissions,
-        );
-        self.stage_pending_scenario();
-    }
-
-    fn draw_overlay(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
-        self.nav
-            .draw_overlay(scene, transform, text_renderer, theme, presence);
-    }
-
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         self.ensure_service();
         self.nav.handle_event(event, ctx);
@@ -655,20 +624,8 @@ impl Widget for WeatherApp {
         self.tick_network();
     }
 
-    fn children(&self) -> Vec<&dyn Widget> {
-        vec![&self.nav]
-    }
-
-    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        vec![&mut self.nav]
-    }
-
     fn name(&self) -> &'static str {
         "WeatherApp"
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.nav.get_rect()
     }
 
     fn accessibility(&self) -> Option<AccessNode> {
@@ -716,14 +673,6 @@ impl Widget for WeatherApp {
             .into_iter()
             .chain(self.nav.next_wake_deadline())
             .min()
-    }
-
-    fn take_structure_dirty(&mut self) -> bool {
-        self.nav.take_structure_dirty()
-    }
-
-    fn modal_capture(&self) -> Option<Rect> {
-        self.nav.modal_capture()
     }
 }
 
@@ -1162,10 +1111,10 @@ mod interaction_tests {
             // live first run shows, not a half-cleared sample.
             let capture =
                 ui::prelude::TestApp::<crate::WeatherShell>::capture(Some("onboarding")).unwrap();
-            assert!(capture.state().locations.is_empty());
+            assert!(capture.state().model().locations.is_empty());
             let mut detail =
                 ui::prelude::TestApp::<crate::WeatherShell>::capture(Some("detail")).unwrap();
-            assert_eq!(detail.state().locations.len(), 4);
+            assert_eq!(detail.state().model().locations.len(), 4);
             assert!(
                 detail
                     .harness()
@@ -2091,7 +2040,7 @@ mod framework_tests {
     #[test]
     fn places_are_edited_through_the_resource_and_the_default_follows_the_document() {
         let mut app = TestApp::<crate::WeatherShell>::capture(Some("detail")).unwrap();
-        let state = app.state();
+        let state = app.state().model();
         assert_eq!(state.locations.len(), 4);
         assert_eq!(state.selected, 0);
         let tokyo: LocationId = state.locations[1].id;
@@ -2101,15 +2050,15 @@ mod framework_tests {
             serde_json::json!({}),
         )
         .unwrap();
-        assert_eq!(app.state().selected_location().unwrap().id, tokyo);
+        assert_eq!(app.state().model().selected_location().unwrap().id, tokyo);
         app.call_on(
             &location_resource_id(tokyo),
             "move-to-top",
             serde_json::json!({}),
         )
         .unwrap();
-        assert_eq!(app.state().locations[0].id, tokyo);
-        let removed = app.state().locations[3].id;
+        assert_eq!(app.state().model().locations[0].id, tokyo);
+        let removed = app.state().model().locations[3].id;
         assert!(
             app.call_on(
                 &location_resource_id(removed),
@@ -2119,7 +2068,46 @@ mod framework_tests {
             .is_err(),
             "removing a place asks for confirmation"
         );
-        assert_eq!(app.state().locations.len(), 4);
+        assert_eq!(app.state().model().locations.len(), 4);
+    }
+
+    /// What an agent does to the places is history a person can read.
+    #[test]
+    fn history_says_what_happened_to_each_place() {
+        let mut app = TestApp::<crate::WeatherShell>::capture(Some("detail")).unwrap();
+        let tokyo: LocationId = app.state().model().locations[1].id;
+        app.call_on(
+            &location_resource_id(tokyo),
+            "move-to-top",
+            serde_json::json!({}),
+        )
+        .unwrap();
+        app.call(
+            "save-location",
+            serde_json::json!({
+                "place": { "name": "Auckland", "country": "New Zealand",
+                           "latitude": -36.85, "longitude": 174.76 }
+            }),
+        )
+        .unwrap();
+        let catalogue =
+            tilo_history::Catalogue::new("en-US", &[include_str!("../locales/en-US.ftl")]);
+        let reader = tilo_history::Reader::new("en-US").with_app(&catalogue);
+        let sentences: Vec<String> = app
+            .versions()
+            .into_iter()
+            .filter_map(|version| version.context)
+            .filter(|entry| entry.what.is_some())
+            .map(|entry| reader.sentence(&entry))
+            .collect();
+        assert_eq!(
+            sentences.get(sentences.len().saturating_sub(2)..),
+            Some(
+                ["Moved Tokyo to the top", "Saved a place to follow"]
+                    .map(String::from)
+                    .as_slice()
+            )
+        );
     }
 
     /// A live window answers the weather effects through the door: with no
@@ -2141,5 +2129,24 @@ mod framework_tests {
             })
             .is_err()
         );
+    }
+}
+
+#[cfg(test)]
+mod morning_preview_regression {
+    use super::*;
+    #[test]
+    fn morning_preview_is_published_from_the_real_cached_forecast() {
+        let app = WeatherApp::sample();
+        let rows = app.location_rows();
+        assert!(!rows.is_empty());
+        let row = rows[0].clone().into_resource();
+        let presentation = row
+            .presentation
+            .expect("cached forecast publishes a bounded morning preview");
+        assert!(presentation.is_valid());
+        assert!(presentation.preview.unwrap().contains("observation"));
+        assert!(presentation.detail.unwrap().contains("Open-Meteo"));
+        assert_eq!(presentation.badge.as_deref(), Some("Capture fixture"));
     }
 }

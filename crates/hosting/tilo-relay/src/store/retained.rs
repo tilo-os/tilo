@@ -699,12 +699,14 @@ pub(crate) struct RetainBuild {
     survivors: u64,
     written: u64,
     shell_store: Option<WorkspaceStore>,
-    selected_read: Option<super::shell_selection::SelectedRead>,
-    selection: Option<super::shell_selection::Selection>,
+    // Boxed, as `fast` is: inline they made a build 54 KB, and the build
+    // moves through the blocking pool on every quantum of the edit it serves.
+    selected_read: Option<Box<super::shell_selection::SelectedRead>>,
+    selection: Option<Box<super::shell_selection::Selection>>,
     publication: Option<super::shell_selection::Publication>,
     /// A plain route tail the in-process tail cache can publish without a
     /// selection; `fast_admitted` once the selected snapshot found it safe.
-    fast: Option<super::shell_selection::tail_cache::FastTail>,
+    fast: Option<Box<super::shell_selection::tail_cache::FastTail>>,
     fast_admitted: bool,
     selected_obsolete: bool,
     staged_only: bool,
@@ -878,9 +880,15 @@ impl RetainBuild {
     pub(crate) fn scratch(&self) -> &Path {
         &self.scratch
     }
+    /// Whether this build made its scratch directory: a checkpoint's ordered
+    /// pass and a shell selection do; a plain delta never does, so its owner
+    /// has nothing to dispose of afterwards.
+    pub(crate) fn holds_scratch(&self) -> bool {
+        self.checkpoint || self.selection.is_some()
+    }
     pub(crate) fn publication_on_error(&self) -> Option<super::shell_selection::Publication> {
         self.selection
-            .as_ref()
+            .as_deref()
             .and_then(super::shell_selection::Selection::publication_on_error)
     }
     #[cfg(test)]
@@ -894,7 +902,7 @@ impl RetainBuild {
     }
     pub(crate) fn selection_stats(&self) -> Option<&super::bounded::WorkStats> {
         self.selection
-            .as_ref()
+            .as_deref()
             .map(super::shell_selection::Selection::stats)
     }
     pub(crate) fn selected_obsolete(&self) -> bool {
@@ -1000,13 +1008,14 @@ impl RetainBuild {
                     self.phase = RetainPhase::Done;
                     self.selected_obsolete = true;
                     let fast = self.fast.take().invariant("fast tail missing")?;
-                    self.store.tail_cache.finish(fast);
+                    self.store.tail_cache.finish(*fast);
                 }
                 Admission::Tail => self.fast_admitted = true,
                 Admission::Select => {
                     self.fast = None;
                     self.store.tail_cache.invalidate();
-                    self.selected_read = super::shell_selection::SelectedRead::new(&self.store)?;
+                    self.selected_read =
+                        super::shell_selection::SelectedRead::new(&self.store)?.map(Box::new);
                 }
             }
             return Ok(Step::More);
@@ -1231,7 +1240,7 @@ impl RetainBuild {
                 {
                     // The selection this skips would publish this tail as an
                     // original and change nothing but its listed tails.
-                    self.store.tail_cache.finish(fast);
+                    self.store.tail_cache.finish(*fast);
                     self.publication = Some(super::shell_selection::Publication::Original);
                 }
                 if self.publication.is_none() {
@@ -1255,7 +1264,7 @@ impl RetainBuild {
                             {
                                 selection.want_route(key);
                             }
-                            self.selection = Some(selection);
+                            self.selection = Some(Box::new(selection));
                         }
                         match self.selection.as_mut().invariant("selection missing")?.step(limit)? {
                             Step::More => return Ok(Step::More),
@@ -1440,11 +1449,11 @@ impl WorkspaceStore {
             selected_read: if fast.is_some() {
                 None
             } else {
-                super::shell_selection::SelectedRead::new(self)?
+                super::shell_selection::SelectedRead::new(self)?.map(Box::new)
             },
             selection: None,
             publication: None,
-            fast,
+            fast: fast.map(Box::new),
             fast_admitted: false,
             selected_obsolete: false,
             staged_only: false,
@@ -1701,6 +1710,48 @@ pub(super) mod tests {
         assert!(store.load_view_channel(&[9; 32], 4096).is_err());
         drop(fault);
         assert_eq!(store.load_view_channel(&[9; 32], 4096).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_retained_build_moves_cheaply() {
+        // The owner job of every edit moves its build into the blocking pool
+        // and back on each quantum; inline selection state made that 54 KB.
+        use std::mem::size_of;
+        let size = size_of::<RetainBuild>();
+        assert!(
+            size <= 2048,
+            "a RetainBuild is {size} bytes inline: store {}, sorter {}, phase {}, \
+             publication {}, fast {}, continuity {}, stamp {}",
+            size_of::<WorkspaceStore>(),
+            size_of::<super::super::bounded::Sorter>(),
+            size_of::<RetainPhase>(),
+            size_of::<Option<super::super::shell_selection::Publication>>(),
+            size_of::<Option<super::super::shell_selection::tail_cache::FastTail>>(),
+            size_of::<Option<super::super::continuity::Receipt>>(),
+            size_of::<Option<tail_index::Stamp>>(),
+        );
+    }
+
+    #[test]
+    fn only_a_build_that_made_its_scratch_holds_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = WorkspaceStore::open(dir.path(), 7, false).unwrap();
+        let mut checkpoint = store
+            .start_retain(&[9; 32], None, message(true, 1))
+            .unwrap();
+        assert!(checkpoint.holds_scratch());
+        assert!(checkpoint.scratch().is_dir());
+        while let Step::More = checkpoint.step(WorkLimit::default()).unwrap() {}
+        assert!(checkpoint.holds_scratch());
+        let mut delta = store
+            .start_retain(&[9; 32], Some(1), message(false, 2))
+            .unwrap();
+        while let Step::More = delta.step(WorkLimit::default()).unwrap() {}
+        assert!(!delta.holds_scratch());
+        assert!(
+            !delta.scratch().exists(),
+            "a build that holds no scratch must have made none"
+        );
     }
 
     fn message(checkpoint: bool, value: u8) -> Vec<u8> {

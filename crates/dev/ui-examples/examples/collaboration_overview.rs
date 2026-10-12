@@ -1,6 +1,6 @@
 //! Interactive and headless visual fixture for the universal collaboration rail.
 
-use collab_types::{ArtifactKind, OpClass};
+use collab_types::ArtifactKind;
 use std::collections::HashMap;
 use std::path::Path;
 use std::time::{Duration, SystemTime};
@@ -8,7 +8,7 @@ use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
 use tilo_actions::ActionContext;
 use tilo_ui::num::f32_of_u32;
 use tilo_ui::offscreen::OffscreenRenderer;
-use tilo_ui::permissions::{PermissionContext, UserId};
+use tilo_ui::permissions::UserId;
 use tilo_ui::text_render::TextRenderer;
 use tilo_ui::{
     ActivityDigest, App, CollaborationExperience, CollaborationOverview, HistoryAuthor,
@@ -25,7 +25,7 @@ fn entry(id: u8, author: &str, at: u64, summary: &str) -> HistoryEntry {
     HistoryEntry {
         id: HistoryEntryId(bytes),
         author: HistoryAuthor::new(author, f32::from(id) * 61.0, format!("person-{id}")),
-        op_class: OpClass::Splice,
+        entry_kind: tilo_ui::widget::EntryKind::Text,
         artifact_kind: ArtifactKind::File,
         timestamp: SystemTime::UNIX_EPOCH
             .checked_add(Duration::from_secs(at))
@@ -35,14 +35,9 @@ fn entry(id: u8, author: &str, at: u64, summary: &str) -> HistoryEntry {
         diff_payload: None,
         redaction: None,
         context: Some(
-            ActionContext::for_resource(
-                "Edit",
-                "finance:q2",
-                "finance.report",
-                "Q2 finance report",
-            )
-            .with_app("org.tilo.Sheets", "Sheets")
-            .with_group("q2-close", "Prepare Q2 close", "project"),
+            ActionContext::for_resource("finance:q2", "finance.report", "Q2 finance report")
+                .with_app("org.tilo.Sheets", "Sheets")
+                .with_group("q2-close", "Prepare Q2 close", "project"),
         ),
     }
 }
@@ -148,7 +143,6 @@ fn render(mut widget: Box<dyn Widget>, out: &Path) {
     let state = State::new();
     let theme = Theme::dark();
     let presence = PresenceCtx::empty();
-    let permission = PermissionContext::permissive();
     let mut tr = TextRenderer::new();
     let mut taffy: TaffyTree<()> = TaffyTree::new();
     let mut map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
@@ -190,14 +184,7 @@ fn render(mut widget: Box<dyn Widget>, out: &Path) {
     }
     widget.apply_layout(&taffy, child, Point::ORIGIN);
     let mut scene = Scene::new();
-    widget.draw_with_presence(
-        &mut scene,
-        Affine::IDENTITY,
-        &mut tr,
-        &theme,
-        &presence,
-        &permission,
-    );
+    widget.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
     if let Some(parent) = out.parent() {
         std::fs::create_dir_all(parent).ok();
     }

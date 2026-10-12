@@ -25,20 +25,29 @@ async fn create_feedback_record(browser: &mut Browser) -> DocumentRoute {
     );
     let mut doc = source.read(Clone::clone).unwrap();
     assert!(
-        chat::doc::ChatDoc::list_workspaces(&doc)
+        chat::projection::read(&doc)
+            .workspace_rows()
             .iter()
             .any(|workspace| workspace.id == browser.room),
         "the production seed uses its host-selected room"
     );
-    chat::doc::ChatDoc::insert_category(&mut doc, "feedback-category", &browser.room, "Feedback");
-    chat::doc::ChatDoc::insert_channel(
+    chat::demo::insert_category(
         &mut doc,
-        "feedback",
-        &browser.room,
+        "fixture",
         "feedback-category",
+        &browser.room,
+        "Feedback",
+    )
+    .unwrap();
+    chat::demo::insert_channel(
+        &mut doc,
+        "fixture",
+        "feedback",
+        (&browser.room, "feedback-category"),
         "Feedback",
         chat::model::ChannelKind::Text,
-    );
+    )
+    .unwrap();
     let mutation = collab_types::DocumentMutation::Snapshot(doc.save());
     browser.peer.publish(route.clone(), &mutation).unwrap();
     let (collab_types::DocumentMutation::Snapshot(bytes)
@@ -115,7 +124,10 @@ async fn signed_reviewed_feedback_retries_once_and_reads_a_retained_receipt() {
     let mut queued = participant(&mut browser, &route, &person);
     queued
         .invoke(
-            &ActionAddress::new("chat.channel:feedback", "submit-feedback"),
+            &ActionAddress::new(
+                chat::projection::item_id("channels", "feedback"),
+                "submit-feedback",
+            ),
             serde_json::json!({"submission": submission})
                 .as_object()
                 .unwrap(),
@@ -130,7 +142,7 @@ async fn signed_reviewed_feedback_retries_once_and_reads_a_retained_receipt() {
     submit_local_participant(&mut browser, &route, &submission, &person);
     assert_signed_canonical(&mut browser, &submission, &host.cert, &device.cert).await;
     let read_address = ActionAddress::new(
-        format!("chat.feedback:{}", submission.id),
+        chat::projection::item_id("feedback", &submission.id),
         "read-feedback-receipt",
     );
     let output = retained_receipt(
@@ -182,7 +194,10 @@ async fn signed_reviewed_feedback_retries_once_and_reads_a_retained_receipt() {
     let mut maintainer = participant(&mut browser, &route, &person);
     maintainer
         .invoke(
-            &ActionAddress::new(format!("chat.feedback:{}", submission.id), "triage"),
+            &ActionAddress::new(
+                chat::projection::item_id("feedback", &submission.id),
+                "triage",
+            ),
             serde_json::json!({"update":{"status":"resolved"}})
                 .as_object()
                 .unwrap(),
@@ -255,7 +270,7 @@ async fn assert_one_report(
             assert_eq!(&report.submission, submission);
             assert_eq!(report.author, person);
             assert_eq!(
-                replica.read(|doc| chat::doc::ChatDoc::list_messages(doc, "feedback").len()),
+                replica.read(|doc| chat::projection::read(doc).message_rows("feedback").len()),
                 Some(1)
             );
             return;
@@ -275,7 +290,10 @@ async fn assert_local_only_report_is_not_a_receipt(
     unsubmitted.id = "1123456789abcdef0123456789abcdef".into();
     local
         .invoke(
-            &ActionAddress::new("chat.channel:feedback", "submit-feedback"),
+            &ActionAddress::new(
+                chat::projection::item_id("channels", "feedback"),
+                "submit-feedback",
+            ),
             serde_json::json!({"submission": unsubmitted})
                 .as_object()
                 .unwrap(),
@@ -293,7 +311,7 @@ async fn assert_local_only_report_is_not_a_receipt(
         .invoke(request(
             &submission.destination.provider,
             ActionAddress::new(
-                format!("chat.feedback:{}", unsubmitted.id),
+                chat::projection::item_id("feedback", &unsubmitted.id),
                 "read-feedback-receipt",
             ),
             InvokeArgument::None,
@@ -314,7 +332,10 @@ fn submit_local_participant(
     let mut replica = participant(browser, route, person);
     replica
         .invoke(
-            &ActionAddress::new("chat.channel:feedback", "submit-feedback"),
+            &ActionAddress::new(
+                chat::projection::item_id("channels", "feedback"),
+                "submit-feedback",
+            ),
             serde_json::json!({"submission": submission})
                 .as_object()
                 .unwrap(),
@@ -372,7 +393,7 @@ async fn resolved_status(browser: &mut Browser, submission: &Submission) -> serd
             .invoke(request(
                 &submission.destination.provider,
                 ActionAddress::new(
-                    format!("chat.feedback:{}", submission.id),
+                    chat::projection::item_id("feedback", &submission.id),
                     "read-feedback-status",
                 ),
                 InvokeArgument::None,
@@ -400,7 +421,7 @@ async fn owner_feedback(
     submission: &Submission,
     include_report: bool,
 ) -> Result<tilo_actions::remote::feedback::FeedbackAnswer, ActionHostError> {
-    use tilo_actions::remote::feedback::{FeedbackDestination, FeedbackPublication, FeedbackQuery};
+    use tilo_actions::remote::feedback::{FeedbackDestination, FeedbackQuery};
     browser.correlation = browser.correlation.checked_add(1).unwrap();
     let correlation = browser.correlation;
     browser.send(RemoteActionMessage::FeedbackRequest {
@@ -411,7 +432,6 @@ async fn owner_feedback(
                 provider: submission.destination.provider.clone(),
                 channel: submission.destination.channel.clone(),
             },
-            publication: FeedbackPublication::Write,
             submission: include_report.then(|| serde_json::to_value(submission).unwrap()),
         },
     });
@@ -452,16 +472,18 @@ async fn assert_signed_canonical(
             .in_room(&submission.destination.room),
         reporter: Caller::authenticated(reporter.user_public_key, reporter.device_public_key)
             .in_room(&submission.destination.room),
-        permissions: ui::permissions::PermissionContext::from_capabilities(
-            ui::permissions::Actor::person(
-                Some(serde_json::from_value(admission.admission.role).unwrap()),
-                hex::encode(reporter.user_public_key),
+        permissions: {
+            let standing: ui::permissions::Standing =
+                serde_json::from_value(admission.admission.standing).unwrap();
+            assert_eq!(standing.person, hex::encode(reporter.user_public_key));
+            ui::permissions::PermissionContext::new(
+                ui::permissions::Actor::person(standing.person.clone())
+                    .in_room(&submission.destination.room),
+                serde_json::from_value(admission.admission.sandbox).unwrap(),
+                standing,
             )
-            .in_room(&submission.destination.room),
-            serde_json::from_value(admission.admission.caps).unwrap(),
-        )
-        .at_unix_time(admission.admission.unix_time),
-        publication: ui::permissions::Verb::Write,
+            .at_unix_time(admission.admission.unix_time)
+        },
     };
     let answer = owner_feedback(browser, submission, true).await.unwrap();
     let receipt =

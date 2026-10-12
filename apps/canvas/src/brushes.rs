@@ -13,6 +13,7 @@
 )]
 
 use std::collections::BTreeMap;
+use ui::num::f32_of_f64;
 
 use tilo_wet_media::StrokePoint as WetPoint;
 use tilo_wet_media::brush::Sample;
@@ -394,19 +395,20 @@ fn smoothed_run(points: &[Vec<f64>], amount: f64) -> Vec<Vec<f64>> {
         .iter()
         .map(|point| {
             let (x, y, pressure) = point_of(point);
-            WetPoint::new(narrow(x), narrow(y), narrow(pressure))
+            WetPoint::new(f32_of_f64(x), f32_of_f64(y), f32_of_f64(pressure))
         })
         .collect();
-    let mut points: Vec<(f64, f64, f64)> = tilo_wet_media::brush::smooth(&curve, narrow(spacing))
-        .iter()
-        .map(|sample| {
-            (
-                f64::from(sample.x),
-                f64::from(sample.y),
-                f64::from(sample.pressure),
-            )
-        })
-        .collect();
+    let mut points: Vec<(f64, f64, f64)> =
+        tilo_wet_media::brush::smooth(&curve, f32_of_f64(spacing))
+            .iter()
+            .map(|sample| {
+                (
+                    f64::from(sample.x),
+                    f64::from(sample.y),
+                    f64::from(sample.pressure),
+                )
+            })
+            .collect();
     if let (Some(last), Some(end)) = (points.last_mut(), curve.last()) {
         // The curve ends where the stroke does, not a step short of it.
         *last = (f64::from(end.x), f64::from(end.y), f64::from(end.pressure));
@@ -503,14 +505,6 @@ pub fn kept(points: &[Vec<f64>], tolerance: f64) -> Vec<usize> {
     keep
 }
 
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "stroke coordinates are bounded artwork units"
-)]
-fn narrow(value: f64) -> f32 {
-    value as f32
-}
-
 /// The stroke as evenly spaced samples `spacing` units apart, after its
 /// smoothing, its corners sharp: each run between them is laid on its own
 /// and ends exactly on its corner. `size` is the brush's.
@@ -521,10 +515,10 @@ pub fn samples(points: &[Vec<f64>], spacing: f64, smoothing: f64, size: f64) -> 
             .iter()
             .map(|point| {
                 let (x, y, pressure) = point_of(point);
-                WetPoint::new(narrow(x), narrow(y), narrow(pressure))
+                WetPoint::new(f32_of_f64(x), f32_of_f64(y), f32_of_f64(pressure))
             })
             .collect();
-        let mut laid = tilo_wet_media::brush::smooth(&run, narrow(spacing));
+        let mut laid = tilo_wet_media::brush::smooth(&run, f32_of_f64(spacing));
         if let (Some(last), Some(end)) = (laid.last().copied(), run.last())
             && (end.x - last.x).hypot(end.y - last.y) > 1e-3
         {
@@ -1166,10 +1160,10 @@ pub fn pieces(mark: &Mark) -> Vec<Piece> {
             .iter()
             .map(|point| {
                 let (x, y, pressure) = point_of(point);
-                WetPoint::new(narrow(x), narrow(y), narrow(pressure))
+                WetPoint::new(f32_of_f64(x), f32_of_f64(y), f32_of_f64(pressure))
             })
             .collect(),
-        size: narrow(size),
+        size: f32_of_f64(size),
         paint: tilo_wet_media::Paint {
             colour: tilo_wet_media::Rgb::WHITE,
             alpha: 1.0,

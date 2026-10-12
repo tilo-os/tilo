@@ -148,21 +148,22 @@ fn inspection_route() -> Result<InspectionRoute, Box<dyn std::error::Error>> {
     })
 }
 
-fn exact_agent_membership(caps: &[collab_types::caps::CapOverride], room: &str, now: u64) -> bool {
-    use collab_types::caps::{Actor, CapDecision, Effect, ResourceRef, Scope, Subject, Verb};
-    caps.iter().any(|cap| {
-        cap.subject == Subject::agent("bootstrap-proof")
-            && cap.scope == Scope::Room(room.into())
-            && cap.effect == Effect::Grant
-            && cap.verb == Verb::Write
-            && cap.is_live_at(Some(now))
-    }) && collab_types::caps::decide_capability(
-        &Actor::agent("bootstrap-proof").in_room(room),
-        &ResourceRef::Room(room.into()),
-        Verb::Write,
-        caps,
-        Some(now),
-    ) == CapDecision::Allow
+/// Whether the proof agent is admitted to the room, able to change it, by a
+/// live grant on the room itself.
+fn exact_agent_membership(policy: &tilo_action_policy::RoomPolicy, now: u64) -> bool {
+    use tilo_action_policy::{ActionKind, Answer, Authority, Subject};
+    let agent = Subject::agent("bootstrap-proof");
+    let cx = tilo_desktop_model::context_at(now);
+    let room = policy.node();
+    policy.grants_of(&agent).any(|grant| {
+        grant.node == room
+            && grant.answer == Answer::Allow
+            && grant.kinds.contains(ActionKind::Undoable)
+            && grant.is_live(&cx)
+    }) && Authority::person(policy.party_of(agent))
+        .decide(&room, ActionKind::Undoable, &cx)
+        .answer
+        == Answer::Allow
 }
 
 fn check_agent_membership(
@@ -172,14 +173,14 @@ fn check_agent_membership(
     now: SystemTime,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let generation = owner.with_outgoing(room, now, |view, _| {
-        let (_, caps, _) = view
+        let member = view
             .peer()
             .permissions(view.device().device_public_key, now)?;
         let seconds = now
             .duration_since(SystemTime::UNIX_EPOCH)
             .map_err(|_| "owner policy clock is unavailable")?
             .as_secs();
-        if !exact_agent_membership(&caps, room_text, seconds) {
+        if member.policy.room != room_text || !exact_agent_membership(&member.policy, seconds) {
             return Err("exact agent membership was not durably admitted".into());
         }
         Ok(view.generation())
@@ -204,40 +205,50 @@ fn native_record_observation(
 ) -> Result<serde_json::Value, String> {
     owner.with_outgoing(room, now, |view, _| {
         view.peer().check_document_read(
-            view.device().device_public_key, "so.tilo.chat", record, now,
+            view.device().device_public_key,
+            "so.tilo.chat",
+            record,
+            now,
         )?;
-        let (role, caps, person) = view.peer().permissions(view.device().device_public_key, now)?;
-        let seconds = now.duration_since(SystemTime::UNIX_EPOCH)
-            .map_err(|_| "owner policy clock is unavailable")?.as_secs();
-        let allows_write = |actor: collab_types::caps::Actor| {
-            collab_types::caps::decide_capability(
-                &actor.in_room(room_text),
-                &collab_types::caps::ResourceRef::Workspace,
-                collab_types::caps::Verb::Write,
-                &caps,
-                Some(seconds),
-            ) == collab_types::caps::CapDecision::Allow
-        };
-        let document = view.peer().document("so.tilo.chat", record)
+        let member = view
+            .peer()
+            .permissions(view.device().device_public_key, now)?;
+        let app_write_permitted = member
+            .policy
+            .app_authors("so.tilo.chat", &tilo_action_policy::Context::at_time(now));
+        let person_write_permitted = member.allows(
+            &member.policy.node(),
+            tilo_action_policy::ActionKind::Undoable,
+            now,
+        );
+        let document = view
+            .peer()
+            .document("so.tilo.chat", record)
             .map(|bytes| automerge::Automerge::load(&bytes))
-            .transpose().map_err(|error| error.to_string())?;
-        let workspace_bound = document.as_ref().map(|document| -> Result<bool, String> {
-            let workspaces = document.get(ROOT, "workspaces")
-                .map_err(|error| error.to_string())?;
-            match workspaces {
-                Some((automerge::Value::Object(automerge::ObjType::Map), map)) => {
-                    Ok(document.get(&map, room_text)
-                        .map_err(|error| error.to_string())?.is_some())
+            .transpose()
+            .map_err(|error| error.to_string())?;
+        let workspace_bound = document
+            .as_ref()
+            .map(|document| -> Result<bool, String> {
+                let workspaces = document
+                    .get(ROOT, "workspaces")
+                    .map_err(|error| error.to_string())?;
+                match workspaces {
+                    Some((automerge::Value::Object(automerge::ObjType::Map), map)) => Ok(document
+                        .get(&map, room_text)
+                        .map_err(|error| error.to_string())?
+                        .is_some()),
+                    _ => Ok(false),
                 }
-                _ => Ok(false),
-            }
-        }).transpose()?.unwrap_or(false);
+            })
+            .transpose()?
+            .unwrap_or(false);
         Ok(serde_json::json!({
             "room": room_text, "app": "so.tilo.chat", "record": record,
             "generation": view.generation(), "record_exists": document.is_some(),
             "workspace_bound": workspace_bound,
-            "app_write_permitted": allows_write(collab_types::caps::Actor::app("so.tilo.chat")),
-            "person_write_permitted": allows_write(collab_types::caps::Actor::person(Some(role), person)),
+            "app_write_permitted": app_write_permitted,
+            "person_write_permitted": person_write_permitted,
             "workspace_administration_permitted": view.peer()
                 .check_workspace_administration(view.device().device_public_key, now).is_ok(),
         }))
@@ -319,68 +330,56 @@ mod tests {
 
     #[test]
     fn membership_requires_live_exact_room_subject_and_restriction() {
-        use collab_types::caps::{
-            Actor, CapDecision, CapOverride, Effect, ResourceRef, Scope, Subject, Verb,
+        use tilo_action_policy::roles::AgentPreset;
+        use tilo_action_policy::{Answer, Grant, KindSet, Lifetime, Role, RoomPolicy, Subject};
+        let owner = Subject::Role(Role::Owner);
+        let room = |agent: &str, preset: AgentPreset| {
+            let mut policy = RoomPolicy::unowned("room", &owner);
+            policy.grants.extend(preset.grants("room", agent, &owner));
+            policy
         };
-        let member =
-            CapOverride::membership(Subject::agent("bootstrap-proof"), "room", Verb::Write);
-        assert!(exact_agent_membership(
-            std::slice::from_ref(&member),
-            "room",
-            10
-        ));
-        assert!(!exact_agent_membership(
-            std::slice::from_ref(&member),
+        let member = room("bootstrap-proof", AgentPreset::Operator);
+        assert!(exact_agent_membership(&member, 10));
+        let mut elsewhere = RoomPolicy::unowned("room", &owner);
+        elsewhere.grants.extend(AgentPreset::Operator.grants(
             "other-room",
+            "bootstrap-proof",
+            &owner,
+        ));
+        assert!(!exact_agent_membership(&elsewhere, 10));
+        let mut expired = member.clone();
+        for grant in &mut expired.grants {
+            grant.lifetime = Lifetime::Until(10_000);
+        }
+        assert!(!exact_agent_membership(&expired, 11));
+        assert!(!exact_agent_membership(
+            &room("another-agent", AgentPreset::Operator),
             10
         ));
-        assert!(!exact_agent_membership(
-            &[member.clone().with_expiry(10)],
-            "room",
-            11
-        ));
-        assert!(!exact_agent_membership(
-            &[CapOverride::membership(
-                Subject::agent("another-agent"),
-                "room",
-                Verb::Write
-            ),],
-            "room",
-            10
-        ));
-        assert!(!exact_agent_membership(
-            &[CapOverride::grant(
-                Subject::agent("bootstrap-proof"),
-                Scope::App("so.tilo.chat".into()),
-                Verb::Write
-            ),],
-            "room",
-            10
-        ));
-        assert_eq!(
-            collab_types::caps::decide_capability(
-                &Actor::agent("bootstrap-proof").in_room("room"),
-                &ResourceRef::Workspace,
-                Verb::Write,
-                std::slice::from_ref(&member),
-                Some(10),
-            ),
-            CapDecision::DeniedByRole,
-            "room membership must not invent execution authority"
+        assert!(
+            !exact_agent_membership(&room("bootstrap-proof", AgentPreset::Observer), 10),
+            "reading the room is not the membership the proof needs"
         );
-        assert!(!exact_agent_membership(
-            &[
-                member,
-                CapOverride::new(
-                    Subject::agent("bootstrap-proof"),
-                    Scope::Room("room".into()),
-                    Effect::Restrict,
-                    Verb::Read,
-                )
-            ],
-            "room",
-            10
+        let mut app_only = RoomPolicy::unowned("room", &owner);
+        app_only.grants.push(Grant::new(
+            "app-only",
+            Subject::agent("bootstrap-proof"),
+            app_only.node().app("so.tilo.chat"),
+            KindSet::ALL,
+            Answer::Allow,
+            owner.clone(),
         ));
+        assert!(!exact_agent_membership(&app_only, 10));
+        let mut restricted = member;
+        restricted.grants.push(Grant::new(
+            "restricted",
+            Subject::agent("bootstrap-proof"),
+            restricted.node(),
+            KindSet::UNDOABLE,
+            Answer::Deny,
+            owner,
+        ));
+        assert!(!exact_agent_membership(&restricted, 10));
     }
 
     #[test]

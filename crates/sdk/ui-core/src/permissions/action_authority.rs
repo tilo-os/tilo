@@ -1,5 +1,6 @@
-//! Host action authority is separate from a record's participation.
-use super::{Actor, PermissionContext, Principal, ResourceRef, UserId};
+//! The host's live view of a person's authority over one app's actions.
+use super::{PermissionContext, TreePath, UserId};
+
 use std::sync::Arc;
 
 #[derive(Clone)]
@@ -23,43 +24,27 @@ impl PartialEq for ActionAuthoritySampler {
 impl Eq for ActionAuthoritySampler {}
 
 impl ActionAuthoritySampler {
-    pub(super) fn matches(&self, resource: &ResourceRef) -> bool {
-        match resource {
-            ResourceRef::App(app) | ResourceRef::Action { app, .. } => app == &self.app_id,
-            _ => false,
-        }
+    /// Whether `node` (below the room) is one of this app's actions.
+    pub(super) fn matches(&self, node: &TreePath) -> bool {
+        TreePath::root().app(self.app_id.clone()).covers(node)
     }
 
+    /// The host's current view, for `asker` when it is exactly the person the
+    /// view belongs to, acting as themselves: never borrowed by another person
+    /// or by an agent acting for them.
     pub(super) fn sample_for(
         &self,
-        person: &UserId,
-        actor: &Actor,
+        asker: &PermissionContext,
     ) -> Result<PermissionContext, String> {
+        if !asker.standing.bounds.is_empty() {
+            return Err("host action authority is not a delegation's".into());
+        }
+        let person: &UserId = &asker.user;
         let current = (self.sample)()?;
-        let bound_person = |value: &Actor| {
-            value
-                .principals
-                .iter()
-                .filter_map(|principal| match principal {
-                    Principal::Person(id) => Some(id.as_str()),
-                    _ => None,
-                })
-                .collect::<Vec<_>>()
-                == vec![person.0.as_str()]
-        };
-        if !bound_person(actor)
-            || !bound_person(&current.actor)
-            || current.user != *person
+        if current.user != *person
+            || current.standing.person != person.0
+            || !current.standing.bounds.is_empty()
             || current.action_authority.is_some()
-            || actor
-                .principals
-                .iter()
-                .any(|principal| !matches!(principal, Principal::Person(_) | Principal::Room(_)))
-            || current
-                .actor
-                .principals
-                .iter()
-                .any(|principal| !matches!(principal, Principal::Person(_) | Principal::Room(_)))
         {
             return Err("host action authority binding mismatch".into());
         }
@@ -68,8 +53,8 @@ impl ActionAuthoritySampler {
 }
 
 impl PermissionContext {
-    /// Borrow host-admitted person authority for this app's Admin actions.
-    /// Record admission and all other verbs keep their original participation.
+    /// Decide this app's actions by the host's live view of the person's
+    /// authority, resampled at every decision.
     #[must_use]
     pub(crate) fn with_action_authority(
         mut self,
@@ -84,42 +69,34 @@ impl PermissionContext {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::permissions::{CapDecision, Role, Verb};
+    use crate::permissions::{ActionKind, Answer, Role, policy};
 
     #[test]
-    fn host_action_authority_cannot_be_borrowed_by_apps_agents_or_foreign_people() {
-        let own = ResourceRef::App("so.tilo.store".into());
-        let authority = || {
-            PermissionContext::from_capabilities(
-                Actor::person(Some(Role::Owner), "person-a").in_room("room-a"),
-                vec![],
-            )
-        };
-        for actor in [
-            Actor::app("so.tilo.store"),
-            Actor::agent("agent-a"),
-            Actor::person(Some(Role::Editor), "person-b"),
-            Actor {
-                principals: vec![
-                    Principal::Person("person-a".into()),
-                    Principal::Person("person-b".into()),
-                ],
-                role: Some(Role::Editor),
-                key: None,
-            },
+    fn host_action_authority_cannot_be_borrowed_by_agents_or_other_people() {
+        let own = TreePath::root().app("so.tilo.store").action("buy");
+        let authority = || PermissionContext::member_of("room-a", "person-a", Role::Owner);
+        let agent = PermissionContext::member_of("room-a", "person-a", Role::Editor);
+        let bounded = agent.clone().with_standing(
+            agent
+                .standing()
+                .clone()
+                .bounded_by(policy::Subject::agent("agent-a"), Vec::new()),
+        );
+        for permissions in [
+            bounded,
+            PermissionContext::member_of("room-a", "person-b", Role::Editor),
         ] {
-            let permissions = PermissionContext::from_capabilities(actor, vec![])
+            let permissions = permissions
                 .with_action_authority("so.tilo.store".into(), Arc::new(move || Ok(authority())));
-            assert_ne!(permissions.decide(&own, Verb::Admin), CapDecision::Allow);
+            assert_eq!(permissions.answer(&own, ActionKind::Outside), Answer::Deny);
             assert!(permissions.directory_witness().is_err());
         }
-        let permissions = PermissionContext::from_capabilities(
-            Actor::person(Some(Role::Editor), "person-a"),
-            vec![],
-        )
-        .with_action_authority("so.tilo.store".into(), Arc::new(move || Ok(authority())))
-        .with_policy_time_sampler(Arc::new(|| Err("clock unavailable".into())));
-        assert_ne!(permissions.decide(&own, Verb::Admin), CapDecision::Allow);
+        let permissions = PermissionContext::member_of("room-a", "person-a", Role::Editor)
+            .with_action_authority("so.tilo.store".into(), Arc::new(move || Ok(authority())));
+        assert_eq!(permissions.answer(&own, ActionKind::Outside), Answer::Allow);
+        let permissions =
+            permissions.with_policy_time_sampler(Arc::new(|| Err("clock unavailable".into())));
+        assert_eq!(permissions.answer(&own, ActionKind::Outside), Answer::Deny);
         assert!(permissions.directory_witness().is_err());
     }
 }
