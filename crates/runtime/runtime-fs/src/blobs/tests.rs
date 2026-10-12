@@ -724,6 +724,10 @@ where
     });
 }
 
+#[allow(
+    clippy::future_not_send,
+    reason = "capnp-rpc clients are Rc-based and run on a LocalSet by construction"
+)]
 async fn open_upload(blobs: &document_blobs::Client) -> blob_upload::Client {
     let mut request = blobs.upload_request();
     request.get().set_mime("");
@@ -738,6 +742,10 @@ async fn open_upload(blobs: &document_blobs::Client) -> blob_upload::Client {
         .unwrap()
 }
 
+#[allow(
+    clippy::future_not_send,
+    reason = "capnp-rpc clients are Rc-based and run on a LocalSet by construction"
+)]
 async fn write_upload(upload: &blob_upload::Client, bytes: &[u8]) -> Result<(), capnp::Error> {
     let mut request = upload.write_request();
     request.get().set_bytes(bytes);
@@ -746,7 +754,9 @@ async fn write_upload(upload: &blob_upload::Client, bytes: &[u8]) -> Result<(), 
 
 /// Waits until the backend has seen `count` uploads end without finishing.
 fn await_abandoned(backend: &MemoryBackend, count: usize) {
-    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let deadline = std::time::Instant::now()
+        .checked_add(Duration::from_secs(10))
+        .unwrap();
     while backend.abandoned.load(std::sync::atomic::Ordering::SeqCst) < count {
         assert!(
             std::time::Instant::now() < deadline,
