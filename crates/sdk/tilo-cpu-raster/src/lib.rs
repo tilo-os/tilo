@@ -326,6 +326,47 @@ pub fn reads_backdrop(encoding: &Encoding) -> bool {
     decode::encoding_reads_backdrop(encoding)
 }
 
+/// Whether every layer `encoding` leaves open after its first `draws` draw
+/// tags is a plain clip or a source-over group at full opacity: a draw there
+/// composites onto the target as it would with no layer open, clipped.
+/// `false` when `encoding` has fewer draw tags. Walks the draw tags only.
+pub fn plain_layers_open_at(encoding: &Encoding, draws: usize) -> bool {
+    decode::plain_layers_open_at(encoding, draws)
+}
+
+/// Device-space bounds of everything a scene paints, for a caller that must
+/// know what lies over a region without rasterising the scene. Keep one: it
+/// retains glyph outlines across calls.
+#[derive(Default)]
+pub struct DrawBounds {
+    list: decode::DisplayList,
+    glyphs: glyph::GlyphCache,
+    images: image::ImageCache,
+}
+
+impl std::fmt::Debug for DrawBounds {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DrawBounds").finish_non_exhaustive()
+    }
+}
+
+impl DrawBounds {
+    /// Every pixel `encoding` can paint, as device-space rectangles: each
+    /// draw's path (stroke reach included) or glyph outlines under its
+    /// transform, and the clip of every layer that blends other than by
+    /// source over. A layer's clip is not applied, so the bounds hold
+    /// whatever it clips. `None` when some draw cannot be bounded.
+    pub fn of(&mut self, encoding: &Encoding) -> Option<Vec<Rect>> {
+        let mut stats = Stats::default();
+        self.glyphs.begin_frame();
+        let bounds = self
+            .list
+            .bounds(encoding, &mut self.glyphs, &mut self.images, &mut stats);
+        self.glyphs.end_frame();
+        bounds
+    }
+}
+
 /// Regions smaller than this many pixels render on the calling thread.
 pub const SINGLE_THREAD_PIXELS: u32 = 128 * 1024;
 

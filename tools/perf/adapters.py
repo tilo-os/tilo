@@ -49,7 +49,11 @@ Each adapter reads what a benchmark already prints and emits records through
   p50), `.whole_frames.<size>` (frames repainted whole), `.cpu_ms.<size>`
   (one scroll frame on the CPU, p50) and `.raster_ms.<size>` (presenting it
   on the GPU, copies included, p50), one sample per run. A run whose
-  presented pixels differ from a full render fails.
+  presented pixels differ from a full render fails. `FRAMEWORK-SCROLL-HOSTED`
+  lines are the same list shown in a region of a host's scene, as the shell
+  shows an in-process app: its line with copies and a whole-pixel step
+  becomes `render.framework_scroll.hosted_pixels.<size>` and
+  `.hosted_whole_frames.<size>`.
 - `hosting-load REPORT_JSON`: the relay load bench's `hosting-load.json`
   (`crates/hosting/tilo-relay/examples/relay_load`). Each KPI it measured
   becomes `<kpi>.n<collaborators>`, one sample per measured minute (fan-out
@@ -267,7 +271,7 @@ def framework_open(logs: list[str], env: dict[str, Any]) -> list[record.Record]:
 
 
 FRAMEWORK_SCROLL_LINE = re.compile(
-    r"^FRAMEWORK-SCROLL tasks=(?P<tasks>[0-9]+) step=(?P<step>[0-9.]+) copying=(?P<copying>true|false) "
+    r"^FRAMEWORK-SCROLL(?P<hosted>-HOSTED)? tasks=(?P<tasks>[0-9]+) step=(?P<step>[0-9.]+) copying=(?P<copying>true|false) "
     r"pixels_p50=(?P<pixels>[0-9]+) pixels_max=(?P<max>[0-9]+) copied_p50=(?P<copied>[0-9]+) "
     r"whole=(?P<whole>[0-9]+) frames=(?P<frames>[0-9]+) cpu_ms=(?P<cpu>[0-9.]+) gpu_ms=(?P<gpu>[0-9.]+) "
     r"gpu_full_ms=(?P<gpu_full>[0-9.]+) differing=(?P<differing>[0-9]+)$")
@@ -288,12 +292,18 @@ def framework_scroll(logs: list[str], env: dict[str, Any]) -> list[record.Record
             if line["copying"] != "true" or float(line["step"]) != int(float(line["step"])):
                 continue
             size = framework_open_size(int(line["tasks"]))
-            measured = {
-                (f"render.framework_scroll.pixels.{size}", "pixels"): float(line["pixels"]),
-                (f"render.framework_scroll.whole_frames.{size}", "count"): float(line["whole"]),
-                (f"render.framework_scroll.cpu_ms.{size}", "ms"): float(line["cpu"]),
-                (f"render.framework_scroll.raster_ms.{size}", "ms"): float(line["gpu"]),
-            }
+            if line["hosted"]:
+                measured = {
+                    (f"render.framework_scroll.hosted_pixels.{size}", "pixels"): float(line["pixels"]),
+                    (f"render.framework_scroll.hosted_whole_frames.{size}", "count"): float(line["whole"]),
+                }
+            else:
+                measured = {
+                    (f"render.framework_scroll.pixels.{size}", "pixels"): float(line["pixels"]),
+                    (f"render.framework_scroll.whole_frames.{size}", "count"): float(line["whole"]),
+                    (f"render.framework_scroll.cpu_ms.{size}", "ms"): float(line["cpu"]),
+                    (f"render.framework_scroll.raster_ms.{size}", "ms"): float(line["gpu"]),
+                }
             for (kpi, unit), value in measured.items():
                 samples.setdefault(kpi, []).append(value)
                 units[kpi] = unit

@@ -43,6 +43,23 @@ pub struct ScrollRegion {
     focused: bool,
     edge_fade: bool,
     persisted: Option<Rc<Cell<(f32, f32)>>>,
+    /// What the frame being drawn shows of the content, and what the last
+    /// frame the host presented showed ([`Self::offer_copy`]).
+    shown_drawing: std::cell::RefCell<Option<RegionShown>>,
+    shown_presented: Option<RegionShown>,
+}
+
+/// Where a frame shows the content: its offset, the clip it paints into,
+/// the transform it lands on screen with, what the region paints over it
+/// without moving it (the edge fades' bands) and its bars' tracks, which
+/// lie beside the content.
+#[derive(Clone, Debug, PartialEq)]
+struct RegionShown {
+    offset: Vec2,
+    clip: Rect,
+    transform: Affine,
+    overlays: Vec<Rect>,
+    tracks: Vec<Rect>,
 }
 
 impl ScrollRegion {
@@ -63,6 +80,8 @@ impl ScrollRegion {
             focused: false,
             edge_fade: false,
             persisted: None,
+            shown_drawing: std::cell::RefCell::new(None),
+            shown_presented: None,
         }
     }
 
@@ -283,6 +302,78 @@ impl ScrollRegion {
             || self.hbar.is_active()
     }
 
+    /// Note what the frame being drawn shows, for a host that clips and
+    /// draws its content itself (with [`Self::paint_bars`]) and offers its
+    /// scrolls as copies ([`Self::offer_copy`]); [`Self::paint`] notes it.
+    pub fn note_shown(&self, transform: Affine, theme: &Theme) {
+        let clip = self.content_rect();
+        let tracks: Vec<Rect> = [self.v_track(theme), self.h_track(theme)]
+            .into_iter()
+            .flatten()
+            .collect();
+        let mut overlays = Vec::new();
+        if self.edge_fade {
+            let reach = crate::surface::CONTENT_FADE_PX;
+            if self.has_vertical() {
+                overlays.push(Rect::new(clip.x0, clip.y0, clip.x1, clip.y0 + reach));
+                overlays.push(Rect::new(clip.x0, clip.y1 - reach, clip.x1, clip.y1));
+            }
+            if self.has_horizontal() {
+                overlays.push(Rect::new(clip.x0, clip.y0, clip.x0 + reach, clip.y1));
+                overlays.push(Rect::new(clip.x1 - reach, clip.y0, clip.x1, clip.y1));
+            }
+        }
+        *self.shown_drawing.borrow_mut() = Some(RegionShown {
+            offset: self.offset,
+            clip,
+            transform: crate::scroll_copy::on_screen(transform),
+            overlays,
+            tracks,
+        });
+    }
+
+    /// From the host's `collect_damage`, when nothing it paints in the
+    /// region changed since the frame on screen but the offset: offer the
+    /// scroll to a host that copies what stays on screen
+    /// ([`crate::scroll_copy::offer`]), and add the bars' tracks, where the
+    /// thumbs moved, to `regions`. `false` when the host does not copy, or
+    /// the frame shows the content in another clip or under another
+    /// transform, or the offset did not move: the host then damages the
+    /// region as it would without copies.
+    pub fn offer_copy<T: ?Sized>(&self, owner: &T, regions: &mut Vec<Rect>) -> bool {
+        let drawing = self.shown_drawing.borrow();
+        let (Some(drawing), Some(presented)) = (drawing.as_ref(), self.shown_presented.as_ref())
+        else {
+            return false;
+        };
+        let offered = drawing.clip == presented.clip
+            && drawing.transform == presented.transform
+            && drawing.offset != presented.offset
+            && crate::scroll_copy::offer(
+                owner,
+                drawing.clip,
+                presented.offset - drawing.offset,
+                drawing
+                    .overlays
+                    .iter()
+                    .chain(&drawing.tracks)
+                    .copied()
+                    .collect(),
+                drawing.transform,
+            );
+        if offered {
+            regions.extend(drawing.tracks.iter().chain(&presented.tracks).copied());
+        }
+        offered
+    }
+
+    /// From the host's `mark_drawn`: the frame just drawn is on screen. Not
+    /// drawn this frame, the region's content is not known to be there, and
+    /// its next scroll repaints.
+    pub fn mark_presented(&mut self) {
+        self.shown_presented = self.shown_drawing.get_mut().take();
+    }
+
     /// Paint the content with `draw` (handed the scene and the content
     /// transform), clipped to the region, then the edge fades and the bars.
     pub fn paint(
@@ -292,6 +383,7 @@ impl ScrollRegion {
         theme: &Theme,
         draw: impl FnOnce(&mut Scene, Affine),
     ) {
+        self.note_shown(transform, theme);
         let shown = self.content_rect();
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &shown);
         draw(scene, self.content_transform(transform));
@@ -600,6 +692,10 @@ impl ScrollRegion {
 #[cfg(test)]
 #[path = "scroll_region/capture_tests.rs"]
 mod capture_tests;
+
+#[cfg(test)]
+#[path = "scroll_region/copy_tests.rs"]
+mod copy_tests;
 
 #[cfg(test)]
 mod tests {
