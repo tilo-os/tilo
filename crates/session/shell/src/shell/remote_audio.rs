@@ -935,16 +935,6 @@ fn state() -> &'static Mutex<RemoteAudioState> {
     STATE.get_or_init(|| Mutex::new(RemoteAudioState::default()))
 }
 
-fn random_nonzero_16() -> [u8; 16] {
-    loop {
-        let mut value = [0_u8; 16];
-        UnwrapErr(SysRng).fill_bytes(&mut value);
-        if value != [0; 16] {
-            return value;
-        }
-    }
-}
-
 fn random_nonzero_u64(existing: &BTreeMap<u64, LocalAudioSelection>) -> u64 {
     loop {
         let value = UnwrapErr(SysRng).next_u64();
@@ -1184,7 +1174,7 @@ pub fn request(
             LocalAudioSelection::System => crate::shell::i18n::t("remote-audio-all-system-audio"),
             LocalAudioSelection::Application { label, .. } => label.clone(),
         };
-        let session_id = random_nonzero_16();
+        let session_id = crate::random::nonzero::<16>();
         let now = Instant::now();
         state.outbound.insert(
             session_id,
@@ -1244,7 +1234,7 @@ pub fn authorize(
         .pending
         .remove(&session_id)
         .ok_or_else(|| crate::shell::i18n::t("remote-audio-error-request-expired"))?;
-    let authorization = approved.then(random_nonzero_16);
+    let authorization = approved.then(crate::random::nonzero::<16>);
     if let Some(authorization) = authorization {
         let playback = match start_playback(
             media::pw_stream::native_streams(),
