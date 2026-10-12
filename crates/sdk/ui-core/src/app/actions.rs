@@ -2161,14 +2161,25 @@ impl App {
             scope,
             ..
         } = *invocation;
+        // The typed text of a prompt travels to the broker as the argument the
+        // action itself names for it.
+        let prompted_arguments = typed_arguments
+            .is_none()
+            .then(|| argument.and_then(|text| spec.prompt_arguments(text)))
+            .flatten();
+        let (broker_arguments, broker_argument) = if prompted_arguments.is_some() {
+            (prompted_arguments.as_ref(), None)
+        } else {
+            (typed_arguments, argument)
+        };
         if spec.deferred_invocation_type().is_some()
             && spec.locus == tilo_actions::ExecutionLocus::ServerPreferred
             && !broker_admitted
         {
             return self.invoke_via_broker(
                 address,
-                typed_arguments,
-                argument,
+                broker_arguments,
+                broker_argument,
                 confirmation_evidence,
             );
         }
@@ -2192,8 +2203,8 @@ impl App {
         if action.locus() == tilo_actions::ExecutionLocus::ServerPreferred && !broker_admitted {
             return self.invoke_via_broker(
                 address,
-                typed_arguments,
-                argument,
+                broker_arguments,
+                broker_argument,
                 confirmation_evidence,
             );
         }
