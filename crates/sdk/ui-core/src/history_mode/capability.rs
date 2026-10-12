@@ -143,9 +143,7 @@ pub fn visit_framework_history(
         topology.visit_framework_history(visitor);
         return;
     }
-    for child in widget.children() {
-        visit_framework_history(child, visitor);
-    }
+    widget.for_each_child(&mut |child| visit_framework_history(child, visitor));
 }
 
 /// Mutable [`visit_framework_history`].

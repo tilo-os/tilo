@@ -126,12 +126,26 @@ impl ActionHost for BrokerActionHost {
         self.broker.state().action_observe(caller, id)
     }
 
+    fn next_change(&self, caller: &Caller, id: &tilo_actions::InvocationId) -> Option<Pending<()>> {
+        // Authorized as `observe` is: an invocation this caller did not
+        // admit has no change to wait for.
+        self.broker.state().action_next_change_after_now(caller, id)
+    }
+
     fn cancel(
         &self,
         caller: &Caller,
         id: &tilo_actions::InvocationId,
     ) -> Result<(), ActionHostError> {
         self.broker.state().action_cancel(caller, id)
+    }
+
+    fn confirm(
+        &self,
+        caller: &Caller,
+        request: &InvokeRequest,
+    ) -> Pending<Result<tilo_actions::remote::Confirmation, ActionHostError>> {
+        self.broker.state().request_witness(caller, None, request)
     }
 }
 
@@ -222,7 +236,7 @@ mod tests {
                 action(
                     "rename",
                     tilo_actions::ActionContract {
-                        permission: tilo_actions::PermissionRequirement::Write,
+                        kind: tilo_actions::ActionKind::Undoable,
                         ..tilo_actions::ActionContract::default()
                     },
                 ),
@@ -248,6 +262,7 @@ mod tests {
             context: None,
             confirmation: None,
             revision: None,
+            wait_ms: None,
         }
     }
 
@@ -296,8 +311,10 @@ mod tests {
                     ("7", "refresh"),
                     ("7", "erase"),
                     ("7", "rename"),
-                    ("workspace", "profile.save"),
-                    ("workspace", "profile.assign"),
+                    ("workspace", "grant"),
+                    ("workspace", "revoke"),
+                    ("workspace", "preset.save"),
+                    ("workspace", "preset.assign"),
                     ("workspace", "app-action.grant"),
                     ("workspace", "app-action.revoke"),
                     ("workspace", "create"),
@@ -431,6 +448,7 @@ mod tests {
                 context: None,
                 confirmation: None,
                 revision: None,
+                wait_ms: None,
             };
             match now(host.invoke(&caller, open)) {
                 Err(ActionHostError::Refused { reason }) => assert!(
@@ -469,10 +487,12 @@ mod tests {
     }
 }
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(test)]
+#[cfg(target_os = "linux")]
 #[path = "shortcuts_door_tests.rs"]
 mod shortcuts_door_tests;
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(test)]
+#[cfg(target_os = "linux")]
 #[path = "keyboard_shortcuts_door_tests.rs"]
 mod keyboard_shortcuts_door_tests;

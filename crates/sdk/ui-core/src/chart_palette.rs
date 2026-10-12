@@ -74,10 +74,6 @@ impl ChartPalette {
             .unwrap_or(self.diverging.0)
     }
 
-    pub fn categorical_colors(&self, count: usize) -> Vec<Color> {
-        (0..count).map(|index| self.categorical(index)).collect()
-    }
-
     /// Sample the sequential ramp. Values outside `0..=1` are clamped.
     pub fn sequential(&self, value: f64) -> Color {
         let value = num::f32_of_f64(value.clamp(0.0, 1.0));

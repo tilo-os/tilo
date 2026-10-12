@@ -61,7 +61,7 @@ impl UserFleet {
         let identity = std::env::var_os("TILO_IDENTITY_ROOT")
             .filter(|root| !root.is_empty())
             .map_or_else(IdentityPaths::default_system, IdentityPaths::under);
-        let identity_dir = xdg_paths::xdg::config_home()
+        let identity_dir = tilo_paths::xdg::config_home()
             .filter(|dir| dir.is_absolute())
             .map(|config| config.join("tilo").join("identity"));
         Self::at(identity, identity_dir)

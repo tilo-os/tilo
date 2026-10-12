@@ -8,7 +8,7 @@ use std::time::SystemTime;
 use channel_crypto::{ChannelGroup, Error, MemberKey, VaultKey};
 use collab_types::history::{HistoryPager, page_before};
 use collab_types::{
-    ArtifactId, AttestationId, ChannelId, ContentRetention, OpClass, SignedOp, generate_keypair,
+    ArtifactId, AttestationId, ChannelId, ContentRetention, OpKind, SignedOp, generate_keypair,
     sign_op, verify_op,
 };
 
@@ -59,7 +59,7 @@ impl Writer {
             artifact,
             self.public,
             AttestationId::new(),
-            OpClass::Splice,
+            OpKind::Change,
             SystemTime::UNIX_EPOCH,
             host.seq,
             metadata,

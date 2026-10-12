@@ -9,10 +9,10 @@
 use super::{
     Addr, Affine, AnnotationClick, Button, CellValue, ChartKind, ChartSnapshot, ChromeMetrics,
     Fill, HashMap, Point, Rect, Scene, SheetsApp, TextRenderer, TextRole, Theme, WindowEvent,
-    count_f64,
 };
 use ui::charts::legend;
 use ui::charts::{Sparkline, TrendFill, TrendRange, TrendStyle};
+use ui::num::f64_of_usize;
 use ui::paint::PaintCtx;
 use ui::surface::separator;
 use ui::widget::{BadgeFace, ButtonFace, ButtonRole, CardFace, ChipStyle, ControlSize, Tone};
@@ -59,7 +59,7 @@ impl ChromeMetrics {
     pub(super) fn comment_rows(&self) -> CommentRows {
         let range_h = self.lh_caption;
         let text_top = range_h + self.s1;
-        let text_h = self.lh_body * count_f64(COMMENT_LINES);
+        let text_h = self.lh_body * f64_of_usize(COMMENT_LINES);
         let replies_top = text_top + text_h + self.s1;
         let actions_top = replies_top + self.lh_caption + self.s3;
         CommentRows {
@@ -101,6 +101,8 @@ impl CardMetrics {
         let width = f64::from(theme.tokens.metrics.panel_width_utility)
             * f64::from(ui::tokens::Metrics::text_growth(theme.text_scale));
         let face = CardFace::new().title("Ag");
+        // The plot gives the type picker's row its height, so a chart card
+        // stands no taller than one with a single row of actions.
         let chart_h = face.height_for_body(tr, theme, width, m.plot_h() + m.s2 + m.control_h);
         let comment_h = face.height_for_body(tr, theme, width, m.comment_rows().height);
         let pad = face
@@ -115,9 +117,9 @@ impl CardMetrics {
                         .intrinsic_width(tr, theme)
                 })
                 .sum();
-            buttons + m.s1 * count_f64(labels.len().saturating_sub(1)) + 2.0 * pad
+            buttons + m.s1 * f64_of_usize(labels.len().saturating_sub(1)) + 2.0 * pad
         };
-        let chart_min_w = row(&["Open", "Edit", "Delete"]);
+        let chart_min_w = row(&["Open", "Rename", "Delete"]).max(row(&["Column", "Line", "Cells"]));
         let comment_min_w = row(&["Reply", "Edit", "Resolve", "Delete"])
             .max(row(&["Reply", "Edit", "Reopen", "Delete"]));
         Self {
@@ -177,7 +179,7 @@ impl SheetsApp {
             .map(|card| cm.height(*card))
             .fold(0.0, f64::max);
         let avail = (area.width() - 2.0 * pad).max(0.0);
-        let gaps = pad * count_f64(cards.len().saturating_sub(1));
+        let gaps = pad * f64_of_usize(cards.len().saturating_sub(1));
         let mins: Vec<f64> = cards.iter().map(|card| cm.min_width(*card)).collect();
         let room = avail - gaps - mins.iter().sum::<f64>();
         // Every card gets what its action row needs; what is left over grows
@@ -201,7 +203,7 @@ impl SheetsApp {
         };
         let dock_h = card_h + 2.0 * pad + lane;
         let min_grid = m.grid.col_header_h()
-            + count_f64(MIN_GRID_ROWS) * m.grid.default_row_h()
+            + f64_of_usize(MIN_GRID_ROWS) * m.grid.default_row_h()
             + self.grid.scrollbar_thickness();
         if cards.is_empty() || area.height() - dock_h < min_grid {
             return (0.0, Vec::new(), 0.0);
@@ -258,12 +260,13 @@ impl SheetsApp {
     }
 
     /// Paint a row of small buttons from `x0` along `y`, registering each as a
-    /// click target.
+    /// click target; the one choosing `picked` shows on.
     fn draw_card_actions(
         &mut self,
         ctx: &mut PaintCtx<'_>,
         origin: (f64, f64),
         actions: Vec<(&'static str, ButtonRole, AnnotationClick)>,
+        picked: Option<ChartKind>,
     ) {
         let (mut x, y) = origin;
         let gap = self.metrics.s1;
@@ -274,9 +277,14 @@ impl SheetsApp {
                 .control_size(ControlSize::Small);
             let w = probe.intrinsic_width(ctx.text, ctx.theme);
             let rect = Rect::new(x, y, x + w, y + h);
+            let on = matches!(
+                (&action, picked),
+                (AnnotationClick::SetChartKind(_, kind), Some(current)) if *kind == current
+            );
             let face = ButtonFace::new(rect, label)
                 .role(role)
                 .control_size(ControlSize::Small)
+                .toggled(on)
                 .hovered(rect.contains(self.last_mouse));
             Button::paint(ctx.scene, ctx.transform, ctx.text, ctx.theme, &face);
             self.annotation_clicks
@@ -357,8 +365,8 @@ impl SheetsApp {
         );
     }
 
-    /// One chart card: its title, its plot in the room above the action row,
-    /// and Open, Edit and Delete.
+    /// One chart card: its title, its plot in the room above its two rows of
+    /// controls, the type picker and Cells, then Open, Rename and Delete.
     fn draw_chart_card(
         &mut self,
         ctx: &mut PaintCtx<'_>,
@@ -370,11 +378,12 @@ impl SheetsApp {
         let face = CardFace::new().title(&chart.title);
         face.paint(ctx, card);
         let body = face.body_rect(ctx.text, ctx.theme, card);
+        let rows = self.metrics.control_h * 2.0 + self.metrics.s1;
         let plot = Rect::new(
             body.x0,
             body.y0,
             body.x1,
-            (body.y1 - gap - self.metrics.control_h).max(body.y0),
+            (body.y1 - gap - rows).max(body.y0),
         );
         Self::draw_plot(ctx, plot, chart.kind, series);
         self.draw_card_actions(
@@ -382,12 +391,37 @@ impl SheetsApp {
             (body.x0, plot.y1 + gap),
             vec![
                 (
+                    ChartKind::Column.label(),
+                    ButtonRole::Secondary,
+                    AnnotationClick::SetChartKind(chart.id.clone(), ChartKind::Column),
+                ),
+                (
+                    ChartKind::Line.label(),
+                    ButtonRole::Secondary,
+                    AnnotationClick::SetChartKind(chart.id.clone(), ChartKind::Line),
+                ),
+                (
+                    "Cells",
+                    ButtonRole::Secondary,
+                    AnnotationClick::ChartCells(chart.id.clone()),
+                ),
+            ],
+            Some(chart.kind),
+        );
+        self.draw_card_actions(
+            ctx,
+            (
+                body.x0,
+                plot.y1 + gap + self.metrics.control_h + self.metrics.s1,
+            ),
+            vec![
+                (
                     "Open",
                     ButtonRole::Secondary,
                     AnnotationClick::Open(chart.start),
                 ),
                 (
-                    "Edit",
+                    "Rename",
                     ButtonRole::Secondary,
                     AnnotationClick::EditChart(chart.id.clone()),
                 ),
@@ -397,6 +431,7 @@ impl SheetsApp {
                     AnnotationClick::DeleteChart(chart.id.clone()),
                 ),
             ],
+            None,
         );
     }
 
@@ -519,10 +554,10 @@ impl SheetsApp {
         let names: Vec<&str> = series.iter().map(|series| series.name.as_str()).collect();
         let entries = legend::measure(ctx.text, theme, names.iter().copied());
         let gap = f64::from(sp.rhythm.section);
-        let gaps = gap * count_f64(entries.len().saturating_sub(1));
+        let gaps = gap * f64_of_usize(entries.len().saturating_sub(1));
         let natural: f64 = entries.iter().map(|entry| entry.width).sum::<f64>() + gaps;
         let share = if natural > area.width() {
-            (area.width() - gaps).max(0.0) / count_f64(entries.len().max(1))
+            (area.width() - gaps).max(0.0) / f64_of_usize(entries.len().max(1))
         } else {
             f64::INFINITY
         };
@@ -561,12 +596,13 @@ impl SheetsApp {
             .unwrap_or(0);
         match kind {
             ChartKind::Column => {
-                let cluster = plot.width() / count_f64(points.max(1));
-                let bar_w = (cluster - 2.0 * inset) / count_f64(series.len().max(1));
+                let cluster = plot.width() / f64_of_usize(points.max(1));
+                let bar_w = (cluster - 2.0 * inset) / f64_of_usize(series.len().max(1));
                 for (s, line) in series.iter().enumerate() {
                     let ink = theme.tokens.colors.presence.series(s);
                     for (i, value) in line.values.iter().enumerate() {
-                        let x0 = plot.x0 + cluster * count_f64(i) + inset + bar_w * count_f64(s);
+                        let x0 =
+                            plot.x0 + cluster * f64_of_usize(i) + inset + bar_w * f64_of_usize(s);
                         let (a, b) = (y_of(*value), y_of(0.0));
                         let (top, bottom) = (a.min(b), a.max(b));
                         let bar = Rect::new(x0, top, x0 + bar_w, bottom.max(top + 1.0));
@@ -660,7 +696,7 @@ impl SheetsApp {
                 ctx.transform
                     * Affine::translate((
                         body.x0,
-                        body.y0 + rows.text_top + self.metrics.lh_body * count_f64(i),
+                        body.y0 + rows.text_top + self.metrics.lh_body * f64_of_usize(i),
                     )),
                 None,
                 &style,
@@ -707,6 +743,7 @@ impl SheetsApp {
                     AnnotationClick::DeleteComment(thread.id.clone()),
                 ),
             ],
+            None,
         );
         // The rest of the card opens the thread's range. Registered after the
         // buttons, so a button wins where they overlap.

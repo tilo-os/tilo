@@ -85,6 +85,15 @@ overhead requires a matched baseline on the same hardware/build/workload.
 
 ## Measured development run, 2026-09-16
 
+These numbers are an in-process diagnostic of a Cargo `dev` build. They time
+the broker from inside the session. They do not include the control socket,
+JSON (de)serialization or the compositor's event loop that an agent's call
+goes through, so they are **not** the agent round-trip KPI. That KPI is
+measured from the client's side of the control socket by
+`scripts/perf/agent_rtt.py`. **Perf / scheduled** (`agent` group) runs it
+nightly and keeps its records in the `tilo-perf-results` store (DEVELOPMENT.md,
+"Performance results").
+
 Evidence: `target/runtime-proof/20260916-083914/benchmark.json` and adjacent raw
 streams. Apple M5 Max, 48 GiB RAM, macOS 27.0 arm64, Cargo `dev` build
 (unoptimized application code; workspace overrides optimize some dependencies).

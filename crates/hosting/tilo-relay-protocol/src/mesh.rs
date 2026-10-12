@@ -11,10 +11,10 @@
 //! - hosts continue to authenticate as ordinary certified devices.
 //!
 //! It therefore does not define another sync protocol.  It describes which
-//! existing replication streams a device requests and which services an
-//! always-on peer offers. Hosts are chosen by configuration (workspace
-//! bindings, home-peer registration) and compute workers by the requester;
-//! nothing here ranks candidates.
+//! existing replication streams a device requests, which services a device
+//! offers, and the advertisement a compute worker is admitted against. Hosts
+//! are chosen by configuration (workspace bindings, home-peer registration);
+//! nothing here ranks candidate servers.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -407,9 +407,9 @@ pub enum PowerAvailability {
 }
 
 impl PowerAvailability {
-    /// Whether the device is on battery at or below 15 %, low enough that it
-    /// must not take discretionary work (app serving, compute). This is the
-    /// one battery rule; essential relay work ignores it.
+    /// Whether the device is too low on battery to take discretionary work
+    /// such as app backends or compute jobs. This is the single battery rule
+    /// shared by every admission path.
     #[must_use]
     pub const fn is_critically_constrained(self) -> bool {
         matches!(self, Self::Battery(percent) if percent <= 15)

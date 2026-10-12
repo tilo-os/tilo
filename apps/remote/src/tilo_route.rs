@@ -1,10 +1,10 @@
 //! Tilo-device session route adapter.
 //!
 //! Discovery remains owned by the device-mesh runtime. Remote accepts a
-//! verified snapshot and decides from it: a direct path is the only route
-//! accepted for control. A workspace-wide relay is reported as unavailable
-//! rather than leaking input through fan-out, since no exact-target relayed
-//! route exists yet.
+//! verified snapshot and accepts only an exact-target route for control: a
+//! direct path. Relayed exact-target control does not exist yet, so a
+//! workspace-wide relay is reported as unavailable rather than leaking input
+//! through fan-out.
 
 /// Certified-device routing key.
 pub type DeviceKey = [u8; 32];
@@ -56,8 +56,8 @@ pub struct MeshRouteSnapshot {
     pub workspace_id: u64,
     /// Whether authenticated discovery currently has a direct target path.
     pub direct_reachable: bool,
-    /// Verified, online relays of this workspace that offer the
-    /// remote-control relay service.
+    /// Verified, online same-workspace relays offering the remote-control
+    /// relay service. They can only explain a refusal; none carries input.
     pub relays: Vec<DeviceKey>,
 }
 
@@ -84,42 +84,34 @@ impl TiloRouteProvider for MeshTiloRouteProvider {
             client,
             target,
             direct_reachable,
-            relays,
+            ref relays,
             ..
-        } = &self.snapshot;
-        if client == target {
-            return Err(
+        } = self.snapshot;
+        // A device cannot remote-control itself, and a relay that is the
+        // client or the target is no intermediate.
+        let unavailable = || {
+            Err(
                 "No direct path or eligible online server is available for this workspace"
                     .to_string(),
-            );
+            )
+        };
+        if client == target {
+            return unavailable();
         }
-        if *direct_reachable {
+        if direct_reachable {
             return Ok(TiloRouteDecision::Direct);
         }
-        // A relay is never one end of the session it would carry.
         if relays
             .iter()
-            .any(|relay| relay != client && relay != target)
+            .any(|relay| *relay != client && *relay != target)
         {
             return Err(
                 "Workspace control needs an exact-target route; the available relay is workspace-wide"
                     .to_string(),
             );
         }
-        Err("No direct path or eligible online server is available for this workspace".to_string())
+        unavailable()
     }
-}
-
-/// Short non-authoritative device fingerprint for status/error copy.
-pub fn short_device_id(device: &DeviceKey) -> String {
-    let mut bytes = device.iter().copied();
-    format!(
-        "{:02x}{:02x}{:02x}{:02x}",
-        bytes.next().unwrap_or_default(),
-        bytes.next().unwrap_or_default(),
-        bytes.next().unwrap_or_default(),
-        bytes.next().unwrap_or_default()
-    )
 }
 
 #[cfg(test)]
@@ -158,11 +150,30 @@ mod tests {
                     .route("studio-node")
                     .is_err()
             );
+            assert_eq!(
+                provider(false, vec![server(3)]).route("studio-node"),
+                Err("Workspace control needs an exact-target route; the available relay is workspace-wide".to_string())
+            );
+            // The client or the target is never its own intermediate.
+            assert_eq!(
+                provider(false, vec![server(1), server(2)]).route("studio-node"),
+                Err(
+                    "No direct path or eligible online server is available for this workspace"
+                        .to_string()
+                )
+            );
         }
 
         eprintln!("phase stale_or_missing_discovery_never_becomes_success");
         {
             assert!(provider(false, Vec::new()).route("studio-node").is_err());
+            assert_eq!(
+                provider(false, Vec::new()).route("studio-node"),
+                Err(
+                    "No direct path or eligible online server is available for this workspace"
+                        .to_string()
+                )
+            );
             assert!(provider(true, Vec::new()).route("different-node").is_err());
             assert!(UnavailableTiloRouteProvider.route("studio-node").is_err());
         }

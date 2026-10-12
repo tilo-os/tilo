@@ -1249,11 +1249,13 @@ mod tests {
             let manifest = payload.join("manifest.toml");
             std::fs::write(
                 &manifest,
-                format!(
-                    "[package]\nid = \"{READER}\"\nversion = \"1.0.0\"\n\
-                     [entrypoint]\nbin = \"bin/app\"\ntype = \"gui\"\n\
-                     [continuity]\nrequired = {required}\n\
-                     semantic-schema = \"{schema}\"\n"
+                crate::shell::test_support::canonical_manifest(
+                    &format!("id = \"{READER}\"\nversion = \"1.0.0\"\nkind = \"app\""),
+                    &format!(
+                        "[entrypoint]\nbin = \"bin/app\"\ntype = \"gui\"\n\
+                         [continuity]\nrequired = {required}\n\
+                         semantic-schema = \"{schema}\"\n"
+                    ),
                 ),
             )
             .unwrap();

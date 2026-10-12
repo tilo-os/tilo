@@ -26,6 +26,7 @@ blake3.workspace = true
 
 [dev-dependencies]
 # The production codec; tests pin every variant's exact encoding.
+hex.workspace = true
 postcard = { workspace = true, features = ["alloc"] }
 serde_json.workspace = true
 uuid.workspace = true

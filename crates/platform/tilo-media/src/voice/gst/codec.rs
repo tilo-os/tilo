@@ -10,6 +10,12 @@ use gst::prelude::*;
 const RATE: i32 = 48_000;
 #[cfg(test)]
 const CHANNELS: i32 = 1;
+/// One encode covers at most 5 s of 48 kHz mono: long enough to observe the
+/// encoder settle into DTX.
+const MAX_ENCODE_SAMPLES: usize = 5 * 48_000;
+const MAX_ENCODE_BYTES: u64 = 2 * 5 * 48_000 + 2_000;
+/// 250 frames plus the encoder's trailing flush.
+const MAX_ENCODE_PACKETS: usize = 264;
 
 pub fn test_tone(rate: i32, channels: i32, ms: u64) -> Vec<i16> {
     if rate <= 0 || channels != 1 || ms > 1000 {
@@ -42,13 +48,13 @@ impl OpusEncoder {
         Self::try_encode(pcm).unwrap_or_default()
     }
     fn try_encode(pcm: &[i16]) -> Result<Vec<Vec<u8>>, AudioError> {
-        if pcm.is_empty() || pcm.len() > 48_000 {
+        if pcm.is_empty() || pcm.len() > MAX_ENCODE_SAMPLES {
             return Err(AudioError::Capacity);
         }
         let pipeline = RunningPipeline(gst::Pipeline::new());
         let source = gst_app::AppSrc::builder().format(gst::Format::Time).build();
         source.set_caps(Some(&raw_caps()));
-        source.set_property("max-bytes", 98_000u64);
+        source.set_property("max-bytes", MAX_ENCODE_BYTES);
         let encode = encoder()?;
         let sink = gst_app::AppSink::builder()
             .sync(false)
@@ -98,7 +104,7 @@ impl OpusEncoder {
                 }
                 continue;
             };
-            if packets.len() == 64 {
+            if packets.len() == MAX_ENCODE_PACKETS {
                 return Err(AudioError::Capacity);
             }
             let buffer = sample.buffer().ok_or(AudioError::Codec)?;
@@ -190,7 +196,7 @@ mod tests {
                 .sum::<usize>()
                 >= 1920
         );
-        assert!(encoder.encode(&vec![0; 48_001]).is_empty());
+        assert!(encoder.encode(&vec![0; MAX_ENCODE_SAMPLES + 1]).is_empty());
         assert!(decoder.decode(&vec![0; MAX_PACKET_BYTES + 1]).is_empty());
     }
 }

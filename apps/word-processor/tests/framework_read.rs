@@ -111,11 +111,29 @@ fn invoke(
         instance_id: INSTANCE,
         address: address(&harness.resources(), action).expect("the action is published"),
     };
-    harness
-        .invoke_bound_action(&address, arguments.as_object().unwrap())
-        .unwrap()
-        .completed()
-        .and_then(|output| output.value)
+    let (invocation, started) = harness
+        .start_bound_job(&address, arguments.as_object().unwrap(), false)
+        .unwrap();
+    // An edit at the caret is applied as the frame settles; one that answers
+    // with what it changed does so then.
+    harness.relayout();
+    if let Some(output) = started.completed() {
+        return output.value;
+    }
+    for _ in 0..4 {
+        if let Some(update) = harness
+            .job_updates(invocation)
+            .iter()
+            .find(|update| update.is_terminal())
+        {
+            return match update {
+                tilo_actions::InvocationUpdate::Succeeded { output, .. } => output.value.clone(),
+                other => panic!("{action} failed: {other:?}"),
+            };
+        }
+        harness.relayout();
+    }
+    panic!("{action} never answered")
 }
 
 #[test]
@@ -184,7 +202,7 @@ fn a_heading_list_and_table_read_back_with_the_handles_that_edit_them() {
     let mut app = TestApp::<WordProcessorApp>::new().unwrap();
     app.harness().type_text("x");
     invoke(&mut app, "select-all", &serde_json::json!({}));
-    let pasted = invoke(
+    invoke(
         &mut app,
         "paste",
         &serde_json::json!({"markdown": "## Standup\n\n- review\n  1. screen reader\n- ship\n\n\
@@ -195,15 +213,6 @@ fn a_heading_list_and_table_read_back_with_the_handles_that_edit_them() {
         | Person {#} | Blocked {#} | Next {#} | {#table}\n| --- | --- | --- |\n\
         | Maya {#} | no {#} | docs {#} |\n| Ravi {#} | yes {#} | CI {#} |\n\
         {#}\n";
-    let pasted = pasted
-        .as_ref()
-        .and_then(|value| value.as_str())
-        .unwrap_or_default();
-    assert_eq!(
-        without_ids(pasted),
-        format!("14 changed:\n{layout}"),
-        "{pasted}"
-    );
 
     let read_back = read(&mut app, &serde_json::json!({})).unwrap();
     let markdown = read_back["content"]["markdown"]
@@ -231,16 +240,171 @@ fn a_heading_list_and_table_read_back_with_the_handles_that_edit_them() {
         "the cell's id selects it: {markdown}"
     );
 
-    // The table's own resource is listed from the state a frame keeps.
-    app.harness().relayout();
-    let appended = invoke(&mut app, "append-row", &serde_json::json!({}));
-    let appended = appended
+    // The table read names is the one a row is added to, and the next read
+    // shows the row.
+    let table = markdown
+        .split_once("{#table ")
+        .and_then(|(_, tagged)| tagged.split_once('}'))
+        .map(|(id, _)| id.to_owned())
+        .expect("the table is tagged with its id");
+    invoke(&mut app, "add-row", &serde_json::json!({ "table": table }));
+    let markdown = read(&mut app, &serde_json::json!({})).unwrap()["content"]["markdown"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(
+        without_ids(&markdown).contains("| Ravi {#} | no {#} | CI {#} |\n| {#} | {#} | {#} |"),
+        "{markdown}"
+    );
+}
+
+/// A paste and a row added answer with the blocks they made, so the caller
+/// fills them without reading the document again.
+#[test]
+fn pasting_a_table_and_adding_a_row_answer_with_the_blocks_they_made() {
+    ui::i18n::I18nManager::init("en-US");
+    let mut app = TestApp::<WordProcessorApp>::new().unwrap();
+    app.harness().type_text("x");
+    invoke(&mut app, "select-all", &serde_json::json!({}));
+    let pasted = invoke(
+        &mut app,
+        "paste",
+        &serde_json::json!({"markdown": "## Standup\n\n- review\n  1. screen reader\n- ship\n\n\
+            | Person | Blocked | Next |\n| --- | --- | --- |\n| Maya | no | docs |\n| Ravi | yes | CI |\n"}),
+    );
+    let layout = "## Standup {#}\n\
+        - review {#}\n  1. screen reader {#}\n- ship {#}\n\
+        | Person {#} | Blocked {#} | Next {#} | {#table}\n| --- | --- | --- |\n\
+        | Maya {#} | no {#} | docs {#} |\n| Ravi {#} | yes {#} | CI {#} |\n\
+        {#}\n";
+    let pasted = pasted
         .as_ref()
         .and_then(|value| value.as_str())
+        .unwrap_or_default();
+    assert_eq!(
+        without_ids(pasted),
+        format!("14 changed:\n{layout}"),
+        "{pasted}"
+    );
+    app.harness().relayout();
+    let table = pasted
+        .split_once("{#table ")
+        .and_then(|(_, tagged)| tagged.split_once('}'))
+        .map(|(id, _)| id.to_owned())
+        .expect("the paste answers with the table's id");
+    let appended = invoke(&mut app, "add-row", &serde_json::json!({ "table": table }));
+    // A verb answers with what it changed, beside the ids it minted.
+    let appended = appended
+        .as_ref()
+        .and_then(|value| value["changed"].as_str())
         .unwrap_or_default();
     assert_eq!(
         without_ids(appended),
         "3 changed:\n| {#} | {#} | {#} | {#table}\n| --- | --- | --- |\n",
         "the new row answers with the ids that fill it"
     );
+}
+
+/// The document's blocks as (kind, text, align), in order.
+fn blocks(app: &TestApp<WordProcessorApp>) -> Vec<(String, String, Option<String>)> {
+    app.read_document(|doc| {
+        let containers = word_processor::model::open(doc).unwrap();
+        let order = tilo_doc::model::region_blocks_in_order(
+            doc,
+            &containers,
+            tilo_doc::model::Region::Body,
+        );
+        tilo_doc::model::materialize_blocks(doc, &containers, &order)
+            .into_iter()
+            .map(|block| {
+                let align = match block.attrs.get("align") {
+                    Some(tilo_doc::AttrVal::Str(align)) => Some(align.clone()),
+                    _ => None,
+                };
+                (block.kind, block.text, align)
+            })
+            .collect()
+    })
+}
+
+#[test]
+fn an_edit_told_which_paragraph_acts_there_and_leaves_the_agent_there() {
+    ui::i18n::I18nManager::init("en-US");
+    let mut app = TestApp::<WordProcessorApp>::new().unwrap();
+    app.harness().type_text("Launch plan");
+    app.harness().key("Enter");
+    app.harness().type_text("Book the venue for the offsite");
+    app.harness().relayout();
+
+    // The paragraphs are published by their first words, each naming its
+    // paragraph as an item of the document.
+    let resources = app.harness().resources();
+    let root = resources[0].id.as_str().to_owned();
+    let title = resources[0]
+        .children
+        .iter()
+        .find(|row| row.label == "Launch plan")
+        .expect("the title is published as a place");
+    assert_eq!(title.kind, "word-processor.document.paragraph");
+    let block = title
+        .id
+        .as_str()
+        .rsplit_once("/blocks/")
+        .map(|(_, block)| block.to_owned())
+        .unwrap();
+    let align = resources[0]
+        .actions
+        .iter()
+        .find(|action| action.id == "align")
+        .unwrap();
+    assert!(
+        align
+            .params()
+            .iter()
+            .any(tilo_actions::ActionParam::is_place),
+        "align is told where by a place"
+    );
+
+    let agent = tilo_actions::ActionInvoker::actor("scribe")
+        .with_participant(tilo_actions::ParticipantId::new("scribe-1").unwrap());
+    app.call_by(
+        agent.clone(),
+        &root,
+        "align",
+        serde_json::json!({"align": "center", "at": {"item": block}}),
+    )
+    .unwrap();
+    app.settle();
+    let after = blocks(&app);
+    assert_eq!(after[0].1, "Launch plan");
+    assert_eq!(after[0].2.as_deref(), Some("center"), "{after:?}");
+    assert_eq!(after[1].2, None, "only the named paragraph is aligned");
+
+    // It is left there: its next edit at its caret is beside the title,
+    // not at the end of the document where an agent starts.
+    app.call_by(agent, &root, "insert-table-here", serde_json::json!({}))
+        .unwrap();
+    app.settle();
+    let after = blocks(&app);
+    assert_eq!(after[0].1, "Launch plan");
+    assert_ne!(
+        after[1].0, "paragraph",
+        "the table follows the title: {after:?}"
+    );
+    assert_eq!(
+        after.last().map(|block| block.1.as_str()),
+        Some("Book the venue for the offsite"),
+        "{after:?}"
+    );
+
+    // A place that is not in the document is refused, and nothing changes.
+    let before = blocks(&app);
+    assert!(
+        app.call(
+            "align",
+            serde_json::json!({"align": "right", "at": {"item": "no-such-paragraph"}}),
+        )
+        .is_err()
+    );
+    assert_eq!(blocks(&app), before);
 }

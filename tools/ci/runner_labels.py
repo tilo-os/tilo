@@ -27,6 +27,9 @@ LABELS = {
         "ubuntu-24.04"),
     "runner-arm64": Label(
         "aarch64", "`runner` on native ARM64", "ubuntu-24.04-arm"),
+    "runner-native-portable": Label(
+        "x86_64/aarch64", "Host-independent native SDK and WASM qualification: at least 22 GiB memory, Docker",
+        "self-hosted on either native architecture"),
     "runner-quality": Label(
         "x86_64", "Lint, change selection and result aggregation: 2 CPUs, 4 GiB memory",
         "ubuntu-24.04"),

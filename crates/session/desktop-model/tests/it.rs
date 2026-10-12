@@ -19,6 +19,8 @@ pub mod collaborator;
 pub mod commands;
 #[path = "desktop_doc.rs"]
 pub mod desktop_doc;
+#[path = "history.rs"]
+pub mod history;
 #[path = "peer_window_merge.rs"]
 pub mod peer_window_merge;
 #[path = "portable_state.rs"]

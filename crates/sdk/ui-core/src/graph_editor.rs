@@ -339,12 +339,6 @@ impl GraphEditor {
         self.selection.clear();
         self.selection.insert(id.into());
     }
-    pub fn toggle_selection(&mut self, id: impl Into<NodeId>) {
-        let id = id.into();
-        if !self.selection.remove(&id) {
-            self.selection.insert(id);
-        }
-    }
     pub fn zoom_about(&mut self, screen: GraphPoint, factor: f64) {
         let old = self.zoom;
         self.zoom = (self.zoom * factor).clamp(0.2, 4.0);
@@ -499,10 +493,6 @@ impl GraphEditor {
             to_node: to_node.to_owned(),
             to_port: to_port.to_owned(),
         })
-    }
-
-    pub fn cancel_connection(&mut self) -> bool {
-        self.connection_drag.take().is_some()
     }
 
     pub fn is_connecting(&self) -> bool {

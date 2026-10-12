@@ -21,7 +21,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use channel_crypto::{ChannelSteward, VaultKey};
 use collab_types::{
     ContentRetention, DocumentFrame, DocumentMutation, Ed25519PublicKey, MlsAccessRequestV1,
-    OpClass, SignedOp, document_artifact_id, document_attestation_id, document_channel_id,
+    OpKind, SignedOp, document_artifact_id, document_attestation_id, document_channel_id,
 };
 use neighbour_wire::NeighbourMsg;
 use tilo_browser_peer::{Host, PeerEvent, PeerStore as _};
@@ -114,7 +114,7 @@ async fn a_browser_joins_a_native_stewarded_channel_and_edits_its_sealed_record(
             artifact,
             Ed25519PublicKey::from_bytes(laptop_device),
             document_attestation_id(&route.app_id, &route.cluster_id, &route.record),
-            OpClass::Splice,
+            OpKind::Change,
             std::time::SystemTime::now(),
             seq,
             metadata,

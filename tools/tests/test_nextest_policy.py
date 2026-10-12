@@ -147,12 +147,24 @@ class NextestPolicyTests(unittest.TestCase):
         # renamed, and nextest rejects a package() that matches nothing.
         for name in ("check.yml", "ci-nightly.yml", "dev-visual-baselines.yml"):
             workflow = (WORKFLOWS / name).read_text(encoding="utf-8")
-            self.assertNotRegex(workflow, r"(?m)^\s*(GOLDEN|PUSH_ONLY)_FILTER:", name)
+            self.assertNotRegex(workflow, r"(?m)^\s*(GOLDEN|PUSH_ONLY|QUARANTINE)_FILTER:", name)
             self.assertIn("python3 tools/ci/nextest_filters.py >> \"$GITHUB_ENV\"", workflow, name)
         output = subprocess.run([sys.executable, str(REPO / "tools/ci/nextest_filters.py")],
                                 check=True, capture_output=True, text=True).stdout
         names = [line.split("=", 1)[0] for line in output.splitlines()]
-        self.assertEqual(names, ["GOLDEN_FILTER", "PUSH_ONLY_FILTER"])
+        self.assertEqual(names, ["GOLDEN_FILTER", "PUSH_ONLY_FILTER", "QUARANTINE_FILTER"])
 
 if __name__ == "__main__":
     unittest.main()
+
+    def test_required_shards_skip_quarantined_tests_on_every_event(self) -> None:
+        # A quarantine names its tracking issue and is skipped on pull
+        # requests and on pushes to main alike, never only on one of them.
+        source = FILTERS.read_text(encoding="utf-8")
+        quarantine = tomllib.loads(source)["quarantine"]
+        self.assertTrue(quarantine.strip())
+        comment = source.split("quarantine =", 1)[0].rsplit("\n\n", 1)[-1]
+        self.assertRegex(comment, r"#\d+", "a quarantine names its tracking issue")
+        workflow = (WORKFLOWS / "check.yml").read_text(encoding="utf-8")
+        step = workflow.split("- name: Test shard ${{ matrix.shard }}", 1)[1].split("- name:", 1)[0]
+        self.assertIn('-E "not ($GOLDEN_FILTER) and not ($QUARANTINE_FILTER)$', step)

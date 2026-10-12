@@ -141,9 +141,15 @@ const COMPAT_PROTOCOL_VERSION: u16 = 1;
 pub const COMPAT_HANDOFF_FRAMING: Framing = Framing::little_endian(4 * 1024).reject_empty();
 /// The model gateway's handoff: a little-endian `u32` length, then JSON.
 const MODEL_GATEWAY_HANDOFF_FRAMING: Framing = Framing::little_endian(4 * 1024);
-/// The collaboration launch preamble (magic + protocol version) is shared
-/// with the broker through `collab-types`.
-pub use collab_types::local_transport::{COLLAB_LAUNCH_MAGIC, COLLAB_LAUNCH_PROTOCOL_VERSION};
+/// Length-prefixed launcher handoff consumed before Cap'n Proto starts on a
+/// collaboration descriptor. The broker binds it to `SO_PEERCRED` and a
+/// compositor-created one-shot launch record.
+pub const COLLAB_LAUNCH_PROTOCOL_VERSION: u16 = 1;
+/// Prefix that separates a launcher-authenticated connection from a raw
+/// Cap'n Proto diagnostic client. It is deliberately not an authority: the
+/// broker still verifies the peer process against the compositor's one-shot
+/// record before it accepts the following frame.
+pub const COLLAB_LAUNCH_MAGIC: [u8; 4] = *b"QCL1";
 /// After [`COLLAB_LAUNCH_MAGIC`]: a little-endian `u32` length, then the JSON
 /// handoff. It is deliberately tiny: it only binds a socket to the shell's
 /// already-created process record, while the certificate the app presents
@@ -219,7 +225,7 @@ pub struct ServiceLaunchContext<'a> {
 
 /// Discover `$XDG_RUNTIME_DIR/tilo/services/`.
 pub fn services_root() -> PathBuf {
-    let runtime = xdg_paths::xdg::runtime_dir().unwrap_or_else(|| {
+    let runtime = tilo_paths::xdg::runtime_dir().unwrap_or_else(|| {
         let uid = unsafe { libc::geteuid() };
         PathBuf::from(format!("/run/user/{uid}"))
     });

@@ -106,7 +106,7 @@ impl ExportDialog {
         let _ = tree.compute_layout(node, size);
         if self
             .dialog
-            .adjust_layout_with_measure(&mut tree, node, text_renderer)
+            .adjust_layout_style(&mut tree, node, text_renderer)
         {
             let _ = tree.compute_layout(node, size);
         }
@@ -178,31 +178,18 @@ fn dismiss_event(event: &WindowEvent) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use winit::event::{DeviceId, KeyEvent};
-    use winit::keyboard::{Key, KeyLocation, NamedKey, PhysicalKey};
+    use winit::event::DeviceId;
+    use winit::keyboard::{Key, NamedKey};
 
     fn escape_event() -> WindowEvent {
-        let mut event: KeyEvent = unsafe { std::mem::zeroed() };
-        event.physical_key =
-            PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
-        event.logical_key = Key::Named(NamedKey::Escape);
-        event.location = KeyLocation::Standard;
-        event.state = ElementState::Pressed;
-        event.repeat = false;
-        WindowEvent::KeyboardInput {
-            device_id: DeviceId::dummy(),
-            event,
-            is_synthetic: false,
-        }
+        ui::synthetic_input::keyboard_input(ui::synthetic_input::key_event(
+            Key::Named(NamedKey::Escape),
+            None,
+            ElementState::Pressed,
+        ))
     }
 
-    fn left_click() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: DeviceId::dummy(),
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        }
-    }
+    use ui::synthetic_input::mouse_press;
 
     fn cursor_move() -> WindowEvent {
         WindowEvent::CursorMoved {
@@ -339,7 +326,7 @@ mod tests {
 
             dialog.show("# config".into());
             assert!(dialog.handle_detached(
-                &left_click(),
+                &mouse_press(),
                 1.0,
                 Modifiers::default(),
                 &mut ui::widget::Edits::lend(&mut doc),

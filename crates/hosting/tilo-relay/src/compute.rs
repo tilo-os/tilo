@@ -25,7 +25,7 @@ use std::time::Duration;
 use launcher::capture::{
     CaptureCancellation, CapturedResourcePlan, CapturedRunOutput, CapturedTermination,
 };
-use launcher::manifest::{MinimalManifest, read_manifest};
+use launcher::manifest::{ManifestView, read_manifest};
 #[cfg(target_os = "linux")]
 use launcher::run::{IdentitySource, LaunchMode, RunOptions, run_with_captured_bounded};
 use package_store::InstalledPackage;
@@ -304,7 +304,7 @@ pub trait ComputeContentStore: Send + Sync {
 /// Information passed only to the trusted, local sandbox adapter.
 pub struct ComputeSandboxInvocation<'a> {
     pub package: &'a InstalledPackage,
-    pub manifest: &'a MinimalManifest,
+    pub manifest: &'a ManifestView,
     pub entrypoint: &'a str,
     pub workspace_slug: &'a str,
     pub host_job_dir: &'a Path,
@@ -1253,10 +1253,15 @@ mod tests {
     fn installed_fixture(root: &Path, spec: &mut ComputeJobSpec) -> InstalledPackage {
         let data_root = root.join("apps");
         let manifest = format!(
-            "[package]\nid = {:?}\nversion = \"1.0.0\"\n\
+            "[package]\nid = {:?}\nversion = \"1.0.0\"\nkind = \"app\"\n\
+             [publisher]\nidentity = \"ed25519:{}\"\n\
+             [sandbox]\nnamespaces = []\nseccomp = \"tilo-default\"\nlandlock = \"strict\"\n\
+             [sandbox.net]\nmode = \"off\"\n\
              [entrypoint]\nbin = \"bin/worker\"\ntype = \"cli\"\n\
              [cli]\ncommands = [{:?}]\n",
-            spec.app_id, spec.entrypoint
+            spec.app_id,
+            "00".repeat(32),
+            spec.entrypoint
         );
         let collection =
             Collection::from_entries([("bin/worker".to_string(), BlobHash::of(b"signed worker"))]);

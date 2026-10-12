@@ -21,8 +21,8 @@ pub struct StorageRoots {
 
 impl StorageRoots {
     pub fn discover() -> Self {
-        let data = xdg_paths::xdg::data_home();
-        let cache = xdg_paths::xdg::cache_home();
+        let data = tilo_paths::xdg::data_home();
+        let cache = tilo_paths::xdg::cache_home();
         let payload_root = std::env::var_os("TILO_APPS_DATA_DIR")
             .map(PathBuf::from)
             .filter(|p| p.is_absolute())

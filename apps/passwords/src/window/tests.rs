@@ -1,6 +1,5 @@
 use super::*;
 use accounts::{SecretId, SecretItem};
-use taffy::{Style, TaffyTree};
 use ui::automerge::{self, AutoCommit};
 use zeroize::Zeroizing;
 
@@ -18,24 +17,7 @@ fn temp_root(name: &str) -> std::path::PathBuf {
 
 /// Run `event` through the window as the host would.
 fn send(app: &mut PasswordsSurface, doc: &mut AutoCommit, event: &WindowEvent) {
-    let mut handled = false;
-    let mut focus = None;
-    let mut taffy = TaffyTree::new();
-    let node = taffy.new_leaf(Style::default()).unwrap();
-    Widget::handle_event(
-        app,
-        event,
-        &mut ui::widget::EventCtx {
-            scale_factor: 1.0,
-            modifiers: &winit::event::Modifiers::default(),
-            state: ui::widget::Edits::lend(doc),
-            path: &automerge::ROOT,
-            handled: &mut handled,
-            focus_target: &mut focus,
-            node_id: node,
-            taffy: &taffy,
-        },
-    );
+    ui::testing::Dispatch::new().doc(doc).send(app, event);
 }
 
 fn request(app: &mut PasswordsSurface, request: Request) {
@@ -143,34 +125,52 @@ fn the_window_is_the_shared_shell_and_follows_the_chosen_place() {
 
 #[test]
 fn list_rows_open_items_and_toggle_favorites_through_the_list() {
-    let mut doc = AutoCommit::new();
-    let mut app = PasswordsSurface::demo();
-    let mut pane = ListPane::new(&app.core, &app.requests);
-    assert!(pane.perform_semantic_action(
-        "passwords.item:demo-mail",
-        &ui::a11y::Action::Activate,
-        &mut ui::widget::Edits::lend(&mut doc),
-        &automerge::ROOT,
-    ));
-    app.settle();
-    assert_eq!(
-        app.core().selected.as_ref().map(|id| id.0.as_str()),
-        Some("demo-mail")
-    );
+    let mut app =
+        ui::framework::testing::TestApp::<crate::resource::PasswordsShell>::capture(None).unwrap();
+    let selected = |app: &mut ui::framework::testing::TestApp<crate::resource::PasswordsShell>| {
+        app.surface::<PasswordsSurface, _>(|surface| {
+            surface.core().selected.as_ref().map(|id| id.0.clone())
+        })
+        .flatten()
+    };
+    let favorites = |app: &mut ui::framework::testing::TestApp<crate::resource::PasswordsShell>| {
+        app.surface::<PasswordsSurface, _>(|surface| surface.core().count(VaultFilter::Favorites))
+            .unwrap()
+    };
 
-    let before = app.core().count(VaultFilter::Favorites);
-    request(
-        &mut app,
-        Request::ToggleFavorite(SecretId("demo-mail".into())),
-    );
-    assert_eq!(app.core().count(VaultFilter::Favorites), before + 1);
+    // A press on a row opens its item.
+    app.harness()
+        .click_named("passwords.item:demo-mail")
+        .unwrap();
+    app.settle();
+    assert_eq!(selected(&mut app).as_deref(), Some("demo-mail"));
+
+    // So does assistive technology, by the row's own target.
+    app.harness()
+        .perform_semantic_named(
+            "passwords.item:demo-recovery",
+            Some("passwords.item:demo-recovery"),
+            &ui::a11y::Action::Activate,
+        )
+        .unwrap();
+    app.settle();
+    assert_eq!(selected(&mut app).as_deref(), Some("demo-recovery"));
+
+    // The row's star toggles the item's favorite.
+    let before = favorites(&mut app);
+    app.harness()
+        .perform_semantic_named(
+            "passwords.item:demo-mail",
+            Some("passwords.item:demo-mail/action/0"),
+            &ui::a11y::Action::Activate,
+        )
+        .unwrap();
+    app.settle();
+    assert_eq!(favorites(&mut app), before + 1);
 
     // The arrow keys step through the list.
-    app.core_mut().step(true);
-    assert_eq!(
-        app.core().selected.as_ref().map(|id| id.0.as_str()),
-        Some("demo-recovery")
-    );
+    app.surface::<PasswordsSurface, _>(|surface| surface.core_mut().step(false));
+    assert_eq!(selected(&mut app).as_deref(), Some("demo-mail"));
 }
 
 #[test]
@@ -240,7 +240,6 @@ fn reveal_and_copy_are_temporary_and_honest_about_the_clipboard() {
     {
         let doc = AutoCommit::new();
         let mut app = PasswordsSurface::demo();
-        app.core_mut().toast = None;
         let (tx, rx) = std::sync::mpsc::channel();
         app.core_mut().export_portal = Some(rx);
         let first = app.core().next_wake().unwrap();
@@ -268,10 +267,9 @@ fn reveal_and_copy_are_temporary_and_honest_about_the_clipboard() {
             "copying must not disclose the value"
         );
         assert!(
-            app.core()
-                .toast
-                .as_ref()
-                .is_some_and(|(message, _)| message.starts_with("Copied password"))
+            app.shell()
+                .toast_text()
+                .is_some_and(|message| message.starts_with("Copied password"))
         );
 
         request(&mut app, Request::RevealSecret);
@@ -301,13 +299,10 @@ fn reveal_and_copy_are_temporary_and_honest_about_the_clipboard() {
             Request::CopyIdentity,
             Request::CopyOrigins,
         ] {
-            app.core_mut().toast = None;
+            app.shell.dismiss_toast();
             request(&mut app, copy);
             assert_eq!(
-                app.core()
-                    .toast
-                    .as_ref()
-                    .map(|(message, _)| message.as_str()),
+                app.shell().toast_text(),
                 Some("Could not copy to the clipboard. Try again.")
             );
             assert_eq!(ui::clipboard_paste().as_deref(), Some("existing clipboard"));

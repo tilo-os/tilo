@@ -9,3 +9,13 @@ checklist-progress = { $done } of { $total } done
 checklist-done-label = Done
 checklist-title-placeholder = Untitled
 checklist-clear-done = Remove checked items
+
+# What each change says in history, in the reader's language.
+shared-checklist-add = Added { $title }
+shared-checklist-clear-done = Removed the checked items
+shared-checklist-checklist-name = Renamed the checklist
+shared-checklist-item-title = Retitled { $item }
+shared-checklist-item-done = { $new ->
+    [true] Checked { $item }
+   *[false] Unchecked { $item }
+}

@@ -1,6 +1,7 @@
 use super::super::internal_download::SelectedManifest;
 use super::*;
 use crate::release::InternalRelease;
+use crate::setup::test_support::isolated;
 
 fn selected() -> SelectedManifest {
     let bytes = super::super::internal_bundle::tests::bytes(
@@ -1718,19 +1719,4 @@ fn fresh_settlements_require_normal_preparation_and_preserve_evidence() {
             }
         },
     );
-}
-
-/// Runs one merged phase on a fresh thread so the thread-local fault hooks,
-/// scripts and counters start clean, exactly as when the phase was its own
-/// test; a failing phase re-raises its original panic payload.
-fn isolated(phase: &str, body: impl FnOnce() + Send) {
-    std::thread::scope(|scope| {
-        let handle = std::thread::Builder::new()
-            .name(phase.to_owned())
-            .spawn_scoped(scope, body)
-            .expect("spawn isolated test phase");
-        if let Err(panic) = handle.join() {
-            std::panic::resume_unwind(panic);
-        }
-    });
 }

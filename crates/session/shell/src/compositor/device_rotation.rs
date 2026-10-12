@@ -17,8 +17,6 @@ use settings_store::hardware::OutputTransform;
 pub const ROTATION_LOCK_KEY: &str = settings_store::hardware::ROTATION_LOCK.name();
 
 const SAMPLE_INTERVAL: Duration = Duration::from_millis(250);
-/// Re-read the lock every this many samples (once a second).
-const LOCK_REFRESH_SAMPLES: u32 = 4;
 
 /// The panel transform that keeps content upright for `orientation`.
 pub fn output_transform(orientation: DeviceOrientation) -> OutputTransform {
@@ -37,30 +35,29 @@ pub fn rotation_locked(settings: &serde_json::Map<String, serde_json::Value>) ->
 
 /// Start following the accelerometer. Returns `None` when the machine has
 /// none. `wake` is called after each change is queued so an idle
-/// compositor loop picks it up promptly.
-pub fn spawn(wake: impl Fn() + Send + 'static) -> Option<Receiver<OutputTransform>> {
+/// compositor loop picks it up promptly. The rotation lock follows the
+/// session's live `settings`, looked at on every sample for the price of
+/// one atomic load.
+pub fn spawn(
+    wake: impl Fn() + Send + 'static,
+    settings: settings_store::live::LiveSettings,
+) -> Option<Receiver<OutputTransform>> {
     let device = os_actions::orientation::accelerometer()?;
     let (tx, rx) = mpsc::channel();
     let label = device.display().to_string();
     let spawned = std::thread::Builder::new()
         .name("tilo-rotation".into())
         .spawn(move || {
-            let mut control =
-                os_actions::RotationControl::new(rotation_locked(&settings_store::load()));
-            let mut seen = true;
-            let mut cached_stamp = settings_store::stamp();
-            let mut locked = control.locked();
-            let mut samples = 0_u32;
+            let snapshot = settings.snapshot();
+            let mut seen = snapshot.generation;
+            let mut control = os_actions::RotationControl::new(rotation_locked(&snapshot.document));
+            drop(snapshot);
             loop {
-                samples = samples.wrapping_add(1);
                 let mut change = None;
-                if samples.checked_rem(LOCK_REFRESH_SAMPLES) == Some(0) {
-                    let current = settings_store::stamp();
-                    if settings_store::document_changed(seen, cached_stamp, current) {
-                        locked = rotation_locked(&settings_store::load());
-                        seen = true;
-                        cached_stamp = current;
-                    }
+                if settings.generation() != seen {
+                    let snapshot = settings.snapshot();
+                    seen = snapshot.generation;
+                    let locked = rotation_locked(&snapshot.document);
                     if locked != control.locked() {
                         change = control.set_locked(locked);
                     }

@@ -326,7 +326,7 @@ mod tests {
     use winit::event::{ElementState, MouseButton};
 
     fn click(host: &mut Embedded<BlockEditor>, doc: &mut crate::widget::Edits<'_>, at: Point) {
-        let device_id = unsafe { std::mem::zeroed() };
+        let device_id = winit::event::DeviceId::dummy();
         for event in [
             WindowEvent::CursorMoved {
                 device_id,
@@ -446,7 +446,6 @@ mod tests {
             builds: usize,
         }
         impl Widget for ThemedBox {
-            crate::testing::inert_widget_methods!(apply_layout, draw, get_rect);
             fn build_layout(
                 &mut self,
                 tree: &mut TaffyTree<()>,
