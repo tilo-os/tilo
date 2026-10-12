@@ -3547,6 +3547,34 @@ impl RecordStore {
         Ok(parked.action_state.generation)
     }
 
+    /// Read canonical edit state without opening an exclusive action loan.
+    /// Admission generations advance even on idle callbacks; deferred input
+    /// instead follows document changes and actual undo/redo transitions.
+    pub(crate) fn document_edit_stamp(
+        &self,
+        id: &RecordId,
+        lifetime: uuid::Uuid,
+    ) -> Result<crate::bound_dispatch::DocumentEditStamp, RecordOpenError> {
+        let set = self.0.try_borrow().map_err(|_| RecordOpenError::Busy)?;
+        let parked = set.open.get(id).ok_or(RecordOpenError::MissingRecord)?;
+        let document = parked.doc.as_ref().ok_or(RecordOpenError::Busy)?;
+        if parked
+            .action_state
+            .generation
+            .is_none_or(|value| value == u64::MAX)
+            || parked.history.revision() == u64::MAX
+        {
+            return Err(RecordOpenError::Busy);
+        }
+        Ok(
+            crate::bound_dispatch::DocumentEditStamp::for_owned_document(
+                document,
+                lifetime,
+                parked.history.revision(),
+            ),
+        )
+    }
+
     /// Capture the exact operational identity before admitting remote bytes.
     pub(crate) fn replica_identity_stamp(
         &self,
