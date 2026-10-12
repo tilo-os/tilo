@@ -7190,32 +7190,31 @@ struct UshSessionReply {
     protocol: u16,
 }
 
-/// Whether the supervisor's session declaration is well formed and matches
-/// what was asked: a session and relay key of 32 hex digits, an environment
-/// of sane length, the editor capability only where an editor may be offered,
-/// and one descriptor more than the plain pair when it is.
-#[cfg(unix)]
-fn session_reply_is_valid(
-    response: &UshSessionReply,
-    descriptor_count: usize,
-    program: &[String],
-    target: &crate::target::SessionTarget,
-) -> bool {
-    let hex_key = |key: &str| key.len() == 32 && key.bytes().all(|b| b.is_ascii_hexdigit());
-    response.result == "session"
-        && hex_key(&response.session)
-        && !response.environment.is_empty()
-        && response.environment.len() <= 1024
-        && response
-            .relay_session
-            .as_deref()
-            .is_none_or(hex_key)
-        && response
-            .editor_protocol
-            .is_none_or(|version| version == runtime_portal::editor::VERSION)
-        && (response.editor_protocol.is_none() || (program.is_empty() && !target.is_host()))
-        && response.protocol == 2
-        && descriptor_count == if response.editor_protocol.is_some() { 3 } else { 2 }
+impl UshSessionReply {
+    /// Whether the supervisor's session declaration is well formed and matches
+    /// what was asked: a session and relay key of 32 hex digits, an environment
+    /// of sane length, the editor capability only where an editor may be offered,
+    /// and one descriptor more than the plain pair when it is.
+    fn is_valid(
+        &self,
+        descriptor_count: usize,
+        program: &[String],
+        target: &crate::target::SessionTarget,
+    ) -> bool {
+        let hex_key = |key: &str| key.len() == 32 && key.bytes().all(|b| b.is_ascii_hexdigit());
+        let descriptors = if self.editor_protocol.is_some() { 3 } else { 2 };
+        self.result == "session"
+            && hex_key(&self.session)
+            && !self.environment.is_empty()
+            && self.environment.len() <= 1024
+            && self.relay_session.as_deref().is_none_or(hex_key)
+            && self
+                .editor_protocol
+                .is_none_or(|version| version == runtime_portal::editor::VERSION)
+            && (self.editor_protocol.is_none() || (program.is_empty() && !target.is_host()))
+            && self.protocol == 2
+            && descriptor_count == descriptors
+    }
 }
 
 #[cfg(unix)]
@@ -7285,7 +7284,7 @@ pub(crate) fn ush_backend_on(
     }
     let response: UshSessionReply = serde_json::from_slice(&payload)
         .map_err(|_| OpenError::Failed("Malformed ush session descriptor declaration".into()))?;
-    if !session_reply_is_valid(&response, descriptors.len(), program, target) {
+    if !response.is_valid(descriptors.len(), program, target) {
         return Err(OpenError::Failed(t("terminal-service-invalid-session")));
     }
     let native_editor = if response.editor_protocol.is_some() {
