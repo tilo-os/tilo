@@ -1,9 +1,10 @@
 # Native room app-record checkpoints
 
-`tilo_joined_room::NativeWorkspaceOwner` implements a local, durable checkpoint
-foundation for an explicit set of native room app records. This is not a
-whole-workspace backup, an isolated project, a file checkpoint, or a public
-search/action surface yet.
+`tilo_joined_room::NativeWorkspaceOwner` implements a local, durable
+checkpoint for an explicit set of native room app records. The desktop publishes
+capture, inspect, name-bind and find through its ordinary room action service.
+This is not a whole-workspace backup, an isolated project, a file checkpoint,
+or a general search provider.
 
 ## Implemented boundary
 
@@ -50,29 +51,57 @@ search/action surface yet.
   Pre-retained but unpublished blocks can remain orphaned; this code does not run
   a garbage collector with an incomplete root set.
 
-## Public action reachability prerequisite
+## Ordinary public room actions
 
-These are host APIs, **not currently published actions**. There is intentionally
-no JSON control shim, shell-admin shortcut, or wire exposure of
-`OwnerCommitRequest`. `CommitTarget::NativeCheckpointRoot` authenticates only the
-owner's internal signed-root publication and is not an invocable commit family.
+The existing `workspace_memberships` room service publishes the
+`desktop:checkpoints` resource (`workspace-checkpoint` kind), using
+`room_service::serve_room` and the normal broker invocation journal:
 
-To expose capture, historical read and name movement through the ordinary
-resource/action backend:
+| Action | Arguments | Result |
+| --- | --- | --- |
+| `capture` | `name`, sorted distinct `routes: [{app, record}]` | Durable acknowledgement; the invocation UUID is the immutable checkpoint ID |
+| `inspect` | immutable `id` | Verified manifest, including authenticated person attribution when captured by this service |
+| `name-bind` | `name`, immutable `id` | Original acknowledgement of the selected checkpoint |
+| `find` | exact `name` | Original acknowledgement of the currently named checkpoint |
 
-- [ ] Define a closed typed checkpoint command/read family with bounded arguments
-  and explicit room naming authorization. Preserve existing postcard variant
-  positions in `tilo-peer-state/src/owner_commit.rs` and bind the original command
-  and broker-retained authenticated caller to durable invocation receipts.
-- [ ] Register the ordinary room resource/actions using `room_service::serve_room`,
-  following `tilo-action-broker/src/workspace_memberships.rs`. Retain the caller
-  certificate from authenticated admission, never from action arguments.
-- [ ] Add selected-owner governor dispatch in shell `NativeOwnerCommitService`,
-  using `trusted_current_device`; refuse unavailable custody and remote-governed
-  rooms. A new enum variant alone does not make a command reachable.
-- [ ] Preserve the same current per-route checks for discovery, resolution and
-  reads. Define safe handling of a remote governor and retained-content hydration
-  before advertising those operations to a member.
+These actions are available through ordinary catalogue discovery and invocation
+(including `tilo-control actions list` / `actions invoke`), not a new socket,
+JSON control shim, shell-admin shortcut or wire exposure of `OwnerCommitRequest`.
+The closed typed family rejects extra authority fields, malformed IDs, overlong
+names, unsorted/duplicate/empty/excessive route sets, and desktop governance
+coverage. Public argument envelopes are capped at 160 KiB. Existing owner commit
+and target postcard positions are unchanged.
+
+Public execution is person-only: the broker retains the original admitted device
+certificate and invocation, never accepting caller, author, agent, signing key,
+room or invocation from arguments. Capture and naming additionally require the
+person's **current room undoable-write permission** (`ActionKind::Undoable`, the
+policy model's Write category); current Read is required on **every source** for
+capture, inspection, name movement and resolution. No historical certificate,
+membership, grant or authority is installed or copied. Abstract action discovery
+reveals no checkpoint names or source records.
+
+Shell `NativeOwnerCommitService` obtains the selected current governor through
+`trusted_current_device`, separately from the caller. It refuses remote-governed
+rooms, missing governor custody and unavailable/fenced owners, including reads.
+There is no remote forwarding or content hydration fallback.
+
+Mutation invocation bindings and original acknowledgements live in the existing
+retained checkpoint index, published atomically with capture or name movement.
+They bind the exact original command and caller evidence. A different caller or
+changed command cannot reuse an invocation. Retrying a name movement after
+another movement returns its original result without moving the name back.
+At most 256 mutation invocations are retained; exhaustion is an explicit refusal,
+not eviction of retry evidence. The broker journal binds reads and their results
+as well. Before disclosing a successful journal result, the service rechecks
+current source permissions, custody and retained integrity against the **result's
+immutable ID**, even when a name has since moved.
+
+Public results contain acknowledgements or verified manifests only, never raw
+private document snapshots. Every read/resolution and successful-result retry
+verifies retained snapshots; missing or corrupt content is an explicit refusal,
+not a partial manifest or an empty checkpoint. The internal materialization API
+remains host-only.
 
 ## Cross-owner and isolation prerequisites
 
@@ -101,4 +130,9 @@ Production-path tests are in
 `crates/collab/tilo-joined-room/src/checkpoint_tests.rs`: one-generation multi-route
 capture, signed outgoing root, exact retry/reopen, later-mutation pinned reads,
 movable names and collisions, bounds, content damage, publication failure,
-current per-route grant revocation and certificate substitution/removal.
+current per-route grant revocation, stale signed-root admission and certificate
+substitution/removal. The installed shell service and certified broker resource
+path are exercised in
+`crates/session/shell/src/shell/broker_services/native_checkpoint_tests.rs`,
+including reopen/retry, argument substitution, remote-governor refusal, missing
+custody, retained-content corruption and cached-result source revocation.

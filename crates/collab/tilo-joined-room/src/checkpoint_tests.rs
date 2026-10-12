@@ -522,6 +522,207 @@ fn capture_member(
 }
 
 #[test]
+fn checkpoint_public_commands_bind_original_invocation_and_caller() {
+    use tilo_peer_state::workspace_checkpoint::{CheckpointCommand, CheckpointRequest};
+    let fixture = fixture();
+    prepare(&fixture);
+    let request = CheckpointRequest {
+        room: testing::ROOM.into(),
+        invocation: uuid::Uuid::new_v4(),
+        caller: fixture.certificate.clone(),
+        command: CheckpointCommand::Capture {
+            name: "public".into(),
+            routes: routes(),
+        },
+    };
+    let execute = |request: &CheckpointRequest| {
+        fixture
+            .owner
+            .execute_checkpoint(request, &fixture.key, fixture.now)
+    };
+    let first = execute(&request).unwrap();
+    let reopened = open_file(&fixture.directory.path().join("owner.json")).unwrap();
+    assert_eq!(
+        reopened
+            .execute_checkpoint(&request, &fixture.key, fixture.now)
+            .unwrap(),
+        first
+    );
+    let mut changed = request.clone();
+    changed.command = CheckpointCommand::Capture {
+        name: "changed".into(),
+        routes: routes(),
+    };
+    assert!(execute(&changed).is_err());
+    changed = request.clone();
+    changed.caller.device_label = "substitution".into();
+    assert!(execute(&changed).is_err());
+    let mut inspect = request.clone();
+    inspect.invocation = uuid::Uuid::new_v4();
+    inspect.command = CheckpointCommand::Inspect {
+        id: request.invocation,
+    };
+    let metadata = execute(&inspect).unwrap();
+    assert!(metadata.get("documents").is_none());
+    assert_eq!(
+        metadata["author"],
+        serde_json::json!(fixture.certificate.user_public_key)
+    );
+    let mut binding = inspect.clone();
+    binding.invocation = uuid::Uuid::new_v4();
+    binding.command = CheckpointCommand::NameBind {
+        name: "moving".into(),
+        id: request.invocation,
+    };
+    let original_binding = execute(&binding).unwrap();
+    let mut second = request;
+    second.invocation = uuid::Uuid::new_v4();
+    second.command = CheckpointCommand::Capture {
+        name: "second".into(),
+        routes: routes(),
+    };
+    execute(&second).unwrap();
+    let mut movement = binding.clone();
+    movement.invocation = uuid::Uuid::new_v4();
+    movement.command = CheckpointCommand::NameBind {
+        name: "moving".into(),
+        id: second.invocation,
+    };
+    execute(&movement).unwrap();
+    assert_eq!(
+        execute(&binding).unwrap(),
+        original_binding,
+        "retry must not move the name back"
+    );
+    let mut find = inspect;
+    find.command = CheckpointCommand::Find {
+        name: "moving".into(),
+    };
+    assert_eq!(execute(&find).unwrap()["id"], second.invocation.to_string());
+    changed = movement;
+    changed.command = binding.command;
+    assert!(
+        execute(&changed).is_err(),
+        "one invocation cannot name a different checkpoint"
+    );
+}
+
+fn deny_checkpoint_naming(fixture: &Fixture, member: &tilo_user_identity::DeviceCert) {
+    // This member's fixture role includes writing; explicitly revoke room naming.
+    fixture.owner.commit_workspace_membership_command(
+        tilo_peer_state::owner_commit::OwnerCommitRequest {
+            room: testing::ROOM.into(),
+            operation: tilo_peer_state::owner_commit::CommitOperation::WorkspaceMembershipCommand {
+                invocation: uuid::Uuid::new_v4(), caller: fixture.certificate.clone(),
+                command: tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::Grant {
+                    grant: tilo_action_policy::Grant::new("checkpoint-no-naming",
+                        tilo_action_policy::Subject::person(blake3::Hash::from_bytes(member.user_public_key).to_hex().as_str()),
+                        tilo_action_policy::TreePath::room(testing::ROOM),
+                        tilo_action_policy::KindSet::UNDOABLE, tilo_action_policy::Answer::Deny,
+                        tilo_action_policy::Subject::person(blake3::Hash::from_bytes(fixture.certificate.user_public_key).to_hex().as_str())),
+                },
+            },
+        }, &fixture.certificate, &fixture.key, fixture.now,
+    ).unwrap();
+}
+
+#[test]
+fn checkpoint_public_read_and_mutation_require_current_source_rights() {
+    use tilo_peer_state::workspace_checkpoint::{CheckpointCommand, CheckpointRequest};
+    let (fixture, member, grants) = checkpoint_reader_fixture();
+    let capture = CheckpointRequest {
+        room: testing::ROOM.into(),
+        invocation: uuid::Uuid::new_v4(),
+        caller: fixture.certificate.clone(),
+        command: CheckpointCommand::Capture {
+            name: "public-member".into(),
+            routes: member_routes(),
+        },
+    };
+    fixture
+        .owner
+        .execute_checkpoint(&capture, &fixture.key, fixture.now)
+        .unwrap();
+    let mut read = capture.clone();
+    read.invocation = uuid::Uuid::new_v4();
+    read.caller = member.clone();
+    read.command = CheckpointCommand::Inspect {
+        id: capture.invocation,
+    };
+    fixture
+        .owner
+        .execute_checkpoint(&read, &fixture.key, fixture.now)
+        .unwrap();
+    let mut other_caller = capture.clone();
+    other_caller.caller = member.clone();
+    assert!(
+        fixture
+            .owner
+            .execute_checkpoint(&other_caller, &fixture.key, fixture.now)
+            .unwrap_err()
+            .contains("another command or caller")
+    );
+    deny_checkpoint_naming(&fixture, &member);
+    assert!(capture_member(&fixture, &fixture.owner, &member, uuid::Uuid::new_v4()).is_err());
+    assert!(
+        fixture
+            .owner
+            .bind_checkpoint_name(
+                room(),
+                &member,
+                &fixture.key,
+                "host-no-bypass",
+                capture.invocation,
+            )
+            .is_err()
+    );
+    let mut denied_capture = capture.clone();
+    denied_capture.caller = member;
+    denied_capture.invocation = uuid::Uuid::new_v4();
+    assert!(
+        fixture
+            .owner
+            .execute_checkpoint(&denied_capture, &fixture.key, fixture.now)
+            .is_err()
+    );
+    let mut naming = read.clone();
+    naming.command = CheckpointCommand::NameBind {
+        name: "not-authorized".into(),
+        id: capture.invocation,
+    };
+    assert!(
+        fixture
+            .owner
+            .execute_checkpoint(&naming, &fixture.key, fixture.now)
+            .is_err()
+    );
+    fixture.owner.commit_workspace_membership_command(
+        tilo_peer_state::owner_commit::OwnerCommitRequest {
+            room: testing::ROOM.into(),
+            operation: tilo_peer_state::owner_commit::CommitOperation::WorkspaceMembershipCommand {
+                invocation: uuid::Uuid::new_v4(), caller: fixture.certificate.clone(),
+                command: tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::Revoke { grant: grants[2].id.clone() },
+            },
+        }, &fixture.certificate, &fixture.key, fixture.now,
+    ).unwrap();
+    assert!(
+        fixture
+            .owner
+            .execute_checkpoint(&read, &fixture.key, fixture.now)
+            .is_err()
+    );
+    read.command = CheckpointCommand::Find {
+        name: "public-member".into(),
+    };
+    assert!(
+        fixture
+            .owner
+            .execute_checkpoint(&read, &fixture.key, fixture.now)
+            .is_err()
+    );
+}
+
+#[test]
 fn checkpoint_current_member_route_revocation_gates_reads_and_retries() {
     use tilo_peer_state::workspace_membership::WorkspaceMembershipCommand;
     let (fixture, member, grants) = checkpoint_reader_fixture();
@@ -702,6 +903,60 @@ fn checkpoint_signed_root_outgoing_reaches_governor_and_names_and_snapshots_reop
         serde_json::to_vec(&before.manifest).unwrap()
     );
     assert_eq!(after.documents, before.documents);
+}
+
+#[test]
+fn checkpoint_stale_signed_publication_cannot_rewind_current_root_or_name() {
+    let fixture = fixture();
+    prepare(&fixture);
+    let first = uuid::Uuid::new_v4();
+    capture(&fixture.owner, &fixture, first, "moving", &routes()).unwrap();
+    let stale = fixture
+        .owner
+        .with_outgoing(room(), fixture.now, |_, outgoing| {
+            Ok(outgoing
+                .entries()
+                .map(|entry| entry.bytes().to_vec())
+                .collect::<Vec<_>>())
+        })
+        .unwrap();
+    assert!(!stale.is_empty());
+    let second = uuid::Uuid::new_v4();
+    let ack = capture(&fixture.owner, &fixture, second, "second", &routes()).unwrap();
+    fixture
+        .owner
+        .bind_checkpoint_name(room(), &fixture.certificate, &fixture.key, "moving", second)
+        .unwrap();
+    let root = fixture
+        .owner
+        .with_current(room(), |view| view.peer().workspace_checkpoint_root())
+        .unwrap();
+    for bytes in stale {
+        // The receiver may classify an old signed frame as duplicate or refuse
+        // it; neither classification may reinstall its older checkpoint root.
+        let _ = fixture.owner.receive(
+            room(),
+            tilo_peer_state::TransportOrigin::RetainedNativePublication {
+                publisher: fixture.certificate.device_public_key,
+            },
+            postcard::from_bytes(&bytes).unwrap(),
+            fixture.now,
+        );
+        assert_eq!(
+            fixture
+                .owner
+                .with_current(room(), |view| view.peer().workspace_checkpoint_root())
+                .unwrap(),
+            root
+        );
+    }
+    let reopened = open_file(&fixture.directory.path().join("owner.json")).unwrap();
+    assert_eq!(
+        reopened
+            .resolve_checkpoint_name(room(), &fixture.certificate, "moving", fixture.now)
+            .unwrap(),
+        ack
+    );
 }
 
 #[test]
