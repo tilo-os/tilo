@@ -353,16 +353,6 @@ impl PieChart {
         self
     }
     #[must_use]
-    pub fn styled(self, style: PieStyle) -> Self {
-        self.with_style(style)
-    }
-    pub fn style(&self) -> &PieStyle {
-        &self.style
-    }
-    pub fn style_mut(&mut self) -> &mut PieStyle {
-        &mut self.style
-    }
-    #[must_use]
     pub fn with_center(mut self, title: impl Into<String>, subtitle: impl Into<String>) -> Self {
         self.center_title = title.into();
         self.center_subtitle = subtitle.into();

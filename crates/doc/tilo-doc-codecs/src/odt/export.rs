@@ -528,20 +528,6 @@ fn para_props(b: &BlockView) -> Option<(String, String)> {
     }
 }
 
-fn image_anchor(b: &BlockView) -> &str {
-    match b.attrs.get("anchor") {
-        Some(AttrVal::Str(s)) => s.as_str(),
-        _ => "inline",
-    }
-}
-
-fn image_wrap(b: &BlockView) -> &str {
-    match b.attrs.get("wrap") {
-        Some(AttrVal::Str(s)) => s.as_str(),
-        _ => "none",
-    }
-}
-
 /// Build the `draw:frame` XML for an `image` block, or `None` if its blob is absent; the
 /// `xlink:href` matches the `Pictures/<hash>.<ext>` part `export()` writes for the same blob.
 fn image_frame_xml(
@@ -554,8 +540,8 @@ fn image_frame_xml(
     };
     let bytes = snap.image(hash)?;
     let href = picture_href(hash, bytes);
-    let anchor = image_anchor(b);
-    let wrap = image_wrap(b);
+    let anchor = b.str_attr("anchor").unwrap_or("inline");
+    let wrap = b.str_attr("wrap").unwrap_or("none");
     let mut frame = String::from("<draw:frame");
     let _ = write!(frame, r#" draw:name="{}""#, escape_attr(&b.id));
     let anchor_type = match anchor {
@@ -596,35 +582,6 @@ fn image_frame_xml(
     }
     frame.push_str("</draw:frame>");
     Some(frame)
-}
-
-fn snap_list_level(b: &BlockView) -> i64 {
-    match b.attrs.get("level") {
-        Some(AttrVal::Int(n)) if *n >= 0 => *n,
-        _ => 0,
-    }
-}
-
-fn snap_list_ordered(b: &BlockView) -> bool {
-    matches!(b.attrs.get("ordered"), Some(AttrVal::Bool(true)))
-}
-
-fn snap_num_format(b: &BlockView) -> &str {
-    match b.attrs.get("num_format") {
-        Some(AttrVal::Str(s)) => s.as_str(),
-        _ => "decimal",
-    }
-}
-
-fn snap_num_start(b: &BlockView) -> i64 {
-    match b.attrs.get("num_start") {
-        Some(AttrVal::Int(n)) => *n,
-        _ => 1,
-    }
-}
-
-fn snap_num_restart(b: &BlockView) -> bool {
-    matches!(b.attrs.get("num_restart"), Some(AttrVal::Bool(true)))
 }
 
 /// Map the model's canonical numbering format onto an ODF `style:num-format` value (inverse of `styles::map_num_format`).
@@ -677,15 +634,19 @@ struct ListKey {
 
 impl ListKey {
     fn of(li: &BlockView) -> Self {
-        let ordered = snap_list_ordered(li);
+        let ordered = li.flag("ordered");
         Self {
             ordered,
             format: if ordered {
-                snap_num_format(li).to_string()
+                li.str_attr("num_format").unwrap_or("decimal").to_owned()
             } else {
                 String::new()
             },
-            start: if ordered { snap_num_start(li) } else { 1 },
+            start: if ordered {
+                li.int_attr("num_start").unwrap_or(1)
+            } else {
+                1
+            },
         }
     }
 }
@@ -718,7 +679,7 @@ fn open_list_tag(li: &BlockView, head: &ContentHead, list_styles: &mut Vec<ListS
         name
     };
     let mut tag = format!(r#"<text:list text:style-name="{name}""#);
-    if start != 1 && snap_num_restart(li) {
+    if start != 1 && li.flag("num_restart") {
         let _ = write!(tag, r#" text:start-value="{start}""#);
     } else if start != 1 {
         // A non-default start that continues: mark it continuing so the importer doesn't treat it as a fresh restart.
@@ -726,21 +687,6 @@ fn open_list_tag(li: &BlockView, head: &ContentHead, list_styles: &mut Vec<ListS
     }
     tag.push('>');
     tag
-}
-
-fn snap_cell_table(b: &BlockView) -> Option<String> {
-    match b.attrs.get("table") {
-        Some(AttrVal::Str(s)) => Some(s.clone()),
-        _ => None,
-    }
-}
-
-fn snap_cell_rc(b: &BlockView) -> (usize, usize) {
-    let g = |k: &str| match b.attrs.get(k) {
-        Some(AttrVal::Int(n)) if *n >= 0 => usize::try_from(*n).unwrap_or(0),
-        _ => 0,
-    };
-    (g("row"), g("col"))
 }
 
 /// A resolved paragraph automatic style: `(parent style name, paragraph-properties XML,
@@ -1176,10 +1122,7 @@ fn render_heading(
     style_attr: &mut impl FnMut(&BlockView) -> String,
     inline: &mut InlineCtx<'_>,
 ) {
-    let level = match b.attrs.get("level") {
-        Some(AttrVal::Int(n)) => (*n).clamp(1, 6),
-        _ => 1,
-    };
+    let level = b.int_attr("level").map_or(1, |n| n.clamp(1, 6));
     let sa = style_attr(b);
     let _ = write!(
         body,
@@ -1220,7 +1163,7 @@ fn render_list_run(
     let mut item_open = false; // a <text:list-item> awaiting its close
     let mut top: Option<ListKey> = None; // what the outermost open list encodes
     while let Some(li) = snap.blocks.get(*i).filter(|b| b.kind == "list_item") {
-        let target = snap_list_level(li).saturating_add(1); // lists that should be open
+        let target = li.int_attr("level").unwrap_or(0).max(0).saturating_add(1); // lists that should be open
         let key = ListKey::of(li);
         // A top-level item of another kind (numbered after bulleted, another format) starts a new list.
         if target == 1 && depth > 0 && top.as_ref() != Some(&key) {
@@ -1291,12 +1234,12 @@ fn render_table_run(
     let Some(first) = snap.blocks.get(*i) else {
         return;
     };
-    let tid = snap_cell_table(first).unwrap_or_default();
+    let tid = first.str_attr("table").unwrap_or_default();
     let start = *i;
     while snap
         .blocks
         .get(*i)
-        .is_some_and(|b| snap_cell_table(b).as_deref() == Some(tid.as_str()))
+        .is_some_and(|b| b.str_attr("table") == Some(tid))
     {
         *i = i.saturating_add(1);
     }
@@ -1305,24 +1248,26 @@ fn render_table_run(
     };
     let nrows = cells
         .iter()
-        .map(|c| snap_cell_rc(c).0)
+        .map(|c| c.cell_position().0)
         .max()
         .unwrap_or(0)
         .saturating_add(1);
     let ncols = cells
         .iter()
-        .map(|c| snap_cell_rc(c).1)
+        .map(|c| c.cell_position().1)
         .max()
         .unwrap_or(0)
         .saturating_add(1);
     let grid = CellGrid::new(cells);
     let ncols = grid.cols.max(ncols);
-    push_table_open(body, &tid, cells.first(), ncols);
+    push_table_open(body, tid, cells.first(), ncols);
     // A row's style rides on its first cell.
     let mut row_styles: BTreeMap<usize, &str> = BTreeMap::new();
     for cell in cells {
         if let Some(AttrVal::Str(s)) = cell.attrs.get(super::content::ODT_ROW_STYLE) {
-            row_styles.entry(snap_cell_rc(cell).0).or_insert(s.as_str());
+            row_styles
+                .entry(cell.cell_position().0)
+                .or_insert(s.as_str());
         }
     }
     for r in 0..grid.rows.max(nrows) {
@@ -1369,10 +1314,7 @@ fn render_table_run(
 /// import on its `first` cell (the columns only while they still number `ncols`), else one
 /// run of plain columns.
 fn push_table_open(body: &mut String, tid: &str, first: Option<&BlockView>, ncols: usize) {
-    let kept = |key: &str| match first.and_then(|c| c.attrs.get(key)) {
-        Some(AttrVal::Str(s)) => Some(s.as_str()),
-        _ => None,
-    };
+    let kept = |key: &str| first.and_then(|c| c.str_attr(key));
     let _ = write!(body, r#"<table:table table:name="{}""#, escape_attr(tid));
     if let Some(style) = kept(super::content::ODT_TABLE_STYLE) {
         let _ = write!(body, r#" table:style-name="{}""#, escape_attr(style));
@@ -1409,18 +1351,10 @@ fn column_count(columns: &str) -> usize {
     n
 }
 
-/// A cell's `colspan`/`rowspan` (1 when absent).
-fn snap_cell_span(b: &BlockView, key: &str) -> usize {
-    match b.attrs.get(key) {
-        Some(AttrVal::Int(n)) if *n > 1 => usize::try_from(*n).unwrap_or(1).min(1024),
-        _ => 1,
-    }
-}
-
 /// The spanning attributes of a merged cell.
 fn cell_spans_xml(b: &BlockView) -> String {
     let mut out = String::new();
-    let (cols, rows) = (snap_cell_span(b, "colspan"), snap_cell_span(b, "rowspan"));
+    let (cols, rows) = (b.cell_span("colspan"), b.cell_span("rowspan"));
     if cols > 1 {
         let _ = write!(out, r#" table:number-columns-spanned="{cols}""#);
     }
@@ -1448,11 +1382,8 @@ impl<'a> CellGrid<'a> {
             cols: 0,
         };
         for cell in cells {
-            let (r, c) = snap_cell_rc(cell);
-            let (cols, rows) = (
-                snap_cell_span(cell, "colspan"),
-                snap_cell_span(cell, "rowspan"),
-            );
+            let (r, c) = cell.cell_position();
+            let (cols, rows) = (cell.cell_span("colspan"), cell.cell_span("rowspan"));
             grid.at.entry((r, c)).or_insert(cell);
             for dr in 0..rows {
                 for dc in 0..cols {

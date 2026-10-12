@@ -265,6 +265,23 @@ impl BlockView {
     pub fn flag(&self, key: &str) -> bool {
         self.bool_attr(key) == Some(true)
     }
+
+    /// A table cell's `(row, col)`; a missing or negative index reads as 0.
+    pub fn cell_position(&self) -> (usize, usize) {
+        let index = |key| {
+            self.int_attr(key)
+                .and_then(|n| usize::try_from(n).ok())
+                .unwrap_or(0)
+        };
+        (index("row"), index("col"))
+    }
+
+    /// A table cell's `colspan` or `rowspan`: at least 1, capped at 1024.
+    pub fn cell_span(&self, key: &str) -> usize {
+        self.int_attr(key)
+            .and_then(|n| usize::try_from(n).ok())
+            .map_or(1, |n| n.clamp(1, 1024))
+    }
 }
 
 /// The document as of position `version` of
