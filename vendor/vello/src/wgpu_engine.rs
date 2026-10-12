@@ -127,6 +127,11 @@ struct DeferredBuild {
     specs: Vec<UninitialisedShader>,
     /// Deferred shaders whose pipeline is not installed yet.
     pending: HashSet<usize>,
+    /// Deferred shaders a full frame on the default path never dispatches:
+    /// the builder takes them last.
+    spare: HashSet<usize>,
+    /// Threads the builder compiles on (the renderer's init threads).
+    threads: usize,
     /// Pipelines the background builder finished, in its order.
     built: Option<Receiver<(ShaderId, WgpuShader)>>,
     started: bool,
@@ -1821,6 +1826,16 @@ impl WgpuEngine {
         let _ = mode;
     }
 
+    /// How many threads [`Self::start_deferred_pipelines`] compiles on.
+    pub(crate) fn set_deferred_build_threads(&mut self, threads: usize) {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.deferred.threads = threads.max(1);
+        }
+        #[cfg(target_arch = "wasm32")]
+        let _ = threads;
+    }
+
     /// Mark the registrations that follow as ones a full frame on the
     /// default path never dispatches, until called with `false`.
     pub(crate) fn defer_unused(&mut self, unused: bool) {
@@ -1832,9 +1847,10 @@ impl WgpuEngine {
         let _ = unused;
     }
 
-    /// Build every deferred pipeline on one background thread, largest
-    /// first; frames install them as they arrive. `built` runs after the
-    /// last, or at once when none is pending. Once only.
+    /// Build every deferred pipeline in the background on the init threads,
+    /// default-path pipelines first and the largest of each group first;
+    /// frames install them as they arrive. `built` runs after the last, or
+    /// at once when none is pending. Once only.
     pub(crate) fn start_deferred_pipelines(
         &mut self,
         device: &Device,
@@ -1857,26 +1873,63 @@ impl WgpuEngine {
                 .filter(|spec| self.deferred.pending.contains(&spec.shader_id.0))
                 .cloned()
                 .collect();
-            work.sort_by_key(|spec| std::cmp::Reverse(spec.wgsl.len()));
+            // What a full frame on the default path dispatches first, so a
+            // frame waiting on the build waits least; within each group the
+            // longest compiles first.
+            let spare = &self.deferred.spare;
+            work.sort_by_key(|spec| {
+                (
+                    spare.contains(&spec.shader_id.0),
+                    std::cmp::Reverse(spec.wgsl.len()),
+                )
+            });
+            let threads = self.deferred.threads.max(1).min(work.len());
             let (sender, receiver) = mpsc::channel();
             let device = device.clone();
             let pipeline_cache = self.pipeline_cache.clone();
             let spawned = std::thread::Builder::new()
                 .name("vello-deferred-pipelines".into())
                 .spawn(move || {
-                    for spec in work {
-                        let shader = Self::create_compute_pipeline(
-                            &device,
-                            spec.label,
-                            spec.wgsl,
-                            spec.entries,
-                            pipeline_cache.as_ref(),
-                        );
-                        if sender.send((spec.shader_id, shader)).is_err() {
-                            return;
+                    let queue = std::sync::Mutex::new(work.into_iter());
+                    let complete = std::sync::atomic::AtomicBool::new(true);
+                    std::thread::scope(|scope| {
+                        for _ in 0..threads {
+                            let sender = sender.clone();
+                            let (queue, complete) = (&queue, &complete);
+                            let (device, pipeline_cache) = (&device, &pipeline_cache);
+                            let worker = move || loop {
+                                let next = queue.lock().ok().and_then(|mut queue| queue.next());
+                                let Some(spec) = next else {
+                                    return;
+                                };
+                                let shader = Self::create_compute_pipeline(
+                                    device,
+                                    spec.label,
+                                    spec.wgsl,
+                                    spec.entries,
+                                    pipeline_cache.as_ref(),
+                                );
+                                if sender.send((spec.shader_id, shader)).is_err() {
+                                    complete.store(false, std::sync::atomic::Ordering::Relaxed);
+                                    return;
+                                }
+                            };
+                            if std::thread::Builder::new()
+                                .name("vello-deferred-pipeline-worker".into())
+                                .spawn_scoped(scope, worker)
+                                .is_err()
+                            {
+                                complete.store(false, std::sync::atomic::Ordering::Relaxed);
+                            }
                         }
+                    });
+                    // Every pipeline was handed over (no renderer left, or a
+                    // worker that never started, leaves the cache unkept).
+                    if complete.load(std::sync::atomic::Ordering::Relaxed)
+                        && queue.lock().is_ok_and(|mut queue| queue.next().is_none())
+                    {
+                        built();
                     }
-                    built();
                 });
             if spawned.is_ok() {
                 self.deferred.built = Some(receiver);
@@ -2126,6 +2179,9 @@ impl WgpuEngine {
                 cpu_metadata,
             });
             self.deferred.pending.insert(id.0);
+            if self.deferred.unused {
+                self.deferred.spare.insert(id.0);
+            }
             self.deferred.specs.push(UninitialisedShader {
                 wgsl,
                 label,

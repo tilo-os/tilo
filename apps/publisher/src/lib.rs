@@ -14,12 +14,6 @@ pub const APP_TITLE: &str = "App Publisher";
 
 pub mod locales;
 
-/// Install the catalog once per process, before the first view reads it.
-fn install_catalog() {
-    static INSTALLED: std::sync::Once = std::sync::Once::new();
-    INSTALLED.call_once(locales::install);
-}
-
 use registry_client::{RegistryClient, key};
 use registry_types::application::{NamespaceClaim, proof_token};
 use ui::prelude::*;
@@ -410,6 +404,11 @@ impl ResourceApp for App {
     type Resource = Publisher;
     const ID: &'static str = crate::APP_ID;
     const TITLE: &'static str = crate::APP_TITLE;
+
+    fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {
+        Some(&crate::locales::CATALOG)
+    }
+
     fn scenarios() -> &'static [&'static str] {
         &["no-key", "unreadable", "applied", "failed", "copied"]
     }
@@ -443,7 +442,6 @@ impl ResourceApp for App {
     }
 
     fn view(cx: &mut ViewCx<Publisher>) -> Element {
-        crate::install_catalog();
         let form = namespace_form(cx);
         // The key is this machine's, not the version's: a past version shows
         // the application it held and nothing that acts on the key.

@@ -11,11 +11,7 @@
 //! shown label to the stored value; the pane shows what the section holds,
 //! whoever changed it.
 
-use std::collections::HashMap;
-
-use taffy::{NodeId, TaffyTree};
 use ui::LocalState;
-use ui::theme::Theme;
 use ui::widget::{AppModel, Dropdown, ModelPath, Widget};
 
 use crate::host::{Followed, PaneCx};
@@ -303,20 +299,7 @@ impl Widget for RegionPane {
         self.composed.sync(state, root);
     }
 
-    fn build_layout(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        theme: &Theme,
-        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        let composition = self.build_composition();
-        let child = self
-            .composed
-            .build_layout(composition, taffy, theme, node_map);
-        crate::panes::pane_node(taffy, child, node_map, self)
-    }
-
-    ui::forward_to_composed!(composed);
+    crate::panes::composed_pane!();
 
     fn name(&self) -> &'static str {
         "RegionPane"

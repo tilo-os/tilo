@@ -525,10 +525,35 @@ compositor still repaints where the copies landed: the client's pixels there
 changed. The nightly render job records `render.framework_scroll.*` and
 enforces the pixels.
 
-Not yet copied: the shell's in-process apps (the compositor composites their
-scene and would need to copy the app's moved region itself), `ScrollRegion`
-(chat transcripts), `VirtualList`, `DocumentViewport`, and Notes blocks with
-hover chrome (code, tables, images, lists).
+Since then the shell's in-process apps copy too (below), and so do
+`VirtualList` (rows a scroll brings near are mounted in a rebuild the frame's
+damage describes; rows move without a rebuild), a painted host scrolling a
+`ScrollRegion` that says only its offset changed (`ScrollRegion::offer_copy`;
+Mail's message list), `DocumentViewport` around a widget, and Notes pages
+with lists, to-dos, code runs, tables and images: what a block paints for the
+pointer rather than the text (`BlockEditor::pointer_chrome`) is repainted
+where it is and was. A note of eight sections of a paragraph, a list, a to-do
+and a code run repaints 119,560 px per frame scrolling down and 96,402
+scrolling up (1280×900, all three themes, pixel-identical); before, it
+repainted the window. `Toggle` repaints only when what it paints changed.
+
+### In-process apps copy too
+
+The shell's in-process apps (Notes, Files, Messages in a tile) hand the
+compositor what a scroll moved, and the DRM presenter copies those pixels in
+its retained target before it rasterises the rest (`ui-rendering-internals.md`).
+`framework-scaling -- 5000 scroll` also shows the checklist in a host's scene
+as the shell shows a tile (`FRAMEWORK-SCROLL-HOSTED`): 985,280 px per frame for
+a host that does not copy, 158,040 px p50 (174,838 max) with copies, 756,288 px
+copied, pixel-identical (M-series Mac, 1280×800 region). The nightly render job
+enforces `render.framework_scroll.hosted_pixels.5k`. The shell's own test
+(`frame_scroll_copy_tests.rs`) scrolls a 60-paragraph note on the 1600×1000
+desktop at 100 % and 200 % with a peer's pointer resting over it and checks
+every presented frame against a whole render.
+
+Not copied: several displays at once (each draws the desktop at its own place
+and scale), a desktop under materials or HDR layers, a strip pan, and the CPU
+presenter some boards use.
 
 ## Verified shared-list CPU workload
 

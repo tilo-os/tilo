@@ -464,8 +464,9 @@ frame on the default path never dispatches: the three-level path-tag scan,
 the GPU draw reduce and leaf while the CPU draw prefix serves, the indirect
 path stages while the direct ones serve, the clip reduce and the sparse fine
 stage. `PipelineDeferral::All` defers every one, for a caller that rasterizes
-its frames another way. `start_deferred_pipelines` builds them on one
-background thread, largest first, and runs a callback after the last. Before
+its frames another way. `start_deferred_pipelines` builds them in the
+background on the renderer's init threads, the default-path ones first and the
+largest of each group first, and runs a callback after the last. Before
 encoding, a render installs what the thread has finished. For a deferred
 pipeline it dispatches and that is not built yet, it waits for the thread, or
 builds it itself when no thread is running, so a dispatch never lacks its
