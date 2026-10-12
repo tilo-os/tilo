@@ -22,7 +22,12 @@ const LAUNCH_RUNTIME_DIR: &str = "run";
 /// A Unix socket path longer than this cannot be connected (`sun_path`).
 const MAX_SOCKET_PATH: usize = 107;
 
-pub(super) fn launch(apps: &Apps, app: &InstalledApp, sockets: &Sockets) -> Result<Launch, String> {
+pub(super) fn launch(
+    apps: &Apps,
+    app: &InstalledApp,
+    sockets: &Sockets,
+    original: &super::creation::OriginalLaunch,
+) -> Result<Launch, String> {
     let launcher = resolve_launcher(&apps.launcher_candidates)?;
     let wayland = wayland_socket()?;
     let runtime_dir = service_directory(&apps.root, sockets)
@@ -40,6 +45,8 @@ pub(super) fn launch(apps: &Apps, app: &InstalledApp, sockets: &Sockets) -> Resu
         .arg(&apps.room)
         .arg("--app-id")
         .arg(&app.package_id)
+        .arg("--expected-package-hash")
+        .arg(&original.package_hash)
         .arg("--wayland-socket")
         .arg(&wayland);
     if let Some(identity) = identity {
