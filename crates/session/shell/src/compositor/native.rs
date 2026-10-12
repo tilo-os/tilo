@@ -10928,8 +10928,24 @@ pub fn run() {
                     settings_store::hardware::DesktopControlsConfig::load(),
                 );
             }
-            if settings_change.display_identify() {
-                frame_builder.host_mut().poll_display_identify();
+            if settings_change.display_identify()
+                && frame_builder.host_mut().poll_display_identify()
+                && let Some(network) = peer_sync.as_ref()
+            {
+                // Identify can follow an arrangement edit in the same tick;
+                // resolve that explicit request instead of numbering from an
+                // older periodic sample.
+                crate::shell::device_fabric_runtime::person_layout::refresh(
+                    network,
+                    crate::shell::continuity_policy::ContinuityPolicySnapshot::load(),
+                );
+                if let Some(view) =
+                    crate::shell::device_fabric_runtime::person_layout::current(network)
+                {
+                    frame_builder
+                        .host_mut()
+                        .number_identified_displays(&view.layout);
+                }
             }
             input_steps.step("settings-shortcuts");
             if settings_change.appearance() {
