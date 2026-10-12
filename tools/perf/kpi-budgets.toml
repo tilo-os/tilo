@@ -290,6 +290,36 @@ p50_tolerance = 1.05
 p99_tolerance = 1.05
 source = "TIL-609: 9,067,894,573 B on db91126b44, plus 5 %; TIL-733: -83,213,633 B"
 
+# OS update size: what a device on main's previous build downloads to reach
+# the newest (image_size.py --update-from-previous: the layers the newest
+# image has and the image of the newest earlier first-parent commit lacks).
+# How much changed between two builds varies with the commits between them,
+# so the rule is a ceiling, with a wide relative tolerance that still fails
+# when updates stay several times larger: before content-based layers an update
+# re-sent 3.7 GB; a per-build app key re-sent 215 MB of identical apps; the
+# release lane's commit-time epoch renewed the 116 MB UKI and the rpmdb in
+# every build. Consecutive rechunked main builds on 10-10 and 10-11 sent
+# 420-830 MB (x86_64) and 420-820 MB (aarch64), before the runtimes and Tilo's
+# programs got layers of their own.
+
+[kpi."footprint.image.update_bytes.x86_64"]
+unit = "bytes"
+max = 900000000.0
+enforce = true
+p50_tolerance = 3.0
+p99_tolerance = 3.0
+min_delta = 100000000.0
+source = "consecutive rechunked main builds 421,875,787-828,748,091 B before the runtime and Tilo trees"
+
+[kpi."footprint.image.update_bytes.aarch64"]
+unit = "bytes"
+max = 900000000.0
+enforce = true
+p50_tolerance = 3.0
+p99_tolerance = 3.0
+min_delta = 100000000.0
+source = "consecutive rechunked main builds 418,858,093-819,840,811 B before the runtime and Tilo trees"
+
 # Agent round trip (scripts/perf/agent_rtt.py): one headless compositor on
 # the shared `runner` class, a release build with `dev-overrides` and thin
 # LTO, timed from the client's side of the control socket. Targets from the
@@ -920,6 +950,30 @@ p50_tolerance = 1.5
 p99_tolerance = 2.0
 min_delta = 10000.0
 source = "framework-scaling scroll, pixels one copied scroll frame repaints, 5,000 items"
+
+# The same list shown in a region of a host's scene, as the shell shows an
+# in-process app (`FRAMEWORK-SCROLL-HOSTED`): each frame's section is compared
+# with the last (scene_parts::damage_with_copies) and presented over it as a
+# host that keeps its target presents it, copies first (present_copies).
+# A frame repaints the strip the scroll exposed, the bar's track and the
+# tile's edge bands: 158,040 px p50 of the 1280x800 region on an M-series Mac
+# (985,280 for a host that does not copy). Enforced about 40 % above that.
+[kpi."render.framework_scroll.hosted_pixels.5k"]
+unit = "pixels"
+p50 = 220000.0
+enforce = true
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 10000.0
+source = "framework-scaling scroll shown in a host's scene, pixels one copied scroll frame repaints, 5,000 items"
+
+[kpi."render.framework_scroll.hosted_whole_frames.5k"]
+unit = "count"
+max = 0.0
+p50_tolerance = 1.5
+p99_tolerance = 1.5
+min_delta = 2.0
+source = "framework-scaling scroll shown in a host's scene, frames repainted whole in 120, 5,000 items (reported)"
 
 [kpi."render.framework_scroll.whole_frames.5k"]
 unit = "count"

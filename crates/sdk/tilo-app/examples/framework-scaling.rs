@@ -59,7 +59,7 @@
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 
-use tilo_app::framework::testing::drive_live_window;
+use tilo_app::framework::testing::{drive_live_embedded, drive_live_window};
 use tilo_app::i18n::EmbeddedCatalog;
 use tilo_app::prelude::*;
 use tilo_app::tilo_resource::profiling::observe;
@@ -653,8 +653,228 @@ fn scrolling(app: &mut tilo_app::App, step: f64, copying: bool) -> Scrolling {
     result
 }
 
+/// The host's section around an in-process app, as the shell draws a tile:
+/// its ground, its clip, the app in a damage part and the tile's edge in
+/// bands of its own, tracked for damage parts as the shell's workspace is.
+fn host_section(
+    tile: &mut tilo_app::app::EmbeddedApp,
+    text: &mut tilo_app::text_render::TextRenderer,
+) -> (
+    Box<tilo_app::advanced::Scene>,
+    tilo_app::scene_parts::SectionParts,
+) {
+    use tilo_app::app::AppSurface as _;
+    use tilo_app::kurbo::{Affine, RoundedRect};
+    use tilo_app::peniko::{BlendMode, Fill};
+    use tilo_app::scene_parts::{PartKey, part};
+    use tilo_app::widget::Widget as _;
+    let theme = tile.app().theme.clone();
+    let size = Surface.inner_size();
+    let region = Rect::new(0.0, 0.0, f64::from(size.width), f64::from(size.height));
+    let recording = tilo_app::scene_parts::Recording::begin();
+    let mut scene = Box::new(tilo_app::advanced::Scene::new());
+    tilo_app::scene_parts::track(&scene);
+    let shape = RoundedRect::from_rect(region, f64::from(theme.tokens.radii.tile));
+    scene.fill(
+        Fill::NonZero,
+        Affine::IDENTITY,
+        theme.tokens.colors.surfaces.content,
+        None,
+        &shape,
+    );
+    scene.push_layer(
+        Fill::NonZero,
+        BlendMode::default(),
+        1.0,
+        Affine::IDENTITY,
+        &shape,
+    );
+    part(
+        &mut scene,
+        PartKey::new("scaling.tile-content", ()),
+        vec![region],
+        |scene| {
+            tile.draw(
+                scene,
+                Affine::IDENTITY,
+                text,
+                &theme,
+                &tilo_app::presence::PresenceCtx::empty(),
+            );
+        },
+    );
+    scene.pop_layer();
+    let reach = 16.0;
+    let bands = vec![
+        Rect::new(region.x0, region.y0, region.x1, region.y0 + reach),
+        Rect::new(region.x0, region.y1 - reach, region.x1, region.y1),
+        Rect::new(region.x0, region.y0, region.x0 + reach, region.y1),
+        Rect::new(region.x1 - reach, region.y0, region.x1, region.y1),
+    ];
+    part(
+        &mut scene,
+        PartKey::new("scaling.tile-edge", ()),
+        bands,
+        |scene| {
+            scene.stroke(
+                &tilo_app::kurbo::Stroke::new(1.0),
+                Affine::IDENTITY,
+                theme.window_edge(),
+                None,
+                &shape,
+            );
+        },
+    );
+    let parts = recording.finish().of(&scene).unwrap_or_default();
+    (scene, parts)
+}
+
+/// [`scrolling`] for the app shown in a region of a host's scene, as the
+/// shell shows an in-process app ([`tilo_app::app::EmbeddedApp`]): each
+/// frame's section is compared with the last
+/// ([`tilo_app::scene_parts::damage_with_copies`]) and presented over it as
+/// a host that keeps its target does, copies first
+/// ([`tilo_app::scene_parts::present_copies`]), when `copying`.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one measured scroll loop: input, frame, damage, presentation and its parity check"
+)]
+fn hosted_scrolling(tile: &mut tilo_app::app::EmbeddedApp, step: f64, copying: bool) -> Scrolling {
+    use tilo_app::app::AppSurface as _;
+    use tilo_app::offscreen::OffscreenRenderer;
+    use tilo_app::scene_parts::{DrawBounds, damage, damage_with_copies, present_copies};
+    use tilo_app::widget::Widget as _;
+    use tilo_app::winit::event::{MouseScrollDelta, TouchPhase};
+    let size = Surface.inner_size();
+    tile.set_accepts_scroll_copies(copying);
+    let mut text = tilo_app::text_render::TextRenderer::new();
+    let mut taffy = tilo_app::taffy::TaffyTree::new();
+    let theme = tile.app().theme.clone();
+    let node = tile.build_layout(&mut taffy, &theme, &mut std::collections::HashMap::new());
+    let _ = taffy.compute_layout(
+        node,
+        tilo_app::taffy::Size {
+            width: tilo_app::taffy::AvailableSpace::Definite(tilo_app::num::f32_of_f64(f64::from(
+                size.width,
+            ))),
+            height: tilo_app::taffy::AvailableSpace::Definite(tilo_app::num::f32_of_f64(
+                f64::from(size.height),
+            )),
+        },
+    );
+    tile.apply_layout(&taffy, node, tilo_app::kurbo::Point::ZERO);
+    let background = theme.tokens.colors.surfaces.content;
+    tile.input_for_test(WindowEvent::CursorMoved {
+        device_id: DeviceId::dummy(),
+        position: PhysicalPosition::new(640.0, 500.0),
+    });
+    let mut shown = host_section(tile, &mut text);
+    for _ in 0..6 {
+        tile.input_for_test(WindowEvent::CursorMoved {
+            device_id: DeviceId::dummy(),
+            position: PhysicalPosition::new(640.0, 500.0),
+        });
+        shown = host_section(tile, &mut text);
+    }
+    let mut gpu = OffscreenRenderer::try_new(size.width, size.height)
+        .ok()
+        .zip(OffscreenRenderer::try_new(size.width, size.height).ok());
+    if let Some((presented, _)) = gpu.as_mut() {
+        let _ = presented.render(&shown.0, background);
+    }
+    let whole_window = f64::from(size.width) * f64::from(size.height);
+    let mut bounds = DrawBounds::default();
+    let mut result = Scrolling {
+        frames: 0,
+        whole: 0,
+        why: None,
+        pixels_p50: 0.0,
+        pixels_max: 0.0,
+        copied_p50: 0.0,
+        cpu_ms: 0.0,
+        gpu_ms: None,
+        differing: 0,
+    };
+    let (mut pixels, mut copied, mut cpu, mut gpu_presented, mut gpu_full) =
+        (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    for _ in 0..SCROLL_FRAMES {
+        let start = Instant::now();
+        tile.input_for_test(WindowEvent::MouseWheel {
+            device_id: DeviceId::dummy(),
+            delta: MouseScrollDelta::PixelDelta(PhysicalPosition::new(0.0, -step)),
+            phase: TouchPhase::Moved,
+        });
+        let drawn = host_section(tile, &mut text);
+        // The host's comparison and plan are part of the frame's cost.
+        let presented_frame = if copying {
+            damage_with_copies(&shown.0, &shown.1, &drawn.0, &drawn.1, &mut bounds)
+                .ok()
+                .map(|section| {
+                    let rects = section.rects.iter().map(|rect| rect.expand()).collect();
+                    let plan = present_copies(
+                        &section.copies,
+                        rects,
+                        &[],
+                        tilo_app::kurbo::Affine::IDENTITY,
+                        (size.width, size.height),
+                    );
+                    (plan.copies, plan.raster)
+                })
+        } else {
+            damage(&shown.0, &shown.1, &drawn.0, &drawn.1)
+                .ok()
+                .map(|rects| (Vec::new(), rects.iter().map(|rect| rect.expand()).collect()))
+        };
+        cpu.push(millis(start));
+        result.frames = result.frames.saturating_add(1);
+        pixels.push(presented_frame.as_ref().map_or_else(
+            || {
+                result.whole = result.whole.saturating_add(1);
+                result.why = result
+                    .why
+                    .or(Some("the host could not compare the section"));
+                whole_window
+            },
+            |(_, rects)| covered(rects, size),
+        ));
+        copied.push(presented_frame.as_ref().map_or(0.0, |(copies, _)| {
+            copies
+                .iter()
+                .map(|copy| f64::from(copy.width) * f64::from(copy.height))
+                .fold(0.0, |sum, pixels| sum + pixels)
+        }));
+        if let Some((presented, full)) = gpu.as_mut() {
+            let start = Instant::now();
+            match &presented_frame {
+                Some((moves, rects)) => {
+                    let _ = presented
+                        .render_copies_and_damage_gpu_wait(&drawn.0, background, moves, rects);
+                }
+                None => presented.render_gpu_wait(&drawn.0, background),
+            }
+            gpu_presented.push(millis(start));
+            let start = Instant::now();
+            full.render_gpu_wait(&drawn.0, background);
+            gpu_full.push(millis(start));
+        }
+        shown = drawn;
+    }
+    if let Some((presented, full)) = gpu.as_mut() {
+        let expected = full.render(&shown.0, background);
+        let actual = presented.readback_current();
+        result.differing = OffscreenRenderer::pixels_differing_beyond_aa(&actual, &expected);
+        result.gpu_ms = Some((median(gpu_presented), median(gpu_full)));
+    }
+    result.pixels_max = pixels.iter().copied().fold(0.0, f64::max);
+    result.pixels_p50 = median(pixels);
+    result.copied_p50 = median(copied);
+    result.cpu_ms = median(cpu);
+    result
+}
+
 /// The `scroll` mode: what one frame of continuous scrolling costs, at a
-/// whole and at a fractional step.
+/// whole and at a fractional step, in a window of its own and shown in a
+/// region of a host's scene as the shell shows an in-process app.
 fn scroll_mode(sizes: &[u32]) -> Result<(), Box<dyn std::error::Error>> {
     println!(
         "tasks  step  copies  frames  whole  repainted px p50  max  copied px p50  \
@@ -667,12 +887,18 @@ fn scroll_mode(sizes: &[u32]) -> Result<(), Box<dyn std::error::Error>> {
     let mut checked: Option<(bool, usize)> = None;
     for &tasks in sizes {
         TASKS.store(tasks, Ordering::Relaxed);
-        for (step, copying) in [
-            (SCROLL_STEP, false),
-            (SCROLL_STEP, true),
-            (SCROLL_STEP + 0.5, true),
+        for (hosted, step, copying) in [
+            (false, SCROLL_STEP, false),
+            (false, SCROLL_STEP, true),
+            (false, SCROLL_STEP + 0.5, true),
+            (true, SCROLL_STEP, false),
+            (true, SCROLL_STEP, true),
         ] {
-            let s = drive_live_window::<Scaling, _>(|app| scrolling(app, step, copying))?;
+            let s = if hosted {
+                drive_live_embedded::<Scaling, _>(|tile| hosted_scrolling(tile, step, copying))?
+            } else {
+                drive_live_window::<Scaling, _>(|app| scrolling(app, step, copying))?
+            };
             let (missing_gpu, differing) = checked.unwrap_or_default();
             checked = Some((
                 missing_gpu || s.gpu_ms.is_none(),
@@ -682,7 +908,12 @@ fn scroll_mode(sizes: &[u32]) -> Result<(), Box<dyn std::error::Error>> {
                 || ("n/a".to_owned(), "n/a".to_owned()),
                 |(presented, full)| (format!("{presented:.3} ms"), format!("{full:.3} ms")),
             );
-            let copies = if copying { "yes" } else { "no" };
+            let copies = match (hosted, copying) {
+                (false, true) => "yes",
+                (false, false) => "no",
+                (true, true) => "hosted",
+                (true, false) => "hosted, none",
+            };
             println!(
                 "{tasks:>5}  {step:>4}  {copies:>6}  {:>6}  {:>5}  {:>16.0}  {:>7.0}  \
                  {:>13.0}  {:>10.3} ms  {gpu_presented:>17}  {gpu_full:>12}  {:>12}  {}",
@@ -696,8 +927,13 @@ fn scroll_mode(sizes: &[u32]) -> Result<(), Box<dyn std::error::Error>> {
                 s.why.unwrap_or("-"),
             );
             // For tools/perf/adapters.py.
+            let tag = if hosted {
+                "FRAMEWORK-SCROLL-HOSTED"
+            } else {
+                "FRAMEWORK-SCROLL"
+            };
             lines.push(format!(
-                "FRAMEWORK-SCROLL tasks={tasks} step={step} copying={copying} \
+                "{tag} tasks={tasks} step={step} copying={copying} \
                  pixels_p50={:.0} pixels_max={:.0} copied_p50={:.0} whole={} frames={} \
                  cpu_ms={:.3} gpu_ms={:.3} gpu_full_ms={:.3} differing={}",
                 s.pixels_p50,

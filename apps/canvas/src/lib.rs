@@ -61,6 +61,11 @@ impl ResourceApp for App {
     type Resource = Artwork;
     const ID: &'static str = crate::APP_ID;
     const TITLE: &'static str = crate::APP_TITLE;
+
+    fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {
+        Some(&crate::locales::CATALOG)
+    }
+
     fn shot_viewport(scenario: Option<&str>) -> (u32, u32) {
         if scenario == Some("inspector-narrow") {
             (800, 600)
@@ -70,7 +75,6 @@ impl ResourceApp for App {
     }
 
     fn view(cx: &mut ViewCx<Artwork>) -> Element {
-        locales::install();
         let recents = cx.settings::<document::RecentArtworks>();
         let tools = tools::Tools {
             recents: recents.state(),

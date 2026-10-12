@@ -232,6 +232,86 @@ fn write_a_long_note(app: &mut App, host: &mut Host, paragraphs: usize) {
     }
 }
 
+/// Commit `text` into the focused block, as an input method does.
+fn commit(app: &mut App, text: &str) {
+    app.surface_input(
+        &Window,
+        WindowEvent::Ime(Ime::Commit(text.to_owned())),
+        false,
+    );
+}
+
+fn press(app: &mut App, host: &mut Host, key: NamedKey) {
+    let key = Key::Named(key);
+    app.surface_input(&Window, key_input(&key, ElementState::Pressed), false);
+    app.surface_input(&Window, key_input(&key, ElementState::Released), false);
+    host.frame(app, &mut Run::default());
+}
+
+/// Open a new note and write `sections` sections into it, each a
+/// paragraph, a bulleted list, a to-do and a code block, through the
+/// editor's Markdown shortcuts as a person types them; then leave the body
+/// with the pointer resting over it, and go back to the top.
+fn write_a_rich_note(app: &mut App, host: &mut Host, sections: usize) {
+    app.init_layout();
+    for _ in 0..5 {
+        host.frame(app, &mut Run::default());
+    }
+    let new_note = bounds_of(app, "New note");
+    host.input(app, cursor_moved(new_note.center().x, new_note.center().y));
+    host.input(app, mouse_press());
+    host.input(app, mouse_release());
+    for _ in 0..5 {
+        host.frame(app, &mut Run::default());
+    }
+    for section in 0..sections {
+        commit(
+            app,
+            &format!("Section {section}: the quick brown fox jumps over the lazy dog."),
+        );
+        press(app, host, NamedKey::Enter);
+        for item in 0..3 {
+            if item == 0 {
+                commit(app, "- ");
+            }
+            commit(app, &format!("Item {item} of section {section}"));
+            press(app, host, NamedKey::Enter);
+        }
+        // An empty bullet ends the list.
+        press(app, host, NamedKey::Enter);
+        commit(app, "[ ] ");
+        commit(app, &format!("Something to finish in section {section}"));
+        press(app, host, NamedKey::Enter);
+        press(app, host, NamedKey::Enter);
+        commit(app, "```");
+        press(app, host, NamedKey::Enter);
+        for line in 0..3 {
+            commit(app, &format!("let line_{line} = {section};"));
+            press(app, host, NamedKey::Enter);
+        }
+        // A closing fence ends the code block.
+        commit(app, "```");
+        press(app, host, NamedKey::Enter);
+    }
+    let escape = Key::Named(NamedKey::Escape);
+    host.input(app, key_input(&escape, ElementState::Pressed));
+    host.input(app, key_input(&escape, ElementState::Released));
+    host.input(app, cursor_moved(700.0, 500.0));
+    host.input(
+        app,
+        WindowEvent::MouseWheel {
+            device_id: ui::winit::event::DeviceId::dummy(),
+            delta: MouseScrollDelta::PixelDelta(ui::winit::dpi::PhysicalPosition::new(
+                0.0, 100_000.0,
+            )),
+            phase: TouchPhase::Moved,
+        },
+    );
+    for _ in 0..10 {
+        host.frame(app, &mut Run::default());
+    }
+}
+
 /// Scroll `frames` frames of `step` logical pixels (down for a positive
 /// step), each presented and checked against a full render.
 fn scroll(app: &mut App, host: &mut Host, label: &str, (step, frames): (f64, usize)) -> Run {
@@ -290,6 +370,67 @@ fn scrolling_a_long_note_copies_what_stays_on_screen() {
                     per_frame < window * 0.25,
                     "{name}: a frame scrolling {direction} repaints the exposed strip and its \
                      surroundings, not the note ({per_frame:.0} px, {run:?})"
+                );
+            }
+        })
+        .unwrap();
+    }
+}
+
+/// Lists, to-dos and code runs paint chrome for where the pointer rests (the
+/// drag handle, a code run's copy chrome) while the text moves under it: a
+/// scroll still copies, repainting that chrome where it is and was, and
+/// matches a full render.
+#[test]
+fn scrolling_a_note_with_lists_and_code_copies_what_stays_on_screen() {
+    for (name, theme) in THEMES {
+        let theme = theme();
+        drive_live_window::<NotesShell, _>(|app| {
+            app.set_theme(theme.clone());
+            let mut host = Host::new(&theme);
+            write_a_rich_note(app, &mut host, 8);
+            // The shortcuts made lists, to-dos and code runs: their markers
+            // are gone from the text, which reached the note.
+            let texts: Vec<String> = app
+                .semantic_tree()
+                .iter()
+                .filter(|node| node.name.as_deref() == Some("Block text"))
+                .filter_map(|node| node.value.clone())
+                .collect();
+            assert!(
+                texts.iter().any(|text| text.starts_with("Item 0"))
+                    && texts.iter().any(|text| text.starts_with("let line_0"))
+                    && texts
+                        .iter()
+                        .any(|text| text.starts_with("Something to finish"))
+                    && !texts.iter().any(|text| text.starts_with("- ")
+                        || text.starts_with("```")
+                        || text.starts_with("[ ]")),
+                "{name}: the note holds lists, to-dos and code: {texts:?}"
+            );
+            let down = scroll(app, &mut host, &format!("{name}: down"), (40.0, 20));
+            let up = scroll(app, &mut host, &format!("{name}: up"), (-32.0, 10));
+            let window = f64::from(WIDTH) * f64::from(HEIGHT);
+            for (direction, run) in [("down", &down), ("up", &up)] {
+                #[allow(
+                    clippy::cast_precision_loss,
+                    reason = "a frame count is far below f64's integer range"
+                )]
+                let per_frame = run.repainted / run.copied_frames.max(1) as f64;
+                eprintln!(
+                    "notes-scroll-damage rich {name} {direction} frames={} copied={} whole={} \
+                     repainted_px_per_copied_frame={per_frame:.0} of {window:.0} ({:?})",
+                    run.frames, run.copied_frames, run.whole, run.why
+                );
+                assert!(
+                    run.copied_frames * 4 >= run.frames * 3,
+                    "{name}: most frames scrolling {direction} copy ({run:?})"
+                );
+                assert!(
+                    per_frame < window * 0.25,
+                    "{name}: a frame scrolling {direction} repaints the exposed strip, the \
+                     chrome that follows the pointer and the surroundings, not the note \
+                     ({per_frame:.0} px, {run:?})"
                 );
             }
         })

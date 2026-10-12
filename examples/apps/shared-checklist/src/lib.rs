@@ -27,10 +27,6 @@ pub const APP_TITLE: &str = "Shared Checklist";
 
 pub mod locales;
 
-fn install_catalog() {
-    locales::install();
-}
-
 use locales::keys;
 use ui::i18n::I18nManager;
 use ui::prelude::*;
@@ -126,6 +122,10 @@ impl ResourceApp for App {
     const ID: &'static str = crate::APP_ID;
     const TITLE: &'static str = crate::APP_TITLE;
 
+    fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {
+        Some(&crate::locales::CATALOG)
+    }
+
     fn label(checklist: &Checklist) -> String {
         if checklist.name.is_empty() {
             I18nManager::lookup_plain("checklist-untitled")
@@ -135,7 +135,6 @@ impl ResourceApp for App {
     }
 
     fn view(cx: &mut ViewCx<Checklist>) -> Element {
-        install_catalog();
         let p = cx.paths();
         let name = cx
             .input(p.name)

@@ -843,6 +843,28 @@ pub struct DocumentViewport {
     rect: Rect,
     dirty: bool,
     layout_theme: Theme,
+    /// What the frame being drawn shows of the content, and what the last
+    /// frame the host presented showed: a pan between the two that changed
+    /// nothing else is offered to the host as a copy
+    /// ([`crate::scroll_copy::offer`]).
+    shown_drawing: Option<ViewShown>,
+    shown_presented: Option<ViewShown>,
+    /// Something besides a pan changed what the frame being drawn paints
+    /// (`dirty` is cleared by the draw itself, before the host collects
+    /// damage).
+    repaint: bool,
+}
+
+/// Where a frame shows the content: where its origin lands and at what
+/// zoom, the viewport, the content's size, and the transform it is drawn
+/// with.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct ViewShown {
+    origin: Point,
+    zoom: f64,
+    rect: Rect,
+    content: (f64, f64),
+    transform: Affine,
 }
 
 impl DocumentViewport {
@@ -860,6 +882,9 @@ impl DocumentViewport {
             rect: Rect::ZERO,
             dirty: true,
             layout_theme: Theme::dark(),
+            shown_drawing: None,
+            shown_presented: None,
+            repaint: true,
         }
     }
 
@@ -879,6 +904,9 @@ impl DocumentViewport {
             rect: Rect::ZERO,
             dirty: true,
             layout_theme: Theme::dark(),
+            shown_drawing: None,
+            shown_presented: None,
+            repaint: true,
         }
     }
 
@@ -921,6 +949,21 @@ impl DocumentViewport {
     pub fn state_mut(&mut self) -> &mut ViewportState {
         self.dirty = true;
         &mut self.state
+    }
+
+    /// How far the content moved on screen since the last presented frame,
+    /// and where this frame shows it, when only a pan moved it: the same
+    /// zoom, viewport, content size and transform. A draw closure's content
+    /// says nothing of what changed in it, so only a wrapped widget offers.
+    fn panned_since_presented(&self) -> Option<(ViewShown, Vec2)> {
+        let (drawing, presented) = (self.shown_drawing?, self.shown_presented?);
+        let quiet = matches!(self.content, Content::Widget(_))
+            && drawing.zoom.to_bits() == presented.zoom.to_bits()
+            && drawing.rect == presented.rect
+            && drawing.content == presented.content
+            && drawing.transform == presented.transform
+            && drawing.origin != presented.origin;
+        quiet.then(|| (drawing, drawing.origin - presented.origin))
     }
 
     /// Lay the wrapped child widget out at its own (content-space) size, so
@@ -1011,6 +1054,14 @@ impl Widget for DocumentViewport {
             self.place_child(theme, text_renderer);
         }
         let content_xf = compose(transform, self.state.content_to_screen());
+        self.repaint |= self.state.is_panning() || self.state.scrollbar_dragging();
+        self.shown_drawing = Some(ViewShown {
+            origin: self.state.content_origin(),
+            zoom: self.state.zoom(),
+            rect: self.rect,
+            content: self.state.content_size(),
+            transform: crate::scroll_copy::on_screen(transform),
+        });
         match &mut self.content {
             Content::Widget(c) => c.draw(scene, content_xf, text_renderer, theme, presence),
             Content::Draw(draw) => draw(scene, content_xf, text_renderer, theme, self.rect),
@@ -1038,6 +1089,7 @@ impl Widget for DocumentViewport {
                 // Otherwise brighten the hovered thumb.
                 if self.state.update_scrollbar_hover(self.last_cursor) {
                     self.dirty = true;
+                    self.repaint = true;
                 }
             }
             WindowEvent::MouseInput {
@@ -1050,6 +1102,7 @@ impl Widget for DocumentViewport {
                     // the child and drag-to-pan beneath it.
                     if self.state.press_scrollbar(self.last_cursor) {
                         self.dirty = true;
+                        self.repaint = true;
                         *ctx.handled = true;
                         return;
                     }
@@ -1074,6 +1127,7 @@ impl Widget for DocumentViewport {
             } => {
                 if self.state.release_scrollbar() {
                     self.dirty = true;
+                    self.repaint = true;
                     *ctx.handled = true;
                     return;
                 }
@@ -1145,6 +1199,49 @@ impl Widget for DocumentViewport {
 
     fn needs_redraw(&self) -> bool {
         self.dirty || self.state.is_panning() || self.state.scrollbar_dragging()
+    }
+
+    /// A pan offers the host a copy of what stays on screen: the bars'
+    /// tracks are what does not move with the content, and what changed in
+    /// the wrapped widget besides moving is its own damage, placed on
+    /// screen. Anything else repaints the viewport.
+    fn collect_damage(&self, regions: &mut Vec<Rect>) {
+        let shown_changed = self.shown_drawing != self.shown_presented;
+        if !shown_changed && !self.repaint && !self.needs_redraw() {
+            return;
+        }
+        if let Some((shown, delta)) = self.panned_since_presented()
+            && let Content::Widget(child) = &self.content
+        {
+            let overlays: Vec<Rect> = [self.state.v_track(), self.state.h_track()]
+                .into_iter()
+                .flatten()
+                .map(|track| track.inflate(SCROLLBAR_INSET, SCROLLBAR_INSET))
+                .collect();
+            if crate::scroll_copy::offer(self, shown.rect, delta, overlays, shown.transform) {
+                let mut changed = Vec::new();
+                child.collect_damage(&mut changed);
+                let placed = self.state.content_to_screen();
+                regions.extend(
+                    changed
+                        .into_iter()
+                        .map(|rect| placed.transform_rect_bbox(rect).intersect(shown.rect))
+                        .filter(|rect| rect.width() > 0.0 && rect.height() > 0.0),
+                );
+                return;
+            }
+        }
+        regions.push(self.rect);
+    }
+
+    fn mark_drawn(&mut self) {
+        // Not drawn this frame, what the screen shows where it lies is not
+        // known to be its content: the next pan repaints the viewport.
+        self.shown_presented = self.shown_drawing.take();
+        self.repaint = false;
+        for child in self.children_mut() {
+            child.mark_drawn();
+        }
     }
 
     /// Hold the pointer while panning or dragging a scrollbar thumb so the
@@ -1635,3 +1732,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "document_viewport_copy_tests.rs"]
+mod copy_tests;
