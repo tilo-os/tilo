@@ -8,7 +8,8 @@
 //! native path or a path inside a [`VirtualRoot`] (the browser's
 //! origin-private file system, or memory); [`Location::native_path`] is the
 //! explicit, fallible way back to a `Path`. What a target cannot provide is
-//! an [`Unsupported`] error at run time and a row of [`CAPABILITIES`], never a
+//! an [`Unsupported`] error at run time and an entry of its [`Feature`]'s
+//! targets, never a
 //! missing item: this crate is where the target-specific code lives, so apps
 //! need none.
 //!
@@ -60,7 +61,7 @@ mod location;
 pub mod session;
 
 pub use app::{AppPaths, DEFAULT_PROFILE, default_profile, set_default_profile};
-pub use caps::{Availability, CAPABILITIES, Feature, Unsupported, availability};
+pub use caps::{Availability, Feature, Unsupported, availability};
 pub use location::{InvalidVPath, Location, VPath, VirtualRoot};
 
 /// Where a Tilo Linux session mounts the collaborative workspace, and the

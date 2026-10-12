@@ -37,41 +37,36 @@ pub enum Feature {
     SealedMemory,
 }
 
-pub use tilo_platform_caps::Availability;
+pub use tilo_platform_caps::{Availability, availability};
 
-/// Each feature's availability on Linux, macOS and the web, in that order.
-pub const CAPABILITIES: &[(Feature, [Availability; 3])] = &[
-    (
-        Feature::ProcessSandbox,
-        [
-            Availability::Available,
-            Availability::Available,
-            Availability::Unsupported("a page has no helper processes"),
-        ],
-    ),
-    (
-        Feature::SealedMemory,
-        [
-            Availability::Available,
-            Availability::Unsupported("POSIX shared memory cannot be sealed; readers copy"),
-            Availability::Unsupported("a page has no shared memory files"),
-        ],
-    ),
-];
+impl tilo_platform_caps::Feature for Feature {
+    /// The feature's availability on Linux, macOS and the web, in that order.
+    fn targets(self) -> [Availability; 3] {
+        use Availability::{Available, Unsupported};
+        match self {
+            Self::ProcessSandbox => [
+                Available,
+                Available,
+                Unsupported("a page has no helper processes"),
+            ],
+            Self::SealedMemory => [
+                Available,
+                Unsupported("POSIX shared memory cannot be sealed; readers copy"),
+                Unsupported("a page has no shared memory files"),
+            ],
+        }
+    }
 
-/// Whether `feature` works on the running target.
-#[must_use]
-pub fn availability(feature: Feature) -> Availability {
-    let column = if cfg!(target_os = "linux") {
-        0
-    } else if cfg!(target_os = "macos") {
-        1
-    } else {
-        2
-    };
-    CAPABILITIES
-        .iter()
-        .find(|(f, _)| *f == feature)
-        .and_then(|(_, row)| row.get(column).copied())
-        .unwrap_or(Availability::Unsupported("unknown feature"))
+    /// Whether the feature works on the running target. Only Linux and
+    /// macOS can confine helpers; every other target reads the web column.
+    fn availability(self) -> Availability {
+        const COLUMN: usize = if cfg!(target_os = "linux") {
+            0
+        } else if cfg!(target_os = "macos") {
+            1
+        } else {
+            2
+        };
+        self.targets()[COLUMN]
+    }
 }

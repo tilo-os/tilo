@@ -1,7 +1,7 @@
-//! The shape every platform crate's capability table shares: each feature
-//! with its [`Availability`] on Linux, macOS and the web, the column for
-//! the running target, and the [`Unsupported`] error for a feature this
-//! target cannot provide.
+//! What every platform crate's capabilities share: a [`Feature`] trait that
+//! gives each feature its [`Availability`] on Linux, macOS and the web, the
+//! column for the running target, and the [`Unsupported`] error for a
+//! feature this target cannot provide.
 
 use std::fmt;
 
@@ -15,12 +15,8 @@ pub enum Availability {
     Unsupported(&'static str),
 }
 
-/// Every feature `F` of one crate with its availability on Linux, macOS and
-/// the web, in that order.
-pub type Table<F> = [(F, [Availability; 3])];
-
-/// This target's column of a [`Table`]. Every wasm target reports the web
-/// column; native targets other than macOS report the Linux column.
+/// This target's column of [`Feature::targets`]. Every wasm target reports
+/// the web column; native targets other than macOS report the Linux column.
 pub const COLUMN: usize = if cfg!(target_family = "wasm") {
     2
 } else if cfg!(target_os = "macos") {
@@ -29,16 +25,22 @@ pub const COLUMN: usize = if cfg!(target_family = "wasm") {
     0
 };
 
-/// Whether `feature` can be used on this target, by `table`.
+/// One capability of a platform crate.
+pub trait Feature: Copy {
+    /// The feature's availability on Linux, macOS and the web, in that order.
+    fn targets(self) -> [Availability; 3];
+
+    /// Whether the feature can be used on this target. A crate whose build
+    /// can leave a backend out overrides this to say so.
+    fn availability(self) -> Availability {
+        self.targets()[COLUMN]
+    }
+}
+
+/// Whether `feature` can be used on this target.
 #[must_use]
-pub fn availability<F: Copy + PartialEq>(table: &Table<F>, feature: F) -> Availability {
-    table
-        .iter()
-        .find(|(listed, _)| *listed == feature)
-        .and_then(|(_, targets)| targets.get(COLUMN).copied())
-        .unwrap_or(Availability::Unsupported(
-            "This build does not know the feature.",
-        ))
+pub fn availability<F: Feature>(feature: F) -> Availability {
+    feature.availability()
 }
 
 /// A feature this target, or this particular host, cannot provide.
@@ -49,11 +51,11 @@ pub struct Unsupported<F> {
     pub reason: &'static str,
 }
 
-impl<F: Copy + PartialEq> Unsupported<F> {
-    /// The error for `feature` on this target, by `table`.
+impl<F: Feature> Unsupported<F> {
+    /// The error for `feature` on this target.
     #[must_use]
-    pub fn of(table: &Table<F>, feature: F) -> Self {
-        let reason = match availability(table, feature) {
+    pub fn of(feature: F) -> Self {
+        let reason = match feature.availability() {
             Availability::Unsupported(reason) => reason,
             Availability::Available | Availability::Prompt => "This host cannot do this.",
         };
@@ -74,34 +76,33 @@ mod tests {
     use super::*;
 
     #[derive(Clone, Copy, Debug, PartialEq)]
-    enum Feature {
-        Listed,
-        Missing,
-    }
+    struct WebOnlyMissing;
 
-    const TABLE: &Table<Feature> = &[(
-        Feature::Listed,
-        [
-            Availability::Available,
-            Availability::Prompt,
-            Availability::Unsupported("web"),
-        ],
-    )];
-
-    #[test]
-    fn a_listed_feature_reads_this_targets_column() {
-        assert_eq!(availability(TABLE, Feature::Listed), TABLE[0].1[COLUMN]);
+    impl Feature for WebOnlyMissing {
+        fn targets(self) -> [Availability; 3] {
+            [
+                Availability::Available,
+                Availability::Prompt,
+                Availability::Unsupported("web"),
+            ]
+        }
     }
 
     #[test]
-    fn an_unlisted_feature_is_unsupported() {
-        assert!(matches!(
-            availability(TABLE, Feature::Missing),
-            Availability::Unsupported(_)
-        ));
+    fn a_feature_reads_this_targets_column() {
         assert_eq!(
-            Unsupported::of(TABLE, Feature::Missing).feature,
-            Feature::Missing
+            availability(WebOnlyMissing),
+            WebOnlyMissing.targets()[COLUMN]
         );
+    }
+
+    #[test]
+    fn unsupported_carries_the_columns_reason() {
+        let reason = Unsupported::of(WebOnlyMissing).reason;
+        if COLUMN == 2 {
+            assert_eq!(reason, "web");
+        } else {
+            assert_eq!(reason, "This host cannot do this.");
+        }
     }
 }

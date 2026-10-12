@@ -68,7 +68,7 @@ pub(crate) fn connect(
 async fn open(url: Url, options: Options) -> Result<Session, NetError> {
     let constructor: js_sys::Function = global_get("WebTransport")
         .and_then(|constructor| constructor.dyn_into().ok())
-        .ok_or_else(|| NetError::from(crate::caps::unsupported(Feature::WebTransport)))?;
+        .ok_or_else(|| NetError::from(crate::Unsupported::of(Feature::WebTransport)))?;
     let init = Object::new();
     if !options.cert_hashes.is_empty() {
         let hashes: Array = options
