@@ -176,13 +176,18 @@ pub enum ModelArtifactFormat {
     /// Whistle CACT weights, interpreted by the immutable image AOT runtime.
     /// The downloadable object contains weights, never executable runtime code.
     WhistleCact,
+    /// CPU Silero GGML acoustic graph; observes speech activity, never text.
+    SileroGgml,
 }
 
 impl ModelArtifactFormat {
     /// Whether models of this format run inside the process that uses them
     /// rather than behind a supervised vLLM runtime.
     pub const fn runs_in_process(self) -> bool {
-        matches!(self, Self::OnnxFile | Self::WhisperGgml | Self::WhistleCact)
+        matches!(
+            self,
+            Self::OnnxFile | Self::WhisperGgml | Self::WhistleCact | Self::SileroGgml
+        )
     }
 
     pub const fn is_speech(self) -> bool {
@@ -200,6 +205,8 @@ pub enum InProcessCapability {
     /// On-device speech recognition; the native consumer owns microphone
     /// permission and inference cancellation, not the model installer.
     SpeechRecognition,
+    /// Independent acoustic evidence for dictation; never microphone permission.
+    SpeechActivity,
 }
 
 impl InProcessCapability {
@@ -289,6 +296,9 @@ impl LocalModelRelease {
         if self.artifact_format.is_speech() {
             capabilities.push(InProcessCapability::SpeechRecognition);
         }
+        if self.artifact_format == ModelArtifactFormat::SileroGgml {
+            capabilities.push(InProcessCapability::SpeechActivity);
+        }
         capabilities
     }
 
@@ -309,7 +319,10 @@ impl LocalModelRelease {
                 "single-file llama.cpp release has no vision projection",
             ));
         }
-        if self.artifact_format.is_speech() && self.segmentation {
+        if (self.artifact_format.is_speech()
+            || self.artifact_format == ModelArtifactFormat::SileroGgml)
+            && self.segmentation
+        {
             return Err(ProvisionError::InvalidCatalog(
                 "speech graph cannot claim segmentation",
             ));
@@ -1003,6 +1016,28 @@ mod tests {
         speech.context_window = 0;
         speech.allowed_runtimes.insert(RuntimeKind::Cpu);
         assert!(speech.validate_shape().is_err());
+    }
+
+    #[test]
+    fn acoustic_graph_never_advertises_transcription_or_permission() {
+        let mut graph = segmentation_model();
+        graph.artifact_format = ModelArtifactFormat::SileroGgml;
+        graph.segmentation = false;
+        graph.validate_shape().unwrap();
+        assert_eq!(
+            graph.in_process_capabilities(),
+            vec![InProcessCapability::SpeechActivity]
+        );
+        assert!(!graph.artifact_format.is_speech());
+        assert_eq!(
+            serde_json::to_string(&graph.artifact_format).unwrap(),
+            "\"silero_ggml\""
+        );
+        graph.segmentation = true;
+        assert!(graph.validate_shape().is_err());
+        graph.segmentation = false;
+        graph.allowed_runtimes.insert(RuntimeKind::Cpu);
+        assert!(graph.validate_shape().is_err());
     }
 
     #[test]
