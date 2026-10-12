@@ -7,6 +7,8 @@ keeps writing `vello_shaders::…`. Upstream: https://github.com/linebender/vell
 
 What differs from the upstream release is listed in the Tilo repository's
 `vendor/PATCHES.md` ("Vello changes"): scratch buffers are sized from what a
-frame measurably uses instead of fixed worst-case constants. The changes are
+frame measurably uses instead of fixed worst-case constants, and the fine
+stage's area coverage is evaluated in a factored, translation-stable form.
+The scratch-buffer changes are
 proposed upstream as linebender/vello#1861, #1862 and #1863; when a vello
 release carries them, the Tilo SDK moves back to `vello_shaders` and this fork ends.

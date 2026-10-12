@@ -282,6 +282,26 @@ buffer, and `fill_segment_count` clamps a fill's segment count to the
 segment buffer. Valid streams render byte-identically (every GPU fixture in
 `vendor/vello/src/lib.rs` passes unchanged).
 
+## `vendor/vello_shaders/shader/fine.wgsl`, `src/cpu/fine.rs`: translation-stable area coverage
+
+Upstream evaluates a line's area coverage of a pixel as
+`(b + 0.5 * (d * d - c * c) - xmin) / (xmax - xmin)`. For a vertical or
+near-vertical edge, `xmax - xmin` is the `1e-6` nudge, while the two
+squares and their sum round at the magnitude of x: the numerator carries an
+absolute error of a few `1e-8` against a value of `1e-6`, so the edge pixel
+comes out up to 15 channel steps (6 % coverage) off, by an error that depends
+on the exact f32 bits of the tile-relative x. The same shape drawn a whole
+number of pixels elsewhere then rasterises differently, which a compositor
+that moves already rasterised pixels (Tilo's strip pans) shows as edge noise
+against a fresh render. `fill_path`, `fill_path_ppt8` and the CPU fine stage
+evaluate the algebraically identical
+`((b - xmin) - 0.5 * ((c - d) * (c + d))) / (xmax - xmin)` instead: both
+differences are of nearby values and exact, so coverage is accurate to f32
+precision and the same at every whole-pixel offset (in the strip pan test,
+whole renders at two pans went from up to 31 pixels more than a step apart
+to none). Edge pixels move to their correct coverage, so visual goldens of
+antialiased text change by up to that much.
+
 ## Total bump budget (`config.rs`, `bump_budget.rs`, `lib.rs`)
 
 `BumpBudget::fit_total_bytes` shrinks every reservation by one factor until
