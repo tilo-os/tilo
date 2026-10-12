@@ -15,8 +15,13 @@ use tilo_action_broker::services::{
     HeldRevision, NativeDocumentRead, NativeDocumentReadContext, NativeDocumentReads,
 };
 
-/// Lines in the large document, about 50,000 characters: one text op each.
-const LINES: usize = 1_000;
+/// Lines in the document, about 10,000 characters: one text op each. At
+/// 50,000 this debug harness's broker thread spends about 5.5 s of CPU per
+/// edit outside any read (with whole reads as well as with changes), which
+/// starves the reader's round trips past their deadlines into renewals,
+/// each a whole read. The read itself at 50,000 characters is measured by
+/// `tilo-joined-room`'s large-document test.
+const LINES: usize = 200;
 /// Lines written per edit while the document is made large.
 const LINES_PER_EDIT: usize = 250;
 /// Small edits measured after the document is large.
