@@ -973,7 +973,7 @@ fn owner_fixture_sessions(gate: Rc<std::cell::Cell<bool>>) -> Sessions {
                 "fixture owner consent required".into(),
             ));
         }
-        let mut command = interactive_bash();
+        let command = interactive_bash();
         crate::inner::TerminalBackend::with_command(command)
             .map_err(|error| OpenError::Failed(error.to_string()))
     })
