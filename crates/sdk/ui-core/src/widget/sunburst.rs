@@ -164,12 +164,6 @@ impl SunburstChart {
         self.style = style;
         self
     }
-    pub fn style(&self) -> &SunburstStyle {
-        &self.style
-    }
-    pub fn style_mut(&mut self) -> &mut SunburstStyle {
-        &mut self.style
-    }
     #[must_use]
     pub fn with_center(mut self, title: impl Into<String>, subtitle: impl Into<String>) -> Self {
         self.center_title = title.into();

@@ -199,12 +199,6 @@ impl DistributionChart {
         self.style = style;
         self
     }
-    pub fn style(&self) -> &DistributionStyle {
-        &self.style
-    }
-    pub fn style_mut(&mut self) -> &mut DistributionStyle {
-        &mut self.style
-    }
     #[must_use]
     pub fn kind(mut self, kind: DistributionKind) -> Self {
         self.style.kind = kind;

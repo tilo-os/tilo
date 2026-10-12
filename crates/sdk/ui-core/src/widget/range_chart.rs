@@ -141,12 +141,6 @@ impl RangeChart {
         self.style = style;
         self
     }
-    pub fn style(&self) -> &RangeStyle {
-        &self.style
-    }
-    pub fn style_mut(&mut self) -> &mut RangeStyle {
-        &mut self.style
-    }
     #[must_use]
     pub fn titled(mut self, title: impl Into<String>) -> Self {
         self.title = title.into();

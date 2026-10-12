@@ -119,12 +119,6 @@ impl SankeyChart {
         self.style = style;
         self
     }
-    pub fn style(&self) -> &SankeyStyle {
-        &self.style
-    }
-    pub fn style_mut(&mut self) -> &mut SankeyStyle {
-        &mut self.style
-    }
     #[must_use]
     pub fn titled(mut self, title: impl Into<String>) -> Self {
         self.title = title.into();

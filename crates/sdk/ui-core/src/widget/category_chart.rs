@@ -197,12 +197,6 @@ impl CategoryChart {
         self.style = style;
         self
     }
-    pub fn style(&self) -> &CategoryChartStyle {
-        &self.style
-    }
-    pub fn style_mut(&mut self) -> &mut CategoryChartStyle {
-        &mut self.style
-    }
     #[must_use]
     pub fn layout(mut self, layout: CategoryLayout) -> Self {
         self.style.layout = layout;

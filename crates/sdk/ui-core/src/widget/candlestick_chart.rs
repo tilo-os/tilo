@@ -144,12 +144,6 @@ impl CandlestickChart {
         self.style = style;
         self
     }
-    pub fn style(&self) -> &CandlestickStyle {
-        &self.style
-    }
-    pub fn style_mut(&mut self) -> &mut CandlestickStyle {
-        &mut self.style
-    }
     #[must_use]
     pub fn titled(mut self, title: impl Into<String>) -> Self {
         self.title = title.into();
