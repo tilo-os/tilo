@@ -2964,10 +2964,14 @@ mod tests {
         }
 
         fn prompted_resource_action_binds_its_declared_argument() {
-            let spec = tilo_actions::ActionSpec::prompted(
+            let spec = tilo_actions::ActionSpec::prompted_param(
                 "rename",
                 "Rename",
-                "New name",
+                tilo_actions::ActionParam::required(
+                    PROMPTED_PARAM,
+                    tilo_actions::ParamType::Text,
+                    "New name",
+                ),
                 "name…",
                 tilo_actions::ExecutionLocus::ClientLocal,
                 |name| tilo_actions::EncodedAction::encode_operation("test.rename", &name).unwrap(),

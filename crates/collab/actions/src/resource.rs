@@ -24,8 +24,8 @@
 //! The projection is derived from the same closure the palette uses:
 //! [`immediate`](ActionSpec::immediate) projects to zero parameters returning
 //! its pre-encoded action, and
-//! [`prompted`](ActionSpec::prompted) projects to one required
-//! [`Text`](ParamType::Text) parameter named [`PROMPTED_PARAM`] that calls the
+//! [`prompted_param`](ActionSpec::prompted_param) projects to one required
+//! [`Text`](ParamType::Text) parameter, named for what it is, that calls the
 //! app's closure. An affordance, its palette row, and an external invocation
 //! therefore run through one function and produce the same action.
 //!
@@ -255,11 +255,11 @@ impl ActionBinding<()> {
     }
 }
 
-/// The parameter name a [`prompted`](ActionSpec::prompted) spec projects its
-/// single free-text argument under.
-///
-/// Fixed rather than derived from the human prompt: the prompt is localisable
-/// display text, and an external caller addresses parameters by a stable name.
+/// The generic parameter name of an argument that is a bare value: an
+/// accessibility set-value, a content hash ([`ActionSpec::prompted_content`]),
+/// a wire `InvokeArgument::Text` before a descriptor says where it goes.
+/// An app's own prompted action names its parameter
+/// ([`ActionSpec::prompted_param`]) and callers ask [`ActionSpec::prompt_param`].
 pub const PROMPTED_PARAM: &str = "value";
 
 /// The text of an argument object that holds exactly one string, whatever it
@@ -1089,31 +1089,6 @@ impl ActionSpec {
     }
 
     /// An action that first collects a free-text argument, then builds its
-    /// encoded action from it.
-    ///
-    /// Projects to one required [`Text`](ParamType::Text) parameter named
-    /// [`PROMPTED_PARAM`], described by `prompt`. That generic name tells a
-    /// caller who cannot see the prompt nothing; name the parameter for what it
-    /// is with [`Self::prompted_param`].
-    pub fn prompted(
-        id: impl Into<String>,
-        label: impl Into<String>,
-        prompt: impl Into<String>,
-        placeholder: impl Into<String>,
-        locus: ExecutionLocus,
-        build: impl Fn(&str) -> EncodedAction + Send + Sync + 'static,
-    ) -> Self {
-        Self::prompted_param(
-            id,
-            label,
-            ActionParam::required_owned(PROMPTED_PARAM, ParamType::Text, prompt.into()),
-            placeholder,
-            locus,
-            build,
-        )
-    }
-
-    /// An action that first collects a free-text argument, then builds its
     /// encoded action from it, the argument being the parameter `param`:
     /// `ActionParam::required("title", ParamType::Text, "The note's new
     /// title")`. The name and description are what an agent reads, and the
@@ -1122,7 +1097,9 @@ impl ActionSpec {
     /// The projection and the palette share the *same* `build` closure, so an
     /// external invocation and the on-screen affordance produce the
     /// byte-identical [`EncodedAction`]. Callers that hold the typed text
-    /// find where it goes with [`Self::prompt_param`], never by name.
+    /// find where it goes with [`Self::prompt_param`], never by name. Name the
+    /// parameter for what it is (`title`, `name`, `comment`): an agent reads
+    /// it, and the generic [`PROMPTED_PARAM`] tells it nothing.
     pub fn prompted_param(
         id: impl Into<String>,
         label: impl Into<String>,
@@ -1406,7 +1383,7 @@ impl ActionSpec {
 
     /// An action whose one argument is the content hash of bytes this
     /// machine already holds, rather than typed words — a separate
-    /// constructor (not a parameter on [`Self::prompted`]) so every
+    /// constructor (not a parameter on [`Self::prompted_param`]) so every
     /// existing action keeps saying exactly what it said.
     pub fn prompted_content(
         id: impl Into<String>,
@@ -1416,7 +1393,14 @@ impl ActionSpec {
         locus: ExecutionLocus,
         build: impl Fn(&str) -> EncodedAction + Send + Sync + 'static,
     ) -> Self {
-        let mut spec = Self::prompted(id, label, prompt, placeholder, locus, build);
+        let mut spec = Self::prompted_param(
+            id,
+            label,
+            ActionParam::required_owned(PROMPTED_PARAM, ParamType::Text, prompt.into()),
+            placeholder,
+            locus,
+            build,
+        );
         if let ActionInput::Prompted { collects, .. } = &mut spec.input {
             *collects = Collects::Content;
         }
@@ -2222,10 +2206,10 @@ mod tests {
             ExecutionLocus::ClientLocal,
             EncodedAction::encode_operation("test.open", &()).unwrap(),
         );
-        let prompted = ActionSpec::prompted(
+        let prompted = ActionSpec::prompted_param(
             "rename",
             "Rename",
-            "Name",
+            ActionParam::required("value", ParamType::Text, "Name"),
             "name",
             ExecutionLocus::ClientLocal,
             |value| EncodedAction::encode_operation("test.rename", &value).unwrap(),
@@ -2327,16 +2311,6 @@ mod tests {
         };
         assert_eq!(prompt, "The note's new title");
         assert_eq!(build("Plan"), encode("Plan"));
-        // The old constructor keeps the generic name, found the same way.
-        let generic = ActionSpec::prompted(
-            "rename",
-            "Rename",
-            "Title",
-            "note title…",
-            ExecutionLocus::ClientLocal,
-            encode,
-        );
-        assert_eq!(generic.prompt_param(), Some(PROMPTED_PARAM));
         // An action that collects no text has no prompt parameter.
         let immediate =
             ActionSpec::operation("run", "Run", OperationKind::Effect, "test.run", &()).unwrap();

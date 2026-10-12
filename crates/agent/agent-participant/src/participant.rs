@@ -869,6 +869,14 @@ impl AgentParticipant {
                 descriptor.action_label, descriptor.resource_label
             )
         });
+        let bound;
+        let arguments = match &descriptor {
+            Some(descriptor) => {
+                bound = descriptor.bind_prompt_text(arguments.clone());
+                &bound
+            }
+            None => arguments,
+        };
         let output = app
             .invoke(address, arguments, confirmed)
             .map_err(Refusal::Door)?;
