@@ -21,12 +21,24 @@ pub mod firstboot;
 pub mod identity_broker;
 mod idle_wake;
 pub mod runtime_host;
+#[cfg(target_os = "linux")]
+mod retained_files;
 
 pub use tilo_identity_host::registry as identity_registry;
 pub mod network;
 pub mod network_secrets;
 pub mod notifications;
 pub mod onboarding;
+#[cfg(target_os = "linux")]
+mod onboarding_browser;
+#[cfg(target_os = "linux")]
+mod onboarding_migration;
+#[cfg(target_os = "linux")]
+mod onboarding_portable_applications;
+#[cfg(target_os = "linux")]
+mod onboarding_portable_home;
+#[cfg(target_os = "linux")]
+mod onboarding_prepared;
 mod onboarding_nearby;
 pub mod onboarding_view;
 pub mod polkit_agent;

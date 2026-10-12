@@ -43,14 +43,19 @@ path = "src/lib.rs"
 dev-overrides = ["package-store/dev-overrides"]
 # Explicit opt-in Linux process-tree qualification fixture.
 managed-tree-test = []
+# Explicit signed-worker/FUSE alias qualification; no authority constructor.
+native-home-alias-qualification = []
 
 [dependencies]
+browser-continuity = { workspace = true, features = ["native"] }
 # Kernel-authenticated custody of the executing native service peer.
 runtime-portal = { path = "../../runtime/runtime-portal", default-features = false }
 tilo-advisory-lock = { path = "../../system/advisory-lock" }
 # Supervisors sleep on a child's pidfd and a wake descriptor instead of polling.
 bounded-command = { path = "../../system/bounded-command" }
 blake3.workspace = true
+sha2.workspace = true
+hex.workspace = true
 tempfile.workspace = true
 tilo-paths.workspace = true
 fnv.workspace = true
@@ -64,11 +69,13 @@ serde.workspace = true
 # `library_path` to match an installed driver to the compositor's
 # chosen render node.
 serde_json.workspace = true
+tilo-actions = { path = "../../collab/actions" }
 toml.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 libc.workspace = true
+getrandom.workspace = true
 runtime-bundle = { path = "../runtime-bundle" }
 # The canonical manifest schema and its one decoder (`view`), so the
 # sandbox reads exactly what the registry and the installer read.
@@ -112,11 +119,9 @@ tilo-action-policy = { path = "../../collab/action-policy" }
 tilo-test-env = { path = "../../dev/test-env" }
 # An installed package launches from the store the desktop reads.
 package-store = { path = "../package-store", features = ["store"] }
-hex.workspace = true
 ed25519-dalek.workspace = true
 # A threshold identity record in the store a launch must only read.
 threshold-identity = { path = "../../collab/threshold-identity" }
-getrandom.workspace = true
 # Kernel probes proving the resolved seccomp profile is what the kernel enforces.
 tilo-sandbox-core = { path = "../../system/sandbox-core", features = ["test-support"] }
 # The collection `tilo-install` runs after an update, interleaved with a
@@ -131,6 +136,8 @@ path = "tests/it.rs"
 workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
+# Held protected ancestry for root-only original-source worker custody.
+tilo-files = { path = "../../platform/tilo-files" }
 landlock.workspace = true
 # `gpu.rs` asks each installed Vulkan ICD directly which render node its
 # devices are on (`VK_EXT_physical_device_drm`), loading the library itself

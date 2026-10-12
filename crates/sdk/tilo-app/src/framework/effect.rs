@@ -174,6 +174,15 @@ impl Progress {
         self.with_effect(|| Ok(())).is_err()
     }
 
+    /// Share the actual job's cancellation flag with blocking native I/O.
+    /// This is explicit cancellation, not authority: callers still use
+    /// [`Self::with_effect`] at work boundaries to recheck current custody.
+    /// Treat the returned flag as read-only.
+    #[must_use]
+    pub fn cancellation_signal(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.cancelled)
+    }
+
     /// Recheck the original caller immediately before a unit of external work.
     /// Blocking workers should use this between units as well as checking
     /// cancellation. It grants no access to the canonical document.
@@ -507,6 +516,7 @@ pub(crate) struct EffectEnv<R: Resource> {
     pub(crate) dispatch: Dispatcher<R>,
     pub(crate) live: Live<R>,
     pub(crate) wake: WakeHandle,
+    scope: Option<std::rc::Weak<super::surface::SurfaceScope>>,
 }
 
 impl<R: Resource> Clone for EffectEnv<R> {
@@ -515,6 +525,29 @@ impl<R: Resource> Clone for EffectEnv<R> {
             dispatch: self.dispatch.clone(),
             live: self.live.clone(),
             wake: self.wake.clone(),
+            scope: self.scope.clone(),
+        }
+    }
+}
+
+impl<R: Resource> EffectEnv<R> {
+    pub(crate) fn scoped(&self, scope: &Rc<super::surface::SurfaceScope>) -> Self {
+        let mut env = self.clone();
+        env.scope = Some(Rc::downgrade(scope));
+        env
+    }
+    fn active(&self) -> bool {
+        self.scope
+            .as_ref()
+            .is_none_or(|scope| scope.upgrade().is_some_and(|scope| scope.active()))
+    }
+    fn track(&self, progress: &Progress) {
+        if let Some(scope) = &self.scope {
+            if let Some(scope) = scope.upgrade() {
+                scope.track(&progress.cancelled);
+            } else {
+                progress.cancelled.store(true, Ordering::Release);
+            }
         }
     }
 }
@@ -733,13 +766,15 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
     }
 
     fn track(&mut self, then: Option<Box<dyn Any>>) -> Progress {
-        track_job(
+        let progress = track_job(
             &mut self.started,
             &self.env.wake,
             JobCustody::of(self.worker_custody.as_ref(), self.custody.as_ref()),
             then,
             std::any::TypeId::of::<Then<R, H>>(),
-        )
+        );
+        self.env.track(&progress);
+        progress
     }
 
     fn then<T: Send + 'static>(
@@ -1065,6 +1100,9 @@ impl<R: Resource> Jobs<R> {
         let Some(env) = &self.env else {
             return;
         };
+        if !env.active() {
+            return;
+        }
         let mut cx = EffectCx::<R, H>::new(env.clone(), None);
         let answer = start(&mut cx);
         self.queue
@@ -1490,13 +1528,15 @@ impl<R: Resource, H: 'static, E: Effect> EffectRunner<R, H, E> {
                 started: cx.started.take(),
             },
             &mut || {
-                track_job(
+                let progress = track_job(
                     &mut cx.started,
                     &cx.env.wake,
                     JobCustody::of(cx.worker_custody.as_ref(), cx.custody.as_ref()),
                     None,
                     std::any::TypeId::of::<Then<R, H>>(),
-                )
+                );
+                cx.env.track(&progress);
+                progress
             },
             &mut |participant| {
                 if let Some(place) = &place {
@@ -2055,6 +2095,7 @@ impl<R: Resource> Effects<R> {
             dispatch,
             live,
             wake: WakeHandle::new(),
+            scope: None,
         };
         Self {
             jobs: Rc::new(RefCell::new(OwnedJobs::new(Jobs::new(Some(env.clone()))))),
@@ -2087,6 +2128,10 @@ impl<R: Resource> Effects<R> {
     #[inline(never)]
     pub(crate) fn surface_jobs(&self) -> Jobs<R> {
         Jobs::new(self.env.clone())
+    }
+
+    pub(crate) fn scoped_surface_jobs(&self, scope: &Rc<super::surface::SurfaceScope>) -> Jobs<R> {
+        Jobs::new(self.env.as_ref().map(|env| env.scoped(scope)))
     }
 
     /// Take up and finish the views' jobs.
@@ -2388,7 +2433,61 @@ mod tests {
             dispatch,
             live: Live::new(Reader::<Probe>::read(&doc).unwrap()),
             wake: WakeHandle::detached(),
+            scope: None,
         })
+    }
+
+    #[test]
+    fn blocking_cancellation_signal_tracks_actual_job_and_preserves_custody_checks() {
+        let mut runner = runner();
+        let invocation = InvocationId::new();
+        let payload = payload(&Work::Count);
+        let op = ResourceOperation::local(
+            invocation,
+            tilo_actions::OperationKind::Effect,
+            Work::OPERATION,
+            &payload,
+        );
+        let (entered, entrance) = channel();
+        let (stopped, observation) = channel();
+        runner
+            .start(&op, &mut (), None, |(), _, cx| {
+                Ok(cx.thread(
+                    move |progress| {
+                        assert!(!progress.is_cancelled());
+                        let signal = progress.cancellation_signal();
+                        entered.send(()).unwrap();
+                        while !signal.load(Ordering::Acquire) {
+                            std::thread::yield_now();
+                        }
+                        assert!(progress.is_cancelled());
+                        let mut work_ran = false;
+                        assert!(
+                            progress
+                                .with_effect(|| {
+                                    work_ran = true;
+                                    Ok(())
+                                })
+                                .is_err()
+                        );
+                        assert!(!work_ran);
+                        stopped.send(()).unwrap();
+                    },
+                    |(), (), _| Ok(Effected::done()),
+                ))
+            })
+            .unwrap();
+        entrance
+            .recv_timeout(std::time::Duration::from_secs(30))
+            .unwrap();
+        assert!(matches!(
+            runner.poll(invocation, true, &mut ()),
+            Some(InvocationUpdate::Cancelled { .. })
+        ));
+        observation
+            .recv_timeout(std::time::Duration::from_secs(30))
+            .unwrap();
+        assert!(runner.poll(invocation, false, &mut ()).is_none());
     }
 
     #[test]

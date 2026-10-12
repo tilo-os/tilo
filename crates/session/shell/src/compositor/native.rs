@@ -2344,6 +2344,7 @@ struct TestControlConn {
     /// [`test_control::Command::admin_permitted`] commands are served, for
     /// the session's own person and never on behalf of a seated agent.
     admin: bool,
+    admin_identity_dir: Option<PathBuf>,
     /// Wakes the compositor loop when request bytes arrive on this stream;
     /// removed from the loop together with the connection.
     wake: Option<calloop::RegistrationToken>,
@@ -2418,9 +2419,10 @@ fn listing_stamp(frame_builder: &FrameBuilder) -> ListingStamp {
 impl TestControlConn {
     /// A connection on the device admin's control socket, already authorised
     /// by [`crate::compositor::admin_control::authorize`].
-    fn admin(stream: UnixStream) -> Option<Self> {
+    fn admin(stream: UnixStream, identity_dir: &Path) -> Option<Self> {
         let mut conn = Self::new(stream, false)?;
         conn.admin = true;
+        conn.admin_identity_dir = Some(identity_dir.to_owned());
         Some(conn)
     }
 
@@ -2434,6 +2436,7 @@ impl TestControlConn {
             input: test_control::BoundedLineBuffer::default(),
             agent,
             admin: false,
+            admin_identity_dir: None,
             wake: None,
             closed: false,
             pending_invocation: None,
@@ -2587,10 +2590,14 @@ impl FrameBuilderControlState<'_> {
                 doc,
                 doc_root: root,
             };
-            let catalog = self
-                .fb
-                .host()
-                .action_catalog_query(&args, gate, include_programmatic);
+            let first_use_gate = super::admin_control::FirstUseVisibility {
+                base: gate,
+                first_use: self.fb.host().onboarding_active(),
+            };
+            let catalog =
+                self.fb
+                    .host()
+                    .action_catalog_query(&args, &first_use_gate, include_programmatic);
             // Read after the query, which may itself have started the work
             // that leaves the listing incomplete.
             (catalog, self.fb.host().action_listing_complete(&args))
@@ -3093,9 +3100,17 @@ impl ControlState for FrameBuilderControlState<'_> {
         let chrome_handle = self.fb.chrome_handle();
         let resource = ResourceRef::new(provider, id);
         let catalog = with_action_gate(&chrome_handle, |chrome, gate| {
-            self.fb
-                .host()
-                .action_catalog_for_resource(&resource, chrome, doc, root, gate)
+            let first_use_gate = super::admin_control::FirstUseVisibility {
+                base: gate,
+                first_use: self.fb.host().onboarding_active(),
+            };
+            self.fb.host().action_catalog_for_resource(
+                &resource,
+                chrome,
+                doc,
+                root,
+                &first_use_gate,
+            )
         })
         .map_err(test_control::ActionRefusal::unknown)?;
         let selected = catalog.select(&resource).ok_or_else(|| {
@@ -4080,8 +4095,17 @@ fn execute_invoke_action(
         // Built through the same gate the dispatcher resolved against — without
         // it, a revoked capability wouldn't stop a caller who got past it once.
         None => match with_action_gate(&chrome_handle, |chrome, gate| {
-            fb.host()
-                .action_catalog_for_resource(&resource, chrome, &ctx.doc, &ctx.root_obj, gate)
+            let first_use_gate = super::admin_control::FirstUseVisibility {
+                base: gate,
+                first_use: fb.host().onboarding_active(),
+            };
+            fb.host().action_catalog_for_resource(
+                &resource,
+                chrome,
+                &ctx.doc,
+                &ctx.root_obj,
+                &first_use_gate,
+            )
         }) {
             Ok(catalog) => catalog,
             Err(why) => {
@@ -5322,6 +5346,17 @@ fn pump_test_control_conn(
     lock: &mut LockController,
     state: &mut State,
 ) -> bool {
+    if conn.admin
+        && let Some(identity_dir) = &conn.admin_identity_dir
+    {
+        let first_use = frame_builder.host().onboarding_active();
+        if (first_use && session.is_locked())
+            || super::admin_control::control_session_decision(identity_dir, first_use).is_err()
+        {
+            conn.closed = true;
+            return false;
+        }
+    }
     // Whether any command produced a `PlannedAction` — synthesised input the
     // next frame must reflect; starts the input-latency measurement instrumentation uses.
     let mut injected_input = false;
@@ -5387,6 +5422,11 @@ fn pump_test_control_conn(
                             Vec::new(),
                         )
                     }
+                    Ok(request) if conn.admin && frame_builder.host().onboarding_active()
+                        && !super::admin_control::first_use_permitted(&request.command) => (
+                            test_control::Response::Err { code: "not_permitted".into(), message: "first use serves only its trusted onboarding and authentication actions".into() },
+                            Vec::new(),
+                        ),
                     Ok(request) if conn.agent && !request.command.agent_permitted() => (
                         test_control::Response::Err {
                             code: "not_permitted".to_string(),
@@ -5432,7 +5472,7 @@ fn pump_test_control_conn(
                             }
                             continue;
                         }
-                        if conn.admin && agent.is_none() && !session.is_locked() {
+                        if conn.admin && agent.is_none() && !session.is_locked() && !frame_builder.host().onboarding_active() {
                             if let test_control::Command::ActionsEnumerate { query, .. } =
                                 &request.command
                             {
@@ -8492,6 +8532,11 @@ pub fn run() {
         .path()
         .parent()
         .is_some_and(crate::onboarding_view::has_pending_progress);
+    // A valid identity does not acknowledge or consume an installed setup.
+    // Keep trusted first-use until its actual prepared/import/migration owner
+    // has observed the necessary completions.
+    let prepared_pending = crate::onboarding_prepared::session_home()
+        .is_some_and(|home| crate::onboarding_prepared::session_pending(&home));
     // `main` probes the existing schema-2 record before entering the
     // compositor. If Secret Service is locked, that probe must not terminate
     // the login: trusted recovery chrome owns the next step. This marker is
@@ -8511,7 +8556,7 @@ pub fn run() {
         .flatten();
     let onboarding_identity_dir = if should_activate_first_use(
         identity_missing,
-        progress_pending,
+        progress_pending || prepared_pending,
         identity_recovery,
         test_control_session,
     ) {
@@ -9025,6 +9070,8 @@ pub fn run() {
     if let Some(bridge) = frame_builder.host().status_bridge() {
         bridge.wake_network_changes(Arc::clone(&session_wake));
     }
+    let mut retained_files = crate::onboarding_prepared::session_home()
+        .map(|home| crate::retained_files::Session::open(home, Arc::clone(&session_wake)));
     state.output_management.set_wake(Arc::clone(&session_wake));
     crate::shell::display_persistence::set_wake(Arc::clone(&session_wake));
     // An invocation a control client waits on wakes the loop when it is
@@ -11975,6 +12022,7 @@ pub fn run() {
             crate::compositor::foreign::store().frame_seq(surface)
         });
         let onboarding_active = frame_builder.host().onboarding_active();
+        let identity_setup_active = frame_builder.host().identity_setup_active();
         if onboarding_active != previous_onboarding_active {
             if let Some(local_session) = local_session_lifecycle.as_ref() {
                 local_session.set_onboarding_active(onboarding_active);
@@ -11991,7 +12039,7 @@ pub fn run() {
         }
         let pump_apps_done = Instant::now();
         pump_checkpoint!("widget-pump");
-        if take_deferred_peer_sync_activation(&mut deferred_peer_sync, onboarding_active) {
+        if take_deferred_peer_sync_activation(&mut deferred_peer_sync, identity_setup_active) {
             // `pump_apps` just observed the trusted onboarding completion.
             // Apps were withheld until this edge. The network starts off the
             // loop; launches wait until it and the broker over it exist, so
@@ -12003,12 +12051,61 @@ pub fn run() {
                 Arc::clone(&session_wake),
             ));
         }
-        if take_deferred_peer_sync_activation(&mut deferred_local_broker, onboarding_active) {
+        if take_deferred_peer_sync_activation(&mut deferred_local_broker, identity_setup_active) {
             local_broker_due = true;
         }
-        // First login has to finish before the device has an owner to serve.
-        if !onboarding_active && let Some(identity_dir) = admin_control_due.take() {
-            let bound = if headless_owner_control {
+        if let Some(files) = retained_files.as_mut() {
+            let chrome = frame_builder.chrome_handle();
+            if let Some(operation) = frame_builder.host_mut().take_existing_files_release() {
+                files.release(&operation, &chrome);
+            }
+            if let Some(request) = frame_builder.host_mut().take_existing_files_request() {
+                let operation = request.operation.clone();
+                match files.start(request) {
+                    Ok(true) => frame_builder
+                        .host_mut()
+                        .existing_files_outcome(&operation, true),
+                    Ok(false) => (),
+                    Err(_) => frame_builder
+                        .host_mut()
+                        .existing_files_outcome(&operation, false),
+                }
+            }
+            if let Some((operation, available)) = files.pump(&chrome) {
+                frame_builder
+                    .host_mut()
+                    .existing_files_outcome(&operation, available);
+                injected_redraw_pending = true;
+            }
+        }
+        // Admission runs off-loop; the visible migration overlay and its
+        // semantic actions continue to own progress/cancel/retry.
+        let copy_opening = frame_builder
+            .chrome_handle()
+            .borrow()
+            .native_app_opening
+            .clone();
+        if let Some(opening) = copy_opening
+            && !identity_setup_active
+            && let Some(request) = frame_builder.host_mut().take_original_copy_request()
+            && let Err(error) = crate::shell::launcher::original_copy::start(
+                request,
+                tree_handle.clone(),
+                opening,
+                Arc::clone(&session_wake),
+            )
+        {
+            tracing::warn!(%error, "original Copy admission worker unavailable");
+        }
+        // First use uses the same semantic socket, restricted to its trusted
+        // providers and admitted only by an actual root-delivered setup or owner.
+        if let Some(identity_dir) = admin_control_due.take() {
+            let bound = if onboarding_active {
+                crate::compositor::admin_control::bind_first_use(
+                    &identity_dir,
+                    headless_owner_control,
+                )
+            } else if headless_owner_control {
                 crate::compositor::admin_control::bind_headless_owner(&identity_dir)
             } else {
                 crate::compositor::admin_control::bind(&identity_dir)
@@ -12021,6 +12118,11 @@ pub fn run() {
                 }
                 Err(reason) => {
                     tracing::info!(%reason, "admin control: not served in this session");
+                    // A normal first-use ceremony can establish the certified
+                    // owner later. Preserve the opportunity to bind then.
+                    if onboarding_active {
+                        admin_control_due = Some(identity_dir);
+                    }
                 }
             }
         }
@@ -13023,7 +13125,13 @@ pub fn run() {
                     Ok((stream, _addr)) => {
                         match crate::compositor::admin_control::authorize(&stream) {
                             Ok(()) => {
-                                if let Some(mut conn) = TestControlConn::admin(stream) {
+                                if let Some(mut conn) = TestControlConn::admin(
+                                    stream,
+                                    identity_store
+                                        .path()
+                                        .parent()
+                                        .expect("identity store parent was reviewed"),
+                                ) {
                                     conn.watch(&event_loop.handle());
                                     test_control_conns.push(conn);
                                 }
@@ -16823,10 +16931,29 @@ mod tests {
         let event_loop: EventLoop<'static, State> = EventLoop::try_new().expect("calloop");
         let display: Display<State> = Display::new().expect("display");
         let mut state = State::new(event_loop.handle(), display.handle());
-        let (server, client) = UnixStream::pair().expect("socket pair");
-        let mut writer = client.try_clone().expect("client writer");
+        // This test isolates dispatch on an already admitted transport. The
+        // actual constructor's identity recheck is exercised first below.
+        let (server, _client) = UnixStream::pair().expect("socket pair");
+        let mut conn =
+            TestControlConn::admin(server, Path::new("/nonexistent-tilo-admin-identity"))
+                .expect("admin connection");
+        pump_test_control_conn(
+            &mut conn,
+            &mut frame_builder,
+            &mut ctx,
+            &session,
+            &mut lock,
+            &mut state,
+        );
+        assert!(
+            conn.closed,
+            "an unverified identity cannot use the admin transport"
+        );
+        let (server, client) = UnixStream::pair().expect("admitted transport pair");
+        let mut writer = client.try_clone().expect("admitted client writer");
         let mut reader = BufReader::new(client);
-        let mut conn = TestControlConn::admin(server).expect("admin connection");
+        let mut conn = TestControlConn::new(server, false).expect("transport connection");
+        conn.admin = true;
         let mut ask = |line: &str| {
             writer
                 .write_all(format!("{line}\n").as_bytes())

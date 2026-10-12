@@ -82,6 +82,7 @@ fn runtime(layer: &Path, work: &Path, missing: bool) -> String {
             arch: Some(std::env::consts::ARCH),
             identity: Some(&identity),
             extra_libs: &[library],
+            extra_bins: &[],
         },
     )
     .unwrap();

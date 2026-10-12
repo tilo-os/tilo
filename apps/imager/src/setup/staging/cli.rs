@@ -166,6 +166,8 @@ fn build(args: &Args) -> Result<(Request, serde_json::Value), Failure> {
             plan_sha256: record.plan_sha256.clone(),
             plan: record.plan,
             profile: serde_json::Map::new(),
+            migration: None,
+            prepared_setup: None,
         };
         let summary = json!({"ok": true, "action": action, "operation_id": id});
         return Ok((request, summary));
@@ -217,6 +219,8 @@ fn build(args: &Args) -> Result<(Request, serde_json::Value), Failure> {
         plan_sha256: plan.digest(),
         plan,
         profile,
+        migration: None,
+        prepared_setup: None,
     };
     helper::validate_request(&request).map_err(|r| other(r.to_string()))?;
     let summary = json!({

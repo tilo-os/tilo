@@ -15,7 +15,7 @@ use collab_types::DocumentMutation;
 use collab_types::caps::Principal;
 use collab_types::{Ed25519PublicKey, SignedOp, document_artifact_id, document_attestation_id};
 use ed25519_dalek::Signer;
-use runtime_identity::wire::{FRAMING, HANDSHAKE_FRAMING, Handshake, Request, Response};
+use runtime_identity::wire::{FRAMING, HANDSHAKE_FRAMING, Request, Response};
 use tilo_action_policy::{ActionKind, Answer, Party, Subject, TreePath};
 use tilo_clock::unix_now;
 use wire_frame::FrameError;
@@ -230,9 +230,21 @@ fn serve(
         tracing::warn!(%error, "cannot configure blocking service connection");
         return;
     }
-    let Ok(handshake) = read_frame::<Handshake>(&mut stream) else {
+    let Ok(negotiated) = read_frame::<runtime_identity::wire::PresentationHandshake>(&mut stream)
+    else {
         return;
     };
+    if !matches!(
+        negotiated.presentation_version,
+        0 | runtime_identity::wire::PRESENTATION_VERSION
+    ) {
+        let _ = write_action_frame(
+            &mut stream,
+            &Response::Denied("unsupported identity presentation version".into()),
+        );
+        return;
+    }
+    let handshake = negotiated.handshake;
     let Some(room) = RoomId::parse(&handshake.workspace_id) else {
         let _ = write_action_frame(
             &mut stream,
@@ -242,7 +254,7 @@ fn serve(
     };
     while let Ok(request) = read_action_frame::<Request>(&mut stream) {
         let response = match request {
-            Request::Metadata => metadata(&room),
+            Request::Metadata => metadata_response(&room, negotiated.presentation_version != 0),
             Request::Sign { action, message } => {
                 sign(tree, &room, &handshake.app_id, &action, &message)
             }
@@ -298,7 +310,7 @@ fn serve(
     }
 }
 
-fn metadata(room: &RoomId) -> Response {
+fn metadata_response(room: &RoomId, presentation: bool) -> Response {
     let profile = match crate::registry::selected_identity_profile(&room.to_string()) {
         Ok(Some(profile)) => profile,
         Ok(None) => return Response::Denied("no identity selected for this workspace".into()),
@@ -319,6 +331,19 @@ fn metadata(room: &RoomId) -> Response {
         Ok(bytes) => bytes,
         Err(error) => return Response::Error(error.to_string()),
     };
+    if presentation {
+        return Response::MetadataWithPresentation {
+            display_name: record.display_name,
+            avatar_color: record.avatar_color,
+            group_public_key: record.group_public_key,
+            signing_public_key: device.verifying_key().to_bytes(),
+            device_certificate: Some(device_certificate),
+            threshold: record.threshold,
+            total_shares: record.total_shares,
+            share_index: record.share_index,
+            photo: record.profile_photo,
+        };
+    }
     Response::Metadata {
         display_name: record.display_name,
         avatar_color: record.avatar_color,
@@ -768,6 +793,7 @@ fn write_action_frame<T: serde::Serialize>(stream: &mut UnixStream, value: &T) -
 #[cfg(test)]
 mod tests {
     use super::*;
+    use runtime_identity::wire::Handshake;
 
     /// What the client's launch binds it to, for an app that keeps none of
     /// the person's records.
@@ -1202,6 +1228,109 @@ params = []
             ),
             Response::Denied(reason) if reason.contains("denies this document action")
         ));
+    }
+
+    #[test]
+    fn negotiated_photo_uses_actual_selected_record_and_refuses_wrong_root_and_invalid_pixels() {
+        let temp = tempfile::tempdir().unwrap();
+        let xdg = temp.path().join("config");
+        let system_root = temp.path().join("system");
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("XDG_CONFIG_HOME", &xdg)
+            .set("TILO_IDENTITY_ROOT", &system_root)
+            .set(crate::provisioning::FILE_SECRETS_ENV, "1");
+        let identity_dir = xdg.join("tilo/identity");
+        let paths = tilo_user_identity::IdentityPaths::under(system_root);
+        ensure_collaboration_identity(&identity_dir, &paths).unwrap();
+        let photo = runtime_identity::ProfilePhoto::new(1, 1, vec![25, 90, 210, 255]).unwrap();
+        runtime_identity::update_identity_photo(&identity_dir, "primary", Some(photo.clone()))
+            .unwrap();
+        let room = RoomId::new();
+        let profile = crate::registry::selected_identity_profile(&room.to_string())
+            .unwrap()
+            .unwrap();
+        let original = std::fs::read(&profile.record_path).unwrap();
+        let mut workspace = Workspace::new(WorkspaceId(1), "Room");
+        workspace.set_room(room);
+        workspace.set_owner(profile.principal_id());
+        let mut tree = WorkspaceTree::default();
+        tree.desktop.workspaces.push(workspace);
+        let socket = temp.path().join("identity.sock");
+        let _broker = spawn(
+            socket.clone(),
+            Arc::new(tree.shared()),
+            Arc::new(()),
+            Arc::new(()),
+        )
+        .unwrap();
+        let connect = |version| {
+            let mut client = UnixStream::connect(&socket).unwrap();
+            client
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            client
+                .set_write_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            write_frame(
+                &mut client,
+                &runtime_identity::wire::PresentationHandshake {
+                    handshake: Handshake {
+                        workspace_id: room.to_string(),
+                        app_id: "so.tilo.notes".into(),
+                    },
+                    presentation_version: version,
+                },
+            )
+            .unwrap();
+            runtime_identity::BrokerSigningIdentity::from_connected_io(client)
+        };
+        let client = connect(runtime_identity::wire::PRESENTATION_VERSION).unwrap();
+        assert_eq!(client.metadata().profile_photo(), Some(&photo));
+        assert_eq!(
+            client.metadata().group_public_key(),
+            profile.user_public_key
+        );
+        assert!(client.sign(b"photo does not grant signing").is_err());
+        drop(client);
+        let legacy = connect(0).unwrap();
+        assert!(legacy.metadata().profile_photo().is_none());
+        assert_eq!(
+            legacy.metadata().group_public_key(),
+            profile.user_public_key
+        );
+        drop(legacy);
+        let mut record: serde_json::Value = serde_json::from_slice(&original).unwrap();
+        record["threshold_identity"]["group_public_key"] = serde_json::json!(vec![7_u8; 32]);
+        tilo_files::native::atomic::write_with_mode(
+            &profile.record_path,
+            &serde_json::to_vec(&record).unwrap(),
+            0o600,
+        )
+        .unwrap();
+        assert!(connect(runtime_identity::wire::PRESENTATION_VERSION).is_err());
+        for invalid in [
+            serde_json::json!({"width":0,"height":1,"rgba":[0,0,0,255]}),
+            serde_json::json!({"width":128,"height":128,"rgba":vec![0; runtime_identity::MAX_PHOTO_BYTES + 1]}),
+        ] {
+            let mut record: serde_json::Value = serde_json::from_slice(&original).unwrap();
+            record["profile_photo"] = invalid;
+            tilo_files::native::atomic::write_with_mode(
+                &profile.record_path,
+                &serde_json::to_vec(&record).unwrap(),
+                0o600,
+            )
+            .unwrap();
+            assert!(connect(runtime_identity::wire::PRESENTATION_VERSION).is_err());
+        }
+        tilo_files::native::atomic::write_with_mode(&profile.record_path, &original, 0o600)
+            .unwrap();
+        assert_eq!(
+            connect(runtime_identity::wire::PRESENTATION_VERSION)
+                .unwrap()
+                .metadata()
+                .profile_photo(),
+            Some(&photo)
+        );
     }
 
     #[test]

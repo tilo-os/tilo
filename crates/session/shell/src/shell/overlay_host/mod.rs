@@ -2279,7 +2279,10 @@ impl ShellOverlayHost {
         clippy::too_many_lines,
         reason = "one shared initialization body for the host interaction surfaces"
     )]
-    fn from_inputs(content: Box<dyn Widget>, inputs: OverlayInputs) -> Self {
+    fn from_inputs(content: Box<dyn Widget>, mut inputs: OverlayInputs) -> Self {
+        inputs.search_registry.register_or_replace(std::rc::Rc::new(
+            crate::shell::search::providers::authentication_prompts::AuthenticationPromptsProvider::new(inputs.portal_dialogs.queue().clone()),
+        ));
         // Palette entries come from the search registry on every
         // keystroke. New providers slot in via `SearchRegistry::register`;
         // the palette picks up their resource-kind chips automatically.
@@ -2473,10 +2476,21 @@ impl ShellOverlayHost {
         }
     }
 
+    fn register_authentication_actions(&mut self) {
+        let queue = self.portal_dialogs.queue().clone();
+        let provider = self.onboarding.as_ref().map_or_else(
+            || crate::shell::search::providers::authentication_prompts::AuthenticationPromptsProvider::new(queue.clone()),
+            |view| crate::shell::search::providers::authentication_prompts::AuthenticationPromptsProvider::with_first_use_scope(queue.clone(), view.authentication_first_use_scope()),
+        );
+        self.search_registry
+            .register_or_replace(std::rc::Rc::new(provider));
+    }
+
     fn register_onboarding_actions(&mut self) {
         if let Some(view) = self.onboarding.as_ref() {
             self.search_registry.register(view.semantic_provider());
         }
+        self.register_authentication_actions();
     }
 
     /// Activate first-login chrome on an already constructed compositor
@@ -2555,6 +2569,46 @@ impl ShellOverlayHost {
         Ok(())
     }
 
+    /// Reenter a deferred migration through the trusted Settings tool route.
+    ///
+    /// # Errors
+    ///
+    /// Refuses an active ceremony or a missing/changed deferred declaration.
+    pub fn open_deferred_migration(&mut self) -> Result<(), String> {
+        if self.onboarding.is_some() {
+            return Err(crate::shell::i18n::t("onboarding-migration-resume-busy"));
+        }
+        let directory = runtime_identity::identity_dir_from_env()
+            .map_err(|_| crate::shell::i18n::t("onboarding-portable-home-unavailable"))?;
+        self.onboarding =
+            Some(crate::onboarding_view::OnboardingView::new_for_migration_resume(directory)?);
+        self.register_onboarding_actions();
+        self.onboarding_released = false;
+        self.onboarding_focus_reset = false;
+        Ok(())
+    }
+
+    pub(crate) fn take_original_copy_request(
+        &mut self,
+    ) -> Option<crate::onboarding_migration::OriginalCopyRequest> {
+        self.onboarding.as_mut()?.take_original_copy_request()
+    }
+    pub(crate) fn identity_setup_active(&self) -> bool {
+        self.onboarding
+            .as_ref()
+            .is_some_and(crate::onboarding_view::OnboardingView::identity_setup_active)
+    }
+    pub(crate) fn take_existing_files_request(&mut self) -> Option<crate::retained_files::Request> {
+        self.onboarding.as_mut()?.take_existing_files_request()
+    }
+    pub(crate) fn take_existing_files_release(&mut self) -> Option<String> {
+        self.onboarding.as_mut()?.take_existing_files_release()
+    }
+    pub(crate) fn existing_files_outcome(&mut self, operation: &str, available: bool) {
+        if let Some(view) = self.onboarding.as_mut() {
+            view.existing_files_outcome(operation, available);
+        }
+    }
     #[doc(hidden)]
     pub fn set_onboarding_visual_state_for_snapshot(
         &mut self,
@@ -4294,6 +4348,7 @@ impl ShellOverlayHost {
         queue: crate::shell::portal_dialog::PortalDialogQueue,
     ) {
         self.portal_dialogs = PortalDialogController::new(queue);
+        self.register_authentication_actions();
     }
 
     /// On-screen rect of the tile hosting foreign wayland surface

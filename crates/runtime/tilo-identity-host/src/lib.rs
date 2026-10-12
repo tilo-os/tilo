@@ -20,6 +20,8 @@ pub mod custody;
 #[cfg(unix)]
 pub mod device_fleet;
 #[cfg(unix)]
+pub mod enrolled_transport;
+#[cfg(unix)]
 pub mod join_proof;
 pub mod policy_change;
 #[cfg(unix)]

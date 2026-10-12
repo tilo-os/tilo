@@ -26,6 +26,7 @@ pub struct BrokerSigningIdentity {
 /// Receiving it authenticates nothing: the certificate is opaque and
 /// unchecked. Deliberately not `Debug`, so the certificate is never printed.
 pub struct BrokerMetadata {
+    profile_photo: Option<crate::ProfilePhoto>,
     display_name: String,
     avatar_color: [u8; 3],
     group_public_key: [u8; 32],
@@ -177,6 +178,28 @@ impl BrokerMetadata {
                 total_shares,
                 share_index,
             } => Ok(Self {
+                profile_photo: None,
+                display_name,
+                avatar_color,
+                group_public_key,
+                signing_public_key,
+                device_certificate,
+                threshold,
+                total_shares,
+                share_index,
+            }),
+            wire::Response::MetadataWithPresentation {
+                display_name,
+                avatar_color,
+                group_public_key,
+                signing_public_key,
+                device_certificate,
+                threshold,
+                total_shares,
+                share_index,
+                photo,
+            } => Ok(Self {
+                profile_photo: photo,
                 display_name,
                 avatar_color,
                 group_public_key,
@@ -193,6 +216,12 @@ impl BrokerMetadata {
                 "identity broker returned an invalid metadata response",
             )),
         }
+    }
+
+    /// Normalized public photo of this exact connection-bound root identity.
+    /// As with the other metadata, receiving pixels authenticates nothing.
+    pub fn profile_photo(&self) -> Option<&crate::ProfilePhoto> {
+        self.profile_photo.as_ref()
     }
 
     /// Human-picked name supplied by the host.

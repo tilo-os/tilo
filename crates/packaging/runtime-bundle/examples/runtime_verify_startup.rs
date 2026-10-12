@@ -53,6 +53,7 @@ fn main() -> Result<(), Error> {
             arch: Some("x86_64"),
             identity: Some(&identity_path),
             extra_libs: &[dylib],
+            extra_bins: &[],
         },
     )?;
     let policy = VerifyOptions {

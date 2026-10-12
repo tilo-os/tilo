@@ -1207,12 +1207,15 @@ fn disconnects_and_pauses_release_scopes_without_consuming() {
             let worker = fixture_worker(root.path(), server.transport(), move |_, cancel, _, _| {
                 e.store(true, Ordering::Release);
                 let limit = tilo_test_env::hang_deadline();
-                while !cancel.is_cancelled() {
+                // The native consumer observes the SAME owned flag supplied
+                // to source refresh and staging, not a separately sampled bool.
+                while !cancel.signal().load(Ordering::Acquire) {
                     if ui::time::now() > limit {
                         return Err("consumer did not receive cancellation".into());
                     }
                     thread::yield_now();
                 }
+                assert!(cancel.is_cancelled());
                 r.store(true, Ordering::Release);
                 Ok(())
             });

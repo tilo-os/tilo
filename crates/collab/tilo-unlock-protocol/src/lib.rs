@@ -44,6 +44,7 @@
 pub mod attest;
 mod cert;
 mod half;
+pub mod startup_secret;
 mod wire;
 
 pub use cert::{

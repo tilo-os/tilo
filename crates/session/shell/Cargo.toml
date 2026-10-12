@@ -11,6 +11,8 @@ license.workspace = true
 # Explicit native RAM custody qualification: requires a qualified tmpfs backing
 # or permission to create a noswap fixture in a private mount namespace.
 signal-profile-native-test = []
+# Provisioning against the current Linux account requires a disposable root fixture.
+native-current-device-qualification = []
 netns-e2e = []
 # Integration-only native broker fixtures. This forwards the shared broker's
 # equally gated fixture entry point; ordinary shell spawning never selects it.
@@ -407,6 +409,8 @@ test = true
 workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
+account-custody = { path = "../../system/account-custody" }
+browser-continuity = { path = "../../browser/browser-continuity", features = ["native"] }
 signal-hook-registry = "1.4.8"
 # Raw Vulkan for returning the device memory lavapipe freed
 # (`shell::render::software_gpu_memory`); the version wgpu-hal and ui's

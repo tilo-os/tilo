@@ -18,6 +18,9 @@ use std::path::{Path, PathBuf};
 
 use super::plan::Plan;
 
+#[cfg(target_os = "linux")]
+mod browser;
+
 pub const SCHEMA: u32 = 1;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -80,6 +83,15 @@ pub struct StepRecord {
     pub at: u64,
 }
 
+/// Nested retained-filesystem checkpoint in the existing authoritative step.
+/// This is journal evidence only; native binding/readback remains mandatory.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct ResizeCheckpoint {
+    pub bytes: u64,
+    pub state: StepState,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReleaseRef {
     pub release_id: String,
@@ -118,6 +130,16 @@ pub struct Record {
     /// re-verify the partitions after the download is gone.
     #[serde(default)]
     pub bundle: Option<RecordedBundle>,
+    /// Immutable source consent, kept only in the private authoritative record.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub migration: Option<serde_json::Value>,
+    #[serde(default)]
+    pub profile: serde_json::Map<String, serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prepared_setup: Option<crate::model::PreparedSetupExpectation>,
+    #[cfg(target_os = "linux")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prepared_browser: Option<crate::setup::browser_transfer::Expectation>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -147,6 +169,12 @@ pub enum RecordStatus {
     Removed,
 }
 
+fn now() -> u64 {
+    ui::time::wall()
+        .duration_since(ui::time::UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_secs())
+}
+
 /// Operation IDs become file names; allow only a UUID-like identifier.
 pub fn valid_operation_id(id: &str) -> bool {
     !id.is_empty()
@@ -174,9 +202,24 @@ impl Record {
             original_firmware,
             owned_boot_entry: None,
             bundle: None,
+            migration: None,
+            profile: serde_json::Map::new(),
+            prepared_setup: None,
+            #[cfg(target_os = "linux")]
+            prepared_browser: None,
         }
     }
 
+    #[cfg(target_os = "linux")]
+    pub(super) fn browser_expectation(
+        &self,
+    ) -> Option<&crate::setup::browser_transfer::Expectation> {
+        self.prepared_browser.as_ref()
+    }
+    #[cfg(not(target_os = "linux"))]
+    pub(super) fn browser_expectation(&self) -> Option<()> {
+        None
+    }
     pub fn step(&self, step: Step) -> Option<&StepRecord> {
         self.steps.iter().find(|s| s.step == step)
     }
@@ -192,6 +235,145 @@ impl Record {
     /// A string field of a step's detail.
     pub fn detail_str(&self, step: Step, key: &str) -> Option<&str> {
         self.step(step)?.detail.get(key)?.as_str()
+    }
+
+    fn resize_key(phase: super::btrfs_resize::Phase) -> (Step, &'static str) {
+        use super::btrfs_resize::Phase;
+        match phase {
+            Phase::ShrinkFilesystem => (Step::Shrink, "btrfs_shrink_filesystem"),
+            Phase::ShrinkPartition => (Step::Shrink, "btrfs_shrink_partition"),
+            Phase::GrowPartition => (Step::RestoreShrink, "btrfs_grow_partition"),
+            Phase::GrowFilesystem => (Step::RestoreShrink, "btrfs_grow_filesystem"),
+        }
+    }
+
+    pub(super) fn resize_checkpoint(
+        &self,
+        phase: super::btrfs_resize::Phase,
+    ) -> Result<Option<ResizeCheckpoint>, String> {
+        let (step, key) = Self::resize_key(phase);
+        self.step(step)
+            .and_then(|step| step.detail.get(key))
+            .map(|value| serde_json::from_value(value.clone()).map_err(|error| error.to_string()))
+            .transpose()
+    }
+
+    /// The helper saves this private record before calling the native mutation.
+    /// Retry may preserve a Done checkpoint; it may never change its target.
+    pub(super) fn resize_intent(
+        &mut self,
+        phase: super::btrfs_resize::Phase,
+        bytes: u64,
+    ) -> Result<(), String> {
+        let (step, key) = Self::resize_key(phase);
+        self.validate_resize_target(phase, bytes)?;
+        let existing = self.resize_checkpoint(phase)?;
+        if let Some(existing) = existing {
+            if existing.bytes != bytes {
+                return Err("retained filesystem checkpoint target changed".into());
+            }
+        }
+        let checkpoint = existing.unwrap_or(ResizeCheckpoint {
+            bytes,
+            state: StepState::Intended,
+        });
+        let step = self
+            .steps
+            .iter_mut()
+            .find(|entry| entry.step == step)
+            .ok_or("retained filesystem checkpoint lacks outer intent")?;
+        step.detail.insert(
+            key.into(),
+            serde_json::to_value(checkpoint).map_err(|error| error.to_string())?,
+        );
+        step.at = now();
+        Ok(())
+    }
+
+    pub(super) fn resize_done(
+        &mut self,
+        phase: super::btrfs_resize::Phase,
+        bytes: u64,
+    ) -> Result<(), String> {
+        let (step, key) = Self::resize_key(phase);
+        self.validate_resize_target(phase, bytes)?;
+        let checkpoint = self
+            .resize_checkpoint(phase)?
+            .ok_or("retained filesystem completion lacks prior intent")?;
+        if checkpoint.bytes != bytes || checkpoint.state == StepState::Failed {
+            return Err("retained filesystem completion differs from intent".into());
+        }
+        let step = self
+            .steps
+            .iter_mut()
+            .find(|entry| entry.step == step)
+            .ok_or("retained filesystem completion lacks outer intent")?;
+        step.detail.insert(
+            key.into(),
+            serde_json::to_value(ResizeCheckpoint {
+                bytes,
+                state: StepState::Done,
+            })
+            .map_err(|error| error.to_string())?,
+        );
+        step.at = now();
+        Ok(())
+    }
+
+    fn validate_resize_target(
+        &self,
+        phase: super::btrfs_resize::Phase,
+        bytes: u64,
+    ) -> Result<(), String> {
+        use super::btrfs_resize::Phase;
+        let shrink = self
+            .plan
+            .shrink
+            .as_ref()
+            .ok_or("resize checkpoint lacks shrink plan")?;
+        if self.plan.basis.linux_btrfs_volume.is_none()
+            || bytes
+                != match phase {
+                    Phase::ShrinkFilesystem | Phase::ShrinkPartition => shrink.to_bytes,
+                    Phase::GrowPartition | Phase::GrowFilesystem => shrink.from_bytes,
+                }
+        {
+            return Err("resize checkpoint differs from retained Linux plan".into());
+        }
+        Ok(())
+    }
+
+    fn validate_resize_checkpoints(&self) -> Result<(), String> {
+        use super::btrfs_resize::Phase;
+        for phase in [
+            Phase::ShrinkFilesystem,
+            Phase::ShrinkPartition,
+            Phase::GrowPartition,
+            Phase::GrowFilesystem,
+        ] {
+            if let Some(checkpoint) = self.resize_checkpoint(phase)? {
+                self.validate_resize_target(phase, checkpoint.bytes)?;
+                if checkpoint.state == StepState::Failed {
+                    return Err("invalid nested resize checkpoint state".into());
+                }
+                if self.is_done(Self::resize_key(phase).0) && checkpoint.state != StepState::Done {
+                    return Err("completed resize retains unfinished nested checkpoint".into());
+                }
+                let predecessor = match phase {
+                    Phase::ShrinkPartition => Some(Phase::ShrinkFilesystem),
+                    Phase::GrowFilesystem => Some(Phase::GrowPartition),
+                    _ => None,
+                };
+                if let Some(predecessor) = predecessor
+                    && self
+                        .resize_checkpoint(predecessor)?
+                        .is_none_or(|previous| previous.state != StepState::Done)
+                {
+                    return Err("resize checkpoint precedes durable prior readback".into());
+                }
+            }
+        }
+        Ok(())
     }
 
     fn set(
@@ -265,6 +447,42 @@ impl Record {
         if self.plan.digest() != self.plan_sha256 {
             return Err("staging record plan does not match its digest".into());
         }
+        self.validate_resize_checkpoints()?;
+        super::handoff::validate_profile(&self.profile)?;
+        if let Some(expected) = &self.prepared_setup
+            && (!expected.valid()
+                || expected.sealed_bytes > super::prepared_setup::SLOT_BYTES
+                || self.plan.basis.host_os() != "linux")
+        {
+            return Err("invalid prepared setup custody in staging record".into());
+        }
+        #[cfg(target_os = "linux")]
+        if let Some(browser) = &self.prepared_browser {
+            browser.validate().map_err(|error| error.to_string())?;
+            if self.prepared_setup.is_none() || self.plan.basis.host_os() != "linux" {
+                return Err("Browser custody requires prepared Linux identity".into());
+            }
+        }
+        if let Some(raw) = &self.migration {
+            #[cfg(not(target_os = "linux"))]
+            {
+                let _ = raw;
+                return Err("Linux migration cannot be resumed on this host".into());
+            }
+            #[cfg(target_os = "linux")]
+            {
+                let migration = crate::setup::migration_handoff::Plan::parse(
+                    &serde_json::to_vec(raw).map_err(|error| error.to_string())?,
+                )
+                .map_err(|error| error.to_string())?;
+                migration
+                    .validate_for_install(&self.plan)
+                    .map_err(|error| error.to_string())?;
+                if migration.operation_id != self.operation_id {
+                    return Err("staging migration consent belongs to another operation".into());
+                }
+            }
+        }
         Ok(())
     }
 }
@@ -324,16 +542,84 @@ impl RecordStore {
         }
     }
 
+    pub(super) fn prepared_path(&self, id: &str) -> Result<PathBuf, String> {
+        if !valid_operation_id(id) {
+            return Err("invalid operation ID".into());
+        }
+        Ok(self.dir.join(format!("{id}.prepared-setup.sealed")))
+    }
+    pub(super) fn retain_prepared(
+        &self,
+        id: &str,
+        bytes: &[u8],
+        expected: &crate::model::PreparedSetupExpectation,
+    ) -> Result<(), String> {
+        super::prepared_setup::verify(bytes, expected).map_err(|error| error.to_string())?;
+        secure::ensure_dir(&self.dir, false)?;
+        let path = self.prepared_path(id)?;
+        match std::fs::symlink_metadata(&path) {
+            Ok(_) => return self.read_prepared(id, expected).map(|_| ()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.to_string()),
+        }
+        let mut temporary =
+            tempfile::NamedTempFile::new_in(&self.dir).map_err(|error| error.to_string())?;
+        std::io::Write::write_all(&mut temporary, bytes).map_err(|error| error.to_string())?;
+        temporary
+            .as_file()
+            .sync_all()
+            .map_err(|error| error.to_string())?;
+        if let Err(error) = temporary.persist_noclobber(&path)
+            && error.error.kind() != std::io::ErrorKind::AlreadyExists
+        {
+            return Err(error.to_string());
+        }
+        std::fs::File::open(&self.dir)
+            .and_then(|file| file.sync_all())
+            .map_err(|error| error.to_string())?;
+        self.read_prepared(id, expected).map(|_| ())
+    }
+    pub(super) fn read_prepared(
+        &self,
+        id: &str,
+        expected: &crate::model::PreparedSetupExpectation,
+    ) -> Result<Vec<u8>, String> {
+        let artifact = super::prepared_setup::PreparedArtifact {
+            #[cfg(target_os = "linux")]
+            browser: None,
+            source_path: self
+                .prepared_path(id)?
+                .to_str()
+                .ok_or("invalid custody path")?
+                .into(),
+            expectation: expected.clone(),
+        };
+        #[cfg(unix)]
+        // SAFETY: reads credentials only, never changes source ownership.
+        let owner = unsafe { libc::geteuid() };
+        #[cfg(not(unix))]
+        let owner = 0;
+        artifact.read(owner).map_err(|error| error.to_string())
+    }
+
     /// Persist atomically, then mirror. A failed mirror is an error too: the
     /// UI must learn of every record that might need a Remove.
     pub fn save(&self, record: &Record) -> Result<(), String> {
+        // Reject an out-of-order nested resize before either durable private
+        // state or its public mirror can replace the last recoverable journal.
+        record.validate_resize_checkpoints()?;
         let name = Self::file_name(&record.operation_id)?;
         let bytes = serde_json::to_vec_pretty(record).map_err(|e| e.to_string())?;
         secure::ensure_dir(&self.dir, false)?;
         write_atomic(&self.dir, &name, &bytes, false).map_err(|e| format!("record write: {e}"))?;
         if let Some(public) = &self.public_dir {
             secure::ensure_dir(public, true)?;
-            write_atomic(public, &name, &bytes, true).map_err(|e| format!("status write: {e}"))?;
+            let mut display = record.clone();
+            display.migration = None;
+            let display_bytes =
+                serde_json::to_vec_pretty(&display).map_err(|error| error.to_string())?;
+            write_atomic(public, &name, &display_bytes, true)
+                .map_err(|e| format!("status write: {e}"))?;
         }
         Ok(())
     }
@@ -661,6 +947,127 @@ mod tests {
                 entries: BTreeMap::new(),
             },
         )
+    }
+
+    #[test]
+    fn btrfs_resize_journal_requires_durable_order_and_preserves_retry_intent() {
+        use crate::setup::staging::btrfs_resize::Phase;
+        let temp = tempfile::tempdir().unwrap();
+        let store = RecordStore {
+            dir: temp.path().join("private"),
+            public_dir: None,
+            require_privileged_owner: false,
+        };
+        let mut record = sample_record("btrfs-resize-fixture");
+        record.plan.shrink = Some(plan::Shrink {
+            partition_guid: "a".repeat(36),
+            from_bytes: 128 << 30,
+            to_bytes: 64 << 30,
+        });
+        record.plan.basis.linux_btrfs_volume = Some(super::super::platform::LinuxBtrfsVolume {
+            partition_guid: "a".repeat(36),
+            filesystem_uuid: "b".repeat(36),
+            device_id: 1,
+            mount_id: 12,
+            first_lba: 2048,
+            sector_bytes: 512,
+            size_bytes: 128 << 30,
+            filesystem_bytes: 128 << 30,
+            kernel_partition_bytes: 128 << 30,
+            supported_min_bytes: 32 << 30,
+            reserve_bytes: 8 << 30,
+        });
+        record.plan_sha256 = record.plan.digest();
+        record.intend(Step::Shrink, serde_json::Map::new());
+        assert!(
+            record
+                .resize_done(Phase::ShrinkFilesystem, 64 << 30)
+                .is_err()
+        );
+        record
+            .resize_intent(Phase::ShrinkFilesystem, 64 << 30)
+            .unwrap();
+        store.save(&record).unwrap();
+        let mut loaded = store.load(&record.operation_id).unwrap().unwrap();
+        assert_eq!(
+            loaded
+                .resize_checkpoint(Phase::ShrinkFilesystem)
+                .unwrap()
+                .unwrap()
+                .state,
+            StepState::Intended
+        );
+        loaded
+            .resize_intent(Phase::ShrinkPartition, 64 << 30)
+            .unwrap();
+        assert!(
+            store.save(&loaded).is_err(),
+            "partition intent precedes filesystem readback"
+        );
+        let retained = store.load(&record.operation_id).unwrap().unwrap();
+        assert!(
+            retained
+                .resize_checkpoint(Phase::ShrinkPartition)
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            retained
+                .resize_checkpoint(Phase::ShrinkFilesystem)
+                .unwrap()
+                .unwrap()
+                .state,
+            StepState::Intended
+        );
+        loaded
+            .resize_done(Phase::ShrinkFilesystem, 64 << 30)
+            .unwrap();
+        store.save(&loaded).unwrap();
+        loaded
+            .resize_done(Phase::ShrinkPartition, 64 << 30)
+            .unwrap();
+        loaded.done(Step::Shrink, serde_json::Map::new());
+        store.save(&loaded).unwrap();
+        loaded
+            .resize_intent(Phase::ShrinkFilesystem, 64 << 30)
+            .unwrap();
+        assert_eq!(
+            loaded
+                .resize_checkpoint(Phase::ShrinkFilesystem)
+                .unwrap()
+                .unwrap()
+                .state,
+            StepState::Done,
+            "retry does not erase observed completion"
+        );
+        assert!(
+            loaded
+                .resize_intent(Phase::ShrinkFilesystem, 63 << 30)
+                .is_err()
+        );
+        assert!(
+            loaded
+                .resize_done(Phase::GrowFilesystem, 128 << 30)
+                .is_err()
+        );
+        loaded.intend(Step::RestoreShrink, serde_json::Map::new());
+        loaded
+            .resize_intent(Phase::GrowPartition, 128 << 30)
+            .unwrap();
+        loaded.resize_done(Phase::GrowPartition, 128 << 30).unwrap();
+        loaded
+            .resize_intent(Phase::GrowFilesystem, 128 << 30)
+            .unwrap();
+        store.save(&loaded).unwrap();
+        loaded.done(Step::RestoreShrink, serde_json::Map::new());
+        assert!(
+            store.save(&loaded).is_err(),
+            "outer Done requires actual filesystem completion"
+        );
+        loaded
+            .resize_done(Phase::GrowFilesystem, 128 << 30)
+            .unwrap();
+        store.save(&loaded).unwrap();
     }
 
     /// Record state machine, store round trip, removal/corruption and ownership.

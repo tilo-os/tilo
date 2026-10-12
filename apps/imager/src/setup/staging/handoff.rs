@@ -40,19 +40,24 @@ pub struct Handoff {
     pub original_boot_order: Vec<String>,
     /// Secret-free fields accepted by the installer's media profile.
     pub profile: serde_json::Map<String, serde_json::Value>,
+    /// Metadata-only source binding; carries no credentials or home data.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub migration: Option<serde_json::Value>,
 }
 
 /// Keys of the installer's secret-free media profile
 /// (`InstallProfile::to_media_profile_json`).
-const PROFILE_KEYS: [&str; 8] = [
+const PROFILE_KEYS: [&str; 10] = [
     "schema",
     "hostname",
     "username",
     "full_name",
+    "device_label",
     "locale",
     "keyboard",
     "timezone",
     "filesystem",
+    "prepared_setup",
 ];
 
 /// Refuse anything but the secret-free media profile shape, so a request can
@@ -68,6 +73,16 @@ pub fn validate_profile(
         }
         let ok = match key.as_str() {
             "schema" => value.as_u64() == Some(1),
+            "device_label" => value.as_str().is_some_and(|label| {
+                label.is_empty()
+                    || (!label.trim().is_empty()
+                        && label.len() <= 64
+                        && !label.chars().any(char::is_control))
+            }),
+            "prepared_setup" => {
+                serde_json::from_value::<crate::model::PreparedSetupExpectation>(value.clone())
+                    .is_ok_and(|receipt| receipt.valid())
+            }
             _ => value.as_str().is_some_and(|s| s.len() <= 256),
         };
         if !ok {
@@ -122,6 +137,7 @@ impl Handoff {
             owned_boot_entry: owned_boot_entry.into(),
             original_boot_order,
             profile,
+            migration: None,
         }
     }
 
@@ -159,7 +175,48 @@ impl Handoff {
         {
             return Err("handoff is internally inconsistent".into());
         }
-        validate_profile(&self.profile)
+        validate_profile(&self.profile)?;
+        if let Some(raw) = &self.migration {
+            #[cfg(not(target_os = "linux"))]
+            {
+                let _ = raw;
+                return Err("Linux migration cannot be resumed on this host".into());
+            }
+            #[cfg(target_os = "linux")]
+            {
+                let plan = crate::setup::migration_handoff::Plan::parse(
+                    &serde_json::to_vec(raw).map_err(|error| error.to_string())?,
+                )
+                .map_err(|error| error.to_string())?;
+                let source = &plan.home.volume;
+                if self.host_os != "linux"
+                    || plan.operation_id != self.operation_id
+                    || !source.disk_guid.eq_ignore_ascii_case(&self.disk_guid)
+                    || source.disk_bytes != self.disk_size_bytes
+                    || source
+                        .partition_guid
+                        .eq_ignore_ascii_case(&self.staging_esp.partuuid)
+                    || source
+                        .partition_guid
+                        .eq_ignore_ascii_case(&self.staging_root.partuuid)
+                {
+                    return Err(
+                        "migration source does not belong to this retained Linux installation"
+                            .into(),
+                    );
+                }
+                for (first, last) in [
+                    (self.target_extent.first_lba, self.target_extent.last_lba),
+                    (self.staging_esp.first_lba, self.staging_esp.last_lba),
+                    (self.staging_root.first_lba, self.staging_root.last_lba),
+                ] {
+                    if first <= source.last_lba && last >= source.first_lba {
+                        return Err("migration source overlaps installation space".into());
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 }
 

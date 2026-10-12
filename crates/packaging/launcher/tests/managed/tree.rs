@@ -244,6 +244,7 @@ fn fixture_runtime(root: &Path) -> ManagedRuntime {
             arch: Some(std::env::consts::ARCH),
             identity: Some(&identity_path),
             extra_libs: &[],
+            extra_bins: &[],
         },
     )
     .unwrap();

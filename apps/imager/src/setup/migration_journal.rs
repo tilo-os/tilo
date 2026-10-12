@@ -223,6 +223,10 @@ pub(super) struct Snapshot {
     changed: (i64, i64),
 }
 impl Snapshot {
+    pub(super) fn size(&self) -> u64 {
+        self.size
+    }
+
     pub(super) fn new(m: &Metadata) -> io::Result<Self> {
         use cap_fs_ext::MetadataExt;
         Ok(Self {

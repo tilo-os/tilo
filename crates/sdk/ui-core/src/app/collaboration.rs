@@ -795,7 +795,10 @@ impl App {
     fn collab_event_updates_app_presentation(event: &CollabEvent) -> bool {
         !matches!(
             event,
-            CollabEvent::NearbyTransferCommandResult { .. }
+            CollabEvent::SelectedDiscoveryResult { .. }
+                | CollabEvent::OpenSelectedV2Result { .. }
+                | CollabEvent::OpenSelectedResult { .. }
+                | CollabEvent::NearbyTransferCommandResult { .. }
                 | CollabEvent::ActionCatalogue { .. }
                 | CollabEvent::ActionDirectoryPage { .. }
                 | CollabEvent::PublishedActionResolution { .. }
@@ -913,6 +916,9 @@ impl App {
             | CollabEvent::WorkspaceControl { .. }
             | CollabEvent::RealtimeCommandResult { .. }
             | CollabEvent::NearbyTransferCommandResult { .. }
+            | CollabEvent::SelectedDiscoveryResult { .. }
+            | CollabEvent::OpenSelectedV2Result { .. }
+            | CollabEvent::OpenSelectedResult { .. }
             | CollabEvent::LocalFileClipboardResult { .. }
             | CollabEvent::Realtime(_) => {}
         }

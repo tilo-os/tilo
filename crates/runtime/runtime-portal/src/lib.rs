@@ -34,6 +34,10 @@ pub mod agent_transport;
 pub mod local_socket;
 pub mod pending_connection;
 pub mod process_binding;
+#[cfg(unix)]
+pub mod request_rendezvous;
+pub mod retained_replacement;
+pub mod retained_role;
 pub mod service_socket;
 pub mod tools;
 

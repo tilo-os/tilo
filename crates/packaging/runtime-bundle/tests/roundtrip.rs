@@ -81,6 +81,7 @@ fn unsigned_bundles_round_trip_over_every_host_layout() {
                 arch: Some("x86_64"),
                 identity: None,
                 extra_libs: &[],
+                extra_bins: &[],
             },
         )
         .expect("build");
@@ -130,6 +131,7 @@ fn unsigned_bundles_round_trip_over_every_host_layout() {
                 arch: Some("aarch64"),
                 identity: None,
                 extra_libs: &[],
+                extra_bins: &[],
             },
         )
         .expect("build aarch64");
@@ -167,6 +169,7 @@ fn unsigned_bundles_round_trip_over_every_host_layout() {
                 arch: Some("aarch64"),
                 identity: None,
                 extra_libs: &[],
+                extra_bins: &[],
             },
         )
         .expect("build aarch64 fedora");
@@ -189,6 +192,7 @@ fn unsigned_bundles_round_trip_over_every_host_layout() {
                 arch: Some("x86_64"),
                 identity: None,
                 extra_libs: &[],
+                extra_bins: &[],
             },
         )
         .expect("build");
@@ -213,6 +217,7 @@ fn unsigned_bundles_round_trip_over_every_host_layout() {
             arch: Some("x86_64"),
             identity: None,
             extra_libs: &[],
+            extra_bins: &[],
         };
         let a = build_bundle_with(out1.path(), "v", &opts).expect("build a");
         let b = build_bundle_with(out2.path(), "v", &opts).expect("build b");
@@ -239,6 +244,7 @@ fn signed_bundles_verify_and_catch_a_tampered_root() {
                 arch: Some("x86_64"),
                 identity: Some(&identity_path),
                 extra_libs: &[],
+                extra_bins: &[],
             },
         )
         .expect("build signed");
@@ -294,6 +300,7 @@ fn signed_bundles_verify_and_catch_a_tampered_root() {
                 arch: Some("x86_64"),
                 identity: Some(&identity_path),
                 extra_libs: &[],
+                extra_bins: &[],
             },
         )
         .unwrap();

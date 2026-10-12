@@ -39,6 +39,12 @@ impl OpenWithCandidates {
 
 /// The host's answer to "what opens this, and open it with that".
 pub trait OpenWithRoute {
+    /// True only when this host has linked normal target launch for retained
+    /// selections. A collaboration descriptor alone is not availability.
+    fn retained_selected_open_available(&self) -> bool {
+        false
+    }
+
     /// Applications that claim `path`'s type, the current default first.
     fn candidates(&self, path: &Path) -> OpenWithCandidates;
 

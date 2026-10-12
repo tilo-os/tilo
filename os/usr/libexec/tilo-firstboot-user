@@ -10,6 +10,12 @@
 # then SHREDS the file so the hash does not linger or appear in process argv.
 set -euo pipefail
 
+# This advertises the implemented seed API without creating an account.
+home_seed_capability() {
+  [ "$#" -eq 0 ] || return 2
+  printf '{"schema":1,"seed_protocol":1}\n'
+}
+
 valid_sha512_crypt() {
   local candidate="$1" rounds
 
@@ -120,12 +126,44 @@ fi
 # `tilo-identity` group exists, so the stored group id can be wrong. The
 # session reads that key as a member of this machine's group.
 repair_enrolled_device_key() {
+  local key key_dir key_meta key_owner key_mode key_links
   key=/var/lib/tilo/device-private/keypair.bin
-  if [ -f "$key" ] && [ ! -L "$key" ]; then
+  if [ -e "$key" ] || [ -L "$key" ]; then
+    [ -f "$key" ] && [ ! -L "$key" ] || return 1
+    key_dir="${key%/*}"
+    [ -d "$key_dir" ] && [ ! -L "$key_dir" ] || return 1
+    case "$(stat -c '%u:%a' -- "$key_dir")" in
+      0:700|0:750|0:2700|0:2750) ;;
+      *) return 1 ;;
+    esac
+    key_meta="$(stat -c '%u:%a:%h' -- "$key")" || return 1
+    IFS=: read -r key_owner key_mode key_links <<<"$key_meta"
+    [ "$key_owner" = 0 ] && [ "$key_links" = 1 ] \
+      && { [ "$key_mode" = 600 ] || [ "$key_mode" = 640 ]; } || return 1
+    chgrp tilo-identity "$key_dir"
+    chmod 2750 "$key_dir"
     chgrp tilo-identity "$key"
     chmod 0640 "$key"
   fi
 }
+
+# Writable shared originals depend on preserving their original Linux UID.
+# The strict root helper validates the private plan, regular-account policy and
+# both username/UID availability before any account creation side effect.
+uid_args=()
+if [ -e /var/lib/tilo/migration-plan.json ] || [ -L /var/lib/tilo/migration-plan.json ]; then
+  required_uid="$(/usr/libexec/tilo-staging-handoff required-user-id --username "$user")" || {
+    echo "tilo-firstboot-user: migration ownership validation failed; preserving credential seed" >&2
+    exit 1
+  }
+  if [ -n "$required_uid" ]; then
+    if [[ ! "$required_uid" =~ ^[1-9][0-9]{0,9}$ ]]; then
+      echo "tilo-firstboot-user: migration user-ID response is malformed" >&2
+      exit 1
+    fi
+    uid_args=(-u "$required_uid")
+  fi
+fi
 
 if id "$user" >/dev/null 2>&1; then
   echo "tilo-firstboot-user: refusing to modify pre-existing account '$user'" >&2
@@ -146,8 +184,9 @@ else
   # The setup handoff may already have seeded this home with the enrolled
   # identity. `useradd -m` refuses an existing home, which would leave the
   # account uncreated and the device key unreadable.
+  native_home="/var/home/$user"
   seeded_home=""
-  for candidate in "/home/$user" "/var/home/$user"; do
+  for candidate in "$native_home" "/home/$user"; do
     if [ -d "$candidate" ] && [ ! -L "$candidate" ]; then
       seeded_home="$candidate"
       break
@@ -155,27 +194,69 @@ else
   done
   if [ -n "$seeded_home" ]; then
     if [ -n "$full_name" ]; then
-      useradd -M -d "$seeded_home" -p '!' -c "$full_name" -G wheel,tilo-identity,video "$user"
+      useradd "${uid_args[@]}" -M -d "$seeded_home" -p '!' -c "$full_name" -G wheel,tilo-identity,video "$user"
     else
-      useradd -M -d "$seeded_home" -p '!' -G wheel,tilo-identity,video "$user"
-    fi
-    if [ -d /etc/skel ]; then
-      cp -an /etc/skel/. "$seeded_home/" || true
+      useradd "${uid_args[@]}" -M -d "$seeded_home" -p '!' -G wheel,tilo-identity,video "$user"
     fi
     chown -R "$user:$user" "$seeded_home"
   elif [ -n "$full_name" ]; then
-    useradd -m -p '!' -c "$full_name" -G wheel,tilo-identity,video "$user"
+    useradd "${uid_args[@]}" -M -d "$native_home" -p '!' -c "$full_name" -G wheel,tilo-identity,video "$user"
   else
-    useradd -m -p '!' -G wheel,tilo-identity,video "$user"
+    useradd "${uid_args[@]}" -M -d "$native_home" -p '!' -G wheel,tilo-identity,video "$user"
   fi
 fi
 
-# Keep the account locked until shadow-utils accepts the complete hash.
+seed_helper=/etc/tilo/firstboot-home-seeds.py
+if [ ! -e "$seed_helper" ] && [ ! -L "$seed_helper" ]; then
+  seed_helper=/usr/libexec/tilo-firstboot-home-seeds.py
+fi
+if [ ! -f "$seed_helper" ] || [ -L "$seed_helper" ] \
+    || ! /usr/bin/python3 "$seed_helper" "$user"; then
+  echo "tilo-firstboot-user: home defaults could not be attested; account remains locked" >&2
+  exit 1
+fi
+
+repair_enrolled_device_key
+
+# Keep the account locked until device custody is readable and shadow-utils
+# accepts the complete hash.
 # printf is a shell builtin: credential bytes travel only over the pipe,
 # never through useradd/chpasswd's observable process arguments.
 printf '%s:%s\n' "$user" "$hash" | chpasswd --encrypted
 
-repair_enrolled_device_key
+# This only delivers bounded metadata. Source mounts, data copies and final
+# promotion require an explicit first-login migration action by this account.
+if [ -f /var/lib/tilo/migration-plan.json ]; then
+  if ! /usr/libexec/tilo-staging-handoff deliver-user-plan --username "$user"; then
+    # Do not permit a first login that silently loses reviewed migration.
+    # Preserve both root metadata and the private credential seed for repair.
+    usermod -L "$user"
+    echo "tilo-firstboot-user: migration metadata delivery failed; account remains locked" >&2
+    exit 1
+  fi
+fi
+
+# Keep prepared setup encrypted through firstboot. Only the actual account's
+# explicit import action may authenticate and adopt its contents later.
+if [ -e /var/lib/tilo/prepared-setup ] || [ -L /var/lib/tilo/prepared-setup ]; then
+  if ! /usr/bin/python3 /etc/tilo/prepared-setup-transport.py deliver-user --username "$user"; then
+    usermod -L "$user"
+    echo "tilo-firstboot-user: encrypted prepared setup delivery failed; account remains locked" >&2
+    exit 1
+  fi
+fi
+
+# Selected encrypted data changes custody without a second archive allocation.
+# Failure retains the root metadata and account seed, as for prepared setup.
+if [ -e /var/lib/tilo/prepared-home ] || [ -L /var/lib/tilo/prepared-home ] \
+    || [ -e /var/lib/tilo/prepared-applications ] || [ -L /var/lib/tilo/prepared-applications ] \
+    || [ -e /var/lib/tilo/prepared-browser ] || [ -L /var/lib/tilo/prepared-browser ]; then
+  if ! /usr/bin/python3 /etc/tilo/prepared-setup-transport.py deliver-home-user --username "$user"; then
+    usermod -L "$user"
+    echo "tilo-firstboot-user: portable data custody delivery failed; account remains locked" >&2
+    exit 1
+  fi
+fi
 
 # Remove the seed file (best-effort shred; fall back to rm).
 shred -u -- "$CONF" 2>/dev/null || rm -f -- "$CONF"

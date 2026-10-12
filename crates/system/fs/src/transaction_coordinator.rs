@@ -79,6 +79,15 @@ where
     A: RecordAuthorizer + ?Sized,
     F: FnMut(Vec<u8>) -> Result<(), std::io::Error>,
 {
+    if entry.external_native_effect.is_some()
+        || journal
+            .get(entry.transaction_id())
+            .is_some_and(|saved| saved.external_native_effect.is_some())
+    {
+        return Err(
+            RecordTransactionCoordinatorError::ExternalNativeEffectPending(entry.transaction_id()),
+        );
+    }
     if matches!(
         entry.transaction.manifest.operation,
         fs_protocol::FileMutationOperation::RestoreContent { .. }
@@ -246,6 +255,13 @@ where
     F: FnMut(Vec<u8>) -> Result<(), std::io::Error>,
 {
     let id = entry.transaction_id();
+    if entry.external_native_effect.is_some()
+        || journal
+            .get(id)
+            .is_some_and(|saved| saved.external_native_effect.is_some())
+    {
+        return Err(RecordTransactionCoordinatorError::ExternalNativeEffectPending(id));
+    }
     if journal
         .get(id)
         .is_some_and(|value| value.phase == RecordTransactionPhase::Prepared)
@@ -294,6 +310,7 @@ where
                     fs_protocol::FileMutationParticipantRole::MergeSource,
                 )),
                 fs_protocol::FileMutationOperation::ReplacementRename { .. }
+                | fs_protocol::FileMutationOperation::AtomicSave { .. }
                 | fs_protocol::FileMutationOperation::RestoreContent { .. } => None,
             }
         {
@@ -398,6 +415,8 @@ where
 
 #[derive(Debug, Error)]
 pub enum RecordTransactionCoordinatorError {
+    #[error("native operation {0} has no revalidated replacing-effect receipt")]
+    ExternalNativeEffectPending(uuid::Uuid),
     #[error(transparent)]
     Repository(#[from] RecordRepositoryError),
     #[error(transparent)]
@@ -700,6 +719,7 @@ mod tests {
             participant_batches,
             phase: RecordTransactionPhase::Prepared,
             namespace_delta: None,
+            external_native_effect: None,
         };
         let journal_root = temp.path().join("journal");
         let namespace_path = temp.path().join("namespace.bin");

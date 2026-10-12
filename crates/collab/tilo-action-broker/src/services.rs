@@ -911,6 +911,62 @@ pub trait NearbyTransferServices: Send + Sync {
     fn disconnect(&self, peer_id: u64);
 }
 
+/// Original Browser connection, minted only from certified launcher custody.
+#[derive(Clone)]
+pub struct BrowserServiceSessionRequestContext {
+    peer_id: u64,
+    person: String,
+    read: crate::collab_broker_capnp::NativeDocumentReadContext,
+}
+impl BrowserServiceSessionRequestContext {
+    pub(crate) fn authenticated(
+        peer_id: u64,
+        person: String,
+        read: crate::collab_broker_capnp::NativeDocumentReadContext,
+    ) -> Self {
+        Self {
+            peer_id,
+            person,
+            read,
+        }
+    }
+    pub fn peer_id(&self) -> u64 {
+        self.peer_id
+    }
+    pub fn app_id(&self) -> &str {
+        &self.read.route().app_id
+    }
+    pub fn workspace_id(&self) -> &str {
+        &self.read.route().cluster_id
+    }
+    pub fn channel(&self) -> String {
+        self.read.route().channel_key()
+    }
+    pub fn person(&self) -> &str {
+        &self.person
+    }
+    pub fn identity_public_key(&self) -> [u8; 32] {
+        self.read.certificate().user_public_key
+    }
+    pub fn read_context(&self) -> &crate::collab_broker_capnp::NativeDocumentReadContext {
+        &self.read
+    }
+    pub fn revalidate(&self) -> Result<(), String> {
+        self.read.revalidate()
+    }
+}
+/// Private credential custody, independent of replicated collaboration state.
+pub trait BrowserServiceSessionServices: Send + Sync {
+    /// Recheck current route Read permission and the session's own person.
+    fn authorize(&self, context: &BrowserServiceSessionRequestContext) -> Result<(), String>;
+    fn command(
+        &self,
+        context: &BrowserServiceSessionRequestContext,
+        command: runtime_collab::BrowserServiceSessionCommand,
+    ) -> Result<runtime_collab::BrowserServiceSessionReply, String>;
+    fn disconnect(&self, peer_id: u64);
+}
+
 /// A descriptor source sealed to the kernel-attested local process.
 pub(crate) type SelectedDescriptorSource =
     Arc<dyn Fn(u32) -> Result<std::fs::File, String> + Send + Sync>;
@@ -963,7 +1019,133 @@ impl FileClipboardContext {
         (self.check)(permission)
     }
 }
+#[cfg(target_os = "linux")]
+#[derive(Clone)]
+pub struct OpenSelectedContext {
+    pub(crate) launch: ObservedApplicationLaunch,
+    pub(crate) workspace: String,
+    pub(crate) duplicate: SelectedDescriptorSource,
+    pub(crate) executing: Arc<runtime_portal::process_binding::ExecutingPeer>,
+    pub(crate) check: Arc<dyn Fn() -> Result<(), String> + Send + Sync>,
+}
+#[cfg(target_os = "linux")]
+impl OpenSelectedContext {
+    pub fn observed_launch(&self) -> &ObservedApplicationLaunch {
+        &self.launch
+    }
+    pub fn workspace(&self) -> &str {
+        &self.workspace
+    }
+    pub fn executing(&self) -> &Arc<runtime_portal::process_binding::ExecutingPeer> {
+        &self.executing
+    }
+    /// # Errors
+    /// Refuses cancelled, revoked or retired OpenWith custody.
+    pub fn authorize(&self) -> Result<(), String> {
+        (self.check)()?;
+        if !self.executing.current() {
+            return Err("Files process ended".into());
+        }
+        Ok(())
+    }
+    /// # Errors
+    /// Refuses stale authority or unavailable actual peer descriptors.
+    pub fn duplicate_selected(&self, descriptor: u32) -> Result<std::fs::File, String> {
+        self.authorize()?;
+        let file = (self.duplicate)(descriptor)?;
+        self.authorize()?;
+        Ok(file)
+    }
+}
+#[cfg(target_os = "linux")]
+pub type OpenSelectedFuture = std::pin::Pin<
+    Box<
+        dyn std::future::Future<
+                Output = Result<runtime_collab::open_selected::ObservedOpenReply, String>,
+            > + Send,
+    >,
+>;
+#[cfg(target_os = "linux")]
+pub type OpenSelectedV2Future = std::pin::Pin<
+    Box<
+        dyn std::future::Future<
+                Output = Result<runtime_collab::open_selected::v2::ObservedReply, String>,
+            > + Send,
+    >,
+>;
+/// Read-only discovery context sealed to the same admitted native Files task.
+/// The context cannot admit a selection or stand in for an original OpenWith.
+#[cfg(target_os = "linux")]
+#[derive(Clone)]
+pub struct SelectedDiscoveryContext {
+    pub(crate) clipboard: FileClipboardContext,
+    pub(crate) executing: Arc<runtime_portal::process_binding::ExecutingPeer>,
+    pub(crate) certificate: tilo_user_identity::DeviceCert,
+    pub(crate) original: Option<ObservedApplicationLaunch>,
+    pub(crate) needed: tilo_actions::ActionKind,
+}
+#[cfg(target_os = "linux")]
+impl SelectedDiscoveryContext {
+    pub fn workspace(&self) -> &str {
+        self.clipboard.workspace()
+    }
+    pub fn owner(&self) -> &str {
+        self.clipboard.owner()
+    }
+    pub fn executing(&self) -> &Arc<runtime_portal::process_binding::ExecutingPeer> {
+        &self.executing
+    }
+    pub fn certificate(&self) -> &tilo_user_identity::DeviceCert {
+        &self.certificate
+    }
+    pub fn authorize(&self) -> Result<(), String> {
+        self.clipboard.authorize(self.needed)?;
+        if let Some(original) = &self.original
+            && original.certificate()? != self.certificate
+        {
+            return Err("selected discovery original certificate changed".into());
+        }
+        if !self.executing.current() {
+            return Err("Files discovery process ended".into());
+        }
+        Ok(())
+    }
+}
+#[cfg(target_os = "linux")]
+pub type SelectedDiscoveryFuture = std::pin::Pin<
+    Box<
+        dyn std::future::Future<
+                Output = Result<runtime_collab::open_selected::discovery::Reply, String>,
+            > + Send,
+    >,
+>;
 pub trait FileClipboardServices: Send + Sync {
+    #[cfg(target_os = "linux")]
+    fn discover_selected(
+        &self,
+        _context: SelectedDiscoveryContext,
+        _request: runtime_collab::open_selected::discovery::Request,
+    ) -> SelectedDiscoveryFuture {
+        Box::pin(async { Err("selected discovery is unavailable".into()) })
+    }
+
+    #[cfg(target_os = "linux")]
+    fn open_selected_v2(
+        &self,
+        _context: OpenSelectedContext,
+        _request: runtime_collab::open_selected::v2::Request,
+    ) -> OpenSelectedV2Future {
+        Box::pin(async { Err("selected version two access unsupported".into()) })
+    }
+    #[cfg(target_os = "linux")]
+    fn open_selected(
+        &self,
+        _context: OpenSelectedContext,
+        _request: runtime_collab::open_selected::Request,
+    ) -> OpenSelectedFuture {
+        Box::pin(async { Err("retained selected-open transport unavailable".into()) })
+    }
+
     /// Perform a bounded command under the sealed local admission.
     ///
     /// # Errors
@@ -1058,6 +1240,7 @@ pub struct HostServices {
     /// app shows anything outside its windows.
     pub live_activities: Option<Arc<runtime_collab::LiveActivities>>,
     pub wifi_continuity: Option<Arc<dyn WifiContinuityServices>>,
+    pub browser_service_sessions: Option<Arc<dyn BrowserServiceSessionServices>>,
     pub nearby_transfer: Option<Arc<dyn NearbyTransferServices>>,
     pub file_clipboard: Option<Arc<dyn FileClipboardServices>>,
     /// What each application declared it may do on the action door under

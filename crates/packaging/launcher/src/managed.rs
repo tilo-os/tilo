@@ -1164,6 +1164,21 @@ impl VerifiedManagedExit {
 }
 #[cfg(target_os = "linux")]
 pub(crate) trait EnrolledProcessObserver {
+    fn selected_parent(&self) -> Option<&crate::retained_view::SelectedParentAdmission> {
+        None
+    }
+    fn retained_view(&self) -> Option<&crate::retained_view::RetainedViewAdmission> {
+        None
+    }
+    fn target_projection(&self) -> Option<&crate::owned_service::TargetProjectionAdmission> {
+        None
+    }
+    fn retained_io_projection(&self) -> Option<&crate::owned_service::RetainedIoAdmission> {
+        None
+    }
+    fn capture_projection(&self) -> Option<&crate::owned_service::CaptureAdmission> {
+        None
+    }
     fn reviewed_network_hosts(&self) -> std::io::Result<Option<Vec<String>>> {
         Ok(None)
     }

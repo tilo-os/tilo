@@ -16,6 +16,8 @@ pub(crate) use file_clipboard::test_support::TestTransferPause;
 mod native_effect_tests;
 mod nearby_transfer;
 mod resource_views;
+#[cfg(target_os = "linux")]
+mod service_sessions;
 mod task_execution;
 pub use nearby_transfer::NativeNearbyTransfer;
 use std::sync::Arc;
@@ -1654,6 +1656,18 @@ pub fn native_services(
     HostServices {
         #[cfg(target_os = "linux")]
         approved_checks,
+        #[cfg(target_os = "linux")]
+        browser_service_sessions: membership.as_ref().zip(network.as_ref()).map(
+            |(tree, network)| {
+                Arc::new(service_sessions::NativeBrowserServiceSessions::new(
+                    Arc::new(NativeOwnerCommitService::new(
+                        tree.clone(),
+                        Some(network.clone()),
+                    )),
+                ))
+                    as Arc<dyn tilo_action_broker::services::BrowserServiceSessionServices>
+            },
+        ),
         #[cfg(target_os = "linux")]
         file_clipboard: membership.as_ref().map(|tree| {
             Arc::new(file_clipboard::NativeFileClipboard::new(tree.clone()))

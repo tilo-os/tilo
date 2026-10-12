@@ -15,6 +15,7 @@ fn signed_fixture() -> Result<(tempfile::TempDir, SdkSelection)> {
             arch: Some(std::env::consts::ARCH),
             identity: Some(&key),
             extra_libs: &[extra],
+            extra_bins: &[],
         },
     )?;
     let selected = SdkSelection {

@@ -1873,6 +1873,12 @@ impl ListRow {
         self
     }
 
+    /// Use canonical normalized public identity pixels; no files are opened.
+    #[must_use]
+    pub fn with_profile_photo(self, photo: &runtime_identity::ProfilePhoto) -> Self {
+        self.avatar_image(crate::widget::avatar::profile_image(photo))
+    }
+
     /// Make the leading avatar square: an account or a site, not a person.
     #[must_use]
     pub fn square(mut self) -> Self {

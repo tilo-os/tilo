@@ -32,6 +32,7 @@ pub mod fanotify;
 pub mod hydrate;
 pub mod journal;
 pub mod probe;
+pub mod snapshot_lease;
 /// Byte range sets, shared with the content store's partial files.
 pub use fs_content::ranges;
 pub mod store;

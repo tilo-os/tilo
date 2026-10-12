@@ -165,6 +165,64 @@ pub fn prepare_host_app_dir(
     Ok(dir)
 }
 
+/// Prepare an owner-private service directory in a fresh private working lease.
+/// The native capture host supplies this lease; ordinary app storage preparation
+/// remains independent. Refuse existing contents before resolving descendants.
+///
+/// # Errors
+/// Refuses a redirected, nonprivate, populated or foreign-owned working root,
+/// and any failure to prepare and attest the exact private service directory.
+#[cfg(target_os = "linux")]
+pub fn prepare_private_host_app_dir(
+    data_home: &Path,
+    workspace_id: Option<&str>,
+    package_id: &str,
+) -> io::Result<PathBuf> {
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+    let open = |path: &Path| {
+        std::fs::File::options()
+            .read(true)
+            .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW)
+            .open(path)
+    };
+    let root = open(data_home)?;
+    let original = root.metadata()?;
+    let uid = unsafe { libc::geteuid() };
+    if original.uid() != uid || original.mode() & 0o077 != 0 {
+        return Err(io::ErrorKind::PermissionDenied.into());
+    }
+    if std::fs::read_dir(data_home)?.next().transpose()?.is_some() {
+        return Err(io::ErrorKind::AlreadyExists.into());
+    }
+    let dir = prepare_host_app_dir(data_home, workspace_id, package_id)?;
+    let file = open(&dir)?;
+    if file.metadata()?.uid() != uid {
+        return Err(io::ErrorKind::PermissionDenied.into());
+    }
+    file.set_permissions(std::fs::Permissions::from_mode(0o700))?;
+    let actual = file.metadata()?;
+    let current_root = open(data_home)?.metadata()?;
+    let current_dir = open(&dir)?.metadata()?;
+    if actual.uid() != uid
+        || actual.mode() & 0o777 != 0o700
+        || (
+            current_root.dev(),
+            current_root.ino(),
+            current_root.uid(),
+            current_root.mode(),
+        ) != (
+            original.dev(),
+            original.ino(),
+            original.uid(),
+            original.mode(),
+        )
+        || (current_dir.dev(), current_dir.ino()) != (actual.dev(), actual.ino())
+    {
+        return Err(io::ErrorKind::PermissionDenied.into());
+    }
+    Ok(dir)
+}
+
 /// Host location of one package's person directory: the same for every
 /// room it is launched into.
 pub fn host_person_dir(data_home: &Path, package_id: &str) -> PathBuf {
@@ -435,5 +493,66 @@ mod tests {
                 "a directory is the user's"
             );
         }
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod private_service_tests {
+    use super::*;
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+    #[test]
+    fn private_service_directory_survives_canonical_launch_preparation() {
+        let working = tempfile::Builder::new()
+            .permissions(std::fs::Permissions::from_mode(0o700))
+            .tempdir()
+            .unwrap();
+        let package = "so.tilo.imager.home-export";
+        let dir = prepare_private_host_app_dir(working.path(), None, package).unwrap();
+        assert_eq!(dir, host_app_dir(working.path(), PERSONAL_ROOM, package));
+        assert_eq!(std::fs::metadata(&dir).unwrap().mode() & 0o777, 0o700);
+        assert_eq!(std::fs::metadata(&dir).unwrap().uid(), unsafe {
+            libc::geteuid()
+        });
+        std::fs::write(dir.join("provider-state"), b"private state").unwrap();
+        assert_eq!(
+            prepare_host_app_dir(working.path(), None, package).unwrap(),
+            dir
+        );
+        assert_eq!(std::fs::metadata(&dir).unwrap().mode() & 0o777, 0o700);
+        assert_eq!(
+            std::fs::read(dir.join("provider-state")).unwrap(),
+            b"private state"
+        );
+        assert!(dir.join(".local/share").is_dir());
+        assert!(dir.join(".config").is_dir());
+    }
+
+    #[test]
+    fn private_service_directory_refuses_nonprivate_and_redirected_working_leases() {
+        let working = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(working.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(
+            prepare_private_host_app_dir(working.path(), None, "so.test")
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::PermissionDenied
+        );
+        assert_eq!(std::fs::read_dir(working.path()).unwrap().count(), 0);
+        std::fs::set_permissions(working.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        std::fs::write(outside.path().join("personal"), b"unchanged").unwrap();
+        std::os::unix::fs::symlink(outside.path(), working.path().join(ROOMS_DIR)).unwrap();
+        assert_eq!(
+            prepare_private_host_app_dir(working.path(), None, "so.test")
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::AlreadyExists
+        );
+        assert_eq!(
+            std::fs::read(outside.path().join("personal")).unwrap(),
+            b"unchanged"
+        );
+        assert_eq!(std::fs::read_dir(outside.path()).unwrap().count(), 1);
     }
 }

@@ -10,4 +10,6 @@ pub const MAGIC: [u8; 4] = *b"QPE1";
 #[cfg(target_os = "linux")]
 mod linux;
 #[cfg(target_os = "linux")]
-pub use linux::{ExecutingPeer, Receiver, arm, complete, receive};
+pub use linux::{
+    ExecutingPeer, Receiver, arm, complete, receive, receive_nonroot_for_authentication,
+};

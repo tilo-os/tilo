@@ -18,6 +18,8 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use uuid::Uuid;
 
+mod read_query;
+
 const HISTORY_SCHEMA_VERSION: u16 = 1;
 pub const HISTORY_XATTR: &str = "user.tilo.history";
 pub const HISTORY_CONTROL_XATTR: &str = "user.tilo.history-control";
@@ -163,6 +165,33 @@ pub struct RecordHistorySnapshot {
     pub versions: Vec<FileVersionV1>,
     pub heads: Vec<FileVersionId>,
     pub conflicts: Vec<FileConflictV1>,
+}
+
+impl RecordHistorySnapshot {
+    /// The existing bounded metadata projection of this exact immutable snapshot.
+    pub(crate) fn projection(self) -> HistoryProjectionV1 {
+        let total_versions = self.versions.len() as u64;
+        let versions_start = self.versions.len().saturating_sub(MAX_PROJECTED_VERSIONS);
+        let conflicts_start = self.conflicts.len().saturating_sub(MAX_PROJECTED_CONFLICTS);
+        HistoryProjectionV1 {
+            schema_version: HISTORY_PROJECTION_VERSION,
+            record_id: self.record_id,
+            total_versions,
+            versions_truncated: versions_start > 0,
+            heads: self.heads,
+            versions: self
+                .versions
+                .get(versions_start..)
+                .unwrap_or_default()
+                .to_vec(),
+            conflicts_truncated: conflicts_start > 0,
+            conflicts: self
+                .conflicts
+                .get(conflicts_start..)
+                .unwrap_or_default()
+                .to_vec(),
+        }
+    }
 }
 
 /// Single-writer, crash-safe history database for one workspace.
@@ -891,34 +920,8 @@ impl FileHistoryStore {
     }
 
     pub fn projection(&self, record_id: FileRecordId) -> Option<HistoryProjectionV1> {
-        let snapshot = self.snapshot(record_id)?;
-        let total_versions = snapshot.versions.len() as u64;
-        let versions_start = snapshot
-            .versions
-            .len()
-            .saturating_sub(MAX_PROJECTED_VERSIONS);
-        let conflicts_start = snapshot
-            .conflicts
-            .len()
-            .saturating_sub(MAX_PROJECTED_CONFLICTS);
-        Some(HistoryProjectionV1 {
-            schema_version: HISTORY_PROJECTION_VERSION,
-            record_id,
-            total_versions,
-            versions_truncated: versions_start > 0,
-            heads: snapshot.heads,
-            versions: snapshot
-                .versions
-                .get(versions_start..)
-                .unwrap_or_default()
-                .to_vec(),
-            conflicts_truncated: conflicts_start > 0,
-            conflicts: snapshot
-                .conflicts
-                .get(conflicts_start..)
-                .unwrap_or_default()
-                .to_vec(),
-        })
+        self.snapshot(record_id)
+            .map(RecordHistorySnapshot::projection)
     }
 }
 

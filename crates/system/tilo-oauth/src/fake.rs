@@ -18,7 +18,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{Read as _, Write as _};
 use std::net::TcpStream;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Condvar, Mutex, PoisonError};
+use std::time::Duration;
 
 use test_http::{Reply, Request, Responder};
 
@@ -42,6 +43,41 @@ struct State {
     access_token: Option<String>,
     /// When set, token requests must carry this `client_secret`.
     client_secret: Option<String>,
+    token_gate: Option<Arc<ExchangeGate>>,
+}
+
+#[derive(Default)]
+struct ExchangeGate {
+    state: Mutex<(bool, bool)>,
+    changed: Condvar,
+}
+
+/// Holds a real fixture token exchange until its owner releases it. Dropping
+/// the gate releases the handler too, so a failed assertion cannot strand it.
+pub struct TokenExchangeGate(Arc<ExchangeGate>);
+impl TokenExchangeGate {
+    pub fn wait_for_exchange(&self, timeout: Duration) -> bool {
+        let state = self.0.state.lock().unwrap_or_else(PoisonError::into_inner);
+        let (state, _) = self
+            .0
+            .changed
+            .wait_timeout_while(state, timeout, |state| !state.0)
+            .unwrap_or_else(PoisonError::into_inner);
+        state.0
+    }
+    pub fn release(&self) {
+        self.0
+            .state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .1 = true;
+        self.0.changed.notify_all();
+    }
+}
+impl Drop for TokenExchangeGate {
+    fn drop(&mut self) {
+        self.release();
+    }
 }
 
 /// See the module docs.
@@ -82,6 +118,12 @@ impl FakeAuthorizationServer {
         let shared = Arc::clone(&state);
         let responder = Responder::handle(move |request| Some(handle(&shared, request)));
         Self { responder, state }
+    }
+
+    pub fn hold_token_exchange(&self) -> TokenExchangeGate {
+        let gate = Arc::new(ExchangeGate::default());
+        lock(&self.state).token_gate = Some(gate.clone());
+        TokenExchangeGate(gate)
     }
 
     /// A provider descriptor pointing at this server.
@@ -168,6 +210,19 @@ fn handle(shared: &Mutex<State>, request: &Request) -> Reply {
         .target
         .split_once('?')
         .map_or(request.target.as_str(), |(path, _)| path);
+    if request.method == "POST"
+        && path == "/token"
+        && let Some(gate) = lock(shared).token_gate.clone()
+    {
+        let mut state = gate.state.lock().unwrap_or_else(PoisonError::into_inner);
+        state.0 = true;
+        gate.changed.notify_all();
+        drop(
+            gate.changed
+                .wait_while(state, |state| !state.1)
+                .unwrap_or_else(PoisonError::into_inner),
+        );
+    }
     match (request.method.as_str(), path) {
         ("GET", "/authorize") => authorize(shared, &query_of(&request.target)),
         ("POST", "/token") => token(shared, &query_of(&format!("?{}", request.body_text()))),

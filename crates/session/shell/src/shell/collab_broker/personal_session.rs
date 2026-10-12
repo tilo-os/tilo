@@ -1,4 +1,7 @@
 //! The actual native broker's signed personal execution and compositor lifetime.
+#[cfg(target_os = "linux")]
+mod retained_launch;
+
 use crate::shell::collab_broker_capnp::{LocalSessionLifecycle, LocalSessionPermit};
 use std::sync::Arc;
 use tilo_action_broker::{collab_broker::AppActionBroker, services::CertifiedPersonContext};
@@ -163,6 +166,23 @@ impl NativePersonalSession {
             return Err("native personal custody changed".into());
         }
         Ok(())
+    }
+    /// Reopen current certified custody for a retained personal launch. The
+    /// supplied room is checked against the certificate, never a UI label.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn retained_launch_certificate(
+        &self,
+        room: super::super::state::RoomId,
+    ) -> Result<tilo_user_identity::DeviceCert, String> {
+        self.check()?;
+        let (certificate, _) = self.host.current_native_material(self.workspace)?;
+        if collab_types::person_room(&certificate.user_public_key).to_string() != room.to_string()
+            || self.caller.room() != Some(room.to_string().as_str())
+        {
+            return Err("retained launch differs from certified personal room".into());
+        }
+        self.check()?;
+        Ok(certificate)
     }
     pub(crate) fn person(&self) -> CertifiedPersonContext {
         self.person.clone()

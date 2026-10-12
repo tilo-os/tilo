@@ -330,6 +330,28 @@ pub(crate) struct RepositoryLease<'a> {
     records: std::sync::MutexGuard<'a, Records>,
 }
 
+enum ExternalObservation<'a> {
+    None(std::marker::PhantomData<&'a ()>),
+    #[cfg(all(feature = "filesystem", target_os = "linux"))]
+    Completed(&'a crate::external_history::coordinator::ObservedExternalReplacement),
+}
+impl ExternalObservation<'_> {
+    fn check(&self, entry: &RecordTransactionJournalEntry) -> Result<(), RecordRepositoryError> {
+        match self {
+            #[cfg(all(feature = "filesystem", target_os = "linux"))]
+            Self::Completed(observed) => observed.check_entry(entry).map_err(|_| {
+                RecordRepositoryError::ExternalNativeEffectPending(entry.transaction_id())
+            }),
+            _ => Err(RecordRepositoryError::ExternalNativeEffectPending(
+                entry.transaction_id(),
+            )),
+        }
+    }
+    fn supplied(&self) -> bool {
+        !matches!(self, Self::None(_))
+    }
+}
+
 pub(crate) struct PreparedRecordTransaction {
     entry: RecordTransactionJournalEntry,
     journal_missing: bool,
@@ -362,15 +384,46 @@ impl RepositoryLease<'_> {
             .unwrap_or(0)
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "validates every participant and installs the fences under one R lease in a single pass"
-    )]
     pub fn prepare<A: RecordAuthorizer + ?Sized>(
         &self,
         journal: &RecordTransactionJournal,
         entry: &RecordTransactionJournalEntry,
         authorizer: &A,
+    ) -> Result<PreparedRecordTransaction, RecordRepositoryError> {
+        self.prepare_inner(
+            journal,
+            entry,
+            authorizer,
+            ExternalObservation::None(std::marker::PhantomData),
+        )
+    }
+
+    #[cfg(all(feature = "filesystem", target_os = "linux"))]
+    pub(crate) fn prepare_external<A: RecordAuthorizer + ?Sized>(
+        &self,
+        journal: &RecordTransactionJournal,
+        entry: &RecordTransactionJournalEntry,
+        authorizer: &A,
+        observed: &crate::external_history::coordinator::ObservedExternalReplacement,
+    ) -> Result<PreparedRecordTransaction, RecordRepositoryError> {
+        self.prepare_inner(
+            journal,
+            entry,
+            authorizer,
+            ExternalObservation::Completed(observed),
+        )
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "validates every participant and installs the fences under one R lease in a single pass"
+    )]
+    fn prepare_inner<A: RecordAuthorizer + ?Sized>(
+        &self,
+        journal: &RecordTransactionJournal,
+        entry: &RecordTransactionJournalEntry,
+        authorizer: &A,
+        observed: ExternalObservation<'_>,
     ) -> Result<PreparedRecordTransaction, RecordRepositoryError> {
         entry
             .validate()
@@ -378,9 +431,21 @@ impl RepositoryLease<'_> {
         let transaction = &entry.transaction;
         let id = transaction.manifest.transaction_id;
         let workspace_id = transaction.manifest.workspace_id;
+        // Inspect the persisted entry as well: stripping the caller's local
+        // binding must not turn external recovery into ordinary record replay.
+        if entry.external_native_effect.is_some()
+            || journal
+                .get(id)
+                .is_some_and(|saved| saved.external_native_effect.is_some())
+        {
+            observed.check(entry)?;
+        } else if observed.supplied() {
+            return Err(RecordRepositoryError::ExternalNativeEffectPending(id));
+        }
         let journal_missing = if let Some(existing) = journal.get(id) {
             if existing.transaction != entry.transaction
                 || existing.participant_batches != entry.participant_batches
+                || existing.external_native_effect != entry.external_native_effect
             {
                 return Err(RecordRepositoryError::TransactionManifestMismatch(id));
             }
@@ -872,10 +937,11 @@ impl RecordRepository {
         let mut records = self.lock_records()?;
         for entry in journal.entries().filter(|entry| {
             entry.phase == RecordTransactionPhase::Prepared
-                && matches!(
-                    entry.transaction.manifest.operation,
-                    fs_protocol::FileMutationOperation::RestoreContent { .. }
-                )
+                && (entry.external_native_effect.is_some()
+                    || matches!(
+                        entry.transaction.manifest.operation,
+                        fs_protocol::FileMutationOperation::RestoreContent { .. }
+                    ))
         }) {
             for participant in &entry.transaction.manifest.participants {
                 let key = RecordRepositoryKey {
@@ -1114,6 +1180,13 @@ impl RecordRepository {
     #[must_use]
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    pub(crate) fn reserve_external_operation(
+        &self,
+        input: &crate::record_log::ExternalReservationInput,
+    ) -> Result<crate::record_log::ExternalCanonicalIds, RecordRepositoryError> {
+        Ok(self.log.reserve_external_operation(input)?)
     }
 
     /// Operations in the durable log.
@@ -2110,6 +2183,7 @@ impl RecordRepository {
             participant_batches,
             phase: RecordTransactionPhase::Prepared,
             namespace_delta: None,
+            external_native_effect: None,
         };
         entry
             .validate()
@@ -2264,6 +2338,7 @@ fn projected_snapshot(
                     fs_protocol::ConflictStrategy::Merge,
                 ),
                 fs_protocol::FileMutationOperation::ReplacementRename { .. }
+                | fs_protocol::FileMutationOperation::AtomicSave { .. }
                 | fs_protocol::FileMutationOperation::RestoreContent { .. } => {
                     return Err(RecordRepositoryError::TransactionProjectionMismatch(
                         transaction.manifest.transaction_id,
@@ -2363,6 +2438,25 @@ fn validate_structural_precondition(
                 })
                 && !binding.tombstoned
                 && binding.kind == fs_protocol::FileNodeKind::File
+        }
+        fs_protocol::FileMutationOperation::AtomicSave {
+            parent_record,
+            document_name,
+            temporary_name,
+            document_record,
+            temporary_record,
+            prior_document_version,
+        } => {
+            binding.parent == Some(*parent_record)
+                && !binding.tombstoned
+                && binding.kind == fs_protocol::FileNodeKind::File
+                && ((record_id == *document_record
+                    && binding.name == *document_name
+                    && snapshot
+                        .content_revision
+                        .as_ref()
+                        .is_some_and(|revision| revision.version_id == *prior_document_version))
+                    || (record_id == *temporary_record && binding.name == *temporary_name))
         }
         fs_protocol::FileMutationOperation::ReplacementRename {
             source_parent,
@@ -2490,6 +2584,8 @@ fn envelope_prefix_digest<'a>(
 
 #[derive(Debug, Error)]
 pub enum RecordRepositoryError {
+    #[error("native operation {0} has no revalidated replacing-effect receipt")]
+    ExternalNativeEffectPending(Uuid),
     #[error(
         "checked restore {0} must finish admitted repository participation before another write; retry after recovery"
     )]
@@ -2757,6 +2853,274 @@ mod tests {
             &fixture.device_key,
         )
         .unwrap()
+    }
+
+    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "exercise two actual signed journal commits and durable reopen without replacing document identity"
+    )]
+    fn atomic_save_two_commits_keep_document_record_and_exact_version_parents() {
+        let fixture = Fixture::new();
+        let parent = FileRecordId::new();
+        let document = fixture.key.record_id;
+        let temp1 = FileRecordId::new();
+        let temp2 = FileRecordId::new();
+        let initial = FileVersionId::new();
+        let auth = MultiRecordAuthorizer {
+            actor: fixture.actor,
+            records: [document, temp1, temp2].into_iter().collect(),
+        };
+        let repository = RecordRepository::open(&fixture.root).unwrap();
+        let seed = |record, version, name: &str| {
+            let baseline = FileVersionV1 {
+                id: version,
+                record_id: record,
+                parents: Vec::new(),
+                actor: fixture.actor,
+                timestamp_ms: 1,
+                content_hash: None,
+                metadata_hash: ContentHash([1; 32]),
+                provenance: FileProvenance::Create,
+            };
+            let binding = FileBindingV1 {
+                schema_version: FILE_BINDING_VERSION,
+                record_id: record,
+                parent: Some(parent),
+                name: name.into(),
+                kind: FileNodeKind::File,
+                tombstoned: false,
+                actor: fixture.actor,
+                observed_at_ms: 1,
+            };
+            let revision = fs_protocol::ContentRevisionV1 {
+                schema_version: CONTENT_REVISION_VERSION,
+                record_id: record,
+                version_id: version,
+                content_hash: None,
+                byte_len: 1,
+                metadata_hash: baseline.metadata_hash,
+            };
+            repository
+                .apply_batch(
+                    RecordRepositoryKey {
+                        workspace_id: fixture.key.workspace_id,
+                        record_id: record,
+                    },
+                    &[
+                        RecordEnvelopeV1::signed(
+                            record,
+                            fixture.actor,
+                            1,
+                            RecordOperationV1::SetBinding(binding),
+                            &fixture.device_key,
+                        )
+                        .unwrap(),
+                        RecordEnvelopeV1::signed(
+                            record,
+                            fixture.actor,
+                            2,
+                            RecordOperationV1::AppendVersion(baseline),
+                            &fixture.device_key,
+                        )
+                        .unwrap(),
+                        RecordEnvelopeV1::signed(
+                            record,
+                            fixture.actor,
+                            3,
+                            RecordOperationV1::SetContentRevision(revision),
+                            &fixture.device_key,
+                        )
+                        .unwrap(),
+                    ],
+                    &auth,
+                )
+                .unwrap();
+        };
+        seed(document, initial, "report.txt");
+        let mut prior = initial;
+        let mut committed = Vec::new();
+        let mut journal = crate::record_transaction::RecordTransactionJournal::open(
+            fixture.dir.path().join("atomic-journal"),
+        )
+        .unwrap();
+        for (index, temporary) in [temp1, temp2].into_iter().enumerate() {
+            let temp_version = FileVersionId::new();
+            seed(temporary, temp_version, "save-temp");
+            let at = u64::try_from(index + 2).unwrap();
+            let make = |record, role, expected, name: &str| {
+                let version = FileVersionV1 {
+                    id: FileVersionId::new(),
+                    record_id: record,
+                    parents: vec![expected],
+                    actor: fixture.actor,
+                    timestamp_ms: at,
+                    content_hash: None,
+                    metadata_hash: ContentHash([u8::try_from(at).unwrap(); 32]),
+                    provenance: if role == FileMutationParticipantRole::AtomicSaveDocument {
+                        FileProvenance::Edit
+                    } else {
+                        FileProvenance::Delete
+                    },
+                };
+                let mut p = FileMutationParticipant {
+                    record_id: record,
+                    role,
+                    expected_version: expected,
+                    proposed_binding: FileBindingV1 {
+                        schema_version: FILE_BINDING_VERSION,
+                        record_id: record,
+                        parent: Some(parent),
+                        name: name.into(),
+                        kind: FileNodeKind::File,
+                        tombstoned: role == FileMutationParticipantRole::AtomicSaveTemporary,
+                        actor: fixture.actor,
+                        observed_at_ms: at,
+                    },
+                    proposed_content_revision: Some(fs_protocol::ContentRevisionV1 {
+                        schema_version: CONTENT_REVISION_VERSION,
+                        record_id: record,
+                        version_id: version.id,
+                        content_hash: None,
+                        byte_len: at,
+                        metadata_hash: version.metadata_hash,
+                    }),
+                    proposed_version: version,
+                    projection_hash: ContentHash([0; 32]),
+                };
+                p.projection_hash = p.computed_projection_hash().unwrap();
+                p
+            };
+            let mut participants = vec![
+                make(
+                    document,
+                    FileMutationParticipantRole::AtomicSaveDocument,
+                    prior,
+                    "report.txt",
+                ),
+                make(
+                    temporary,
+                    FileMutationParticipantRole::AtomicSaveTemporary,
+                    temp_version,
+                    "save-temp",
+                ),
+            ];
+            participants.sort_by_key(|p| p.record_id);
+            let transaction = FileMutationTransaction::signed(
+                FileMutationTransactionManifest {
+                    schema_version: fs_protocol::files::FILE_MUTATION_TRANSACTION_VERSION_V4,
+                    transaction_id: Uuid::new_v4(),
+                    workspace_id: fixture.key.workspace_id,
+                    actor: fixture.actor,
+                    timestamp_ms: at,
+                    operation: FileMutationOperation::AtomicSave {
+                        parent_record: parent,
+                        document_name: "report.txt".into(),
+                        temporary_name: "save-temp".into(),
+                        document_record: document,
+                        temporary_record: temporary,
+                        prior_document_version: prior,
+                    },
+                    participants,
+                },
+                &fixture.device_key,
+            )
+            .unwrap();
+            let batches = transaction
+                .manifest
+                .participants
+                .iter()
+                .map(|p| {
+                    let sequence = if p.record_id == document {
+                        4 + u64::try_from(index).unwrap() * 2
+                    } else {
+                        4
+                    };
+                    crate::record_transaction::RecordTransactionParticipantBatch {
+                        record_id: p.record_id,
+                        envelopes: vec![
+                            RecordEnvelopeV1::signed(
+                                p.record_id,
+                                fixture.actor,
+                                sequence,
+                                RecordOperationV1::PrepareTransaction(transaction.clone()),
+                                &fixture.device_key,
+                            )
+                            .unwrap(),
+                            RecordEnvelopeV1::signed(
+                                p.record_id,
+                                fixture.actor,
+                                sequence + 1,
+                                RecordOperationV1::CommitTransaction {
+                                    transaction_id: transaction.manifest.transaction_id,
+                                },
+                                &fixture.device_key,
+                            )
+                            .unwrap(),
+                        ],
+                    }
+                })
+                .collect();
+            let entry = crate::record_transaction::RecordTransactionJournalEntry {
+                schema_version: crate::record_transaction::RECORD_TRANSACTION_JOURNAL_VERSION,
+                transaction: transaction.clone(),
+                participant_batches: batches,
+                phase: crate::record_transaction::RecordTransactionPhase::Prepared,
+                namespace_delta: None,
+                external_native_effect: None,
+            };
+            repository
+                .apply_transaction(&mut journal, &entry, &auth)
+                .unwrap();
+            let current = repository
+                .snapshot(fixture.key, &fixture.actor, &auth)
+                .unwrap();
+            let version = current.content_revision.unwrap().version_id;
+            assert_eq!(current.binding.as_ref().unwrap().record_id, document);
+            assert!(!current.binding.as_ref().unwrap().tombstoned);
+            assert_eq!(
+                current
+                    .versions
+                    .iter()
+                    .find(|v| v.id == version)
+                    .unwrap()
+                    .parents,
+                [prior]
+            );
+            assert!(
+                repository
+                    .snapshot(
+                        RecordRepositoryKey {
+                            workspace_id: fixture.key.workspace_id,
+                            record_id: temporary
+                        },
+                        &fixture.actor,
+                        &auth
+                    )
+                    .unwrap()
+                    .binding
+                    .unwrap()
+                    .tombstoned
+            );
+            committed.push(version);
+            prior = version;
+        }
+        drop(repository);
+        let reopened = RecordRepository::open(&fixture.root).unwrap();
+        let current = reopened
+            .snapshot(fixture.key, &fixture.actor, &auth)
+            .unwrap();
+        assert_eq!(current.versions.len(), 3);
+        assert_eq!(current.content_revision.unwrap().version_id, committed[1]);
+        assert_eq!(
+            current
+                .versions
+                .iter()
+                .find(|v| v.id == committed[1])
+                .unwrap()
+                .parents,
+            [committed[0]]
+        );
     }
 
     #[allow(
@@ -3754,6 +4118,7 @@ mod tests {
                 participant_batches,
                 phase: crate::record_transaction::RecordTransactionPhase::Prepared,
                 namespace_delta: None,
+                external_native_effect: None,
             };
             let journal_root = fixture.dir.path().join("transaction-journal");
             let mut journal =

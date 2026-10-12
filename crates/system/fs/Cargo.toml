@@ -66,6 +66,11 @@ filesystem = [
     "dep:notify",
     "dep:zeroize",
     "dep:wire-frame",
+    "dep:runtime-collab",
+    "dep:runtime-portal",
+    "dep:capnp",
+    "dep:capnp-rpc",
+    "dep:tokio-util",
 ]
 
 [[bin]]
@@ -219,6 +224,13 @@ fuser = { workspace = true, optional = true }
 # The Tier 1 native data plane: fanotify journal, Btrfs capture epochs and
 # pre-content placeholders. Linux-only kernel interfaces.
 [target.'cfg(target_os = "linux")'.dependencies]
+# Certified external source/history admission lives only in the Linux daemon.
+# Portable content consumers do not pull native proof or RPC dependencies.
+runtime-collab = { version = "0.1.0", path = "../../runtime/runtime-collab", default-features = false, features = ["client"], optional = true }
+runtime-portal = { version = "0.1.0", path = "../../runtime/runtime-portal", default-features = false, optional = true }
+capnp = { workspace = true, optional = true }
+capnp-rpc = { workspace = true, optional = true }
+tokio-util = { workspace = true, features = ["compat"], optional = true }
 fs-native = { version = "0.1.0", path = "../fs-native", optional = true }
 
 # Shared filesystem and relay data remain available; no native mount provider.

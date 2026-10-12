@@ -36,6 +36,8 @@
 )]
 
 pub mod appdir;
+#[cfg(target_os = "linux")]
+mod browser_projection;
 pub mod capabilities;
 pub mod capture;
 #[cfg(target_os = "linux")]
@@ -43,6 +45,8 @@ pub mod dbus_proxy;
 pub mod dev_env;
 pub mod gpu;
 pub mod hardening;
+#[cfg(target_os = "linux")]
+mod headless_console;
 #[cfg(target_os = "linux")]
 pub mod host;
 #[cfg(target_os = "linux")]
@@ -58,6 +62,10 @@ pub mod manifest;
 pub mod mesa_seed;
 pub mod netgate;
 #[cfg(target_os = "linux")]
+pub mod ordinary_child;
+#[cfg(target_os = "linux")]
+pub mod ordinary_namespace;
+#[cfg(target_os = "linux")]
 pub mod owned_service;
 pub mod performance;
 pub mod profile;
@@ -65,6 +73,8 @@ pub mod profile;
 pub mod provider_sandbox;
 #[cfg(unix)]
 pub mod registration_gate;
+#[cfg(target_os = "linux")]
+pub mod retained_view;
 #[cfg(target_os = "linux")]
 pub mod run;
 #[cfg(target_os = "linux")]

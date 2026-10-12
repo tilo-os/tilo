@@ -382,6 +382,7 @@ fn install_unsigned_bundle(xdg_data_home: &Path, version: &str) -> PathBuf {
             arch: Some("x86_64"),
             identity: None,
             extra_libs: &[],
+            extra_bins: &[],
         },
     )
     .expect("build unsigned bundle");
@@ -412,6 +413,7 @@ fn install_signed_bundle(
             arch: Some("x86_64"),
             identity: Some(&id_path),
             extra_libs: &[],
+            extra_bins: &[],
         },
     )
     .expect("build signed bundle");
@@ -554,6 +556,7 @@ fn runtime_bundles_and_the_dbus_proxy_shape_the_launch_argv() {
                 arch: Some("x86_64"),
                 identity: Some(&id_path),
                 extra_libs: &[libstd, libruntime],
+                extra_bins: &[],
             },
         )
         .expect("build thin bundle");

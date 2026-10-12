@@ -1803,7 +1803,8 @@ fn shared_owner_child() {
 fn the_engine_host_does_not_inherit_the_app_loader_environment() {
     let command = host_command(Path::new(
         "/run/tilo-runtime/x/lib/chromium/tilo-chromium-host",
-    ));
+    ))
+    .unwrap();
     for name in ["LD_LIBRARY_PATH", "LD_PRELOAD"] {
         assert!(
             command
@@ -2379,6 +2380,8 @@ fn native_caret_prepare_opt_in_uses_the_original_tab_capability() {
         download_events: Arc::default(),
         server: std::sync::OnceLock::new(),
         link: None,
+        service_session: None,
+        exited: Arc::new(AtomicBool::new(false)),
     });
     let one = ChromiumEngine {
         tx: tx.clone(),
@@ -2422,4 +2425,160 @@ fn native_caret_prepare_opt_in_uses_the_original_tab_capability() {
     let check = tx.pop().unwrap();
     assert_eq!(check["action"], "check_text_input");
     assert!(check.get("native_caret").is_none());
+}
+
+pub(super) fn selected_service_request() -> super::super::ServiceSessionRequest {
+    use browser_continuity::sessions::{Cookie, SameSite, Service, SessionCookies};
+    super::super::ServiceSessionRequest {
+        request_id: 7,
+        verify_only: false,
+        session: SessionCookies {
+            schema: 1,
+            session_id: "selected-slack-session".into(),
+            service: Service::Slack,
+            identity_public_key: [9; 32],
+            setup_binding: "setup-operation".into(),
+            source_snapshot_digest: [4; 32],
+            origin_storage: Vec::new(),
+            cookies: vec![Cookie {
+                host: "app.slack.com".into(),
+                domain: "app.slack.com".into(),
+                host_only: true,
+                name: "__Host-session".into(),
+                value: "private-cookie-marker".into(),
+                path: "/".into(),
+                expires_unix_seconds: None,
+                secure: true,
+                http_only: true,
+                same_site: SameSite::Lax,
+            }],
+        },
+    }
+}
+
+#[test]
+fn selected_service_wire_preserves_cookie_semantics_redacts_and_refuses_expired_credentials() {
+    let request = selected_service_request();
+    let command = WebViewCommand::ImportServiceSession(request.clone());
+    assert!(!format!("{command:?}").contains("private-cookie-marker"));
+    assert!(command_within_limits(&command));
+    let mut wire = encode_command(command).unwrap();
+    assert_eq!(wire["cookies"][0]["host"], "app.slack.com");
+    assert_eq!(wire["cookies"][0]["domain"], "app.slack.com");
+    assert_eq!(wire["cookies"][0]["host_only"], true);
+    assert_eq!(wire["cookies"][0]["expires_unix_seconds"], Value::Null);
+    assert_eq!(wire["cookies"][0]["http_only"], true);
+    assert_eq!(wire["cookies"][0]["same_site"], "lax");
+    assert!(wire.get("identity_public_key").is_none());
+    assert!(wire.get("source_snapshot_digest").is_none());
+    wipe_service_wire(&mut wire);
+    assert_eq!(wire["cookies"][0]["value"], "");
+    let mut expired = request.clone();
+    expired.session.cookies[0].expires_unix_seconds = Some(1);
+    assert!(!command_within_limits(
+        &WebViewCommand::ImportServiceSession(expired)
+    ));
+    let mut foreign = request.clone();
+    foreign.session.cookies[0].host = "foreign.example".into();
+    assert!(encode_command(WebViewCommand::ImportServiceSession(foreign)).is_none());
+    let mut weakened = request;
+    weakened.session.cookies[0].secure = false;
+    assert!(encode_command(WebViewCommand::ImportServiceSession(weakened)).is_none());
+}
+
+#[test]
+fn selected_service_completion_is_correlated_storage_evidence_and_test_engine_refuses_import() {
+    let event = json!({"event":"service_session_result", "request_id":7,
+        "session_id":"selected-slack-session", "service":"slack", "imported":true, "cookie_count":1});
+    assert!(validate_event(&event).is_ok());
+    let Some(WebViewEvent::ServiceSessionResult(reply)) = decode_event(&event) else {
+        panic!("missing storage result");
+    };
+    assert_eq!(reply.request_id, 7);
+    assert_eq!(reply.cookie_count, 1);
+    assert!(reply.imported);
+    for (key, value) in [
+        ("request_id", json!(0)),
+        ("cookie_count", json!(1025)),
+        ("session_id", json!("../escape")),
+        ("service", json!("unknown")),
+    ] {
+        let mut malformed = event.clone();
+        malformed[key] = value;
+        assert!(validate_event(&malformed).is_err());
+    }
+    for field in [
+        "cookies",
+        "value",
+        "password",
+        "token",
+        "identity_public_key",
+        "source_snapshot_digest",
+    ] {
+        let mut leaked = event.clone();
+        leaked[field] = json!("private-credential-must-not-be-a-receipt");
+        assert!(
+            validate_event(&leaked).is_err(),
+            "private field admitted to public result"
+        );
+        assert!(decode_event(&leaked).is_none());
+    }
+    let engine = super::super::test_engine::TestEngine::new();
+    engine.send(WebViewCommand::ImportServiceSession(
+        selected_service_request(),
+    ));
+    let events = engine.drain_events();
+    assert!(events.iter().any(
+        |event| matches!(event, WebViewEvent::ServiceSessionResult(reply)
+        if reply.request_id == 7 && !reply.imported && reply.cookie_count == 0)
+    ));
+}
+
+#[test]
+fn selected_discord_origin_wire_preserves_raw_value_refuses_other_origins_and_redacts_receipts() {
+    use browser_continuity::sessions::{OriginStorage, Service};
+    let mut request = selected_service_request();
+    request.session.schema = 2;
+    request.session.service = Service::Discord;
+    request.session.cookies.clear();
+    request.session.origin_storage = vec![OriginStorage {
+        origin: "https://discord.com".into(),
+        key: "token".into(),
+        value: "\"synthetic-raw-dom-value\"".into(),
+        source_snapshot_digest: [6; 32],
+    }];
+    assert!(command_within_limits(
+        &WebViewCommand::ImportServiceSession(request.clone())
+    ));
+    assert!(!format!("{request:?}").contains("synthetic-raw-dom-value"));
+    request.verify_only = true;
+    let mut wire = encode_command(WebViewCommand::ImportServiceSession(request.clone())).unwrap();
+    assert_eq!(wire["verify_only"], true);
+    assert_eq!(
+        wire["origin_storage"][0]["value"],
+        "\"synthetic-raw-dom-value\""
+    );
+    assert!(
+        wire["origin_storage"][0]
+            .get("source_snapshot_digest")
+            .is_none()
+    );
+    wipe_service_wire(&mut wire);
+    assert_eq!(wire["origin_storage"][0]["value"], "");
+    request.session.origin_storage[0].origin = "https://discord.com.evil.example".into();
+    assert!(encode_command(WebViewCommand::ImportServiceSession(request)).is_none());
+    let event = json!({"event":"service_session_result", "request_id":2,
+        "session_id":"selected-discord-session", "service":"discord", "imported":true,
+        "cookie_count":0,"origin_storage_count":1});
+    assert!(
+        matches!(decode_event(&event),Some(WebViewEvent::ServiceSessionResult(reply))
+        if reply.origin_storage_count == 1 && reply.cookie_count == 0)
+    );
+    let mut wrong_service = event.clone();
+    wrong_service["service"] = json!("slack");
+    assert!(decode_event(&wrong_service).is_none());
+    let mut leak = event;
+    leak["origin_storage"] = json!([{"value":"synthetic-raw-dom-value"}]);
+    assert!(validate_event(&leak).is_err());
+    assert!(decode_event(&leak).is_none());
 }

@@ -30,6 +30,9 @@ pub enum SetupEffect {
     /// Install the exact reviewed Desktop release after a fresh host probe.
     #[effect(returns)]
     InstallDesktop,
+    /// Retry unfinished guided session preparation after verified package installation.
+    #[effect(returns)]
+    RetryDesktop,
     /// Cancel the current package download; no native transaction is cancelled.
     #[effect(returns)]
     CancelDesktopDownload,
@@ -117,6 +120,15 @@ pub enum SetupEffect {
     SetInternalTargetSize {
         #[param("Tilo size in GiB")]
         gib: i64,
+    },
+    /// Attach an explicitly granted private migration intent to the next installation.
+    #[effect(returns, privileged)]
+    UseMigrationIntent {
+        #[param(
+            secret,
+            "Private migration intent directory; never returned or replicated"
+        )]
+        directory: String,
     },
     /// Install Tilo alongside the current system.
     ///
@@ -354,10 +366,20 @@ fn review_gate(state: &InternalProjection) -> (&'static str, &'static str) {
 /// and the code and reason (a message key) when it may not.
 fn internal_commands(
     state: &InternalProjection,
-) -> [(&'static str, &'static str, bool, &'static str, &'static str); 15] {
+) -> [(&'static str, &'static str, bool, &'static str, &'static str); 16] {
     let a = state.availability;
     let (review_code, review_reason) = review_gate(state);
     [
+        (
+            SetupEffect::USE_MIGRATION_INTENT.id,
+            "imager-setup-action-use-migration-intent",
+            cfg!(target_os = "linux")
+                && state.on_review
+                && state.run == "idle"
+                && state.pending_operation.is_none(),
+            "migration_intent_unavailable",
+            "imager-setup-error-migration-intent-unavailable",
+        ),
         (
             SetupEffect::START_INTERNAL_DOWNLOAD.id,
             "imager-setup-action-start-download",
@@ -743,6 +765,17 @@ fn internal_row(state: &InternalProjection) -> LiveRow {
     for (id, label, open, code, reason) in internal_commands(state) {
         let label = super::strings::t(label);
         let spec = match id {
+            id if id == SetupEffect::USE_MIGRATION_INTENT.id => asking(
+                &SetupEffect::UseMigrationIntent {
+                    directory: String::new(),
+                },
+                label,
+                ActionParam::required_owned(
+                    "directory",
+                    ParamType::Secret,
+                    super::strings::t("imager-setup-param-migration-intent"),
+                ),
+            ),
             id if id == SetupEffect::SET_INTERNAL_TARGET_SIZE.id => asking(
                 &SetupEffect::SetInternalTargetSize { gib: -1 },
                 label,
@@ -938,6 +971,57 @@ fn yes_no(value: bool) -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn migration_intent_is_private_and_available_only_before_full_os_staging() {
+        let mut state = InternalProjection {
+            on_review: true,
+            run: "idle",
+            ..InternalProjection::default()
+        };
+        let actions = internal_actions(&projection(state.clone()));
+        let action = actions
+            .iter()
+            .find(|action| action.id == SetupEffect::USE_MIGRATION_INTENT.id)
+            .unwrap();
+        assert_eq!(action.params()[0].ty, ParamType::Secret);
+        assert_eq!(
+            action.contract.availability.is_available(),
+            cfg!(target_os = "linux")
+        );
+        let encoded = decoded(
+            action,
+            &serde_json::Map::from_iter([(
+                "directory".into(),
+                serde_json::Value::String("/private/reviewed-intent".into()),
+            )]),
+        );
+        assert_eq!(
+            encoded,
+            SetupEffect::UseMigrationIntent {
+                directory: "/private/reviewed-intent".into()
+            }
+        );
+        for (review, run, pending) in [
+            (false, "idle", None),
+            (true, "running", None),
+            (true, "idle", Some("staged".into())),
+        ] {
+            state.on_review = review;
+            state.run = run;
+            state.pending_operation = pending;
+            let actions = internal_actions(&projection(state.clone()));
+            assert!(
+                !actions
+                    .iter()
+                    .find(|action| action.id == SetupEffect::USE_MIGRATION_INTENT.id)
+                    .unwrap()
+                    .contract
+                    .availability
+                    .is_available()
+            );
+        }
+    }
+
     use super::*;
     use tilo_actions::OperationKind;
 
@@ -1138,5 +1222,39 @@ mod tests {
                 .iter()
                 .all(|action| action.kind == OperationKind::Effect)
         );
+    }
+}
+
+/// A delivery retry writes the prepared account capsule, so it is distinct
+/// from the read-only native package recheck.
+pub(super) fn desktop_preparation_row(retry: bool) -> LiveRow {
+    LiveRow::new(
+        "imager.setup.desktop-preparation",
+        "imager.setup.desktop-preparation",
+        super::strings::t("installer-desktop-resource"),
+    )
+    .operation(gated(
+        bound(
+            &SetupEffect::RetryDesktop,
+            super::strings::t("installer-desktop-retry"),
+        ),
+        retry,
+        "desktop_preparation_unavailable",
+        &super::strings::t("installer-desktop-unavailable"),
+    ))
+}
+
+pub(super) fn desktop_preparation_status(retry: bool) -> EffectStatus {
+    if retry {
+        EffectStatus::labelled(
+            SetupEffect::RETRY_DESKTOP,
+            super::strings::t("installer-desktop-retry"),
+        )
+    } else {
+        EffectStatus::unavailable(
+            SetupEffect::RETRY_DESKTOP,
+            "desktop_preparation_unavailable",
+            super::strings::t("installer-desktop-unavailable"),
+        )
     }
 }

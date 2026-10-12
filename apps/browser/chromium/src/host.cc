@@ -15,6 +15,7 @@
 #include "credential_document.h"
 #include "credential_consent.h"
 #include "credential_commands.h"
+#include "service_sessions.h"
 #if defined(OS_MAC)
 #include "credentials_mac.h"
 #endif
@@ -142,6 +143,8 @@ void Dispatch(CefRefPtr<CefDictionaryValue> command);
 bool closing=false;
 bool clear_on_exit=false;
 bool private_mode=false;
+std::string service_session_id;
+bool service_session_consumed=false;
 std::string downloads_directory;
 std::shared_ptr<tilo::CredentialWorker> credential_worker;
 struct CredentialDeliveryState {std::mutex mutex;bool active=false;};
@@ -315,6 +318,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     document_scripts_=nullptr;
     if(composition_scripts_)composition_scripts_->Detach();
     composition_scripts_=nullptr;
+    if(service_session_import_)service_session_import_->Detach();service_session_import_=nullptr;
     browser_=nullptr;
     download_owners.Destroy(id_);
     Event("closed");clients.erase(id_);PublishDownloadRuntime();
@@ -371,6 +375,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     if(startup_diagnostics_ && tilo::Origin(frame->GetURL()).starts_with("https://"))startup_diagnostics_->Loaded();
     OfferCredentialContext(frame);pending_main_media_token_.reset();PublishZoom();
     CompleteMainNavigation(frame->GetURL().ToString(),status);SendScripts();
+    if(service_session_import_)service_session_import_->Loaded(frame,status);
     if(page_automation_)page_automation_->NavigationFinished();
   }
   void OnLoadError(CefRefPtr<CefBrowser>,CefRefPtr<CefFrame> frame,ErrorCode code,const CefString& text,const CefString& url) override {
@@ -605,6 +610,20 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
         int command=d->GetInt("command");auto callback=context_callback_;context_callback_=nullptr;
         if(command && context_commands_.count(command)) callback->Continue(command,EVENTFLAG_NONE);else callback->Cancel();
       }
+    }
+    else if(op=="service_session_import") {
+      CefRefPtr<Client> owner=this;
+      auto reply=[owner](CefRefPtr<CefDictionaryValue> fields){
+        if(!closing && output)owner->Event("service_session_result",fields);
+      };
+      if(private_mode || service_session_id.empty() || service_session_id!=d->GetString("session_id").ToString() || service_session_consumed) {
+        auto fields=CefDictionaryValue::Create();fields->SetInt("request_id",d->GetInt("request_id"));
+        fields->SetString("session_id",d->GetString("session_id"));fields->SetString("service",d->GetString("service"));
+        fields->SetBool("imported",false);fields->SetInt("cookie_count",0);fields->SetInt("origin_storage_count",0);tilo::ForgetServiceCookies(d);reply(fields);return;
+      }
+      service_session_consumed=true;
+      service_session_import_=new tilo::ServiceSessionImport(browser_,d,std::move(reply));
+      service_session_import_->Start();
     }
     else if(op=="credential_action") {CredentialCommand(d);}
     else if(op=="text_input") {
@@ -1058,6 +1077,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
   CefRefPtr<tilo::StartupDiagnostics> startup_diagnostics_;
   CefRefPtr<tilo::DocumentScripts> document_scripts_,composition_scripts_;std::vector<CefRefPtr<CefDictionaryValue>> pending_navigation_;
   CefRefPtr<tilo::SiteClear> site_clear_;
+  CefRefPtr<tilo::ServiceSessionImport> service_session_import_;
   int pixel_width_=0,pixel_height_=0,popup_width_=0,popup_height_=0,mouse_modifiers_=0;
   CefRefPtr<CefRunContextMenuCallback> context_callback_;int context_id_=0;std::set<int> context_commands_;
   bool finding_=false,select_initial_=false;CefString find_text_;int find_id_=0;std::deque<CefRefPtr<CefDictionaryValue>> pending_find_;
@@ -1233,6 +1253,7 @@ bool ValidCommand(CefRefPtr<CefDictionaryValue> d) {
     return true;
   }
   if(op=="site_exceptions") {if(!type("origins",VTYPE_LIST))return false;auto list=d->GetList("origins");if(list->GetSize()>1024)return false;for(size_t i=0;i<list->GetSize();++i){if(list->GetType(i)!=VTYPE_STRING)return false;const auto origin=list->GetString(i).ToString();if(origin.empty() || tilo::Origin(origin)!=origin)return false;}return true;}
+  if(op=="service_session_import")return tilo::ServiceSessionCommandValid(d);
   if(op=="credential_action") {
     if(!type("request_id",VTYPE_INT) || d->GetInt("request_id")<=0 || !type("action",VTYPE_STRING) ||
        !type("origin",VTYPE_STRING) || d->GetString("origin").ToString().size()>8192 ||
@@ -1318,21 +1339,25 @@ void ReadCommands(std::atomic<bool>& stop) {
   while(!stop && !output->Failed()) {
     pollfd fd{STDIN_FILENO,POLLIN,0};int r=poll(&fd,1,100);
     if(r<0 && errno==EINTR) continue;if(r<0) break;if(!r) continue;
-    ssize_t n=read(STDIN_FILENO,chunk,sizeof(chunk));if(n<=0) break;buffer.append(chunk,n);
+    ssize_t n=read(STDIN_FILENO,chunk,sizeof(chunk));if(n<=0) break;buffer.append(chunk,n);{volatile char* secret=chunk;for(ssize_t i=0;i<n;++i)secret[i]=0;}
     bool bad=false;
     while(buffer.size()>=4) {
       auto size=tilo::U32(buffer.data());if(!size || size>tilo::kMaxPacket) {bad=true;break;}
       if(buffer.size()<size_t(size)+4) break;
       if(buffer[4]!=1) {bad=true;break;}
-      auto parsed=CefParseJSON(buffer.substr(5,size-1),JSON_PARSER_RFC);
+      std::string payload=buffer.substr(5,size-1);
+      auto parsed=CefParseJSON(payload,JSON_PARSER_RFC);tilo::WipeServiceTransport(payload);
       if(!parsed || parsed->GetType()!=VTYPE_DICTIONARY || parsed->GetDictionary()->GetType("op")!=VTYPE_STRING) {bad=true;break;}
-      auto d=parsed->GetDictionary();if(!ValidCommand(d)) {bad=true;break;}
+      auto d=parsed->GetDictionary();if(!ValidCommand(d)) {if(d->GetString("op")=="service_session_import")tilo::ForgetServiceCookies(d);bad=true;break;}
       if(d->GetString("op")=="resize") TraceGeometry("resize-received",d->HasKey("tab")?d->GetInt("tab"):1,d->GetInt("width"),d->GetInt("height"),Number(d,"scale_factor"));
       CefPostTask(TID_UI,base::BindOnce([](CefRefPtr<CefDictionaryValue> command){Dispatch(command);},d));
-      buffer.erase(0,size+4);
+      volatile char* consumed=buffer.data();for(size_t i=0;i<size+4;++i)consumed[i]=0;
+      const auto previous_size=buffer.size();buffer.erase(0,size+4);
+      const auto remaining_size=buffer.size();buffer.resize(previous_size,'\0');buffer.resize(remaining_size);
     }
     if(bad) { std::cerr<<"Malformed browser IPC packet\n";break; }
   }
+  tilo::WipeServiceTransport(buffer);
   if(!stop) CefPostTask(TID_UI,base::BindOnce(&CloseHost));
 }
 }
@@ -1347,7 +1372,8 @@ void CloseHost() {
 int RunHost(int argc,char** argv) {
   signal(SIGPIPE,SIG_IGN);
   std::string profile;
-  for(int i=1;i<argc;++i) { std::string arg=argv[i];if(arg.rfind("--profile=",0)==0) profile=arg.substr(10);if(arg.rfind("--downloads=",0)==0) downloads_directory=arg.substr(12);if(arg=="--private") private_mode=true; }
+  for(int i=1;i<argc;++i) { std::string arg=argv[i];if(arg.rfind("--profile=",0)==0) profile=arg.substr(10);if(arg.rfind("--downloads=",0)==0) downloads_directory=arg.substr(12);if(arg=="--private") private_mode=true;if(arg.rfind("--service-session=",0)==0) {service_session_id=arg.substr(18);if(!tilo::ServiceSessionId(service_session_id))return 2;} }
+  if(private_mode && !service_session_id.empty())return 2;
   if(profile.empty() || profile[0]!='/') {std::cerr<<"--profile requires an absolute directory\n";return 2;}
   std::filesystem::create_directories(profile);
   profile=std::filesystem::canonical(profile).string();
@@ -1356,6 +1382,7 @@ int RunHost(int argc,char** argv) {
   CefSettings settings;settings.windowless_rendering_enabled=true;settings.log_severity=LOGSEVERITY_WARNING;
   CefString(&settings.root_cache_path)=profile;
   if(!private_mode) CefString(&settings.cache_path)=profile+"/default";
+  if(!service_session_id.empty())settings.persist_session_cookies=true;
   CefString(&settings.log_file)=profile+"/cef.log";
 #if defined(OS_MAC)
   const auto executable=std::filesystem::canonical(argv[0]);

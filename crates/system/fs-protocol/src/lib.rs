@@ -50,7 +50,8 @@ pub use file_invite::{
 pub use files::{
     CONTENT_REVISION_VERSION, ConflictMergeCodecV1, ConflictResolution, ConflictStatus,
     ConflictStrategy, ContentHash, ContentRevisionV1, FILE_BINDING_VERSION,
-    FILE_MUTATION_TRANSACTION_SIGNATURE_DOMAIN, FILE_MUTATION_TRANSACTION_VERSION, FileActor,
+    FILE_MUTATION_TRANSACTION_SIGNATURE_DOMAIN, FILE_MUTATION_TRANSACTION_SIGNATURE_DOMAIN_V4,
+    FILE_MUTATION_TRANSACTION_VERSION, FILE_MUTATION_TRANSACTION_VERSION_V4, FileActor,
     FileBindingV1, FileConflictV1, FileMetadataV1, FileMutationOperation, FileMutationParticipant,
     FileMutationParticipantRole, FileMutationTransaction, FileMutationTransactionError,
     FileMutationTransactionManifest, FileNameV1, FileNodeKind, FilePropertiesV1, FileProvenance,

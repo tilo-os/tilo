@@ -29,6 +29,44 @@ pub struct LocalIdentity {
 /// hosting more than one identity must not be frozen into the first one.
 pub trait LocalIdentitySource: Send + Sync {
     fn load(&self) -> Option<LocalIdentity>;
+
+    /// Bounded public presentation, bound to the certified person's root key.
+    #[cfg(feature = "local-daemons")]
+    fn public_photo(&self) -> Option<([u8; 32], runtime_identity::ProfilePhoto)> {
+        None
+    }
+}
+
+/// Resolve a photo only for the exact canonical root public key. Account names
+/// and email addresses are never interpreted as the local person.
+#[cfg(feature = "local-daemons")]
+pub(crate) fn photo_for(identity: &str) -> Option<runtime_identity::ProfilePhoto> {
+    let source = SOURCE
+        .read()
+        .unwrap_or_else(PoisonError::into_inner)
+        .clone();
+    match source {
+        Some(source) => photo_from(source.as_ref(), identity),
+        None => photo_from(&RuntimeIdentity, identity),
+    }
+}
+
+#[cfg(feature = "local-daemons")]
+fn photo_from(
+    source: &dyn LocalIdentitySource,
+    identity: &str,
+) -> Option<runtime_identity::ProfilePhoto> {
+    // Reject aliases before asking the authenticated source for any metadata.
+    if identity.len() != 64
+        || !identity
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    {
+        return None;
+    }
+    let (key, photo) = source.public_photo()?;
+    let canonical: String = key.iter().map(|byte| format!("{byte:02x}")).collect();
+    (identity == canonical).then_some(photo)
 }
 
 static SOURCE: RwLock<Option<Arc<dyn LocalIdentitySource>>> = RwLock::new(None);
@@ -93,6 +131,14 @@ pub struct RuntimeIdentity;
 impl LocalIdentitySource for RuntimeIdentity {
     fn load(&self) -> Option<LocalIdentity> {
         Self::resolve(true)
+    }
+
+    #[cfg(unix)]
+    fn public_photo(&self) -> Option<([u8; 32], runtime_identity::ProfilePhoto)> {
+        // Automatic presentation uses only the launcher's authenticated broker,
+        // never an ungranted host config file or a username-derived location.
+        let metadata = runtime_identity::load_bound_metadata().ok()?;
+        Some((metadata.group_public_key, metadata.profile_photo?))
     }
 }
 
@@ -162,5 +208,42 @@ pub struct FixedIdentity(pub LocalIdentity);
 impl LocalIdentitySource for FixedIdentity {
     fn load(&self) -> Option<LocalIdentity> {
         Some(self.0.clone())
+    }
+}
+
+#[cfg(all(test, feature = "local-daemons"))]
+mod photo_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct CertifiedPhoto {
+        calls: AtomicUsize,
+    }
+    impl LocalIdentitySource for CertifiedPhoto {
+        fn load(&self) -> Option<LocalIdentity> {
+            None
+        }
+        fn public_photo(&self) -> Option<([u8; 32], runtime_identity::ProfilePhoto)> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Some((
+                [0x12; 32],
+                runtime_identity::ProfilePhoto::new(1, 1, vec![20, 90, 210, 255]).unwrap(),
+            ))
+        }
+    }
+
+    #[test]
+    fn public_photo_requires_exact_person_key_and_never_queries_for_account_aliases() {
+        let source = CertifiedPhoto {
+            calls: AtomicUsize::new(0),
+        };
+        for alias in ["Ada", "ada@example.org", "12", &"AB".repeat(32)] {
+            assert!(photo_from(&source, alias).is_none());
+        }
+        assert_eq!(source.calls.load(Ordering::SeqCst), 0);
+        assert!(photo_from(&source, &"13".repeat(32)).is_none());
+        let photo = photo_from(&source, &"12".repeat(32)).unwrap();
+        assert_eq!(photo.rgba(), &[20, 90, 210, 255]);
+        assert!(photo_from(&NoLocalIdentity, &"12".repeat(32)).is_none());
     }
 }

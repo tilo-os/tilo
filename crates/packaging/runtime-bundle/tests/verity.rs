@@ -63,6 +63,7 @@ fn signed_bundle(parent: &Path, dylib_size: usize, signed: bool) -> Fixture {
             arch: Some("x86_64"),
             identity: signed.then_some(identity_path.as_path()),
             extra_libs: &[dylib],
+            extra_bins: &[],
         },
     )
     .unwrap();

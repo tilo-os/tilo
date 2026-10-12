@@ -25,6 +25,25 @@ pub fn object_path(device: &str) -> String {
     path
 }
 
+/// Filesystems for which migration can request a mount without journal replay.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReadOnlyFilesystem {
+    Ext4,
+    Xfs,
+    Btrfs,
+}
+
+impl ReadOnlyFilesystem {
+    /// Controlled mount options: no caller-provided paths or option fragments.
+    pub fn options(self) -> &'static str {
+        match self {
+            Self::Ext4 => "ro,nodev,nosuid,noexec,noatime,noload",
+            Self::Xfs => "ro,nodev,nosuid,noexec,noatime,norecovery",
+            Self::Btrfs => "ro,nodev,nosuid,noexec,noatime,nologreplay,subvolid=5",
+        }
+    }
+}
+
 #[cfg(feature = "udisks")]
 pub use client::Udisks;
 
@@ -35,7 +54,7 @@ mod client {
     use zbus::blocking::{Connection, Proxy};
     use zbus::zvariant::Value;
 
-    use super::{IFACE_BLOCK, IFACE_FILESYSTEM, SERVICE, object_path};
+    use super::{IFACE_BLOCK, IFACE_FILESYSTEM, ReadOnlyFilesystem, SERVICE, object_path};
 
     /// Empty `a{sv}` options: `UDisks2` picks its defaults (automatic mount
     /// point, default mkfs options).
@@ -90,6 +109,64 @@ mod client {
             self.filesystem(device)?.call("Mount", &(no_options(),))
         }
 
+        /// Refresh kernel partition and filesystem information after imaging.
+        ///
+        /// # Errors
+        /// Returns an error if the daemon cannot rescan the selected device.
+        pub fn rescan(&self, device: &str) -> zbus::Result<()> {
+            self.block(device)?.call("Rescan", &(no_options(),))
+        }
+
+        /// Mount the verified installer's FAT filesystem for encrypted setup.
+        /// Permission remains with Polkit; these options never permit execution.
+        ///
+        /// # Errors
+        /// Returns an error if mounting is refused or these options are unavailable.
+        pub fn mount_setup(&self, device: &str, uid: u32, gid: u32) -> zbus::Result<String> {
+            let mount_options = format!("rw,nodev,nosuid,noexec,uid={uid},gid={gid},umask=0077");
+            let options = HashMap::from([
+                ("fstype", Value::from("vfat")),
+                ("options", Value::from(mount_options.as_str())),
+            ]);
+            self.filesystem(device)?.call("Mount", &(options,))
+        }
+
+        /// Mount an explicitly selected migration source without journal replay.
+        /// The caller must additionally attest the returned mount against the
+        /// current kernel mount table and filesystem read-only flag.
+        ///
+        /// # Errors
+        /// Returns an error when the mount options are unsupported or Polkit
+        /// refuses permission. There is no fallback to writable/default options.
+        pub fn mount_read_only(
+            &self,
+            device: &str,
+            filesystem: ReadOnlyFilesystem,
+        ) -> zbus::Result<String> {
+            let options = HashMap::from([("options", Value::from(filesystem.options()))]);
+            self.filesystem(device)?.call("Mount", &(options,))
+        }
+
+        /// Mount an explicitly selected retained Linux filesystem for shared edits.
+        /// No forced recovery or ownership change is requested.
+        ///
+        /// # Errors
+        /// Refuses denied or unsupported controlled mount options.
+        pub fn mount_shared_files(
+            &self,
+            device: &str,
+            filesystem: ReadOnlyFilesystem,
+        ) -> zbus::Result<String> {
+            let controlled = match filesystem {
+                ReadOnlyFilesystem::Ext4 | ReadOnlyFilesystem::Xfs => {
+                    "rw,nodev,nosuid,noexec,noatime"
+                }
+                ReadOnlyFilesystem::Btrfs => "rw,nodev,nosuid,noexec,noatime,subvolid=5",
+            };
+            let options = HashMap::from([("options", Value::from(controlled))]);
+            self.filesystem(device)?.call("Mount", &(options,))
+        }
+
         /// `Filesystem.Unmount`.
         ///
         /// # Errors
@@ -97,6 +174,47 @@ mod client {
         /// Returns an error when the call fails or is not authorised.
         pub fn unmount(&self, device: &str) -> zbus::Result<()> {
             self.filesystem(device)?.call("Unmount", &(no_options(),))
+        }
+
+        /// Obtain a read-only descriptor through the daemon's authorization.
+        ///
+        /// # Errors
+        /// Returns an error if opening the selected block device is refused.
+        pub fn open_read_only(&self, device: &str) -> zbus::Result<std::fs::File> {
+            let descriptor: zbus::zvariant::OwnedFd = self
+                .block(device)?
+                .call("OpenDevice", &("r", no_options()))?;
+            Ok(std::fs::File::from(std::os::fd::OwnedFd::from(descriptor)))
+        }
+
+        /// Format only a caller-attested new migration partition as ext4.
+        /// Ownership is assigned by the daemon to its authorized caller.
+        ///
+        /// # Errors
+        /// Returns an error if formatting or ownership options are refused.
+        pub fn format_migration(&self, device: &str) -> zbus::Result<()> {
+            let options = HashMap::from([
+                ("label", Value::from("Tilo migration")),
+                (
+                    "mkfs-args",
+                    Value::from(crate::migration_ext4::MKFS_ARGS.to_vec()),
+                ),
+                ("take-ownership", Value::from(true)),
+                ("update-partition-type", Value::from(false)),
+            ]);
+            self.block(device)?.call("Format", &("ext4", options))
+        }
+
+        /// Mount encrypted migration media without execution or device access.
+        ///
+        /// # Errors
+        /// Returns an error if these controlled mount options are unavailable.
+        pub fn mount_migration(&self, device: &str) -> zbus::Result<String> {
+            let options = HashMap::from([
+                ("fstype", Value::from("ext4")),
+                ("options", Value::from("rw,nodev,nosuid,noexec,noatime")),
+            ]);
+            self.filesystem(device)?.call("Mount", &(options,))
         }
 
         /// `Block.Format` with `fstype` (`ext4`, `vfat`, ...).
@@ -113,6 +231,28 @@ mod client {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn migration_mounts_disable_writes_and_journal_replay() {
+        for filesystem in [
+            ReadOnlyFilesystem::Ext4,
+            ReadOnlyFilesystem::Xfs,
+            ReadOnlyFilesystem::Btrfs,
+        ] {
+            let options: Vec<_> = filesystem.options().split(',').collect();
+            for required in ["ro", "nodev", "nosuid", "noexec", "noatime"] {
+                assert!(options.contains(&required));
+            }
+            assert!(!options.contains(&"rw"));
+        }
+        assert!(ReadOnlyFilesystem::Ext4.options().contains("noload"));
+        assert!(ReadOnlyFilesystem::Xfs.options().contains("norecovery"));
+        assert!(
+            ReadOnlyFilesystem::Btrfs
+                .options()
+                .contains("nologreplay,subvolid=5")
+        );
+    }
 
     #[test]
     fn object_paths_escape_every_byte_outside_the_plain_name_set() {

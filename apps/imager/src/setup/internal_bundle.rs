@@ -54,6 +54,14 @@ struct Manifest {
     firmware: String,
     secure_boot: String,
     installer_protocol: u32,
+    #[serde(default)]
+    account_custody: Option<super::account_admission::ConsumerCapability>,
+    #[serde(default)]
+    home_archive: Option<super::home_admission::ConsumerCapability>,
+    #[serde(default)]
+    applications: Option<super::applications_admission::ConsumerCapability>,
+    #[serde(default)]
+    original_source: Option<super::original_admission::ConsumerCapability>,
     source_image_bytes: u64,
     components: Vec<Component>,
     boot_binding: BootBinding,
@@ -133,6 +141,70 @@ impl InternalBundle {
     /// SHA-256 of the live UKI at `efi_path`, as built and signed.
     pub fn uki_sha256(&self) -> &str {
         &self.manifest.boot_binding.uki_sha256
+    }
+
+    /// Check the prepared account requirement against this selected image's proof.
+    /// # Errors
+    /// Refuses protected custody when the authenticated target lacks its protocol.
+    pub fn require_account_protocol(&self, required: Option<u32>) -> Result<(), String> {
+        if required.is_some_and(|protocol| {
+            self.manifest
+                .account_custody
+                .as_ref()
+                .is_none_or(|capability| capability.protected_grant_protocol != protocol)
+        }) {
+            return Err("The selected system cannot use the saved connections".into());
+        }
+        Ok(())
+    }
+
+    /// Consumer proof is authenticated only when this bundle comes from the signed release selection.
+    pub fn account_custody(&self) -> Option<&super::account_admission::ConsumerCapability> {
+        self.manifest.account_custody.as_ref()
+    }
+
+    /// Check separately selected website sessions against the authenticated receiver.
+    /// # Errors
+    /// Refuses a target without its actual browser and engine consumer proof.
+    pub fn require_service_session_protocol(&self, required: Option<u32>) -> Result<(), String> {
+        if required.is_some_and(|protocol| {
+            self.manifest
+                .account_custody
+                .as_ref()
+                .is_none_or(|proof| !proof.supports_service_session_protocol(protocol))
+        }) {
+            return Err("The selected system cannot use the saved connections".into());
+        }
+        Ok(())
+    }
+
+    /// Check the Home declaration against authenticated target consumers.
+    /// # Errors
+    /// Refuses images without the required archive protocol.
+    /// # Errors
+    /// Refuses selected app data without its separate authenticated consumer proof.
+    pub fn require_applications_protocol(&self, required: Option<u32>) -> Result<(), String> {
+        super::applications_admission::require(self.manifest.applications.as_ref(), required)
+            .map_err(|e| e.to_string())
+    }
+    pub fn require_home_protocol(&self, required: Option<u32>) -> Result<(), String> {
+        super::home_admission::require(self.manifest.home_archive.as_ref(), required)
+            .map_err(|error| error.to_string())
+    }
+
+    /// This proof is authenticated by the enclosing selected signed image manifest.
+    pub fn home_archive(&self) -> Option<&super::home_admission::ConsumerCapability> {
+        self.manifest.home_archive.as_ref()
+    }
+
+    /// The enclosing selected manifest authenticates this declaration only;
+    /// actual installed readiness must still be independently checked.
+    pub fn original_source(&self) -> Option<&super::original_admission::ConsumerCapability> {
+        self.manifest.original_source.as_ref()
+    }
+    pub fn require_original_protocol(&self, required: Option<u32>) -> Result<(), String> {
+        super::original_admission::require(self.original_source(), required)
+            .map_err(|error| error.to_string())
     }
 
     pub fn release_id(&self) -> &str {
@@ -260,6 +332,18 @@ pub fn validate_internal_bundle(manifest: &[u8]) -> Result<InternalBundle, Strin
         require(
             shape.is_object()
                 && shape
+                    .get("account_custody")
+                    .is_none_or(serde_json::Value::is_object)
+                && shape
+                    .get("applications")
+                    .is_none_or(serde_json::Value::is_object)
+                && shape
+                    .get("home_archive")
+                    .is_none_or(serde_json::Value::is_object)
+                && shape
+                    .get("original_source")
+                    .is_none_or(super::original_admission::ConsumerCapability::wire_shape)
+                && shape
                     .get("boot_binding")
                     .is_some_and(serde_json::Value::is_object)
                 && shape
@@ -274,6 +358,22 @@ pub fn validate_internal_bundle(manifest: &[u8]) -> Result<InternalBundle, Strin
         data.schema == SCHEMA && data.installer_protocol == 1,
         "unsupported schema or installer protocol",
     )?;
+    if let Some(capability) = &data.account_custody {
+        capability.validate().map_err(|error| error.to_string())?;
+    }
+    if let Some(capability) = &data.applications {
+        capability.validate().map_err(|e| e.to_string())?;
+    }
+    if let Some(capability) = &data.home_archive {
+        capability.validate().map_err(|error| error.to_string())?;
+    }
+    if let Some(capability) = &data.original_source {
+        capability.validate().map_err(|error| error.to_string())?;
+        require(
+            capability.capture_pins.arch == data.architecture,
+            "original-source proof architecture differs from selected image",
+        )?;
+    }
     require(data.purpose == PURPOSE, "wrong bundle purpose")?;
     require(identifier(&data.release_id), "invalid release identity")?;
     require(
@@ -1705,5 +1805,136 @@ pub(crate) mod tests {
                 .map(|key| value[key].clone())
                 .collect(),
         )
+    }
+    #[test]
+    fn selected_bundle_account_admission_keeps_legacy_fresh_setup_and_refuses_missing_proof() {
+        let mut data: Value = serde_json::from_str(SHARED_FIXTURE).unwrap();
+        let legacy = validate_internal_bundle(&bytes(&data)).unwrap();
+        assert!(legacy.require_account_protocol(None).is_ok());
+        assert!(legacy.require_account_protocol(Some(1)).is_err());
+        let capability = json!({"schema":1,"protected_grant_protocol":1,
+            "credential_helper_sha256":"a".repeat(64),"runtime_root_hash":"b".repeat(64),
+            "runtime_probe_sha256":"c".repeat(64),"runtime_library_sha256":"d".repeat(64),
+            "runtime_version":"0.1.0+native.abc","runtime_library":"lib/libruntime_dylib.so"});
+        data["account_custody"] = capability.clone();
+        let updated = validate_internal_bundle(&bytes(&data)).unwrap();
+        assert!(updated.require_account_protocol(Some(1)).is_ok());
+        assert!(updated.require_service_session_protocol(None).is_ok());
+        assert!(updated.require_service_session_protocol(Some(1)).is_err());
+        assert!(updated.require_account_protocol(Some(2)).is_err());
+        assert!(updated.require_account_protocol(None).is_ok());
+        assert_eq!(updated.uki_sha256(), legacy.uki_sha256());
+        for bad in [json!(null), json!([]), json!(true)] {
+            data["account_custody"] = bad;
+            assert!(validate_internal_bundle(&bytes(&data)).is_err());
+        }
+        data["account_custody"] = capability;
+        data["account_custody"]["protected_grant_protocol"] = json!(2);
+        assert!(validate_internal_bundle(&bytes(&data)).is_err());
+    }
+    #[test]
+    fn selected_application_data_requires_distinct_authenticated_target_proof() {
+        let mut data: Value = serde_json::from_str(SHARED_FIXTURE).unwrap();
+        let legacy = validate_internal_bundle(&bytes(&data)).unwrap();
+        assert!(legacy.require_applications_protocol(None).is_ok());
+        assert!(legacy.require_applications_protocol(Some(2)).is_err());
+        data["home_archive"] = json!({"schema":1,"archive_protocol":2,"seed_protocol":1,
+            "firstboot_user_sha256":"c".repeat(64),"seed_helper_sha256":"d".repeat(64),
+            "prepared_helper_sha256":"a".repeat(64),"tar_sha256":"b".repeat(64)});
+        assert!(
+            validate_internal_bundle(&bytes(&data))
+                .unwrap()
+                .require_applications_protocol(Some(2))
+                .is_err()
+        );
+        let proof = json!({"schema":1,"subset_protocol":2,"prepared_helper_sha256":"a".repeat(64),
+            "qualification_script_sha256":"b".repeat(64),"native_qualification_sha256":"c".repeat(64)});
+        data["applications"] = proof.clone();
+        let selected = validate_internal_bundle(&bytes(&data)).unwrap();
+        assert!(selected.require_applications_protocol(Some(2)).is_ok());
+        assert!(selected.require_applications_protocol(Some(1)).is_err());
+        assert_eq!(selected.uki_sha256(), legacy.uki_sha256());
+        for malformed in [json!(null), json!([]), json!(true)] {
+            data["applications"] = malformed;
+            assert!(validate_internal_bundle(&bytes(&data)).is_err());
+        }
+        for field in [
+            "prepared_helper_sha256",
+            "qualification_script_sha256",
+            "native_qualification_sha256",
+        ] {
+            data["applications"] = proof.clone();
+            data["applications"][field] = json!("x".repeat(64));
+            assert!(validate_internal_bundle(&bytes(&data)).is_err());
+        }
+    }
+    #[test]
+    fn selected_bundle_home_admission_preserves_fresh_setup_and_requires_target_proof() {
+        let mut data: Value = serde_json::from_str(SHARED_FIXTURE).unwrap();
+        let legacy = validate_internal_bundle(&bytes(&data)).unwrap();
+        assert!(legacy.require_home_protocol(None).is_ok());
+        assert!(legacy.require_home_protocol(Some(2)).is_err());
+        let proof = json!({"schema":1,"archive_protocol":2,"seed_protocol":1,
+            "firstboot_user_sha256":"c".repeat(64),"seed_helper_sha256":"d".repeat(64),
+            "prepared_helper_sha256":"a".repeat(64),"tar_sha256":"b".repeat(64)});
+        data["home_archive"] = proof.clone();
+        let updated = validate_internal_bundle(&bytes(&data)).unwrap();
+        assert!(updated.require_home_protocol(Some(2)).is_ok());
+        assert!(updated.require_home_protocol(Some(1)).is_err());
+        assert_eq!(updated.uki_sha256(), legacy.uki_sha256());
+        for bad in [
+            json!(null),
+            json!([]),
+            json!(true),
+            json!([
+                1,
+                2,
+                1,
+                "c".repeat(64),
+                "d".repeat(64),
+                "a".repeat(64),
+                "b".repeat(64)
+            ]),
+        ] {
+            data["home_archive"] = bad;
+            assert!(validate_internal_bundle(&bytes(&data)).is_err());
+        }
+        for key in ["firstboot_user_sha256", "seed_helper_sha256"] {
+            data["home_archive"] = proof.clone();
+            data["home_archive"][key] = json!("X".repeat(64));
+            assert!(validate_internal_bundle(&bytes(&data)).is_err());
+        }
+        data["home_archive"] = proof.clone();
+        data["home_archive"]["seed_protocol"] = json!(2);
+        assert!(validate_internal_bundle(&bytes(&data)).is_err());
+        data["home_archive"] = proof;
+        data["home_archive"]["archive_protocol"] = json!(1);
+        assert!(validate_internal_bundle(&bytes(&data)).is_err());
+    }
+    #[test]
+    fn selected_bundle_original_syntax_preserves_legacy_and_requires_matching_architecture() {
+        let mut data: Value = serde_json::from_str(SHARED_FIXTURE).unwrap();
+        let legacy = validate_internal_bundle(&bytes(&data)).unwrap();
+        assert!(legacy.original_source().is_none());
+        assert!(legacy.require_original_protocol(None).is_ok());
+        assert!(legacy.require_original_protocol(Some(5)).is_err());
+        let mut proof = super::super::original_admission::syntax_fixture();
+        proof.capture_pins.arch = data["architecture"].as_str().unwrap().into();
+        data["original_source"] = serde_json::to_value(&proof).unwrap();
+        let selected = validate_internal_bundle(&bytes(&data)).unwrap();
+        assert_eq!(selected.original_source(), Some(&proof));
+        assert_eq!(selected.uki_sha256(), legacy.uki_sha256());
+        for bad in [json!(null), json!([]), json!(true)] {
+            let mut changed = data.clone();
+            changed["original_source"] = bad;
+            assert!(validate_internal_bundle(&bytes(&changed)).is_err());
+        }
+        data["original_source"]["capture_pins"]["arch"] =
+            json!(if proof.capture_pins.arch == "x86_64" {
+                "aarch64"
+            } else {
+                "x86_64"
+            });
+        assert!(validate_internal_bundle(&bytes(&data)).is_err());
     }
 }

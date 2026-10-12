@@ -24,6 +24,7 @@
 //! method logs errors, while `try_save` returns them to the caller.
 
 use std::collections::BTreeMap;
+use std::io::Read as _;
 use std::path::{Path, PathBuf};
 
 use secret_vault::{VaultFormat, VaultKey};
@@ -36,7 +37,7 @@ pub use secret_vault::Custody as SecretCustody;
 
 /// One account's secret material. Kept out of the plaintext account store entirely — it
 /// only ever lives in the sealed vault (or in memory while an app is connecting).
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Secret {
     /// The password / app-password for password-auth accounts.
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -45,6 +46,12 @@ pub struct Secret {
     /// of using a password. Unused by current consumers but reserved so the vault shape doesn't churn.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub token: Option<String>,
+}
+
+impl std::fmt::Debug for Secret {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Secret(<private credentials>)")
+    }
 }
 
 impl Secret {
@@ -87,6 +94,7 @@ pub struct SecretVault {
     entries: BTreeMap<String, Secret>,
     custody: SecretCustody,
     load_error: Option<String>,
+    read_only: bool,
 }
 
 pub(crate) fn explicit_root_custody() -> SecretCustody {
@@ -116,6 +124,7 @@ impl SecretVault {
                     page: None,
                     entries: BTreeMap::new(),
                     custody: explicit_root_custody(),
+                    read_only: false,
                     load_error: Some(format!("user config directory unavailable: {error}")),
                 },
             },
@@ -128,6 +137,49 @@ impl SecretVault {
         let dir = crate::vault_dir_in(config_root);
         let custody = explicit_root_custody();
         Self::open_at(dir, custody)
+    }
+
+    /// Read an existing explicit-root vault without changing its source custody.
+    /// Missing ciphertext or keys are recovery errors. This view cannot be saved,
+    /// including after in-memory edits; it never creates or restricts source files.
+    pub fn open_read_only_in(config_root: &Path) -> Self {
+        let dir = crate::vault_dir_in(config_root);
+        let custody = explicit_root_custody();
+        Self::open_read_only_at(dir, custody)
+    }
+
+    /// Read existing native session custody without creating keys or files.
+    /// An unavailable native config root is a recovery error; no page fallback
+    /// or new credential namespace is created.
+    pub fn open_read_only() -> Self {
+        match crate::config_root() {
+            Some(root) => {
+                Self::open_read_only_at(crate::vault_dir_in(&root), SecretCustody::for_session())
+            }
+            None => Self {
+                dir: PathBuf::new(),
+                page: None,
+                entries: BTreeMap::new(),
+                custody: explicit_root_custody(),
+                read_only: true,
+                load_error: Some("native credential custody unavailable".into()),
+            },
+        }
+    }
+
+    fn open_read_only_at(dir: PathBuf, custody: SecretCustody) -> Self {
+        let (entries, load_error) = match load_entries_read_only(&dir, custody) {
+            Ok(entries) => (entries, None),
+            Err(error) => (BTreeMap::new(), Some(error)),
+        };
+        Self {
+            dir,
+            page: None,
+            entries,
+            custody,
+            load_error,
+            read_only: true,
+        }
     }
 
     fn open_page(page: tilo_files::Dir) -> Self {
@@ -144,6 +196,7 @@ impl SecretVault {
             entries,
             custody: SecretCustody::System,
             load_error,
+            read_only: false,
         }
     }
 
@@ -161,6 +214,7 @@ impl SecretVault {
             entries,
             custody,
             load_error,
+            read_only: false,
         }
     }
 
@@ -225,6 +279,9 @@ impl SecretVault {
     /// prepared, serialization or encryption fails, or the sealed file cannot
     /// be atomically persisted.
     pub fn try_save(&self) -> Result<(), String> {
+        if self.read_only {
+            return Err("read-only credential vault cannot be saved".to_string());
+        }
         if let Some(error) = &self.load_error {
             return Err(format!(
                 "vault recovery required; restore access and reopen: {error}"
@@ -292,6 +349,37 @@ fn load_page_entries(page: &tilo_files::Dir) -> Result<BTreeMap<String, Secret>,
         .map_err(|_| "decrypted credential vault is invalid".to_string())
 }
 
+/// Bounded, owner-checked ciphertext reads preserve inherited ciphertext modes;
+/// the existing key retains strict canonical private-file custody.
+fn load_entries_read_only(
+    dir: &Path,
+    custody: SecretCustody,
+) -> Result<BTreeMap<String, Secret>, String> {
+    const MAX_BLOB: u64 = 8 * 1024 * 1024;
+    let file = tilo_files::native::private::read_ciphertext(&dir.join("vault.enc"))
+        .map_err(|_| "existing credential vault unavailable".to_string())?;
+    let metadata = file
+        .metadata()
+        .map_err(|_| "credential vault metadata unavailable".to_string())?;
+    if !metadata.is_file() || metadata.len() > MAX_BLOB {
+        return Err("credential vault exceeds read limit".to_string());
+    }
+    let mut blob = Vec::new();
+    file.take(MAX_BLOB + 1)
+        .read_to_end(&mut blob)
+        .map_err(|_| "credential vault read failed".to_string())?;
+    if blob.len() as u64 > MAX_BLOB {
+        return Err("credential vault exceeds read limit".to_string());
+    }
+    let key = FORMAT
+        .read_existing_key(dir, custody)
+        .ok_or_else(|| "existing credential vault key unavailable".to_string())?;
+    let plaintext =
+        open(&key, &blob).ok_or_else(|| "credential vault integrity check failed".to_string())?;
+    serde_json::from_slice(&plaintext)
+        .map_err(|_| "decrypted credential vault is invalid".to_string())
+}
+
 /// Read and authenticate existing entries, distinguishing absence from damage.
 fn load_entries(dir: &Path, custody: SecretCustody) -> Result<BTreeMap<String, Secret>, String> {
     let blob = match std::fs::read(dir.join("vault.enc")) {
@@ -324,6 +412,22 @@ fn open(key: &VaultKey, blob: &[u8]) -> Option<Zeroizing<Vec<u8>>> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn secret_debug_never_exposes_password_or_token() {
+        let secret = super::Secret {
+            password: "debug-password-marker".into(),
+            token: Some("debug-token-marker".into()),
+        };
+        let output = format!("{secret:?}");
+        assert!(!output.contains("debug-password-marker"));
+        assert!(!output.contains("debug-token-marker"));
+        let encoded = serde_json::to_string(&secret).unwrap();
+        assert_eq!(
+            serde_json::from_str::<super::Secret>(&encoded).unwrap(),
+            secret
+        );
+    }
+
     use super::*;
     use secret_vault::KEY_LEN;
     #[cfg(windows)]
@@ -338,6 +442,233 @@ mod tests {
         let mut bytes = Zeroizing::new(Vec::new());
         private_fs::read(path)?.read_to_end(&mut bytes)?;
         Ok(bytes)
+    }
+
+    #[cfg(windows)]
+    mod readonly_windows {
+        use super::*;
+        use std::os::windows::fs::MetadataExt as _;
+
+        #[derive(Debug, PartialEq, Eq)]
+        struct Witness {
+            name: std::ffi::OsString,
+            bytes: Vec<u8>,
+            attributes: u32,
+            created: u64,
+            modified: u64,
+            acl: Vec<u8>,
+        }
+
+        fn acl(path: &Path) -> Vec<u8> {
+            let result = bounded_command::run(
+                "icacls.exe",
+                &[path.to_str().unwrap()],
+                None,
+                16 * 1024,
+                Duration::from_secs(5),
+            )
+            .unwrap();
+            assert!(result.status.success(), "{result:?}");
+            result.stdout
+        }
+
+        fn snapshot(directory: &Path) -> Vec<Witness> {
+            let mut paths: Vec<_> = std::fs::read_dir(directory)
+                .unwrap()
+                .map(|entry| entry.unwrap().path())
+                .collect();
+            paths.sort();
+            paths.insert(0, directory.to_owned());
+            paths
+                .into_iter()
+                .map(|path| {
+                    let metadata = std::fs::symlink_metadata(&path).unwrap();
+                    let bytes = if metadata.is_file() {
+                        let private = private_fs::read(&path).unwrap();
+                        assert_eq!(private.metadata().unwrap().len(), metadata.len());
+                        std::fs::read(&path).unwrap()
+                    } else {
+                        Vec::new()
+                    };
+                    Witness {
+                        name: path.file_name().unwrap().to_owned(),
+                        bytes,
+                        attributes: metadata.file_attributes(),
+                        created: metadata.creation_time(),
+                        modified: metadata.last_write_time(),
+                        acl: acl(&path),
+                    }
+                })
+                .collect()
+        }
+
+        fn source(root: &Path) -> (AccountId, PathBuf) {
+            let id = AccountId::from("readonly-dpapi-account");
+            let mut writable = SecretVault::open_in(root);
+            writable.put(&id, &Secret::password("original-private-secret"));
+            writable.try_save().unwrap();
+            let directory = crate::vault_dir_in(root);
+            assert!(private_fs::read(&directory.join("vault.key.dpapi")).is_ok());
+            assert!(!directory.join("vault.key").exists());
+            std::fs::remove_file(directory.join("vault-key.lock")).unwrap();
+            (id, directory)
+        }
+
+        #[test]
+        fn readonly_dpapi_source_authenticates_without_recreating_lock_or_changing_acl() {
+            let root = temp_root();
+            let (id, directory) = source(&root);
+            let before = snapshot(&directory);
+            let mut readonly = SecretVault::open_read_only_in(&root);
+            assert!(readonly.recovery_error().is_none());
+            assert_eq!(readonly.custody(), SecretCustody::WindowsDpapi);
+            assert_eq!(
+                readonly.get(&id),
+                Some(Secret::password("original-private-secret"))
+            );
+            readonly.put(&id, &Secret::password("memory-only-edit"));
+            assert!(readonly.try_save().is_err());
+            assert!(!directory.join("vault-key.lock").exists());
+            assert_eq!(snapshot(&directory), before);
+            std::fs::remove_dir_all(root).unwrap();
+        }
+
+        #[test]
+        fn readonly_missing_or_corrupt_dpapi_key_never_creates_or_repairs_source() {
+            let root = temp_root();
+            let missing = root.join("absent");
+            assert!(
+                SecretVault::open_read_only_in(&missing)
+                    .recovery_error()
+                    .is_some()
+            );
+            assert!(!missing.exists());
+            let (_, directory) = source(&root);
+            let key = directory.join("vault.key.dpapi");
+            let ciphertext = std::fs::read(directory.join("vault.enc")).unwrap();
+            std::fs::remove_file(&key).unwrap();
+            let missing_before = snapshot(&directory);
+            assert!(
+                SecretVault::open_read_only_in(&root)
+                    .recovery_error()
+                    .is_some()
+            );
+            assert!(!key.exists());
+            assert!(!directory.join("vault-key.lock").exists());
+            assert_eq!(snapshot(&directory), missing_before);
+            private_fs::create_atomic(&key, b"invalid DPAPI ciphertext").unwrap();
+            let corrupt_before = snapshot(&directory);
+            assert!(
+                SecretVault::open_read_only_in(&root)
+                    .recovery_error()
+                    .is_some()
+            );
+            assert!(!directory.join("vault-key.lock").exists());
+            assert_eq!(snapshot(&directory), corrupt_before);
+            assert_eq!(
+                std::fs::read(directory.join("vault.enc")).unwrap(),
+                ciphertext
+            );
+            std::fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn readonly_source_vault_authenticates_without_changing_files_or_permissions() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let root = temp_root();
+        let id = AccountId::from("source-account");
+        let mut writable = SecretVault::open_in(&root);
+        writable.put(&id, &Secret::password("source-secret"));
+        writable.try_save().unwrap();
+        let directory = crate::vault_dir_in(&root);
+        let snapshot = || {
+            let mut entries: Vec<_> = std::fs::read_dir(&directory)
+                .unwrap()
+                .map(|entry| {
+                    let entry = entry.unwrap();
+                    (
+                        entry.file_name(),
+                        std::fs::read(entry.path()).unwrap(),
+                        entry.metadata().unwrap().permissions().mode(),
+                    )
+                })
+                .collect();
+            entries.sort_by(|left, right| left.0.cmp(&right.0));
+            entries
+        };
+        let before = snapshot();
+        let mut readonly = SecretVault::open_read_only_in(&root);
+        assert!(
+            readonly.recovery_error().is_none(),
+            "{:?}",
+            readonly.recovery_error()
+        );
+        assert_eq!(readonly.get(&id), Some(Secret::password("source-secret")));
+        readonly.put(&id, &Secret::password("changed-in-memory"));
+        assert!(readonly.try_save().is_err());
+        assert_eq!(snapshot(), before);
+        let ciphertext = directory.join("vault.enc");
+        let retained = directory.join("original.enc");
+        std::fs::rename(&ciphertext, &retained).unwrap();
+        std::os::unix::fs::symlink(&retained, &ciphertext).unwrap();
+        assert!(
+            SecretVault::open_read_only_in(&root)
+                .recovery_error()
+                .is_some()
+        );
+        assert_eq!(
+            std::fs::read(&retained).unwrap(),
+            before
+                .iter()
+                .find(|(name, _, _)| name == "vault.enc")
+                .unwrap()
+                .1
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn readonly_missing_or_corrupt_source_custody_never_creates_or_repairs_files() {
+        use std::io::Write as _;
+        let root = temp_root();
+        let missing = root.join("absent");
+        assert!(
+            SecretVault::open_read_only_in(&missing)
+                .recovery_error()
+                .is_some()
+        );
+        assert!(!missing.exists());
+        let mut writable = SecretVault::open_in(&root);
+        writable.put(&AccountId::from("account"), &Secret::password("secret"));
+        writable.try_save().unwrap();
+        let directory = crate::vault_dir_in(&root);
+        let blob = directory.join("vault.enc");
+        let key = directory.join("vault.key");
+        let ciphertext = std::fs::read(&blob).unwrap();
+        std::fs::remove_file(&key).unwrap();
+        assert!(
+            SecretVault::open_read_only_in(&root)
+                .recovery_error()
+                .is_some()
+        );
+        assert!(!key.exists());
+        assert_eq!(std::fs::read(&blob).unwrap(), ciphertext);
+        assert_eq!(std::fs::read_dir(&directory).unwrap().count(), 1);
+        private_fs::create_new(&key)
+            .unwrap()
+            .write_all(b"malformed")
+            .unwrap();
+        assert!(
+            SecretVault::open_read_only_in(&root)
+                .recovery_error()
+                .is_some()
+        );
+        assert_eq!(std::fs::read(&key).unwrap(), b"malformed");
+        assert_eq!(std::fs::read(&blob).unwrap(), ciphertext);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

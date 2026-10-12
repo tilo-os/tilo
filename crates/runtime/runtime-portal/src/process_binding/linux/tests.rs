@@ -120,6 +120,30 @@ fn executing_peer_pins_child_not_socket_launcher_and_rejects_reused_launch_start
     assert_eq!(peer.pid(), child.id());
     assert_ne!(peer.pid(), std::process::id());
     assert!(peer.current());
+    assert_eq!(peer.uid(), unsafe { libc::geteuid() });
+    assert_eq!(peer.gid(), unsafe { libc::getegid() });
+    assert_eq!(
+        peer.start_time().unwrap(),
+        process_stat(child.id()).unwrap().1
+    );
+    peer.matches_transferred_pidfd(peer.pidfd())
+        .expect("actual same-task kernel handle");
+    let parent_fd = unsafe { libc::syscall(libc::SYS_pidfd_open, std::process::id(), 0) };
+    assert!(
+        parent_fd >= 0,
+        "owned parent pidfd: {}",
+        io::Error::last_os_error()
+    );
+    let parent_fd = unsafe { OwnedFd::from_raw_fd(parent_fd as i32) };
+    assert!(
+        peer.matches_transferred_pidfd(parent_fd.as_fd()).is_err(),
+        "different live kernel task refused"
+    );
+    let unrelated = std::fs::File::open("/dev/null").unwrap();
+    assert!(
+        peer.matches_transferred_pidfd(unrelated.as_fd()).is_err(),
+        "descriptor is not a kernel process handle"
+    );
     assert!(peer.belongs_to(std::process::id(), start()));
     assert!(!peer.belongs_to(
         std::process::id(),
@@ -131,6 +155,14 @@ fn executing_peer_pins_child_not_socket_launcher_and_rejects_reused_launch_start
     assert!(
         !peer.current(),
         "a exited task cannot regain custody through numeric PID reuse"
+    );
+    assert!(
+        peer.start_time().is_err(),
+        "stopped task cannot furnish a fresh launch time"
+    );
+    assert!(
+        peer.matches_transferred_pidfd(peer.pidfd()).is_err(),
+        "stopped same-task descriptor is not current authority"
     );
     let mut restarted = std::process::Command::new("/bin/true")
         .spawn()
@@ -192,4 +224,30 @@ fn executing_peer_refuses_wrong_nonce_user_missing_extra_or_non_socket_rights() 
             "invalid case {case} must refuse"
         );
     }
+}
+
+#[test]
+fn root_only_unclassified_authentication_never_admits_the_calling_process() {
+    // A non-root controller refuses before IO; a root controller refuses its
+    // own root sender after the real kernel SCM/socket-creator proof.
+    let (host, app) = UnixStream::pair().unwrap();
+    arm(&host).unwrap();
+    let (_owned, proof) = UnixStream::pair().unwrap();
+    let nonce = [97; 32];
+    send_answer(&app, &nonce, &proof).unwrap();
+    let error = receive_nonroot_for_authentication(&host, &nonce)
+        .err()
+        .expect("root controller plus non-root sender are independently mandatory");
+    assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+
+    // The existing exact-UID route remains independent and unchanged.
+    let (host, app) = UnixStream::pair().unwrap();
+    arm(&host).unwrap();
+    let (_owned, proof) = UnixStream::pair().unwrap();
+    send_answer(&app, &nonce, &proof).unwrap();
+    let peer = receive(&host, &nonce, unsafe { libc::geteuid() }).unwrap();
+    assert_eq!(peer.uid(), unsafe { libc::geteuid() });
+    assert_eq!(peer.gid(), unsafe { libc::getegid() });
+    assert_eq!(peer.start_time().unwrap(), start());
+    peer.matches_transferred_pidfd(peer.as_fd()).unwrap();
 }

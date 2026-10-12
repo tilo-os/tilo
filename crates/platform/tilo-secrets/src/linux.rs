@@ -26,6 +26,11 @@ const SERVICE: &str = "org.freedesktop.secrets";
 const SERVICE_PATH: &str = "/org/freedesktop/secrets";
 const DEFAULT_COLLECTION: &str = "/org/freedesktop/secrets/aliases/default";
 
+mod chromium;
+mod goa;
+pub(crate) use chromium::read_chromium;
+pub(crate) use goa::read_goa;
+
 /// `(session, parameters, value, content type)`.
 type WireSecret = (OwnedObjectPath, Vec<u8>, Vec<u8>, String);
 
@@ -364,4 +369,38 @@ mod tests {
         assert!(read.is_err(), "{read:?}");
         drop(env);
     }
+}
+
+/// Exact read-only QtKeychain lookup, reached only by the typed owner-migration API.
+pub(crate) fn read_nextcloud(key: &str) -> Result<Option<Secret>, SecretError> {
+    let key = key.to_owned();
+    on_bus(move || {
+        let attributes = HashMap::from([
+            ("user", key.as_str()),
+            ("server", "Nextcloud"),
+            ("type", "plaintext"),
+        ]);
+        let mut guard = session()?;
+        let result = (|| {
+            let Session { connection, path } = guard.as_ref().ok_or(SecretError::Denied)?;
+            let found = items(connection, &attributes)?;
+            if found.is_empty() {
+                return Ok(None);
+            }
+            if found.len() != 1 {
+                return Err(SecretError::Denied);
+            }
+            let secrets: HashMap<OwnedObjectPath, WireSecret> = service(connection)?
+                .call("GetSecrets", &(found.clone(), path))
+                .map_err(failed)?;
+            let item = found.first().ok_or(SecretError::Denied)?;
+            let (_, _, value, _) = secrets.get(item).ok_or(SecretError::Denied)?;
+            if value.is_empty() || value.len() > 4096 || std::str::from_utf8(value).is_err() {
+                return Err(SecretError::Denied);
+            }
+            Ok(Some(Secret::new(value.clone())))
+        })();
+        reset_on_disconnect(&mut guard, &result);
+        result
+    })
 }

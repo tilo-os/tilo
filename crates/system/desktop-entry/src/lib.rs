@@ -41,6 +41,8 @@ pub mod exec;
 pub mod icon_theme;
 pub mod launch;
 pub mod locale;
+#[cfg(target_os = "linux")]
+pub mod migration_startup;
 pub mod scan;
 
 pub use entry::{DesktopAction, DesktopEntry, EntrySource, EntryType};

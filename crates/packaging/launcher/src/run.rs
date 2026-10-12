@@ -24,8 +24,7 @@ use crate::seccomp::compile_baseline;
 use crate::services::{
     ACCOUNT_CHILD_FD, BASELINE_SECCOMP_CHILD_FD, CLONE3_COMPAT_SECCOMP_CHILD_FD,
     EXIT_REQUIRED_SERVICE_MISSING, ServiceError, ServiceLaunchContext, resolve_blob_bind,
-    resolve_chooser_bind, resolve_identity_bind, resolve_service_binds_for_launch,
-    to_service_binds,
+    resolve_chooser_bind, resolve_service_binds_for_launch, to_service_binds,
 };
 
 struct SeccompFds {
@@ -342,6 +341,11 @@ pub struct RunOptions {
     /// projection. Honoured only for Files and mounted read-only over its
     /// otherwise writable app directory.
     pub trusted_identities_host_path: Option<PathBuf>,
+    /// Device-local location metadata for Files; filesystem authority remains
+    /// with separately reviewed workspace grants.
+    pub retained_files_host_path: Option<PathBuf>,
+    /// Verified, selected browser data; projected read-only to Browser GUI only.
+    pub browser_continuity_host_path: Option<PathBuf>,
     /// Separate host action policy projection; never a sandbox capability grant.
     pub action_authority_host_path: Option<PathBuf>,
     /// Workspace this launch belongs to — the CRDT cluster id
@@ -359,6 +363,8 @@ pub struct RunOptions {
     /// A URI to open, forwarded as one opaque argv value. The caller must
     /// validate its scheme against the freshly-read installed manifest.
     pub open_uri: Option<String>,
+    /// Shell instance id selecting the fixed private standard console namespace.
+    pub headless_console: Option<u64>,
 }
 
 impl Default for RunOptions {
@@ -384,28 +390,51 @@ impl Default for RunOptions {
             identity: IdentitySource::UserStore,
             data_home: None,
             trusted_identities_host_path: None,
+            retained_files_host_path: None,
+            browser_continuity_host_path: None,
             action_authority_host_path: None,
             workspace_id: None,
             capabilities_path: None,
             app_id: None,
             open_document: None,
             open_uri: None,
+            headless_console: None,
         }
     }
 }
 
 fn gui_open_args(opts: &RunOptions) -> Vec<String> {
-    if let Some(uri) = &opts.open_uri {
+    let mut args = if let Some(uri) = &opts.open_uri {
         vec![uri.clone()]
     } else {
         opts.open_document
             .as_ref()
             .map(|path| vec![path.display().to_string()])
             .unwrap_or_default()
+    };
+    if let Some(instance) = opts.headless_console {
+        args.extend([
+            "--headless-drive".into(),
+            serde_json::json!({
+                "serve": crate::headless_console::guest_socket(instance),
+            })
+            .to_string(),
+        ]);
     }
+    args
 }
 
 fn validate_open_uri(manifest: &ManifestView, opts: &RunOptions) -> Result<(), RunError> {
+    if let Some(instance) = opts.headless_console
+        && (instance == 0
+            || opts.wayland_socket.is_some()
+            || !matches!(opts.mode, LaunchMode::Gui)
+            || manifest.entrypoint.gui_bin().is_none())
+    {
+        return Err(RunError::InvalidServiceLaunch(
+            "invalid headless console launch".into(),
+        ));
+    }
     let Some(uri) = opts.open_uri.as_deref() else {
         return Ok(());
     };
@@ -522,7 +551,7 @@ fn is_native_game_launch(manifest: &ManifestView, opts: &RunOptions) -> bool {
 }
 
 #[cfg(test)]
-mod resource_claim_tests {
+mod headless_console_launch_tests {
     use super::*;
 
     fn browser_manifest() -> ManifestView {
@@ -531,6 +560,31 @@ mod resource_claim_tests {
             "[entrypoint]\nbin = \"bin/browser\"\n\
              [providers]\nschemes = [\"https\"]\n",
         )
+    }
+
+    #[test]
+    fn typed_headless_console_uses_fixed_standard_wire_and_refuses_other_modes() {
+        let mut opts = RunOptions {
+            headless_console: Some(72),
+            ..Default::default()
+        };
+        validate_open_uri(&browser_manifest(), &opts).unwrap();
+        let args = gui_open_args(&opts);
+        assert_eq!(args[0], "--headless-drive");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&args[1]).unwrap(),
+            serde_json::json!({"serve":"/run/tilo/app/.headless-72/control.sock"})
+        );
+        opts.wayland_socket = Some("/not/a/display".into());
+        assert!(validate_open_uri(&browser_manifest(), &opts).is_err());
+        opts.wayland_socket = None;
+        opts.headless_console = Some(0);
+        assert!(validate_open_uri(&browser_manifest(), &opts).is_err());
+        opts.headless_console = Some(72);
+        opts.mode = LaunchMode::Service {
+            passthrough_argv: Vec::new(),
+        };
+        assert!(validate_open_uri(&browser_manifest(), &opts).is_err());
     }
 
     #[test]
@@ -1427,6 +1481,7 @@ mod per_user_runtime_verification_tests {
                 arch: Some(std::env::consts::ARCH),
                 identity: Some(&identity_path),
                 extra_libs: &[dylib],
+                extra_bins: &[],
             },
         )
         .unwrap();
@@ -1638,6 +1693,38 @@ pub fn run_manifest(
     opts: &RunOptions,
 ) -> Result<ExitStatus, RunError> {
     run_with_context(manifest, payload_root, opts, None, None)
+}
+
+/// Run an ordinary signed GUI application with canonical namespace custody.
+/// This changes supervision only: services, egress, private state and sandbox
+/// grants still come from the ordinary application pipeline. The owner does
+/// not confer retained file authority.
+///
+/// # Errors
+/// Refuses unsigned/unpinned launches, non-GUI modes, changed installation,
+/// failed namespace observation or retired owner authority.
+pub fn run_supervised_gui(
+    manifest_path: &Path,
+    payload_root: &Path,
+    opts: &RunOptions,
+    owner: &crate::ordinary_namespace::OrdinaryNamespaceOwner,
+) -> Result<ExitStatus, RunError> {
+    if !matches!(opts.mode, LaunchMode::Gui) {
+        return Err(RunError::InvalidServiceLaunch(
+            "ordinary namespace owner requires GUI mode".into(),
+        ));
+    }
+    let expected = opts.expected_package_hash.as_deref().ok_or_else(|| {
+        RunError::InvalidServiceLaunch(
+            "ordinary namespace owner requires signed package pin".into(),
+        )
+    })?;
+    let manifest = verified_original_manifest(manifest_path, payload_root, opts, expected)?;
+    let mut pinned = opts.clone();
+    if pinned.bwrap_bin.is_none() {
+        pinned.bwrap_bin = Some("/usr/bin/bwrap".into());
+    }
+    run_with_context(&manifest, payload_root, &pinned, None, Some(owner))
 }
 
 pub(crate) fn verified_original_manifest(
@@ -2115,6 +2202,54 @@ fn splice_trusted_identities(
     Ok(())
 }
 
+/// Expose only host-owned retained-location metadata, never a file grant.
+fn splice_retained_files(
+    argv: &mut Vec<String>,
+    manifest: &ManifestView,
+    opts: &RunOptions,
+) -> Result<(), RunError> {
+    if manifest.package_id != "so.tilo.file-explorer" {
+        return Ok(());
+    }
+    let Some(path) = opts.retained_files_host_path.as_deref() else {
+        return Ok(());
+    };
+    validate_retained_files_projection(path)?;
+    let entry = pop_entry(argv)?;
+    crate::sandbox::push_retained_files_bind(argv, path);
+    argv.push(entry);
+    Ok(())
+}
+
+fn validate_retained_files_projection(path: &Path) -> Result<(), RunError> {
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+    let invalid =
+        || RunError::InvalidServiceLaunch("invalid retained file location projection".into());
+    if !path.is_absolute()
+        || path.file_name().and_then(|name| name.to_str()) != Some("locations.json")
+    {
+        return Err(invalid());
+    }
+    let parent = path.parent().ok_or_else(invalid)?;
+    let directory = std::fs::symlink_metadata(parent)?;
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(path)?;
+    let metadata = file.metadata()?;
+    if !directory.is_dir()
+        || directory.uid() != current_uid()
+        || directory.mode() & 0o077 != 0
+        || !metadata.is_file()
+        || metadata.uid() != current_uid()
+        || metadata.mode() & 0o077 != 0
+        || metadata.len() > 16 * 1024
+    {
+        return Err(invalid());
+    }
+    Ok(())
+}
+
 /// Bind only one app/person projection directory so atomic replacement and
 /// revocation are visible without exposing the host capability store.
 fn splice_action_authority(
@@ -2234,6 +2369,31 @@ fn splice_gpu(
     Ok((gpu, seed))
 }
 
+/// Read-only metadata rules match the host projection mounts; original file
+/// permissions remain in the independently resolved capability plan.
+pub(crate) fn push_projection_landlock_rules(
+    argv: &mut Vec<String>,
+    opts: &RunOptions,
+    manifest: &ManifestView,
+) {
+    if opts.action_authority_host_path.is_some() {
+        argv.push("--ro".into());
+        argv.push(crate::sandbox::SANDBOX_ACTION_AUTHORITY_DIR.into());
+    }
+    if crate::browser_projection::eligible(manifest, opts) {
+        argv.extend([
+            "--ro".to_owned(),
+            browser_continuity::PROJECTION_DIRECTORY.to_owned(),
+        ]);
+    }
+    if manifest.package_id == "so.tilo.file-explorer" && opts.retained_files_host_path.is_some() {
+        argv.extend([
+            "--ro".to_owned(),
+            crate::sandbox::SANDBOX_RETAINED_FILES_DIR.to_owned(),
+        ]);
+    }
+}
+
 /// Everything [`splice_sandbox_shim`] needs beyond `argv` and `opts`.
 struct ShimSpliceCtx<'a> {
     manifest: &'a ManifestView,
@@ -2312,10 +2472,7 @@ fn splice_sandbox_shim(
     }
     // This is generated sandbox data, never the host account database.
     argv.extend(["--ro".to_string(), "/etc/passwd".to_string()]);
-    if opts.action_authority_host_path.is_some() {
-        argv.push("--ro".into());
-        argv.push(crate::sandbox::SANDBOX_ACTION_AUTHORITY_DIR.into());
-    }
+    push_projection_landlock_rules(argv, opts, ctx.manifest);
     // Capability-granted paths need matching Landlock rules from the same
     // plan, or the bind is visible but every open() returns EACCES.
     for path in &ctx.capabilities.ro_paths {
@@ -2429,8 +2586,13 @@ fn sandbox_account(uid: u32, gid: u32) -> String {
 }
 
 /// Give bwrap a private, read-only account file. No host `/etc/passwd` bind.
-fn stage_sandbox_account(argv: &mut Vec<String>) -> Result<OwnedFd, RunError> {
-    let account = sandbox_account(unsafe { libc::geteuid() }, unsafe { libc::getegid() });
+fn stage_sandbox_account(
+    argv: &mut Vec<String>,
+    original_identity: Option<(u32, u32)>,
+) -> Result<OwnedFd, RunError> {
+    let (uid, gid) =
+        original_identity.unwrap_or_else(|| unsafe { (libc::geteuid(), libc::getegid()) });
+    let account = sandbox_account(uid, gid);
     let data = stage_seccomp_blob(account.as_bytes())?;
     // Keep the source above the fixed child slots: earlier dup2 calls must
     // not overwrite it before the account descriptor is handed to bwrap.
@@ -2439,14 +2601,18 @@ fn stage_sandbox_account(argv: &mut Vec<String>) -> Result<OwnedFd, RunError> {
         return Err(std::io::Error::last_os_error().into());
     }
     let owned = unsafe { <OwnedFd as std::os::fd::FromRawFd>::from_raw_fd(fd) };
-    argv.splice(
-        0..0,
-        [
-            "--ro-bind-data".to_string(),
-            ACCOUNT_CHILD_FD.to_string(),
-            "/etc/passwd".to_string(),
-        ],
-    );
+    let mut binding = Vec::new();
+    if original_identity.is_some() {
+        // One fixed non-secret synthetic account, readable after credential
+        // drop; this mode applies to this exact next data operation only.
+        binding.extend(["--perms".into(), "0444".into()]);
+    }
+    binding.extend([
+        "--ro-bind-data".into(),
+        ACCOUNT_CHILD_FD.to_string(),
+        "/etc/passwd".into(),
+    ]);
+    argv.splice(0..0, binding);
     Ok(owned)
 }
 
@@ -2461,7 +2627,7 @@ mod sandbox_account_tests {
             clone3_compat: stage_seccomp_blob(b"clone3").expect("compat fixture"),
             baseline: stage_seccomp_blob(b"baseline").expect("baseline fixture"),
         };
-        let account = stage_sandbox_account(&mut Vec::new()).expect("account");
+        let account = stage_sandbox_account(&mut Vec::new(), None).expect("account");
         let expected = format!(
             "serviceclone3baseline{}",
             sandbox_account(unsafe { libc::geteuid() }, unsafe { libc::getegid() })
@@ -2495,7 +2661,7 @@ mod sandbox_account_tests {
     fn staged_account_is_private_read_only_data_and_reserves_its_descriptor() {
         use std::io::Read as _;
         let mut argv = vec!["--unshare-all".to_string(), "/app/bin".to_string()];
-        let fd = stage_sandbox_account(&mut argv).expect("stage account");
+        let fd = stage_sandbox_account(&mut argv, None).expect("stage account");
         assert!(fd.as_raw_fd() >= 128);
         let mut contents = String::new();
         std::fs::File::from(fd)
@@ -2587,7 +2753,30 @@ fn spawn_and_wait(
     });
     let (identity_broker_app, identity_broker_control, identity_broker_thread) = identity_broker;
     SeccompFds::prepend_bwrap_args(&mut argv);
-    let account_fd = stage_sandbox_account(&mut argv)?;
+    let target_projection =
+        observer.and_then(crate::managed::EnrolledProcessObserver::target_projection);
+    if let Some(target) = target_projection {
+        target.prepare_filter(&seccomp_fds.baseline)?;
+        target.splice_baseline_argv(&mut argv)?;
+    }
+    let original_baseline = observer
+        .and_then(crate::managed::EnrolledProcessObserver::capture_projection)
+        .map(|capture| capture.original_baseline_filter(&seccomp_fds.baseline))
+        .transpose()?
+        .flatten();
+    if let Some(lease) = &original_baseline {
+        lease.splice_argv(&mut argv)?;
+    }
+    let original_identity = observer
+        .and_then(crate::managed::EnrolledProcessObserver::capture_projection)
+        .and_then(crate::owned_service::CaptureAdmission::original_sandbox_account_identity)
+        .or_else(|| {
+            observer
+                .and_then(crate::managed::EnrolledProcessObserver::retained_io_projection)
+                .map(|io| io.identity())
+        })
+        .or_else(|| target_projection.map(|target| target.identity()));
+    let account_fd = stage_sandbox_account(&mut argv, original_identity)?;
     let host_account_fd = account_fd.as_raw_fd();
 
     if observer
@@ -2596,7 +2785,14 @@ fn spawn_and_wait(
     {
         // Only the stricter owned-service path asks for PID 1 supervision.
         if !argv.iter().any(|arg| arg == "--unshare-all")
-            || opts.bwrap_bin.as_deref() != Some(Path::new("/usr/bin/bwrap"))
+            || (opts.bwrap_bin.as_deref() != Some(Path::new("/usr/bin/bwrap"))
+                && observer
+                    .and_then(crate::managed::EnrolledProcessObserver::capture_projection)
+                    .is_none()
+                && observer
+                    .and_then(crate::managed::EnrolledProcessObserver::retained_io_projection)
+                    .is_none()
+                && target_projection.is_none())
         {
             return Err(RunError::InvalidServiceLaunch(
                 "private service namespace missing".into(),
@@ -2615,6 +2811,16 @@ fn spawn_and_wait(
         );
     }
 
+    // Validate the canonical full namespace plan above BEFORE the root-only
+    // original-source token replaces its user-namespace component. Bootstrap
+    // admission emits a fixed private PID/net/IPC/UTS plan; the signed shim
+    // verifies actual isolation before saved source credentials become active.
+    if let Some(capture) =
+        observer.and_then(crate::managed::EnrolledProcessObserver::capture_projection)
+    {
+        capture.splice_original_bootstrap(&mut argv)?;
+    }
+
     // Passthrough: everything after the entrypoint token is opaque to bwrap,
     // forwarded as the sandboxed program's argv[1..].
     argv.extend(cli_passthrough);
@@ -2624,7 +2830,27 @@ fn spawn_and_wait(
         .bwrap_bin
         .clone()
         .unwrap_or_else(|| PathBuf::from("bwrap"));
-    let mut cmd = Command::new(&bwrap);
+    if let Some(io) =
+        observer.and_then(crate::managed::EnrolledProcessObserver::retained_io_projection)
+    {
+        io.splice_credentials(&mut argv)?;
+    }
+    if let Some(target) = target_projection {
+        target.splice_credentials(&mut argv)?;
+    }
+    let mut cmd = if let Some(capture) =
+        observer.and_then(crate::managed::EnrolledProcessObserver::capture_projection)
+    {
+        capture.command()
+    } else if let Some(io) =
+        observer.and_then(crate::managed::EnrolledProcessObserver::retained_io_projection)
+    {
+        io.native()?.command()
+    } else if let Some(target) = target_projection {
+        target.native()?.command()
+    } else {
+        Command::new(&bwrap)
+    };
     cmd.args(&argv);
     clear_bwrap_environment(&mut cmd);
     if observer.is_some_and(crate::managed::EnrolledProcessObserver::owns_process_group) {
@@ -2660,6 +2886,33 @@ fn spawn_and_wait(
     if let Some(fd) = observer.and_then(crate::managed::EnrolledProcessObserver::namespace_init_fd)
     {
         service_fds.push((fd, crate::services::SERVICE_NAMESPACE_CHILD_FD));
+    }
+    if let Some(capture) =
+        observer.and_then(crate::managed::EnrolledProcessObserver::capture_projection)
+    {
+        service_fds.extend(capture.descriptor_pairs());
+    }
+    if let Some(lease) = &original_baseline {
+        lease.splice_pairs(&mut service_fds)?;
+    }
+    if let Some(io) =
+        observer.and_then(crate::managed::EnrolledProcessObserver::retained_io_projection)
+    {
+        service_fds.extend(io.pairs()?);
+    }
+    if let Some(retained) =
+        observer.and_then(crate::managed::EnrolledProcessObserver::retained_view)
+    {
+        service_fds.extend(retained.descriptor_pairs()?);
+    }
+    if let Some(parent) =
+        observer.and_then(crate::managed::EnrolledProcessObserver::selected_parent)
+    {
+        service_fds.push(parent.descriptor_pair()?);
+    }
+    if let Some(target) = target_projection {
+        service_fds.extend(target.pairs()?);
+        target.replace_baseline(&mut service_fds)?;
     }
     for r in &resolved {
         tracing::info!(
@@ -3100,23 +3353,43 @@ fn prepare_launch_host(
     payload_root: &Path,
     opts: &RunOptions,
     enrolled: Option<&crate::services::EnrolledServiceContext>,
+    owner: Option<&dyn crate::managed::EnrolledProcessObserver>,
 ) -> Result<LaunchHost, RunError> {
     // A resolved bundle wins over --minimal-libs and skips the loader-bind
     // stopgap entirely.
+    let retained_io =
+        owner.and_then(crate::managed::EnrolledProcessObserver::retained_io_projection);
+    let target_projection =
+        owner.and_then(crate::managed::EnrolledProcessObserver::target_projection);
     let runtime = if enrolled.is_some() {
         Some(
             crate::managed::verify_runtime(manifest, opts)
                 .map_err(RunError::InvalidServiceLaunch)?,
         )
+    } else if let Some(capture) =
+        owner.and_then(crate::managed::EnrolledProcessObserver::capture_projection)
+    {
+        Some(capture.resolve_runtime(manifest)?)
+    } else if let Some(io) = retained_io {
+        Some(io.native()?.resolve_runtime(manifest)?)
+    } else if let Some(target) = target_projection {
+        Some(target.native()?.resolve_runtime(manifest)?)
     } else {
         resolve_runtime(manifest, opts)?
     };
+    if let (Some(io), Some((root, _))) = (retained_io, runtime.as_ref()) {
+        io.exclude_path(root)?;
+    }
     tilo_startup_metrics::handoff_mark("runtime-verified");
     let runtime_arg = runtime.as_ref().map(|(p, v)| (p.as_path(), v.as_str()));
     preflight_runtime_libraries(manifest, payload_root, opts, runtime_arg)?;
     tilo_startup_metrics::handoff_mark("loader-preflight-done");
     // The app's one writable directory, for the room it's opened into.
-    let (app_dir, person_dir) = if let Some(services) = enrolled {
+    let (app_dir, person_dir) = if let Some(io) = retained_io {
+        io.launch_dirs()?
+    } else if let Some(target) = target_projection {
+        target.launch_dirs()?
+    } else if let Some(services) = enrolled {
         (
             crate::appdir::prepare_host_app_dir(
                 services.data_home(),
@@ -3166,6 +3439,38 @@ pub(crate) fn run_with_context(
     )>,
     native_owner: Option<&dyn crate::managed::EnrolledProcessObserver>,
 ) -> Result<ExitStatus, RunError> {
+    let retained_io =
+        native_owner.and_then(crate::managed::EnrolledProcessObserver::retained_io_projection);
+    let target_projection =
+        native_owner.and_then(crate::managed::EnrolledProcessObserver::target_projection);
+    if (retained_io.is_some() || target_projection.is_some()) && enrolled.is_some()
+        || retained_io.is_some() && target_projection.is_some()
+    {
+        return Err(RunError::InvalidServiceLaunch(
+            "Mixed retained/enrolled authority".into(),
+        ));
+    }
+    let retained_view =
+        native_owner.and_then(crate::managed::EnrolledProcessObserver::retained_view);
+    let selected_parent =
+        native_owner.and_then(crate::managed::EnrolledProcessObserver::selected_parent);
+    if selected_parent.is_some() && retained_view.is_some() {
+        return Err(RunError::InvalidServiceLaunch(
+            "Mixed ordinary view grants".into(),
+        ));
+    }
+    if (retained_view.is_some() || selected_parent.is_some())
+        && (enrolled.is_some()
+            || retained_io.is_some()
+            || target_projection.is_some()
+            || native_owner
+                .and_then(crate::managed::EnrolledProcessObserver::capture_projection)
+                .is_some())
+    {
+        return Err(RunError::InvalidServiceLaunch(
+            "Mixed ordinary retained authority".into(),
+        ));
+    }
     validate_open_uri(manifest, opts)?;
     // 0a. A host application has no manifest and no sandbox. Refusing here,
     // before any socket/directory/argv exists, keeps the two launch kinds
@@ -3211,6 +3516,7 @@ pub(crate) fn run_with_context(
             payload_root,
             opts,
             enrolled.as_ref().map(|(services, _)| &**services),
+            native_owner,
         );
         Ok::<_, RunError>((join_beside(dbus), host))
     })?;
@@ -3264,9 +3570,16 @@ pub(crate) fn run_with_context(
             },
         )?;
         crate::services::authenticate_shell_ui_bind(&resolved, package_id, &egress)?;
-        if let Some(identity) =
-            resolve_identity_bind(package_id, opts.workspace_id.as_deref(), opts.no_services)?
-        {
+        if let Some(identity) = crate::services::resolve_identity_bind_for_contract(
+            package_id,
+            opts.workspace_id.as_deref(),
+            opts.no_services,
+            manifest
+                .sandbox
+                .services
+                .get(crate::services::IDENTITY_SERVICE)
+                .map(String::as_str),
+        )? {
             resolved.push(identity);
         }
         if let Some(blobs) =
@@ -3283,6 +3596,10 @@ pub(crate) fn run_with_context(
     };
     let binds = to_service_binds(&resolved);
     tilo_startup_metrics::handoff_mark("services-resolved");
+    let mut headless_console = opts
+        .headless_console
+        .map(|instance| crate::headless_console::Namespace::prepare(&app_dir, instance))
+        .transpose()?;
 
     // Resolve the selected record on the host, migrate legacy storage, then
     // mint one app-scoped broker connection. The path is only a presence
@@ -3341,19 +3658,45 @@ pub(crate) fn run_with_context(
         )?;
     }
     splice_game_ntsync(&mut argv, latency_sensitive)?;
-    let ro_paths = splice_runtime_mounts(&mut argv, manifest, opts, resolved_runtime.is_some())?;
+    let mut ro_paths =
+        splice_runtime_mounts(&mut argv, manifest, opts, resolved_runtime.is_some())?;
+    if native_owner
+        .and_then(crate::managed::EnrolledProcessObserver::capture_projection)
+        .is_some()
+    {
+        crate::owned_service::capture::splice(&mut argv, &mut ro_paths);
+        if let Some(capture) =
+            native_owner.and_then(crate::managed::EnrolledProcessObserver::capture_projection)
+        {
+            capture.splice_archive(&mut argv, &mut ro_paths);
+        }
+    }
+    if native_owner
+        .and_then(crate::managed::EnrolledProcessObserver::capture_projection)
+        .is_some_and(crate::owned_service::CaptureAdmission::has_output)
+    {
+        crate::owned_service::capture::splice_output(&mut argv);
+    }
     splice_workspace_id_bind(&mut argv, opts)?;
-    if enrolled.is_none() {
+    if enrolled.is_none() && retained_io.is_none() && target_projection.is_none() {
         splice_tool_context(&mut argv)?;
     }
     splice_app_dir(&mut argv, &app_dir, &person_dir, &capabilities)?;
-    splice_session_settings(&mut argv, &manifest.package_id)?;
+    if retained_io.is_none() && target_projection.is_none() {
+        splice_session_settings(&mut argv, &manifest.package_id)?;
+    }
     let (system_authority, _system_bus_guard) = splice_system_authority(&mut argv, manifest)?;
     splice_trusted_identities(&mut argv, manifest, opts)?;
+    splice_retained_files(&mut argv, manifest, opts)?;
+    let _browser_projection = crate::browser_projection::splice(&mut argv, manifest, opts)?;
     splice_action_authority(&mut argv, manifest, opts)?;
     let wayland_bind = splice_wayland(&mut argv, opts)?;
     splice_net_gate_bind(&mut argv, net_gate.as_ref())?;
-    let (gpu, pipeline_seed) = splice_gpu(&mut argv, manifest, opts, &capabilities)?;
+    let (gpu, pipeline_seed) = if retained_io.is_some() || target_projection.is_some() {
+        (None, None)
+    } else {
+        splice_gpu(&mut argv, manifest, opts, &capabilities)?
+    };
     splice_startup_marks(&mut argv)?;
     splice_sandbox_shim(
         &mut argv,
@@ -3374,7 +3717,54 @@ pub(crate) fn run_with_context(
         },
     )?;
 
-    spawn_and_wait(
+    if native_owner
+        .and_then(crate::managed::EnrolledProcessObserver::capture_projection)
+        .is_some()
+    {
+        crate::owned_service::capture::splice_shim_data(&mut argv)?;
+        if let Some(capture) =
+            native_owner.and_then(crate::managed::EnrolledProcessObserver::capture_projection)
+        {
+            capture.splice_inventory_scratch_policy(&mut argv)?;
+        }
+    }
+
+    if native_owner
+        .and_then(crate::managed::EnrolledProcessObserver::capture_projection)
+        .is_some_and(crate::owned_service::CaptureAdmission::has_output)
+    {
+        let position = argv
+            .iter()
+            .position(|arg| arg == "__sandbox-exec")
+            .ok_or_else(|| RunError::InvalidServiceLaunch("Capture shim unavailable".into()))?;
+        argv.splice(
+            position + 1..position + 1,
+            [
+                "--rw-noexec".into(),
+                crate::owned_service::capture::OUTPUT_PATH.into(),
+            ],
+        );
+    }
+
+    if let Some(namespace) = &mut headless_console {
+        namespace.before_spawn();
+    }
+    if let Some(io) = retained_io {
+        crate::owned_service::capture::splice_shim_data(&mut argv)?;
+        io.splice_source(&mut argv)?;
+    }
+    if target_projection.is_some() {
+        crate::owned_service::capture::splice_shim_data(&mut argv)?;
+    }
+    if let Some(retained) =
+        native_owner.and_then(crate::managed::EnrolledProcessObserver::retained_view)
+    {
+        retained.splice(&mut argv, capabilities.participation)?;
+    }
+    if let Some(parent) = selected_parent {
+        parent.splice(&mut argv, capabilities.participation)?;
+    }
+    let result = spawn_and_wait(
         argv,
         cli_passthrough,
         opts,
@@ -3401,7 +3791,13 @@ pub(crate) fn run_with_context(
                 enrolled
                     .map(|(services, observer)| (observer, debug_output_log(services.data_home())))
             }),
-    )
+    );
+    if result.is_ok()
+        && let Some(namespace) = &mut headless_console
+    {
+        namespace.after_exit()?;
+    }
+    result
 }
 
 /// Debug-only, off by default: when the launching host sets
@@ -3478,7 +3874,7 @@ fn spawn_and_capture(
 ) -> Result<(ExitStatus, Vec<u8>), RunError> {
     let (identity_broker_app, identity_broker_control, identity_broker_thread) = identity_broker;
     SeccompFds::prepend_bwrap_args(&mut argv);
-    let account_fd = stage_sandbox_account(&mut argv)?;
+    let account_fd = stage_sandbox_account(&mut argv, None)?;
     let host_account_fd = account_fd.as_raw_fd();
     // Everything after the entrypoint token is opaque to bwrap and
     // becomes the child's argv[1..].
@@ -3668,7 +4064,7 @@ fn spawn_and_capture_bounded(
     let plan = plan.validate()?;
     let (identity_broker_app, identity_broker_control, identity_broker_thread) = identity_broker;
     SeccompFds::prepend_bwrap_args(&mut argv);
-    let account_fd = stage_sandbox_account(&mut argv)?;
+    let account_fd = stage_sandbox_account(&mut argv, None)?;
     let host_account_fd = account_fd.as_raw_fd();
     argv.extend(passthrough);
 
@@ -3918,9 +4314,16 @@ fn run_with_capture_spawn<T>(
         },
     )?;
     crate::services::authenticate_shell_ui_bind(&resolved, package_id, &egress)?;
-    if let Some(identity) =
-        resolve_identity_bind(package_id, opts.workspace_id.as_deref(), opts.no_services)?
-    {
+    if let Some(identity) = crate::services::resolve_identity_bind_for_contract(
+        package_id,
+        opts.workspace_id.as_deref(),
+        opts.no_services,
+        manifest
+            .sandbox
+            .services
+            .get(crate::services::IDENTITY_SERVICE)
+            .map(String::as_str),
+    )? {
         resolved.push(identity);
     }
     if let Some(blobs) =
@@ -3973,10 +4376,16 @@ fn run_with_capture_spawn<T>(
     splice_net_gate_bind(&mut argv, net_gate.as_ref())?;
     splice_workspace_id_bind(&mut argv, opts)?;
     let (app_dir, person_dir) = resolve_launch_dirs(manifest, opts)?;
+    let mut headless_console = opts
+        .headless_console
+        .map(|instance| crate::headless_console::Namespace::prepare(&app_dir, instance))
+        .transpose()?;
     splice_app_dir(&mut argv, &app_dir, &person_dir, &capabilities)?;
     splice_session_settings(&mut argv, &manifest.package_id)?;
     let (system_authority, _system_bus_guard) = splice_system_authority(&mut argv, manifest)?;
     splice_trusted_identities(&mut argv, manifest, opts)?;
+    splice_retained_files(&mut argv, manifest, opts)?;
+    let _browser_projection = crate::browser_projection::splice(&mut argv, manifest, opts)?;
     splice_action_authority(&mut argv, manifest, opts)?;
     let wayland_bind = splice_wayland(&mut argv, opts)?;
     let (gpu, pipeline_seed) = splice_gpu(&mut argv, manifest, opts, &capabilities)?;
@@ -3999,7 +4408,10 @@ fn run_with_capture_spawn<T>(
         },
     )?;
 
-    spawn(
+    if let Some(namespace) = &mut headless_console {
+        namespace.before_spawn();
+    }
+    let result = spawn(
         argv,
         passthrough,
         opts,
@@ -4010,7 +4422,13 @@ fn run_with_capture_spawn<T>(
             identity_broker_control,
             identity_broker_thread,
         ),
-    )
+    );
+    if result.is_ok()
+        && let Some(namespace) = &mut headless_console
+    {
+        namespace.after_exit()?;
+    }
+    result
 }
 
 /// Give `bwrap` itself an environment worth inheriting, so a dropped
@@ -4993,6 +5411,74 @@ mod managed_spawn_policy_tests {
         }
     }
 
+    struct OrdinaryPrivateService {
+        info: OwnedFd,
+        checked: AtomicUsize,
+        spawned: AtomicUsize,
+    }
+    impl crate::managed::EnrolledProcessObserver for OrdinaryPrivateService {
+        fn namespace_init_fd(&self) -> Option<RawFd> {
+            Some(self.info.as_raw_fd())
+        }
+        fn before_spawn(&self) -> std::io::Result<()> {
+            self.checked.fetch_add(1, AtomicOrdering::SeqCst);
+            Ok(())
+        }
+        fn child_created(&self) {
+            self.spawned.fetch_add(1, AtomicOrdering::SeqCst);
+        }
+        fn supervise(&self, mut child: std::process::Child) -> std::io::Result<ExitStatus> {
+            child.wait()
+        }
+    }
+    #[test]
+    fn ordinary_private_service_missing_full_namespace_plan_refuses_before_spawn() {
+        // Exercise the actual final command boundary with no capture token.
+        // Explicit flags resembling the original-reader plan cannot admit an
+        // ordinary service; it still requires the canonical --unshare-all.
+        for flags in [
+            Vec::<String>::new(),
+            [
+                "--unshare-pid",
+                "--unshare-net",
+                "--unshare-ipc",
+                "--unshare-uts",
+            ]
+            .map(String::from)
+            .to_vec(),
+        ] {
+            let owner = OrdinaryPrivateService {
+                info: tempfile::tempfile().unwrap().into(),
+                checked: AtomicUsize::new(0),
+                spawned: AtomicUsize::new(0),
+            };
+            let result = spawn_and_wait(
+                flags,
+                vec![],
+                &RunOptions {
+                    bwrap_bin: Some("/usr/bin/bwrap".into()),
+                    ..Default::default()
+                },
+                ChildSetup {
+                    seccomp_fds: SeccompFds {
+                        clone3_compat: tempfile::tempfile().unwrap().into(),
+                        baseline: tempfile::tempfile().unwrap().into(),
+                    },
+                    services: vec![],
+                    identity_broker: (None, None, None),
+                    latency_sensitive: false,
+                },
+                &crate::netgate::EgressDecision::Blocked,
+                None,
+                Some((&owner, None)),
+            );
+            assert!(matches!(result, Err(RunError::InvalidServiceLaunch(reason))
+                if reason == "private service namespace missing"));
+            assert_eq!(owner.checked.load(AtomicOrdering::SeqCst), 0);
+            assert_eq!(owner.spawned.load(AtomicOrdering::SeqCst), 0);
+        }
+    }
+
     #[test]
     fn managed_prepared_spawn_checks_current_policy_before_child_creation() {
         // This exercises the real prepared-command spawn boundary, not a package,
@@ -5312,5 +5798,104 @@ collab = "required@1"
     #[test]
     fn captured_runtime_preflight_precedes_service_handoff() {
         assert_runtime_refusal_precedes_handoff(true);
+    }
+}
+
+#[cfg(test)]
+mod retained_files_tests {
+    use super::*;
+    use std::os::unix::fs::{PermissionsExt, symlink};
+
+    #[test]
+    fn retained_locations_are_live_readonly_metadata_without_filesystem_authority() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        let path = root.path().join("locations.json");
+        std::fs::write(&path, br#"{"schema":1,"locations":[]}"#).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let manifest: ManifestView = toml::from_str(
+            "[package]\nid = \"so.tilo.file-explorer\"\nversion = \"1.0\"\n[entrypoint]\nbin = \"files\"\n",
+        ).unwrap();
+        let opts = RunOptions {
+            retained_files_host_path: Some(path),
+            ..RunOptions::default()
+        };
+        let before = resolve_capabilities(&manifest, &RunOptions::default());
+        let after = resolve_capabilities(&manifest, &opts);
+        assert_eq!(before.ro_paths, after.ro_paths);
+        assert_eq!(before.rw_paths, after.rw_paths);
+        let mut argv = vec!["bwrap".into(), "files".into()];
+        splice_retained_files(&mut argv, &manifest, &opts).unwrap();
+        assert_eq!(
+            argv,
+            vec![
+                "bwrap",
+                "--ro-bind",
+                root.path().to_str().unwrap(),
+                crate::sandbox::SANDBOX_RETAINED_FILES_DIR,
+                "--setenv",
+                "TILO_RETAINED_FILES",
+                crate::sandbox::SANDBOX_RETAINED_FILES_PATH,
+                "files",
+            ]
+        );
+        let mut shim = vec!["files".into()];
+        let enforced = RunOptions {
+            landlock_enforce: true,
+            ..opts.clone()
+        };
+        splice_sandbox_shim(
+            &mut shim,
+            &enforced,
+            &ShimSpliceCtx {
+                manifest: &manifest,
+                net_gate: &None,
+                runtime_arg: None,
+                extra_ro_paths: &[],
+                egress: &crate::netgate::EgressDecision::Blocked,
+                capabilities: &after,
+                dbus_plan: &None,
+                system_authority: &None,
+                wayland_bind: &None,
+                gpu: &None,
+                pipeline_seed: &None,
+                keep_fds: &[],
+            },
+        )
+        .unwrap();
+        assert!(
+            shim.windows(2)
+                .any(|args| args == ["--ro", crate::sandbox::SANDBOX_RETAINED_FILES_DIR])
+        );
+        assert!(
+            !shim
+                .windows(2)
+                .any(|args| args == ["--rw", crate::sandbox::SANDBOX_RETAINED_FILES_DIR])
+        );
+        let mut other = manifest;
+        other.package_id = "so.tilo.settings".into();
+        let mut argv = vec!["settings".into()];
+        splice_retained_files(&mut argv, &other, &opts).unwrap();
+        assert_eq!(argv, ["settings"]);
+    }
+
+    #[test]
+    fn retained_projection_refuses_redirected_or_nonprivate_custody() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        let path = root.path().join("locations.json");
+        let other = root.path().join("other");
+        std::fs::write(&other, b"unchanged").unwrap();
+        symlink(&other, &path).unwrap();
+        assert!(validate_retained_files_projection(&path).is_err());
+        assert_eq!(std::fs::read(&other).unwrap(), b"unchanged");
+        std::fs::remove_file(&path).unwrap();
+        std::fs::write(&path, b"{}").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(validate_retained_files_projection(&path).is_err());
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(validate_retained_files_projection(&path).is_ok());
+        std::fs::write(&path, vec![0; 16 * 1024 + 1]).unwrap();
+        assert!(validate_retained_files_projection(&path).is_err());
     }
 }

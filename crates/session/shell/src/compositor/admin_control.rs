@@ -16,8 +16,11 @@
 //! the machine's administrator group whose identity is the one that claimed
 //! the device at its first login and holds its primary certificate
 //! ([`tilo_identity_host::provisioning::active_identity_owns_device`]).
-//! Another account on the machine, or the admin's session before its first
-//! login is finished, has no such socket.
+//! Before first use finishes, the same socket may serve only onboarding and
+//! the existing authentication queue to the exact target account of a root
+//! authenticated prepared delivery. This is not an absent-owner shortcut;
+//! the delivery binds the account, Home inode, ciphertext and intended person.
+//! Every request rechecks that binding and promotion requires certified ownership.
 //!
 //! **The peer.** Every connection is checked against the kernel's account of
 //! the process on the other end (`SO_PEERCRED`): it must run as this session's
@@ -43,6 +46,7 @@ use crate::shell::test_control_socket::{admin_socket_path, bind_private};
 /// The group whose members administer the machine: `sudo` and the polkit
 /// rules shipped with the image both name it.
 const ADMIN_GROUP: &CStr = c"wheel";
+mod prepared;
 
 /// Why this session serves no admin control socket.
 #[derive(Debug, PartialEq, Eq)]
@@ -97,6 +101,49 @@ pub(crate) fn session_decision(
     }
 }
 
+/// Recheck certified device administration for a trusted authentication prompt.
+/// Missing, locked or unreadable identity custody is never first-owner consent.
+pub(crate) fn authentication_session_decision(identity_dir: &Path) -> Result<(), NotServed> {
+    session_decision(
+        in_admin_group(),
+        tilo_identity_host::provisioning::active_identity_owns_device(
+            identity_dir,
+            &tilo_identity_host::provisioning::collaboration_identity_paths(),
+        ),
+    )
+}
+
+/// Revalidate the current control phase. Prepared access is only the actual
+/// root installation's delivered target; it never turns absence into ownership.
+pub(crate) fn control_session_decision(
+    identity_dir: &Path,
+    first_use: bool,
+) -> Result<(), NotServed> {
+    match authentication_session_decision(identity_dir) {
+        Ok(()) => Ok(()),
+        Err(NotServed::NotDeviceOwner) if first_use && in_admin_group() => {
+            prepared::check(identity_dir)
+                .map_err(|error| NotServed::OwnershipUnreadable(error.to_string()))
+        }
+        Err(error) => Err(error),
+    }
+}
+
+pub(crate) fn bind_first_use(
+    identity_dir: &Path,
+    headless: bool,
+) -> Result<(UnixListener, PathBuf), NotServed> {
+    control_session_decision(identity_dir, true)?;
+    let path =
+        admin_socket_path(std::env::var_os("XDG_RUNTIME_DIR")).ok_or(NotServed::NoRuntimeDir)?;
+    let path = if headless {
+        path.with_file_name("headless-owner-control.sock")
+    } else {
+        path
+    };
+    bind_listener(path)
+}
+
 /// Bind the admin control socket for this session, or say why not.
 ///
 /// `identity_dir` is the session's identity directory. The socket is
@@ -121,13 +168,11 @@ pub(crate) fn bind_headless_owner(
 }
 
 fn bind_at(identity_dir: &Path, path: PathBuf) -> Result<(UnixListener, PathBuf), NotServed> {
-    session_decision(
-        in_admin_group(),
-        tilo_identity_host::provisioning::active_identity_owns_device(
-            identity_dir,
-            &tilo_identity_host::provisioning::collaboration_identity_paths(),
-        ),
-    )?;
+    authentication_session_decision(identity_dir)?;
+    bind_listener(path)
+}
+
+fn bind_listener(path: PathBuf) -> Result<(UnixListener, PathBuf), NotServed> {
     if path.exists() && UnixStream::connect(&path).is_ok() {
         return Err(NotServed::InUse(path));
     }
@@ -341,5 +386,71 @@ mod tests {
                 .as_str()
                 .is_some_and(|message| message.contains("sandboxed"))
         );
+    }
+}
+
+/// The actual first-use resource surface; publication alone never exposes a
+/// different provider through the bootstrap control phase.
+pub(crate) struct FirstUseVisibility<'a> {
+    pub base: &'a dyn crate::shell::search::action_api::ActionVisibility,
+    pub first_use: bool,
+}
+impl crate::shell::search::action_api::ActionVisibility for FirstUseVisibility<'_> {
+    fn can_see(
+        &self,
+        resource: &crate::shell::search::action_api::ResourceRef,
+        kind: &crate::shell::search::ResourceKind,
+    ) -> bool {
+        (!self.first_use || first_use_provider(&resource.provider))
+            && self.base.can_see(resource, kind)
+    }
+}
+fn first_use_provider(provider: &str) -> bool {
+    matches!(provider, "onboarding" | "authentication-prompts")
+}
+pub(crate) fn first_use_permitted(command: &crate::shell::test_control::Command) -> bool {
+    use crate::shell::test_control::Command;
+    match command {
+        Command::ActionsEnumerate { .. } => true,
+        Command::ActionsInvoke {
+            provider,
+            device: None,
+            ..
+        } => first_use_provider(provider),
+        _ => false,
+    }
+}
+#[cfg(test)]
+mod first_use_tests {
+    use super::*;
+    use crate::shell::{
+        search::action_api::{ActionVisibility, AllVisible, ResourceRef},
+        test_control::Command,
+    };
+    #[test]
+    fn first_use_scope_refuses_unrelated_published_actions_and_remote_devices() {
+        let gate = FirstUseVisibility {
+            base: &AllVisible,
+            first_use: true,
+        };
+        let kind = crate::shell::search::ResourceKind::Action;
+        assert!(gate.can_see(&ResourceRef::new("onboarding", "inspect"), &kind));
+        assert!(gate.can_see(
+            &ResourceRef::new("authentication-prompts", "answer@ticket"),
+            &kind
+        ));
+        for provider in ["app-actions", "session", "permissions", "host-applications"] {
+            assert!(!gate.can_see(&ResourceRef::new(provider, "inspect"), &kind));
+        }
+        assert!(!first_use_permitted(&Command::Windows));
+        assert!(!first_use_permitted(&Command::ActionsStatus {
+            invocation_id: 1,
+            wait_ms: None
+        }));
+        let command = crate::shell::test_control::parse_command(
+            r#"{"op":"actions_invoke","provider":"host-applications","id":"launch"}"#,
+        )
+        .expect("real codec");
+        assert!(!first_use_permitted(&command));
     }
 }

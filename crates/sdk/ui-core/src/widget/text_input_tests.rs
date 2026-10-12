@@ -4596,3 +4596,179 @@ fn single_line_batch_metrics_preserve_graphemes_preedit_and_theme_geometry() {
         }
     }
 }
+
+#[test]
+fn themed_input_typography_reflows_and_centers_actual_shaped_text() {
+    let mut input = TextInput::local()
+        .with_initial_value("Themed input baseline")
+        .with_spellcheck(false)
+        .with_autocorrect(false);
+    input.core.set_selection(6, 12);
+    let mut authored = Theme::dark();
+    authored.tokens.typography = authored.tokens.typography.with_base_size(18.0);
+    let themes = [
+        authored.clone().with_ui_scale(1.25).with_text_scale(1.5),
+        authored.with_ui_scale(2.0).with_text_scale(1.5),
+    ];
+    let mut previous_height = 0.0;
+    for theme in themes {
+        let mut tree = TaffyTree::new();
+        let node = input.build_layout(&mut tree, &theme, &mut Default::default());
+        tree.compute_layout(
+            node,
+            Size {
+                width: taffy::AvailableSpace::Definite(640.0),
+                height: taffy::AvailableSpace::MaxContent,
+            },
+        )
+        .unwrap();
+        input.apply_layout(&tree, node, Point::ZERO);
+        draw_with_theme(&mut input, &theme);
+        let expected = theme.text(TextRole::Body).size;
+        assert!(expected > body_size() * theme.text_scale);
+        let layout = input
+            .single_layout
+            .as_ref()
+            .expect("actual draw shapes the input");
+        assert!((layout.buffer.metrics().font_size - expected).abs() < 0.001);
+        let line_height = f64::from(layout.buffer.metrics().line_height);
+        assert!(input.rect.height() >= line_height + 2.0 * f64::from(theme.tokens.spacing.s1));
+        assert!(
+            input.rect.height() > previous_height,
+            "a changed theme reflows the retained field"
+        );
+        previous_height = input.rect.height();
+        assert!((input.single_origin.y + line_height / 2.0 - input.rect.center().y).abs() < 0.001);
+        assert_eq!(input.core.caret(), 12);
+        assert_eq!(input.core.anchor(), 6);
+        assert!(
+            input.take_dirty().is_none(),
+            "theme changes are not user edits"
+        );
+    }
+    input.set_text_role(TextRole::Heading);
+    let theme = Theme::dark().with_ui_scale(2.0).with_text_scale(1.5);
+    input.prepare_theme(&theme);
+    draw_with_theme(&mut input, &theme);
+    assert!(
+        (input
+            .single_layout
+            .as_ref()
+            .unwrap()
+            .buffer
+            .metrics()
+            .font_size
+            - theme.text(TextRole::Heading).size)
+            .abs()
+            < 0.001,
+        "a role change reads the current theme instead of a stale cached Body size"
+    );
+}
+
+#[test]
+fn embedded_input_measurement_adopts_theme_and_keeps_document_size_override() {
+    let text = "A wrapping field must measure the same themed typography that it paints.";
+    let mut theme = Theme::dark();
+    theme.tokens.typography = theme.tokens.typography.with_base_size(19.0);
+    let theme = theme.with_ui_scale(2.0).with_text_scale(1.5);
+    let mut input = TextInput::local().multiline(true).with_initial_value(text);
+    let mut renderer = TextRenderer::new();
+    assert_eq!(
+        renderer.text_scale(),
+        1.0,
+        "renderer starts at its old frame scale"
+    );
+    let height = input.measure_wrapped_content(280.0, &mut renderer, &theme);
+    let layout = input
+        .single_layout
+        .as_ref()
+        .expect("actual wrapped measurement shapes text");
+    assert!((layout.buffer.metrics().font_size - theme.text(TextRole::Body).size).abs() < 0.001);
+    assert!(height >= layout.height());
+    assert!(
+        layout.buffer.layout_runs().count() > 1,
+        "the themed paragraph really wraps"
+    );
+
+    let mut document = TextInput::local()
+        .with_content_size(17.0)
+        .with_initial_value("document");
+    document.prepare_theme(&theme);
+    document.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 80.0));
+    draw_with_theme(&mut document, &theme);
+    assert_eq!(
+        document
+            .single_layout
+            .as_ref()
+            .unwrap()
+            .buffer
+            .metrics()
+            .font_size,
+        17.0
+    );
+}
+
+#[test]
+fn forced_color_idle_field_boundary_has_rendered_non_text_contrast() {
+    let mut renderer = crate::offscreen::OffscreenRenderer::new(160, 64);
+    for theme in [
+        Theme::high_contrast(),
+        Theme::preset(crate::theme::Preset::HighContrastLight),
+    ] {
+        assert!(theme.colors_are_forced());
+        let mut scene = Scene::new();
+        paint_field_chrome(
+            &mut scene,
+            Affine::IDENTITY,
+            &theme,
+            &RoundedRect::from_rect(Rect::new(12.0, 12.0, 148.0, 52.0), 8.0),
+            FieldState::default(),
+        );
+        let pixels = renderer.render(&scene, theme.tokens.colors.surfaces.content);
+        let pixel = |x: usize, y: usize| {
+            let offset = (y * 160 + x) * 4;
+            vello::peniko::Color::from_rgba8(
+                pixels[offset],
+                pixels[offset + 1],
+                pixels[offset + 2],
+                pixels[offset + 3],
+            )
+        };
+        let ground = pixel(80, 24);
+        for edge in [pixel(80, 12), pixel(12, 32)] {
+            assert!(
+                crate::a11y::contrast_ratio(edge, ground)
+                    >= crate::tokens::colors::NON_TEXT_MIN_CONTRAST,
+                "actual idle field edge must remain visible when forced surfaces coincide"
+            );
+        }
+        let enabled_contrast = crate::a11y::contrast_ratio(pixel(80, 12), ground);
+        let mut disabled_scene = Scene::new();
+        paint_field_chrome(
+            &mut disabled_scene,
+            Affine::IDENTITY,
+            &theme,
+            &RoundedRect::from_rect(Rect::new(12.0, 12.0, 148.0, 52.0), 8.0),
+            FieldState {
+                disabled: true,
+                ..FieldState::default()
+            },
+        );
+        let disabled_pixels =
+            renderer.render(&disabled_scene, theme.tokens.colors.surfaces.content);
+        for (x, y) in [(80, 12), (12, 32)] {
+            let offset = (y * 160 + x) * 4;
+            let edge = vello::peniko::Color::from_rgba8(
+                disabled_pixels[offset],
+                disabled_pixels[offset + 1],
+                disabled_pixels[offset + 2],
+                disabled_pixels[offset + 3],
+            );
+            let contrast = crate::a11y::contrast_ratio(edge, ground);
+            assert!(
+                contrast > 1.5 && contrast < enabled_contrast,
+                "the actual disabled group must dim the forced outline while keeping it visible"
+            );
+        }
+    }
+}

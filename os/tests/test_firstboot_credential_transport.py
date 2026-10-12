@@ -14,7 +14,7 @@ SYNTHETIC_HASH = "$6$fixture$" + "A" * 86
 
 
 class CredentialTransportTests(unittest.TestCase):
-    def run_firstboot(self, root, full_name, seeded_home, fail_password=False):
+    def run_firstboot(self, root, full_name, seeded_home, fail_password=False, fail_seeds=False):
         credential = root / "install-user.conf"
         credential.write_text("fixtureuser:" + SYNTHETIC_HASH + "\n")
         credential.chmod(0o600)
@@ -25,6 +25,10 @@ class CredentialTransportTests(unittest.TestCase):
         home = root / "home/fixtureuser"
         if seeded_home:
             home.mkdir(parents=True)
+        # This inert helper covers unlock ordering only. The separate native
+        # seed/adoption fixture uses the actual root-owned script and real NSS.
+        seeds = root / "home-seeds.py"
+        seeds.write_text("import os, sys\nfrom pathlib import Path\nassert sys.argv[1:] == ['fixtureuser']\nPath(os.environ['FIXTURE_ROOT'], 'seeds-called').write_text('called')\nraise SystemExit(int(os.environ.get('FIXTURE_SEEDS_FAILURE', '0')))\n")
         source = SOURCE.read_text()
         replacements = {
             "CONF=/etc/tilo/install-user.conf": f"CONF={credential}",
@@ -32,6 +36,7 @@ class CredentialTransportTests(unittest.TestCase):
             "key=/var/lib/tilo/device-private/keypair.bin": f"key={root}/absent-device-key",
             '"/home/$user"': f'"{root}/home/$user"',
             '"/var/home/$user"': f'"{root}/var-home/$user"',
+            'seed_helper=/etc/tilo/firstboot-home-seeds.py': f'seed_helper={seeds}',
         }
         for original, replacement in replacements.items():
             self.assertEqual(source.count(original), 1, original)
@@ -40,8 +45,8 @@ class CredentialTransportTests(unittest.TestCase):
         script.write_text(source)
         tools = root / "bin"
         tools.mkdir()
-        # Only the credential-file ownership view is mocked. The production
-        # parser, account creation branches, and cleanup run unchanged.
+        # Account tools and the seed producer are inert in this credential
+        # boundary fixture; production parsing and unlock ordering run unchanged.
         stubs = {
             "id": "raise SystemExit(1)",
             "stat": "print('0:600:1' if sys.argv[2] == '%u:%a:%h' else Path(sys.argv[-1]).stat().st_size)",
@@ -59,14 +64,21 @@ class CredentialTransportTests(unittest.TestCase):
             )
             path.chmod(0o755)
         environment = dict(os.environ, PATH=f"{tools}:{os.environ['PATH']}",
-                           FIXTURE_ROOT=str(root), FIXTURE_PASSWORD_FAILURE=str(int(fail_password)))
+                           FIXTURE_ROOT=str(root), FIXTURE_PASSWORD_FAILURE=str(int(fail_password)),
+                           FIXTURE_SEEDS_FAILURE=str(int(fail_seeds)))
         result = subprocess.run(["bash", str(script)], env=environment, capture_output=True, text=True)
         arguments = json.loads((root / "useradd.json").read_text())
         self.assertNotIn(SYNTHETIC_HASH, arguments, "password hashes must not be process arguments")
         self.assertEqual(arguments[arguments.index("-p") + 1], "!")
-        self.assertIn("-M" if seeded_home else "-m", arguments)
+        self.assertIn("-M", arguments)
+        self.assertNotIn("-m", arguments)
+        self.assertEqual((root / "seeds-called").read_text(), "called")
         self.assertEqual("-c" in arguments, full_name)
         self.assertNotIn(SYNTHETIC_HASH, result.stdout + result.stderr)
+        if fail_seeds:
+            self.assertFalse((root / "chpasswd.json").exists())
+            self.assertFalse((root / "password-stdin").exists())
+            return result, credential
         self.assertEqual(json.loads((root / "chpasswd.json").read_text()), ["--encrypted"])
         self.assertEqual((root / "password-stdin").read_text(), "fixtureuser:" + SYNTHETIC_HASH + "\n")
         return result, credential
@@ -79,6 +91,14 @@ class CredentialTransportTests(unittest.TestCase):
                         result, credential = self.run_firstboot(Path(work), full_name, seeded_home)
                         self.assertEqual(result.returncode, 0, result.stderr)
                         self.assertFalse(credential.exists())
+
+    def test_seed_failure_never_installs_password_or_discards_repair_seed(self):
+        with tempfile.TemporaryDirectory() as work:
+            result, credential = self.run_firstboot(Path(work), False, False, fail_seeds=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("account remains locked", result.stderr)
+            self.assertNotIn("created account", result.stdout)
+            self.assertTrue(credential.exists())
 
     def test_password_install_failure_never_creates_an_unlocked_account(self):
         with tempfile.TemporaryDirectory() as work:

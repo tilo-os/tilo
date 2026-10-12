@@ -9,6 +9,8 @@
 //! Inode numbers are a local `NodeId`<->`u64` index; renames keep the node id,
 //! so the inode stays stable across renames.
 
+#[cfg(all(feature = "filesystem", target_os = "linux"))]
+pub(crate) mod external_projection;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::time::{Duration, UNIX_EPOCH};
 
@@ -1805,6 +1807,84 @@ impl Namespace {
         Ok(delta)
     }
 
+    fn apply_atomic_save_in_place(
+        &mut self,
+        transaction: &FileMutationTransaction,
+    ) -> Result<Option<Vec<u8>>, TransactionProjectionError> {
+        transaction
+            .verify()
+            .map_err(|_| TransactionProjectionError::InvalidTransaction)?;
+        let fs_protocol::FileMutationOperation::AtomicSave {
+            parent_record,
+            document_name,
+            temporary_name,
+            document_record,
+            temporary_record,
+            prior_document_version,
+        } = &transaction.manifest.operation
+        else {
+            return Err(TransactionProjectionError::InvalidTransaction);
+        };
+        let document = transaction
+            .manifest
+            .participants
+            .iter()
+            .find(|p| p.role == FileMutationParticipantRole::AtomicSaveDocument)
+            .ok_or(TransactionProjectionError::InvalidTransaction)?;
+        let temporary = transaction
+            .manifest
+            .participants
+            .iter()
+            .find(|p| p.role == FileMutationParticipantRole::AtomicSaveTemporary)
+            .ok_or(TransactionProjectionError::InvalidTransaction)?;
+        let document_id = self
+            .unique_node_id_for_record(*document_record)
+            .ok_or(TransactionProjectionError::UnknownOrDuplicateRecord)?;
+        let temporary_id = self
+            .unique_node_id_for_record(*temporary_record)
+            .ok_or(TransactionProjectionError::UnknownOrDuplicateRecord)?;
+        let revision = document
+            .proposed_content_revision
+            .ok_or(TransactionProjectionError::InvalidTransaction)?;
+        let document_ino = self.ino_for_id(&document_id);
+        if self.reaches_root(&document_id)
+            && !self.reaches_root(&temporary_id)
+            && self.content_revision_for(document_ino) == Some(revision)
+        {
+            return Ok(None);
+        }
+        for (id, name, expected) in [
+            (&document_id, document_name, *prior_document_version),
+            (&temporary_id, temporary_name, temporary.expected_version),
+        ] {
+            if !self.reaches_root(id)
+                || self.kind_of(id) != NodeKind::File
+                || self
+                    .parent_of(id)
+                    .and_then(|parent| self.record_id_for_id(&parent))
+                    != Some(*parent_record)
+                || self.name_of(id).as_ref() != Some(name)
+                || self
+                    .content_revision_for_id(id)
+                    .is_none_or(|revision| revision.version_id != expected)
+            {
+                return Err(TransactionProjectionError::PreconditionFailed);
+            }
+        }
+        self.apply_signed_binding(&document.proposed_binding)
+            .map_err(|_| TransactionProjectionError::PreconditionFailed)?;
+        if !self.set_content_revision_preserving_preview(
+            document_ino,
+            &revision,
+            transaction.manifest.timestamp_ms,
+        ) {
+            return Err(TransactionProjectionError::ContentProjectionFailed);
+        }
+        self.apply_signed_binding(&temporary.proposed_binding)
+            .map_err(|_| TransactionProjectionError::PreconditionFailed)?;
+        Ok(Some(self.save_incremental()))
+    }
+
     /// Apply either supported signed multi-record mutation to a complete
     /// namespace clone, publishing the clone only after every precondition and
     /// both record projections succeed.
@@ -1843,6 +1923,15 @@ impl Namespace {
                     return Err(TransactionProjectionError::ContentProjectionFailed);
                 }
                 Ok(Some(self.save_incremental()))
+            }
+            fs_protocol::FileMutationOperation::AtomicSave { .. } => {
+                let mut candidate = self.clone();
+                let delta = candidate.apply_atomic_save_in_place(transaction)?;
+                if delta.is_some() {
+                    candidate.rebuild_record_index();
+                    *self = candidate;
+                }
+                Ok(delta)
             }
             fs_protocol::FileMutationOperation::ReplacementRename { .. } => {
                 self.apply_replacement_transaction(transaction)
@@ -3717,6 +3806,169 @@ mod tests {
 
     fn h(b: u8) -> Hash {
         Hash::from([b; 32])
+    }
+
+    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "verify two signed AtomicSave namespace publications, stable identity and durable replay"
+    )]
+    fn atomic_save_namespace_keeps_document_node_across_two_publications() {
+        use ed25519_dalek::SigningKey;
+        use fs_protocol::{
+            ContentHash, FileMutationOperation, FileMutationParticipant,
+            FileMutationTransactionManifest, FileProvenance, FileVersionId, FileVersionV1,
+        };
+        use getrandom::{SysRng, rand_core::UnwrapErr};
+
+        let mut ns = Namespace::new("atomic-save").unwrap();
+        let mut document_ino = ns.create_file(ROOT_INO, "report.txt", None, 1, 1).unwrap();
+        let document = ns.record_id_for(document_ino).unwrap();
+        let document_node = ns.id_for_ino(document_ino).unwrap().to_owned();
+        let parent = ns.record_id_for(ROOT_INO).unwrap();
+        let mut prior = FileVersionId::new();
+        assert!(ns.set_content_revision(
+            document_ino,
+            &ContentRevisionV1 {
+                schema_version: fs_protocol::CONTENT_REVISION_VERSION,
+                record_id: document,
+                version_id: prior,
+                content_hash: None,
+                byte_len: 1,
+                metadata_hash: ContentHash([1; 32]),
+            },
+            1,
+        ));
+        let key = SigningKey::generate(&mut UnwrapErr(SysRng));
+        let actor = FileActor {
+            person: collab_types::Ed25519PublicKey([9; 32]),
+            device: collab_types::Ed25519PublicKey(key.verifying_key().to_bytes()),
+        };
+        let workspace = Uuid::new_v4();
+        for at in [2_u64, 3] {
+            let temporary_ino = ns.create_file(ROOT_INO, "save-temp", None, 1, at).unwrap();
+            let temporary = ns.record_id_for(temporary_ino).unwrap();
+            let temp_prior = FileVersionId::new();
+            assert!(ns.set_content_revision(
+                temporary_ino,
+                &ContentRevisionV1 {
+                    schema_version: fs_protocol::CONTENT_REVISION_VERSION,
+                    record_id: temporary,
+                    version_id: temp_prior,
+                    content_hash: None,
+                    byte_len: at,
+                    metadata_hash: ContentHash([2; 32]),
+                },
+                at,
+            ));
+            let participant = |record_id, expected_version, role, name: &str| {
+                let version = FileVersionV1 {
+                    id: FileVersionId::new(),
+                    record_id,
+                    parents: vec![expected_version],
+                    actor,
+                    timestamp_ms: at,
+                    content_hash: None,
+                    metadata_hash: ContentHash([u8::try_from(at).unwrap(); 32]),
+                    provenance: if role == FileMutationParticipantRole::AtomicSaveDocument {
+                        FileProvenance::Edit
+                    } else {
+                        FileProvenance::Delete
+                    },
+                };
+                let mut result = FileMutationParticipant {
+                    record_id,
+                    role,
+                    expected_version,
+                    proposed_binding: FileBindingV1 {
+                        schema_version: FILE_BINDING_VERSION,
+                        record_id,
+                        parent: Some(parent),
+                        name: name.into(),
+                        kind: FileNodeKind::File,
+                        tombstoned: role == FileMutationParticipantRole::AtomicSaveTemporary,
+                        actor,
+                        observed_at_ms: at,
+                    },
+                    proposed_content_revision: Some(ContentRevisionV1 {
+                        schema_version: fs_protocol::CONTENT_REVISION_VERSION,
+                        record_id,
+                        version_id: version.id,
+                        content_hash: None,
+                        byte_len: at,
+                        metadata_hash: version.metadata_hash,
+                    }),
+                    proposed_version: version,
+                    projection_hash: ContentHash([0; 32]),
+                };
+                result.projection_hash = result.computed_projection_hash().unwrap();
+                result
+            };
+            let mut participants = vec![
+                participant(
+                    document,
+                    prior,
+                    FileMutationParticipantRole::AtomicSaveDocument,
+                    "report.txt",
+                ),
+                participant(
+                    temporary,
+                    temp_prior,
+                    FileMutationParticipantRole::AtomicSaveTemporary,
+                    "save-temp",
+                ),
+            ];
+            participants.sort_by_key(|participant| participant.record_id);
+            let transaction = FileMutationTransaction::signed(
+                FileMutationTransactionManifest {
+                    schema_version: fs_protocol::files::FILE_MUTATION_TRANSACTION_VERSION_V4,
+                    transaction_id: Uuid::new_v4(),
+                    workspace_id: workspace,
+                    actor,
+                    timestamp_ms: at,
+                    operation: FileMutationOperation::AtomicSave {
+                        parent_record: parent,
+                        document_name: "report.txt".into(),
+                        temporary_name: "save-temp".into(),
+                        document_record: document,
+                        temporary_record: temporary,
+                        prior_document_version: prior,
+                    },
+                    participants,
+                },
+                &key,
+            )
+            .unwrap();
+            let document_participant = transaction
+                .manifest
+                .participants
+                .iter()
+                .find(|participant| participant.record_id == document)
+                .unwrap();
+            assert_eq!(document_participant.proposed_version.parents, [prior]);
+            let expected = document_participant.proposed_content_revision.unwrap();
+            assert!(
+                ns.apply_mutation_transaction(&transaction)
+                    .unwrap()
+                    .is_some()
+            );
+            assert_eq!(
+                ns.lookup(ROOT_INO, "report.txt").unwrap().ino.0,
+                document_ino
+            );
+            assert_eq!(ns.record_id_for(document_ino), Some(document));
+            assert_eq!(ns.content_revision_for(document_ino), Some(expected));
+            assert!(ns.lookup(ROOT_INO, "save-temp").is_none());
+            assert!(ns.ino_for_record_id(temporary).is_none());
+            assert_eq!(ns.apply_mutation_transaction(&transaction), Ok(None));
+            let saved = ns.save();
+            ns = Namespace::from_bytes("atomic-save", &saved).unwrap();
+            document_ino = ns.lookup(ROOT_INO, "report.txt").unwrap().ino.0;
+            assert_eq!(ns.id_for_ino(document_ino), Some(document_node.as_str()));
+            assert_eq!(ns.record_id_for(document_ino), Some(document));
+            assert_eq!(ns.content_revision_for(document_ino), Some(expected));
+            prior = expected.version_id;
+        }
     }
 
     #[test]

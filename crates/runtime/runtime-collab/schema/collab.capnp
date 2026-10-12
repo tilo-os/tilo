@@ -417,6 +417,10 @@ interface ChannelHandle {
   # endpoint asks on a timer as before.
   channelKeysChanged @59 (after :UInt64) -> (change :UInt64);
 
+  # Private website session custody for the certified Browser Read route.
+  # Identity, person and source are derived by the broker, never caller claims.
+  browserServiceSessionCommand @60 (command :Data) -> (reply :Data);
+
 }
 
 # Optional result on @35, minted from the same captured directory and worker.

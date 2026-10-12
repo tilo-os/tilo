@@ -77,8 +77,8 @@ pub use image::{
 pub use manifest::{
     Capabilities, Cli, DEFAULT_PLATFORMS, Entrypoint, EntrypointType, Image, Manifest,
     ManifestParseError, NetMode, Package, PathPattern, Platform, Providers, Publisher, Requirement,
-    Sandbox, SandboxFs, SandboxNet, ServiceReq, ServiceReqParseError, SplashSegment,
-    SplashSegmentError, Target, Trust, TrustAttestation,
+    Sandbox, SandboxFs, SandboxNet, ServiceProtocol, ServiceReq, ServiceReqParseError,
+    SplashSegment, SplashSegmentError, Target, Trust, TrustAttestation,
 };
 pub use pack::{
     PackError, Packed, SigningIdentity, pack, pack_with_signature, sign_placeholder_root,

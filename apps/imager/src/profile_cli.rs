@@ -48,6 +48,7 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         wifi_ssid: String::new(),
         device_label: String::new(),
         enroll_local_identity: false,
+        prepared_setup: None,
     };
 
     let mut options = std::fs::OpenOptions::new();

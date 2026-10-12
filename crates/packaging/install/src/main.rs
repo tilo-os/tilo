@@ -2210,6 +2210,7 @@ fn runtime_install(
             arch,
             identity,
             extra_libs: &[],
+            extra_bins: &[],
         },
     )
     .map_err(|e| Error::RuntimeBundle(e.to_string()))?;

@@ -13,6 +13,8 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+mod signed_history;
+
 const MAX_REPORTS: usize = 4096;
 const MAX_REPORT_BYTES: usize = 64 * 1024;
 const MAX_METADATA_BYTES: usize = 64 * 1024 * 1024;
@@ -27,6 +29,8 @@ pub enum RecoveryKind {
     KnownStaged,
     UnknownNativeCommit,
     PublishedSourceRetained,
+    /// A namespace-only capture retained in independently admitted root custody.
+    QuarantinedNative,
 }
 #[derive(Clone, Debug)]
 pub struct RecoveryInfo {
@@ -61,6 +65,11 @@ pub struct OperationReport {
 }
 pub enum RecoveryResolution {
     RestoreKnown {
+        parent: DirectoryGrant,
+        name: EntryName,
+    },
+    /// Restore an actual protected capture without opening its contents.
+    RestoreCaptured {
         parent: DirectoryGrant,
         name: EntryName,
     },
@@ -132,6 +141,7 @@ struct Receipt {
 struct Store {
     receipts: BTreeMap<uuid::Uuid, Receipt>,
     poisoned: bool,
+    capture_claims: std::collections::HashSet<uuid::Uuid>,
 }
 
 /// The trusted host retains this owner. Opening takes an already-authorized
@@ -150,12 +160,250 @@ pub struct OperationOwner {
     #[cfg(test)]
     pub(super) submissions: std::sync::atomic::AtomicUsize,
 }
+/// A live exclusion claim, not durable history and not authority reconstructed
+/// from an identifier. Queued restores retain their claim through native effects.
+pub(super) struct CaptureClaim {
+    owner: Arc<OperationOwner>,
+    recovery: uuid::Uuid,
+}
+impl Drop for CaptureClaim {
+    fn drop(&mut self) {
+        if let Ok(mut state) = self.owner.state.lock() {
+            state.capture_claims.remove(&self.recovery);
+        }
+    }
+}
+/// Actual native replacement observation and protected victim pin. Holding it
+/// prevents public restore while the canonical daemon commits signed ownership.
+/// Inode identity proves namespace custody, never immutable historical bytes.
+pub struct NativeReplacementPin {
+    claim: Arc<CaptureClaim>,
+    operation: OperationId,
+    source_owner: [u8; 32],
+    source: [u64; 2],
+    victim: [u64; 2],
+    destination: [u64; 2],
+}
+impl NativeReplacementPin {
+    pub fn operation_id(&self) -> &OperationId {
+        &self.operation
+    }
+    pub fn source_owner(&self) -> [u8; 32] {
+        self.source_owner
+    }
+    pub fn source_identity(&self) -> [u64; 2] {
+        self.source
+    }
+    pub fn victim_identity(&self) -> [u64; 2] {
+        self.victim
+    }
+    pub fn destination_identity(&self) -> [u64; 2] {
+        self.destination
+    }
+    pub fn capture_id(&self) -> RecoveryId {
+        RecoveryId(self.claim.recovery)
+    }
+    /// Called by the enrolled host only after its canonical signed transaction
+    /// and archive map durably own this exact capture. Does not delete bytes.
+    /// # Errors
+    /// Refuses unavailable publication or changed journal phase.
+    pub fn check(&self, current: &FsSession, parent: &DirectoryGrant) -> Result<(), FsError> {
+        let owner = current.operation_store()?;
+        if !Arc::ptr_eq(&owner, &self.claim.owner)
+            || current.retained_source_owner_key()? != self.source_owner
+        {
+            return Err(FsError::Denied);
+        }
+        let (_, step) = owner.find_recovery(&self.capture_id())?;
+        if !matches!(
+            step.phase.as_str(),
+            "ReplaceVictimCaptured" | "ReplaceHistoryOwned"
+        ) || step
+            .recovery
+            .as_ref()
+            .is_none_or(|record| record.acknowledged)
+        {
+            return Err(FsError::Conflict);
+        }
+        let observed = current.observe_replacement(parent, &step)?;
+        if observed != (self.source, self.victim, self.destination) {
+            return Err(FsError::StaleEntry);
+        }
+        Ok(())
+    }
+    /// Accept canonical ownership only from the enrolled daemon's signed
+    /// commit for this same actual pin and durably retained preparation.
+    /// # Errors
+    /// Refuses stale capture/grant, different operation, invalid signer or
+    /// ambiguous journal publication. Captured inode custody is not byte history.
+    pub fn commit_with_history(
+        &self,
+        current: &FsSession,
+        parent: &DirectoryGrant,
+        committed: &crate::external_history::CommittedReceipt,
+    ) -> Result<(), FsError> {
+        self.check(current, parent)?;
+        let prepared = self.claim.owner.history_prepare(&self.operation)?;
+        let verifier = current.retained_history_verifier()?;
+        committed
+            .verify(&prepared, &verifier)
+            .map_err(|_| FsError::Denied)?;
+        if committed.operation_id != self.operation.native().to_string()
+            || committed.source_owner != self.source_owner
+            || committed.capture_id != self.claim.recovery.to_string()
+            || committed.source_identity != self.source
+            || committed.victim_identity != self.victim
+            || committed.destination_identity != self.destination
+        {
+            return Err(FsError::Denied);
+        }
+        self.commit_history_ownership(current, parent, committed)?;
+        current.advance_selected_lineage_from_history(parent, self)
+    }
+    fn commit_history_ownership(
+        &self,
+        current: &FsSession,
+        parent: &DirectoryGrant,
+        committed: &crate::external_history::CommittedReceipt,
+    ) -> Result<(), FsError> {
+        self.check(current, parent)?;
+        let (_, observed_step) = self.claim.owner.find_recovery(&self.capture_id())?;
+        // Keep the actual revocation/lifetime gate through durable authority
+        // mutation; no effect occurs after an unlocked preliminary check.
+        current.with_replacement_observation(
+            parent,
+            &observed_step,
+            Some(self.source_owner),
+            |observed| {
+                if observed != (self.source, self.victim, self.destination) {
+                    return Err(FsError::StaleEntry);
+                }
+                self.claim
+                    .owner
+                    .bind_history_commit(&self.operation, committed)?;
+                self.claim
+                    .owner
+                    .update(&self.operation, "ReplaceHistoryOwned", |receipt| {
+                        let step = receipt.steps.first_mut().ok_or(FsError::StoreUnavailable)?;
+                        if !matches!(
+                            step.phase.as_str(),
+                            "ReplaceVictimCaptured" | "ReplaceHistoryOwned"
+                        ) || step.recovery.as_ref().is_none_or(|recovery| {
+                            recovery.id != self.claim.recovery || recovery.acknowledged
+                        }) {
+                            return Err(FsError::Conflict);
+                        }
+                        step.phase = "ReplaceHistoryOwned".into();
+                        Ok(())
+                    })
+            },
+        )
+    }
+}
+impl RecoveryId {
+    /// A record identifier only. Resolution requires a genuine current native owner.
+    pub fn from_bytes(bytes: [u8; 16]) -> Self {
+        Self(uuid::Uuid::from_bytes(bytes))
+    }
+    /// Identifier of an actual durable native recovery record, never authority.
+    pub fn as_bytes(&self) -> &[u8; 16] {
+        self.0.as_bytes()
+    }
+}
 impl OperationId {
+    /// A receipt identifier only; report access remains scoped by its actual owner.
+    pub fn from_bytes(bytes: [u8; 16]) -> Self {
+        Self(uuid::Uuid::from_bytes(bytes))
+    }
+    /// Identifier of an actual durable native operation record, never authority.
+    pub fn as_bytes(&self) -> &[u8; 16] {
+        self.0.as_bytes()
+    }
     pub(super) fn native(&self) -> uuid::Uuid {
         self.0
     }
 }
 impl OperationOwner {
+    fn claim_capture(
+        self: &Arc<Self>,
+        recovery: &RecoveryId,
+    ) -> Result<Arc<CaptureClaim>, FsError> {
+        let mut state = lock(&self.state)?;
+        if !state.capture_claims.insert(recovery.0) {
+            return Err(FsError::Busy);
+        }
+        Ok(Arc::new(CaptureClaim {
+            owner: Arc::clone(self),
+            recovery: recovery.0,
+        }))
+    }
+    /// Obtain a success observation only from the genuine completed native job,
+    /// independently root-sealed source owner and held current parent/capture.
+    /// # Errors
+    /// Refuses uncertain outcomes, absent rights, substituted inodes or restore.
+    pub fn pin_replacement(
+        self: &Arc<Self>,
+        current: &FsSession,
+        operation: &OperationId,
+        parent: &DirectoryGrant,
+    ) -> Result<NativeReplacementPin, FsError> {
+        let attached = current.operation_store()?;
+        if !Arc::ptr_eq(self, &attached) || current.owner() != self.owner() {
+            return Err(FsError::Denied);
+        }
+        let (step, recovery) = {
+            let state = lock(&self.state)?;
+            let receipt = state.receipts.get(&operation.0).ok_or(FsError::NotFound)?;
+            if receipt.item_count != 1
+                || receipt.items.len() != 1
+                || receipt.items[0].state != ItemState::Completed
+            {
+                return Err(FsError::Conflict);
+            }
+            let step = receipt.steps.first().ok_or(FsError::StoreUnavailable)?;
+            if !matches!(
+                step.phase.as_str(),
+                "ReplaceVictimCaptured" | "ReplaceHistoryOwned"
+            ) {
+                return Err(FsError::Conflict);
+            }
+            let recovery = step
+                .recovery
+                .as_ref()
+                .filter(|record| !record.acknowledged)
+                .ok_or(FsError::Conflict)?;
+            (step.clone(), RecoveryId(recovery.id))
+        };
+        let claim = self.claim_capture(&recovery)?;
+        // Recheck durable state after claiming so a concurrent restore cannot
+        // finish between the initial observation and exclusion acquisition.
+        let (_, latest) = self.find_recovery(&recovery)?;
+        if latest.phase != step.phase
+            || latest.stage != step.stage
+            || latest
+                .recovery
+                .as_ref()
+                .is_none_or(|record| record.acknowledged)
+        {
+            return Err(FsError::Conflict);
+        }
+        let observed = current.observe_replacement(parent, &step)?;
+        let pin = NativeReplacementPin {
+            claim,
+            operation: operation.clone(),
+            source_owner: current.retained_source_owner_key()?,
+            source: observed.0,
+            victim: observed.1,
+            destination: observed.2,
+        };
+        // An owned phase alone never reacquires canonical history. Require the
+        // same actual pin and durable signed prepare/commit under today's scope.
+        if step.phase == "ReplaceHistoryOwned" {
+            pin.check(current, parent)?;
+            pin.verify_owned_history(current)?;
+        }
+        Ok(pin)
+    }
     /// # Errors
     /// Returns `Busy` for a second writer, and `StoreUnavailable` for invalid
     /// or oversized receipts or owner mismatch. Privacy denial returns `Denied`;
@@ -268,6 +516,83 @@ impl OperationOwner {
             self.metadata_limit
         }
     }
+    /// Open the authentic host-delegated persistent journal and adopt only live
+    /// device-number observations beneath the same verified original Home and
+    /// protected capture inodes. No saved locator supplies a grant.
+    /// # Errors
+    /// Refuses unrelated roots/private namespace, unavailable grant or publication.
+    pub fn open_retained(
+        opened: std::fs::File,
+        owner: FsOwner,
+        session: &FsSession,
+        root: &DirectoryGrant,
+    ) -> Result<Arc<Self>, FsError> {
+        let (home, captured) = session.retained_journal_roots(root, &opened)?;
+        let this = Self::open(opened, owner)?;
+        let records = lock(&this.state)?
+            .receipts
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        for record in records {
+            let mut adopted = record.clone();
+            for step in &mut adopted.steps {
+                // A byte fingerprint belongs to its recorded source observation;
+                // adoption must never attach it to an unrelated root or inode.
+                if let Some(fingerprint) = &step.fingerprint {
+                    let source = step.source.as_ref().ok_or(FsError::Denied)?;
+                    if source.identity != Some(fingerprint.identity)
+                        || source.root.device != fingerprint.identity.device
+                    {
+                        return Err(FsError::Denied);
+                    }
+                }
+                for locator in [&mut step.source, &mut step.stage, &mut step.destination]
+                    .into_iter()
+                    .flatten()
+                {
+                    let current = if locator.root.inode == home.inode {
+                        home
+                    } else if locator.root.inode == captured.inode {
+                        captured
+                    } else {
+                        return Err(FsError::Denied);
+                    };
+                    let previous_device = locator.root.device;
+                    locator.root = current;
+                    if let Some(identity) = &mut locator.identity {
+                        if identity.device != previous_device {
+                            return Err(FsError::Denied);
+                        }
+                        identity.device = current.device;
+                    }
+                }
+                if let Some(fingerprint) = &mut step.fingerprint {
+                    fingerprint.identity = step
+                        .source
+                        .as_ref()
+                        .and_then(|source| source.identity)
+                        .ok_or(FsError::Denied)?;
+                }
+            }
+            if postcard::to_stdvec(&adopted).map_err(|_| FsError::StoreUnavailable)?
+                != postcard::to_stdvec(&record).map_err(|_| FsError::StoreUnavailable)?
+            {
+                this.update(
+                    &OperationId(record.id),
+                    "OriginalSourceAdopted",
+                    |receipt| {
+                        // Keep update's newly appended durable checkpoint.
+                        receipt.steps = adopted.steps;
+                        Ok(())
+                    },
+                )?;
+            }
+        }
+        // Renew actual held scope after publication, before exposing the owner.
+        session.check_directory(root)?;
+        Ok(this)
+    }
     fn write(&self, receipt: &Receipt) -> Result<(), FsError> {
         let bytes = postcard::to_stdvec(receipt).map_err(|_| FsError::StoreUnavailable)?;
         if bytes.len() > self.report_byte_limit() {
@@ -301,7 +626,13 @@ impl OperationOwner {
                 n.checked_add(
                     if matches!(
                         checkpoint,
-                        "Admitted" | "PublishStarted" | "NativeTrashSubmitted"
+                        "Admitted"
+                            | "PublishStarted"
+                            | "NativeTrashSubmitted"
+                            | "RemoveStarted"
+                            | "RemoveCaptureStarted"
+                            | "ReplaceTempCaptureStarted"
+                            | "ReplaceExchangeStarted"
                     ) {
                         1024
                     } else {
@@ -500,9 +831,9 @@ impl OperationOwner {
                 let recovery = target.recovery.as_mut().ok_or(FsError::NotFound)?;
                 recovery.kind = kind;
                 let state = match kind {
-                    RecoveryKind::KnownStaged | RecoveryKind::NeedsRevalidation => {
-                        ItemState::RecoveryRequired
-                    }
+                    RecoveryKind::KnownStaged
+                    | RecoveryKind::NeedsRevalidation
+                    | RecoveryKind::QuarantinedNative => ItemState::RecoveryRequired,
                     RecoveryKind::PublishedSourceRetained => ItemState::CopiedSourceRetained,
                     RecoveryKind::UnknownNativeCommit => ItemState::OutcomeUnknown,
                 };
@@ -562,6 +893,71 @@ impl OperationOwner {
             })
             .collect())
     }
+    pub(crate) fn scoped_page(
+        &self,
+        scope: &NativeLocator,
+        after: &[u8],
+    ) -> Result<crate::directory_backend::RecoveryPage, FsError> {
+        let position = if after.is_empty() {
+            None
+        } else {
+            let raw: [u8; 24] = after.try_into().map_err(|_| FsError::InvalidName)?;
+            let operation =
+                uuid::Uuid::from_bytes(raw[..16].try_into().map_err(|_| FsError::InvalidName)?);
+            let item = u64::from_be_bytes(raw[16..].try_into().map_err(|_| FsError::InvalidName)?);
+            Some((operation, item))
+        };
+        let store = lock(&self.state)?;
+        let mut entries = Vec::new();
+        let mut next = Vec::new();
+        for receipt in store.receipts.values() {
+            for step in &receipt.steps {
+                let key = (
+                    receipt.id,
+                    u64::try_from(step.item).map_err(|_| FsError::LimitExceeded)?,
+                );
+                if position.is_some_and(|position| key <= position) {
+                    continue;
+                }
+                if step.phase == "ReplaceHistoryOwned" {
+                    continue;
+                }
+                let Some(recovery) = &step.recovery else {
+                    continue;
+                };
+                if recovery.acknowledged {
+                    continue;
+                }
+                let Some(source) = &step.source else { continue };
+                if source.root != scope.root || source.parents != scope.parents {
+                    continue;
+                }
+                if entries.len() == 256 {
+                    return Ok(crate::directory_backend::RecoveryPage {
+                        entries,
+                        next,
+                        done: false,
+                    });
+                }
+                entries.push(crate::directory_backend::RecoveryRow {
+                    recovery: *recovery.id.as_bytes(),
+                    operation: *receipt.id.as_bytes(),
+                    original_name: EntryName::new(OsString::from_vec(
+                        recovery.original_name.clone(),
+                    ))?,
+                    kind: recovery.kind,
+                });
+                next.clear();
+                next.extend_from_slice(receipt.id.as_bytes());
+                next.extend_from_slice(&key.1.to_be_bytes());
+            }
+        }
+        Ok(crate::directory_backend::RecoveryPage {
+            entries,
+            next: Vec::new(),
+            done: true,
+        })
+    }
     pub(super) fn find_recovery(&self, id: &RecoveryId) -> Result<(OperationId, Step), FsError> {
         let store = lock(&self.state)?;
         for r in store.receipts.values() {
@@ -620,6 +1016,37 @@ impl OperationOwner {
                 let stage = step.stage.as_ref().ok_or(FsError::StaleEntry)?;
                 let _ = current.recovery_source(stage)?;
                 crate::operations::start_restore(current, id.clone(), step, parent, name)
+            }
+            RecoveryResolution::RestoreCaptured { parent, name } => {
+                if !matches!(
+                    recovery.kind,
+                    RecoveryKind::QuarantinedNative | RecoveryKind::UnknownNativeCommit
+                ) {
+                    return Err(FsError::Denied);
+                }
+                let stage = step.stage.as_ref().ok_or(FsError::StaleEntry)?;
+                current.recovery_custody(&parent, stage)?;
+                if step.phase == "ReplaceHistoryOwned" {
+                    return Err(FsError::Denied);
+                }
+                let claim = attached.claim_capture(id)?;
+                let (_, latest) = self.find_recovery(id)?;
+                if latest
+                    .recovery
+                    .as_ref()
+                    .is_none_or(|record| record.acknowledged)
+                    || latest.phase == "ReplaceHistoryOwned"
+                {
+                    return Err(FsError::Conflict);
+                }
+                crate::operations::start_captured_restore(
+                    current,
+                    id.clone(),
+                    latest,
+                    parent,
+                    name,
+                    claim,
+                )
             }
             RecoveryResolution::AcknowledgeUnknown { note } => {
                 if recovery.kind != RecoveryKind::UnknownNativeCommit {
@@ -809,7 +1236,22 @@ fn mark_interrupted(receipt: &mut Receipt) -> Result<(), FsError> {
                 .find(|s| s.item == index)
                 .ok_or(FsError::StoreUnavailable)?;
             let state = match step.phase.as_str() {
-                "NativeTrashSubmitted" => {
+                "CreatedTemporaryCaptureStarted"
+                | "CreatedTemporaryCaptured"
+                | "RemoveCaptureStarted"
+                | "RemoveCaptured"
+                | "ReplaceTempCaptureStarted"
+                | "ReplaceTempCaptured"
+                | "ReplaceVictimCaptured" => {
+                    ensure_recovery(step, RecoveryKind::QuarantinedNative);
+                    ItemState::RecoveryRequired
+                }
+                "NativeTrashSubmitted"
+                | "ReplaceExchangeStarted"
+                | "RemoveStarted"
+                | "Removed"
+                | "CapturedRestoreStarted"
+                | "CapturedRestored" => {
                     ensure_recovery(step, RecoveryKind::UnknownNativeCommit);
                     ItemState::OutcomeUnknown
                 }

@@ -1370,10 +1370,13 @@ pub fn surface_in_root<A: ResourceApp, S: 'static>(
 
 fn surface_of<A: ResourceApp, S: 'static>(root: &mut ResourceRoot) -> Option<&mut S> {
     root.typed::<A::Resource>()?;
-    root.content
-        .as_mut()
-        .as_any_mut()
-        .and_then(|any| any.downcast_mut::<S>())
+    fn find<S: 'static>(widget: &mut dyn ui_core::widget::Widget) -> Option<&mut S> {
+        if widget.as_any().is_some_and(|any| any.is::<S>()) {
+            return widget.as_any_mut()?.downcast_mut::<S>();
+        }
+        widget.children_mut().into_iter().find_map(find::<S>)
+    }
+    find::<S>(root.content.as_mut())
 }
 
 /// A dispatcher outside any host, for a unit test of a surface (or of the

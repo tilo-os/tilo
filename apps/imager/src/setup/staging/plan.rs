@@ -4,7 +4,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::platform::{Disk, SystemVolume};
+use super::platform::{Disk, LinuxBtrfsVolume, SystemVolume};
 use super::{ALIGN_BYTES, MIN_TARGET_BYTES};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -21,6 +21,9 @@ pub struct FirmwareFacts {
 pub struct Basis {
     pub disk: Disk,
     pub system_volume: Option<SystemVolume>,
+    /// Separate from Windows facts; omitted None preserves legacy plan digests.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub linux_btrfs_volume: Option<LinuxBtrfsVolume>,
     pub firmware: FirmwareFacts,
 }
 
@@ -104,10 +107,8 @@ impl Plan {
 impl Basis {
     /// Whether the host can choose a new partition's GUID at creation.
     ///
-    /// Derived rather than stored so every existing `Basis` producer stays
-    /// valid: only Windows reports a system volume (it is the only host that
-    /// shrinks one), Windows `New-Partition` cannot set a GUID, and Linux
-    /// `sfdisk` can.
+    /// Only Windows reports `system_volume`. Linux Btrfs facts are separate:
+    /// Windows `New-Partition` cannot set a GUID; Linux `sfdisk` can.
     pub fn sets_partition_guids(&self) -> bool {
         self.system_volume.is_none()
     }
@@ -151,6 +152,17 @@ pub fn minimum_system_volume_bytes(volume: &SystemVolume) -> u64 {
             .saturating_add(system_volume_reserve(volume.used_bytes)),
     );
     floor.div_ceil(ALIGN_BYTES).saturating_mul(ALIGN_BYTES)
+}
+
+/// Supported Btrfs minimum plus explicit retained headroom, rounded upward.
+/// Overflow refuses the plan instead of manufacturing a smaller bound.
+pub fn minimum_linux_btrfs_bytes(volume: &LinuxBtrfsVolume) -> Result<u64, PlanError> {
+    volume
+        .supported_min_bytes
+        .checked_add(volume.reserve_bytes)
+        .and_then(|bytes| bytes.checked_add(ALIGN_BYTES - 1))
+        .map(|bytes| bytes / ALIGN_BYTES * ALIGN_BYTES)
+        .ok_or_else(|| PlanError::Unsupported("Btrfs shrink bound overflow".into()))
 }
 
 /// Validated sector geometry of the basis disk.
@@ -270,8 +282,8 @@ fn free_spans(disk: &Disk, g: Geometry) -> Vec<Span> {
 enum Capacity {
     /// Linux: the largest existing free span.
     Free { span: Span },
-    /// Windows: a span ending before the partition after C:, whose start can
-    /// move down to `lowest_start` by shrinking C:.
+    /// A span after one eligible Windows or Linux Btrfs volume, ending before
+    /// its next partition. The bound comes from the actual filesystem minimum.
     Shrinkable {
         end: u64,
         /// First LBA usable without shrinking.
@@ -279,29 +291,77 @@ enum Capacity {
         /// First LBA usable at the maximum safe shrink.
         lowest_start: u64,
         volume_first_lba: u64,
+        partition_guid: String,
+        from_bytes: u64,
+        minimum_bytes: u64,
     },
 }
 
 impl Capacity {
     fn of(basis: &Basis, g: Geometry) -> Result<Self, PlanError> {
-        let Some(volume) = &basis.system_volume else {
-            let span = free_spans(&basis.disk, g)
-                .into_iter()
-                .max_by(|a, b| a.len().cmp(&b.len()).then(b.start.cmp(&a.start)))
-                .unwrap_or(Span { start: 0, end: 0 });
-            return Ok(Self::Free { span });
-        };
+        let (partition_guid, size_bytes, minimum) =
+            match (&basis.system_volume, &basis.linux_btrfs_volume) {
+                (Some(_), Some(_)) => {
+                    return Err(PlanError::Unsupported(
+                        "Windows and Linux shrink facts cannot coexist".into(),
+                    ));
+                }
+                (Some(volume), None) => (
+                    &volume.partition_guid,
+                    volume.size_bytes,
+                    minimum_system_volume_bytes(volume),
+                ),
+                (None, Some(volume)) => {
+                    if volume.device_id == 0
+                        || volume.mount_id == 0
+                        || volume.sector_bytes != g.sector
+                        || volume.filesystem_bytes != volume.size_bytes
+                        || volume.kernel_partition_bytes != volume.size_bytes
+                        || volume.supported_min_bytes == 0
+                        || volume.reserve_bytes == 0
+                        || uuid::Uuid::parse_str(&volume.filesystem_uuid)
+                            .ok()
+                            .is_none_or(|uuid| uuid.is_nil())
+                        || uuid::Uuid::parse_str(&volume.partition_guid)
+                            .ok()
+                            .is_none_or(|uuid| uuid.is_nil())
+                    {
+                        return Err(PlanError::Unsupported("invalid direct Btrfs facts".into()));
+                    }
+                    (
+                        &volume.partition_guid,
+                        volume.size_bytes,
+                        minimum_linux_btrfs_bytes(volume)?,
+                    )
+                }
+                (None, None) => {
+                    let span = free_spans(&basis.disk, g)
+                        .into_iter()
+                        .max_by(|a, b| a.len().cmp(&b.len()).then(b.start.cmp(&a.start)))
+                        .unwrap_or(Span { start: 0, end: 0 });
+                    return Ok(Self::Free { span });
+                }
+            };
         let c = basis
             .disk
             .partitions
             .iter()
-            .find(|p| super::same_guid(&p.guid, &volume.partition_guid))
+            .find(|p| super::same_guid(&p.guid, partition_guid))
             .ok_or_else(|| {
-                PlanError::Unsupported("the system volume is not on the system disk".into())
+                PlanError::Unsupported("the shrink volume is not on the system disk".into())
             })?;
-        if g.bytes(c.last_lba - c.first_lba + 1) != volume.size_bytes {
+        if g.bytes(c.last_lba - c.first_lba + 1) != size_bytes {
             return Err(PlanError::Unsupported(
-                "the system volume size disagrees with the partition map".into(),
+                "the shrink volume size disagrees with the partition map".into(),
+            ));
+        }
+        if let Some(volume) = &basis.linux_btrfs_volume
+            && (volume.first_lba != c.first_lba
+                || !super::same_guid(&c.type_guid, "0fc63daf-8483-4772-8e79-3d69d8477de4")
+                || minimum > size_bytes)
+        {
+            return Err(PlanError::Unsupported(
+                "direct Btrfs geometry or shrink bound disagrees with GPT".into(),
             ));
         }
         let next_first = basis
@@ -317,23 +377,25 @@ impl Capacity {
         };
         let end = g.down(upper_excl);
         let current_start = g.up(c.last_lba + 1 + g.align);
-        let minimum = minimum_system_volume_bytes(volume);
         let lowest = g.up(c.first_lba + minimum / g.sector + g.align);
         Ok(Self::Shrinkable {
             end,
             current_start,
             lowest_start: lowest.min(current_start),
             volume_first_lba: c.first_lba,
+            partition_guid: partition_guid.clone(),
+            from_bytes: size_bytes,
+            minimum_bytes: minimum,
         })
     }
 
     /// The largest number of LBAs the layout may occupy.
     fn max_lbas(&self) -> u64 {
-        match *self {
+        match self {
             Self::Free { span } => span.len(),
             Self::Shrinkable {
                 end, lowest_start, ..
-            } => end.saturating_sub(lowest_start),
+            } => end.saturating_sub(*lowest_start),
         }
     }
 }
@@ -342,10 +404,10 @@ impl Capacity {
 /// the design spec §2 for rules.
 ///
 /// Layout: `target | staging ESP | staging root`, contiguous and 1 MiB
-/// aligned. Linux places it at the start of the largest free span. Windows
-/// pins it against the end of the space after C: (before e.g. WinRE) and
-/// shrinks C: by exactly the shortfall. Partition GUIDs are pre-generated
-/// only when [`Basis::sets_partition_guids`]. The loader path defaults to the
+/// aligned. Linux without shrink facts uses the largest existing free span.
+/// Windows and eligible Linux Btrfs layouts pin it against the end of the
+/// space after the retained volume and shrink by exactly the shortfall.
+/// Partition GUIDs are pre-generated only when [`Basis::sets_partition_guids`]. The loader path defaults to the
 /// fallback path for this build's architecture; callers holding the bundle's
 /// `boot_binding.efi_path` apply it with [`with_loader_path`].
 pub fn compute(basis: &Basis, requirements: Requirements) -> Result<Plan, PlanError> {
@@ -365,9 +427,10 @@ pub fn compute(basis: &Basis, requirements: Requirements) -> Result<Plan, PlanEr
     let root = g.lbas(requirements.staging_root_bytes);
     let need = target + esp + root;
     let capacity = Capacity::of(basis, g)?;
+    let available_bytes = g.bytes(capacity.max_lbas());
     let insufficient = || PlanError::InsufficientSpace {
         needed_bytes: g.bytes(need),
-        available_bytes: g.bytes(capacity.max_lbas()),
+        available_bytes,
     };
     if need > capacity.max_lbas() {
         return Err(insufficient());
@@ -378,23 +441,23 @@ pub fn compute(basis: &Basis, requirements: Requirements) -> Result<Plan, PlanEr
             end,
             current_start,
             volume_first_lba,
+            partition_guid,
+            from_bytes,
+            minimum_bytes,
             ..
         } => {
             let start = end - need;
             let shrink = if start >= current_start {
                 None
             } else {
-                let Some(volume) = basis.system_volume.as_ref() else {
-                    return Err(insufficient());
-                };
                 let to_bytes =
                     g.bytes(start - g.align - volume_first_lba) / ALIGN_BYTES * ALIGN_BYTES;
-                if to_bytes < minimum_system_volume_bytes(volume) || to_bytes >= volume.size_bytes {
+                if to_bytes < minimum_bytes || to_bytes >= from_bytes {
                     return Err(insufficient());
                 }
                 Some(Shrink {
-                    partition_guid: volume.partition_guid.clone(),
-                    from_bytes: volume.size_bytes,
+                    partition_guid,
+                    from_bytes,
                     to_bytes,
                 })
             };
@@ -549,6 +612,7 @@ pub(crate) mod tests {
                 supported_min_bytes: used_gib * GIB + GIB,
                 used_bytes: used_gib * GIB,
             }),
+            linux_btrfs_volume: None,
             firmware: firmware(),
         }
     }
@@ -557,6 +621,7 @@ pub(crate) mod tests {
         Basis {
             disk: disk(disk_bytes, sector, parts),
             system_volume: None,
+            linux_btrfs_volume: None,
             firmware: firmware(),
         }
     }
@@ -935,6 +1000,108 @@ pub(crate) mod tests {
             assert_eq!(plan.boot_entry.description, "Tilo installer");
             assert_eq!(plan.basis.host_os(), "linux");
         }
+    }
+
+    fn btrfs_basis() -> Basis {
+        let mut basis = windows_basis(512, 400, 100, true);
+        let volume = basis.system_volume.take().unwrap();
+        let partition = basis
+            .disk
+            .partitions
+            .iter_mut()
+            .find(|p| p.guid == C_GUID)
+            .unwrap();
+        partition.type_guid = "0fc63daf-8483-4772-8e79-3d69d8477de4".into();
+        basis.linux_btrfs_volume = Some(LinuxBtrfsVolume {
+            partition_guid: volume.partition_guid,
+            filesystem_uuid: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb".into(),
+            device_id: 1,
+            mount_id: 37,
+            first_lba: partition.first_lba,
+            sector_bytes: basis.disk.sector_bytes,
+            size_bytes: volume.size_bytes,
+            filesystem_bytes: volume.size_bytes,
+            kernel_partition_bytes: volume.size_bytes,
+            supported_min_bytes: 250 * GIB,
+            reserve_bytes: 20 * GIB,
+        });
+        basis
+    }
+
+    #[test]
+    fn linux_btrfs_plans_use_supported_minimum_and_keep_linux_guids() {
+        let basis = btrfs_basis();
+        let bounds = target_bounds(&basis, req(0)).unwrap();
+        let plan = compute(&basis, req(bounds.max_bytes)).unwrap();
+        assert_layout(&plan, req(bounds.max_bytes));
+        let shrink = plan.shrink.as_ref().unwrap();
+        assert_eq!(shrink.to_bytes, 270 * GIB);
+        assert_eq!(shrink.partition_guid, C_GUID);
+        assert_eq!(plan.basis.host_os(), "linux");
+        assert!(plan.staging_esp.partition_guid.is_some());
+        assert!(plan.staging_root.partition_guid.is_some());
+        assert!(matches!(
+            compute(&basis, req(bounds.max_bytes + MIB)),
+            Err(PlanError::InsufficientSpace { .. })
+        ));
+        let mut changed = basis.clone();
+        changed
+            .linux_btrfs_volume
+            .as_mut()
+            .unwrap()
+            .supported_min_bytes += GIB;
+        assert_eq!(
+            target_bounds(&changed, req(0)).unwrap().max_bytes,
+            bounds.max_bytes - GIB
+        );
+        let mut rebound = plan.clone();
+        rebound.basis = changed;
+        assert_ne!(rebound.digest(), plan.digest());
+    }
+
+    #[test]
+    fn linux_btrfs_plans_refuse_inconsistent_and_indirect_facts() {
+        let basis = btrfs_basis();
+        let mutations: [fn(&mut LinuxBtrfsVolume); 9] = [
+            |v| v.mount_id = 0,
+            |v| v.device_id = 0,
+            |v| v.first_lba += 1,
+            |v| v.sector_bytes = 4096,
+            |v| v.filesystem_uuid = "invalid".into(),
+            |v| v.filesystem_bytes -= MIB,
+            |v| v.kernel_partition_bytes -= MIB,
+            |v| v.supported_min_bytes = u64::MAX,
+            |v| v.partition_guid = "dddddddd-dddd-4ddd-8ddd-dddddddddddd".into(),
+        ];
+        for mutate in mutations {
+            let mut changed = basis.clone();
+            mutate(changed.linux_btrfs_volume.as_mut().unwrap());
+            assert!(matches!(
+                compute(&changed, req(64 * GIB)),
+                Err(PlanError::Unsupported(_))
+            ));
+            assert!(matches!(
+                target_bounds(&changed, req(0)),
+                Err(PlanError::Unsupported(_))
+            ));
+        }
+        let mut mixed = basis;
+        mixed.system_volume = windows_basis(512, 400, 100, true).system_volume;
+        assert!(matches!(
+            compute(&mixed, req(64 * GIB)),
+            Err(PlanError::Unsupported(_))
+        ));
+    }
+
+    #[test]
+    fn legacy_basis_serialization_preserves_absent_linux_facts() {
+        let basis = windows_basis(512, 400, 100, true);
+        let value = serde_json::to_value(&basis).unwrap();
+        assert!(value.get("linux_btrfs_volume").is_none());
+        let decoded: Basis = serde_json::from_value(value).unwrap();
+        assert_eq!(decoded, basis);
+        assert_eq!(decoded.host_os(), "windows");
+        assert!(!decoded.sets_partition_guids());
     }
 
     /// Windows shrink planning.

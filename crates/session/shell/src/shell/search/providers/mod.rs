@@ -4,6 +4,7 @@
 
 pub mod actions;
 pub mod applications;
+pub(crate) mod authentication_prompts;
 mod background_index;
 pub mod continuity;
 pub mod desktop_windows;

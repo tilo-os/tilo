@@ -201,6 +201,18 @@ pub struct TiloRelease {
     /// SHA-256 of the expanded image that is written to the device.
     #[serde(default)]
     pub image_sha256: String,
+    /// Exact target consumer proof authenticated with the media catalog's image digest.
+    #[serde(default)]
+    pub account_custody: Option<crate::setup::account_admission::ConsumerCapability>,
+    /// Home archive consumers authenticated with the selected image digest.
+    #[serde(default)]
+    pub home_archive: Option<crate::setup::home_admission::ConsumerCapability>,
+    /// Selected app-state consumers authenticated with the exact image digest.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub applications: Option<crate::setup::applications_admission::ConsumerCapability>,
+    /// Original-source consumer proof authenticated with the selected image.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub original_source: Option<crate::setup::original_admission::ConsumerCapability>,
 }
 
 impl TiloRelease {
@@ -283,6 +295,11 @@ pub enum TargetKind {
 }
 
 impl TargetKind {
+    /// The device class is removable; this alone grants no write eligibility.
+    pub fn is_removable_class(&self) -> bool {
+        matches!(self, Self::Usb | Self::SdCard)
+    }
+
     pub fn tag(&self) -> &'static str {
         match self {
             TargetKind::Usb => "USB",
@@ -662,6 +679,27 @@ impl Default for UserAccount {
     }
 }
 
+/// Public expectation for an opaque, password-encrypted preparation package.
+/// Its zero default is invalid and grants no prepared setup authority.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Model, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PreparedSetupExpectation {
+    pub schema: u32,
+    pub sealed_bytes: u64,
+    pub ciphertext_sha256: String,
+}
+impl PreparedSetupExpectation {
+    pub fn valid(&self) -> bool {
+        self.schema == 1
+            && (48..=40 * 1024 * 1024).contains(&self.sealed_bytes)
+            && self.ciphertext_sha256.len() == 64
+            && self
+                .ciphertext_sha256
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+    }
+}
+
 /// The complete host-side customization draft. [`InstallProfile::to_media_profile_json`]
 /// emits only its validated, non-secret preferences; target selection,
 /// destructive consent, credentials, and recovery acknowledgement stay local
@@ -698,6 +736,11 @@ pub struct InstallProfile {
     /// stays on the setup machine.
     #[serde(default)]
     pub enroll_local_identity: bool,
+    /// Public ciphertext binding carried by the reviewed setup profile.
+    /// The writer independently requires the held matching package; this
+    /// descriptive value grants no identity or source access.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prepared_setup: Option<PreparedSetupExpectation>,
 }
 
 /// 1–63 letters, digits or hyphens, without a hyphen at either end: one DNS
@@ -729,6 +772,7 @@ impl Default for InstallProfile {
             wifi_ssid: String::new(),
             device_label: String::new(),
             enroll_local_identity: false,
+            prepared_setup: None,
         }
     }
 }
@@ -766,6 +810,12 @@ impl InstallProfile {
     /// Returns a field-specific message when any transported value would be
     /// rejected by the live installer.
     pub fn validate_media_profile(&self) -> Result<(), String> {
+        if (!self.device_label.is_empty() && self.device_label.trim().is_empty())
+            || self.device_label.len() > 64
+            || self.device_label.chars().any(char::is_control)
+        {
+            return Err("Device name must be at most 64 bytes without control characters.".into());
+        }
         if !hostname_is_valid(self.hostname.trim()) {
             return Err(
                 "Hostname must be 1–63 letters, numbers or hyphens, without a hyphen at either end."
@@ -845,6 +895,13 @@ impl InstallProfile {
         {
             return Err("Time zone must be a safe IANA name such as Europe/Berlin.".into());
         }
+        if self
+            .prepared_setup
+            .as_ref()
+            .is_some_and(|receipt| !receipt.valid())
+        {
+            return Err("Prepared setup expectation is invalid.".into());
+        }
         Ok(())
     }
 
@@ -866,10 +923,14 @@ impl InstallProfile {
             hostname: &'a str,
             username: &'a str,
             full_name: &'a str,
+            #[serde(skip_serializing_if = "str::is_empty")]
+            device_label: &'a str,
             locale: &'a str,
             keyboard: &'a str,
             timezone: &'a str,
             filesystem: &'static str,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            prepared_setup: &'a Option<PreparedSetupExpectation>,
         }
 
         serde_json::to_vec(&MediaProfile {
@@ -877,10 +938,12 @@ impl InstallProfile {
             hostname: self.hostname.trim(),
             username: self.user.username.trim(),
             full_name: self.user.full_name.trim(),
+            device_label: &self.device_label,
             locale: self.locale.trim(),
             keyboard: self.keyboard.trim(),
             timezone: self.timezone.trim(),
             filesystem: self.filesystem.key(),
+            prepared_setup: &self.prepared_setup,
         })
     }
 
@@ -901,6 +964,7 @@ impl InstallProfile {
             wifi_ssid: String::new(),
             device_label: String::new(),
             enroll_local_identity: false,
+            prepared_setup: None,
         }
     }
 
@@ -1121,6 +1185,10 @@ pub fn sample_releases() -> Vec<TiloRelease> {
             archive_sha256: String::new(),
             archive_size: 0,
             image_sha256: "1111111111111111111111111111111111111111111111111111111111111111".into(),
+            account_custody: None,
+            home_archive: None,
+            applications: None,
+            original_source: None,
         },
         TiloRelease {
             name: "Tilo".into(),
@@ -1134,6 +1202,10 @@ pub fn sample_releases() -> Vec<TiloRelease> {
             archive_sha256: String::new(),
             archive_size: 0,
             image_sha256: "2222222222222222222222222222222222222222222222222222222222222222".into(),
+            account_custody: None,
+            home_archive: None,
+            applications: None,
+            original_source: None,
         },
     ]
 }
@@ -1516,5 +1588,44 @@ mod tests {
                 assert_eq!(progress.phase, phase);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod prepared_setup_binding_tests {
+    use super::*;
+
+    #[test]
+    fn media_profile_carries_only_valid_ciphertext_binding_and_public_device_name() {
+        let mut profile = InstallProfile::default();
+        let legacy: serde_json::Value =
+            serde_json::from_slice(&profile.to_media_profile_json().unwrap()).unwrap();
+        assert!(legacy.get("prepared_setup").is_none());
+        profile.device_label = "Travel laptop".into();
+        profile.user.password = "private startup secret".into();
+        profile.encryption_passphrase = "private disk secret".into();
+        let expectation = PreparedSetupExpectation {
+            schema: 1,
+            sealed_bytes: 4096,
+            ciphertext_sha256: "a".repeat(64),
+        };
+        profile.prepared_setup = Some(expectation.clone());
+        profile.validate_media_profile().unwrap();
+        let bytes = profile.to_media_profile_json().unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(value["device_label"], "Travel laptop");
+        assert_eq!(
+            serde_json::from_value::<PreparedSetupExpectation>(value["prepared_setup"].clone())
+                .unwrap(),
+            expectation
+        );
+        let text = String::from_utf8(bytes).unwrap();
+        assert!(!text.contains("private startup secret"));
+        assert!(!text.contains("private disk secret"));
+        profile.prepared_setup.as_mut().unwrap().ciphertext_sha256 = "A".repeat(64);
+        assert!(profile.validate_media_profile().is_err());
+        profile.prepared_setup.as_mut().unwrap().ciphertext_sha256 = "a".repeat(64);
+        profile.prepared_setup.as_mut().unwrap().sealed_bytes = 40 * 1024 * 1024 + 1;
+        assert!(profile.validate_media_profile().is_err());
     }
 }

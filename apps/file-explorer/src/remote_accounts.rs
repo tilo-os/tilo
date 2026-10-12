@@ -9,11 +9,15 @@
 
 use std::path::{Path, PathBuf};
 
-use accounts::{Account, AccountId, AccountSyncHealth, AccountSyncStatusStore};
+use accounts::{Account, AccountId, AccountSyncHealth, AccountSyncStatusStore, AccountTypeId};
 use serde_json::Value;
 
 pub const WEBDAV_TYPE: &str = "webdav";
 pub const NEXTCLOUD_TYPE: &str = "nextcloud";
+pub const GOOGLE_DRIVE_TYPE: &str = "google-drive";
+pub const ONEDRIVE_TYPE: &str = "onedrive";
+pub const DROPBOX_TYPE: &str = "dropbox";
+pub const ICLOUD_DRIVE_TYPE: &str = "icloud-drive";
 pub const MAX_REMOTE_ACCOUNTS: usize = 64;
 const MAX_LABEL_CHARS: usize = 120;
 const MAX_HOST_CHARS: usize = 253;
@@ -35,6 +39,10 @@ pub struct RemoteAccount {
 pub enum RemoteAccountKind {
     WebDav,
     Nextcloud,
+    GoogleDrive,
+    OneDrive,
+    Dropbox,
+    ICloudDrive,
 }
 
 impl RemoteAccountKind {
@@ -42,6 +50,21 @@ impl RemoteAccountKind {
         match self {
             Self::WebDav => "WebDAV",
             Self::Nextcloud => "Nextcloud",
+            Self::GoogleDrive => "Google Drive",
+            Self::OneDrive => "OneDrive",
+            Self::Dropbox => "Dropbox",
+            Self::ICloudDrive => "iCloud Drive",
+        }
+    }
+
+    /// A fixed public service name, not a configured credential endpoint.
+    fn service_host(self) -> Option<&'static str> {
+        match self {
+            Self::WebDav | Self::Nextcloud => None,
+            Self::GoogleDrive => Some("drive.google.com"),
+            Self::OneDrive => Some("onedrive.live.com"),
+            Self::Dropbox => Some("www.dropbox.com"),
+            Self::ICloudDrive => Some("www.icloud.com"),
         }
     }
 }
@@ -100,8 +123,9 @@ impl RemoteAccountHealth {
 }
 
 /// Load from an explicit Settings config root, with mounts under
-/// `home/Remote`. Invalid or unsuitable records are withheld: URLs with
-/// userinfo/query or a non-HTTPS scheme are never presented.
+/// `home/Remote`. DAV URLs with userinfo/query or a non-HTTPS scheme are
+/// withheld. OAuth providers use fixed public service labels rather than
+/// copying configured authorization endpoints or credentials into the view.
 pub fn load_in(config_root: &Path, home: Option<&Path>) -> Vec<RemoteAccount> {
     let store = accounts::AccountStore::load_in(config_root);
     let health = AccountSyncStatusStore::load_in(config_root);
@@ -140,6 +164,12 @@ fn assign_mounts(projected: &mut [RemoteAccount], store: &accounts::AccountStore
 
 /// Whether the cloud service considers `account` a mountable file account.
 fn is_file_account(account: &Account) -> bool {
+    if matches!(
+        account.type_id.as_str(),
+        GOOGLE_DRIVE_TYPE | ONEDRIVE_TYPE | DROPBOX_TYPE | ICLOUD_DRIVE_TYPE
+    ) {
+        return true;
+    }
     matches!(account.type_id.as_str(), WEBDAV_TYPE | NEXTCLOUD_TYPE)
         && (account.type_id.as_str() != NEXTCLOUD_TYPE
             || account
@@ -158,6 +188,10 @@ fn from_account(account: &Account, statuses: &AccountSyncStatusStore) -> Option<
     let kind = match account.type_id.as_str() {
         WEBDAV_TYPE => RemoteAccountKind::WebDav,
         NEXTCLOUD_TYPE => RemoteAccountKind::Nextcloud,
+        GOOGLE_DRIVE_TYPE => RemoteAccountKind::GoogleDrive,
+        ONEDRIVE_TYPE => RemoteAccountKind::OneDrive,
+        DROPBOX_TYPE => RemoteAccountKind::Dropbox,
+        ICLOUD_DRIVE_TYPE => RemoteAccountKind::ICloudDrive,
         _ => return None,
     };
     if kind == RemoteAccountKind::Nextcloud
@@ -169,11 +203,14 @@ fn from_account(account: &Account, statuses: &AccountSyncStatusStore) -> Option<
     {
         return None;
     }
-    let host = account
-        .config
-        .get("server_url")
-        .and_then(Value::as_str)
-        .and_then(safe_https_host)?;
+    let host = match kind.service_host() {
+        Some(host) => host.to_owned(),
+        None => account
+            .config
+            .get("server_url")
+            .and_then(Value::as_str)
+            .and_then(safe_https_host)?,
+    };
     let label = bounded_label(if account.display_name.trim().is_empty() {
         kind.label()
     } else {
@@ -238,6 +275,17 @@ pub fn resource_id(id: &AccountId) -> String {
     format!("files.remote-account:{}", hex::encode(id.as_str()))
 }
 
+pub fn type_id(kind: RemoteAccountKind) -> AccountTypeId {
+    match kind {
+        RemoteAccountKind::WebDav => WEBDAV_TYPE.into(),
+        RemoteAccountKind::Nextcloud => NEXTCLOUD_TYPE.into(),
+        RemoteAccountKind::GoogleDrive => GOOGLE_DRIVE_TYPE.into(),
+        RemoteAccountKind::OneDrive => ONEDRIVE_TYPE.into(),
+        RemoteAccountKind::Dropbox => DROPBOX_TYPE.into(),
+        RemoteAccountKind::ICloudDrive => ICLOUD_DRIVE_TYPE.into(),
+    }
+}
+
 /// The account id a [`resource_id`] names.
 pub fn account_of_resource(resource: &str) -> Option<String> {
     let hex_id = resource.strip_prefix("files.remote-account:")?;
@@ -247,6 +295,36 @@ pub fn account_of_resource(resource: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn remote_links_use_cloud_daemon_names_when_oauth_provider_labels_collide() {
+        for provider in ["google-drive", "onedrive", "dropbox", "icloud-drive"] {
+            let root = tempfile::tempdir().unwrap();
+            let home = tempfile::tempdir().unwrap();
+            let mut store = accounts::AccountStore::new();
+            let mut oauth = Account::new("a-cloud", provider);
+            oauth.display_name = "Cloud".into();
+            store.upsert(oauth);
+            let mut dav = Account::new("z-dav", WEBDAV_TYPE);
+            dav.display_name = "Cloud".into();
+            dav.config = serde_json::json!({"server_url":"https://files.example/dav"});
+            store.upsert(dav);
+            store.save_in(root.path()).unwrap();
+            // The storage daemon reserves mount names for every file provider,
+            // including disabled accounts. The Files resource must open DAV,
+            // rather than the earlier provider's identically named folder.
+            let loaded = load_in(root.path(), Some(home.path()));
+            let dav = loaded
+                .iter()
+                .find(|account| account.id.as_str() == "z-dav")
+                .unwrap();
+            assert_eq!(
+                dav.mount,
+                Some(home.path().join("Remote/Cloud (2)")),
+                "{provider}"
+            );
+        }
+    }
 
     #[test]
     fn accounts_load_from_an_explicit_root_with_their_mount_folders() {

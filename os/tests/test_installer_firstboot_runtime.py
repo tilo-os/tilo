@@ -20,7 +20,7 @@ class FirstbootRuntime(unittest.TestCase):
 # The fixture cannot relabel host files; record every production label call.
 label_installed_tilo_path() { printf '%s\n' "$2" >> "$LABEL_TRACE"; }
 die() { printf '%s\n' "$*" >&2; exit 1; }
-""" + function + '\nstage_installed_firstboot_runtime "$1" "$2"',
+""" + function + '\nPREPARED_SETUP_RUN="$1/no-prepared-setup"\nstage_installed_firstboot_runtime "$1" "$2"',
              "firstboot-fixture", str(source), str(target)],
             env={**os.environ, "LABEL_TRACE": str(target.parent / "labels")},
             text=True, capture_output=True,
@@ -33,6 +33,8 @@ die() { printf '%s\n' "$*" >&2; exit 1; }
             target = work / "target" / "etc"
             target.mkdir(parents=True)
             for relative in ("usr/libexec/tilo-firstboot-user",
+                             "usr/libexec/tilo-firstboot-home-seeds.py",
+                             "usr/libexec/tilo-installer-prepared-setup-extract.py",
                              "usr/lib/systemd/system/tilo-firstboot-user.service",
                              "usr/libexec/tilo-firstboot-autologin-cleanup",
                              "usr/lib/systemd/system/tilo-firstboot-autologin-cleanup.service",
@@ -53,6 +55,13 @@ die() { printf '%s\n' "$*" >&2; exit 1; }
             helper = target / "tilo/firstboot-user"
             self.assertEqual(helper.read_bytes(), (source / "usr/libexec/tilo-firstboot-user").read_bytes())
             self.assertEqual(helper.stat().st_mode & 0o777, 0o644)
+            seeds = target / "tilo/firstboot-home-seeds.py"
+            self.assertEqual(seeds.read_bytes(), (source / "usr/libexec/tilo-firstboot-home-seeds.py").read_bytes())
+            self.assertEqual(seeds.stat().st_mode & 0o777, 0o644)
+            transport = target / "tilo/prepared-setup-transport.py"
+            self.assertEqual(transport.read_bytes(), (source / "usr/libexec/tilo-installer-prepared-setup-extract.py").read_bytes())
+            self.assertEqual(transport.stat().st_mode & 0o777, 0o644)
+            self.assertIn("/etc/tilo/firstboot-home-seeds.py", (work / "target/labels").read_text())
             unit = target / "systemd/system/tilo-firstboot-user.service"
             self.assertIn("ExecStart=/usr/bin/bash /etc/tilo/firstboot-user\n", unit.read_text())
             self.assertNotIn("ExecStart=/usr/libexec/", unit.read_text())
@@ -136,11 +145,27 @@ die() { printf '%s\n' "$*" >&2; exit 1; }
     def test_base_os_ships_native_firstboot_runtime(self):
         containerfile = (ROOT / "os/Containerfile").read_text()
         for path in ("os/usr/libexec/tilo-firstboot-user",
+                     "os/usr/libexec/tilo-firstboot-home-seeds.py",
                      "os/usr/libexec/tilo-firstboot-autologin-cleanup",
                      "os/usr/lib/systemd/system/tilo-firstboot-user.service",
                      "os/usr/lib/systemd/system/tilo-firstboot-autologin-cleanup.service"):
             self.assertIn(path, containerfile)
         self.assertIn("COPY os/etc/greetd/config.toml /usr/share/tilo/greetd-config.toml", containerfile)
+
+    def test_missing_seed_helper_fails_before_target_mutation(self):
+        with tempfile.TemporaryDirectory() as work:
+            work = Path(work)
+            source = work / "live"
+            for relative in ("usr/libexec/tilo-firstboot-user", "usr/lib/systemd/system/tilo-firstboot-user.service"):
+                output = source / relative
+                output.parent.mkdir(parents=True, exist_ok=True)
+                output.write_bytes((ROOT / "os" / relative).read_bytes())
+            target = work / "target/etc"
+            target.mkdir(parents=True)
+            result = self.stage(source, target)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("missing its first-boot account runtime", result.stderr)
+            self.assertEqual(list(target.iterdir()), [])
 
     def test_missing_live_helper_fails_before_target_mutation(self):
         with tempfile.TemporaryDirectory() as work:

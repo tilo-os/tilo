@@ -20,12 +20,15 @@ modules:
     buildsystem: simple
     build-commands:
       - install -Dm755 tilo-imager-bin /app/bin/tilo-imager
+      - tar -xf tilo-capture-sidecar.tar -C /app
       - install -Dm644 org.tilo.Imager.desktop /app/share/applications/org.tilo.Imager.desktop
       - install -Dm644 org.tilo.Imager.metainfo.xml /app/share/metainfo/org.tilo.Imager.metainfo.xml
       - install -Dm644 org.tilo.Imager.svg /app/share/icons/hicolor/scalable/apps/org.tilo.Imager.svg
     sources:
       - type: file
         path: tilo-imager-bin
+      - type: file
+        path: tilo-capture-sidecar.tar
       - type: file
         path: org.tilo.Imager.desktop
       - type: file

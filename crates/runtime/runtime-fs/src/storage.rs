@@ -91,7 +91,13 @@ pub struct EvictionReport {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum StorageRequest {
     Snapshot,
-    Evict { selected: Vec<EvictionSelection> },
+    Evict {
+        selected: Vec<EvictionSelection>,
+    },
+    /// Switch this same managed daemon connection into private enrollment.
+    /// The switch itself supplies no certified role, verifier or source access.
+    BindExternalSource,
+    BindExternalReadSource,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -99,6 +105,12 @@ pub enum StorageResponse {
     Snapshot(SyncStorageSnapshot),
     Evicted(EvictionReport),
     Error(String),
+    /// Transport switch only. Mutual kernel role and current certification
+    /// checks on the same stream still precede every enrollment.
+    ExternalSourceBinding,
+    ExternalReadSourceBinding {
+        schema: u32,
+    },
 }
 
 pub struct StorageClient {
@@ -125,7 +137,9 @@ impl StorageClient {
         match self.request(&StorageRequest::Snapshot)? {
             StorageResponse::Snapshot(snapshot) => Ok(snapshot),
             StorageResponse::Error(error) => Err(std::io::Error::other(error)),
-            StorageResponse::Evicted(_) => {
+            StorageResponse::Evicted(_)
+            | StorageResponse::ExternalSourceBinding
+            | StorageResponse::ExternalReadSourceBinding { .. } => {
                 Err(std::io::Error::other("unexpected storage response"))
             }
         }
@@ -140,9 +154,40 @@ impl StorageClient {
         match self.request(&StorageRequest::Evict { selected })? {
             StorageResponse::Evicted(report) => Ok(report),
             StorageResponse::Error(error) => Err(std::io::Error::other(error)),
-            StorageResponse::Snapshot(_) => {
+            StorageResponse::Snapshot(_)
+            | StorageResponse::ExternalSourceBinding
+            | StorageResponse::ExternalReadSourceBinding { .. } => {
                 Err(std::io::Error::other("unexpected storage response"))
             }
+        }
+    }
+
+    /// Request the existing lane's closed enrollment switch and consume its
+    /// exact stream. Callers must authenticate the actual installed daemon and
+    /// current person/device before trusting any subsequent enrollment reply.
+    /// # Errors
+    /// Refuses unavailable enrollment or any unrelated storage response.
+    pub fn bind_external_source(mut self) -> std::io::Result<UnixStream> {
+        match self.request(&StorageRequest::BindExternalSource)? {
+            StorageResponse::ExternalSourceBinding => Ok(self.stream),
+            StorageResponse::Error(error) => Err(std::io::Error::other(error)),
+            StorageResponse::Snapshot(_)
+            | StorageResponse::Evicted(_)
+            | StorageResponse::ExternalReadSourceBinding { .. } => {
+                Err(std::io::Error::other("unexpected storage response"))
+            }
+        }
+    }
+
+    /// Switch to independently authenticated Files Read enrollment. This
+    /// receipt grants no source, person or record authority.
+    /// # Errors
+    /// Refuses every unrelated or unsupported switch response.
+    pub fn bind_external_read_source(mut self) -> std::io::Result<UnixStream> {
+        match self.request(&StorageRequest::BindExternalReadSource)? {
+            StorageResponse::ExternalReadSourceBinding { schema: 1 } => Ok(self.stream),
+            StorageResponse::Error(error) => Err(std::io::Error::other(error)),
+            _ => Err(std::io::Error::other("unexpected storage response")),
         }
     }
 
@@ -159,6 +204,47 @@ mod tests {
     use super::*;
     use std::io::{Read, Write};
 
+    #[test]
+    fn enrollment_switch_appends_wire_tags_and_preserves_exact_stream() {
+        let (client_end, mut daemon) = UnixStream::pair().unwrap();
+        daemon
+            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .unwrap();
+        let worker = std::thread::spawn(move || {
+            let mut request = [0u8; 5];
+            daemon.read_exact(&mut request).unwrap();
+            assert_eq!(request, [1, 0, 0, 0, 2]);
+            daemon.write_all(&[1, 0, 0, 0, 3]).unwrap();
+            // Bytes following the switch belong to the caller's role protocol.
+            daemon.write_all(b"role").unwrap();
+        });
+        let mut enrolled_stream = StorageClient { stream: client_end }
+            .bind_external_source()
+            .unwrap();
+        let mut next = [0u8; 4];
+        enrolled_stream.read_exact(&mut next).unwrap();
+        assert_eq!(&next, b"role");
+        worker.join().unwrap();
+    }
+    #[test]
+    fn ordinary_storage_operations_refuse_enrollment_switch_response() {
+        for snapshot in [true, false] {
+            let (client_end, mut daemon) = UnixStream::pair().unwrap();
+            let worker = std::thread::spawn(move || {
+                let _: StorageRequest = STORAGE_FRAMING.read_value(&mut daemon).unwrap().unwrap();
+                STORAGE_FRAMING
+                    .write_value(&mut daemon, &StorageResponse::ExternalSourceBinding)
+                    .unwrap();
+            });
+            let mut client = StorageClient { stream: client_end };
+            if snapshot {
+                assert!(client.snapshot().is_err());
+            } else {
+                assert!(client.evict(Vec::new()).is_err());
+            }
+            worker.join().unwrap();
+        }
+    }
     #[test]
     fn storage_wire_bytes_and_protocol_carry_revalidation_identity() {
         // phase: storage_wire_bytes_are_pinned

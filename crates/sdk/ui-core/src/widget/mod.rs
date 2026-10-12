@@ -1445,6 +1445,13 @@ pub trait Widget {
         None
     }
 
+    /// Context that should remain visible with a focused descendant, such
+    /// as a form control and its validation message. Opt-in scroll containers
+    /// use this block when it fits; otherwise they prioritise the control.
+    fn focus_reveal_context(&self) -> Option<vello::kurbo::Rect> {
+        None
+    }
+
     /// Reveal a newly keyboard-focused descendant inside any enclosing
     /// viewport. Containers override this to scroll; ordinary widgets simply
     /// recurse toward the target and report whether it was found.

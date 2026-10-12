@@ -6350,6 +6350,9 @@ impl CapnpBrokerState {
     }
 
     fn disconnect_file_transfers(&self, peer_id: u64) {
+        if let Some(service) = self.services.browser_service_sessions.as_ref() {
+            service.disconnect(peer_id);
+        }
         if let Some(nearby) = self.services.nearby_transfer.as_ref() {
             nearby.disconnect(peer_id);
         }
@@ -6664,6 +6667,9 @@ impl CapnpBrokerState {
             | CollabEvent::NativeMediaCommandResult { .. }
             | CollabEvent::RealtimeCommandResult { .. }
             | CollabEvent::NearbyTransferCommandResult { .. }
+            | CollabEvent::SelectedDiscoveryResult { .. }
+            | CollabEvent::OpenSelectedV2Result { .. }
+            | CollabEvent::OpenSelectedResult { .. }
             | CollabEvent::LocalFileClipboardResult { .. }
             | CollabEvent::Realtime(_)
             | CollabEvent::RecordContent { .. }
@@ -7802,6 +7808,42 @@ fn delegate_wifi_continuity_command(
     }
 }
 
+fn delegate_browser_service_session_command(
+    services: &HostServices,
+    context: &crate::services::BrowserServiceSessionRequestContext,
+    bytes: &[u8],
+) -> Result<zeroize::Zeroizing<Vec<u8>>, capnp::Error> {
+    let refused = || capnp::Error::failed("private service-session request refused".into());
+    if context.app_id() != "so.tilo.browser"
+        || context.workspace_id().is_empty()
+        || context.person().is_empty()
+    {
+        return Err(refused());
+    }
+    context.revalidate().map_err(|_| refused())?;
+    let command =
+        runtime_collab::BrowserServiceSessionCommand::decode(bytes).map_err(|_| refused())?;
+    let service = services
+        .browser_service_sessions
+        .as_ref()
+        .ok_or_else(refused)?;
+    service.authorize(context).map_err(|_| refused())?;
+    let reply = service
+        .command(context, command.clone())
+        .map_err(|_| refused())?;
+    context.revalidate().map_err(|_| refused())?;
+    service.authorize(context).map_err(|_| refused())?;
+    if !reply.matches(&command) {
+        return Err(refused());
+    }
+    if let runtime_collab::BrowserServiceSessionReply::Resolved { session } = &reply {
+        if session.identity_public_key != context.identity_public_key() {
+            return Err(refused());
+        }
+    }
+    reply.encode().map_err(|_| refused())
+}
+
 fn delegate_nearby_transfer_command(
     services: &HostServices,
     context: &crate::services::NearbyTransferRequestContext,
@@ -8456,6 +8498,36 @@ impl channel_handle::Server for CapnpChannelHandle {
         }
     }
 
+    fn browser_service_session_command(
+        self: Rc<Self>,
+        params: channel_handle::BrowserServiceSessionCommandParams,
+        mut results: channel_handle::BrowserServiceSessionCommandResults,
+    ) -> Promise<(), capnp::Error> {
+        Promise::from((|| {
+            let refused = || capnp::Error::failed("private service-session request refused".into());
+            if self.route().app_id != "so.tilo.browser"
+                || self.verified_identity.agent_id.is_some()
+                || self.verified_identity.host_scope.is_some()
+            {
+                return Err(refused());
+            }
+            let read = self.document_read_context().map_err(|_| refused())?;
+            let context = crate::services::BrowserServiceSessionRequestContext::authenticated(
+                self.peer_id,
+                self.verified_identity.principal_id.clone(),
+                read,
+            );
+            let request = params.get()?;
+            let reply = delegate_browser_service_session_command(
+                &self.state.services,
+                &context,
+                request.get_command()?,
+            )?;
+            results.get().set_reply(&reply);
+            Ok(())
+        })())
+    }
+
     fn nearby_transfer_command(
         self: Rc<Self>,
         params: channel_handle::NearbyTransferCommandParams,
@@ -8513,6 +8585,72 @@ impl channel_handle::Server for CapnpChannelHandle {
             Ok(request) => request,
             Err(error) => return Promise::err(error),
         };
+        #[cfg(target_os = "linux")]
+        if request
+            .get_command_json()
+            .is_ok_and(runtime_collab::open_selected::discovery::is_envelope)
+        {
+            let future = match request.get_command_json().and_then(|bytes| {
+                self.selected_discovery_dispatch(bytes, request.get_on_behalf_of()?)
+            }) {
+                Ok(value) => value,
+                Err(error) => return Promise::err(error),
+            };
+            return Promise::from_future(async move {
+                let value = future.await.map_err(capnp::Error::failed)?;
+                if !value.valid() {
+                    return Err(capnp::Error::failed("invalid discovery response".into()));
+                }
+                let bytes =
+                    serde_json::to_vec(&value).map_err(|e| capnp::Error::failed(e.to_string()))?;
+                if bytes.len() > runtime_collab::open_selected::discovery::MAX_BYTES {
+                    return Err(capnp::Error::failed(
+                        "discovery response exceeds limit".into(),
+                    ));
+                }
+                results.get().set_reply_json(&bytes);
+                Ok(())
+            });
+        }
+        #[cfg(target_os = "linux")]
+        if request
+            .get_command_json()
+            .is_ok_and(runtime_collab::open_selected::v2::is_envelope)
+        {
+            let future = match request.get_command_json().and_then(|bytes| {
+                self.selected_open_v2_dispatch(bytes, request.get_on_behalf_of()?)
+            }) {
+                Ok(future) => future,
+                Err(error) => return Promise::err(error),
+            };
+            return Promise::from_future(async move {
+                let receipt = future.await.map_err(capnp::Error::failed)?;
+                let bytes = runtime_collab::open_selected::v2::encode_observed(&receipt)
+                    .map_err(|e| capnp::Error::failed(e.to_string()))?;
+                results.get().set_reply_json(&bytes);
+                Ok(())
+            });
+        }
+        #[cfg(target_os = "linux")]
+        if request
+            .get_command_json()
+            .is_ok_and(runtime_collab::open_selected::is_envelope)
+        {
+            let future = match request
+                .get_command_json()
+                .and_then(|bytes| self.selected_open_dispatch(bytes, request.get_on_behalf_of()?))
+            {
+                Ok(future) => future,
+                Err(error) => return Promise::err(error),
+            };
+            return Promise::from_future(async move {
+                let receipt = future.await.map_err(capnp::Error::failed)?;
+                let bytes = runtime_collab::open_selected::encode_observed(&receipt)
+                    .map_err(|e| capnp::Error::failed(e.to_string()))?;
+                results.get().set_reply_json(&bytes);
+                Ok(())
+            });
+        }
         let answer = request
             .get_command_json()
             .and_then(|bytes| self.file_clipboard_dispatch(bytes, request.get_on_behalf_of()?));
@@ -14325,6 +14463,78 @@ pub mod tests {
                         .expect("unattested channel must be refused");
                     assert!(error.to_string().contains("launcher-attested"), "{error}");
                 }
+            })
+            .await;
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test(flavor = "current_thread")]
+    async fn selected_open_rpc_requires_actual_files_peer_and_original_invocation() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let fixture = local_directory_fixture();
+                let channel = fixture.invocation_channel();
+                let discovery = runtime_collab::open_selected::discovery::Request {
+                    invocation: None,
+                    protocol: runtime_collab::open_selected::discovery::PROTOCOL.into(),
+                    schema: 1,
+                    request_id: uuid::Uuid::new_v4().to_string(),
+                    components: vec![b"document.md".to_vec()],
+                };
+                let mut rpc = channel.local_file_clipboard_request();
+                rpc.get()
+                    .set_command_json(&serde_json::to_vec(&discovery).unwrap());
+                rpc.get().set_on_behalf_of(&[]);
+                let error = rpc
+                    .send()
+                    .promise
+                    .await
+                    .err()
+                    .expect("discovery cannot mint a local Files peer");
+                assert!(error.to_string().contains("launcher-attested"), "{error}");
+                let selected = runtime_collab::open_selected::v2::Request {
+                    protocol: runtime_collab::open_selected::v2::PROTOCOL.into(),
+                    resource: "entry:document".into(),
+                    request: runtime_collab::open_selected::v2::RootRequest {
+                        schema: 2,
+                        request_id: uuid::Uuid::new_v4().to_string(),
+                        components: vec![b"document.md".to_vec()],
+                        app_id: "so.tilo.text-editor".into(),
+                        access: runtime_collab::open_selected::v2::SelectedAccess::EditInParent,
+                    },
+                    selected_descriptor: 3,
+                    parent_descriptor: 4,
+                    proof_descriptor: 5,
+                };
+                let mut rpc = channel.local_file_clipboard_request();
+                rpc.get()
+                    .set_command_json(&serde_json::to_vec(&selected).unwrap());
+                rpc.get().set_on_behalf_of(&[]);
+                let error = rpc
+                    .send()
+                    .promise
+                    .await
+                    .err()
+                    .expect("Edit requires its actual semantic invocation");
+                assert!(
+                    error.to_string().contains("admitted semantic invocation"),
+                    "{error}"
+                );
+                let navigation = selected.navigation();
+                let mut rpc = channel.local_file_clipboard_request();
+                rpc.get()
+                    .set_command_json(&serde_json::to_vec(&navigation).unwrap());
+                rpc.get().set_on_behalf_of(&[]);
+                let error = rpc
+                    .send()
+                    .promise
+                    .await
+                    .err()
+                    .expect("Read requires its actual semantic invocation");
+                assert!(
+                    error.to_string().contains("admitted semantic invocation"),
+                    "{error}"
+                );
             })
             .await;
     }

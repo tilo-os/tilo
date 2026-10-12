@@ -9,7 +9,7 @@ use std::{
     io::{self, Read},
     os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd},
     os::unix::{
-        fs::{FileTypeExt, MetadataExt},
+        fs::{FileTypeExt, MetadataExt, OpenOptionsExt},
         net::UnixStream,
     },
     path::{Path, PathBuf},
@@ -21,6 +21,48 @@ use std::{
     time::{Duration, Instant},
 };
 
+pub(crate) mod capture;
+pub(crate) mod retained_io;
+mod retained_worker;
+pub use retained_worker::{RetainedWorkerConnector, RetainedWorkerWitness};
+pub mod target_projection;
+pub use target_projection::{
+    AdmittedTargetFuse, SelectedParentEditAuthority, SelectedParentScopeFacts, TargetFuseReady,
+    TargetProjectionAdmission, TargetProjectionAuthority, TargetProjectionCredentials,
+    TargetProjectionEndpoint, TargetProjectionMode,
+};
+pub type ConnectedTargetProjection =
+    Box<dyn FnOnce(TargetProjectionEndpoint) -> io::Result<()> + Send>;
+enum RetainedService {
+    Source(RetainedIoAdmission),
+    Target(TargetProjectionAdmission, ConnectedTargetProjection),
+}
+pub use retained_io::NATIVE_HISTORY_VERIFIER_FD as RETAINED_NATIVE_HISTORY_VERIFIER_FD;
+pub use retained_io::NATIVE_OWNER_FD as RETAINED_NATIVE_OWNER_FD;
+pub use retained_io::REMOVAL_DIRECTORY_FD as RETAINED_REMOVAL_DIRECTORY_FD;
+pub use retained_io::REMOVAL_JOURNAL_FD as RETAINED_REMOVAL_JOURNAL_FD;
+pub use retained_io::SELECTED_REPLACEMENT_PERMIT_FD as RETAINED_SELECTED_REPLACEMENT_PERMIT_FD;
+pub use retained_io::SOURCE_DATA_FD as RETAINED_SOURCE_DATA_FD;
+pub use retained_io::SOURCE_PATH as RETAINED_IO_SOURCE_PATH;
+pub use retained_io::{
+    RetainedIoAdmission, RetainedIoAuthority, RetainedIoCredentials, RetainedNativeOwner,
+};
+pub const RETAINED_IO_PACKAGE_ID: &str = "so.tilo.imager.home-export";
+pub const RETAINED_IO_WORKER_ARGUMENT: &str = "--tilo-retained-source-io";
+pub const RETAINED_HOME_IO_WORKER_ARGUMENT: &str = "--tilo-retained-home-io";
+pub use capture::original::verify_original_read_claim;
+pub use capture::{
+    CaptureAdmission, CaptureOutputAdmission, INVENTORY_SCRATCH_BYTES_ENV, INVENTORY_SCRATCH_PATH,
+    InstalledCopyOutputAdmission, InstalledCopyOutputBinding, InstalledCopyOutputCustody,
+    InstalledCopyOutputFiles, ORIGINAL_FLATPAK_INVENTORY_PATH, ORIGINAL_FLATPAK_SOURCE_PATH,
+    OUTPUT_PATH as CAPTURE_OUTPUT_PATH, OriginalFlatpakBinding, OriginalFlatpakProjection,
+    OriginalMountedBinding, OriginalMountedIdentity, OriginalMountedInput, OriginalOutputAdmission,
+    OriginalOutputBinding, OriginalOutputCustody, OriginalOutputFiles,
+    SOURCE_PATH as CAPTURE_SOURCE_PATH, VerifiedOriginalMountedRoots,
+    original_mounted_table_sha256, run_capture, run_capture_connected,
+    run_capture_connected_observed, verify_original_mounted_roots,
+};
+
 /// Original host admission/custody, checked before spawn and while running.
 pub trait ServiceAuthority: Send + Sync {
     /// Temporary protected network decision of the original native host.
@@ -28,6 +70,12 @@ pub trait ServiceAuthority: Send + Sync {
     /// Refuses a retired review; absence grants no egress.
     fn network_hosts(&self) -> io::Result<Vec<String>> {
         Ok(Vec::new())
+    }
+
+    /// Protected original controller's actual reopened per-volume table. Ordinary
+    /// authorities and caller-authored metadata confer no mounted read authority.
+    fn original_mounted_binding(&self) -> io::Result<Option<OriginalMountedBinding>> {
+        Ok(None)
     }
 
     /// # Errors
@@ -128,6 +176,22 @@ impl QuiescentExit {
         Arc::ptr_eq(&self.key.0, &key.0) && self.data_home == data_home && self.package == package
     }
 }
+/// Cleanup-only receipt. It proves exact namespace death, never successful
+/// export/checkpoint, retained authority or ciphertext integrity.
+pub struct ConfirmedShutdown {
+    key: ServiceLeaseKey,
+    data_home: PathBuf,
+    package: String,
+}
+impl ConfirmedShutdown {
+    pub fn matches(&self, key: &ServiceLeaseKey, data_home: &Path, package: &str) -> bool {
+        Arc::ptr_eq(&self.key.0, &key.0) && self.data_home == data_home && self.package == package
+    }
+}
+pub struct SupervisedRun {
+    pub result: Result<QuiescentExit, RunError>,
+    pub shutdown: Option<ConfirmedShutdown>,
+}
 /// The installed package selected by the native host, never by an app request.
 pub struct ServiceLaunch {
     pub manifest: PathBuf,
@@ -159,6 +223,134 @@ pub fn run_connected(
     key: ServiceLeaseKey,
     connected: Option<ConnectedService>,
 ) -> Result<QuiescentExit, RunError> {
+    run_admitted(launch, authority, cancellation, key, connected, None)
+}
+
+/// Run the one offline signed source-I/O service and observe canonical shutdown.
+/// The callback connects/transfers its private stream and returns promptly; it
+/// must not run the projector loop while blocking namespace supervision.
+pub fn run_retained_io_connected(
+    launch: ServiceLaunch,
+    admission: RetainedIoAdmission,
+    cancellation: ServiceCancellation,
+    key: ServiceLeaseKey,
+    connected: Option<ConnectedService>,
+) -> SupervisedRun {
+    struct Authority(Arc<dyn RetainedIoAuthority>);
+    impl ServiceAuthority for Authority {
+        fn check(&self) -> io::Result<()> {
+            self.0.check()?;
+            if !self.0.network_hosts()?.is_empty() {
+                return Err(io::ErrorKind::PermissionDenied.into());
+            }
+            Ok(())
+        }
+    }
+    let authority: Arc<dyn ServiceAuthority> = Arc::new(Authority(admission.authority.clone()));
+    let mut shutdown = None;
+    let result = run_admitted_inner(
+        launch,
+        authority,
+        cancellation,
+        key,
+        connected,
+        None,
+        Some(RetainedService::Source(admission)),
+        Some(&mut shutdown),
+    );
+    SupervisedRun { result, shutdown }
+}
+
+/// Run the fixed signed target-FUSE worker through canonical native custody.
+/// Callback starts connected relay before observe_ready and returns promptly;
+/// NamespaceOwner continues actual service supervision and observed teardown.
+pub fn run_target_projection_connected(
+    launch: ServiceLaunch,
+    admission: TargetProjectionAdmission,
+    cancellation: ServiceCancellation,
+    key: ServiceLeaseKey,
+    connected: ConnectedTargetProjection,
+) -> SupervisedRun {
+    struct Authority(Arc<dyn TargetProjectionAuthority>);
+    impl ServiceAuthority for Authority {
+        fn check(&self) -> io::Result<()> {
+            self.0.check()?;
+            if !self.0.network_hosts()?.is_empty() {
+                return Err(io::ErrorKind::PermissionDenied.into());
+            }
+            Ok(())
+        }
+    }
+    let authority: Arc<dyn ServiceAuthority> = Arc::new(Authority(admission.authority.clone()));
+    let mut shutdown = None;
+    let result = run_admitted_inner(
+        launch,
+        authority,
+        cancellation,
+        key,
+        None,
+        None,
+        Some(RetainedService::Target(admission, connected)),
+        Some(&mut shutdown),
+    );
+    SupervisedRun { result, shutdown }
+}
+
+fn run_admitted(
+    launch: ServiceLaunch,
+    authority: Arc<dyn ServiceAuthority>,
+    cancellation: ServiceCancellation,
+    key: ServiceLeaseKey,
+    connected: Option<ConnectedService>,
+    capture: Option<CaptureAdmission>,
+) -> Result<QuiescentExit, RunError> {
+    run_admitted_inner(
+        launch,
+        authority,
+        cancellation,
+        key,
+        connected,
+        capture,
+        None,
+        None,
+    )
+}
+fn run_admitted_observed(
+    launch: ServiceLaunch,
+    authority: Arc<dyn ServiceAuthority>,
+    cancellation: ServiceCancellation,
+    key: ServiceLeaseKey,
+    connected: Option<ConnectedService>,
+    capture: Option<CaptureAdmission>,
+) -> SupervisedRun {
+    let mut shutdown = None;
+    let result = run_admitted_inner(
+        launch,
+        authority,
+        cancellation,
+        key,
+        connected,
+        capture,
+        None,
+        Some(&mut shutdown),
+    );
+    SupervisedRun { result, shutdown }
+}
+fn run_admitted_inner(
+    launch: ServiceLaunch,
+    authority: Arc<dyn ServiceAuthority>,
+    cancellation: ServiceCancellation,
+    key: ServiceLeaseKey,
+    connected: Option<ConnectedService>,
+    capture: Option<CaptureAdmission>,
+    retained: Option<RetainedService>,
+    observed_shutdown: Option<&mut Option<ConfirmedShutdown>>,
+) -> Result<QuiescentExit, RunError> {
+    let (retained_io, target_projection, target_connected) = match retained {
+        Some(RetainedService::Source(io)) => (Some(io), None, None),
+        Some(RetainedService::Target(target, callback)) => (None, Some(target), Some(callback)),
+        None => (None, None, None),
+    };
     let mut options = launch.options;
     crate::run::validate_owned_service_options(&options)?;
     if options.bwrap_bin.is_some()
@@ -180,25 +372,139 @@ pub fn run_connected(
     // refuses shim mode. Use the OS-owned launcher, never current_exe or a
     // caller-selected replacement that could skip mandatory confinement.
     options.sandbox_shim_bin = Some("/usr/bin/tilo-launcher".into());
+    if let Some(capture) = &capture {
+        // Refuse unguarded original readers before workspace creation/spawn.
+        // Builder admission remains usable before the private context attaches.
+        capture.check_execution()?;
+        capture.configure(&mut options);
+    }
+    if let Some(io) = &retained_io {
+        io.check()?;
+        if capture.is_some()
+            || !matches!(&options.mode, crate::run::LaunchMode::Service { passthrough_argv } if passthrough_argv.as_slice() == [io.worker_argument()])
+            || options.open_document.is_some()
+            || options.open_uri.is_some()
+            || options.app_id.as_deref() != Some(RETAINED_IO_PACKAGE_ID)
+            || options.headless_console.is_some()
+            || options.trusted_identities_host_path.is_some()
+            || options.retained_files_host_path.is_some()
+            || options.browser_continuity_host_path.is_some()
+            || options.action_authority_host_path.is_some()
+        {
+            return Err(RunError::InvalidServiceLaunch(
+                "Retained I/O options differ".into(),
+            ));
+        }
+        io.native()?.configure(&mut options);
+        for path in [
+            launch.payload.as_path(),
+            launch
+                .manifest
+                .parent()
+                .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidInput))?,
+        ] {
+            io.exclude_path(path)?;
+        }
+    }
+    if let Some(target) = &target_projection {
+        target.native()?;
+        if capture.is_some()
+            || retained_io.is_some()
+            || !matches!(&options.mode,crate::run::LaunchMode::Service {passthrough_argv} if passthrough_argv.as_slice()==[target_projection::WORKER_ARG])
+            || options.open_document.is_some()
+            || options.open_uri.is_some()
+            || options.app_id.as_deref() != Some(target_projection::PACKAGE_ID)
+            || options.headless_console.is_some()
+            || options.trusted_identities_host_path.is_some()
+            || options.retained_files_host_path.is_some()
+            || options.browser_continuity_host_path.is_some()
+            || options.action_authority_host_path.is_some()
+        {
+            return Err(RunError::InvalidServiceLaunch(
+                "Target projection options differ".into(),
+            ));
+        }
+        target.native()?.configure(&mut options);
+    }
     let expected = options
         .expected_package_hash
         .as_deref()
         .ok_or_else(|| RunError::InvalidServiceLaunch("original installation missing".into()))?;
-    let manifest = crate::run::verified_original_manifest(
-        &launch.manifest,
-        &launch.payload,
-        &options,
-        expected,
-    )?;
+    let manifest = match capture
+        .as_ref()
+        .and_then(|capture| capture.original_manifest(&launch.manifest, &launch.payload, expected))
+        .or_else(|| {
+            retained_io.as_ref().and_then(|io| match io.native() {
+                Ok(native) => native.original_manifest(&launch.manifest, &launch.payload, expected),
+                Err(error) => Some(Err(error.into())),
+            })
+        })
+        .or_else(|| {
+            target_projection
+                .as_ref()
+                .and_then(|target| match target.native() {
+                    Ok(native) => {
+                        native.original_manifest(&launch.manifest, &launch.payload, expected)
+                    }
+                    Err(error) => Some(Err(error.into())),
+                })
+        }) {
+        Some(manifest) => manifest?,
+        None => crate::run::verified_original_manifest(
+            &launch.manifest,
+            &launch.payload,
+            &options,
+            expected,
+        )?,
+    };
+    if options.app_id.as_deref() != Some(manifest.package_id.as_str()) {
+        return Err(RunError::InvalidServiceLaunch(
+            "owned service identity changed".into(),
+        ));
+    }
     if manifest.sandbox.net.mode != "off" || !manifest.sandbox.net.hosts.is_empty() {
         return Err(RunError::InvalidServiceLaunch(
             "owned service egress requires protected native review".into(),
+        ));
+    }
+    if (retained_io.is_some() || target_projection.is_some())
+        && (manifest.package_id != RETAINED_IO_PACKAGE_ID
+            || manifest.kind != "service"
+            || !manifest.optional_runtimes.is_empty()
+            || !manifest.sandbox.portals.is_empty()
+            || !manifest.sandbox.services.is_empty()
+            || !manifest.sandbox.fs.read.is_empty()
+            || !manifest.sandbox.fs.write.is_empty())
+    {
+        return Err(RunError::InvalidServiceLaunch(
+            "Retained I/O manifest authority differs".into(),
         ));
     }
     let data_home = options
         .data_home
         .clone()
         .ok_or_else(|| RunError::InvalidServiceLaunch("private working lease missing".into()))?;
+    if let Some(capture) = &capture {
+        capture.prepare_original_workspace(&data_home)?;
+    }
+    if let Some(io) = &retained_io {
+        io.prepare_workspace(&data_home)?;
+    }
+    if let Some(target) = &target_projection {
+        target.prepare_workspace(&data_home)?;
+    }
+    // Endpoint clones must retain and revalidate the mandatory original read
+    // context too; caller-selected authority cannot substitute for it.
+    let authority: Arc<dyn ServiceAuthority> = match capture
+        .as_ref()
+        .and_then(CaptureAdmission::original_custody)
+    {
+        Some(original) => Arc::new(OriginalReadAuthority {
+            outer: authority,
+            original,
+        }),
+        None => authority,
+    };
     let mut owner = NamespaceOwner::new(authority, cancellation)?;
     owner.endpoint = crate::appdir::host_app_dir(
         &data_home,
@@ -207,8 +513,36 @@ pub fn run_connected(
     )
     .join("provider.sock");
     owner.connected = Mutex::new(connected);
+    owner.capture = capture;
+    owner.retained_io = retained_io;
+    owner.target_projection = target_projection;
+    owner.target_connected = Mutex::new(target_connected);
     let status =
-        crate::run::run_with_context(&manifest, &launch.payload, &options, None, Some(&owner))?;
+        crate::run::run_with_context(&manifest, &launch.payload, &options, None, Some(&owner));
+    // Even errors return only after canonical ServiceChild teardown. Unknown
+    // init/outer wait never sets shutdown. Preserve the original result below.
+    if owner.shutdown.load(Ordering::Acquire)
+        && let Some(observed) = observed_shutdown
+    {
+        *observed = owner.confirmed_shutdown(&key, &data_home, &manifest.package_id);
+    }
+    let status = status?;
+    if let Some(io) = &owner.retained_io {
+        io.check()?;
+    }
+    if let Some(target) = &owner.target_projection {
+        target.check()?;
+    }
+    if let Some(original) = owner
+        .capture
+        .as_ref()
+        .and_then(CaptureAdmission::original_custody)
+    {
+        original.check()?;
+        if !original.network_hosts()?.is_empty() {
+            return Err(io::Error::from(io::ErrorKind::PermissionDenied).into());
+        }
+    }
     if !status.success() || !owner.quiescent.load(Ordering::Acquire) {
         return Err(RunError::InvalidServiceLaunch(
             "provider exit was not a clean checkpoint".into(),
@@ -221,18 +555,93 @@ pub fn run_connected(
     })
 }
 
+struct OriginalReadAuthority {
+    outer: Arc<dyn ServiceAuthority>,
+    original: Arc<dyn ServiceAuthority>,
+}
+impl ServiceAuthority for OriginalReadAuthority {
+    fn network_hosts(&self) -> io::Result<Vec<String>> {
+        self.original.check()?;
+        if !self.original.network_hosts()?.is_empty() {
+            return Err(io::ErrorKind::PermissionDenied.into());
+        }
+        self.outer.network_hosts()
+    }
+    fn check(&self) -> io::Result<()> {
+        self.original.check()?;
+        if !self.original.network_hosts()?.is_empty() {
+            return Err(io::ErrorKind::PermissionDenied.into());
+        }
+        self.outer.check()
+    }
+}
+
 pub type ConnectedService = Box<dyn FnOnce(ServiceEndpoint) -> io::Result<()> + Send>;
 
 /// Host-only endpoint pinned to the actual private namespace and lease path.
 /// No public constructor or ambient socket path can substitute for it.
 pub struct ServiceEndpoint {
+    retained_program: Option<Arc<retained_worker::RetainedWorkerProgram>>,
+    retained_gid: Option<u32>,
     path: PathBuf,
     namespace: File,
     init: OwnedFd,
+    init_pid: u32,
+    expected_uid: u32,
     authority: Arc<dyn ServiceAuthority>,
     cancellation: ServiceCancellation,
 }
+/// Observed kernel facts for durable recovery; this DTO itself grants no authority.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ServiceCustody {
+    pub init_pid: u32,
+    pub start_ticks: u64,
+    pub namespace_dev: u64,
+    pub namespace_ino: u64,
+}
 impl ServiceEndpoint {
+    /// Observe exact retained init pidfd readiness even after cancellation or
+    /// authority revocation. This is stop evidence, never a successful exit.
+    /// # Errors
+    /// Refuses non-root observers or unavailable kernel evidence.
+    pub fn observed_stopped(&self) -> io::Result<bool> {
+        if unsafe { libc::getuid() } != 0 || unsafe { libc::geteuid() } != 0 {
+            return Err(io::ErrorKind::PermissionDenied.into());
+        }
+        exited(&self.init)
+    }
+    /// Observe the exact live namespace before issuing any provider command.
+    /// # Errors
+    /// Refuses retired authority, cancellation, dead init or unavailable held evidence.
+    pub fn custody(&self) -> io::Result<ServiceCustody> {
+        self.authority.check()?;
+        if self.cancellation.is_cancelled() || exited(&self.init)? {
+            return Err(io::ErrorKind::Interrupted.into());
+        }
+        let held = self.namespace.metadata()?;
+        // PID namespace membership belongs to this exact process for its
+        // lifetime. init_handle authenticated and retained both namespace and
+        // pidfd before credential drop; a live held pidfd excludes PID reuse.
+        // Reopening /proc/<init>/ns here adds ptrace permissions, not evidence,
+        // and fails after the confined original reader changes credentials.
+        let stat = std::fs::read_to_string(format!("/proc/{}/stat", self.init_pid))?;
+        let start_ticks = stat
+            .rsplit_once(") ")
+            .and_then(|(_, fields)| fields.split_whitespace().nth(19))
+            .ok_or(io::ErrorKind::InvalidData)?
+            .parse()
+            .map_err(io::Error::other)?;
+        self.authority.check()?;
+        if self.cancellation.is_cancelled() || exited(&self.init)? {
+            return Err(io::ErrorKind::Interrupted.into());
+        }
+        Ok(ServiceCustody {
+            init_pid: self.init_pid,
+            start_ticks,
+            namespace_dev: held.dev(),
+            namespace_ino: held.ino(),
+        })
+    }
     /// Open a separate authenticated stream to this one provider. No protocol
     /// byte is sent before peer namespace, ownership and live authority match.
     /// # Errors
@@ -242,14 +651,23 @@ impl ServiceEndpoint {
         if self.cancellation.is_cancelled() || exited(&self.init)? {
             return Err(io::ErrorKind::Interrupted.into());
         }
-        let metadata = std::fs::symlink_metadata(&self.path)?;
+        // AF_UNIX has a tiny address field. Hold the actual private parent so
+        // long preparation roots need neither a global alias nor a shorter lease.
+        let parent = self.path.parent().ok_or(io::ErrorKind::InvalidInput)?;
+        let name = self.path.file_name().ok_or(io::ErrorKind::InvalidInput)?;
+        let directory = File::options()
+            .read(true)
+            .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW)
+            .open(parent)?;
+        let socket = PathBuf::from(format!("/proc/self/fd/{}", directory.as_raw_fd())).join(name);
+        let metadata = std::fs::symlink_metadata(&socket)?;
         if !metadata.file_type().is_socket()
-            || metadata.uid() != unsafe { libc::geteuid() }
+            || metadata.uid() != self.expected_uid
             || metadata.mode() & 0o077 != 0
         {
             return Err(io::ErrorKind::PermissionDenied.into());
         }
-        let stream = UnixStream::connect(&self.path)?;
+        let stream = UnixStream::connect(&socket)?;
         let mut credentials: libc::ucred = unsafe { std::mem::zeroed() };
         let mut length =
             u32::try_from(std::mem::size_of::<libc::ucred>()).map_err(io::Error::other)?;
@@ -266,15 +684,21 @@ impl ServiceEndpoint {
             return Err(io::Error::last_os_error());
         }
         if usize::try_from(length).map_err(io::Error::other)? != std::mem::size_of::<libc::ucred>()
-            || credentials.uid != unsafe { libc::geteuid() }
+            || credentials.uid != self.expected_uid
             || credentials.pid <= 1
         {
             return Err(io::ErrorKind::PermissionDenied.into());
         }
-        let peer = File::open(format!("/proc/{}/ns/pid", credentials.pid))?.metadata()?;
-        let namespace = self.namespace.metadata()?;
-        if peer.dev() != namespace.dev() || peer.ino() != namespace.ino() {
-            return Err(io::ErrorKind::PermissionDenied.into());
+        // The held live init pidfd prevents reuse of this exact PID. Its
+        // namespace was authenticated before credential drop, which can make
+        // /proc/<pid>/ns inaccessible to a controller without CAP_SYS_PTRACE.
+        // Other peers still need the independent namespace comparison.
+        if u32::try_from(credentials.pid).map_err(io::Error::other)? != self.init_pid {
+            let peer = File::open(format!("/proc/{}/ns/pid", credentials.pid))?.metadata()?;
+            let namespace = self.namespace.metadata()?;
+            if peer.dev() != namespace.dev() || peer.ino() != namespace.ino() {
+                return Err(io::ErrorKind::PermissionDenied.into());
+            }
         }
         self.authority.check()?;
         if self.cancellation.is_cancelled() || exited(&self.init)? {
@@ -284,16 +708,36 @@ impl ServiceEndpoint {
     }
 }
 
-struct NamespaceOwner {
+pub(crate) struct NamespaceOwner {
     authority: Arc<dyn ServiceAuthority>,
     cancellation: ServiceCancellation,
     info_reader: Mutex<File>,
     info_writer: Mutex<Option<File>>,
     quiescent: AtomicBool,
+    shutdown: Arc<AtomicBool>,
     endpoint: PathBuf,
     connected: Mutex<Option<ConnectedService>>,
+    capture: Option<CaptureAdmission>,
+    retained_io: Option<RetainedIoAdmission>,
+    target_projection: Option<TargetProjectionAdmission>,
+    target_connected: Mutex<Option<ConnectedTargetProjection>>,
+    mount_namespace: Mutex<Option<File>>,
+    ordinary_connected: Mutex<Option<crate::ordinary_namespace::ConnectedNamespace>>,
 }
 impl NamespaceOwner {
+    pub(crate) fn for_ordinary(
+        authority: Arc<dyn ServiceAuthority>,
+        cancellation: ServiceCancellation,
+        connected: crate::ordinary_namespace::ConnectedNamespace,
+    ) -> io::Result<Self> {
+        let owner = Self::new(authority, cancellation)?;
+        *owner
+            .ordinary_connected
+            .lock()
+            .map_err(|_| io::Error::other("ordinary namespace callback poisoned"))? =
+            Some(connected);
+        Ok(owner)
+    }
     fn new(
         authority: Arc<dyn ServiceAuthority>,
         cancellation: ServiceCancellation,
@@ -311,18 +755,48 @@ impl NamespaceOwner {
             info_reader: Mutex::new(unsafe { File::from_raw_fd(read) }),
             info_writer: Mutex::new(Some(unsafe { File::from_raw_fd(write) })),
             quiescent: AtomicBool::new(false),
+            shutdown: Arc::new(AtomicBool::new(false)),
             endpoint: PathBuf::new(),
             connected: Mutex::new(None),
+            capture: None,
+            retained_io: None,
+            target_projection: None,
+            target_connected: Mutex::new(None),
+            mount_namespace: Mutex::new(None),
+            ordinary_connected: Mutex::new(None),
         })
+    }
+    fn confirmed_shutdown(
+        &self,
+        key: &ServiceLeaseKey,
+        data_home: &Path,
+        package: &str,
+    ) -> Option<ConfirmedShutdown> {
+        self.shutdown
+            .load(Ordering::Acquire)
+            .then(|| ConfirmedShutdown {
+                key: key.clone(),
+                data_home: data_home.into(),
+                package: package.into(),
+            })
     }
     fn before_connection(&self) -> io::Result<()> {
         self.authority.check()?;
+        if let Some(capture) = &self.capture {
+            capture.check()?;
+        }
+        if let Some(io) = &self.retained_io {
+            io.check()?;
+        }
+        if let Some(target) = &self.target_projection {
+            target.check()?;
+        }
         if self.cancellation.is_cancelled() {
             return Err(io::ErrorKind::Interrupted.into());
         }
         Ok(())
     }
-    fn init_handle(&self, child: &Child) -> io::Result<(OwnedFd, File)> {
+    fn init_handle(&self, child: &Child) -> io::Result<(OwnedFd, File, u32)> {
         let mut reader = self
             .info_reader
             .lock()
@@ -370,13 +844,30 @@ impl NamespaceOwner {
         let handle = unsafe { OwnedFd::from_raw_fd(fd) };
         verify_init(pid, child.id())?;
         let namespace = File::open(format!("/proc/{pid}/ns/pid"))?;
-        Ok((handle, namespace))
+        Ok((handle, namespace, pid.cast_unsigned()))
     }
 }
 impl EnrolledProcessObserver for NamespaceOwner {
     fn reviewed_network_hosts(&self) -> io::Result<Option<Vec<String>>> {
         self.before_spawn()?;
-        self.authority.network_hosts().map(Some)
+        let hosts = self.authority.network_hosts()?;
+        if (self.capture.is_some()
+            || self.retained_io.is_some()
+            || self.target_projection.is_some())
+            && !hosts.is_empty()
+        {
+            return Err(io::ErrorKind::PermissionDenied.into());
+        }
+        Ok(Some(hosts))
+    }
+    fn retained_io_projection(&self) -> Option<&RetainedIoAdmission> {
+        self.retained_io.as_ref()
+    }
+    fn target_projection(&self) -> Option<&TargetProjectionAdmission> {
+        self.target_projection.as_ref()
+    }
+    fn capture_projection(&self) -> Option<&CaptureAdmission> {
+        self.capture.as_ref()
     }
     fn namespace_init_fd(&self) -> Option<RawFd> {
         self.info_writer
@@ -390,6 +881,15 @@ impl EnrolledProcessObserver for NamespaceOwner {
     }
     fn before_spawn(&self) -> io::Result<()> {
         self.authority.check()?;
+        if let Some(capture) = &self.capture {
+            capture.check()?;
+        }
+        if let Some(io) = &self.retained_io {
+            io.check()?;
+        }
+        if let Some(target) = &self.target_projection {
+            target.check()?;
+        }
         if self.cancellation.is_cancelled() || self.namespace_init_fd().is_none() {
             return Err(io::ErrorKind::Interrupted.into());
         }
@@ -401,9 +901,68 @@ impl EnrolledProcessObserver for NamespaceOwner {
         }
     }
     fn supervise(&self, child: Child) -> io::Result<ExitStatus> {
-        let mut owned = ServiceChild { child, init: None };
-        let (init, namespace) = self.init_handle(&owned.child)?;
+        let mut owned = ServiceChild {
+            child,
+            init: None,
+            shutdown: self.shutdown.clone(),
+        };
+        let (init, namespace, init_pid) = self.init_handle(&owned.child)?;
         owned.init = Some(init);
+        if let Some(connected) = self
+            .ordinary_connected
+            .lock()
+            .map_err(|_| io::Error::other("ordinary namespace callback poisoned"))?
+            .take()
+        {
+            self.before_connection()?;
+            let mount_namespace = File::open(format!("/proc/{init_pid}/ns/mnt"))?;
+            let witness = crate::ordinary_namespace::NamespaceWitness::observed(
+                owned
+                    .init
+                    .as_ref()
+                    .ok_or(io::ErrorKind::InvalidData)?
+                    .try_clone()?,
+                namespace.try_clone()?,
+                mount_namespace,
+                init_pid,
+                owned.child.id(),
+            );
+            // The fixed bounded handoff sends held descriptors to the protected
+            // root owner. Returning never retires actual namespace custody.
+            connected.send(witness, &self.cancellation)?;
+            self.before_connection()?;
+        }
+        if let Some(target) = &self.target_projection {
+            self.before_connection()?;
+            let endpoint = ServiceEndpoint {
+                retained_program: None,
+                retained_gid: None,
+                path: self.endpoint.clone(),
+                namespace: namespace.try_clone()?,
+                init: owned
+                    .init
+                    .as_ref()
+                    .ok_or(io::ErrorKind::InvalidData)?
+                    .try_clone()?,
+                init_pid,
+                expected_uid: target.identity().0,
+                authority: self.authority.clone(),
+                cancellation: self.cancellation.clone(),
+            };
+            let endpoint = TargetProjectionEndpoint::receive(endpoint, target)?;
+            *self
+                .mount_namespace
+                .lock()
+                .map_err(|_| io::Error::other("Target mount custody poisoned"))? =
+                Some(endpoint.mount_namespace_clone()?);
+            let callback = self
+                .target_connected
+                .lock()
+                .map_err(|_| io::Error::other("Target callback poisoned"))?
+                .take()
+                .ok_or(io::ErrorKind::InvalidData)?;
+            callback(endpoint)?;
+        }
         let connected = self
             .connected
             .lock()
@@ -417,9 +976,25 @@ impl EnrolledProcessObserver for NamespaceOwner {
                 .ok_or(io::ErrorKind::InvalidData)?
                 .try_clone()?;
             connected(ServiceEndpoint {
+                retained_program: self
+                    .retained_io
+                    .as_ref()
+                    .and_then(|io| io.worker_program.clone()),
+                retained_gid: self.retained_io.as_ref().map(|io| io.identity().1),
                 path: self.endpoint.clone(),
                 namespace,
                 init,
+                init_pid,
+                expected_uid: self
+                    .retained_io
+                    .as_ref()
+                    .map(|io| io.identity().0)
+                    .unwrap_or_else(|| {
+                        self.capture.as_ref().map_or_else(
+                            || unsafe { libc::geteuid() },
+                            CaptureAdmission::worker_uid,
+                        )
+                    }),
                 authority: self.authority.clone(),
                 cancellation: self.cancellation.clone(),
             })?;
@@ -443,7 +1018,11 @@ impl EnrolledProcessObserver for NamespaceOwner {
                 bounded_command::Wakeup::Exited(status) => {
                     let init = owned.init.as_ref().ok_or(io::ErrorKind::InvalidData)?;
                     if status.success() && !forced && exited(init)? {
+                        if let Some(io) = &self.retained_io {
+                            io.confirm_removal_retirement()?;
+                        }
                         self.quiescent.store(true, Ordering::Release);
+                        self.shutdown.store(true, Ordering::Release);
                         owned.init.take();
                     }
                     // An outer failure is not proof that the private namespace
@@ -461,7 +1040,16 @@ impl EnrolledProcessObserver for NamespaceOwner {
                     .ok_or(io::ErrorKind::InvalidData)?;
             }
             if stopping.is_none()
-                && (self.cancellation.is_cancelled() || self.authority.check().is_err())
+                // The root-held clone must be detached after actual consumer
+                // stop before this target's intentional teardown. Checks below
+                // still fail and source/relay calls still deny immediately.
+                && (self.cancellation.is_cancelled()
+                    || self.authority.check().is_err()
+                    || self
+                        .capture
+                        .as_ref()
+                        .is_some_and(|capture| capture.check().is_err()))
+                && self.target_projection.as_ref().is_none_or(TargetProjectionAdmission::begin_exposure_stop)
             {
                 owned.signal(libc::SIGTERM)?;
                 stopping = Some(
@@ -476,7 +1064,7 @@ impl EnrolledProcessObserver for NamespaceOwner {
         }
     }
 }
-fn verify_init(pid: i32, parent: u32) -> io::Result<()> {
+pub(crate) fn verify_init(pid: i32, parent: u32) -> io::Result<()> {
     let status = std::fs::read_to_string(format!("/proc/{pid}/status")).map_err(|error| {
         let own = std::fs::read_to_string("/proc/self/status").unwrap_or_default();
         let visible = own
@@ -529,6 +1117,7 @@ fn exited(handle: &OwnedFd) -> io::Result<bool> {
 struct ServiceChild {
     child: Child,
     init: Option<OwnedFd>,
+    shutdown: Arc<AtomicBool>,
 }
 impl ServiceChild {
     fn signal(&self, signal: i32) -> io::Result<()> {
@@ -570,6 +1159,36 @@ impl Drop for ServiceChild {
             }
             let _ = self.child.kill();
             let _ = self.child.wait();
+        }
+        if let Some(init) = &self.init {
+            // This destructor runs on the canonical owning service worker.
+            // Outer wait is not namespace quiescence. Keep the owner (including
+            // original source/mount/store custody) alive until the exact init
+            // pidfd becomes readable, even if killed tasks remain in kernel IO.
+            // A deadline diagnoses incomplete cleanup; it cannot release leases.
+            let deadline = Instant::now() + Duration::from_secs(3);
+            let mut reported = false;
+            loop {
+                match exited(init) {
+                    Ok(true) => {
+                        self.shutdown.store(true, Ordering::Release);
+                        break;
+                    }
+                    Ok(false) => {}
+                    Err(error) if !reported => {
+                        tracing::error!(%error, "owned namespace exit observation failed; retaining custody");
+                        reported = true;
+                    }
+                    Err(_) => {}
+                }
+                if !reported && Instant::now() >= deadline {
+                    tracing::error!(
+                        "owned namespace cleanup timed out; retaining custody until kernel exit"
+                    );
+                    reported = true;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
         }
     }
 }
@@ -718,9 +1337,13 @@ mod tests {
         }
         fn endpoint(&self) -> ServiceEndpoint {
             ServiceEndpoint {
+                retained_program: self.endpoint.retained_program.clone(),
+                retained_gid: self.endpoint.retained_gid,
                 path: self.endpoint.path.clone(),
                 namespace: self.endpoint.namespace.try_clone().unwrap(),
                 init: self.endpoint.init.try_clone().unwrap(),
+                init_pid: self.endpoint.init_pid,
+                expected_uid: self.endpoint.expected_uid,
                 authority: self.endpoint.authority.clone(),
                 cancellation: self.endpoint.cancellation.clone(),
             }
@@ -775,6 +1398,124 @@ mod tests {
         }
     }
     #[test]
+    fn stalled_ordinary_registration_cancels_exact_namespace_before_releasing_owner() {
+        use std::io::Read as _;
+        let cancellation = ServiceCancellation::default();
+        let (sender, mut receiver) = UnixStream::pair().unwrap();
+        receiver
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let owner = Arc::new(
+            NamespaceOwner::for_ordinary(
+                Arc::new(Authority(AtomicBool::new(true))),
+                cancellation.clone(),
+                crate::ordinary_namespace::ConnectedNamespace::new(sender),
+            )
+            .unwrap(),
+        );
+        let fd = owner.namespace_init_fd().unwrap();
+        let mut command = std::process::Command::new("/usr/bin/bwrap");
+        command.args([
+            "--unshare-all",
+            "--as-pid-1",
+            "--die-with-parent",
+            "--info-fd",
+            &fd.to_string(),
+            "--ro-bind",
+            "/usr",
+            "/usr",
+            "--ro-bind",
+            "/lib64",
+            "/lib64",
+            "--symlink",
+            "/usr/bin",
+            "/bin",
+            "--proc",
+            "/proc",
+            "--dev",
+            "/dev",
+            "/usr/bin/sleep",
+            "30",
+        ]);
+        command.process_group(0);
+        unsafe {
+            command.pre_exec(move || {
+                if libc::fcntl(fd, libc::F_SETFD, 0) < 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        owner.before_spawn().unwrap();
+        let child = command.spawn().unwrap();
+        owner.child_created();
+        let observed = owner.clone();
+        let worker = std::thread::spawn(move || observed.supervise(child));
+        let mut numbers = [0; 12];
+        receiver.read_exact(&mut numbers).unwrap();
+        let (bytes, init) =
+            runtime_portal::fd_transport::recv_with_owned_fd(receiver.as_raw_fd()).unwrap();
+        assert_eq!(bytes, [0]);
+        let init = init.expect("canonical registration must send actual init pidfd");
+        assert!(
+            !exited(&init).unwrap(),
+            "test must observe its live namespace subject"
+        );
+        // Retain actual root-side handle but withhold descriptor ACK. The
+        // owner is still inside its real registration path, not its wait loop.
+        let began = Instant::now();
+        cancellation.cancel();
+        let error = worker
+            .join()
+            .unwrap()
+            .expect_err("stalled registration must cancel");
+        assert_eq!(error.kind(), io::ErrorKind::Interrupted);
+        assert!(began.elapsed() < Duration::from_secs(5));
+        assert!(
+            exited(&init).unwrap(),
+            "return requires exact namespace kernel stop"
+        );
+        assert!(owner.shutdown.load(Ordering::Acquire));
+        assert!(
+            !owner.quiescent.load(Ordering::Acquire),
+            "cancelled registration cannot admit successful completion"
+        );
+        assert_eq!(
+            unsafe { libc::fcntl(init.as_raw_fd(), libc::F_GETFD) } & libc::FD_CLOEXEC,
+            libc::FD_CLOEXEC,
+            "root-side init custody remains owned after incomplete handoff"
+        );
+    }
+
+    #[test]
+    fn outer_process_wait_without_verified_init_never_mints_cleanup_receipt() {
+        let child = std::process::Command::new("/bin/true").spawn().unwrap();
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let mut owned = ServiceChild {
+            child,
+            init: None,
+            shutdown: shutdown.clone(),
+        };
+        owned.child.wait().unwrap();
+        drop(owned);
+        assert!(!shutdown.load(Ordering::Acquire));
+        let mut owner = NamespaceOwner::new(
+            Arc::new(Authority(AtomicBool::new(true))),
+            ServiceCancellation::default(),
+        )
+        .unwrap();
+        owner.shutdown = shutdown;
+        assert!(
+            owner
+                .confirmed_shutdown(
+                    &ServiceLeaseKey::default(),
+                    Path::new("/fixture"),
+                    "fixture.service"
+                )
+                .is_none()
+        );
+    }
+    #[test]
     fn successful_namespace_exit_waits_for_the_actual_live_descendant() {
         let mut running = Running::start();
         let descendant = running.orphan_handle();
@@ -797,13 +1538,20 @@ mod tests {
         let status = running.worker.take().unwrap().join().unwrap().unwrap();
         assert!(!status.success());
         assert!(!running.owner.quiescent.load(Ordering::Acquire));
-        let deadline = Instant::now().checked_add(Duration::from_secs(5)).unwrap();
-        while !exited(&descendant).unwrap() && Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(1));
-        }
+        let key = ServiceLeaseKey::default();
+        let cleanup = running
+            .owner
+            .confirmed_shutdown(&key, Path::new("/fixture"), "fixture.service")
+            .expect("actual failed namespace teardown yields cleanup only");
+        assert!(cleanup.matches(&key, Path::new("/fixture"), "fixture.service"));
+        assert!(!cleanup.matches(
+            &ServiceLeaseKey::default(),
+            Path::new("/fixture"),
+            "fixture.service"
+        ));
         assert!(
             exited(&descendant).unwrap(),
-            "outer failure must retire every owned writer"
+            "outer failure must observe every owned writer stopped before returning"
         );
     }
     #[test]
@@ -896,6 +1644,13 @@ mod tests {
         let status = running.worker.take().unwrap().join().unwrap().unwrap();
         assert!(!status.success());
         assert!(!running.owner.quiescent.load(Ordering::Acquire));
+        let key = ServiceLeaseKey::default();
+        assert!(
+            running
+                .owner
+                .confirmed_shutdown(&key, Path::new("/fixture"), "fixture.service")
+                .is_some()
+        );
         assert!(exited(&descendant).unwrap());
     }
     #[test]
@@ -903,6 +1658,20 @@ mod tests {
         let running = Running::start();
         let mut endpoint = running.endpoint();
         let stream = endpoint.connect().unwrap();
+        assert!(
+            endpoint.connect_pending_worker().is_err(),
+            "ordinary fixture has no actual signed retained program admission"
+        );
+        assert!(
+            retained_worker::same_worker_peer(
+                &stream,
+                &endpoint.custody().unwrap(),
+                unsafe { libc::geteuid() },
+                unsafe { libc::getegid() }
+            )
+            .is_err(),
+            "actual descendant listener cannot substitute for exact fixed-entry init"
+        );
         drop(stream);
         let alien_path = running.root.path().join("alien.sock");
         let listener = std::os::unix::net::UnixListener::bind(&alien_path).unwrap();

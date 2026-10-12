@@ -13,7 +13,7 @@ use accounts::handoff::exit;
 
 fn usage() -> ExitCode {
     eprintln!(
-        "usage: tilo-account-credential refresh <account id> [--force] [--config-root <dir>]"
+        "usage: tilo-account-credential capabilities | refresh <account id> [--force] [--config-root <dir>]"
     );
     ExitCode::from(64)
 }
@@ -24,8 +24,16 @@ fn code(value: i32) -> ExitCode {
 
 fn main() -> ExitCode {
     let mut args = std::env::args_os().skip(1);
-    if args.next().as_deref() != Some(std::ffi::OsStr::new("refresh")) {
-        return usage();
+    match args.next().as_deref().and_then(std::ffi::OsStr::to_str) {
+        Some("capabilities") if args.next().is_none() => {
+            println!(
+                "{{\"schema\":1,\"protected_grant_protocol\":{}}}",
+                account_custody::protected_grant_protocol()
+            );
+            return ExitCode::SUCCESS;
+        }
+        Some("refresh") => {}
+        _ => return usage(),
     }
     let Some(id) = args.next().and_then(|id| id.into_string().ok()) else {
         return usage();

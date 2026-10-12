@@ -16,3 +16,6 @@ pub(crate) use windows::directory_probe::run as run_directory_probe;
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 pub(crate) use unix::publish_policy;
+
+#[cfg(target_os = "linux")]
+pub(crate) use unix::publish_atomic_save;

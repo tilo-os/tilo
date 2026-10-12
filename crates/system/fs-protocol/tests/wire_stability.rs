@@ -208,3 +208,44 @@ fn signed_file_mutation_transaction_keeps_its_wire_bytes() {
         SIGNED_FILE_MUTATION_TRANSACTION,
     );
 }
+
+#[test]
+fn atomic_save_appends_wire_variants_without_renumbering_legacy_roles() {
+    use fs_protocol::files::FileNameV1;
+    let roles = [
+        FileMutationParticipantRole::Source,
+        FileMutationParticipantRole::Replaced,
+        FileMutationParticipantRole::KeepBothSource,
+        FileMutationParticipantRole::KeepBothSibling,
+        FileMutationParticipantRole::MergeSource,
+        FileMutationParticipantRole::RestoreContent,
+        FileMutationParticipantRole::AtomicSaveDocument,
+        FileMutationParticipantRole::AtomicSaveTemporary,
+    ];
+    for (role, index) in roles.into_iter().zip(0u8..8) {
+        let bytes = postcard::to_allocvec(&role).unwrap();
+        assert_eq!(bytes, [index], "legacy role ordinals remain wire ABI");
+        assert_eq!(
+            postcard::from_bytes::<FileMutationParticipantRole>(&bytes).unwrap(),
+            role
+        );
+    }
+    let operation = FileMutationOperation::AtomicSave {
+        parent_record: record(1),
+        document_name: FileNameV1(b"document.txt".to_vec()),
+        temporary_name: FileNameV1(b"temporary".to_vec()),
+        document_record: record(2),
+        temporary_record: record(3),
+        prior_document_version: version(4),
+    };
+    let bytes = postcard::to_allocvec(&operation).unwrap();
+    assert_eq!(
+        bytes.first(),
+        Some(&4),
+        "atomic save is appended after four existing operations"
+    );
+    assert_eq!(
+        postcard::from_bytes::<FileMutationOperation>(&bytes).unwrap(),
+        operation
+    );
+}

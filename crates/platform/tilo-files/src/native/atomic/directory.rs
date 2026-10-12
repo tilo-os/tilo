@@ -69,6 +69,15 @@ impl StorageDirectory {
         self.inner.validate_namespace_control()
     }
 
+    /// Root-only read observation of another exact owner's held directory.
+    /// This grants no publication authority and changes no ownership or policy.
+    /// `OwnerOnly` requires private DAC/ACL mode; `Inherit` requires owner control.
+    /// The caller must obtain the owner and handle on an authenticated channel.
+    #[cfg(target_os = "linux")]
+    pub fn validate_observed_owner(&self, owner: u32, privacy: Privacy) -> io::Result<()> {
+        self.inner.validate_observed_owner(owner, privacy)
+    }
+
     /// Query the identity of the retained directory handle.
     ///
     /// # Errors
@@ -154,6 +163,36 @@ impl StorageDirectory {
         self.publish_with_mode(name, bytes, mode, privacy, None)
     }
 
+    /// Durably publish bytes with explicit native permission bits.
+    ///
+    /// This uses the same retained directory and publication barriers as
+    /// [`Self::publish`]. Permission bits do not admit a directory or source.
+    ///
+    /// # Errors
+    ///
+    /// Returns a publication error for unsupported permissions, invalid names,
+    /// staging, publication or durability failures.
+    pub fn publish_with_permissions(
+        &self,
+        name: &OsStr,
+        bytes: &[u8],
+        mode: PublishMode,
+        privacy: Privacy,
+        permissions: u32,
+    ) -> Result<(), PublicationError> {
+        self.publish_with_mode(name, bytes, mode, privacy, Some(permissions))
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn publish_atomic_save(
+        &self,
+        name: &OsStr,
+        bytes: &[u8],
+        permissions: u32,
+    ) -> Result<(), PublicationError> {
+        native::publish_atomic_save(&self.inner, name, bytes, permissions)
+    }
+
     pub(crate) fn publish_with_mode(
         &self,
         name: &OsStr,
@@ -163,5 +202,88 @@ impl StorageDirectory {
         exact_mode: Option<u32>,
     ) -> Result<(), PublicationError> {
         native::publish(&self.inner, name, bytes, mode, privacy, exact_mode)
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod retained_foundation_tests {
+    use super::*;
+    use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+
+    #[test]
+    fn explicit_permissions_publish_through_held_parent_after_name_replacement() {
+        let root = tempfile::tempdir().unwrap();
+        let named = root.path().join("store");
+        std::fs::create_dir(&named).unwrap();
+        let store = StorageDirectory::open(&named).unwrap();
+        store.validate_namespace_control().unwrap();
+        let retained = root.path().join("retained");
+        std::fs::rename(&named, &retained).unwrap();
+        std::fs::create_dir(&named).unwrap();
+        store
+            .publish_with_permissions(
+                OsStr::new("record"),
+                b"actual held publication",
+                PublishMode::CreateNew,
+                Privacy::Inherit,
+                0o640,
+            )
+            .unwrap();
+        let record = retained.join("record");
+        assert_eq!(std::fs::read(&record).unwrap(), b"actual held publication");
+        assert_eq!(std::fs::metadata(&record).unwrap().mode() & 0o7777, 0o640);
+        assert!(!named.join("record").exists());
+        assert_eq!(std::fs::read_dir(&retained).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn public_permissions_refuse_private_publication_and_retire_stage() {
+        let root = tempfile::tempdir().unwrap();
+        let store = StorageDirectory::open(root.path()).unwrap();
+        let result = store.publish_with_permissions(
+            OsStr::new("record"),
+            b"must remain unpublished",
+            PublishMode::CreateNew,
+            Privacy::OwnerOnly,
+            0o644,
+        );
+        assert!(result.is_err());
+        assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn observed_owner_requires_real_root_and_rechecks_held_permissions() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        let store = StorageDirectory::open(root.path()).unwrap();
+        let owner = std::fs::metadata(root.path()).unwrap().uid();
+        if rustix::process::getuid().as_raw() != 0 || rustix::process::geteuid().as_raw() != 0 {
+            assert_eq!(
+                store
+                    .validate_observed_owner(owner, Privacy::OwnerOnly)
+                    .unwrap_err()
+                    .kind(),
+                io::ErrorKind::PermissionDenied
+            );
+        } else {
+            store
+                .validate_observed_owner(owner, Privacy::OwnerOnly)
+                .unwrap();
+            assert_eq!(
+                store
+                    .validate_observed_owner(owner.checked_add(1).unwrap(), Privacy::OwnerOnly)
+                    .unwrap_err()
+                    .kind(),
+                io::ErrorKind::PermissionDenied
+            );
+            std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o770)).unwrap();
+            assert_eq!(
+                store
+                    .validate_observed_owner(owner, Privacy::Inherit)
+                    .unwrap_err()
+                    .kind(),
+                io::ErrorKind::PermissionDenied
+            );
+        }
     }
 }

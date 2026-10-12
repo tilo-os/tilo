@@ -56,6 +56,23 @@ pub fn ensure_collaboration_identity(
     )
 }
 
+/// Provision the native device with its authenticated installer name.
+///
+/// # Errors
+/// As the canonical labeled collaboration provisioning operation.
+pub fn ensure_collaboration_identity_with_device_label(
+    identity_dir: &Path,
+    paths: &IdentityPaths,
+    label: &str,
+) -> Result<ProvisionOutcome, io::Error> {
+    tilo_identity_host::provisioning::ensure_collaboration_identity_with_device_label(
+        identity_dir,
+        paths,
+        IDENTITY_STORAGE,
+        label,
+    )
+}
+
 /// [`tilo_identity_host::provisioning::ensure_throwaway_test_identity`] in
 /// this session's identity storage.
 ///

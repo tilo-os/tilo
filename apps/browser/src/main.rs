@@ -7,6 +7,18 @@
 extern crate runtime_dylib;
 
 fn main() {
+    let args: Vec<_> = std::env::args_os().skip(1).collect();
+    if args.len() == 1
+        && args
+            .first()
+            .is_some_and(|arg| arg == "--service-session-capability")
+    {
+        match browser::service_session_capability() {
+            Ok(value) => println!("{value}"),
+            Err(_) => std::process::exit(1),
+        }
+        return;
+    }
     ui::framework::run::<browser::BrowserShell>();
     // Every Browser tab of this profile browses through one Chromium host.
     // When it is this process's, the window closing must not take the

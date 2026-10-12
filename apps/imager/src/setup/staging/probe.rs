@@ -68,6 +68,10 @@ impl HostFacts {
 /// [`add_shared_blockers`] are added here for both; `InsufficientSpace`
 /// needs bundle sizes and comes from [`space_blocker`].
 pub fn probe() -> HostFacts {
+    #[cfg(all(test, target_os = "linux"))]
+    if let Some(facts) = super::super::journey::main_story_tests::fixture_host_facts() {
+        return facts;
+    }
     #[cfg(target_os = "linux")]
     {
         let mut facts = super::linux::probe_facts();
@@ -128,6 +132,37 @@ pub fn space_blocker(facts: &HostFacts, requirements: Requirements) -> Option<Bl
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn non_uefi_preparation_geometry_does_not_offer_installation() {
+        use super::super::plan;
+        let mut basis = plan::tests::linux_basis(512, 64 << 30, Vec::new());
+        basis.firmware.uefi = false;
+        basis.firmware.secure_boot = false;
+        basis.firmware.boot_current = None;
+        basis.firmware.boot_order.clear();
+        basis.firmware.boot_next = None;
+        let mut facts = HostFacts {
+            basis: Some(basis.clone()),
+            bitlocker_protected: false,
+            blockers: Vec::new(),
+        };
+        add_shared_blockers(&mut facts);
+        assert!(facts.blockers.contains(&Blocker::NotUefi));
+        assert!(!facts.offers_full_os());
+        let reviewed = plan::compute(
+            &basis,
+            Requirements {
+                staging_esp_bytes: 512 << 20,
+                staging_root_bytes: 4 << 30,
+                target_bytes: 35 << 30,
+            },
+        )
+        .unwrap();
+        assert_eq!(reviewed.basis, basis);
+        assert!(!reviewed.basis.firmware.uefi);
+        assert!(!facts.offers_full_os());
+    }
 
     /// Remedies, hard blockers and space blockers.
     #[test]

@@ -18,6 +18,12 @@ pub fn roomtest_payload() -> &'static Path {
     built_once(&PAYLOAD, "roomtest", "2021")
 }
 
+/// Actual finite headless worker for signed capture-pipeline qualification.
+pub fn capture_worker_payload() -> &'static Path {
+    static PAYLOAD: OnceLock<PathBuf> = OnceLock::new();
+    built_once(&PAYLOAD, "capture-worker", "2024")
+}
+
 /// The build runs `rustc` from `PATH`, which the sandbox-environment tests
 /// replace while they hold the environment lock, so it runs under that lock
 /// too. The lock is taken *before* the `OnceLock`: a test that already holds

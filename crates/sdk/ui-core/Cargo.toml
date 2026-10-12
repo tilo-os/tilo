@@ -91,6 +91,7 @@ portal = ["native", "tilo-host/portal"]
 notifications = ["native", "tilo-host/notifications"]
 
 [dependencies]
+browser-continuity.workspace = true
 mime_guess.workspace = true
 fnv.workspace = true
 # Host services: the clock, background work, clipboard, file choosers,
@@ -278,6 +279,9 @@ accesskit_winit = { package = "tilo-accesskit-winit", version = "0.34.0", path =
 # `default_speaker()` never panics (falls back to `NullSpeaker` when no speech
 # stack is installed), so depending on this is safe in headless builds.
 tilo-tts = { version = "0.1.0", path = "../../system/tts" }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+tilo-sandbox-core = { version = "0.1.0", path = "../../system/sandbox-core" }
 
 [target.'cfg(unix)'.dependencies]
 # Takes the launcher's content-store capability at launch (`launch.rs`).

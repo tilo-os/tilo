@@ -76,6 +76,22 @@ pub(super) struct PinnedDirectory {
 }
 
 impl PinnedDirectory {
+    #[cfg(target_os = "linux")]
+    pub(in crate::setup) fn from_protected_inbox(
+        file: File,
+        proof: &super::read_media::VerifiedInboxLease<'_>,
+    ) -> io::Result<Arc<Self>> {
+        proof.validate_exact(&file)?;
+        let pin = Arc::new(Self {
+            identity: Metadata::from_file(&file)?,
+            file,
+            parent: None,
+            created: false,
+        });
+        pin.validate_destination()?;
+        proof.validate_exact(&pin.file)?;
+        Ok(pin)
+    }
     pub(super) fn open_absolute(path: &Path) -> io::Result<Arc<Self>> {
         if !path.is_absolute() {
             return Err(changed("folder grant must be a native absolute path"));
@@ -533,11 +549,25 @@ pub(super) fn stream(
             .ok_or_else(|| changed("invalid read length"))?;
         digest.update(chunk);
         if let Some(output) = &mut destination {
-            output.write_all(chunk)?;
+            // Copy output is an exclusively created, empty regular file. Keep
+            // zero-filled extents sparse on Unix so VM images and large caches do not
+            // consume their entire logical length on the destination. Digests
+            // still cover every byte; the final length below includes trailing
+            // holes. This does not promise identical physical extent layout.
+            if cfg!(unix) && chunk.iter().all(|byte| *byte == 0) {
+                output.seek(SeekFrom::Current(
+                    i64::try_from(count).map_err(io::Error::other)?,
+                ))?;
+            } else {
+                output.write_all(chunk)?;
+            }
         }
     }
     if total != expected {
         return Err(changed("file length changed during copy"));
+    }
+    if let Some(output) = destination {
+        output.set_len(total)?;
     }
     Ok((total, digest.finalize().into()))
 }

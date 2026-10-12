@@ -45,6 +45,11 @@ pub use task_control::{TaskDirection, TaskRunControl, TaskRunStatus, native_task
 use std::rc::Rc;
 
 pub mod file_clipboard;
+pub mod open_selected;
+pub mod browser_service_sessions;
+pub use browser_service_sessions::*;
+pub mod retained_person;
+pub mod retained_retirement;
 
 #[cfg(feature = "client")]
 use runtime_portal::NotAvailable;
@@ -981,6 +986,118 @@ impl ChannelHandle {
             return Err(failed("clipboard reply exceeds bound".into()));
         }
         serde_json::from_slice(bytes).map_err(|error| failed(error.to_string()))
+    }
+
+    /// Submit selected-open routing under its original semantic invocation.
+    /// The receipt confirms admission only; it does not confirm app startup.
+    ///
+    /// # Errors
+    /// Refuses missing action custody, malformed requests and mismatched receipts.
+    pub async fn local_file_open_selected(
+        &self,
+        command: &open_selected::Request,
+        parent: Option<[u8; 16]>,
+    ) -> Result<open_selected::RootReceipt, NotAvailable> {
+        let failed = |message: String| NotAvailable::Capnp(capnp::Error::failed(message));
+        let parent =
+            parent.ok_or_else(|| failed("selected open requires its action invocation".into()))?;
+        if parent == [0; 16] || !command.valid() {
+            return Err(failed("invalid selected open request".into()));
+        }
+        let bytes = serde_json::to_vec(command).map_err(|error| failed(error.to_string()))?;
+        if bytes.len() > open_selected::MAX_WIRE_BYTES {
+            return Err(failed("selected open request exceeds bound".into()));
+        }
+        // This existing byte transport dispatches the distinct selected-open
+        // protocol before decoding any clipboard command.
+        let mut request = self.inner.local_file_clipboard_request();
+        request.get().set_command_json(&bytes);
+        request.get().set_on_behalf_of(&parent);
+        let response = request.send().promise.await?;
+        let bytes = response.get()?.get_reply_json()?;
+        if bytes.len() > open_selected::MAX_WIRE_BYTES {
+            return Err(failed("selected open receipt exceeds bound".into()));
+        }
+        let receipt: open_selected::RootReceipt =
+            serde_json::from_slice(bytes).map_err(|error| failed(error.to_string()))?;
+        if !receipt.valid() || receipt.request_id != command.request.request_id {
+            return Err(failed(
+                "selected open receipt differs from its request".into(),
+            ));
+        }
+        Ok(receipt)
+    }
+
+    /// Read current selected-file target presentation on the existing Files lane.
+    /// No response conveys a file grant or an observed launch outcome.
+    /// # Errors
+    /// Refuses invalid requests, unavailable native hosts or mismatched responses.
+    pub async fn local_file_selected_discovery(
+        &self,
+        command: &open_selected::discovery::Request,
+        parent: Option<[u8; 16]>,
+    ) -> Result<open_selected::discovery::Reply, NotAvailable> {
+        if !command.valid()
+            || parent.is_some() != command.invocation.is_some()
+            || parent == Some([0; 16])
+        {
+            return Err(capnp::Error::failed("invalid selected discovery request".into()).into());
+        }
+        let bytes = serde_json::to_vec(command).map_err(|e| capnp::Error::failed(e.to_string()))?;
+        if bytes.len() > open_selected::discovery::MAX_BYTES {
+            return Err(capnp::Error::failed("selected discovery exceeds limit".into()).into());
+        }
+        let mut request = self.inner.local_file_clipboard_request();
+        request.get().set_command_json(&bytes);
+        if let Some(parent) = parent {
+            request.get().set_on_behalf_of(&parent);
+        }
+        let response = request.send().promise.await?;
+        let value = open_selected::discovery::decode_reply(response.get()?.get_reply_json()?)
+            .map_err(|e| capnp::Error::failed(e.to_string()))?;
+        if !value.matches(command) {
+            return Err(
+                capnp::Error::failed("selected discovery response scope differs".into()).into(),
+            );
+        }
+        Ok(value)
+    }
+
+    /// Open with explicit access through original semantic action custody.
+    /// The observed result requires namespace admission and normal launch readiness.
+    /// # Errors
+    /// Refuses missing custody, malformed access or mismatched observed results.
+    pub async fn local_file_open_selected_v2(
+        &self,
+        command: &open_selected::v2::Request,
+        parent: Option<[u8; 16]>,
+    ) -> Result<open_selected::v2::ObservedReply, NotAvailable> {
+        let failed = |message: String| NotAvailable::Capnp(capnp::Error::failed(message));
+        let parent =
+            parent.ok_or_else(|| failed("selected open requires its action invocation".into()))?;
+        if parent == [0; 16] || !command.valid() {
+            return Err(failed("invalid selected open v2 request".into()));
+        }
+        let bytes = serde_json::to_vec(command).map_err(|error| failed(error.to_string()))?;
+        if bytes.len() > open_selected::MAX_WIRE_BYTES {
+            return Err(failed("selected open request exceeds bound".into()));
+        }
+        let mut request = self.inner.local_file_clipboard_request();
+        request.get().set_command_json(&bytes);
+        request.get().set_on_behalf_of(&parent);
+        let response = request.send().promise.await?;
+        let bytes = response.get()?.get_reply_json()?;
+        let observed =
+            open_selected::v2::decode_observed(bytes).map_err(|error| failed(error.to_string()))?;
+        if observed.reply.request_id != command.request.request_id
+            || observed.reply.target.app_id != command.request.app_id
+            || observed.access != command.request.access
+        {
+            return Err(failed(
+                "selected open result differs from actual request".into(),
+            ));
+        }
+        Ok(observed)
     }
 
     /// Use the shell-owned sealed Wi-Fi secret bridge from the authenticated

@@ -187,6 +187,8 @@ pub enum FilesEffect {
         app: String,
         #[param("Always open files of this type with it")]
         always: Option<bool>,
+        #[param("Access to the original file", choices = ["read-only", "edit-in-parent"])]
+        access: Option<String>,
     },
     /// Copy to folder…
     #[effect(row)]

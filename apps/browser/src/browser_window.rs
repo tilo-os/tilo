@@ -40,6 +40,7 @@ enum ExitState {
     Normal,
     Choice,
     Cancelling,
+    ClosingService,
     Ready,
 }
 
@@ -50,6 +51,7 @@ enum ExitState {
 )]
 pub struct BrowserWindow {
     page: Box<BrowserWidget>,
+    pub(crate) service_cx: Option<ui::framework::SurfaceCx<crate::resource::Browser>>,
     rect: Rect,
     dirty: bool,
     /// A window opened without a page starts in the address field.
@@ -72,6 +74,7 @@ impl BrowserWindow {
     pub fn new(page: BrowserWidget, focus_address: bool) -> Self {
         Self {
             page: Box::new(page),
+            service_cx: None,
             rect: Rect::ZERO,
             dirty: true,
             focus_address,
@@ -114,6 +117,12 @@ impl BrowserWindow {
     }
 
     /// Keep the page's visits in the person's browsing history.
+    pub(crate) fn attach_personal_bookmarks(
+        &mut self,
+        record: ui::framework::PersonRecord<crate::personal_bookmarks::PersonalBookmarks>,
+    ) {
+        self.page.attach_personal_bookmarks(record);
+    }
     pub(crate) fn attach_history(
         &mut self,
         record: ui::framework::PersonRecord<crate::history::BrowsingHistory>,
@@ -297,6 +306,16 @@ impl Widget for BrowserWindow {
             self.dirty = true;
         }
         self.page.sync(state, path);
+        #[cfg(target_os = "linux")]
+        if let Some(anchor) = self.page.take_service_redirect()
+            && let Some(cx) = &self.service_cx
+            && let Some((id, _)) = crate::service_destinations::parse_anchor(&anchor)
+            && let Some(person) = cx.me().and_then(crate::service_sessions::identity)
+        {
+            if let Err(error) = self.page.begin_service_session(&id, person, cx.waker()) {
+                tracing::warn!(%error, "Approved account could not be opened");
+            }
+        }
         if self.page.take_native_closed() {
             // The page closed itself (`window.close()`): so does its tab.
             ui::shell_tabs::close_this();
@@ -312,11 +331,19 @@ impl Widget for BrowserWindow {
             self.page.exit_content_fullscreen();
         }
         self.reconcile_content_fullscreen();
+        if self.exit_state == ExitState::ClosingService && self.page.service_close_complete() {
+            self.exit_state = ExitState::Ready;
+            self.close_intent = true;
+        }
         if self.exit_state == ExitState::Cancelling {
             if self.page.download_exit_cleanup_complete() {
-                self.exit_state = ExitState::Ready;
                 self.exit_panel = None;
-                self.close_intent = true;
+                if self.page.request_service_close() {
+                    self.exit_state = ExitState::Ready;
+                    self.close_intent = true;
+                } else {
+                    self.exit_state = ExitState::ClosingService;
+                }
             } else {
                 self.exit_panel = Some(self.make_exit_panel(true));
             }
@@ -613,9 +640,33 @@ impl Widget for BrowserWindow {
 }
 
 impl ui::component_lifecycle::ComponentLifecycle for BrowserWindow {
+    fn close_components(&mut self) -> Vec<ui::application::ComponentCloseReport> {
+        // The host has stopped frames. Join native cleanup before a headless
+        // runner can exit and release the profile lease under a living child.
+        let result = self.page.finish_service_close();
+        let mut reports: Vec<_> = self
+            .children_mut()
+            .into_iter()
+            .flat_map(ui::component_lifecycle::close_components)
+            .collect();
+        if let Err(error) = result {
+            reports.push(ui::application::ComponentCloseReport {
+                recovery: None,
+                view_error: None,
+                view_retry: None,
+                record_error: None,
+                record_retry: None,
+                record_retry_target: None,
+                teardown_error: Some(error),
+            });
+        }
+        reports
+    }
     fn on_window_close_requested(&mut self) -> WindowCloseAdmission {
         match self.exit_state {
-            ExitState::Choice | ExitState::Cancelling => WindowCloseAdmission::Defer,
+            ExitState::Choice | ExitState::Cancelling | ExitState::ClosingService => {
+                WindowCloseAdmission::Defer
+            }
             ExitState::Normal if self.page.download_exit_requires_choice() => {
                 // The immersive layout omits window-level dialogs. Leave page
                 // full screen before asking what to do with active downloads.
@@ -627,7 +678,14 @@ impl ui::component_lifecycle::ComponentLifecycle for BrowserWindow {
                 self.dirty = true;
                 WindowCloseAdmission::Defer
             }
-            ExitState::Normal | ExitState::Ready => WindowCloseAdmission::Allow,
+            ExitState::Normal | ExitState::Ready => {
+                if self.page.request_service_close() {
+                    WindowCloseAdmission::Allow
+                } else {
+                    self.exit_state = ExitState::ClosingService;
+                    WindowCloseAdmission::Defer
+                }
+            }
         }
     }
     fn take_window_close_intent(&mut self) -> bool {

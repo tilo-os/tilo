@@ -2568,3 +2568,106 @@ activity-morning-command-refused = Request refused
 activity-morning-recorded = { $source } · last recorded workspace activity: { $time }
 
 activity-morning-next = Next chosen source
+
+# Installed prepared setup and original-file migration.
+onboarding-prepared-title = Welcome home
+
+onboarding-prepared-body = Enter the password you chose while preparing Tilo to bring your identity and accounts here.
+
+onboarding-prepared-password = Your password
+
+onboarding-prepared-working = Bringing your setup here…
+
+onboarding-prepared-failed = We couldn’t bring your prepared setup here. Try again.
+
+onboarding-migration-title = Bring your things into Tilo
+
+onboarding-migration-body = Bring over the documents and apps you chose during setup. Your originals stay where they are.
+
+onboarding-migration-reviewed = Your migration is ready. Copy your things into a separate import first.
+
+onboarding-migration-adopt-body = Your import is verified. Add it to your home; existing files and your Tilo identity stay in place.
+
+onboarding-migration-working = Bringing your things over…
+
+onboarding-migration-complete = Your things are ready in Tilo.
+
+onboarding-migration-incomplete = Some things still need attention. Existing files were kept; the imported copies remain separately available.
+
+onboarding-migration-failed = Your migration could not continue. Your originals and retained import have been kept.
+
+onboarding-migration-cancelled = Migration stopped. Your imported files are kept so you can continue later.
+
+onboarding-migration-review = Review my migration
+
+onboarding-migration-start = Copy my things
+
+onboarding-migration-adopt = Add to my home
+
+onboarding-migration-retry = Retry
+
+onboarding-migration-cancel = Stop
+
+onboarding-migration-later = Bring my things later
+
+onboarding-migration-progress = { $files } files copied
+
+onboarding-portable-home-title = Bring your files into Tilo
+
+onboarding-portable-home-body = Enter the password you chose during setup to review your files before adding them to this computer.
+
+onboarding-portable-home-unavailable = Your transfer is not available on this computer yet. Try again or continue without bringing your files over.
+
+onboarding-migration-resume-busy = Finish the current setup before opening your file migration.
+
+onboarding-migration-resume-unavailable = There is no deferred file migration available for your current identity.
+
+onboarding-existing-files-available = Your existing files are available in Tilo. Changes you make here also appear in your previous system.
+
+onboarding-existing-files-prepare-apps = Prepare my apps
+
+onboarding-existing-files-use = Use my existing files
+
+onboarding-existing-files-body = Use your existing files directly. Changes you make in Tilo also appear in your previous system.
+
+onboarding-existing-files-apps-reviewed = Prepare your selected apps and their data for Tilo. Your existing apps stay in your previous system.
+
+onboarding-existing-files-apps-adopt = Your apps are prepared. Add them and their data to Tilo.
+
+onboarding-portable-applications-title = Bring your apps with you
+
+onboarding-portable-applications-body = Restore the apps you selected and their data from your installer. Your original apps and files stay unchanged.
+
+onboarding-portable-applications-start = Restore my apps
+
+onboarding-portable-applications-unavailable = Your apps could not be restored. You can retry without replacing your existing files.
+
+onboarding-browser-title = Bring your browser with you
+
+onboarding-browser-body = Your selected bookmarks and history are ready to bring into Tilo.
+
+onboarding-browser-start = Use my browser data
+
+onboarding-browser-unavailable = Your browser data is still waiting. Try again or continue for now.
+
+onboarding-backup-unavailable = A personal identity backup can’t be created on this device.
+
+onboarding-ready-welcome = Welcome to Tilo
+
+onboarding-ready-next = Make yourself at home, or take a quick tour first.
+
+onboarding-migration-cleanup-pending = Your things are ready in Tilo. Some temporary files still need to be removed.
+
+onboarding-migration-cleanup-unavailable = Your things are ready in Tilo. Temporary file cleanup could not be confirmed.
+
+onboarding-migration-cleanup-resume = Retry cleanup
+
+onboarding-migration-cleanup-running = Your things are ready in Tilo. Removing temporary files…
+
+session-retained-retirement = Retained file cleanup
+session-retained-retirement-detail = Inspect this session’s retained file owners and observed cleanup.
+
+search-provider-authentication-prompts = Administrator authentication
+portal-auth-identity-param = Administrator account
+portal-auth-request-expired = This authentication request is no longer available.
+portal-auth-local-admin-required = Administrator authentication requires the unlocked device owner's session.

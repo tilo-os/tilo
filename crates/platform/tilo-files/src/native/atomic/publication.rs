@@ -189,6 +189,23 @@ pub(crate) fn replace_with_mode(
     )
 }
 
+#[cfg(target_os = "linux")]
+pub(crate) fn save_with_mode(path: &Path, bytes: &[u8], mode: u32) -> Result<(), PublicationError> {
+    let name = path.file_name().ok_or_else(|| {
+        PublicationError::new(
+            PublicationState::NotPublished,
+            io::ErrorKind::InvalidInput.into(),
+        )
+    })?;
+    let parent = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let directory = crate::native::atomic::StorageDirectory::open(parent)
+        .map_err(|error| PublicationError::new(PublicationState::NotPublished, error))?;
+    directory.publish_atomic_save(name, bytes, mode)
+}
+
 #[cfg(windows)]
 pub(crate) fn validate_windows_mode(mode: u32) -> Result<(), PublicationError> {
     if mode == 0o600 {

@@ -23,6 +23,8 @@ static BROKER_FD_CLAIMED: AtomicBool = AtomicBool::new(false);
 
 #[derive(Debug, Serialize, Deserialize)]
 struct PublicMetadata {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    profile_photo: Option<crate::ProfilePhoto>,
     display_name: String,
     avatar_color: [u8; 3],
     group_public_key: [u8; 32],
@@ -68,6 +70,7 @@ pub fn serve(mut stream: UnixStream, identity: SigningIdentity) -> io::Result<()
         match op {
             OP_METADATA if payload.is_empty() => {
                 let metadata = PublicMetadata {
+                    profile_photo: identity.profile_photo.clone(),
                     display_name: identity.display_name.clone(),
                     avatar_color: identity.avatar_color,
                     group_public_key: identity.group_public_key,
@@ -130,6 +133,7 @@ pub(crate) fn connect_from_env() -> Result<SigningIdentity, NotAvailable> {
         NotAvailable::ConnectionFailed(io::Error::new(io::ErrorKind::InvalidData, e))
     })?;
     Ok(SigningIdentity {
+        profile_photo: metadata.profile_photo,
         display_name: metadata.display_name,
         avatar_color: metadata.avatar_color,
         group_public_key: metadata.group_public_key,

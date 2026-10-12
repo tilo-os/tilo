@@ -3,6 +3,10 @@
 
 use std::cell::RefCell;
 use std::rc::{Rc, Weak};
+use std::sync::{
+    Arc, Weak as SyncWeak,
+    atomic::{AtomicBool, Ordering},
+};
 use ui_core::widget::{AppModel, ModelPath};
 
 use tilo_resource::{ActionDecl, Effect, NoEffect, Resource, SearchEntry};
@@ -18,6 +22,65 @@ use super::dispatch::Dispatcher;
 use super::effect::{EffectAnswer, EffectCx, EffectRunner, EffectStatus, Effects, Jobs, OwnedJobs};
 use super::live::Live;
 use super::rows::{LiveRow, outside_document, resolved_outside_document};
+
+/// A hosted surface's publication and job lifetime. Retained contexts contain
+/// this revocable scope, never a strong reference to its publication token.
+pub(crate) struct SurfaceScope {
+    token: RefCell<Option<Rc<()>>>,
+    parent: Weak<()>,
+    children: RefCell<Vec<Weak<Self>>>,
+    jobs: RefCell<Vec<SyncWeak<AtomicBool>>>,
+}
+impl SurfaceScope {
+    fn new(parent: Weak<()>) -> Rc<Self> {
+        Rc::new(Self {
+            token: RefCell::new(Some(Rc::new(()))),
+            parent,
+            children: RefCell::default(),
+            jobs: RefCell::default(),
+        })
+    }
+    fn alive(&self) -> Weak<()> {
+        self.token
+            .borrow()
+            .as_ref()
+            .map_or_else(Weak::new, Rc::downgrade)
+    }
+    pub(crate) fn active(&self) -> bool {
+        if self.parent.strong_count() == 0 {
+            self.retire();
+        }
+        self.token.borrow().is_some()
+    }
+    pub(crate) fn track(&self, cancelled: &Arc<AtomicBool>) {
+        if self.active() {
+            let mut jobs = self.jobs.borrow_mut();
+            jobs.retain(|job| job.strong_count() > 0);
+            jobs.push(Arc::downgrade(cancelled));
+        } else {
+            cancelled.store(true, Ordering::Release);
+        }
+    }
+    fn retire(&self) {
+        self.token.borrow_mut().take();
+        for child in self
+            .children
+            .borrow_mut()
+            .drain(..)
+            .filter_map(|child| child.upgrade())
+        {
+            child.retire();
+        }
+        for job in self
+            .jobs
+            .borrow_mut()
+            .drain(..)
+            .filter_map(|job| job.upgrade())
+        {
+            job.store(true, Ordering::Release);
+        }
+    }
+}
 
 /// A custom widget or renderer — a timeline, a canvas, a GPU viewport, a page
 /// layout engine — taking part in a resource.
@@ -347,6 +410,20 @@ pub struct SurfaceCx<R: Resource> {
     pub(crate) env: super::env::RecordEnv<R>,
     pub(crate) jobs: Jobs<R>,
     pub(crate) actions: Actions<R>,
+    pub(crate) stages: super::stage::Stages,
+    pub(crate) scope: Option<Rc<SurfaceScope>>,
+}
+
+impl<R: Resource> Clone for SurfaceCx<R> {
+    fn clone(&self) -> Self {
+        Self {
+            env: self.env.clone(),
+            jobs: self.jobs.clone(),
+            actions: self.actions.clone(),
+            stages: self.stages.clone(),
+            scope: self.scope.clone(),
+        }
+    }
 }
 
 impl<R: Resource> std::ops::Deref for SurfaceCx<R> {
@@ -357,6 +434,62 @@ impl<R: Resource> std::ops::Deref for SurfaceCx<R> {
 }
 
 impl<R: Resource> SurfaceCx<R> {
+    /// Host a dynamically prepared child through the same resource, dispatcher
+    /// and effect publication as this surface. Removing either host retires its
+    /// effects and jobs, even when somebody retains its context or child widget.
+    ///
+    /// # Errors
+    /// Refuses a child after this surface's owning view has been retired.
+    pub fn surface<S, E>(&self, surface: S) -> Result<ui_core::widget::Element, &'static str>
+    where
+        S: ResourceSurface<R, E> + 'static,
+        E: Effect,
+    {
+        if self.alive.strong_count() == 0
+            || self.scope.as_ref().is_some_and(|scope| !scope.active())
+        {
+            return Err("the parent surface has been retired");
+        }
+        Ok(self.host_surface(surface))
+    }
+
+    pub(crate) fn host_surface<S, E>(&self, mut surface: S) -> ui_core::widget::Element
+    where
+        S: ResourceSurface<R, E> + 'static,
+        E: Effect,
+    {
+        let scope = SurfaceScope::new(self.alive.clone());
+        if let Some(parent) = &self.scope {
+            let mut children = parent.children.borrow_mut();
+            children.retain(|child| child.strong_count() > 0);
+            children.push(Rc::downgrade(&scope));
+        }
+        let jobs = self.effects.scoped_surface_jobs(&scope);
+        let mut cx = self.clone();
+        cx.jobs = jobs.clone();
+        cx.env.alive = scope.alive();
+        cx.scope = Some(Rc::clone(&scope));
+        surface.attach(cx);
+        surface.present(&self.live.get());
+        let host = SurfaceHost::new(
+            self.live.clone(),
+            self.dispatch.clone(),
+            &self.effects,
+            jobs,
+            Rc::clone(&scope),
+            surface,
+        );
+        let pending = host.staging();
+        self.stages.push(
+            scope.alive(),
+            Box::new(move |scenario| {
+                if scope.active() {
+                    *pending.borrow_mut() = Some(scenario.map(str::to_owned));
+                }
+            }),
+        );
+        HostedSurface::element(Box::new(host))
+    }
     /// The host-owned identity of the record this surface shows. A durable
     /// activation link can name it without relying on the last-open window.
     /// Absent in a historical view that cannot launch live work.
@@ -519,6 +652,13 @@ pub(crate) struct SurfaceHost<R: Resource, S, E> {
     statuses: Rc<RefCell<Vec<EffectStatus>>>,
     /// The jobs the surface started on its own.
     jobs: OwnedJobs<R, S>,
+    scope: Rc<SurfaceScope>,
+}
+
+impl<R: Resource, S, E> Drop for SurfaceHost<R, S, E> {
+    fn drop(&mut self) {
+        self.scope.retire();
+    }
 }
 
 /// The scenario a surface stages on its next sync: outer `None` is nothing
@@ -531,15 +671,22 @@ impl<R: Resource, S: ResourceSurface<R, E> + 'static, E: Effect> SurfaceHost<R, 
         dispatch: Dispatcher<R>,
         effects: &Effects<R>,
         jobs: Jobs<R>,
-        alive: Weak<()>,
+        scope: Rc<SurfaceScope>,
         surface: S,
     ) -> Self {
         let statuses = Rc::new(RefCell::new(surface.effects()));
-        let runner = effects.env().map(|env| EffectRunner::new(env.clone()));
+        let runner = effects
+            .env()
+            .map(|env| EffectRunner::new(env.scoped(&scope)));
         if runner.is_some() && !E::declarations().is_empty() {
             let published = Rc::clone(&statuses);
-            effects.publish::<E>(alive, move || {
-                super::effect::published_specs::<E>(&published.borrow())
+            let lifetime = Rc::clone(&scope);
+            effects.publish::<E>(scope.alive(), move || {
+                if lifetime.active() {
+                    super::effect::published_specs::<E>(&published.borrow())
+                } else {
+                    Vec::new()
+                }
             });
         }
         Self {
@@ -554,6 +701,7 @@ impl<R: Resource, S: ResourceSurface<R, E> + 'static, E: Effect> SurfaceHost<R, 
             jobs: OwnedJobs::new(jobs),
             surface,
             search_queries: SearchQueries::default(),
+            scope,
         }
     }
 
@@ -622,6 +770,10 @@ impl<R: Resource, S: ResourceSurface<R, E> + 'static, E: Effect> SurfaceDriver
     }
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
+        if !self.scope.active() {
+            self.effects = None;
+            return;
+        }
         let read_only = self.dispatch.read_only();
         if read_only != self.read_only {
             self.read_only = read_only;
@@ -659,6 +811,9 @@ impl<R: Resource, S: ResourceSurface<R, E> + 'static, E: Effect> SurfaceDriver
         op: &ResourceOperation<'_>,
         doc: &AutoCommit,
     ) -> Result<Option<ResourceOperationStart>, String> {
+        if !self.scope.active() {
+            return Err("the surface has been retired".into());
+        }
         match self.effects.as_mut() {
             Some(runner) => runner.start(op, &mut self.surface, Some(doc), S::effect),
             None => Ok(None),
@@ -670,6 +825,10 @@ impl<R: Resource, S: ResourceSurface<R, E> + 'static, E: Effect> SurfaceDriver
         invocation: tilo_actions::InvocationId,
         cancellation_requested: bool,
     ) -> Option<tilo_actions::InvocationUpdate> {
+        if !self.scope.active() {
+            self.effects = None;
+            return None;
+        }
         self.effects
             .as_mut()?
             .poll(invocation, cancellation_requested, &mut self.surface)

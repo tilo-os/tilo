@@ -123,6 +123,7 @@ fn runtime_bundle(root: &Path, name: &str, toolkit: &[u8], identity: &Path) -> (
             arch: None,
             identity: Some(identity),
             extra_libs: &[dylib],
+            extra_bins: &[],
         },
     )
     .unwrap();

@@ -34,6 +34,8 @@ pub use device_pairing::pair_with_host;
 /// empty, so ceremonies that need signing must use the runtime broker.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct IdentityRecord {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile_photo: Option<runtime_identity::ProfilePhoto>,
     pub display_name: String,
     /// `[r, g, b]` for direct painting.
     pub avatar_color: [u8; 3],
@@ -124,6 +126,7 @@ impl IdentityRecord {
         .unwrap_or_default()
         .to_rfc3339();
         Ok(Self {
+            profile_photo: None,
             display_name: display_name.into(),
             avatar_color,
             threshold_identity: serialisable,

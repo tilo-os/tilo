@@ -33,7 +33,8 @@ class AppArtifactHandoffTests(unittest.TestCase):
             "os/scripts/bake-runtime-bundle.sh", "tools/apps/app_release.py",
             "os/scripts/collect-runtime-dependencies.py",
             "os/scripts/verify-runtime-bundle-closure.sh",
-            "os/scripts/stamp-runtime.sh", "tools/apps/pack-runtime-package.sh",
+            "os/scripts/stamp-runtime.sh", "tools/apps/stage_sdk_services.py",
+            "tools/apps/pack-runtime-package.sh",
             "tools/ci/__init__.py", "tools/ci/workspace_graph.py", "tools/ci/runner_labels.py",
             "tools/apps/assemble_app_collection.py",
             "apps/calculator/Cargo.toml", "apps/calculator/tilo-app.toml",
@@ -109,6 +110,7 @@ header[18:20] = (62 if os.environ['FIXTURE_ARCH'] == 'x86_64' else 183).to_bytes
 pathlib.Path('target/thin-app/calculator').write_bytes(header)
 ELF
 chmod +x target/thin-app/calculator
+cp target/thin-app/calculator target/thin-app/tilo-runtime-account-capability
 printf '\\177ELF fixture runtime dylib' > target/thin-app/libruntime_dylib.so
 printf '\\177ELF fixture typst engine' > target/thin-app/libtilo_typst_engine.so
 printf 'libtilo_typst_engine.so\\n' > target/thin-app/runtime-engines
@@ -154,6 +156,7 @@ if a[0] == 'pack':
     else:
         assert manifest['package']['isa'] == {arch: 'v3' if arch == 'x86_64' else 'armv8-a'}
         assert manifest['package']['runtime'] == runtime, manifest
+        assert manifest['sandbox']['services']['identity'] == 'optional@2', manifest
         payload = pathlib.Path(a[a.index('--payload')+1])
         output = pathlib.Path(a[a.index('--output')+1])
         output.write_bytes((payload/'bin/calculator').read_bytes())

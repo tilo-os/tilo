@@ -48,6 +48,7 @@ PACKAGING_INPUTS = {
     "os/scripts/bake-runtime-bundle.sh",
     "os/scripts/collect-runtime-dependencies.py",
     "os/scripts/stamp-runtime.sh",
+    "tools/apps/stage_sdk_services.py",
     "tools/assemble_verified_apps.py",
     "tools/app_packaging_plan.py",
 }

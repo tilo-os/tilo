@@ -24,12 +24,20 @@ default = ["client"]
 # (action directory, nearby transfer, Wi-Fi continuity, task runs, presence
 # and workspace-control types), for code that speaks the broker's language
 # through some other transport.
-client = ["dep:runtime-portal", "dep:capnp", "dep:capnp-rpc", "dep:tokio"]
+client = ["dep:runtime-portal", "dep:capnp", "dep:capnp-rpc", "dep:tokio", "dep:ed25519-dalek"]
 # The `AppSettings` capability over a `settings_store::SettingsSource`, for
 # the hosts that hand one to each app.
 settings-host = ["client", "dep:settings-store"]
+# Explicit root-only kernel/certificate qualification fixtures.
+native-retained-qualification = ["client"]
 
 [dependencies]
+browser-continuity.workspace = true
+zeroize.workspace = true
+# Signed retained proofs use the current canonical personal/device identity.
+tilo-user-identity = { version = "0.1.0", path = "../../collab/tilo-user-identity" }
+ed25519-dalek = { workspace = true, optional = true }
+uuid.workspace = true
 collab-types = { version = "0.1.0", path = "../../collab/collab-types" }
 # The typed action vocabulary the exported surface and directory rows hold;
 # only this crate's codec turns it into wire text.
@@ -66,3 +74,6 @@ workspace = true
 tokio = { workspace = true, optional = true, features = ["net"] }
 # The workspace-hack's native feature set does not build for wasm32.
 workspace-hack = { version = "0.1" }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc.workspace = true

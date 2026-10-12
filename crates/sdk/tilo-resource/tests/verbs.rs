@@ -849,3 +849,80 @@ fn an_absent_positional_option_is_not_sent() {
     shelf.apply(add.with(("Tea".to_owned(), None))).unwrap();
     assert_eq!(shelf.state().unwrap().cards.len(), 1);
 }
+
+#[derive(Model, Default, Debug, Clone, PartialEq)]
+pub struct PrivateImport {
+    pub received_bytes: u64,
+}
+
+#[resource(kind = "test.private-import", label = "Private import")]
+impl PrivateImport {
+    /// Receive a private snapshot.
+    #[action]
+    pub fn import(&mut self, #[param(secret, "Private snapshot")] payload: String) {
+        self.received_bytes = payload.len() as u64;
+    }
+
+    /// Receive an optional private snapshot.
+    #[action]
+    pub fn optional_import(
+        &mut self,
+        #[param("Private snapshot", secret)] payload: Option<String>,
+    ) {
+        self.received_bytes = payload.map_or(0, |payload| payload.len() as u64);
+    }
+}
+
+#[test]
+fn typed_secret_parameters_bind_redacted_variants_and_refuse_plaintext_arguments() {
+    use tilo_actions::{ActionArgs, ArgValue, ParamType};
+    let mut record = Replica::<PrivateImport>::new();
+    let tree = tilo_resource::publish::<PrivateImport>(
+        "private",
+        "Private import",
+        &record.state().unwrap(),
+    );
+    let action = tree
+        .actions
+        .iter()
+        .find(|action| action.id == "import")
+        .unwrap();
+    let params = action.params();
+    assert_eq!(params[0].ty, ParamType::Secret);
+    assert!(params[0].required);
+    assert!(params[0].choices.is_empty());
+    let supplied = serde_json::json!({"payload":"private-history-sentinel"});
+    let bound = ActionArgs::bind_json(params, supplied.as_object().unwrap()).unwrap();
+    let debug = format!("{bound:?}");
+    assert!(debug.contains("REDACTED"));
+    assert!(!debug.contains("private-history-sentinel"));
+    assert!(
+        ActionArgs::bind(
+            params,
+            [(
+                "payload".to_owned(),
+                ArgValue::Text("private-history-sentinel".into())
+            )]
+        )
+        .is_err()
+    );
+    assert!(
+        ActionArgs::bind_json(
+            params,
+            serde_json::json!({"payload":37}).as_object().unwrap()
+        )
+        .is_err()
+    );
+    record
+        .apply(PrivateImport::IMPORT.with("private-history-sentinel".to_owned()))
+        .unwrap();
+    assert_eq!(record.state().unwrap().received_bytes, 24);
+    let optional = tree
+        .actions
+        .iter()
+        .find(|action| action.id == "optional-import")
+        .unwrap();
+    assert_eq!(optional.params()[0].ty, ParamType::Secret);
+    assert!(!optional.params()[0].required);
+    assert!(ActionArgs::bind_json(optional.params(), &serde_json::Map::new()).is_ok());
+}

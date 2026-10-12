@@ -10,7 +10,7 @@
 //! descendant: [`restrict_self`] must run in the process about to exec the
 //! confined program, after any mount namespace it relies on is complete.
 
-use std::os::fd::{AsFd, AsRawFd};
+use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd};
 use std::path::{Path, PathBuf};
 
 use landlock::{
@@ -217,6 +217,32 @@ impl RulesetSpec {
 /// it), a rule is rejected, or an opened rule path cannot be inspected.
 pub fn restrict_self(
     spec: &RulesetSpec,
+    on_skip: impl FnMut(&Path, &PathFdError),
+) -> Result<RestrictionStatus, LandlockBuildError> {
+    restrict_self_inner(spec, None, on_skip)
+}
+
+/// Add exactly ReadFile beneath an already held authenticated directory.
+/// This only confines the calling task; filesystem/source ACLs still decide
+/// access. There is no pathname reopen or FUSE metadata operation here.
+pub fn restrict_self_with_readonly_directory(
+    spec: &RulesetSpec,
+    directory: BorrowedFd<'_>,
+    on_skip: impl FnMut(&Path, &PathFdError),
+) -> Result<RestrictionStatus, LandlockBuildError> {
+    if spec.compat != CompatLevel::HardRequirement
+        || !spec.handled_fs.contains(AccessFs::from_all(FS_ABI))
+    {
+        return Err(LandlockBuildError::Inspect(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "Held read rule requires complete mandatory ABI5 policy",
+        )));
+    }
+    restrict_self_inner(spec, Some(directory), on_skip)
+}
+fn restrict_self_inner(
+    spec: &RulesetSpec,
+    directory: Option<BorrowedFd<'_>>,
     mut on_skip: impl FnMut(&Path, &PathFdError),
 ) -> Result<RestrictionStatus, LandlockBuildError> {
     let mut ruleset = Ruleset::default()
@@ -246,13 +272,83 @@ pub fn restrict_self(
         }
     }
 
+    if let Some(directory) = directory {
+        add_held_read_rule(&created, directory)?;
+    }
     Ok(created.restrict_self()?)
+}
+
+#[repr(C, packed)]
+struct HeldReadAttribute {
+    allowed_access: u64,
+    parent_fd: i32,
+}
+fn held_read_attribute(directory: BorrowedFd<'_>) -> HeldReadAttribute {
+    HeldReadAttribute {
+        allowed_access: AccessFs::ReadFile as u64,
+        parent_fd: directory.as_raw_fd(),
+    }
+}
+fn add_held_read_rule(
+    created: &landlock::RulesetCreated,
+    directory: BorrowedFd<'_>,
+) -> Result<(), LandlockBuildError> {
+    // PathBeneath compatibility processing fstats its parent, which cannot
+    // observe an Owner-only FUSE mount before the dropped worker services it.
+    // Public clone/conversion borrows the SAME kernel ruleset, never a second
+    // restriction or private dependency layout. Original restrict_self retains
+    // canonical ABI/compatibility/NNP/network enforcement and status reporting.
+    let clone: Option<OwnedFd> = created.try_clone()?.into();
+    let ruleset = clone.ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "Held read rule has no enforced ruleset",
+        )
+    })?;
+    let attr = held_read_attribute(directory);
+    if unsafe {
+        libc::syscall(
+            libc::SYS_landlock_add_rule,
+            ruleset.as_raw_fd(),
+            1u32,
+            &raw const attr,
+            0u32,
+        )
+    } != 0
+    {
+        return Err(LandlockBuildError::Inspect(std::io::Error::last_os_error()));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::fs::OpenOptionsExt;
 
+    #[test]
+    fn held_read_rule_has_only_readfile_on_exact_borrowed_fd_and_requires_mandatory_policy() {
+        let directory = std::fs::File::options()
+            .read(true)
+            .custom_flags(libc::O_PATH | libc::O_DIRECTORY | libc::O_NOFOLLOW)
+            .open("/")
+            .unwrap();
+        let attr = held_read_attribute(directory.as_fd());
+        let access = attr.allowed_access;
+        let fd = attr.parent_fd;
+        assert_eq!(access, AccessFs::ReadFile as u64);
+        assert_eq!(fd, directory.as_raw_fd());
+        // Deny-all uses best effort. Refusal occurs before any restriction,
+        // and does not fabricate kernel/native enforcement from a mask test.
+        assert!(
+            restrict_self_with_readonly_directory(
+                &RulesetSpec::deny_all(),
+                directory.as_fd(),
+                |_, _| {}
+            )
+            .is_err()
+        );
+    }
     #[test]
     fn landlock_plans_map_ro_and_rw_rules_in_order_without_widening() {
         // Phase `plan_maps_ro_to_read_only_access`.

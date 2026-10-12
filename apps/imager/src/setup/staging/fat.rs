@@ -550,6 +550,23 @@ pub(crate) mod tests {
         placeholder: usize,
         sector: usize,
     ) -> Vec<u8> {
+        staging_esp_image_with_slots(fat32, placeholder, sector, 0)
+    }
+    pub(crate) fn staging_esp_image_with_slots(
+        fat32: bool,
+        placeholder: usize,
+        sector: usize,
+        package: usize,
+    ) -> Vec<u8> {
+        staging_esp_image_with_browser_slots(fat32, placeholder, sector, package, 0)
+    }
+    pub(crate) fn staging_esp_image_with_browser_slots(
+        fat32: bool,
+        placeholder: usize,
+        sector: usize,
+        package: usize,
+        browser: usize,
+    ) -> Vec<u8> {
         let mut b = Builder::with_sector(fat32, sector);
         let efi = b.mkdir(None, None, b"EFI        ");
         let boot = b.mkdir(Some(efi), None, b"BOOT       ");
@@ -570,6 +587,32 @@ pub(crate) mod tests {
             &pad,
             false,
         );
+        if package > 0 {
+            let state = b.mkdir(None, Some(".tilo-installer"), b"TILOIN~1   ");
+            b.file(
+                Some(state),
+                Some("prepared-setup.sealed"),
+                b"PREPAR~1SEA",
+                &vec![b' '; package],
+                false,
+            );
+            b.file(
+                Some(state),
+                Some("receipt.json"),
+                b"RECEIP~1JSO",
+                &vec![b' '; 1024],
+                false,
+            );
+            if browser > 0 {
+                for (name, short, length) in [
+                    ("browser.sealed", *b"BROWSE~1SEA", browser),
+                    ("browser-receipt.json", *b"BROWSE~2JSO", 4096),
+                    ("browser-selection.json", *b"BROWSE~3JSO", 4096),
+                ] {
+                    b.file(Some(state), Some(name), &short, &vec![b' '; length], false);
+                }
+            }
+        }
         b.image
     }
 

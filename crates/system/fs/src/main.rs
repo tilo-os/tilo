@@ -1926,6 +1926,44 @@ async fn serve(
             .map(Arc::new)
         })
         .transpose()?;
+    #[cfg(target_os = "linux")]
+    let external_history = if storage_sock.is_some() {
+        match (
+            record_services
+                .as_ref()
+                .and_then(|records| records.workspace_authority.as_ref()),
+            record_publisher.as_ref(),
+        ) {
+            (Some(authority), Some(publisher)) => {
+                match fs::external_history::ExternalHistoryFactory::for_mount(
+                    credentials.clone(),
+                    Arc::clone(&revocations),
+                    Arc::clone(authority),
+                    Arc::clone(publisher),
+                    &paths,
+                    history.as_ref().zip(replacement_transactions.as_ref()).map(
+                        |(history, (journal, path))| {
+                            fs::external_history::ExternalHistoryRuntime::from_mount(
+                                Arc::clone(history),
+                                Arc::clone(journal),
+                                Arc::clone(&namespace),
+                                path.clone(),
+                            )
+                        },
+                    ),
+                ) {
+                    Ok(factory) => factory,
+                    Err(error) => {
+                        eprintln!("external-source enrollment unavailable: {error}");
+                        None
+                    }
+                }
+            }
+            _ => None,
+        }
+    } else {
+        None
+    };
     let allow_legacy_record_migration = remote_ticket.is_none()
         && record_repository
             .as_ref()
@@ -2207,6 +2245,8 @@ async fn serve(
             history: history.map(|history| (history, history_actor)),
             record_publisher,
             replacement_transactions,
+            #[cfg(target_os = "linux")]
+            external_history,
             rebind: managed_service.then_some(rebind_rx),
         },
     )
@@ -2452,6 +2492,8 @@ async fn mount(
             history: history.map(|history| (history, history_actor)),
             record_publisher,
             replacement_transactions,
+            #[cfg(target_os = "linux")]
+            external_history: None,
             rebind: None,
         },
     )
@@ -2625,6 +2667,8 @@ async fn mount_share(
             history: Some((history, actor)),
             record_publisher: None,
             replacement_transactions: None,
+            #[cfg(target_os = "linux")]
+            external_history: None,
             rebind: None,
         },
     )
@@ -3533,6 +3577,8 @@ struct MountServices {
     history: Option<(Arc<FileHistoryStore>, fs_protocol::FileActor)>,
     record_publisher: Option<Arc<RecordPublisher>>,
     replacement_transactions: Option<(Arc<Mutex<fs::RecordTransactionJournal>>, PathBuf)>,
+    #[cfg(target_os = "linux")]
+    external_history: Option<Arc<fs::external_history::ExternalHistoryFactory>>,
     rebind: Option<tokio::sync::mpsc::UnboundedReceiver<()>>,
 }
 
@@ -3565,6 +3611,8 @@ async fn run_mount(config: MountConfig, services: MountServices) -> Result<Mount
         history,
         record_publisher,
         replacement_transactions,
+        #[cfg(target_os = "linux")]
+        external_history,
         mut rebind,
     } = services;
     if !mount_point.exists() {
@@ -3687,7 +3735,7 @@ async fn run_mount(config: MountConfig, services: MountServices) -> Result<Mount
     };
 
     let storage_authority = storage_sock.as_ref().map(|_| {
-        fs::storage::StorageAuthority::new(
+        let authority = fs::storage::StorageAuthority::new(
             Arc::clone(&fs.namespace),
             Arc::clone(&fs.hydrator),
             fs.write_buffers_handle(),
@@ -3695,7 +3743,10 @@ async fn run_mount(config: MountConfig, services: MountServices) -> Result<Mount
             storage_eviction_queue,
             storage_history,
             "Current workspace",
-        )
+        );
+        #[cfg(target_os = "linux")]
+        let authority = authority.with_external_history(external_history.clone());
+        authority
     });
 
     let _storage = storage_sock

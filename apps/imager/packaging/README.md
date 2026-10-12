@@ -244,3 +244,77 @@ every listed medium against both that catalog and its detached signature. Both
 generic architectures remain mandatory. Supporting versioned catalogs does not
 create a board image: the corresponding signed OS and medium build must supply
 the board artifact and provenance before it can enter the release catalog.
+
+## Native migration service assembly
+
+`package-capture-service.sh --build-only OUTPUT PINS_JSON` compiles the protocol-6
+headless worker and signing tools against the unified SDK graph. Assemble those
+actual outputs in the same native builder with `--assemble-only`; its pinned
+Rust toolchain must be on `PATH`. Assembly also needs a C compiler, `pkg-config`,
+GPGME development headers and libraries (`gpgme-devel` on Fedora,
+`libgpgme-dev` on Debian/Ubuntu), the configured GnuPG engine, `bubblewrap`,
+GNU `tar`, `binutils` and the `ostree` package providing `/usr/bin/ostree`.
+The signed capture runtime retains that actual Flatpak repository helper.
+`capture-native-preflight.sh` checks the actual native
+headers, linkable GPGME library, pinned Rust shared standard library and tools
+before the configured OpenPGP engine probe runs. Assembly reuses
+`os/scripts/collect-runtime-dependencies.py` to include both transitive native
+links and the SDK's observed `.tilo.lazy_needed` first-use libraries. The same
+signed-runtime closure verifier used by ordinary app packaging checks the result;
+missing libraries stop assembly before any pins are emitted.
+
+Assembly requires explicit `TILO_VERSION`, `TILO_CAPTURE_RUNTIME_IDENTITY` and
+`TILO_CAPTURE_SERVICE_IDENTITY`. It never generates signing keys. Its output is
+a signed candidate sidecar plus public pins; passing signature, protocol and
+closure checks does not qualify source migration or installed consumers.
+
+Select that exact candidate at host build time with `TILO_CAPTURE_PINS` and
+`TILO_CAPTURE_SIDECAR`. The build embeds admitted pins in its output directory;
+the checked-in default stays `null`. Host and Flatpak packaging require the
+actual native release qualifier to pass before shipping a selected sidecar.
+A ready flag or a successful worker build cannot replace that qualification.
+
+### Forward compiler cohort evidence
+
+`record-capture-cargo.py` records new Cargo invocations; it has no old-log import
+mode. Set `TILO_CAPTURE_BUILD_EVIDENCE` to a private output directory and use its
+absolute path as `CARGO` for `package-capture-service.sh --build-only`. This
+captures the actual unified worker/runtime Cargo stream and source snapshots
+before and after each command. Other roles use the same recorder directly with
+their ordinary `build --locked ...` arguments. The native test role uses
+`test --locked -p imager --lib --no-run --features native-capture-qualification`.
+
+Record assembly with `record-capture-cargo.py assemble --sidecar FRESH_OUTPUT
+--pins FRESH_PINS`. It invokes the canonical producer and preserves its real
+status and logs, then checks the signed candidate. Its receipt records artifact
+assembly, never migration qualification.
+
+Once every required role has a successful invocation against unchanged current
+sources, run `record-capture-cargo.py cohort --evidence PRIVATE_OUTPUT --output
+FRESH_COHORT_JSON`. The default requires all fourteen release roles. The explicit
+`--source-backend-only` selects the four source backend roles and cannot qualify
+publication. Cohort export rechecks current sources and the actual qualifier's
+role admission contract. Any source change invalidates earlier role evidence;
+finish edits before recording the cohort rather than relabelling old logs.
+
+For the full shared-file edit proof, add `--with-writer` before `--build-only` or
+`--assemble-only`. The ordinary Files and Writer executables are then selected in
+the same unified thin graph as the capture worker and SDK. Its measured full
+role is `writer`; source-only evidence still uses four roles. The receiver must
+pack, register and launch `so.tilo.word-processor` through the ordinary signed
+app pipeline before invoking its real edit/save actions. A direct root write or
+a standalone executable invocation is not that proof.
+
+The normal app collection signs `bin/tilo-runtime-account-capability` into its
+SDK runtime. Image builds also preserve that actual graph-built probe, install
+the runtime-version marker, and run the installed account consumer verifier only
+after the helper, app store, signed runtime and trust files exist. Its generated
+receipt records observed protected-grant protocol and exact helper/SDK hashes.
+Without the separate optional service-session qualifiers it contains no
+`service_sessions` proof.
+
+The receiving tool roles are measured current `tilo-app-package`
+(`tilo-app-package-cli`), `tilo-runtime-bundle` (`runtime-bundle`) and
+`tilo-install` (`install`). Qualification stages those actual compiled ELFs
+read-only at their canonical `/usr/bin/` paths. A native builder image with no
+installed tools cannot silently substitute a prior binary or synthetic registry.

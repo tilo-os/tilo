@@ -44,6 +44,8 @@ pub enum AvatarSize {
     Large,
     /// The subject of a detail view (a contact, an account).
     Hero,
+    /// A person’s picture while setting up or editing their profile.
+    Portrait,
 }
 
 impl AvatarSize {
@@ -57,6 +59,7 @@ impl AvatarSize {
             Self::Regular => target,
             Self::Large => target * 1.5,
             Self::Hero => target * 2.5,
+            Self::Portrait => target * 4.0,
         }
     }
 }
@@ -101,6 +104,7 @@ impl PresenceStatus {
 #[derive(Clone, Copy, Debug)]
 pub struct AvatarFace<'a> {
     name: &'a str,
+    identity: &'a str,
     tint: Tint<'a>,
     image: Option<&'a peniko::ImageData>,
     square: bool,
@@ -115,6 +119,7 @@ impl<'a> AvatarFace<'a> {
     pub fn new(name: &'a str, identity: &'a str) -> Self {
         Self {
             name,
+            identity,
             tint: Tint::Identity(identity),
             image: None,
             square: false,
@@ -312,7 +317,21 @@ impl<'a> AvatarFace<'a> {
                 &RoundedRect::from_rect(outer, radius),
             );
         }
-        if let Some(image) = self.image {
+        #[cfg(feature = "local-daemons")]
+        let public_image = if self.image.is_none() {
+            if self.tint == Tint::Neutral {
+                None
+            } else {
+                crate::local_identity::photo_for(self.identity).map(|photo| profile_image(&photo))
+            }
+        } else {
+            None
+        };
+        #[cfg(feature = "local-daemons")]
+        let image = self.image.or(public_image.as_ref());
+        #[cfg(not(feature = "local-daemons"))]
+        let image = self.image;
+        if let Some(image) = image {
             crate::image_store::paint_image_cover(
                 ctx.scene,
                 ctx.transform,
@@ -535,6 +554,7 @@ enum Picture {
 /// A person's avatar as a retained widget. See the module docs.
 pub struct Avatar {
     name: String,
+    name_state: Option<crate::local_state::LocalBinding<String>>,
     identity: String,
     presence: Option<Color>,
     picture: Picture,
@@ -548,11 +568,22 @@ pub struct Avatar {
     dirty: bool,
 }
 
+pub(super) fn profile_image(photo: &runtime_identity::ProfilePhoto) -> peniko::ImageData {
+    peniko::ImageData {
+        data: peniko::Blob::new(std::sync::Arc::new(photo.rgba().to_vec())),
+        format: peniko::ImageFormat::Rgba8,
+        alpha_type: peniko::ImageAlphaType::Alpha,
+        width: u32::from(photo.width()),
+        height: u32::from(photo.height()),
+    }
+}
+
 impl Avatar {
     /// An avatar for `name`, coloured by `identity`.
     pub fn person(name: impl Into<String>, identity: impl Into<String>) -> Self {
         Self {
             name: name.into(),
+            name_state: None,
             identity: identity.into(),
             presence: None,
             picture: Picture::None,
@@ -567,11 +598,42 @@ impl Avatar {
         }
     }
 
+    /// Bind the displayed name and accessible description to process-local
+    /// presentation state, retaining the avatar and adjacent input widgets.
+    /// Identity, picture and geometry remain independently configured.
+    #[must_use]
+    pub fn with_name_state(mut self, state: &crate::LocalState<String>) -> Self {
+        let (name, binding) = crate::local_state::LocalBinding::new(state);
+        self.name = name;
+        self.name_state = Some(binding);
+        self.dirty = true;
+        self
+    }
+
+    fn refresh_name(&mut self) -> bool {
+        if let Some(binding) = &mut self.name_state
+            && let Some(name) = binding.poll()
+            && self.name != name
+        {
+            self.name = name;
+            self.dirty = true;
+            return true;
+        }
+        false
+    }
+
     /// See [`AvatarFace::presence`].
     #[must_use]
     pub fn with_presence(mut self, colour: Color) -> Self {
         self.presence = Some(colour);
         self
+    }
+
+    /// Render the validated public photo carried by canonical identity metadata.
+    /// Pixels are already normalized; this opens no files and decodes no image.
+    #[must_use]
+    pub fn with_profile_photo(self, photo: &runtime_identity::ProfilePhoto) -> Self {
+        self.with_image(profile_image(photo))
     }
 
     /// The person's picture, already decoded.
@@ -654,7 +716,16 @@ impl Avatar {
 }
 
 impl Widget for Avatar {
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+
     fn sync(&mut self, _state: &crate::widget::AppModel, _path: &crate::widget::ModelPath) {
+        self.refresh_name();
         if self.image.is_none()
             && let Picture::Lazy { store, url } = &self.picture
             && let Some(image) = store.get(url)
@@ -662,6 +733,14 @@ impl Widget for Avatar {
             self.image = Some(image);
             self.dirty = true;
         }
+    }
+
+    fn update(
+        &mut self,
+        _state: &crate::widget::AppModel,
+        _path: &crate::widget::ModelPath,
+    ) -> bool {
+        self.refresh_name()
     }
 
     fn build_layout(
@@ -862,6 +941,86 @@ mod tests {
         assert!(
             (circle.rect().width() - 30.0).abs() < 0.01,
             "centred square"
+        );
+    }
+
+    #[test]
+    fn bound_name_refresh_keeps_photo_and_adjacent_input_selection() {
+        use crate::widget::{Row, TextInput};
+        let name = crate::LocalState::new("Ada".to_owned());
+        let photo = runtime_identity::ProfilePhoto::new(1, 1, vec![200, 100, 50, 255]).unwrap();
+        let avatar = Avatar::person("Ada", "ada")
+            .with_name_state(&name)
+            .with_profile_photo(&photo)
+            .size(AvatarSize::Portrait);
+        let input = TextInput::local().with_initial_value("Ada");
+        let root = Row::new().push(Box::new(avatar)).push(Box::new(input));
+        let mut harness = crate::headless::FrameHarness::new_with_theme(
+            crate::State::new(),
+            Box::new(root),
+            (640, 320),
+            Theme::dark(),
+        );
+        harness
+            .with_widget_mut::<TextInput, _>(|input| {
+                input.set_text("Ada Lovelace");
+                input.set_focus(true);
+                input.set_selection(4, 8);
+            })
+            .unwrap();
+        let original = harness
+            .with_widget_mut::<Avatar, _>(|avatar| (std::ptr::from_ref(avatar), avatar.get_rect()))
+            .unwrap();
+        name.set("Ada Lovelace".to_owned());
+        // Pump the actual retained widget binding and layout; a name edit must
+        // not rebuild the neighbouring editor or replace its presentation state.
+        harness
+            .with_widget_mut::<Avatar, _>(|avatar| {
+                assert_eq!(std::ptr::from_ref(avatar), original.0);
+                assert_eq!(avatar.get_rect(), original.1);
+                assert_eq!(avatar.name, "Ada Lovelace");
+                assert!(avatar.image.is_some());
+                assert_eq!(
+                    Widget::accessibility(avatar).unwrap().name.as_deref(),
+                    Some("Ada Lovelace")
+                );
+            })
+            .unwrap();
+        harness
+            .with_widget_mut::<TextInput, _>(|input| {
+                assert!(input.is_focused());
+                assert_eq!(input.cursor_pos(), 8);
+                assert_eq!(input.selection_range_public(), Some((4, 8)));
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn explicit_canonical_photo_is_drawn_by_shared_avatar() {
+        let photo = runtime_identity::ProfilePhoto::new(1, 1, vec![200, 100, 50, 255]).unwrap();
+        let mut avatar = Avatar::person("Ada", "ada").with_profile_photo(&photo);
+        let mut tree = TaffyTree::new();
+        let mut map = std::collections::HashMap::new();
+        let theme = Theme::dark();
+        let node = avatar.build_layout(&mut tree, &theme, &mut map);
+        tree.compute_layout(
+            node,
+            <taffy::Size<taffy::AvailableSpace> as taffy::prelude::TaffyMaxContent>::MAX_CONTENT,
+        )
+        .unwrap();
+        avatar.apply_layout(&tree, node, Point::ZERO);
+        let mut scene = Scene::new();
+        avatar.draw(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut TextRenderer::new(),
+            &theme,
+            &PresenceCtx::empty(),
+        );
+        assert_eq!(tags(&scene, DrawTag::IMAGE), 1);
+        assert_eq!(
+            Widget::accessibility(&avatar).unwrap().name.as_deref(),
+            Some("Ada")
         );
     }
 

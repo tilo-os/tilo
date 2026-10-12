@@ -194,6 +194,12 @@ pub enum BundleError {
     #[error("included directory holds something other than files and directories: {path}")]
     IncludeSpecialFile { path: PathBuf },
     #[error(
+        "included binary must be a bounded regular native executable with a fixed basename: {path}"
+    )]
+    IncludeInvalidBinary { path: PathBuf },
+    #[error("different included binaries claim the same basename: {name}")]
+    IncludeDuplicateBinary { name: String },
+    #[error(
         "bundle version {version} claims ABI digest {claimed}, but its payload's digest is \
          {computed}: it is not the runtime build it names"
     )]
@@ -400,6 +406,10 @@ pub struct BuildOptions<'a> {
     /// Hashed and signature-covered like any other bundle file; absolute
     /// host paths, must exist.
     pub extra_libs: &'a [PathBuf],
+    /// Native service executables placed under `bin/` by their exact basename.
+    /// Each must be a regular, non-symlink executable. Bytes are hashed into
+    /// the same manifest and ABI digest as the libraries; modes are preserved.
+    pub extra_bins: &'a [PathBuf],
 }
 
 /// Signing identity for [`build_bundle_with`]: JSON `{ "secret_key_hex": "<64-hex>" }`, same shape as `tilo-app-package`.
@@ -636,6 +646,7 @@ fn stage_payload(
     }
 
     copy_includes(out, opts.extra_libs, &mut written)?;
+    copy_binaries(out, opts.extra_bins, &mut written)?;
 
     // Optional ld.so.cache.
     let cache_src = resolve_from(host_root, HOST_LD_SO_CACHE);
@@ -1245,6 +1256,63 @@ fn copy_includes(
     Ok(())
 }
 
+fn copy_binaries(
+    out: &Path,
+    binaries: &[PathBuf],
+    written: &mut Vec<(String, PathBuf)>,
+) -> Result<(), BundleError> {
+    let mut names = BTreeMap::new();
+    for source in binaries {
+        let invalid = || BundleError::IncludeInvalidBinary {
+            path: source.clone(),
+        };
+        let name = source
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(invalid)?;
+        if name.is_empty()
+            || name.starts_with('.')
+            || !name
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+        {
+            return Err(invalid());
+        }
+        let metadata = fs::symlink_metadata(source).map_err(|_| invalid())?;
+        if !metadata.is_file() || metadata.len() == 0 || metadata.len() > 64 * 1024 * 1024 {
+            return Err(invalid());
+        }
+        if !binary_is_executable(&metadata) {
+            return Err(invalid());
+        }
+        if let Some(prior) = names.insert(name, source) {
+            if prior != source {
+                return Err(BundleError::IncludeDuplicateBinary { name: name.into() });
+            }
+            continue;
+        }
+        let relative = format!("bin/{name}");
+        fs::create_dir_all(out.join("bin"))?;
+        let destination = out.join(&relative);
+        copy_file(source, &destination)?;
+        written.push((relative, destination));
+    }
+    Ok(())
+}
+
+fn binary_is_executable(metadata: &fs::Metadata) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        metadata.permissions().mode() & 0o111 != 0
+    }
+    #[cfg(not(unix))]
+    {
+        let _metadata = metadata;
+        false
+    }
+}
+
 /// Copy the tree at `src` to `dst`, recording each file as `rel/<path>`.
 /// Links and special files are refused: a bundle is plain bytes.
 fn copy_tree(
@@ -1308,6 +1376,99 @@ fn produced_at_from(value: Result<String, std::env::VarError>) -> Result<u64, Bu
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn included_launcher_is_executable_and_covered_by_signed_runtime_identity() {
+        use std::os::unix::fs::PermissionsExt;
+        let host = tempfile::tempdir().unwrap();
+        fake_x86_64_host(host.path());
+        let launcher = host.path().join("tilo-launcher");
+        fs::write(&launcher, b"launcher compiled for this runtime").unwrap();
+        fs::set_permissions(&launcher, fs::Permissions::from_mode(0o755)).unwrap();
+        let identity = Identity::generate();
+        let identity_path = host.path().join("identity.json");
+        fs::write(&identity_path, identity.to_json_bytes()).unwrap();
+        let out = tempfile::tempdir().unwrap();
+        let (manifest, bundle) = build_abi_bundle(
+            out.path(),
+            "2026.07",
+            &BuildOptions {
+                from: Some(host.path()),
+                arch: Some("x86_64"),
+                identity: Some(&identity_path),
+                extra_bins: std::slice::from_ref(&launcher),
+                ..BuildOptions::default()
+            },
+        )
+        .unwrap();
+        assert!(
+            manifest
+                .files
+                .iter()
+                .any(|file| file.path == "bin/tilo-launcher")
+        );
+        assert!(
+            !manifest
+                .files
+                .iter()
+                .any(|file| file.path == "lib/tilo-launcher")
+        );
+        let packaged = bundle.join("bin/tilo-launcher");
+        assert_eq!(
+            fs::metadata(&packaged).unwrap().permissions().mode() & 0o777,
+            0o755
+        );
+        let options = VerifyOptions {
+            require_publisher: Some(identity.public_key_hex()),
+            require_signature: true,
+            require_arch: Some("x86_64".into()),
+        };
+        assert_eq!(
+            verify_bundle_with(&bundle, &options).unwrap().root_hash,
+            manifest.root_hash
+        );
+        fs::write(&packaged, b"changed launcher bytes").unwrap();
+        assert!(matches!(
+            verify_bundle_with(&bundle, &options),
+            Err(BundleError::SizeMismatch { .. } | BundleError::HashMismatch { .. })
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn binary_includes_refuse_redirected_non_executable_or_ambiguous_services() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+        let source = tempfile::tempdir().unwrap();
+        let other = tempfile::tempdir().unwrap();
+        let out = tempfile::tempdir().unwrap();
+        let launcher = source.path().join("tilo-launcher");
+        fs::write(&launcher, b"launcher").unwrap();
+        fs::set_permissions(&launcher, fs::Permissions::from_mode(0o644)).unwrap();
+        let include = |bins: &[PathBuf]| copy_binaries(out.path(), bins, &mut Vec::new());
+        assert!(matches!(
+            include(std::slice::from_ref(&launcher)),
+            Err(BundleError::IncludeInvalidBinary { .. })
+        ));
+        fs::set_permissions(&launcher, fs::Permissions::from_mode(0o755)).unwrap();
+        let redirected = source.path().join("redirected-launcher");
+        symlink(&launcher, &redirected).unwrap();
+        assert!(matches!(
+            include(&[redirected]),
+            Err(BundleError::IncludeInvalidBinary { .. })
+        ));
+        let second = other.path().join("tilo-launcher");
+        fs::write(&second, b"different compiler output").unwrap();
+        fs::set_permissions(&second, fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(matches!(
+            include(&[launcher.clone(), second]),
+            Err(BundleError::IncludeDuplicateBinary { .. })
+        ));
+        assert!(
+            include(&[launcher.clone(), launcher]).is_ok(),
+            "same source is copied once"
+        );
+    }
 
     #[test]
     fn sdk_font_catalog_is_signed_and_corruption_does_not_change_a_retained_sdk() {
@@ -1382,6 +1543,7 @@ mod tests {
                     arch: Some("x86_64"),
                     identity: None,
                     extra_libs: extra,
+                    extra_bins: &[],
                 },
             )
             .expect("build")
@@ -1449,6 +1611,7 @@ mod tests {
                     arch: Some("x86_64"),
                     identity: None,
                     extra_libs: &[],
+                    extra_bins: &[],
                 },
             )
             .expect("build");
@@ -1475,6 +1638,7 @@ mod tests {
                     arch: Some("aarch64"),
                     identity: None,
                     extra_libs: &[],
+                    extra_bins: &[],
                 },
             )
             .expect("build");
@@ -1502,6 +1666,7 @@ mod tests {
                     arch: Some("aarch64"),
                     identity: None,
                     extra_libs: &[],
+                    extra_bins: &[],
                 },
             )
             .expect("build");
@@ -1525,6 +1690,7 @@ mod tests {
                     arch: Some("mips64"),
                     identity: None,
                     extra_libs: &[],
+                    extra_bins: &[],
                 },
             )
             .unwrap_err();
@@ -1542,6 +1708,7 @@ mod tests {
                     arch: Some("x86_64"),
                     identity: None,
                     extra_libs: &[],
+                    extra_bins: &[],
                 },
             )
             .unwrap_err();
@@ -1558,6 +1725,7 @@ mod tests {
                 arch: Some("x86_64"),
                 identity: None,
                 extra_libs: &[],
+                extra_bins: &[],
             };
             let a = build_bundle_with(out1.path(), "v", &opts).unwrap();
             let b = build_bundle_with(out2.path(), "v", &opts).unwrap();
@@ -1586,6 +1754,7 @@ mod tests {
                     arch: Some("x86_64"),
                     identity: None,
                     extra_libs: &[libstd, libruntime],
+                    extra_bins: &[],
                 },
             )
             .expect("build with extras");
@@ -1621,6 +1790,7 @@ mod tests {
                     arch: Some("x86_64"),
                     identity: None,
                     extra_libs: std::slice::from_ref(&engine_dir),
+                    extra_bins: &[],
                 },
             )
             .expect("build with a directory");
@@ -1647,6 +1817,7 @@ mod tests {
                         arch: Some("x86_64"),
                         identity: None,
                         extra_libs: std::slice::from_ref(&engine_dir),
+                        extra_bins: &[],
                     },
                 )
                 .unwrap_err();
@@ -1667,6 +1838,7 @@ mod tests {
                     arch: Some("x86_64"),
                     identity: None,
                     extra_libs: &[missing],
+                    extra_bins: &[],
                 },
             )
             .unwrap_err();
@@ -1692,6 +1864,7 @@ mod tests {
             arch: Some("x86_64"),
             identity: Some(&identity_path),
             extra_libs: &[libstd.clone(), libruntime.clone()],
+            extra_bins: &[],
         };
         let (expected, _) = build_abi_bundle(unique.path(), "2026.07", &opts).unwrap();
         // Explicit includes and ldd's transitive closure name the same inputs.
@@ -1736,6 +1909,7 @@ mod tests {
                 arch: Some("x86_64"),
                 identity: None,
                 extra_libs: &[first.path().join(name), second.path().join(name)],
+                extra_bins: &[],
             },
         )
         .unwrap();
@@ -1803,6 +1977,7 @@ mod tests {
                     arch: Some("x86_64"),
                     identity: None,
                     extra_libs: &[],
+                    extra_bins: &[],
                 },
             )
             .unwrap();
@@ -1827,6 +2002,7 @@ mod tests {
                     arch: Some("x86_64"),
                     identity: None,
                     extra_libs: &[],
+                    extra_bins: &[],
                 },
             )
             .unwrap();
@@ -1849,6 +2025,7 @@ mod tests {
                     arch: Some("x86_64"),
                     identity: Some(&identity_path),
                     extra_libs: &[],
+                    extra_bins: &[],
                 },
             )
             .unwrap();
@@ -1888,6 +2065,7 @@ mod tests {
                     arch: Some("x86_64"),
                     identity: None,
                     extra_libs: &[],
+                    extra_bins: &[],
                 },
             )
             .unwrap();
@@ -1910,6 +2088,7 @@ mod tests {
                     arch: Some("x86_64"),
                     identity: None,
                     extra_libs: &[],
+                    extra_bins: &[],
                 },
             )
             .unwrap();
@@ -1949,6 +2128,7 @@ mod tests {
                     arch: Some("x86_64"),
                     identity: Some(&identity_path),
                     extra_libs: &[],
+                    extra_bins: &[],
                 },
             )
             .expect("build signed");
@@ -1990,6 +2170,7 @@ mod tests {
                     arch: Some("x86_64"),
                     identity: Some(&identity_path),
                     extra_libs: &[],
+                    extra_bins: &[],
                 },
             )
             .unwrap();
@@ -2023,6 +2204,7 @@ mod tests {
                     arch: Some("x86_64"),
                     identity: Some(&identity_path),
                     extra_libs: &[],
+                    extra_bins: &[],
                 },
             )
             .unwrap();
@@ -2055,6 +2237,7 @@ mod tests {
                     arch: Some("x86_64"),
                     identity: None,
                     extra_libs: &[],
+                    extra_bins: &[],
                 },
             )
             .unwrap();
@@ -2102,6 +2285,7 @@ mod tests {
                 arch: Some("x86_64"),
                 identity: None,
                 extra_libs: &[],
+                extra_bins: &[],
             },
         )
         .unwrap();

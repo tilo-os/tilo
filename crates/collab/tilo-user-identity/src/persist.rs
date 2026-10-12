@@ -75,6 +75,14 @@ fn protect_secret_process() -> io::Result<()> {
     Ok(())
 }
 
+/// Apply canonical process protection before held-file private custody reads.
+///
+/// # Errors
+/// Returns the native failure when dump/ptrace protection cannot be established.
+pub fn protect_private_custody() -> io::Result<()> {
+    protect_secret_process()
+}
+
 /// Distributions and platforms put ordinary directories behind symlinks they
 /// own: Fedora Atomic exposes /home as a symlink to /var/home, and macOS puts
 /// /tmp and /var (so every `$TMPDIR`) behind /private. Resolving an absolute
@@ -509,6 +517,32 @@ fn signing_key_from_file(
             format!("cannot open secret key {}: {error}", path.display()),
         ))
     })?;
+    signing_key_from_open_file(&file, path, forbidden_mode, owner_policy)
+}
+
+/// Read a device key from an already admitted Unix inode using the same key
+/// policy as [`read_device_key`]. The caller retains namespace provenance;
+/// this function never opens a path or generates a replacement key.
+///
+/// # Errors
+/// Refuses nonregular, insecure, foreign-owned, multiply-linked or wrong-size keys.
+#[cfg(unix)]
+pub fn read_device_key_from_file(file: &fs::File) -> Result<SigningKey, PersistError> {
+    protect_secret_process()?;
+    signing_key_from_open_file(
+        file,
+        Path::new("<held device key>"),
+        0o007,
+        SecretOwner::RootOrReader,
+    )
+}
+
+fn signing_key_from_open_file(
+    file: &fs::File,
+    path: &Path,
+    forbidden_mode: u32,
+    owner_policy: SecretOwner,
+) -> Result<SigningKey, PersistError> {
     #[cfg(not(unix))]
     let _ = (forbidden_mode, owner_policy);
     let metadata = file.metadata()?;
@@ -550,10 +584,29 @@ fn signing_key_from_file(
         }
     }
 
-    // Read one byte beyond the only valid size so a malicious pseudo-file or
-    // oversized secret is rejected without an unbounded allocation.
-    let mut bytes = Zeroizing::new(Vec::with_capacity(33));
-    file.take(33).read_to_end(&mut bytes)?;
+    // Read one byte beyond the only valid size. A held reader must not depend
+    // on a descriptor's shared mutable cursor, including aliases of this fd.
+    #[cfg(unix)]
+    let bytes = {
+        use std::os::unix::fs::FileExt as _;
+        let mut bytes = Zeroizing::new(vec![0u8; 33]);
+        let mut read = 0;
+        while read < bytes.len() {
+            let found = file.read_at(&mut bytes[read..], read as u64)?;
+            if found == 0 {
+                break;
+            }
+            read += found;
+        }
+        bytes.truncate(read);
+        bytes
+    };
+    #[cfg(not(unix))]
+    let bytes = {
+        let mut bytes = Zeroizing::new(Vec::with_capacity(33));
+        file.take(33).read_to_end(&mut bytes)?;
+        bytes
+    };
     if bytes.len() != 32 {
         return Err(PersistError::WrongKeyLength(bytes.len()));
     }
@@ -1249,6 +1302,57 @@ mod tests {
     }
     use ed25519_dalek::Signer;
     use std::sync::{Arc, Barrier};
+
+    #[cfg(unix)]
+    #[test]
+    fn held_device_key_reader_preserves_cursor_and_canonical_inode_policy() {
+        use std::io::{Seek as _, SeekFrom};
+        use std::os::unix::fs::PermissionsExt as _;
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("device-key");
+        let key = SigningKey::from_bytes(&[31; 32]);
+        write_device_key(&path, &key).unwrap();
+        let file = fs::File::open(&path).unwrap();
+        let mut alias = file.try_clone().unwrap();
+        alias.seek(SeekFrom::End(0)).unwrap();
+        assert_eq!(
+            read_device_key_from_file(&file).unwrap().verifying_key(),
+            key.verifying_key()
+        );
+        assert_eq!(alias.stream_position().unwrap(), 32);
+        assert_eq!(
+            read_device_key(&path).unwrap().verifying_key(),
+            key.verifying_key()
+        );
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(matches!(
+            read_device_key_from_file(&file),
+            Err(PersistError::InsecurePermissions { .. })
+        ));
+        fs::set_permissions(&path, fs::Permissions::from_mode(DEVICE_KEY_MODE)).unwrap();
+        fs::hard_link(&path, root.path().join("alias")).unwrap();
+        assert!(matches!(
+            read_device_key_from_file(&file),
+            Err(PersistError::InsecureLinkCount { .. })
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn held_device_key_reader_refuses_short_and_oversized_actual_files() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let root = tempfile::tempdir().unwrap();
+        for (name, length) in [("short", 31), ("long", 4096)] {
+            let path = root.path().join(name);
+            fs::write(&path, vec![0u8; length]).unwrap();
+            fs::set_permissions(&path, fs::Permissions::from_mode(DEVICE_KEY_MODE)).unwrap();
+            let file = fs::File::open(path).unwrap();
+            assert!(matches!(
+                read_device_key_from_file(&file),
+                Err(PersistError::WrongKeyLength(actual)) if actual == length.min(33)
+            ));
+        }
+    }
 
     #[test]
     fn joined_device_is_certified_without_copying_the_human_root() {

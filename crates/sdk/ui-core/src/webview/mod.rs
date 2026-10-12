@@ -20,10 +20,12 @@
 
 pub mod chromium;
 mod credentials;
+mod service_sessions;
 pub use credentials::{
     AddressFields, CredentialAccount, CredentialAction, CredentialForm, CredentialReply,
     CredentialRequest,
 };
+pub use service_sessions::{ServiceSessionReply, ServiceSessionRequest};
 pub mod page;
 pub mod paint;
 pub mod text_input;
@@ -187,6 +189,7 @@ pub struct SiteStatus {
 #[derive(Debug, Clone, PartialEq)]
 pub enum WebViewCommand {
     Credentials(CredentialRequest),
+    ImportServiceSession(ServiceSessionRequest),
     SetSiteExceptions(Vec<String>),
     RequestSiteStatus {
         request_id: u32,
@@ -372,6 +375,7 @@ pub enum WebViewCommand {
 #[derive(Debug, Clone, PartialEq)]
 pub enum WebViewEvent {
     CredentialResult(CredentialReply),
+    ServiceSessionResult(ServiceSessionReply),
     SiteStatus(SiteStatus),
     SiteResult {
         request_id: u32,

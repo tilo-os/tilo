@@ -44,6 +44,7 @@ pub const SESSION_RUNTIME_SUPPORTED: bool = false;
 pub(crate) mod approved_checks;
 #[cfg(feature = "broker-transport")]
 mod broker;
+pub mod browser_service_sessions;
 pub mod channel_live_activity;
 #[cfg(feature = "broker-transport")]
 pub(crate) mod channel_settings;
@@ -110,7 +111,6 @@ pub const CURRENT_CONNECTION_PEER_ID: u64 = u64::MAX;
 
 pub use collab_types::DocumentMutation;
 use collab_types::SignedOp;
-pub use runtime_collab::file_clipboard;
 pub use runtime_collab::{
     CalibrationInfo, CalibrationMemberInfo, CalibrationMemberState, CalibrationMicrophoneInfo,
     CalibrationMicrophoneRun, CalibrationMicrophoneState, CalibrationPhaseInfo,
@@ -125,6 +125,7 @@ pub use runtime_collab::{
     NearbyTransferSnapshot, NearbyTransferStatus, NearbyTransferTarget, PortableWifiSecurity,
     WifiContinuityCommand, WifiContinuityReply,
 };
+pub use runtime_collab::{file_clipboard, open_selected};
 
 use crate::presence::PresenceKey;
 
@@ -211,6 +212,22 @@ impl From<TransportError> for CollabSendError {
 
 #[derive(Debug, Clone)]
 pub enum CollabRequest {
+    SelectedDiscovery {
+        request_id: u64,
+        command: runtime_collab::open_selected::discovery::Request,
+        on_behalf_of: Option<tilo_actions::InvocationId>,
+    },
+    OpenSelectedV2 {
+        request_id: u64,
+        command: runtime_collab::open_selected::v2::Request,
+        on_behalf_of: tilo_actions::InvocationId,
+    },
+    OpenSelected {
+        request_id: u64,
+        command: runtime_collab::open_selected::Request,
+        on_behalf_of: tilo_actions::InvocationId,
+    },
+
     LocalFileClipboard {
         request_id: u64,
         command: runtime_collab::file_clipboard::Command,
@@ -625,6 +642,19 @@ impl ChannelAccessState {
 
 #[derive(Debug, Clone)]
 pub enum CollabEvent {
+    SelectedDiscoveryResult {
+        request_id: u64,
+        result: Result<runtime_collab::open_selected::discovery::Reply, String>,
+    },
+    OpenSelectedV2Result {
+        request_id: u64,
+        result: Result<runtime_collab::open_selected::v2::ObservedReply, String>,
+    },
+    OpenSelectedResult {
+        request_id: u64,
+        result: Result<runtime_collab::open_selected::RootReceipt, String>,
+    },
+
     LocalFileClipboardResult {
         request_id: u64,
         result: Result<runtime_collab::file_clipboard::Reply, String>,

@@ -11,13 +11,23 @@ use accounts::{Account, AccountId, HandoffCredential, HandoffStore, Secret, Secr
 use serde::{Deserialize, Serialize};
 use tilo_oauth::client::{Authorization, OAuthClient};
 use tilo_oauth::{OAuthError, Provider, Registration, TokenSet};
-use zeroize::Zeroizing;
+use zeroize::{Zeroize, Zeroizing};
 
 use crate::clients::ClientTable;
 use crate::icloud::{ICloudAuth, ICloudAuthError, ICloudSessionState, UnavailableICloud};
 use crate::providers::{
     ICLOUD_DRIVE_TYPE, NEXTCLOUD_TYPE, OAuthCloud, OAuthIssuer, OAuthUse, WEBDAV_TYPE,
 };
+
+/// The protected grant wire protocol implemented by this loaded custodian.
+///
+/// Native runtime certification invokes this non-inlined symbol through the
+/// actual SDK dylib, separately from the installed credential helper. It is
+/// not a package version or a claim made by a prepared-account importer.
+#[inline(never)]
+pub fn protected_grant_protocol() -> u32 {
+    1
+}
 
 /// How long a browser sign-in may take.
 pub const SIGN_IN_TIMEOUT: Duration = Duration::from_secs(10 * 60);
@@ -72,11 +82,202 @@ impl From<OAuthError> for CustodyError {
 
 /// The long-lived grant sealed in the vault's `token` field. Never handed
 /// out of this crate except to be sealed.
-#[derive(Serialize, Deserialize)]
+#[derive(Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum Grant {
-    Oauth2 { tokens: TokenSet },
-    Icloud { apple_id: String, session: String },
+    #[serde(alias = "protected_oauth2")]
+    Oauth2 {
+        tokens: TokenSet,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        registration: Option<ImportedRegistration>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        copied: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        copy_origin: Option<CopyOrigin>,
+    },
+    #[serde(alias = "copied_icloud")]
+    Icloud {
+        apple_id: String,
+        session: String,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        copied: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        copy_origin: Option<CopyOrigin>,
+    },
+    #[serde(alias = "protected_password")]
+    CopiedPassword {
+        #[serde(default)]
+        password: Option<String>,
+        #[serde(default)]
+        copy_origin: Option<CopyOrigin>,
+    },
+}
+
+// Protected kinds deliberately differ from the legacy decoder's known variants.
+// Their credentials stay nested: an older decoder cannot fall back to TokenSet
+// or use/revoke an outer plaintext password after ignoring copy provenance.
+impl Serialize for Grant {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        let mut map = serializer.serialize_map(None)?;
+        match self {
+            Self::Oauth2 {
+                tokens,
+                registration,
+                copied,
+                copy_origin,
+            } => {
+                let protected = *copied || registration.is_some() || copy_origin.is_some();
+                map.serialize_entry(
+                    "kind",
+                    if protected {
+                        "protected_oauth2"
+                    } else {
+                        "oauth2"
+                    },
+                )?;
+                map.serialize_entry("tokens", tokens)?;
+                if protected {
+                    map.serialize_entry("registration", registration)?;
+                    map.serialize_entry("copied", copied)?;
+                    map.serialize_entry("copy_origin", copy_origin)?;
+                }
+            }
+            Self::Icloud {
+                apple_id,
+                session,
+                copied,
+                copy_origin,
+            } => {
+                map.serialize_entry(
+                    "kind",
+                    if *copied || copy_origin.is_some() {
+                        "copied_icloud"
+                    } else {
+                        "icloud"
+                    },
+                )?;
+                map.serialize_entry("apple_id", apple_id)?;
+                map.serialize_entry("session", session)?;
+                if *copied || copy_origin.is_some() {
+                    map.serialize_entry("copied", copied)?;
+                    map.serialize_entry("copy_origin", copy_origin)?;
+                }
+            }
+            Self::CopiedPassword {
+                password,
+                copy_origin,
+            } => {
+                map.serialize_entry(
+                    "kind",
+                    if password.is_some() {
+                        "protected_password"
+                    } else {
+                        "copied_password"
+                    },
+                )?;
+                if let Some(password) = password {
+                    map.serialize_entry("password", password)?;
+                }
+                map.serialize_entry("copy_origin", copy_origin)?;
+            }
+        }
+        map.end()
+    }
+}
+
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CopyOrigin {
+    credential_sha256: [u8; 32],
+    account_sha256: [u8; 32],
+}
+
+/// Original installed-app client registration, sealed with an imported cloud grant.
+/// This never contains provider endpoints and cannot override another issuer or use.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ImportedRegistration {
+    issuer: String,
+    client_id: String,
+    client_secret: Option<String>,
+    source_binding: String,
+}
+
+impl Drop for ImportedRegistration {
+    fn drop(&mut self) {
+        if let Some(secret) = &mut self.client_secret {
+            secret.zeroize();
+        }
+    }
+}
+
+impl ImportedRegistration {
+    /// Bind an explicitly imported Files grant to its original client and source.
+    ///
+    /// # Errors
+    /// Refuses empty, unbounded or control-containing client/source values.
+    pub fn new(
+        cloud: OAuthCloud,
+        client: Registration,
+        source_binding: String,
+    ) -> Result<Self, CustodyError> {
+        let value = Self {
+            issuer: cloud.issuer().id().into(),
+            client_id: client.client_id,
+            client_secret: client.client_secret,
+            source_binding,
+        };
+        value.validate(cloud.oauth_use())?;
+        Ok(value)
+    }
+
+    fn validate(&self, oauth_use: OAuthUse) -> Result<(), CustodyError> {
+        let valid = |s: &str| !s.is_empty() && s.len() <= 4096 && !s.chars().any(char::is_control);
+        if oauth_use.capability != crate::Capability::Files
+            || self.issuer != oauth_use.issuer.id()
+            || !matches!(
+                oauth_use.issuer,
+                OAuthIssuer::Google | OAuthIssuer::Microsoft | OAuthIssuer::Dropbox
+            )
+            || !valid(&self.client_id)
+            || !valid(&self.source_binding)
+            || self.client_secret.as_deref().is_some_and(|s| !valid(s))
+        {
+            return Err(CustodyError::NeedsAuthentication);
+        }
+        Ok(())
+    }
+}
+
+fn registered_secret(
+    tokens: &TokenSet,
+    registration: Option<ImportedRegistration>,
+    copied: bool,
+    copy_origin: Option<CopyOrigin>,
+) -> Secret {
+    Secret {
+        password: String::new(),
+        token: serde_json::to_string(&Grant::Oauth2 {
+            tokens: tokens.clone(),
+            registration,
+            copied,
+            copy_origin,
+        })
+        .ok(),
+    }
+}
+
+/// Seal the original client registration with its cloud grant.
+pub fn imported_oauth_secret(tokens: &TokenSet, registration: &ImportedRegistration) -> Secret {
+    registered_secret(tokens, Some(registration.clone()), true, None)
+}
+
+/// Test an existing sealed imported grant's exact original source/client binding.
+pub fn imported_oauth_matches(secret: &Secret, registration: &ImportedRegistration) -> bool {
+    matches!(grant_of(secret), Some(Grant::Oauth2 { tokens, registration: Some(stored), .. })
+        if !tokens.refresh_token.is_empty() && stored.issuer == registration.issuer && stored.client_id == registration.client_id
+        && stored.client_secret == registration.client_secret && stored.source_binding == registration.source_binding)
 }
 
 /// Seal an `OAuth` sign-in result into a vault secret.
@@ -85,6 +286,9 @@ pub fn oauth_secret(tokens: &TokenSet) -> Secret {
         password: String::new(),
         token: serde_json::to_string(&Grant::Oauth2 {
             tokens: tokens.clone(),
+            registration: None,
+            copied: false,
+            copy_origin: None,
         })
         .ok(),
     }
@@ -93,14 +297,186 @@ pub fn oauth_secret(tokens: &TokenSet) -> Secret {
 /// Seal an `iCloud` session into a vault secret. The Apple ID password is
 /// not part of it.
 pub fn icloud_secret(apple_id: &str, session: &ICloudSessionState) -> Secret {
+    icloud_secret_with_provenance(apple_id, session, false, None)
+}
+
+fn icloud_secret_with_provenance(
+    apple_id: &str,
+    session: &ICloudSessionState,
+    copied: bool,
+    copy_origin: Option<CopyOrigin>,
+) -> Secret {
     Secret {
         password: String::new(),
         token: serde_json::to_string(&Grant::Icloud {
-            apple_id: apple_id.to_string(),
+            apple_id: apple_id.into(),
             session: session.0.to_string(),
+            copied,
+            copy_origin,
         })
         .ok(),
     }
+}
+
+/// Copy canonical custody without transferring authority to revoke the original sign-in.
+/// The grant, original registration and password remain usable; this provenance is
+/// sealed and retained through refresh and portable resealing.
+pub fn copied_secret(account: &Account, secret: &Secret) -> Secret {
+    use sha2::{Digest, Sha256};
+    let digest = |domain: &[u8], encoded: String| {
+        let encoded = Zeroizing::new(encoded);
+        let mut hash = Sha256::new();
+        hash.update(domain);
+        hash.update(encoded.as_bytes());
+        <[u8; 32]>::from(hash.finalize())
+    };
+    let origin = CopyOrigin {
+        credential_sha256: copy_origin(secret).map_or_else(
+            || {
+                digest(
+                    b"tilo-account-copy-credential/v1\0",
+                    serde_json::to_string(secret).unwrap_or_default(),
+                )
+            },
+            |origin| origin.credential_sha256,
+        ),
+        account_sha256: digest(
+            b"tilo-account-copy-owner-metadata/v1\0",
+            serde_json::to_string(account).unwrap_or_default(),
+        ),
+    };
+    let mut copy = secret.clone();
+    let grant = match grant_of(secret) {
+        Some(Grant::Oauth2 {
+            tokens,
+            registration,
+            ..
+        }) => Some(Grant::Oauth2 {
+            tokens,
+            registration,
+            copied: true,
+            copy_origin: Some(origin),
+        }),
+        Some(Grant::Icloud {
+            apple_id, session, ..
+        }) => Some(Grant::Icloud {
+            apple_id,
+            session,
+            copied: true,
+            copy_origin: Some(origin),
+        }),
+        Some(Grant::CopiedPassword { password, .. }) => Some(Grant::CopiedPassword {
+            password,
+            copy_origin: Some(origin),
+        }),
+        None if secret.token.is_none() && !secret.password.is_empty() => {
+            Some(Grant::CopiedPassword {
+                password: matches!(account.type_id.as_str(), WEBDAV_TYPE | NEXTCLOUD_TYPE)
+                    .then(|| secret.password.clone()),
+                copy_origin: Some(origin),
+            })
+        }
+        None => None,
+    };
+    if let Some(grant) = grant {
+        if matches!(
+            grant,
+            Grant::CopiedPassword {
+                password: Some(_),
+                ..
+            }
+        ) {
+            copy.password.zeroize();
+        }
+        copy.token = serde_json::to_string(&grant).ok();
+    }
+    copy
+}
+
+fn copy_origin(secret: &Secret) -> Option<CopyOrigin> {
+    match grant_of(secret)? {
+        Grant::Oauth2 {
+            copied: true,
+            copy_origin,
+            ..
+        }
+        | Grant::Icloud {
+            copied: true,
+            copy_origin,
+            ..
+        }
+        | Grant::CopiedPassword { copy_origin, .. } => copy_origin,
+        Grant::Oauth2 { .. } | Grant::Icloud { .. } => None,
+    }
+}
+
+/// Match an explicitly copied source after its target access/refresh token changed.
+/// Both original credential and owner/account metadata fingerprints must match.
+pub fn copied_source_matches(stored: &Secret, expected: &Secret) -> bool {
+    let usable = match grant_of(stored) {
+        Some(Grant::Oauth2 { tokens, .. }) => !tokens.refresh_token.is_empty(),
+        Some(Grant::Icloud { session, .. }) => !session.is_empty(),
+        Some(Grant::CopiedPassword { .. }) => {
+            !password_credential(stored).is_empty()
+                && password_credential(stored) == password_credential(expected)
+                && stored.password == expected.password
+        }
+        None => false,
+    };
+    if !usable {
+        return false;
+    }
+    match (copy_origin(stored), copy_origin(expected)) {
+        (Some(stored), Some(expected)) => stored == expected,
+        _ => false,
+    }
+}
+
+/// Read a password through canonical custody, including protected copied DAV grants.
+/// Other account types retain their existing plain password representation.
+pub fn password_credential(secret: &Secret) -> Zeroizing<String> {
+    if let Some(Grant::CopiedPassword {
+        password: Some(password),
+        ..
+    }) = grant_of(secret)
+    {
+        return Zeroizing::new(password);
+    }
+    if has_grant_tag(secret) && grant_of(secret).is_none() {
+        return Zeroizing::new(String::new());
+    }
+    Zeroizing::new(secret.password.clone())
+}
+
+/// Whether preserving this grant's client/copy authority requires protocol 1.
+pub fn requires_protected_consumer(secret: &Secret) -> bool {
+    match grant_of(secret) {
+        Some(Grant::Oauth2 {
+            registration,
+            copied,
+            copy_origin,
+            ..
+        }) => copied || registration.is_some() || copy_origin.is_some(),
+        Some(Grant::Icloud {
+            copied,
+            copy_origin,
+            ..
+        }) => copied || copy_origin.is_some(),
+        Some(Grant::CopiedPassword { .. }) => true,
+        None => false,
+    }
+}
+
+/// Whether canonical removal should detach this copy without revoking its source.
+pub fn is_copied_secret(secret: &Secret) -> bool {
+    matches!(
+        grant_of(secret),
+        Some(
+            Grant::Oauth2 { copied: true, .. }
+                | Grant::Icloud { copied: true, .. }
+                | Grant::CopiedPassword { .. }
+        )
+    )
 }
 
 /// A sealed grant, and whether it is in the format Mail sealed before its
@@ -112,9 +488,30 @@ fn decode_grant(secret: &Secret) -> Option<(Grant, bool)> {
     if let Ok(grant) = serde_json::from_str(raw) {
         return Some((grant, false));
     }
-    serde_json::from_str::<TokenSet>(raw)
-        .ok()
-        .map(|tokens| (Grant::Oauth2 { tokens }, true))
+    // Tagged objects are never legacy bare tokens, even if they contain an
+    // access_token field. Refuse unknown future protected custody formats.
+    if has_grant_tag(secret) {
+        return None;
+    }
+    serde_json::from_str::<TokenSet>(raw).ok().map(|tokens| {
+        (
+            Grant::Oauth2 {
+                tokens,
+                registration: None,
+                copied: false,
+                copy_origin: None,
+            },
+            true,
+        )
+    })
+}
+
+fn has_grant_tag(secret: &Secret) -> bool {
+    secret
+        .token
+        .as_deref()
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
+        .is_some_and(|value| value.get("kind").is_some())
 }
 
 fn grant_of(secret: &Secret) -> Option<Grant> {
@@ -125,7 +522,7 @@ fn grant_of(secret: &Secret) -> Option<Grant> {
 pub fn icloud_apple_id(secret: &Secret) -> Option<String> {
     match grant_of(secret)? {
         Grant::Icloud { apple_id, .. } => Some(apple_id),
-        Grant::Oauth2 { .. } => None,
+        Grant::Oauth2 { .. } | Grant::CopiedPassword { .. } => None,
     }
 }
 
@@ -325,6 +722,91 @@ impl Custodian {
         Ok((descriptor, registration))
     }
 
+    fn grant_config(
+        &self,
+        oauth_use: OAuthUse,
+        imported: Option<&ImportedRegistration>,
+    ) -> Result<(Provider, Registration), CustodyError> {
+        let Some(imported) = imported else {
+            return self.use_config(oauth_use);
+        };
+        imported.validate(oauth_use)?;
+        // Descriptors remain canonical. The sealed grant supplies only its own client.
+        let provider = self
+            .overrides
+            .get(&oauth_use)
+            .map(|(provider, _)| provider.clone())
+            .or_else(|| self.endpoints.get(&oauth_use.issuer).cloned())
+            .unwrap_or_else(|| oauth_use.issuer.endpoints());
+        let mut client = Registration::public(imported.client_id.clone());
+        client.client_secret = imported.client_secret.clone();
+        Ok((provider, client))
+    }
+
+    /// Resolve the same selected remote root using the canonical provider consumer.
+    ///
+    /// # Errors
+    /// Refuses invalid provider configuration, unavailable storage or inaccessible grants.
+    pub fn resolve_imported_storage(
+        &self,
+        cloud: OAuthCloud,
+        tokens: &TokenSet,
+        root: Option<&str>,
+        drive: Option<&str>,
+    ) -> Result<serde_json::Value, CustodyError> {
+        let mut config =
+            self.storage
+                .get(cloud.type_id())
+                .cloned()
+                .unwrap_or_else(|| match cloud {
+                    OAuthCloud::GoogleDrive => {
+                        serde_json::to_value(cloud_source_gdrive::DriveConfig::my_drive())
+                            .unwrap_or_default()
+                    }
+                    OAuthCloud::OneDrive => {
+                        serde_json::to_value(cloud_source_onedrive::OneDriveConfig::me())
+                            .unwrap_or_default()
+                    }
+                    OAuthCloud::Dropbox => {
+                        serde_json::to_value(cloud_source_dropbox::DropboxConfig::new(""))
+                            .unwrap_or_default()
+                    }
+                });
+        if let Some(root) = root {
+            config["root"] = match cloud {
+                OAuthCloud::OneDrive => serde_json::json!({"Item":root}),
+                OAuthCloud::GoogleDrive | OAuthCloud::Dropbox => serde_json::json!(root),
+            };
+        }
+        if let Some(drive) = drive {
+            match cloud {
+                OAuthCloud::GoogleDrive => config["shared_drive"] = serde_json::json!(drive),
+                OAuthCloud::OneDrive => config["drive"] = serde_json::json!({"Id":drive}),
+                OAuthCloud::Dropbox => return Err(CustodyError::NeedsAuthentication),
+            }
+        }
+        crate::storage::resolve(cloud, Some(&config), &tokens.access_token)
+    }
+
+    /// Validate an explicitly selected imported refresh grant under its original client.
+    ///
+    /// # Errors
+    /// Invalid, revoked, mismatched or unreachable grants are refused.
+    pub fn refresh_imported_cloud(
+        &self,
+        cloud: OAuthCloud,
+        tokens: &TokenSet,
+        registration: &ImportedRegistration,
+    ) -> Result<TokenSet, CustodyError> {
+        if tokens.refresh_token.is_empty() {
+            return Err(CustodyError::NeedsAuthentication);
+        }
+        let (provider, client) = self.grant_config(cloud.oauth_use(), Some(registration))?;
+        Ok(OAuthClient::new()?
+            .refresh(&provider, &client, &tokens.refresh_token)?
+            .stamp_now())
+    }
+
     /// Whether `oauth_use` can sign in in this build.
     pub fn is_configured(&self, oauth_use: OAuthUse) -> bool {
         self.use_config(oauth_use).is_ok()
@@ -394,7 +876,7 @@ impl Custodian {
             return Err(CustodyError::Storage(error.to_string()));
         }
         let secret = vault.get(id).ok_or(CustodyError::NeedsAuthentication)?;
-        let Some((Grant::Oauth2 { tokens }, _)) = decode_grant(&secret) else {
+        let Some((Grant::Oauth2 { tokens, .. }, _)) = decode_grant(&secret) else {
             return Err(CustodyError::NeedsAuthentication);
         };
         Ok(tokens.scope)
@@ -476,9 +958,21 @@ impl Custodian {
         force: bool,
     ) -> Result<TokenSet, CustodyError> {
         let secret = vault.get(id).ok_or(CustodyError::NeedsAuthentication)?;
-        let Some((Grant::Oauth2 { mut tokens }, legacy)) = decode_grant(&secret) else {
+        let Some((
+            Grant::Oauth2 {
+                mut tokens,
+                registration,
+                copied,
+                copy_origin,
+            },
+            legacy,
+        )) = decode_grant(&secret)
+        else {
             return Err(CustodyError::NeedsAuthentication);
         };
+        if let Some(imported) = &registration {
+            imported.validate(oauth_use)?;
+        }
         if legacy {
             vault.put(id, &oauth_secret(&tokens));
             vault.try_save().map_err(CustodyError::Storage)?;
@@ -487,29 +981,37 @@ impl Custodian {
             return Err(CustodyError::NeedsAuthentication);
         }
         if force || tokens.needs_refresh() {
-            let (provider, registration) = self.use_config(oauth_use)?;
-            let renewed = match OAuthClient::new()?.refresh(
-                &provider,
-                &registration,
-                &tokens.refresh_token,
-            ) {
-                Ok(renewed) => renewed.stamp_now(),
-                Err(OAuthError::InvalidGrant) => {
-                    // The provider revoked the grant: its access token
-                    // must not be handed out again either. Keep the
-                    // account, drop the dead grant until the next sign-in.
-                    vault.put(id, &oauth_secret(&TokenSet::default()));
-                    vault.try_save().map_err(CustodyError::Storage)?;
-                    return Err(CustodyError::NeedsAuthentication);
-                }
-                Err(error) => return Err(error.into()),
-            };
+            let (provider, client) = self.grant_config(oauth_use, registration.as_ref())?;
+            let renewed =
+                match OAuthClient::new()?.refresh(&provider, &client, &tokens.refresh_token) {
+                    Ok(renewed) => renewed.stamp_now(),
+                    Err(OAuthError::InvalidGrant) => {
+                        // The provider revoked the grant: its access token
+                        // must not be handed out again either. Keep the
+                        // account, drop the dead grant until the next sign-in.
+                        vault.put(
+                            id,
+                            &registered_secret(
+                                &TokenSet::default(),
+                                registration.clone(),
+                                copied,
+                                copy_origin.clone(),
+                            ),
+                        );
+                        vault.try_save().map_err(CustodyError::Storage)?;
+                        return Err(CustodyError::NeedsAuthentication);
+                    }
+                    Err(error) => return Err(error.into()),
+                };
             let mut renewed = renewed;
             if renewed.scope.is_none() {
                 renewed.scope = tokens.scope;
             }
             tokens = renewed;
-            vault.put(id, &oauth_secret(&tokens));
+            vault.put(
+                id,
+                &registered_secret(&tokens, registration.clone(), copied, copy_origin.clone()),
+            );
             vault.try_save().map_err(CustodyError::Storage)?;
         }
         Ok(tokens)
@@ -600,7 +1102,13 @@ impl Custodian {
                 expires_unix: tokens.expires_at(),
             }
         } else if account.type_id.as_str() == ICLOUD_DRIVE_TYPE {
-            let Some(Grant::Icloud { apple_id, session }) = grant_of(&secret) else {
+            let Some(Grant::Icloud {
+                apple_id,
+                session,
+                copied,
+                copy_origin,
+            }) = grant_of(&secret)
+            else {
                 return Err(CustodyError::NeedsAuthentication);
             };
             let (renewed, headers) = self
@@ -612,14 +1120,18 @@ impl Custodian {
                     ICloudAuthError::Offline => CustodyError::Offline,
                     other => CustodyError::SignIn(other.to_string()),
                 })?;
-            vault.put(id, &icloud_secret(&apple_id, &renewed));
+            vault.put(
+                id,
+                &icloud_secret_with_provenance(&apple_id, &renewed, copied, copy_origin),
+            );
             vault.try_save().map_err(CustodyError::Storage)?;
             HandoffCredential::Session {
                 headers: headers.headers,
                 expires_unix: headers.expires_unix,
             }
         } else if matches!(account.type_id.as_str(), WEBDAV_TYPE | NEXTCLOUD_TYPE) {
-            if secret.password.is_empty() {
+            let password = password_credential(&secret);
+            if password.is_empty() {
                 return Err(CustodyError::NeedsAuthentication);
             }
             let username = account
@@ -628,10 +1140,7 @@ impl Custodian {
                 .and_then(serde_json::Value::as_str)
                 .unwrap_or_default()
                 .to_string();
-            HandoffCredential::Basic {
-                username,
-                password: Zeroizing::new(secret.password),
-            }
+            HandoffCredential::Basic { username, password }
         } else {
             return Err(CustodyError::Account(
                 "this account type is not a file provider".into(),
@@ -649,10 +1158,26 @@ impl Custodian {
         if let Ok(handoff) = self.handoff() {
             let _ = handoff.withdraw(&account.id);
         }
+        if is_copied_secret(secret) || (has_grant_tag(secret) && grant_of(secret).is_none()) {
+            return;
+        }
         let type_id = account.type_id.as_str();
         if let Some(cloud) = OAuthCloud::from_type_id(type_id) {
-            let (Some(Grant::Oauth2 { tokens }), Ok((provider, registration))) =
-                (grant_of(secret), self.oauth_config(cloud))
+            let Some(Grant::Oauth2 {
+                tokens,
+                registration,
+                ..
+            }) = grant_of(secret)
+            else {
+                return;
+            };
+            // Imported custody is a copy of a still-used source grant. Detaching
+            // this account must not sign its original application out remotely.
+            if registration.is_some() {
+                return;
+            }
+            let Ok((provider, registration)) =
+                self.grant_config(cloud.oauth_use(), registration.as_ref())
             else {
                 return;
             };

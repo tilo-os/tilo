@@ -19,9 +19,32 @@ use crate::grants::{
     DirectoryGrant, DirectoryPage, EntryName, FileGrant, FsEntry, FsError, FsOwner, FsRight,
     GrantedEntry, PageCursor,
 };
-use crate::{EntryKind, MAX_READ_CHUNK, Metadata};
+use crate::{EntryKind, MAX_READ_CHUNK, MAX_WRITE_CHUNK, Metadata};
 use cap_std::fs::{Dir, File, MetadataExt};
 use rustix::fs::OFlags;
+
+#[path = "native/history_read_subject.rs"]
+mod history_read_subject;
+pub use history_read_subject::{NativeHistoryReadObservation, NativeHistoryReadSubject};
+
+#[path = "native/selected_replace.rs"]
+mod selected_replace;
+pub use selected_replace::SelectedReplacementAuthority;
+
+#[path = "native/xattrs.rs"]
+pub(super) mod xattrs;
+
+#[path = "native/append.rs"]
+mod append;
+pub use append::FsAppendHandle;
+#[path = "native/cursor.rs"]
+mod cursor;
+#[path = "native/open.rs"]
+mod open;
+#[path = "native/removal.rs"]
+pub(super) mod removal;
+pub use cursor::FsDirectoryCursor;
+pub use open::NativeFileAccess;
 
 // Opaque cursors cannot alias a snapshot in a different authority.
 static NEXT_SNAPSHOT: AtomicU64 = AtomicU64::new(1);
@@ -93,6 +116,9 @@ struct Session {
     lifetimes: Mutex<Vec<Lifetime>>,
     workers: Weak<crate::operations::WorkerQueue>,
     pub(super) mutation_active: AtomicBool,
+    removal: Mutex<Option<Arc<removal::RemovalCustody>>>,
+    selected_replace: Mutex<Option<Arc<selected_replace::SelectedPermit>>>,
+    created_temporaries: Mutex<Vec<Weak<crate::operations::NativeCreatedTemporary>>>,
 }
 
 // A terminal lifetime releases snapshots even when an operation exits early.
@@ -387,6 +413,9 @@ impl NativeGrantAuthority {
                 lifetimes: Mutex::new(Vec::new()),
                 workers: Arc::downgrade(&self.workers),
                 mutation_active: AtomicBool::new(false),
+                removal: Mutex::new(None),
+                selected_replace: Mutex::new(None),
+                created_temporaries: Mutex::new(Vec::new()),
             }),
         })
     }
@@ -558,7 +587,10 @@ impl FsSession {
         {
             return Err(FsError::Denied);
         }
-        if right.is_some_and(|right| !lease.record.rights.contains(&right)) {
+        if let Some(right) = right
+            && !lease.record.rights.contains(&right)
+            && !(right == FsRight::Replace && self.selected_replace_right(lease)?)
+        {
             return Err(FsError::Denied);
         }
         Ok(())
@@ -572,12 +604,212 @@ impl FsSession {
         self.validate(&table, &grant.lease, Some(FsRight::Enumerate))
     }
 
+    /// Flush namespace changes on the actual held directory. This does not
+    /// admit a namespace edit or reopen a caller path; the original user's
+    /// kernel descriptor permissions and live Enumerate lineage remain in force.
+    /// Calls belong on the service's bounded worker pool.
+    /// # Errors
+    /// Returns live-scope, held-inode or actual fsync errors. The authority lock
+    /// stays held across the syscall so revocation cannot interleave its effect.
+    pub fn sync_directory(&self, grant: &DirectoryGrant) -> Result<(), FsError> {
+        let table = self.call()?;
+        self.validate(&table, &grant.lease, Some(FsRight::Enumerate))?;
+        self.metadata_locked(&table, &grant.lease)?;
+        let descriptor = Self::directory(&grant.lease)?;
+        self.validate(&table, &grant.lease, Some(FsRight::Enumerate))?;
+        rustix::fs::fsync(&*descriptor).map_err(|error| io_error(error.into()))?;
+        self.validate(&table, &grant.lease, Some(FsRight::Enumerate))
+    }
+
+    /// Observe filesystem capacity on the actual held directory, without opening
+    /// child bytes or upgrading Read/Write rights. Calls belong on bounded workers.
+    /// # Errors
+    /// Refuses revoked Enumerate scope, native errors or unsupported/overflowing statistics.
+    pub fn directory_statfs(
+        &self,
+        grant: &DirectoryGrant,
+    ) -> Result<crate::directory_backend::DirectoryFilesystemStats, FsError> {
+        let table = self.call()?;
+        self.validate(&table, &grant.lease, Some(FsRight::Enumerate))?;
+        self.metadata_locked(&table, &grant.lease)?;
+        let descriptor = Self::directory(&grant.lease)?;
+        let raw = rustix::fs::fstatvfs(&*descriptor).map_err(|error| io_error(error.into()))?;
+        self.validate(&table, &grant.lease, Some(FsRight::Enumerate))?;
+        let stats = crate::directory_backend::DirectoryFilesystemStats {
+            blocks: raw.f_blocks,
+            blocks_free: raw.f_bfree,
+            blocks_available: raw.f_bavail,
+            files: raw.f_files,
+            files_free: raw.f_ffree,
+            files_available: raw.f_favail,
+            block_size: raw
+                .f_bsize
+                .try_into()
+                .map_err(|_| FsError::Unsupported("filesystem block size overflow"))?,
+            fragment_size: raw
+                .f_frsize
+                .try_into()
+                .map_err(|_| FsError::Unsupported("filesystem fragment size overflow"))?,
+            name_max: raw
+                .f_namemax
+                .try_into()
+                .map_err(|_| FsError::Unsupported("filesystem name limit overflow"))?,
+            read_only: raw.f_flag.contains(rustix::fs::StatVfsMountFlags::RDONLY),
+        };
+        stats
+            .validate()
+            .map_err(|_| FsError::Unsupported("invalid filesystem capacity"))?;
+        self.validate(&table, &grant.lease, Some(FsRight::Enumerate))?;
+        Ok(stats)
+    }
     /// Resolve one native child into a retained descriptor or link object.
     /// # Errors
     /// Returns live-scope errors, `NotFound`, or typed filesystem errors.
     pub fn lookup(&self, dir: &DirectoryGrant, name: &EntryName) -> Result<GrantedEntry, FsError> {
         let mut table = self.call()?;
         self.lookup_locked(&mut table, &dir.lease, name)
+    }
+
+    /// Check actual grant/session/ancestor scope without accessing bytes.
+    /// # Errors
+    /// Refuses closed, revoked, foreign or detached lineage.
+    pub fn check_entry(&self, entry: &GrantedEntry) -> Result<(), FsError> {
+        let table = self.call()?;
+        self.validate(&table, entry.lease(), None)
+    }
+    /// Read observational identity from the actual held object, under live scope.
+    /// # Errors
+    /// Returns authority/metadata failure; the value grants no access.
+    pub fn entry_identity(&self, entry: &GrantedEntry) -> Result<[u64; 2], FsError> {
+        let table = self.call()?;
+        self.metadata_locked(&table, entry.lease())?;
+        let identity = entry.lease().object()?.identity();
+        self.validate(&table, entry.lease(), None)?;
+        Ok([identity.device, identity.inode])
+    }
+
+    /// Observe an actual held directory or regular file without byte access.
+    /// # Errors
+    /// Refuses revoked scope, wrong type or a changed native identity.
+    pub fn entry_stat(
+        &self,
+        entry: &GrantedEntry,
+    ) -> Result<crate::directory_backend::DirectoryStat, FsError> {
+        let table = self.call()?;
+        self.metadata_locked(&table, entry.lease())?;
+        let object = entry.lease().object()?;
+        let identity = object.identity();
+        let raw = match object {
+            NativeObject::Directory { descriptor, .. } => {
+                descriptor.dir_metadata().map_err(io_error)?
+            }
+            NativeObject::File { descriptor, .. } => descriptor.metadata().map_err(io_error)?,
+            _ => {
+                return Err(FsError::Unsupported(
+                    "held directory or regular file required",
+                ));
+            }
+        };
+        let metadata = checked_metadata(&raw, identity)?;
+        self.validate(&table, entry.lease(), None)?;
+        Ok(crate::directory_backend::DirectoryStat {
+            metadata,
+            identity: [raw.dev(), raw.ino()],
+            file_type: raw.mode() & u32::from(libc::S_IFMT),
+            execute_bits: (raw.mode() & 0o111) as u16,
+        })
+    }
+
+    /// Observe one raw component without opening its bytes or following links.
+    /// The descriptor and actual enumerating parent grant remain held throughout.
+    /// # Errors
+    /// Returns live scope, missing component, or native metadata errors.
+    pub fn stat_child(
+        &self,
+        dir: &DirectoryGrant,
+        name: &EntryName,
+    ) -> Result<crate::directory_backend::DirectoryStat, FsError> {
+        let table = self.call()?;
+        self.validate(&table, &dir.lease, Some(FsRight::Enumerate))?;
+        let descriptor = Self::directory(&dir.lease)?;
+        let metadata = descriptor
+            .symlink_metadata(name.as_os_str())
+            .map_err(io_error)?;
+        self.validate(&table, &dir.lease, Some(FsRight::Enumerate))?;
+        Ok(crate::directory_backend::DirectoryStat {
+            metadata: describe(&metadata),
+            identity: [metadata.dev(), metadata.ino()],
+            file_type: metadata.mode() & u32::from(libc::S_IFMT),
+            execute_bits: (metadata.mode() & 0o111) as u16,
+        })
+    }
+
+    /// Observe bounded raw bytes of the exact no-follow symlink inode.
+    /// This grants neither target traversal nor target content access.
+    /// # Errors
+    /// Refuses absent Enumerate/metadata rights, substitutions, revocation or IO.
+    #[cfg(target_os = "linux")]
+    pub fn readlink_child(
+        &self,
+        dir: &DirectoryGrant,
+        name: &EntryName,
+        expected: [u64; 2],
+    ) -> Result<Vec<u8>, FsError> {
+        let table = self.call()?;
+        let check = || self.validate(&table, &dir.lease, Some(FsRight::Enumerate));
+        check()?;
+        self.metadata_locked(&table, &dir.lease)?;
+        let parent = Self::directory(&dir.lease)?;
+        let before = parent
+            .symlink_metadata(name.as_os_str())
+            .map_err(io_error)?;
+        if !before.is_symlink() || [before.dev(), before.ino()] != expected {
+            return Err(FsError::Busy);
+        }
+        check()?;
+        let held = rustix::fs::openat(
+            &*parent,
+            name.as_os_str(),
+            OFlags::PATH | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            rustix::fs::Mode::empty(),
+        )
+        .map_err(|e| io_error(e.into()))?;
+        let stat = rustix::fs::fstat(&held).map_err(|e| io_error(e.into()))?;
+        if stat.st_mode & libc::S_IFMT != libc::S_IFLNK || [stat.st_dev, stat.st_ino] != expected {
+            return Err(FsError::Busy);
+        }
+        check()?;
+        // Linux empty-path readlinkat observes this held O_PATH link itself,
+        // never a replacement at the public name or the target's bytes.
+        let mut bytes = [0_u8; 4097];
+        let length = rustix::fs::readlinkat_raw(&held, "", &mut bytes[..])
+            .map_err(|e| io_error(e.into()))?;
+        check()?;
+        let after = parent
+            .symlink_metadata(name.as_os_str())
+            .map_err(io_error)?;
+        check()?;
+        if !after.is_symlink() || [after.dev(), after.ino()] != expected {
+            return Err(FsError::Busy);
+        }
+        if length == 0 || length > 4096 {
+            return Err(FsError::LimitExceeded);
+        }
+        Ok(bytes[..length].to_vec())
+    }
+
+    /// # Errors
+    /// Exact held-link observation is currently implemented only on Linux.
+    #[cfg(not(target_os = "linux"))]
+    pub fn readlink_child(
+        &self,
+        dir: &DirectoryGrant,
+        _: &EntryName,
+        _: [u64; 2],
+    ) -> Result<Vec<u8>, FsError> {
+        let table = self.call()?;
+        self.validate(&table, &dir.lease, Some(FsRight::Enumerate))?;
+        Err(FsError::Unsupported("held symlink observation"))
     }
 
     fn directory(lease: &GrantLease) -> Result<Arc<Dir>, FsError> {
@@ -839,6 +1071,91 @@ impl FsSession {
         Ok(bytes)
     }
 
+    /// Write one bounded chunk into the exact held regular-file inode.
+    ///
+    /// The trusted host must admit an already-writable selected descriptor with
+    /// `FsRight::Write`. This call neither acquires a parent nor reopens a name;
+    /// replacing the selected name never redirects this grant. It does not
+    /// truncate, sync, or provide a mutation job/receipt. A partial successful
+    /// syscall returns its byte count; another call must recheck live authority.
+    /// # Errors
+    /// Returns live-scope or missing-right errors, `LimitExceeded` for oversized
+    /// chunks/offset overflow, `Unsupported` for links/special/append descriptors,
+    /// `Denied` for a read-only descriptor, and typed host I/O errors.
+    pub fn write_at(&self, file: &FileGrant, offset: u64, bytes: &[u8]) -> Result<u32, FsError> {
+        let table = self.call()?;
+        self.validate(&table, &file.lease, Some(FsRight::Write))?;
+        if bytes.len() > MAX_WRITE_CHUNK as usize
+            || offset
+                .checked_add(bytes.len() as u64)
+                .is_none_or(|end| end > i64::MAX as u64)
+        {
+            return Err(FsError::LimitExceeded);
+        }
+        let descriptor = self.writable_file(&table, file)?;
+        let flags =
+            rustix::fs::fcntl_getfl(&*descriptor).map_err(|error| io_error(error.into()))?;
+        // Linux pwrite honors O_APPEND, despite its explicit offset. Refuse it
+        // rather than quietly changing the destination of an admitted write.
+        if flags.contains(OFlags::APPEND) {
+            return Err(FsError::Unsupported(
+                "append descriptor cannot write at an offset",
+            ));
+        }
+        self.validate(&table, &file.lease, Some(FsRight::Write))?;
+        if bytes.is_empty() {
+            return Ok(0);
+        }
+        // `table` remains locked across the syscall: revoke()/close() cannot
+        // retire the grant between the final live check and this exact effect.
+        let written = rustix::io::pwrite(&*descriptor, bytes, offset)
+            .map_err(|error| io_error(error.into()))?;
+        u32::try_from(written).map_err(|_| FsError::LimitExceeded)
+    }
+
+    /// Change the length of exactly the held regular-file inode.
+    /// # Errors
+    /// Returns live-scope/missing-Write errors, `LimitExceeded` above `i64::MAX`,
+    /// `Unsupported` for links/special files, `Denied` for a read-only descriptor,
+    /// and typed host I/O errors. No name or parent is reopened.
+    pub fn truncate(&self, file: &FileGrant, len: u64) -> Result<(), FsError> {
+        let table = self.call()?;
+        self.validate(&table, &file.lease, Some(FsRight::Write))?;
+        if len > i64::MAX as u64 {
+            return Err(FsError::LimitExceeded);
+        }
+        let descriptor = self.writable_file(&table, file)?;
+        self.validate(&table, &file.lease, Some(FsRight::Write))?;
+        descriptor.set_len(len).map_err(io_error)
+    }
+
+    /// Sync bytes and metadata of exactly the writable held regular file.
+    /// # Errors
+    /// Returns live-scope/missing-Write errors, `Unsupported` for links/special
+    /// files, `Denied` for a read-only descriptor, and typed host I/O errors.
+    /// The authority gate remains held until the sync syscall completes.
+    pub fn sync_file(&self, file: &FileGrant) -> Result<(), FsError> {
+        let table = self.call()?;
+        let descriptor = self.writable_file(&table, file)?;
+        self.validate(&table, &file.lease, Some(FsRight::Write))?;
+        descriptor.sync_all().map_err(io_error)
+    }
+
+    fn writable_file(&self, table: &Table, file: &FileGrant) -> Result<Arc<File>, FsError> {
+        self.validate(table, &file.lease, Some(FsRight::Write))?;
+        let NativeObject::File { descriptor, .. } = file.lease.object()? else {
+            return Err(FsError::Unsupported(
+                "in-place mutation requires held regular file",
+            ));
+        };
+        let flags =
+            rustix::fs::fcntl_getfl(&*descriptor).map_err(|error| io_error(error.into()))?;
+        if !flags.intersects(OFlags::WRONLY | OFlags::RDWR) {
+            return Err(FsError::Denied);
+        }
+        Ok(descriptor)
+    }
+
     /// Retain a bounded snapshot and return at most 256 rows per page.
     /// # Errors
     /// Returns `Busy` when the fixed snapshot entry budget is exceeded, never a
@@ -970,8 +1287,28 @@ fn open_pinned(
     validate()?;
     // EntryName proves this is one normal component. Use the kernel's actual
     // no-follow operation; cap-std's manual resolver can follow raw O_NOFOLLOW.
-    let opened = rustix::fs::openat(dir, name.as_os_str(), flags, rustix::fs::Mode::empty())
-        .map_err(|error| io_error(error.into()))?;
+    let opened = match rustix::fs::openat(dir, name.as_os_str(), flags, rustix::fs::Mode::empty()) {
+        Ok(opened) => opened,
+        #[cfg(target_os = "linux")]
+        Err(rustix::io::Errno::ACCESS) => {
+            // A readable parent can enumerate an unreadable child. Hold metadata
+            // custody only: O_PATH cannot read or write bytes. All editable opens
+            // still use explicit native parent rights and RDONLY/WRONLY/RDWR.
+            validate()?;
+            let mut metadata_flags = OFlags::PATH | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+            if metadata.is_dir() {
+                metadata_flags |= OFlags::DIRECTORY;
+            }
+            rustix::fs::openat(
+                dir,
+                name.as_os_str(),
+                metadata_flags,
+                rustix::fs::Mode::empty(),
+            )
+            .map_err(|error| io_error(error.into()))?
+        }
+        Err(error) => return Err(io_error(error.into())),
+    };
     let opened = File::from_std(std::fs::File::from(opened));
     validate()?;
     let observed = opened.metadata().map_err(io_error)?;
@@ -1019,6 +1356,52 @@ mod tests {
             )
             .unwrap();
         (temp, authority, session, root)
+    }
+
+    #[test]
+    fn directory_flush_observes_real_held_descriptor_and_revocation() {
+        let (temp, authority, session, root) = fixture();
+        std::fs::write(temp.path().join("entry"), b"original").unwrap();
+        session.sync_directory(&root).unwrap();
+        authority.revoke_directory(&root).unwrap();
+        assert!(matches!(
+            session.sync_directory(&root),
+            Err(FsError::Revoked)
+        ));
+        assert_eq!(
+            std::fs::read(temp.path().join("entry")).unwrap(),
+            b"original"
+        );
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn directory_flush_refuses_metadata_only_opath_without_faking_durability() {
+        use std::os::unix::fs::OpenOptionsExt;
+        let temp = tempfile::tempdir().unwrap();
+        let authority = NativeGrantAuthority::new();
+        let owner = FsOwner {
+            workspace: "flush".into(),
+            app_id: "so.tilo.file-explorer".into(),
+        };
+        let held = std::fs::File::options()
+            .read(true)
+            .custom_flags(libc::O_PATH | libc::O_DIRECTORY | libc::O_NOFOLLOW)
+            .open(temp.path())
+            .unwrap();
+        let root = authority
+            .admit_directory(held, owner.clone(), vec![FsRight::Enumerate])
+            .unwrap();
+        let session = authority
+            .bind(
+                owner,
+                uuid::Uuid::new_v4(),
+                std::slice::from_ref(&root),
+                &[],
+            )
+            .unwrap();
+        assert!(matches!(session.sync_directory(&root), Err(FsError::Io(_))));
+        session.check_directory(&root).unwrap();
     }
 
     #[test]
@@ -1094,7 +1477,7 @@ mod tests {
 
 /// Private receipt locator. Components are names beneath a freshly allowed root,
 /// never paths to reopen from ambient authority.
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub(super) struct NativeLocator {
     pub(super) root: NativeIdentity,
     pub(super) parents: Vec<Vec<u8>>,

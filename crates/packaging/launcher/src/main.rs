@@ -20,22 +20,25 @@ use launcher::landlock_shim::{SANDBOX_EXEC_SUBCOMMAND, run_sandbox_exec};
 use launcher::registration_gate::{LAUNCH_REGISTRATION_FD_ENV, LAUNCH_REGISTRATION_STDIN_ENV};
 use launcher::run::{IdentitySource, LaunchMode, RunOptions, launch_manifest, run_manifest};
 
-fn wait_for_registration_fd(fd: RawFd) -> std::io::Result<()> {
+fn wait_for_registration_fd(
+    fd: RawFd,
+) -> std::io::Result<Option<launcher::retained_view::OrdinaryLaunchGate>> {
     if fd < 3 {
-        return Err(std::io::Error::from(std::io::ErrorKind::InvalidInput));
+        return Err(std::io::ErrorKind::InvalidInput.into());
     }
-    // SAFETY: the compositor transfers ownership of this inherited descriptor
-    // specifically through `LAUNCH_REGISTRATION_FD_ENV`.
-    let mut gate = unsafe { std::fs::File::from_raw_fd(fd) };
-    let mut release = [0_u8; 1];
-    gate.read_exact(&mut release)
+    let gate = unsafe { std::os::unix::net::UnixStream::from_raw_fd(fd) };
+    launcher::retained_view::RetainedLaunchGate::receive_registration(
+        gate,
+        &launcher::owned_service::ServiceCancellation::default(),
+    )
 }
 
 #[allow(
     clippy::disallowed_methods,
     reason = "runs first in main before any thread is spawned, and the internal handoff variable must be removed so launched apps never inherit it"
 )]
-fn wait_for_shell_registration() -> Result<(), String> {
+fn wait_for_shell_registration()
+-> Result<Option<launcher::retained_view::OrdinaryLaunchGate>, String> {
     let on_stdin = std::env::var_os(LAUNCH_REGISTRATION_STDIN_ENV).is_some();
     let raw_fd = std::env::var(LAUNCH_REGISTRATION_FD_ENV);
     // SAFETY: process startup is single-threaded; remove the internal handoff
@@ -46,11 +49,12 @@ fn wait_for_shell_registration() -> Result<(), String> {
     }
     if on_stdin {
         return launcher::registration_gate::wait_on_stdin()
+            .map(|()| None)
             .map_err(|error| format!("launch-registration handoff failed: {error}"));
     }
     // A host from before the stdin handoff names an inherited descriptor.
     let Ok(raw_fd) = raw_fd else {
-        return Ok(());
+        return Ok(None);
     };
     let fd = raw_fd
         .parse::<RawFd>()
@@ -125,10 +129,8 @@ enum Cmd {
         /// nothing widened.
         #[arg(long)]
         capabilities: Option<PathBuf>,
-        /// Host-staged governance identity projection. Honoured only for
-        /// Files and mounted read-only at its fixed projection path.
-        #[arg(long)]
-        trusted_identities: Option<PathBuf>,
+        #[command(flatten)]
+        file_locations: Box<FileLocationArgs>,
         #[command(flatten)]
         action_authority: Box<ActionAuthorityArgs>,
         /// App id the caller launched; must equal the manifest's package id.
@@ -153,6 +155,9 @@ enum Cmd {
         /// argv value; it is never parsed as a command line.
         #[arg(long, conflicts_with = "open")]
         open_uri: Option<String>,
+        /// Standard console in a private namespace for this shell instance.
+        #[arg(long, conflicts_with_all = ["service", "wayland_socket"])]
+        headless_console: Option<u64>,
         /// Launch this package's headless entrypoint as a desktop-managed
         /// service. Valid only for `kind = "service"`; no display or open
         /// resource is handed into the sandbox.
@@ -283,20 +288,29 @@ fn exit_code(code: i32) -> ExitCode {
 
 fn main() -> ExitCode {
     tilo_startup_metrics::handoff_mark("launcher-start");
-    if let Err(error) = wait_for_shell_registration() {
-        eprintln!("tilo-launcher: {error}");
-        return ExitCode::from(126);
-    }
+    let retained_endpoint = match wait_for_shell_registration() {
+        Ok(endpoint) => endpoint,
+        Err(error) => {
+            eprintln!("tilo-launcher: {error}");
+            return ExitCode::from(126);
+        }
+    };
     tilo_startup_metrics::handoff_mark("shell-registered");
     // Hidden subcommand: parsed BEFORE clap so its argv shape (positional
     // paths, `--` separator) doesn't collide with clap's flag parsing.
     let raw_args: Vec<String> = std::env::args().collect();
     if raw_args.get(1).map(std::string::String::as_str) == Some(SANDBOX_EXEC_SUBCOMMAND) {
+        if retained_endpoint.is_some() {
+            return ExitCode::from(126);
+        }
         run_sandbox_exec(raw_args.get(2..).unwrap_or(&[]));
     }
 
     init_tracing();
     let cli = Cli::parse();
+    if retained_endpoint.is_some() && !matches!(&cli.cmd, Cmd::Run { .. }) {
+        return ExitCode::from(126);
+    }
     match cli.cmd {
         Cmd::Run {
             manifest,
@@ -311,38 +325,45 @@ fn main() -> ExitCode {
             wayland_socket,
             workspace_id,
             capabilities,
-            trusted_identities,
+            file_locations,
             action_authority,
             app_id,
             identity,
             render_node,
             open,
             open_uri,
+            headless_console,
             service,
             rest,
-        } => run_gui_command(RunCliArgs {
-            manifest,
-            expected_package_hash,
-            payload_root,
-            runtime,
-            no_services,
-            minimal_libs,
-            allow_missing_runtime,
-            allow_unsigned_runtime,
-            require_runtime_publisher,
-            wayland_socket,
-            workspace_id,
-            capabilities,
-            trusted_identities,
-            action_authority: action_authority.action_authority,
-            app_id,
-            identity,
-            render_node,
-            open,
-            open_uri,
-            service,
-            rest,
-        }),
+        } => run_gui_command(
+            RunCliArgs {
+                manifest,
+                expected_package_hash,
+                payload_root,
+                runtime,
+                no_services,
+                minimal_libs,
+                allow_missing_runtime,
+                allow_unsigned_runtime,
+                require_runtime_publisher,
+                wayland_socket,
+                workspace_id,
+                capabilities,
+                trusted_identities: file_locations.trusted_identities,
+                retained_files: file_locations.retained_files,
+                browser_continuity: file_locations.browser_continuity,
+                action_authority: action_authority.action_authority,
+                app_id,
+                identity,
+                render_node,
+                open,
+                open_uri,
+                headless_console,
+                service,
+                rest,
+            },
+            retained_endpoint,
+        ),
         Cmd::RunInstalled {
             package,
             command,
@@ -386,6 +407,19 @@ fn main() -> ExitCode {
 }
 
 #[derive(Debug, clap::Args)]
+struct FileLocationArgs {
+    /// Host-staged governance identity projection; read-only and Files only.
+    #[arg(long)]
+    trusted_identities: Option<PathBuf>,
+    /// Device-local retained locations; metadata does not grant file access.
+    #[arg(long)]
+    retained_files: Option<PathBuf>,
+    /// Verified browser migration subset; read-only and Browser GUI only.
+    #[arg(long)]
+    browser_continuity: Option<PathBuf>,
+}
+
+#[derive(Debug, clap::Args)]
 struct ActionAuthorityArgs {
     /// Host-staged, app-scoped action authority; mounted read-only.
     #[arg(long)]
@@ -413,12 +447,15 @@ struct RunCliArgs {
     workspace_id: Option<String>,
     capabilities: Option<PathBuf>,
     trusted_identities: Option<PathBuf>,
+    retained_files: Option<PathBuf>,
+    browser_continuity: Option<PathBuf>,
     action_authority: Option<PathBuf>,
     app_id: Option<String>,
     identity: Option<PathBuf>,
     render_node: Option<PathBuf>,
     open: Option<PathBuf>,
     open_uri: Option<String>,
+    headless_console: Option<u64>,
     service: bool,
     rest: Vec<String>,
 }
@@ -426,7 +463,10 @@ struct RunCliArgs {
 /// Build [`RunOptions`] from the `run` subcommand's flags and launch either
 /// the package's GUI entrypoint or its explicitly requested managed-service
 /// entrypoint.
-fn run_gui_command(args: RunCliArgs) -> ExitCode {
+fn run_gui_command(
+    args: RunCliArgs,
+    retained_endpoint: Option<launcher::retained_view::OrdinaryLaunchGate>,
+) -> ExitCode {
     if args.minimal_libs {
         eprintln!(
             "tilo-launcher: --minimal-libs is deprecated. \
@@ -461,11 +501,14 @@ fn run_gui_command(args: RunCliArgs) -> ExitCode {
         workspace_id: args.workspace_id,
         capabilities_path: args.capabilities,
         trusted_identities_host_path: args.trusted_identities,
+        retained_files_host_path: args.retained_files,
+        browser_continuity_host_path: args.browser_continuity,
         action_authority_host_path: args.action_authority,
         app_id: args.app_id,
         render_node: args.render_node,
         open_document: args.open,
         open_uri: args.open_uri,
+        headless_console: args.headless_console,
     };
     // Held from before the package is verified until the app exits, so an
     // update meanwhile leaves the build this launch runs alone
@@ -502,7 +545,40 @@ fn run_gui_command(args: RunCliArgs) -> ExitCode {
         }
         manifest
     });
-    match manifest.and_then(|manifest| run_manifest(&manifest, &args.payload_root, &opts)) {
+    let result = manifest.and_then(|manifest| {
+        if let Some(endpoint) = retained_endpoint {
+            let cancellation = launcher::owned_service::ServiceCancellation::default();
+            match endpoint {
+                launcher::retained_view::OrdinaryLaunchGate::Home(endpoint) => {
+                    launcher::retained_view::RetainedViewAdmission::receive(
+                        endpoint,
+                        &args.manifest,
+                        &args.payload_root,
+                        &opts,
+                        &cancellation,
+                    )
+                    .and_then(|admission| {
+                        launcher::retained_view::run_admitted_gui(admission, cancellation)
+                    })
+                }
+                launcher::retained_view::OrdinaryLaunchGate::SelectedParent(endpoint) => {
+                    launcher::retained_view::SelectedParentAdmission::receive(
+                        endpoint,
+                        &args.manifest,
+                        &args.payload_root,
+                        &opts,
+                        &cancellation,
+                    )
+                    .and_then(|admission| {
+                        launcher::retained_view::run_selected_parent_gui(admission, cancellation)
+                    })
+                }
+            }
+        } else {
+            run_manifest(&manifest, &args.payload_root, &opts)
+        }
+    });
+    match result {
         Ok(status) => {
             // How the app ended, said where its output goes: a signal leaves
             // no exit code of its own, and is folded into 1 below.
@@ -927,6 +1003,8 @@ fn run_installed(
         identity: IdentitySource::UserStore,
         data_home: None,
         trusted_identities_host_path: None,
+        retained_files_host_path: None,
+        browser_continuity_host_path: None,
         action_authority_host_path: None,
         // CLI launches are stdio-only: no display in the sandbox, and
         // therefore no compositor whose GPU choice they have to match.
@@ -951,6 +1029,7 @@ fn run_installed(
         // `LaunchMode::Cli`; no document to open on its behalf.
         open_document: None,
         open_uri: None,
+        headless_console: None,
     };
     match launcher::run::run_with(&manifest, &entry.payload_root, &opts) {
         Ok(status) => {

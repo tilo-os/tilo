@@ -39,11 +39,14 @@ pub const MAX_CONFLICT_VERSIONS: usize = 8;
 pub const FILE_MUTATION_TRANSACTION_VERSION: u16 = 1;
 pub const FILE_MUTATION_TRANSACTION_VERSION_V2: u16 = 2;
 pub const FILE_MUTATION_TRANSACTION_VERSION_V3: u16 = 3;
+pub const FILE_MUTATION_TRANSACTION_VERSION_V4: u16 = 4;
 pub const MAX_TRANSACTION_PARTICIPANTS: usize = 8;
 pub const FILE_MUTATION_TRANSACTION_SIGNATURE_DOMAIN: &str =
     "tilo.collaborative-fs.file-mutation-transaction.v1";
 pub const FILE_MUTATION_TRANSACTION_SIGNATURE_DOMAIN_V2: &str =
     "tilo.collaborative-fs.file-mutation-transaction.v2";
+pub const FILE_MUTATION_TRANSACTION_SIGNATURE_DOMAIN_V4: &str =
+    "tilo.collaborative-fs.file-mutation-transaction.v4";
 
 /// A Unix directory-entry name, preserved as the exact bytes supplied by the
 /// kernel.  The transparent byte-vector encoding is deliberately wire
@@ -511,6 +514,8 @@ pub enum FileMutationParticipantRole {
     KeepBothSibling,
     MergeSource,
     RestoreContent,
+    AtomicSaveDocument,
+    AtomicSaveTemporary,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -588,7 +593,10 @@ impl FileMutationParticipant {
             return Err(FileRecordError::InvalidTransactionParticipant);
         }
         let valid_parents = match self.role {
-            FileMutationParticipantRole::Source | FileMutationParticipantRole::Replaced => {
+            FileMutationParticipantRole::Source
+            | FileMutationParticipantRole::Replaced
+            | FileMutationParticipantRole::AtomicSaveDocument
+            | FileMutationParticipantRole::AtomicSaveTemporary => {
                 self.proposed_version.parents == [self.expected_version]
             }
             FileMutationParticipantRole::KeepBothSource
@@ -621,6 +629,16 @@ impl FileMutationParticipant {
                         self.proposed_version.provenance,
                         FileProvenance::Rename | FileProvenance::Move
                     )
+            }
+            FileMutationParticipantRole::AtomicSaveDocument => {
+                !self.proposed_binding.tombstoned
+                    && self.proposed_binding.kind == FileNodeKind::File
+                    && self.proposed_version.provenance == FileProvenance::Edit
+            }
+            FileMutationParticipantRole::AtomicSaveTemporary => {
+                self.proposed_binding.tombstoned
+                    && self.proposed_binding.kind == FileNodeKind::File
+                    && self.proposed_version.provenance == FileProvenance::Delete
             }
             FileMutationParticipantRole::Replaced => {
                 self.proposed_binding.tombstoned
@@ -690,6 +708,14 @@ pub enum FileMutationOperation {
         base_version: Option<FileVersionId>,
         codec: ConflictMergeCodecV1,
     },
+    AtomicSave {
+        parent_record: FileRecordId,
+        document_name: FileNameV1,
+        temporary_name: FileNameV1,
+        document_record: FileRecordId,
+        temporary_record: FileRecordId,
+        prior_document_version: FileVersionId,
+    },
 }
 
 /// Canonical manifest signed once and copied unchanged into every prepare.
@@ -730,6 +756,7 @@ impl FileMutationTransactionManifest {
             FILE_MUTATION_TRANSACTION_VERSION
                 | FILE_MUTATION_TRANSACTION_VERSION_V2
                 | FILE_MUTATION_TRANSACTION_VERSION_V3
+                | FILE_MUTATION_TRANSACTION_VERSION_V4
         ) {
             return Err(FileRecordError::UnsupportedMutationTransactionVersion(
                 self.schema_version,
@@ -791,6 +818,53 @@ impl FileMutationTransactionManifest {
                         })
                     || participant.proposed_version.timestamp_ms != self.timestamp_ms
                     || !action_valid
+                {
+                    return Err(FileRecordError::InvalidTransactionParticipant);
+                }
+                Ok(())
+            }
+            FileMutationOperation::AtomicSave {
+                parent_record,
+                document_name,
+                temporary_name,
+                document_record,
+                temporary_record,
+                prior_document_version,
+            } => {
+                if self.schema_version != FILE_MUTATION_TRANSACTION_VERSION_V4
+                    || self.participants.len() != 2
+                    || parent_record.0.is_nil()
+                    || document_record.0.is_nil()
+                    || temporary_record.0.is_nil()
+                    || document_record == temporary_record
+                    || parent_record == document_record
+                    || parent_record == temporary_record
+                    || document_name == temporary_name
+                    || prior_document_version.0.is_nil()
+                    || !valid_transaction_name(document_name)
+                    || !valid_transaction_name(temporary_name)
+                {
+                    return Err(FileRecordError::InvalidReplacementRename);
+                }
+                let document = self
+                    .participants
+                    .iter()
+                    .find(|p| p.role == FileMutationParticipantRole::AtomicSaveDocument)
+                    .ok_or(FileRecordError::InvalidTransactionParticipants)?;
+                let temporary = self
+                    .participants
+                    .iter()
+                    .find(|p| p.role == FileMutationParticipantRole::AtomicSaveTemporary)
+                    .ok_or(FileRecordError::InvalidTransactionParticipants)?;
+                if document.record_id != *document_record
+                    || temporary.record_id != *temporary_record
+                    || document.expected_version != *prior_document_version
+                    || document.proposed_binding.parent != Some(*parent_record)
+                    || document.proposed_binding.name != *document_name
+                    || temporary.proposed_binding.parent != Some(*parent_record)
+                    || temporary.proposed_binding.name != *temporary_name
+                    || document.proposed_version.timestamp_ms != self.timestamp_ms
+                    || temporary.proposed_version.timestamp_ms != self.timestamp_ms
                 {
                     return Err(FileRecordError::InvalidTransactionParticipant);
                 }
@@ -967,7 +1041,9 @@ pub struct FileMutationTransaction {
 impl FileMutationTransaction {
     fn signing_view(&self) -> TransactionSigningView<'_> {
         TransactionSigningView {
-            domain: if self.manifest.schema_version == FILE_MUTATION_TRANSACTION_VERSION_V3 {
+            domain: if self.manifest.schema_version == FILE_MUTATION_TRANSACTION_VERSION_V4 {
+                FILE_MUTATION_TRANSACTION_SIGNATURE_DOMAIN_V4
+            } else if self.manifest.schema_version == FILE_MUTATION_TRANSACTION_VERSION_V3 {
                 "tilo.collaborative-fs.file-mutation-transaction.v3"
             } else if self.manifest.schema_version == FILE_MUTATION_TRANSACTION_VERSION_V2 {
                 FILE_MUTATION_TRANSACTION_SIGNATURE_DOMAIN_V2
@@ -1600,7 +1676,9 @@ mod tests {
             metadata_hash: ContentHash([record_id.0.as_bytes()[0]; 32]),
             provenance: match role {
                 FileMutationParticipantRole::Source => FileProvenance::Rename,
-                FileMutationParticipantRole::Replaced => FileProvenance::Delete,
+                FileMutationParticipantRole::AtomicSaveDocument => FileProvenance::Edit,
+                FileMutationParticipantRole::Replaced
+                | FileMutationParticipantRole::AtomicSaveTemporary => FileProvenance::Delete,
                 _ => unreachable!("replacement fixture role"),
             },
         };
@@ -1614,7 +1692,11 @@ mod tests {
                 parent: Some(parent),
                 name: name.into(),
                 kind: FileNodeKind::File,
-                tombstoned: role == FileMutationParticipantRole::Replaced,
+                tombstoned: matches!(
+                    role,
+                    FileMutationParticipantRole::Replaced
+                        | FileMutationParticipantRole::AtomicSaveTemporary
+                ),
                 actor,
                 observed_at_ms: 44,
             },
@@ -1631,6 +1713,104 @@ mod tests {
         };
         participant.projection_hash = participant.computed_projection_hash().unwrap();
         participant
+    }
+
+    #[test]
+    fn atomic_save_signed_manifest_keeps_document_and_rejects_role_or_prior_substitution() {
+        let key = SigningKey::generate(&mut UnwrapErr(SysRng));
+        let actor = FileActor {
+            person: Ed25519PublicKey([9; 32]),
+            device: Ed25519PublicKey(key.verifying_key().to_bytes()),
+        };
+        let parent = FileRecordId::new();
+        let document = FileRecordId::new();
+        let temporary = FileRecordId::new();
+        let doc = transaction_participant(
+            document,
+            FileMutationParticipantRole::AtomicSaveDocument,
+            parent,
+            "report.txt",
+            actor,
+        );
+        let prior = doc.expected_version;
+        let mut participants = vec![
+            doc,
+            transaction_participant(
+                temporary,
+                FileMutationParticipantRole::AtomicSaveTemporary,
+                parent,
+                "save-temp",
+                actor,
+            ),
+        ];
+        participants.sort_by_key(|p| p.record_id);
+        let manifest = FileMutationTransactionManifest {
+            schema_version: FILE_MUTATION_TRANSACTION_VERSION_V4,
+            transaction_id: Uuid::new_v4(),
+            workspace_id: Uuid::new_v4(),
+            actor,
+            timestamp_ms: 44,
+            operation: FileMutationOperation::AtomicSave {
+                parent_record: parent,
+                document_name: "report.txt".into(),
+                temporary_name: "save-temp".into(),
+                document_record: document,
+                temporary_record: temporary,
+                prior_document_version: prior,
+            },
+            participants,
+        };
+        let signed = FileMutationTransaction::signed(manifest.clone(), &key).unwrap();
+        signed.verify().unwrap();
+        let doc = signed
+            .manifest
+            .participants
+            .iter()
+            .find(|p| p.record_id == document)
+            .unwrap();
+        assert_eq!(doc.proposed_version.parents, [prior]);
+        assert_eq!(doc.proposed_version.provenance, FileProvenance::Edit);
+        assert!(!doc.proposed_binding.tombstoned);
+        let mut changed = manifest.clone();
+        changed.schema_version = FILE_MUTATION_TRANSACTION_VERSION;
+        assert!(changed.validate().is_err());
+        let mut changed = manifest.clone();
+        if let FileMutationOperation::AtomicSave {
+            prior_document_version,
+            ..
+        } = &mut changed.operation
+        {
+            *prior_document_version = FileVersionId::new();
+        }
+        assert!(changed.validate().is_err());
+        let mut changed = manifest.clone();
+        if let FileMutationOperation::AtomicSave { parent_record, .. } = &mut changed.operation {
+            *parent_record = document;
+        }
+        assert!(changed.validate().is_err());
+        let mut changed = manifest.clone();
+        let temporary = changed
+            .participants
+            .iter_mut()
+            .find(|p| p.role == FileMutationParticipantRole::AtomicSaveTemporary)
+            .unwrap();
+        temporary.proposed_binding.kind = FileNodeKind::Directory;
+        temporary.proposed_content_revision = None;
+        temporary.projection_hash = temporary.computed_projection_hash().unwrap();
+        assert!(
+            changed.validate().is_err(),
+            "atomic saves retire their own regular temporary file"
+        );
+        let mut changed = manifest;
+        let doc = changed
+            .participants
+            .iter_mut()
+            .find(|p| p.record_id == document)
+            .unwrap();
+        doc.role = FileMutationParticipantRole::Source;
+        doc.proposed_version.provenance = FileProvenance::Rename;
+        doc.projection_hash = doc.computed_projection_hash().unwrap();
+        assert!(changed.validate().is_err());
     }
 
     /// Replacement transactions are signed, sorted and projection-bound; checked-restore manifests

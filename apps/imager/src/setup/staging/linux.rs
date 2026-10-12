@@ -19,6 +19,9 @@ use super::linux_parse::{self, MountSource, PowerSupply};
 use super::platform::{Disk, IoResult, NewPartition, Platform, SystemVolume};
 use super::probe::{Blocker, HostFacts};
 
+#[path = "linux_btrfs.rs"]
+mod btrfs;
+
 const EFIVARS: &str = "/sys/firmware/efi/efivars";
 /// `_IO(0x12, 97)`: flush and invalidate the block device buffer cache.
 const BLKFLSBUF: libc::c_ulong = 0x1261;
@@ -28,6 +31,7 @@ const FS_IMMUTABLE_FL: libc::c_int = 0x10;
 const DIRECT_ALIGN: usize = 4096;
 
 pub struct LinuxPlatform {
+    btrfs: Option<btrfs::Held>,
     /// Whole-disk node, e.g. `/dev/nvme0n1`.
     disk: PathBuf,
     efivars: PathBuf,
@@ -120,13 +124,16 @@ impl LinuxPlatform {
             None => resolve_system_disk()
                 .map_err(|b| format!("{b:?}: the system disk is unsupported"))?,
         };
-        Ok(Self {
+        let mut platform = Self {
+            btrfs: None,
             disk,
             efivars: env("TILO_STAGING_TEST_EFIVARS").unwrap_or_else(|| PathBuf::from(EFIVARS)),
             by_partuuid: PathBuf::from("/dev/disk/by-partuuid"),
             // Below /dev: temporary filesystems are often mounted nodev.
             private_nodes: PathBuf::from(format!("/dev/.tilo-staging-{}", std::process::id())),
-        })
+        };
+        platform.btrfs = btrfs::Held::discover(&platform)?;
+        Ok(platform)
     }
 
     fn disk_name(&self) -> IoResult<String> {
@@ -175,9 +182,14 @@ impl LinuxPlatform {
         })
     }
 
-    fn lock_disk(&self) -> IoResult<advisory_lock::FileLock> {
+    fn lock_disk(&self) -> IoResult<Option<advisory_lock::FileLock>> {
+        if self.btrfs.is_some() {
+            return Ok(None);
+        }
         let file = File::open(&self.disk).map_err(|e| e.to_string())?;
-        advisory_lock::FileLock::exclusive(file).map_err(|e| e.to_string())
+        advisory_lock::FileLock::exclusive(file)
+            .map(Some)
+            .map_err(|e| e.to_string())
     }
 
     fn settle(&self) {
@@ -356,6 +368,22 @@ impl Platform for LinuxPlatform {
         Ok(None)
     }
 
+    fn linux_btrfs_volume(&self) -> IoResult<Option<super::platform::LinuxBtrfsVolume>> {
+        self.btrfs.as_ref().map(|held| held.facts(self)).transpose()
+    }
+    fn resize_linux_btrfs_filesystem(&mut self, guid: &str, bytes: u64) -> IoResult<()> {
+        self.btrfs
+            .as_ref()
+            .ok_or("no admitted Btrfs root")?
+            .resize_filesystem(self, guid, bytes)
+    }
+    fn resize_linux_btrfs_partition(&mut self, guid: &str, bytes: u64) -> IoResult<()> {
+        self.btrfs
+            .as_ref()
+            .ok_or("no admitted Btrfs root")?
+            .resize_partition(self, guid, bytes)
+    }
+
     fn shrink_system_volume(&mut self, _: &str, _: u64) -> IoResult<()> {
         Err("Linux hosts use existing free space only".into())
     }
@@ -513,6 +541,11 @@ impl Platform for LinuxPlatform {
         Ok(())
     }
 
+    fn has_uefi(&self) -> bool {
+        Path::new("/sys/firmware/efi").is_dir()
+            || (self.efivars != Path::new(EFIVARS) && self.efivars.is_dir())
+    }
+
     fn get_efi_var(&self, name: &str) -> IoResult<Option<Vec<u8>>> {
         let path = self.efivar_path(name)?;
         let mut file = match File::open(&path) {
@@ -599,13 +632,8 @@ pub fn probe_facts() -> HostFacts {
         }
         Err(_) => return HostFacts::unsupported(Blocker::DiskUnsupported),
     };
-    // A test efivars directory (overrides only) stands in for the firmware.
-    let efivars_overridden = platform.efivars != Path::new(EFIVARS);
-    if !Path::new("/sys/firmware/efi").is_dir()
-        && !(efivars_overridden && platform.efivars.is_dir())
-    {
-        return HostFacts::unsupported(Blocker::NotUefi);
-    }
+    // Disk geometry is useful for preparation even when this host cannot
+    // boot the installer. Firmware remains an explicit independent blocker.
     if removable(&platform.disk) {
         return HostFacts::unsupported(Blocker::DiskUnsupported);
     }
@@ -621,11 +649,22 @@ pub fn probe_facts() -> HostFacts {
         basis: Some(super::plan::Basis {
             disk,
             system_volume: None,
+            linux_btrfs_volume: match platform.linux_btrfs_volume() {
+                Ok(volume) => volume,
+                Err(_) => return HostFacts::unsupported(Blocker::DiskUnsupported),
+            },
             firmware,
         }),
         bitlocker_protected: false,
         blockers: Vec::new(),
     };
+    if facts
+        .basis
+        .as_ref()
+        .is_some_and(|basis| !basis.firmware.uefi)
+    {
+        facts.block(Blocker::NotUefi);
+    }
     if linux_parse::on_low_battery(&power_supplies()) {
         facts.block(Blocker::OnBattery);
     }

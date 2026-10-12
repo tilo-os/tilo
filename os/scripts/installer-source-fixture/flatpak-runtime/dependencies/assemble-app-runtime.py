@@ -1,0 +1,290 @@
+#!/usr/bin/env python3
+"""Assemble the existing apps+runtime component in private final-path mounts.
+
+No OS/kernel build and no host /usr writes. The caller owns the normal native
+build admission. The result is only a staged component; tilo-vmd still owns
+source authority, import, activation and the slot lifecycle.
+"""
+import argparse
+import os
+from pathlib import Path
+import platform
+import re
+import shutil
+import subprocess
+import tempfile
+import tomllib
+
+
+def run(argv, *, env=None, capture=False):
+    return subprocess.run(argv, check=True, env=env,
+                          stdout=subprocess.PIPE if capture else None,
+                          text=capture)
+
+
+def applications(repo):
+    rows = []
+    for path in sorted((repo / 'apps').glob('*/tilo-app.toml')):
+        manifest = tomllib.loads(path.read_text())
+        cargo = tomllib.loads(path.with_name('Cargo.toml').read_text())
+        release = manifest['package'].get('runtime', '')
+        if not re.fullmatch(r'tilo-runtime/[0-9A-Za-z.-]+', release):
+            raise ValueError('apps+runtime requires an authored toolkit release')
+        entry = manifest.get('entrypoint', {}).get('bin', '')
+        if not entry.startswith('bin/') or '/' in entry[4:]:
+            raise ValueError('apps+runtime requires a native binary entrypoint')
+        rows.append((cargo['package']['name'], entry[4:], release))
+    if not rows or len({row[2] for row in rows}) != 1:
+        raise ValueError('apps+runtime must share one authored toolkit release')
+    return rows
+
+
+def selected_applications(repo, app):
+    rows = applications(repo)
+    if app is None:
+        return rows
+    if not re.fullmatch(r'[A-Za-z0-9_-]+', app):
+        raise ValueError('invalid selected application directory')
+    manifest = repo / 'apps' / app / 'tilo-app.toml'
+    if not manifest.is_file():
+        raise ValueError('selected app is outside the canonical runtime graph')
+    cargo = tomllib.loads(manifest.with_name('Cargo.toml').read_text())
+    return [row for row in rows if row[0] == cargo['package']['name']]
+
+
+def private_ancestors(path, outputs):
+    """Copy directory structure only along outputs; host siblings stay readonly."""
+    argv = ['--dir', str(path)]
+    for child in sorted(path.iterdir()):
+        if child in outputs:
+            continue
+        if any(output.is_relative_to(child) for output in outputs):
+            argv += private_ancestors(child, outputs)
+        elif child.is_symlink():
+            argv += ['--symlink', os.readlink(child), str(child)]
+        else:
+            argv += ['--ro-bind', str(child), str(child)]
+    return argv
+
+
+def namespace_command(repo, stage, tools, profile, *, packaging=False, app=None):
+    """Final-path binds preserve registry paths, with only owned outputs writable."""
+    tree = stage / 'tree'
+    runtime = tree / 'usr/lib/tilo-runtime'
+    store = tree / 'usr/share/tilo-apps'
+    pins = tree / 'usr/share/tilo'
+    for path in (runtime, store, pins, stage / 'home', stage / 'work'):
+        path.mkdir(parents=True, exist_ok=True)
+    for name in ('runtime-bundle-publisher.hex', 'app-publisher.hex',
+                 'browser-runtime-publisher.hex'):
+        if not packaging:
+            (pins / name).write_text('')
+            (pins / name).chmod(0o644)
+    if not packaging:
+        shutil.copyfile(repo / 'os/registry-runtime-publisher.hex',
+                        pins / 'registry-runtime-publisher.hex')
+        (pins / 'registry-runtime-publisher.hex').chmod(0o644)
+        (stage / 'work/trusted-publishers.txt').write_text('')
+    argv = ['bwrap', '--die-with-parent', '--new-session', '--unshare-all', '--uid', '0', '--gid', '0',
+            '--ro-bind', '/', '/', '--dev', '/dev', '--proc', '/proc',
+            '--tmpfs', '/tmp', '--tmpfs', '/usr', '--tmpfs', '/etc']
+    outputs = {Path('/usr/lib/tilo-runtime'), Path('/usr/share/tilo-apps'),
+               Path('/usr/share/tilo'), Path('/etc/tilo')}
+    argv += private_ancestors(Path('/usr'), outputs)
+    argv += private_ancestors(Path('/etc'), outputs)
+    argv += ['--bind', str(stage), str(stage),
+            '--bind', str(runtime), '/usr/lib/tilo-runtime',
+            '--bind', str(store), '/usr/share/tilo-apps',
+            '--dir', '/usr/share/tilo', '--dir', '/etc/tilo',
+            '--bind', str(stage / 'work/trusted-publishers.txt'),
+            '/etc/tilo/runtime-bundle-trusted-publishers.txt']
+    for pin in sorted(pins.iterdir()):
+        readonly = packaging and pin.name != 'app-publisher.hex'
+        argv += ['--ro-bind' if readonly else '--bind', str(pin), '/usr/share/tilo/' + pin.name]
+    for variable in ('HOME', 'XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'XDG_STATE_HOME',
+                     'XDG_CACHE_HOME', 'XDG_RUNTIME_DIR'):
+        argv += ['--setenv', variable, str(stage / 'home')]
+    argv += ['--setenv', 'TMPDIR', '/tmp',
+             '--unsetenv', 'LD_PRELOAD', '--unsetenv', 'LD_LIBRARY_PATH',
+             '--chdir', str(repo), 'python3', str(Path(__file__).resolve()),
+             '--inside', '--repo', str(repo), '--target-dir', str(tools),
+             '--profile', profile, '--stage', str(stage)]
+    if app is not None:
+        argv += ['--app', app]
+    if packaging:
+        argv += ['--packaging']
+    return argv
+
+
+def profile_directory(profile):
+    return 'debug' if profile == 'dev' else profile
+
+
+def native_dependencies(objects, dependency_env):
+    """Collect the native closure of every ELF before signing its SDK."""
+    paths = set()
+    for binary in objects:
+        report = run(['ldd', str(binary)], env=dependency_env, capture=True).stdout
+        if 'not found' in report:
+            raise ValueError(f'{binary} has unresolved native dependencies')
+        paths.update(map(Path, re.findall(r'(?:=>\s*)?(/[^\s()]+)', report)))
+    return sorted(paths)
+
+
+def assemble_inside(args):
+    repo, target, stage = args.repo, args.target_dir, args.stage
+    rows = applications(repo)
+    binaries = [target / profile_directory(args.profile) / row[1] for row in rows]
+    if any(not binary.is_file() for binary in binaries):
+        raise ValueError('a required cohort binary is absent; refusing a partial store')
+    toolkit = target / profile_directory(args.profile) / 'libruntime_dylib.so'
+    libdir = Path(run(['rustc', '--print', 'target-libdir'], capture=True).stdout.strip())
+    std = sorted(libdir.glob('libstd-*.so'))
+    if len(std) != 1 or not toolkit.is_file():
+        raise ValueError('the exact graph toolkit or Rust standard library is missing')
+    dependency_env = dict(os.environ, LD_LIBRARY_PATH=f'{toolkit.parent}:{libdir}')
+    launcher = target / 'release/tilo-launcher'
+    if not launcher.is_file() or launcher.is_symlink() or not os.access(launcher, os.X_OK):
+        raise ValueError('the canonical compiled runtime launcher is absent or unsafe')
+    probe = toolkit.parent / 'tilo-runtime-account-capability'
+    if not probe.is_file() or probe.is_symlink() or not os.access(probe, os.X_OK):
+        raise ValueError('the SDK-linked account capability probe is absent or unsafe')
+    bwrap = Path('/usr/bin/bwrap')
+    if not bwrap.is_file() or bwrap.is_symlink() or not os.access(bwrap, os.X_OK):
+        raise ValueError('the canonical build bwrap executable is missing')
+    bwrap_help = run([str(bwrap), '--help'], env=dict(os.environ, LC_ALL='C'), capture=True).stdout
+    if not re.search(r'^\s*--args\s+FD\s+Parse NUL-separated args from FD', bwrap_help, re.MULTILINE):
+        raise ValueError('canonical bwrap lacks native NUL-separated --args transport')
+    closure = native_dependencies([toolkit, launcher, probe, bwrap, *binaries], dependency_env)
+    includes = list(dict.fromkeys([toolkit, std[0], *closure]))
+    bundle = target / 'release/tilo-runtime-bundle'
+    identity = stage / 'work/runtime-identity.json'
+    version_file = stage / 'work/runtime-version'
+    run([str(bundle), 'key', 'generate', '--out', str(identity)])
+    try:
+        command = [str(bundle), 'build', '--release', rows[0][2].split('/')[1],
+                   '--arch', platform.machine(), '--from', '/',
+                   '--include-bin', str(launcher), '--include-bin', str(probe),
+                   '--include-bin', str(bwrap),
+                   '--identity', str(identity), '--out-root', '/usr/lib/tilo-runtime',
+                   '--version-out', str(version_file)]
+        for path in includes:
+            command += ['--include', str(path)]
+        run(command)
+        publisher = run([str(bundle), 'key', 'pubkey', '--identity', str(identity)],
+                        capture=True).stdout.strip()
+        if not re.fullmatch(r'[0-9a-f]{64}', publisher):
+            raise ValueError('runtime publisher is malformed')
+        (stage / 'tree/usr/share/tilo/runtime-bundle-publisher.hex').write_text(publisher + '\n')
+        (stage / 'work/trusted-publishers.txt').write_text(publisher + '\n')
+    finally:
+        identity.unlink(missing_ok=True)
+    version = version_file.read_text().strip()
+    (stage / 'tree/usr/share/tilo/runtime-version').write_text(version + '\n')
+    runtime = Path('/usr/lib/tilo-runtime') / version
+    run([str(bundle), 'verify', str(runtime), '--require-publisher', publisher,
+         '--require-signature', '--require-arch', platform.machine()])
+    run(['bash', str(repo / 'os/scripts/verify-runtime-bundle-closure.sh'),
+         str(runtime), *map(str, binaries)])
+    # Packing happens in a fresh namespace with immutable generated pins.
+
+
+def package_inside(args):
+    repo, target, stage = args.repo, args.target_dir, args.stage
+    rows = selected_applications(repo, args.app)
+    version = (stage / 'work/runtime-version').read_text().strip()
+    bundle = target / 'release/tilo-runtime-bundle'
+    env = dict(os.environ, REPO=str(repo), STORE='/usr/share/tilo-apps',
+               BIN_DIR=str(target / profile_directory(args.profile)),
+               PKG_BIN=str(target / 'release/tilo-app-package'),
+               INSTALL_BIN=str(target / 'release/tilo-install'),
+               BUNDLE_BIN=str(bundle), SHIM_BIN=str(target / 'release/tilo-cli-shim'),
+               PUBKEY_OUT=str(stage / 'tree/usr/share/tilo/app-publisher.hex'),
+               RUNTIME_ID='tilo-runtime/' + version, REQUIRE_MIN=str(len(rows)))
+    if args.app is not None:
+        env.update(APP_DIR=args.app, TAPP_OUT=str(stage / 'work/selected.tapp'),
+                   STAGE=str(stage / 'work/selected-pack'))
+    else:
+        env['COHORT_TAPP_DIR'] = '/usr/share/tilo-apps/cohort'
+    run(['bash', str(repo / 'os/scripts/pack-apps.sh')], env=env)
+
+
+
+def assemble(args):
+    repo, target = args.repo.resolve(), args.target_dir.resolve()
+    rows = applications(repo)
+    if args.dest is not None and args.dest.exists() and any(args.dest.iterdir()):
+        raise ValueError('component destination must be empty')
+    cargo = os.environ.get('CARGO', 'cargo')
+    tools_env = dict(os.environ, CARGO_PROFILE_RELEASE_LTO='off',
+                     CARGO_PROFILE_RELEASE_CODEGEN_UNITS='16')
+    run([cargo, 'build', '--locked', '--release', '-p', 'runtime-bundle',
+         '-p', 'tilo-app-package-cli', '-p', 'install', '-p', 'cli-shim',
+         '-p', 'launcher'],
+        env=tools_env)
+    env = dict(os.environ, REPO=str(repo), TARGET_DIR=str(target),
+               PROFILE=args.profile, APP_FEATURES=args.features)
+    for variable in ('EXCLUDE_PACKAGES', 'INCLUDE_PACKAGES', 'BUILD_PACKAGES', 'EXTRA_CARGO_ARGS'):
+        env.pop(variable, None)
+    # The SDK is shared by the complete collection, including native libraries
+    # linked only by an app. Warm unchanged targets are reused by Cargo; a
+    # selected update packages only that app but derives the same complete SDK.
+    run(['bash', str(repo / 'os/scripts/build-thin-apps.sh')], env=env)
+    for _, binary, _ in selected_applications(repo, args.app):
+        if not (target / profile_directory(args.profile) / binary).is_file():
+            raise ValueError('full cohort build did not produce all applications')
+    with tempfile.TemporaryDirectory(prefix='app-runtime-', dir=target) as directory:
+        stage = Path(directory)
+        run(namespace_command(repo, stage, target, args.profile, app=args.app))
+        run(namespace_command(repo, stage, target, args.profile, packaging=True, app=args.app))
+        if args.app is not None:
+            shutil.copyfile(stage / 'work/selected.tapp', args.tapp_out)
+            return
+        for path in (stage / 'tree').rglob('*'):
+            if path.is_dir() and not path.is_symlink():
+                path.chmod(0o755)
+        # The ephemeral keys/home/work are outside tree and never exported.
+        shutil.copytree(stage / 'tree', args.dest, dirs_exist_ok=True)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--repo', type=Path, required=True)
+    parser.add_argument('--target-dir', type=Path, required=True)
+    parser.add_argument('--profile', required=True)
+    parser.add_argument('--features')
+    parser.add_argument('--app')
+    parser.add_argument('--tapp-out', type=Path)
+    parser.add_argument('--dest', type=Path)
+    parser.add_argument('--inside', action='store_true', help=argparse.SUPPRESS)
+    parser.add_argument('--stage', type=Path, help=argparse.SUPPRESS)
+    parser.add_argument('--packaging', action='store_true', help=argparse.SUPPRESS)
+    args = parser.parse_args()
+    if not re.fullmatch(r'[A-Za-z0-9_-]+', args.profile):
+        parser.error('invalid build profile')
+    if args.features is None:
+        components = tomllib.loads((args.repo / 'os/components.toml').read_text())['component']
+        cohort = next(row for row in components if row['name'] == 'apps+runtime')
+        if args.profile != cohort.get('profile'):
+            parser.error('selected app must use the canonical cohort profile')
+        args.features = ','.join(cohort.get('features', []))
+    if args.app is not None:
+        selected_applications(args.repo, args.app)
+    if args.inside:
+        if args.stage is None:
+            parser.error('private assembly needs its owned stage')
+        if args.packaging:
+            package_inside(args)
+        else:
+            assemble_inside(args)
+    else:
+        if args.app is not None:
+            if args.tapp_out is None or args.dest is not None:
+                parser.error('selected app needs only --tapp-out')
+        elif args.dest is None or args.tapp_out is not None:
+            parser.error('assembly needs only a component destination')
+        assemble(args)
+
+
+if __name__ == '__main__':
+    main()

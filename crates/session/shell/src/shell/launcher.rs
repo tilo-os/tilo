@@ -13,6 +13,8 @@
 //! through [`drain_events`], drained once per frame.
 
 pub(crate) mod diagnostics;
+#[cfg(target_os = "linux")]
+pub(crate) mod retained_home;
 
 use crate::shell::state::WorkspaceAuthority as _;
 pub(crate) mod action_authority;
@@ -25,10 +27,12 @@ use std::process::Stdio;
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsStr;
 #[cfg(any(test, target_os = "linux"))]
-use std::io::Read;
+use std::io::{self, Read};
+#[cfg(target_os = "linux")]
+use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{LazyLock, Mutex};
+use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::shell::state::{RoomId, Workspace};
@@ -1554,6 +1558,96 @@ fn attach_trusted_identities_projection(
     Ok(())
 }
 
+type RetainedLocations = HashMap<RoomId, Option<(String, PathBuf)>>;
+static RETAINED_FILES: std::sync::LazyLock<Mutex<RetainedLocations>> =
+    std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
+
+fn retained_files_path(room: RoomId) -> PathBuf {
+    runtime_dir()
+        .join("tilo/retained-files")
+        .join(room.to_string())
+        .join("locations.json")
+}
+
+pub(crate) fn set_retained_files(room: RoomId, location: Option<(&str, &Path)>) -> bool {
+    let location = location.map(|(operation, path)| (operation.to_owned(), path.to_path_buf()));
+    let changed = {
+        let mut locations = lock(&RETAINED_FILES);
+        if locations.get(&room) == Some(&location) {
+            false
+        } else {
+            locations.insert(room, location.clone());
+            true
+        }
+    };
+    if changed && let Err(error) = write_retained_files(room, location.as_ref()) {
+        tracing::warn!(%room, %error, "Could not publish retained Files location");
+    }
+    changed
+}
+
+pub(crate) fn clear_retained_files() {
+    let rooms: Vec<_> = lock(&RETAINED_FILES).keys().copied().collect();
+    for room in rooms {
+        set_retained_files(room, None);
+    }
+}
+
+fn write_retained_files(
+    room: RoomId,
+    location: Option<&(String, PathBuf)>,
+) -> std::io::Result<PathBuf> {
+    let locations: Vec<_> = location
+        .into_iter()
+        .map(|(id, path)| serde_json::json!({"id":id,"path":path}))
+        .collect();
+    let bytes = serde_json::to_vec(&serde_json::json!({"schema":1,"locations":locations}))?;
+    if bytes.len() > 16 * 1024 {
+        return Err(std::io::Error::other(
+            "Retained Files projection exceeds bounds",
+        ));
+    }
+    let path = retained_files_path(room);
+    tilo_files::native::atomic::write_private(&path, &bytes)?;
+    Ok(path)
+}
+
+// Session authority comes only from the first-use helper's verified result.
+// Kept outside the onboarding view so finishing setup does not revoke delivery.
+static BROWSER_CONTINUITY: LazyLock<Mutex<Option<PathBuf>>> = LazyLock::new(|| Mutex::new(None));
+
+pub(crate) fn set_browser_continuity(projection: Option<PathBuf>) {
+    *lock(&BROWSER_CONTINUITY) = projection;
+}
+
+fn attach_browser_continuity(package_id: &str, command: &mut LaunchCommand) {
+    if package_id != "so.tilo.browser" {
+        return;
+    }
+    let projection = lock(&BROWSER_CONTINUITY).clone();
+    if let Some(path) = projection
+        && crate::onboarding_browser::validate_published_projection(&path)
+    {
+        command.args.push("--browser-continuity".into());
+        command.args.push(path.display().to_string());
+    }
+}
+
+fn attach_retained_files(
+    app: &InstalledApp,
+    room: RoomId,
+    command: &mut LaunchCommand,
+) -> std::io::Result<()> {
+    if app.package_id != FILES_PACKAGE_ID {
+        return Ok(());
+    }
+    let location = lock(&RETAINED_FILES).get(&room).cloned().flatten();
+    let path = write_retained_files(room, location.as_ref())?;
+    command.args.push("--retained-files".into());
+    command.args.push(path.display().to_string());
+    Ok(())
+}
+
 /// Write `grants` where `tilo-launcher --capabilities` will read them. Each launch owns a private immutable snapshot until its supervisor
 /// drops the file. `Ok(None)` means no file or flag: manifest permissions alone.
 fn write_capabilities_file(
@@ -2775,12 +2869,15 @@ fn execute_installed_with_context(
         LaunchContext::Raw(context),
         None,
         None,
+        None,
     )
 }
 
 /// The launcher's typed context channel: a validated tool intent, or a
 /// shell-built context for one specific package.
 enum LaunchContext<'a> {
+    #[cfg(target_os = "linux")]
+    SelectedOpen(&'a Arc<retained_home::selected_target::SelectedContinuation>),
     None,
     Tool(&'a ToolIntent),
     Raw(String),
@@ -2803,6 +2900,7 @@ fn execute_installed(
         tool_intent.map_or(LaunchContext::None, LaunchContext::Tool),
         media_handoff,
         capability_snapshot,
+        None,
     )
 }
 
@@ -2852,7 +2950,26 @@ fn execute_installed_inner(
     context: LaunchContext<'_>,
     media_handoff: Option<MediaHandoffLaunch>,
     capability_snapshot: Option<LaunchGrants>,
+    native_owner: Option<super::native_workspace_owner::NativeWorkspaceOwner>,
 ) -> Result<InstalledApp, LaunchError> {
+    #[cfg(target_os = "linux")]
+    let retained = if document.is_none() && uri.is_none() && matches!(&context, LaunchContext::None)
+    {
+        retained_home::FilesHomeLaunch::select(&app, room, native_owner.as_ref()).map_err(
+            |error| LaunchError::IdentityUnavailable {
+                detail: error.to_string(),
+            },
+        )?
+    } else {
+        None
+    };
+    #[cfg(not(target_os = "linux"))]
+    drop(native_owner);
+    #[cfg(target_os = "linux")]
+    let selected_open = match &context {
+        LaunchContext::SelectedOpen(selected) => Some((*selected).clone()),
+        _ => None,
+    };
     tracing::info!(target: "tilo::launch_probe", package_id = %app.package_id, "launch preflight begin");
     tilo_startup_metrics::launch_phase(&app.package_id, "preflight");
     let socket = wayland_socket().ok_or(LaunchError::NoDisplay)?;
@@ -2928,6 +3045,17 @@ fn execute_installed_inner(
         ));
     }
     match context {
+        #[cfg(target_os = "linux")]
+        LaunchContext::SelectedOpen(selected) => {
+            if document.is_some() || uri.is_some() {
+                return Err(LaunchError::RegistryUnreadable {
+                    detail: "selected open cannot borrow a host path or URI".into(),
+                });
+            }
+            command
+                .args
+                .extend(["--open".into(), selected.destination().into()]);
+        }
         LaunchContext::None => {}
         LaunchContext::Tool(intent) => {
             // Validation happens at the service boundary too; repeat it here so
@@ -2955,13 +3083,48 @@ fn execute_installed_inner(
             app.package_id
         );
     }
+    #[cfg(target_os = "linux")]
+    let retained_projection = if let Some(retained) = &retained {
+        Some(retained.attach_projection(&mut command).map_err(|error| {
+            LaunchError::RegistryUnreadable {
+                detail: error.to_string(),
+            }
+        })?)
+    } else {
+        None
+    };
+    #[cfg(target_os = "linux")]
+    let ordinary_projection = retained.is_none() && selected_open.is_none();
+    #[cfg(not(target_os = "linux"))]
+    let ordinary_projection = true;
+    if ordinary_projection {
+        attach_retained_files(&app, room, &mut command).map_err(|error| {
+            LaunchError::RegistryUnreadable {
+                detail: format!("Could not stage retained Files projection: {error}"),
+            }
+        })?;
+    }
     let authority_lease =
         attach_sandbox_authority(&app, room, &mut command, capabilities, capabilities_file)?;
     tracing::info!(target: "tilo::launch_probe", package_id = %app.package_id, "governance projection staged");
     tilo_startup_metrics::launch_phase(&app.package_id, "authority");
     remember_launch(&app);
-    spawn_detached(app.clone(), command, authority_lease)
-        .map_err(|detail| LaunchError::AgentLaunchWorkerUnavailable { detail })?;
+    #[cfg(target_os = "linux")]
+    let launched = if let Some(selected) = selected_open {
+        selected
+            .dispatch(app.clone(), command, authority_lease, native_owner)
+            .map_err(|error| error.to_string())
+    } else {
+        match retained {
+            Some(retained) => retained
+                .dispatch(app.clone(), command, authority_lease, retained_projection)
+                .map_err(|error| error.to_string()),
+            None => spawn_detached(app.clone(), command, authority_lease),
+        }
+    };
+    #[cfg(not(target_os = "linux"))]
+    let launched = spawn_detached(app.clone(), command, authority_lease);
+    launched.map_err(|detail| LaunchError::AgentLaunchWorkerUnavailable { detail })?;
     tracing::info!(target: "tilo::launch_probe", package_id = %app.package_id, "launch worker queued");
     Ok(app)
 }
@@ -3013,7 +3176,13 @@ pub fn queue_launch_target_in_workspace(
     uri: Option<String>,
 ) -> Result<(), LaunchError> {
     let grants = workspace.launch_grants(tilo_clock::unix_now());
-    queue_prepared_launch(app, workspace.room, move || Ok(grants), uri)
+    queue_prepared_launch(
+        app,
+        workspace.room,
+        move || Ok(grants),
+        uri.map(PreparedNavigation::Uri),
+        None,
+    )
 }
 
 /// A retained host notification resolves its verified package on the same
@@ -3093,6 +3262,7 @@ pub(crate) fn queue_native_authoring_launch(
     room: RoomId,
     opening: Option<NativeAppOpening>,
 ) -> Result<(), LaunchError> {
+    let native_owner = tree.read().installed_native_owner();
     let package = app.package_id.clone();
     let expected = tree
         .read()
@@ -3153,6 +3323,7 @@ pub(crate) fn queue_native_authoring_launch(
             prepare().map_err(|detail| LaunchError::IdentityUnavailable { detail })
         },
         None,
+        native_owner,
     )
 }
 
@@ -3169,6 +3340,7 @@ pub(crate) fn queue_observed_native_launch(
     room: RoomId,
     original: tilo_action_broker::services::ObservedApplicationLaunch,
 ) -> Result<(), LaunchError> {
+    let native_owner = tree.read().installed_native_owner();
     let package = app.package_id.clone();
     queue_prepared_launch(
         app,
@@ -3178,6 +3350,36 @@ pub(crate) fn queue_observed_native_launch(
                 .map_err(|detail| LaunchError::IdentityUnavailable { detail })
         },
         None,
+        native_owner,
+    )
+}
+
+enum PreparedNavigation {
+    Uri(String),
+    #[cfg(target_os = "linux")]
+    SelectedOpen(Arc<retained_home::selected_target::SelectedContinuation>),
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn queue_selected_open(
+    app: InstalledApp,
+    tree: super::state::WorkspaceTreeHandle,
+    selected: Arc<retained_home::selected_target::SelectedContinuation>,
+) -> Result<(), LaunchError> {
+    let room = selected.room();
+    let owner = tree.read().installed_native_owner();
+    let package = app.package_id.clone();
+    let prepare_selected = selected.clone();
+    queue_prepared_launch(
+        app,
+        room,
+        move || {
+            prepare_selected
+                .prepare_workspace(&tree, &package)
+                .map_err(|detail| LaunchError::IdentityUnavailable { detail })
+        },
+        Some(PreparedNavigation::SelectedOpen(selected)),
+        owner,
     )
 }
 
@@ -3305,7 +3507,8 @@ fn queue_prepared_launch(
     app: InstalledApp,
     room: RoomId,
     prepare: impl FnOnce() -> Result<LaunchGrants, LaunchError> + Send + 'static,
-    uri: Option<String>,
+    navigation: Option<PreparedNavigation>,
+    native_owner: Option<super::native_workspace_owner::NativeWorkspaceOwner>,
 ) -> Result<(), LaunchError> {
     let package_id = app.package_id.clone();
     let display_name = app.display_name.clone();
@@ -3313,9 +3516,30 @@ fn queue_prepared_launch(
         std::thread::Builder::new().name("tilo-launch-preflight".to_string()),
         super::launch_readiness::inherit(move || {
             let outcome = prepare().and_then(|grants| {
-                execute_installed(app, room, None, uri.as_deref(), None, None, Some(grants))
+                let (uri, context) = match &navigation {
+                    Some(PreparedNavigation::Uri(uri)) => (Some(uri.as_str()), LaunchContext::None),
+                    #[cfg(target_os = "linux")]
+                    Some(PreparedNavigation::SelectedOpen(selected)) => {
+                        (None, LaunchContext::SelectedOpen(selected))
+                    }
+                    None => (None, LaunchContext::None),
+                };
+                execute_installed_inner(
+                    app,
+                    room,
+                    None,
+                    uri,
+                    context,
+                    None,
+                    Some(grants),
+                    native_owner,
+                )
             });
             if let Err(error) = outcome {
+                #[cfg(target_os = "linux")]
+                if let Some(PreparedNavigation::SelectedOpen(selected)) = &navigation {
+                    selected.report_error(error.user_message());
+                }
                 super::launch_readiness::fail_current(error.user_message());
                 push_event(LaunchEvent {
                     package_id,
@@ -3416,6 +3640,73 @@ pub fn launch_uri_in_workspace(
     )
 }
 
+#[cfg(any(test, target_os = "linux"))]
+enum SupervisedLaunchGate {
+    Local(launcher::registration_gate::RegistrationGate),
+    #[cfg(target_os = "linux")]
+    Retained(UnixStream),
+}
+
+/// Same launch supervision, with root retaining actual Child/reap custody for
+/// the private outer mount namespace. This never constructs Child from a PID.
+#[cfg(any(test, target_os = "linux"))]
+enum SupervisedLaunchChild {
+    Local(std::process::Child),
+    #[cfg(target_os = "linux")]
+    Retained(launcher::ordinary_child::PreparedOrdinaryChild),
+}
+#[cfg(any(test, target_os = "linux"))]
+impl SupervisedLaunchChild {
+    #[cfg(target_os = "linux")]
+    fn retained(&self) -> io::Result<&launcher::ordinary_child::PreparedOrdinaryChild> {
+        match self {
+            Self::Retained(child) => Ok(child),
+            Self::Local(_) => Err(io::ErrorKind::PermissionDenied.into()),
+        }
+    }
+    fn id(&self) -> u32 {
+        match self {
+            Self::Local(child) => child.id(),
+            #[cfg(target_os = "linux")]
+            Self::Retained(child) => child.id(),
+        }
+    }
+    fn kill(&mut self) -> io::Result<()> {
+        match self {
+            Self::Local(child) => child.kill(),
+            #[cfg(target_os = "linux")]
+            Self::Retained(child) => child.kill(),
+        }
+    }
+    fn wait(&mut self) -> io::Result<std::process::ExitStatus> {
+        match self {
+            Self::Local(child) => child.wait(),
+            #[cfg(target_os = "linux")]
+            Self::Retained(child) => child.wait(),
+        }
+    }
+    fn stdout(&mut self) -> Option<std::fs::File> {
+        match self {
+            Self::Local(child) => child
+                .stdout
+                .take()
+                .map(|pipe| std::fs::File::from(std::os::fd::OwnedFd::from(pipe))),
+            #[cfg(target_os = "linux")]
+            Self::Retained(child) => child.take_stdout(),
+        }
+    }
+    fn stderr(&mut self) -> Option<std::fs::File> {
+        match self {
+            Self::Local(child) => child
+                .stderr
+                .take()
+                .map(|pipe| std::fs::File::from(std::os::fd::OwnedFd::from(pipe))),
+            #[cfg(target_os = "linux")]
+            Self::Retained(child) => child.take_stderr(),
+        }
+    }
+}
+
 /// Run `command` on a worker thread and report the outcome through
 /// [`LaunchSession`]; the thread lives as long as the app does.
 fn spawn_detached(
@@ -3467,6 +3758,8 @@ fn apply_launch_env_with(
 #[derive(Debug)]
 struct HeldLaunch {
     authority: Option<action_authority::Lease>,
+    #[cfg(target_os = "linux")]
+    retained: Option<retained_home::Registration>,
     package_id: String,
     display_name: String,
     command: LaunchCommand,
@@ -3503,6 +3796,8 @@ pub fn release_held_launches() {
             held.command,
             &session,
             held.authority,
+            #[cfg(target_os = "linux")]
+            held.retained,
         );
     });
 }
@@ -3571,6 +3866,12 @@ fn admit_launch(
         // another invocation's queued worker or adopted window.
         key_args.push(format!("startup-observation:{token}"));
     }
+    #[cfg(target_os = "linux")]
+    if let Some(retained) = &launch.retained {
+        // A root-owned operation cannot be collapsed into an unrelated normal
+        // palette launch or another operation's held namespace endpoint.
+        key_args.push(format!("retained-home:{}", retained.operation_id()));
+    }
     let key = (
         launch.package_id.clone(),
         launch.command.program.clone(),
@@ -3618,6 +3919,8 @@ fn spawn_launch_with_authority(
         &session.gate,
         HeldLaunch {
             authority,
+            #[cfg(target_os = "linux")]
+            retained: None,
             package_id,
             display_name,
             command,
@@ -3629,6 +3932,8 @@ fn spawn_launch_with_authority(
                 held.command,
                 &session,
                 held.authority,
+                #[cfg(target_os = "linux")]
+                held.retained,
             )
         },
         |event| session.push(event),
@@ -3654,6 +3959,7 @@ fn start_launch(
     command: LaunchCommand,
     events: &LaunchSession,
     authority: Option<action_authority::Lease>,
+    #[cfg(target_os = "linux")] retained: Option<retained_home::Registration>,
 ) -> Result<(), String> {
     #[cfg(test)]
     #[cfg(not(target_os = "linux"))]
@@ -3681,6 +3987,8 @@ fn start_launch(
     let startup_token = super::launch_readiness::command_token(&command);
     let spawn_result = builder.spawn(move || {
         let mut authority_lease = authority;
+        #[cfg(target_os = "linux")]
+        let mut retained = retained;
         let events = worker_events;
         events.clone().adopt();
         if let Err(detail) = wait_for_retiring_app(
@@ -3700,6 +4008,8 @@ fn start_launch(
         }
         // Includes any wait for the previous window of this app to retire.
         tilo_startup_metrics::launch_phase(&app.package_id, "worker");
+        let mut command = command;
+        attach_browser_continuity(&app.package_id, &mut command);
         let mut cmd = Command::new(&command.program);
         cmd.args(&command.args);
         apply_launch_env(&mut cmd, &command.env);
@@ -3713,12 +4023,30 @@ fn start_launch(
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
 
-        // The launcher waits on this gate, its stdin, before any launch work;
-        // see `launcher::registration_gate`. Nothing here may add a
-        // `pre_exec` hook: with one, `spawn` forks the whole compositor
-        // instead of using `posix_spawn`.
-        let launch_gate = match launcher::registration_gate::install(&mut cmd) {
-            Ok(gate) => gate,
+        // Ordinary launches retain main's stdin gate and posix_spawn behavior.
+        let mut local = || {
+            let gate = launcher::registration_gate::install(&mut cmd)?;
+            let child = cmd.spawn()?;
+            Ok((
+                SupervisedLaunchChild::Local(child),
+                SupervisedLaunchGate::Local(gate),
+            ))
+        };
+        #[cfg(target_os = "linux")]
+        let owned: io::Result<_> = match retained.as_mut() {
+            Some(registration) => registration.take_prepared_child().and_then(|mut child| {
+                let gate = child.gate()?;
+                Ok((
+                    SupervisedLaunchChild::Retained(child),
+                    SupervisedLaunchGate::Retained(gate),
+                ))
+            }),
+            None => local(),
+        };
+        #[cfg(not(target_os = "linux"))]
+        let owned: io::Result<_> = local();
+        let (mut child, launch_gate) = match owned {
+            Ok(owned) => owned,
             Err(error) => {
                 events.startup.fail(startup_token, error.to_string());
                 events.push(LaunchEvent {
@@ -3728,23 +4056,6 @@ fn start_launch(
                     managed_workspace_id: app.managed_workspace_id.clone(),
                     kind: LaunchEventKind::SpawnFailed {
                         detail: error.to_string(),
-                    },
-                });
-                return;
-            }
-        };
-
-        let mut child = match cmd.spawn() {
-            Ok(c) => c,
-            Err(e) => {
-                events.startup.fail(startup_token, e.to_string());
-                events.push(LaunchEvent {
-                    package_id: app.package_id.clone(),
-                    display_name: app.display_name.clone(),
-                    managed_agent_id: app.managed_agent_id.clone(),
-                    managed_workspace_id: app.managed_workspace_id.clone(),
-                    kind: LaunchEventKind::SpawnFailed {
-                        detail: e.to_string(),
                     },
                 });
                 return;
@@ -3808,7 +4119,38 @@ fn start_launch(
         });
         // The child cannot exec the launcher (and therefore cannot reach the
         // public Wayland socket) until both registries above are complete.
-        let _ = launch_gate.release();
+        let release = match launch_gate {
+            SupervisedLaunchGate::Local(gate) => gate.release(),
+            #[cfg(target_os = "linux")]
+            SupervisedLaunchGate::Retained(gate) => match retained {
+                Some(registration) => child.retained().and_then(|owned| {
+                    registration.release(
+                        &gate,
+                        child.id(),
+                        &command,
+                        authority_lease.as_mut(),
+                        owned,
+                    )
+                }),
+                None => Err(io::ErrorKind::PermissionDenied.into()),
+            },
+        };
+        if let Err(error) = release {
+            let _ = child.kill();
+            let _ = child.wait();
+            unregister_launched_process(child.id());
+            events.startup.fail(startup_token, error.to_string());
+            events.push(LaunchEvent {
+                package_id: app.package_id.clone(),
+                display_name: app.display_name.clone(),
+                managed_agent_id: app.managed_agent_id.clone(),
+                managed_workspace_id: app.managed_workspace_id.clone(),
+                kind: LaunchEventKind::SpawnFailed {
+                    detail: error.to_string(),
+                },
+            });
+            return;
+        }
 
         // Drain both pipes concurrently. A GUI normally keeps both streams
         // open for its entire lifetime, so reading either one to EOF before
@@ -3816,7 +4158,7 @@ fn start_launch(
         // wait. Worse, a child filling the other pipe would deadlock both
         // processes. The joins below happen only after the child exits and
         // closes its inherited descriptors.
-        if let Some(stdout) = child.stdout.take() {
+        if let Some(stdout) = child.stdout() {
             let tag = app.package_id.clone();
             let _ = std::thread::Builder::new()
                 .name("tilo-app-stdout".to_string())
@@ -3830,7 +4172,7 @@ fn start_launch(
         // stderr is both echoed and kept (last N lines) for the failure
         // notification.
         let stderr_tag = app.package_id.clone();
-        let stderr_drain = child.stderr.take().and_then(|stderr| {
+        let stderr_drain = child.stderr().and_then(|stderr| {
             std::thread::Builder::new()
                 .name("tilo-app-stderr".to_string())
                 .spawn(move || {
@@ -4705,6 +5047,8 @@ mod tests {
     fn held(package_id: &str, args: &[&str]) -> HeldLaunch {
         HeldLaunch {
             authority: None,
+            #[cfg(target_os = "linux")]
+            retained: None,
             package_id: package_id.into(),
             display_name: package_id.into(),
             command: LaunchCommand {
@@ -6845,7 +7189,15 @@ mod tests {
             wait_for_retiring_app(&package, &command, std::time::Duration::from_millis(1)).is_err()
         );
         let session = LaunchSession::current();
-        start_launch(package.clone(), package.clone(), command, &session, None).unwrap();
+        start_launch(
+            package.clone(),
+            package.clone(),
+            command,
+            &session,
+            None,
+            None,
+        )
+        .unwrap();
         std::thread::sleep(std::time::Duration::from_millis(250));
         assert!(
             !replacement.exists(),
@@ -7516,3 +7868,6 @@ mod tests {
         files_launch_receives_only_the_staged_projection_path();
     }
 }
+
+#[cfg(target_os = "linux")]
+pub(crate) mod original_copy;

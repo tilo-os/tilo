@@ -145,6 +145,21 @@ impl VaultFormat {
         envelope::open(key, Context::new(Label::SecretVault, &identity), blob).ok()
     }
 
+    /// Read an existing key without creating files, changing permissions, locking,
+    /// publishing a key or migrating its custody. Missing or invalid keys fail closed.
+    pub fn read_existing_key(&self, dir: &Path, custody: Custody) -> Option<VaultKey> {
+        match custody {
+            Custody::System => self.lookup_system_key(&self.system_store()).ok().flatten(),
+            Custody::LocalFile => {
+                key_from_bytes(read_key_bytes(&dir.join(KEY_FILE)).ok()?.as_slice())
+            }
+            #[cfg(windows)]
+            Custody::WindowsDpapi => {
+                key_from_bytes(windows::read_existing_key(self, dir).ok()?.as_slice())
+            }
+        }
+    }
+
     /// Load the key for the vault in `dir`, creating one on first use.
     ///
     /// `None` when the key can neither be read nor safely created: an

@@ -34,12 +34,14 @@ default = ["custody"]
 # against. Without it the crate is the client registrations and provider
 # descriptors only, for builds that must stay free of the TLS/HTTP stack.
 custody = [
+    "dep:browser-continuity",
     "tilo-oauth/client",
     "dep:tilo-net",
     "dep:reqwest",
     "dep:serde_json",
     "dep:url",
     "dep:zeroize",
+    "dep:sha2",
     "dep:cloud-source",
     "dep:cloud-source-gdrive",
     "dep:cloud-source-onedrive",
@@ -51,6 +53,7 @@ custody = [
 ]
 
 [dependencies]
+browser-continuity = { path = "../../browser/browser-continuity", optional = true }
 accounts = { path = "../accounts" }
 tilo-oauth = { path = "../tilo-oauth", default-features = false }
 serde.workspace = true
@@ -62,6 +65,7 @@ reqwest = { workspace = true, optional = true, features = ["blocking"] }
 serde_json = { workspace = true, optional = true }
 url = { workspace = true, optional = true }
 zeroize = { workspace = true, optional = true }
+sha2 = { workspace = true, optional = true }
 # Resolving a new account's storage (drive ids, team roots) once at sign-in,
 # and iCloud's web sign-in behind `icloud::ICloudAuth`.
 cloud-source = { path = "../cloud-source", optional = true }

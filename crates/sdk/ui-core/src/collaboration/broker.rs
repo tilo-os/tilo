@@ -575,6 +575,13 @@ impl CollabTransport for BrokerTransport {
 }
 
 enum SdkCommand {
+    BrowserServiceSession {
+        route: RouteSpec,
+        command: runtime_collab::BrowserServiceSessionCommand,
+        wake: Option<crate::WakeHandle>,
+        reply: mpsc::SyncSender<Result<runtime_collab::BrowserServiceSessionReply, String>>,
+    },
+
     Initialize {
         route: RouteSpec,
         request: runtime_collab::committed_document::Request,
@@ -879,6 +886,9 @@ fn request_bytes(request: &CollabRequest) -> Option<usize> {
             }
         }
         CollabRequest::RemoteAction { message } => serialized_bytes(message, &mut meter),
+        CollabRequest::SelectedDiscovery { command, .. } => serialized_bytes(command, &mut meter),
+        CollabRequest::OpenSelected { command, .. } => serialized_bytes(command, &mut meter),
+        CollabRequest::OpenSelectedV2 { command, .. } => serialized_bytes(command, &mut meter),
         CollabRequest::LocalFileClipboard { command, .. } => serialized_bytes(command, &mut meter),
         CollabRequest::OfferContent { hash, bytes } => {
             meter.string_capacity(hash);
@@ -1008,6 +1018,16 @@ fn request_bytes(request: &CollabRequest) -> Option<usize> {
 
 fn command_bytes(command: &SdkCommand) -> Option<usize> {
     match command {
+        SdkCommand::BrowserServiceSession { route, command, .. } => {
+            let mut meter = ByteMeter(Some(std::mem::size_of::<SdkCommand>()));
+            meter.string_capacity(&route.app_id);
+            if let Some(record) = &route.record {
+                meter.string_capacity(record);
+            }
+            serialized_bytes(command, &mut meter);
+            meter.finish()
+        }
+
         SdkCommand::Initialize { route, request, .. } => {
             let mut meter = ByteMeter(Some(std::mem::size_of::<SdkCommand>()));
             meter.string_capacity(&route.app_id);
@@ -1505,6 +1525,27 @@ fn event_diagnostics(event: &CollabEvent) -> (&'static str, Option<usize>) {
                 Err(error) => meter.string_capacity(error),
             }
             "RealtimeCommandResult"
+        }
+        CollabEvent::SelectedDiscoveryResult { result, .. } => {
+            match result {
+                Ok(value) => serialized_bytes(value, &mut meter),
+                Err(error) => meter.string_capacity(error),
+            }
+            "SelectedDiscoveryResult"
+        }
+        CollabEvent::OpenSelectedV2Result { result, .. } => {
+            match result {
+                Ok(reply) => serialized_bytes(reply, &mut meter),
+                Err(error) => meter.string_capacity(error),
+            }
+            "OpenSelectedV2Result"
+        }
+        CollabEvent::OpenSelectedResult { result, .. } => {
+            match result {
+                Ok(reply) => serialized_bytes(reply, &mut meter),
+                Err(error) => meter.string_capacity(error),
+            }
+            "OpenSelectedResult"
         }
         CollabEvent::LocalFileClipboardResult { result, .. } => {
             match result {
@@ -4023,6 +4064,33 @@ async fn drive_shovel(
                     tracing::warn!(%error, "collab: publishing pull resource/action directory failed");
                 }
             }
+            SdkCommand::BrowserServiceSession {
+                route: spec,
+                command,
+                wake,
+                reply,
+            } => {
+                let result = if let Some(route) = routes
+                    .get_mut(&spec.channel_id())
+                    .filter(|route| route.spec == spec)
+                {
+                    tokio::time::timeout(
+                        Duration::from_secs(10),
+                        route.channel.browser_service_session_command(&command),
+                    )
+                    .await
+                    .map_err(|_| "This account could not be opened".to_owned())
+                    .and_then(|result| {
+                        result.map_err(|_| "This account could not be opened".to_owned())
+                    })
+                } else {
+                    Err("This account could not be opened".to_owned())
+                };
+                let _ = reply.try_send(result);
+                if let Some(wake) = wake {
+                    wake.wake();
+                }
+            }
             SdkCommand::WifiContinuity {
                 app_id,
                 command,
@@ -6220,6 +6288,44 @@ async fn dispatch_sdk_request(
                 .map_err(|error| error.to_string());
             let _ = inbound_tx
                 .send_durable(CollabEvent::NearbyTransferCommandResult { request_id, result });
+        }
+        CollabRequest::SelectedDiscovery {
+            request_id,
+            command,
+            on_behalf_of,
+        } => {
+            let result = route
+                .channel
+                .local_file_selected_discovery(&command, on_behalf_of.map(|id| *id.0.as_bytes()))
+                .await
+                .map_err(|error| error.to_string());
+            let _ = inbound_tx
+                .send_durable(CollabEvent::SelectedDiscoveryResult { request_id, result });
+        }
+        CollabRequest::OpenSelectedV2 {
+            request_id,
+            command,
+            on_behalf_of,
+        } => {
+            let result = route
+                .channel
+                .local_file_open_selected_v2(&command, Some(*on_behalf_of.0.as_bytes()))
+                .await
+                .map_err(|error| error.to_string());
+            let _ =
+                inbound_tx.send_durable(CollabEvent::OpenSelectedV2Result { request_id, result });
+        }
+        CollabRequest::OpenSelected {
+            request_id,
+            command,
+            on_behalf_of,
+        } => {
+            let result = route
+                .channel
+                .local_file_open_selected(&command, Some(*on_behalf_of.0.as_bytes()))
+                .await
+                .map_err(|error| error.to_string());
+            let _ = inbound_tx.send_durable(CollabEvent::OpenSelectedResult { request_id, result });
         }
         CollabRequest::LocalFileClipboard {
             request_id,

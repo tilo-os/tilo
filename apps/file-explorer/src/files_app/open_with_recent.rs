@@ -50,13 +50,36 @@ impl FileExplorerWidget {
         }
     }
 
+    pub(super) fn native_selected_discovery(&self) -> bool {
+        self.current_path.starts_with("/run/tilo/retained-home") && self.open_with_route().is_none()
+    }
+    pub(super) fn retained_selected_open_available(&self) -> bool {
+        self.current_path.starts_with("/run/tilo/retained-home")
+            && (self
+                .open_with_route()
+                .is_some_and(|route| route.retained_selected_open_available())
+                || self.native_selected_discovery()
+                    && self
+                        .entries
+                        .iter()
+                        .filter(|entry| !entry.is_dir)
+                        .any(|entry| self.selected_open.discovery.available(&entry.path)))
+    }
+
     /// Whether "Open with" applies: one regular file, and a host to ask.
     pub(super) fn open_with_available(&self) -> bool {
-        self.open_with_route().is_some() && self.open_with_subject().is_some()
+        self.open_with_subject().is_some_and(|path| {
+            self.open_with_route().is_some()
+                || self.native_selected_discovery()
+                    && !self.open_with_candidates(&path).apps.is_empty()
+        })
     }
 
     /// Applications that open `path`, default first; empty with no route.
     pub(super) fn open_with_candidates(&self, path: &Path) -> OpenWithCandidates {
+        if self.native_selected_discovery() && path.starts_with("/run/tilo/retained-home") {
+            return self.selected_open.discovery.candidates(path);
+        }
         let key = type_key(path);
         if let Some(cached) = self.open_with_cache.borrow().get(&key) {
             return cached.clone();
@@ -100,6 +123,45 @@ impl FileExplorerWidget {
             || path.display().to_string(),
             |name| name.to_string_lossy().into_owned(),
         );
+        if (self.native_selected_discovery()
+            || self
+                .open_with_route()
+                .is_some_and(|route| route.retained_selected_open_available()))
+            && path.starts_with("/run/tilo/retained-home")
+        {
+            let Some(_) = self.retained_open_target_access(path, app_id) else {
+                self.status = Some(t("files-open-with-launch-unavailable"));
+                return true;
+            };
+            let Some(entry) = self
+                .entries
+                .iter()
+                .find(|entry| entry.path == path && !entry.is_dir)
+            else {
+                self.status = Some(t("files-open-with-launch-unavailable"));
+                return true;
+            };
+            let resource = Self::entry_resource_id(entry);
+            if self.visible_entry_path(&resource).as_deref() != Some(path)
+                || self.open_with_candidates(path).find(app_id).is_none()
+                || always
+            {
+                self.status = Some(t("files-open-with-launch-unavailable"));
+                return true;
+            }
+            // The host, not this command bus, mints the original addressed
+            // invocation. Both pointer and keyboard submenu activation use this
+            // same current published OpenWith action as the full chooser.
+            self.selected_open.control = Some(ui::tilo_actions::ControlInvocation {
+                address: ui::tilo_actions::ActionAddress::new(&resource, OPEN_WITH_ACTION),
+                arguments: serde_json::Map::from_iter([
+                    ("app".into(), app_id.into()),
+                    ("always".into(), false.into()),
+                    ("access".into(), "read-only".into()),
+                ]),
+            });
+            return true;
+        }
         let Some(route) = self.open_with_route() else {
             self.status = Some(t_args("files-open-with-unavailable", &[arg("name", name)]));
             return true;
@@ -329,12 +391,22 @@ impl FileExplorerWidget {
         if candidates.apps.is_empty() {
             return;
         }
-        let mut open_with = crate::effects::FilesEffect::OpenWith {
-            entry: resource_id.to_string(),
-            app: String::new(),
-            always: None,
-        }
-        .bound_asking_params(vec![
+        let access = self.retained_open_default_access(&entry.path);
+        let can_edit = candidates.apps.iter().any(|app| {
+            self.retained_open_target_access(&entry.path, &app.id)
+                == Some(ui::collaboration::open_selected::v2::SelectedAccess::EditInParent)
+        });
+        let permission = if can_edit {
+            ui::tilo_actions::ActionKind::Undoable
+        } else {
+            match access {
+                Some(ui::collaboration::open_selected::v2::SelectedAccess::EditInParent) => {
+                    ui::tilo_actions::ActionKind::Undoable
+                }
+                _ => ui::tilo_actions::ActionKind::Read,
+            }
+        };
+        let mut params = vec![
             ActionParam::required_owned("app", ParamType::Text, t("files-open-with-app-param"))
                 .with_choices(candidates.apps.iter().map(|app| app.id.clone())),
             ActionParam::optional_owned(
@@ -345,7 +417,36 @@ impl FileExplorerWidget {
                     &[arg("type", candidates.type_label.clone())],
                 ),
             ),
-        ]);
+        ];
+        if let Some(access) = access {
+            let choices = if can_edit {
+                vec!["read-only", "edit-in-parent"]
+            } else {
+                vec!["read-only"]
+            };
+            params.push(
+                ActionParam::optional_owned(
+                    "access",
+                    ParamType::Text,
+                    t("files-open-with-access-param"),
+                )
+                .with_choices(choices.clone())
+                .with_schema(
+                    serde_json::json!({"type":"string", "enum":choices, "default":access.as_str()}),
+                ),
+            );
+        }
+        // This is an actual declared contract for the offered operation, not
+        // permission reconstructed later from caller-provided text. The same
+        // row is rebuilt from the live dispatcher on every publication.
+        let mut open_with = crate::effects::FilesEffect::OpenWith {
+            entry: resource_id.to_string(),
+            app: String::new(),
+            always: None,
+            access: access.map(|access| access.as_str().to_owned()),
+        }
+        .bound_asking_params(params);
+        open_with.contract.kind = permission;
         open_with.id = OPEN_WITH_ACTION.into();
         open_with.label = t("files-menu-open-with");
         resource.actions.push(open_with);
@@ -353,6 +454,14 @@ impl FileExplorerWidget {
             return;
         }
         for app in &candidates.apps {
+            let access = self
+                .retained_open_target_access(&entry.path, &app.id)
+                .map(|_| ui::collaboration::open_selected::v2::SelectedAccess::ReadOnly);
+            let permission = if access.is_some_and(|value| value.editable()) {
+                ui::tilo_actions::ActionKind::Undoable
+            } else {
+                ui::tilo_actions::ActionKind::Read
+            };
             for (prefix, always, label) in [
                 (
                     OPEN_ONCE_PREFIX,
@@ -371,17 +480,76 @@ impl FileExplorerWidget {
                     ),
                 ),
             ] {
-                resource.actions.push(crate::effects::row_action(
-                    &crate::effects::FilesEffect::OpenWith {
-                        entry: resource_id.to_string(),
-                        app: app.id.clone(),
-                        always: Some(always),
+                if always && access.is_some() {
+                    continue;
+                }
+                let effect = crate::effects::FilesEffect::OpenWith {
+                    entry: resource_id.to_string(),
+                    app: app.id.clone(),
+                    always: Some(always),
+                    access: if always {
+                        None
+                    } else {
+                        access.map(|access| access.as_str().to_owned())
                     },
-                    format!("{prefix}{}", app.id),
-                    label,
-                ));
+                };
+                let spec =
+                    if let Some(access) = access.filter(|_| !always) {
+                        let immediate = effect.bound().input;
+                        let mut spec =
+                            effect.bound_asking_params(vec![ActionParam::optional_owned(
+                        "access", ParamType::Text, t("files-open-with-access-param"),
+                    ).with_choices([access.as_str()]).with_schema(serde_json::json!({
+                        "type":"string", "const":access.as_str(), "default":access.as_str(),
+                    }))]);
+                        spec.contract.kind = permission;
+                        // The existing chooser remains one click. Its immutable
+                        // optional constant also describes the bound intent to the
+                        // original host custody, without a second permission UI.
+                        spec.input = immediate;
+                        spec.id = format!("{prefix}{}", app.id).into();
+                        spec.label = label.into();
+                        spec
+                    } else {
+                        crate::effects::row_action(&effect, format!("{prefix}{}", app.id), label)
+                    };
+                resource.actions.push(spec);
             }
         }
+    }
+
+    fn retained_open_target_access(
+        &self,
+        path: &Path,
+        app: &str,
+    ) -> Option<ui::collaboration::open_selected::v2::SelectedAccess> {
+        use ui::collaboration::open_selected::v2::SelectedAccess;
+        let source = if self.native_selected_discovery() {
+            self.selected_open.discovery.access(path, app)?
+        } else {
+            self.retained_open_default_access(path)?
+        };
+        let writes = self.dispatcher.as_ref().is_some_and(|dispatcher| {
+            dispatcher.may(&ui::tilo_actions::ActionNeed::of(
+                ui::tilo_actions::ActionKind::Undoable,
+            ))
+        });
+        Some(if writes && source.editable() {
+            SelectedAccess::EditInParent
+        } else {
+            SelectedAccess::ReadOnly
+        })
+    }
+    fn retained_open_default_access(
+        &self,
+        path: &Path,
+    ) -> Option<ui::collaboration::open_selected::v2::SelectedAccess> {
+        use ui::collaboration::open_selected::v2::SelectedAccess;
+        if !self.retained_selected_open_available() || !path.starts_with("/run/tilo/retained-home")
+        {
+            return None;
+        }
+        Some(SelectedAccess::ReadOnly)
     }
 
     pub(super) fn invoke_open_with(
