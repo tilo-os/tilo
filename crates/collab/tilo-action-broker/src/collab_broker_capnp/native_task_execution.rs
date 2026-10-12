@@ -12,7 +12,149 @@ use tokio::sync::mpsc;
 #[path = "native_task_tests.rs"]
 mod tests;
 
+/// How often a held re-ask samples its run's cancellation. The task owner
+/// signals no change for it, so it is read in-process here, at the cadence
+/// the agent used to ask across the connection; reading the run cancelled
+/// cancels its children, which ends the hold.
+const CANCELLATION_SAMPLE: std::time::Duration = std::time::Duration::from_millis(50);
+
+/// What a native task's re-ask of its child asked to wait for: the child
+/// moving past `seen` (with no `seen`, settling), until `until`.
+pub(super) struct ChildWait {
+    seen: Option<tilo_actions::remote::UpdateMark>,
+    until: tokio::time::Instant,
+}
+
+impl ChildWait {
+    /// The wait a re-ask asked for, capped at
+    /// [`tilo_actions::remote::MAX_REMOTE_WAIT`]; `None` for an answer now.
+    pub(super) fn read(
+        request: &super::channel_handle::invoke_task_action_params::Reader<'_>,
+    ) -> Result<Option<Self>, capnp::Error> {
+        let wait_ms = request.get_wait_ms();
+        if wait_ms == 0 {
+            return Ok(None);
+        }
+        let seen = request.get_seen_json()?.to_str()?.trim();
+        let seen = if seen.is_empty() {
+            None
+        } else {
+            Some(serde_json::from_str(seen).map_err(|_| {
+                capnp::Error::failed("task child wait names an invalid update mark".into())
+            })?)
+        };
+        let wait = std::time::Duration::from_millis(u64::from(wait_ms))
+            .min(tilo_actions::remote::MAX_REMOTE_WAIT);
+        let now = tokio::time::Instant::now();
+        Ok(Some(Self {
+            seen,
+            until: now.checked_add(wait).unwrap_or(now),
+        }))
+    }
+
+    /// Whether `update` is news to the caller.
+    fn arrived(&self, update: &tilo_actions::InvocationUpdate) -> bool {
+        update.is_terminal()
+            || self
+                .seen
+                .is_some_and(|seen| tilo_actions::remote::UpdateMark::of(update) != seen)
+    }
+}
+
+/// A native task's request about its child: the run, the child's stable
+/// id, the action it names and the authenticated caller.
+pub(super) struct ChildReask<'a> {
+    pub peer_id: u64,
+    pub agent_id: &'a str,
+    pub run_id: u64,
+    pub lease: &'a str,
+    pub invocation: tilo_actions::InvocationId,
+    pub target: runtime_collab::TaskAction<'a>,
+    pub caller: &'a durable_local_invocation::LocalCaller,
+}
+
 impl CapnpBrokerState {
+    /// What a native task's request finds of its child: `None` when it has
+    /// not started (the request starts it), else the child's state as
+    /// [`Self::native_task_observation`] reports it. With `wait`, a running
+    /// child is held ([`Self::hold_native_observation`]) and then observed
+    /// and authorized afresh, with the connection's admission revalidated
+    /// (`admission`); a held re-ask never starts the child anew.
+    pub(super) async fn observe_native_child(
+        &self,
+        reask: &ChildReask<'_>,
+        wait: Option<ChildWait>,
+        admission: (&super::CrdtRoute, &super::AdmittedJoinIdentity),
+    ) -> Result<Option<(u64, tilo_actions::InvocationUpdate)>, capnp::Error> {
+        let observe = || {
+            let run =
+                self.task_run_for(reask.peer_id, reask.agent_id, reask.run_id, reask.lease)?;
+            self.native_task_observation(&run, reask.invocation, reask.target, reask.caller)
+        };
+        let (observed, wait) = match (observe().map_err(capnp::Error::failed)?, wait) {
+            (Some(observed), Some(wait)) => (observed, wait),
+            (observed, _) => return Ok(observed),
+        };
+        self.hold_native_observation(reask, observed, wait).await;
+        let (route, identity) = admission;
+        self.revalidate_admission(route, identity)?;
+        observe()
+            .map_err(capnp::Error::failed)?
+            .ok_or_else(|| capnp::Error::failed("native task child is no longer recorded".into()))
+            .map(Some)
+    }
+
+    /// Hold a native task's re-ask of its child, observed as `observed`,
+    /// until the child moves past what the caller has seen or settles, the
+    /// run is read cancelled (or can no longer be read), or the wait ends.
+    /// It answers nothing itself: the caller observes and authorizes the
+    /// child afresh once it returns. Between wakes it only looks at the
+    /// child's status; it never starts, admits or authorizes anything.
+    pub(super) async fn hold_native_observation(
+        &self,
+        reask: &ChildReask<'_>,
+        observed: (u64, tilo_actions::InvocationUpdate),
+        wait: ChildWait,
+    ) {
+        let (wire_id, mut update) = observed;
+        // Subscribed before looking again, so a change between the
+        // observation and this point still wakes the hold.
+        let mut changes = self.invocation_changes();
+        if let Some(current) = self.invocation_status(wire_id) {
+            update = current;
+        }
+        let mut signalled = true;
+        while !wait.arrived(&update) {
+            let now = tokio::time::Instant::now();
+            if now >= wait.until {
+                return;
+            }
+            let sample = CANCELLATION_SAMPLE.min(wait.until.saturating_duration_since(now));
+            tokio::select! {
+                signal = changes.changed(), if signalled => {
+                    // A broker going away stops signalling: sample only.
+                    signalled = signal.is_ok();
+                }
+                () = tilo_rt::sleep(sample) => {
+                    match self.task_run_cancelled(
+                        reask.peer_id,
+                        reask.agent_id,
+                        reask.run_id,
+                        reask.lease,
+                    ) {
+                        Ok(false) => {}
+                        Ok(true) | Err(_) => return,
+                    }
+                }
+            }
+            match self.invocation_status(wire_id) {
+                Some(current) => update = current,
+                None => return,
+            }
+        }
+        tracing::trace!(invocation = %reask.invocation.0, "held native re-ask answered");
+    }
+
     pub(super) fn native_task_observation(
         &self,
         run: &PendingTaskRun,
