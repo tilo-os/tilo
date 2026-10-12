@@ -2642,60 +2642,85 @@ fn workspace_lens_and_shortcut_help_adapt_between_wide_and_compact_outputs() {
         assert_eq!(lens.y1, 680.0);
     }
 
-    fn compact_shortcut_help_fits_the_window_and_scrolls_its_body() {
-        let (vw, vh) = (800.0, 600.0);
-        let mut h = build_harness_sized(vw, vh);
-        h.chrome.borrow_mut().overlays.shortcut_help = true;
-        settle(&mut h, vw, vh);
-        let panel = h.host.shortcut_help_panel_rect();
-        let done = h.host.shortcut_help_done_rect();
-        assert_eq!(panel.x0, 32.0);
-        assert_eq!(panel.x1, 768.0);
-        assert_eq!(panel.y0, 32.0);
-        assert_eq!(panel.y1, 568.0);
-        assert!(done.y0 >= panel.y0 + 16.0);
-        assert!(done.y1 <= panel.y1 - 18.0);
-        // The content is taller than an 800x600 window, so the body scrolls
-        // instead of overflowing its panel.
-        assert!(h.host.shortcut_guide_max_scroll > 0.0);
-        let painted: Vec<_> = h.host.shortcut_binding_rects.clone();
-        let body = Rect::new(
-            panel.x0 + 24.0,
-            panel.y0 + 98.0,
-            panel.x1 - 24.0,
-            panel.y1 - 22.0,
-        );
-        assert!(
-            painted
-                .iter()
-                .all(|(_, rect)| rect.y0 >= body.y0 - 6.0 && rect.y1 <= body.y1 + 6.0),
-            "pointer targets stay inside the visible body"
-        );
-    }
-
-    fn wide_shortcut_help_is_exactly_as_tall_as_its_content() {
-        let (vw, vh) = (1280.0, 1000.0);
-        let mut h = build_harness_sized(vw, vh);
-        h.chrome.borrow_mut().overlays.shortcut_help = true;
-        settle(&mut h, vw, vh);
-        let panel = h.host.shortcut_help_panel_rect();
-        assert_eq!(panel.width(), 960.0);
-        assert!(
-            panel.height() < vh - 64.0,
-            "a tall window keeps the card intrinsic"
-        );
-        assert!(panel.x0 >= 150.0 && panel.x1 <= 1130.0);
-        assert!(panel.y0 >= 32.0 && panel.y1 <= vh - 32.0);
-        assert_eq!(
-            h.host.shortcut_guide_max_scroll, 0.0,
-            "nothing to scroll when the whole guide fits"
-        );
-    }
-
     workspace_lens_leaves_wide_workspace_visible_and_interactive();
     workspace_lens_promotes_to_one_inset_sheet_on_narrow_outputs();
-    compact_shortcut_help_fits_the_window_and_scrolls_its_body();
-    wide_shortcut_help_is_exactly_as_tall_as_its_content();
+}
+
+#[test]
+fn compact_shortcut_help_fits_the_window_and_scrolls_its_body() {
+    let (vw, vh) = (800.0, 600.0);
+    let mut h = build_harness_sized(vw, vh);
+    h.chrome.borrow_mut().overlays.shortcut_help = true;
+    settle(&mut h, vw, vh);
+    let panel = h.host.shortcut_help_panel_rect();
+    let done = h.host.shortcut_help_done_rect();
+    assert_eq!(panel.x0, 32.0);
+    assert_eq!(panel.x1, 768.0);
+    assert_eq!(panel.y0, 32.0);
+    assert_eq!(panel.y1, 568.0);
+    assert!(done.y0 >= panel.y0 + 16.0);
+    assert!(done.y1 <= panel.y1 - 18.0);
+    // The content is taller than an 800x600 window, so the body scrolls
+    // instead of overflowing its panel.
+    assert!(h.host.shortcut_guide_max_scroll > 0.0);
+    // Everything is reachable by scrolling: the scroll range is exactly
+    // the content that does not fit, so the last row ends at the body's
+    // bottom edge when scrolled to the end, and scrolling past it is
+    // clamped rather than leaving blank space or clipping a row.
+    let body_h = panel.height() - 98.0 - 22.0;
+    let note_lines = shortcut_note_lines(
+        shortcut_action_summary(&h.host.shortcut_config).is_some(),
+        h.host.desktop_controls.config().vim_mode,
+    );
+    let content_h =
+        shortcut_guide_content_height(panel.width() - 48.0, SHORTCUT_GUIDE_ROWS.len(), note_lines);
+    assert!(
+        (h.host.shortcut_guide_max_scroll - (content_h - body_h)).abs() < 1e-6,
+        "scroll range {} must equal the overflow {}",
+        h.host.shortcut_guide_max_scroll,
+        content_h - body_h
+    );
+    h.host.shortcut_guide_scroll = f64::MAX;
+    settle(&mut h, vw, vh);
+    assert_eq!(
+        h.host.shortcut_guide_scroll, h.host.shortcut_guide_max_scroll,
+        "scrolling past the end clamps to the last row"
+    );
+    h.host.shortcut_guide_scroll = 0.0;
+    settle(&mut h, vw, vh);
+    let painted: Vec<_> = h.host.shortcut_binding_rects.clone();
+    let body = Rect::new(
+        panel.x0 + 24.0,
+        panel.y0 + 98.0,
+        panel.x1 - 24.0,
+        panel.y1 - 22.0,
+    );
+    assert!(
+        painted
+            .iter()
+            .all(|(_, rect)| rect.y0 >= body.y0 - 6.0 && rect.y1 <= body.y1 + 6.0),
+        "pointer targets stay inside the visible body"
+    );
+}
+
+#[test]
+fn wide_shortcut_help_is_exactly_as_tall_as_its_content() {
+    let (vw, vh) = (1280.0, 1000.0);
+    let mut h = build_harness_sized(vw, vh);
+    h.chrome.borrow_mut().overlays.shortcut_help = true;
+    settle(&mut h, vw, vh);
+    let panel = h.host.shortcut_help_panel_rect();
+    assert_eq!(panel.width(), 960.0);
+    assert!(
+        panel.height() < vh - 64.0,
+        "a tall window keeps the card intrinsic"
+    );
+    assert!(panel.x0 >= 150.0 && panel.x1 <= 1130.0);
+    assert!(panel.y0 >= 32.0 && panel.y1 <= vh - 32.0);
+    assert_eq!(
+        h.host.shortcut_guide_max_scroll, 0.0,
+        "nothing to scroll when the whole guide fits"
+    );
 }
 
 #[test]
