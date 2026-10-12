@@ -13975,6 +13975,7 @@ dependencies = [
 name = "settings"
 version = "0.1.0"
 dependencies = [
+ "accesskit_unix",
  "account-custody",
  "accounts",
  "agent-provider-config",
