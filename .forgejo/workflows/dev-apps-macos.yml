@@ -44,7 +44,10 @@ jobs:
         working-directory: ${{ env.SRC }}
         env:
           TILO_SDK_SOURCE: git
+        # Cargo fetches branches and tags from the file:// repository; the
+        # detached checkout's commit needs a branch to be found.
         run: |
+          git update-ref refs/heads/outside-repo-sdk HEAD
           rustup target add wasm32-unknown-unknown
           cargo test --locked -p tilo-app-cli --test it outside_repo -- --ignored --nocapture
       - name: Calculator and Notes as .app bundles
