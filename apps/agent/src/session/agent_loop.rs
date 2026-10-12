@@ -2091,7 +2091,6 @@ mod tests {
             );
             self.0.timeouts.lock().unwrap().push(request.timeout);
             self.0.bodies.lock().unwrap().push(request.body);
-            let (tx, rx) = std::sync::mpsc::channel();
             let events = self
                 .0
                 .turns
@@ -2099,14 +2098,24 @@ mod tests {
                 .unwrap()
                 .pop_front()
                 .unwrap_or_else(|| vec![TurnEvent::Finished(Err("script exhausted".into()))]);
+            // A paced provider offers one frame at a time. An independent
+            // producer must not make its queue backlog look like execution order.
+            let capacity = if self.0.pace.is_some() {
+                0
+            } else {
+                events.len()
+            };
+            let (tx, rx) = std::sync::mpsc::sync_channel(capacity);
             let emitted = Arc::clone(&self.0.emitted);
             let send = move |events: Vec<TurnEvent>, pace: Option<Duration>| {
                 for event in events {
                     if let Some(pace) = pace {
                         std::thread::sleep(pace);
                     }
-                    let _ = tx.send(event);
                     emitted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    if tx.send(event).is_err() {
+                        break;
+                    }
                 }
             };
             match self.0.pace {
