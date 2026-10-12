@@ -339,7 +339,7 @@ impl<R, T: Settable> Path<R, T> {
     )]
     pub fn set(&self, value: T) -> Edit<R> {
         self.edit(EditOp::Set {
-            value: crate::shape::without_absent(T::SHAPE, value.to_json()),
+            value: crate::shape::without_absent::<T>(value.to_json()),
         })
     }
 }
@@ -578,7 +578,7 @@ impl<R, T: Model> Path<R, crate::Collection<T>> {
         self.edit(EditOp::InsertItem {
             id: None,
             at,
-            value: crate::shape::without_absent(T::SHAPE, value.to_json()),
+            value: crate::shape::without_absent::<T>(value.to_json()),
         })
     }
 
@@ -588,7 +588,7 @@ impl<R, T: Model> Path<R, crate::Collection<T>> {
         self.edit(EditOp::InsertItem {
             id: Some(id.clone()),
             at,
-            value: crate::shape::without_absent(T::SHAPE, value.to_json()),
+            value: crate::shape::without_absent::<T>(value.to_json()),
         })
     }
 
@@ -635,7 +635,7 @@ impl<R, T: Model> Path<R, crate::Grid<T>> {
         self.edit(EditOp::SetCell {
             row: row.clone(),
             column: column.clone(),
-            value: value.map(|value| crate::shape::without_absent(T::SHAPE, value.to_json())),
+            value: value.map(|value| crate::shape::without_absent::<T>(value.to_json())),
         })
     }
 

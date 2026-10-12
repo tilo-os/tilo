@@ -353,6 +353,27 @@ pub(crate) struct ComposeEventContext<'a> {
     pub(crate) taffy: &'a taffy::TaffyTree<()>,
 }
 
+impl ComposeEventContext<'_> {
+    /// The event context a compose child sees, reporting into `handled` and
+    /// `focus_target`.
+    fn event_ctx<'b>(
+        &'b mut self,
+        handled: &'b mut bool,
+        focus_target: &'b mut Option<taffy::NodeId>,
+    ) -> ui::widget::EventCtx<'b> {
+        ui::widget::EventCtx {
+            scale_factor: self.scale_factor,
+            modifiers: &self.modifiers,
+            state: self.state.reborrow(),
+            path: self.path,
+            handled,
+            focus_target,
+            node_id: self.node_id,
+            taffy: self.taffy,
+        }
+    }
+}
+
 /// Where the compose window is parked.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DockState {
@@ -1543,51 +1564,17 @@ impl ComposeWindow {
         let mut h = false;
         let mut ft: Option<taffy::NodeId> = None;
         for inp in [&mut self.to, &mut self.cc, &mut self.bcc, &mut self.subject] {
-            inp.handle_event(
-                event,
-                &mut ui::widget::EventCtx {
-                    scale_factor: ctx.scale_factor,
-                    modifiers: &ctx.modifiers,
-                    state: ctx.state.reborrow(),
-                    path: ctx.path,
-                    handled: &mut h,
-                    focus_target: &mut ft,
-                    node_id: ctx.node_id,
-                    taffy: ctx.taffy,
-                },
-            );
+            inp.handle_event(event, &mut ctx.event_ctx(&mut h, &mut ft));
         }
         // Forward to the plain body too so its hover / drag-selection tracks
         // (Text mode).
         if matches!(self.format, ComposeFormat::Text) {
-            self.plain_body.handle_event(
-                event,
-                &mut ui::widget::EventCtx {
-                    scale_factor: ctx.scale_factor,
-                    modifiers: &ctx.modifiers,
-                    state: ctx.state.reborrow(),
-                    path: ctx.path,
-                    handled: &mut h,
-                    focus_target: &mut ft,
-                    node_id: ctx.node_id,
-                    taffy: ctx.taffy,
-                },
-            );
+            self.plain_body
+                .handle_event(event, &mut ctx.event_ctx(&mut h, &mut ft));
         }
         if let Some(p) = self.prompt.as_mut() {
-            p.input.handle_event(
-                event,
-                &mut ui::widget::EventCtx {
-                    scale_factor: ctx.scale_factor,
-                    modifiers: &ctx.modifiers,
-                    state: ctx.state.reborrow(),
-                    path: ctx.path,
-                    handled: &mut h,
-                    focus_target: &mut ft,
-                    node_id: ctx.node_id,
-                    taffy: ctx.taffy,
-                },
-            );
+            p.input
+                .handle_event(event, &mut ctx.event_ctx(&mut h, &mut ft));
         }
         if matches!(self.format, ComposeFormat::Html) {
             self.body_event(event, ctx);
@@ -1731,19 +1718,8 @@ impl ComposeWindow {
         let mut h = false;
         let mut ft: Option<taffy::NodeId> = None;
         if let Some(p) = self.prompt.as_mut() {
-            p.input.handle_event(
-                event,
-                &mut ui::widget::EventCtx {
-                    scale_factor: ctx.scale_factor,
-                    modifiers: &ctx.modifiers,
-                    state: ctx.state.reborrow(),
-                    path: ctx.path,
-                    handled: &mut h,
-                    focus_target: &mut ft,
-                    node_id: ctx.node_id,
-                    taffy: ctx.taffy,
-                },
-            );
+            p.input
+                .handle_event(event, &mut ctx.event_ctx(&mut h, &mut ft));
         }
         self.dirty = true;
         (true, ComposeAction::None)
@@ -1772,19 +1748,8 @@ impl ComposeWindow {
             ComposeFormat::Text => {
                 let mut h = false;
                 let mut ft: Option<taffy::NodeId> = None;
-                self.plain_body.handle_event(
-                    event,
-                    &mut ui::widget::EventCtx {
-                        scale_factor: ctx.scale_factor,
-                        modifiers: &ctx.modifiers,
-                        state: ctx.state.reborrow(),
-                        path: ctx.path,
-                        handled: &mut h,
-                        focus_target: &mut ft,
-                        node_id: ctx.node_id,
-                        taffy: ctx.taffy,
-                    },
-                );
+                self.plain_body
+                    .handle_event(event, &mut ctx.event_ctx(&mut h, &mut ft));
             }
         }
         self.dirty = true;
@@ -1796,19 +1761,7 @@ impl ComposeWindow {
         let mut h = false;
         let mut ft: Option<taffy::NodeId> = None;
         if let Some(inp) = self.focused_input() {
-            inp.handle_event(
-                event,
-                &mut ui::widget::EventCtx {
-                    scale_factor: ctx.scale_factor,
-                    modifiers: &ctx.modifiers,
-                    state: ctx.state.reborrow(),
-                    path: ctx.path,
-                    handled: &mut h,
-                    focus_target: &mut ft,
-                    node_id: ctx.node_id,
-                    taffy: ctx.taffy,
-                },
-            );
+            inp.handle_event(event, &mut ctx.event_ctx(&mut h, &mut ft));
         }
         self.dirty = true;
     }
@@ -1866,19 +1819,8 @@ impl ComposeWindow {
                     p.input.set_focus(true);
                     let mut h = false;
                     let mut ft: Option<taffy::NodeId> = None;
-                    p.input.handle_event(
-                        event,
-                        &mut ui::widget::EventCtx {
-                            scale_factor: ctx.scale_factor,
-                            modifiers: &ctx.modifiers,
-                            state: ctx.state.reborrow(),
-                            path: ctx.path,
-                            handled: &mut h,
-                            focus_target: &mut ft,
-                            node_id: ctx.node_id,
-                            taffy: ctx.taffy,
-                        },
-                    );
+                    p.input
+                        .handle_event(event, &mut ctx.event_ctx(&mut h, &mut ft));
                 }
             }
         }
@@ -1907,19 +1849,8 @@ impl ComposeWindow {
                 // click point (the preceding CursorMoved set hover).
                 let mut h = false;
                 let mut ft: Option<taffy::NodeId> = None;
-                self.plain_body.handle_event(
-                    event,
-                    &mut ui::widget::EventCtx {
-                        scale_factor: ctx.scale_factor,
-                        modifiers: &ctx.modifiers,
-                        state: ctx.state.reborrow(),
-                        path: ctx.path,
-                        handled: &mut h,
-                        focus_target: &mut ft,
-                        node_id: ctx.node_id,
-                        taffy: ctx.taffy,
-                    },
-                );
+                self.plain_body
+                    .handle_event(event, &mut ctx.event_ctx(&mut h, &mut ft));
             }
         }
     }
@@ -1956,16 +1887,7 @@ impl ComposeWindow {
         ui::Widget::handle_event(
             &mut self.format_bar.bar,
             event,
-            &mut ui::widget::EventCtx {
-                scale_factor: ctx.scale_factor,
-                modifiers: &ctx.modifiers,
-                state: ctx.state.reborrow(),
-                path: ctx.path,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: ctx.node_id,
-                taffy: ctx.taffy,
-            },
+            &mut ctx.event_ctx(&mut handled, &mut focus),
         );
         if let Some(format) = self.format_bar.chosen.take() {
             self.apply_format(format);
@@ -2038,19 +1960,7 @@ impl ComposeWindow {
         let mut h = false;
         let mut ft: Option<taffy::NodeId> = None;
         if let Some(inp) = self.focused_input() {
-            inp.handle_event(
-                event,
-                &mut ui::widget::EventCtx {
-                    scale_factor: ctx.scale_factor,
-                    modifiers: &ctx.modifiers,
-                    state: ctx.state.reborrow(),
-                    path: ctx.path,
-                    handled: &mut h,
-                    focus_target: &mut ft,
-                    node_id: ctx.node_id,
-                    taffy: ctx.taffy,
-                },
-            );
+            inp.handle_event(event, &mut ctx.event_ctx(&mut h, &mut ft));
         }
     }
 

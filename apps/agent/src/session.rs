@@ -222,6 +222,32 @@ impl Handoff {
     }
 }
 
+/// A legacy invocation the host accepted, followed to its outcome alone
+/// ([`Session::invoke_task_action`]) or beside others started in the same
+/// turn. Each keeps its own invocation id, interaction sequence and broker
+/// job: following several at once shares only the waiting.
+struct Following {
+    action: TaskAction,
+    invocation: tilo_actions::InvocationId,
+    /// The latest state the host reported.
+    update: tilo_actions::InvocationUpdate,
+    /// The last semantic interaction sequence published for it.
+    sequence: u64,
+    deadline: Instant,
+    /// Its outcome, once settled.
+    outcome: Option<Result<StepOutcome, TaskActionStop>>,
+}
+
+impl Following {
+    fn into_outcome(self) -> Result<StepOutcome, TaskActionStop> {
+        self.outcome.unwrap_or_else(|| {
+            Err(TaskActionStop::Failed(
+                "Task action did not reach a terminal state before its deadline".into(),
+            ))
+        })
+    }
+}
+
 /// One task-action reply from the collaboration link.
 struct TaskReply {
     result: Result<(u64, tilo_actions::InvocationUpdate), String>,
@@ -1256,6 +1282,36 @@ impl Session {
         action: &TaskAction,
         arguments: &serde_json::Map<String, serde_json::Value>,
     ) -> Result<Result<StepOutcome, TaskActionStop>> {
+        let following = match self.start_task_invocation(run, action, arguments)? {
+            Ok(following) => following,
+            Err(stop) => return Ok(Err(stop)),
+        };
+        if self.native_task.is_some() {
+            return self.follow_native_invocation(
+                run,
+                action,
+                arguments,
+                following.invocation,
+                following.update,
+            );
+        }
+        let mut followed = [following];
+        self.follow_invocations(run, &mut followed)?;
+        let [following] = followed;
+        Ok(following.into_outcome())
+    }
+
+    /// Ask the host to start one legacy invocation: authorized, journaled
+    /// and accepted by the broker on its own, exactly as when it is followed
+    /// alone. The host answers with the accepted state at once; the action
+    /// then runs in its application while this agent starts the next one or
+    /// follows it ([`Self::follow_invocations`]).
+    fn start_task_invocation(
+        &mut self,
+        run: &runtime_collab::TaskRunEnvelope,
+        action: &TaskAction,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<Result<Following, TaskActionStop>> {
         if self.task_budget_expired() {
             return Ok(Err(TaskActionStop::Failed(
                 "Task time budget expired before invoking an action".into(),
@@ -1278,103 +1334,202 @@ impl Session {
             Ok((_, update)) => update,
             Err(error) => return Ok(Err(TaskActionStop::Failed(error))),
         };
-        if self.native_task.is_some() {
-            self.follow_native_invocation(run, action, arguments, invocation, update)
-        } else {
-            self.follow_task_invocation(run, action, invocation, update)
+        if self.native_task.is_none() {
+            self.publish_task_interaction(run, action, &update, 0)?;
+        }
+        Ok(Ok(Following {
+            action: action.clone(),
+            invocation,
+            update,
+            sequence: 0,
+            deadline: self.task_wait_deadline(TASK_ACTION_WAIT),
+            outcome: None,
+        }))
+    }
+
+    /// Follow started legacy invocations, together, until each has its
+    /// outcome: one wait for news of any of them, one cancellation poll per
+    /// round, and every one still running cancelled when Task Center
+    /// cancels the run. One invocation alone is followed exactly as before.
+    fn follow_invocations(
+        &mut self,
+        run: &runtime_collab::TaskRunEnvelope,
+        followed: &mut [Following],
+    ) -> Result<()> {
+        let mut wait = FOLLOW_FIRST_WAIT;
+        loop {
+            for following in followed.iter_mut() {
+                self.conclude_following(run, following)?;
+            }
+            let running: Vec<tilo_actions::InvocationId> = followed
+                .iter()
+                .filter(|following| following.outcome.is_none())
+                .map(|following| following.invocation)
+                .collect();
+            let Some(deadline) = followed
+                .iter()
+                .filter(|following| following.outcome.is_none())
+                .map(|following| following.deadline)
+                .min()
+            else {
+                return Ok(());
+            };
+            let left = deadline.saturating_duration_since(ui::time::now());
+            let pushed = self.await_invocation_news(&running, wait.min(left))?;
+            wait = (wait * 2).min(FOLLOW_MOST_WAIT);
+            // Asked without waiting: the answer arrives ahead of the
+            // observations' in the client's one ordered queue, so it is read
+            // below as fresh as the observations themselves.
+            self.poll_cancellation(run)?;
+            match pushed {
+                Some((invocation, update)) => {
+                    if let Some(following) = followed
+                        .iter_mut()
+                        .find(|following| following.invocation == invocation)
+                    {
+                        self.advance_following(run, following, update)?;
+                    }
+                }
+                None => {
+                    for following in followed
+                        .iter_mut()
+                        .filter(|following| following.outcome.is_none())
+                    {
+                        match self.observe(following.invocation)? {
+                            Ok(update) => self.advance_following(run, following, update)?,
+                            Err(error) => {
+                                following.outcome = Some(Err(TaskActionStop::Failed(error)));
+                            }
+                        }
+                    }
+                }
+            }
+            let still_running = followed
+                .iter()
+                .any(|following| following.outcome.is_none() && !following.update.is_terminal());
+            if still_running && self.cancellation_known()? {
+                for following in followed
+                    .iter_mut()
+                    .filter(|following| following.outcome.is_none())
+                {
+                    if following.update.is_terminal() {
+                        self.conclude_following(run, following)?;
+                    } else {
+                        self.cancel_following(run, following)?;
+                    }
+                }
+                return Ok(());
+            }
         }
     }
 
-    /// Follow a started legacy invocation to its terminal update through
-    /// the action host.
-    fn follow_task_invocation(
+    /// Take in a newer state of `following` and show it.
+    fn advance_following(
         &mut self,
         run: &runtime_collab::TaskRunEnvelope,
-        action: &TaskAction,
-        invocation: tilo_actions::InvocationId,
-        mut update: tilo_actions::InvocationUpdate,
-    ) -> Result<Result<StepOutcome, TaskActionStop>> {
-        let mut interaction_sequence = 0_u64;
-        self.publish_task_interaction(run, action, &update, interaction_sequence)?;
-        let deadline = self.task_wait_deadline(TASK_ACTION_WAIT);
-        let mut wait = FOLLOW_FIRST_WAIT;
-        while !update.is_terminal() && ui::time::now() < deadline {
-            let left = deadline.saturating_duration_since(ui::time::now());
-            let pushed = self.await_invocation_news(invocation, wait.min(left))?;
-            wait = (wait * 2).min(FOLLOW_MOST_WAIT);
-            // Asked without waiting: the answer arrives ahead of the
-            // observation's in the client's one ordered queue, so it is read
-            // below as fresh as the observation itself.
-            self.poll_cancellation(run)?;
-            update = match pushed {
-                Some(pushed) => pushed,
-                None => match self.observe(invocation)? {
-                    Ok(update) => update,
-                    Err(error) => return Ok(Err(TaskActionStop::Failed(error))),
-                },
-            };
-            interaction_sequence = interaction_sequence.saturating_add(1);
-            self.publish_task_interaction(run, action, &update, interaction_sequence)?;
-            if !update.is_terminal() && self.cancellation_known()? {
-                self.link.send(&CollabRequest::RemoteAction {
-                    message: RemoteActionMessage::Cancel { invocation },
-                })?;
-                let _ = self.wait_for_remote_answer(|message| {
-                    matches!(
-                        message,
-                        RemoteActionMessage::CancelResponse { invocation: answered, .. }
-                            if *answered == invocation
-                    )
-                })?;
-                interaction_sequence = interaction_sequence.saturating_add(1);
-                let cancelled = tilo_actions::InvocationUpdate::Cancelled {
-                    invocation: update.invocation(),
-                    message: Some("Cancelled from Task Center".into()),
-                };
-                self.publish_task_interaction(run, action, &cancelled, interaction_sequence)?;
-                return Ok(Err(TaskActionStop::Cancelled(Some(
-                    "Cancelled from Task Center".into(),
-                ))));
-            }
+        following: &mut Following,
+        update: tilo_actions::InvocationUpdate,
+    ) -> Result<()> {
+        following.update = update;
+        following.sequence = following.sequence.saturating_add(1);
+        self.publish_task_interaction(
+            run,
+            &following.action,
+            &following.update,
+            following.sequence,
+        )
+    }
+
+    /// Settle `following` once it is terminal or its time is up; a running
+    /// one within its time is left as it is.
+    fn conclude_following(
+        &mut self,
+        run: &runtime_collab::TaskRunEnvelope,
+        following: &mut Following,
+    ) -> Result<()> {
+        if following.outcome.is_some() {
+            return Ok(());
         }
-        if self.task_budget_expired() && !update.is_terminal() {
-            self.link.send(&CollabRequest::RemoteAction {
-                message: RemoteActionMessage::Cancel { invocation },
-            })?;
-            return Ok(Err(TaskActionStop::Failed(
-                "Task time budget expired; cancellation requested, action outcome remains unknown"
-                    .into(),
-            )));
-        }
-        match update {
-            tilo_actions::InvocationUpdate::Succeeded { output, .. } => {
-                Ok(Ok(StepOutcome { output }))
-            }
+        let outcome = match &following.update {
+            tilo_actions::InvocationUpdate::Succeeded { output, .. } => Ok(StepOutcome {
+                output: output.clone(),
+            }),
             tilo_actions::InvocationUpdate::Cancelled { message, .. } => {
-                Ok(Err(TaskActionStop::Cancelled(message)))
+                Err(TaskActionStop::Cancelled(message.clone()))
             }
             tilo_actions::InvocationUpdate::Failed { error, .. } => {
-                Ok(Err(TaskActionStop::Failed(error.message)))
+                Err(TaskActionStop::Failed(error.message.clone()))
+            }
+            _ if ui::time::now() < following.deadline => return Ok(()),
+            _ if self.task_budget_expired() => {
+                self.link.send(&CollabRequest::RemoteAction {
+                    message: RemoteActionMessage::Cancel {
+                        invocation: following.invocation,
+                    },
+                })?;
+                Err(TaskActionStop::Failed(
+                    "Task time budget expired; cancellation requested, action outcome remains unknown"
+                        .into(),
+                ))
             }
             other => {
                 let message = "Task action did not reach a terminal state before its deadline";
-                interaction_sequence = interaction_sequence.saturating_add(1);
-                self.publish_task_interaction(
-                    run,
-                    action,
-                    &tilo_actions::InvocationUpdate::Failed {
-                        invocation: other.invocation(),
-                        error: tilo_actions::ActionFailure {
-                            code: "timeout".into(),
-                            message: message.into(),
-                            details: None,
-                            retryable: true,
-                        },
+                let failed = tilo_actions::InvocationUpdate::Failed {
+                    invocation: other.invocation(),
+                    error: tilo_actions::ActionFailure {
+                        code: "timeout".into(),
+                        message: message.into(),
+                        details: None,
+                        retryable: true,
                     },
-                    interaction_sequence,
-                )?;
-                Ok(Err(TaskActionStop::Failed(message.into())))
+                };
+                following.sequence = following.sequence.saturating_add(1);
+                self.publish_task_interaction(run, &following.action, &failed, following.sequence)?;
+                Err(TaskActionStop::Failed(message.into()))
             }
+        };
+        following.outcome = Some(outcome);
+        Ok(())
+    }
+
+    /// Cancel a running `following` because Task Center cancelled the run.
+    fn cancel_following(
+        &mut self,
+        run: &runtime_collab::TaskRunEnvelope,
+        following: &mut Following,
+    ) -> Result<()> {
+        let invocation = following.invocation;
+        self.link.send(&CollabRequest::RemoteAction {
+            message: RemoteActionMessage::Cancel { invocation },
+        })?;
+        let _ = self.wait_for_remote_answer(|message| {
+            matches!(
+                message,
+                RemoteActionMessage::CancelResponse { invocation: answered, .. }
+                    if *answered == invocation
+            )
+        })?;
+        following.sequence = following.sequence.saturating_add(1);
+        let cancelled = tilo_actions::InvocationUpdate::Cancelled {
+            invocation: following.update.invocation(),
+            message: Some("Cancelled from Task Center".into()),
+        };
+        self.publish_task_interaction(run, &following.action, &cancelled, following.sequence)?;
+        following.outcome = Some(Err(TaskActionStop::Cancelled(Some(
+            "Cancelled from Task Center".into(),
+        ))));
+        Ok(())
+    }
+
+    /// Ask the host to stop `following` without waiting for its answer: the
+    /// turn that started it ended before it settled.
+    fn abandon_following(&mut self, following: &Following) {
+        if let Err(error) = self.link.send(&CollabRequest::RemoteAction {
+            message: RemoteActionMessage::Cancel {
+                invocation: following.invocation,
+            },
+        }) {
+            tracing::warn!(%error, "could not cancel an abandoned invocation");
         }
     }
 
@@ -1548,15 +1703,15 @@ impl Session {
         }
     }
 
-    /// Wait up to `wait` for news of `invocation`: its update, when the host
-    /// pushes one (returned), or a document change in the room (absorbed;
-    /// the wait ends so the caller asks at once). Catalogue updates are
-    /// applied and every other event keeps its place.
+    /// Wait up to `wait` for news of any of `invocations`: an update the
+    /// host pushes (returned, with its invocation), or a document change in
+    /// the room (absorbed; the wait ends so the caller asks at once).
+    /// Catalogue updates are applied and every other event keeps its place.
     fn await_invocation_news(
         &mut self,
-        invocation: tilo_actions::InvocationId,
+        invocations: &[tilo_actions::InvocationId],
         wait: Duration,
-    ) -> Result<Option<tilo_actions::InvocationUpdate>> {
+    ) -> Result<Option<(tilo_actions::InvocationId, tilo_actions::InvocationUpdate)>> {
         let deadline = ui::time::now() + wait;
         let mut deferred = Vec::new();
         let mut pushed = None;
@@ -1573,8 +1728,8 @@ impl Session {
                             invocation: answered,
                             state: Some(state),
                         },
-                }) if answered == invocation => {
-                    pushed = Some(state.update);
+                }) if invocations.contains(&answered) => {
+                    pushed = Some((answered, state.update));
                     break;
                 }
                 Some(CollabEvent::ActionCatalogue { surfaces }) => {

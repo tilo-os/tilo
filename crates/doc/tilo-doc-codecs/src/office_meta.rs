@@ -2,18 +2,11 @@
 //! read into `meta.props`, and on export the original part's unmodeled
 //! children are carried over verbatim.
 
+use crate::office_props::{element_props, local_name};
 use quick_xml::events::{BytesStart, Event};
 use quick_xml::reader::Reader;
 use std::collections::BTreeSet;
 use tilo_doc::model::DocMut;
-
-/// The element local-name (after any `prefix:`).
-pub(crate) fn local_name(name: &[u8]) -> &[u8] {
-    match name.iter().rposition(|&b| b == b':') {
-        Some(i) => name.get(i.saturating_add(1)..).unwrap_or(name),
-        None => name,
-    }
-}
 
 /// Collect the text content of every element matching `prop_of` into `meta.props`.
 pub(crate) fn import_elements(
@@ -21,44 +14,8 @@ pub(crate) fn import_elements(
     doc: &mut DocMut,
     prop_of: impl Fn(&[u8]) -> Option<&'static str>,
 ) {
-    let mut reader = Reader::from_reader(xml);
-    reader.config_mut().trim_text(false);
-    let mut buf = Vec::new();
-    let mut current: Option<&'static str> = None;
-    let mut text = String::new();
-    loop {
-        match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(e)) => {
-                if let Some(prop) = prop_of(local_name(e.name().as_ref())) {
-                    current = Some(prop);
-                    text.clear();
-                }
-            }
-            Ok(Event::Text(t)) => {
-                if current.is_some()
-                    && let Ok(s) = t.xml10_content()
-                {
-                    text.push_str(&s);
-                }
-            }
-            Ok(Event::GeneralRef(r)) if current.is_some() => {
-                text.extend(crate::resolve_general_ref(&r));
-            }
-            Ok(Event::End(e)) => {
-                if let Some(prop) = prop_of(local_name(e.name().as_ref()))
-                    && current == Some(prop)
-                {
-                    if !text.is_empty() {
-                        doc.set_doc_prop(prop, &text);
-                    }
-                    current = None;
-                    text.clear();
-                }
-            }
-            Ok(Event::Eof) | Err(_) => break,
-            _ => {}
-        }
-        buf.clear();
+    for (prop, text) in element_props(xml, prop_of) {
+        doc.set_doc_prop(&prop, &text);
     }
 }
 

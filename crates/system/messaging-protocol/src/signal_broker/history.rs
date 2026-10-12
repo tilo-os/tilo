@@ -116,13 +116,16 @@ impl History {
         {
             return Err(SendError::Unavailable);
         }
-        private_fs::directory(root).map_err(|_| SendError::Unavailable)?;
-        let file = private_fs::lock_file(&root.join("history.lock"))
+        tilo_files::native::private::directory(root).map_err(|_| SendError::Unavailable)?;
+        let file = tilo_files::native::private::lock_file(&root.join("history.lock"))
             .map_err(|_| SendError::Unavailable)?;
         let lock = FileLock::try_exclusive(file).map_err(|_| SendError::Unavailable)?;
         let path = root.join("history.enc");
         let mut created = false;
-        let ledger = match private_fs::open_owned_for_read(&path, (MAX_BYTES + 1024) as u64) {
+        let ledger = match tilo_files::native::private::open_owned_for_read(
+            &path,
+            (MAX_BYTES + 1024) as u64,
+        ) {
             Ok((mut file, _)) => {
                 use std::io::Read;
                 let mut bytes = Vec::new();
@@ -193,7 +196,8 @@ impl History {
             let sealed = FORMAT
                 .seal(&self.key, &bytes)
                 .ok_or(SendError::Unavailable)?;
-            private_fs::write_atomic(&self.path, &sealed).map_err(|_| SendError::Unavailable)
+            tilo_files::native::private::write_atomic(&self.path, &sealed)
+                .map_err(|_| SendError::Unavailable)
         })();
         if result.is_err() {
             self.usable = false;
