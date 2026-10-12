@@ -31,6 +31,20 @@ class DevMacosWorkflowTests(unittest.TestCase):
                 self.assertNotIn("id-token", source)
                 self.assertNotIn("secrets.", source)
 
+    def test_jobs_build_from_the_stable_source_path(self) -> None:
+        for name in MACOS:
+            source = (WORKFLOWS / name).read_text()
+            with self.subTest(name):
+                runs = re.findall(r"^      - name: .*\n((?:        .*\n)*)", source, re.M)
+                builds = [step for step in runs if "cargo " in step]
+                self.assertTrue(builds)
+                for step in builds:
+                    self.assertIn("working-directory: ${{ env.SRC }}", step)
+                self.assertEqual(
+                    source.count("uses: ./.forgejo/actions/stable-source"),
+                    source.count("uses: actions/checkout@"),
+                )
+
     def test_runtime_check_follows_pull_requests(self) -> None:
         on = triggers((WORKFLOWS / "dev-runtime-macos.yml").read_text())
         self.assertIn("  pull_request:\n", on)
