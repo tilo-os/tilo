@@ -74,7 +74,17 @@ pub const INVOKE: &str = "invoke";
 pub const INVOKE_PARAMETERS: &str = "parameters";
 /// The optional [`INVOKE`] property carrying the task's final reply.
 pub const INVOKE_REPLY: &str = "reply";
+/// The optional [`INVOKE`] property by which the model says a step neither
+/// needs nor reports what the steps before it in the turn do, so it may run
+/// alongside them.
+pub const INVOKE_INDEPENDENT: &str = "independent";
 pub const PLAN: &str = "plan";
+
+/// Whether an [`INVOKE`] call declared itself [`INVOKE_INDEPENDENT`] of the
+/// steps before it. Anything but an explicit `true` keeps it in order.
+pub fn invoke_independent(input: &Value) -> bool {
+    input.get(INVOKE_INDEPENDENT).and_then(Value::as_bool) == Some(true)
+}
 
 /// How many operations one listing returns.
 ///
@@ -483,13 +493,22 @@ fn invoke_definition() -> Value {
             "Perform one listed operation now, as a person using the application would. \
              Returns the result, how your own view changed and which operations became \
              available. Several invokes in one turn run in order as soon as each is \
-             written; after a failure the rest of the turn is skipped. Put your reply \
-             on the last invoke of the task to finish in the same turn.",
+             written; after a failure the rest of the turn is skipped, except invokes \
+             marked `independent`, which may also run alongside the ones before them. \
+             Put your reply on the last invoke of the task to finish in the same turn.",
         "input_schema": {
             "type": "object",
             // Sorted maps on the wire: `operation` precedes `parameters` (its
             // text is attributable while it streams), and `reply` comes last.
             "properties": {
+                INVOKE_INDEPENDENT: {
+                    "type": "boolean",
+                    "description":
+                        "true only when this step neither needs nor reports the result of \
+                         the steps before it in this turn (for example two unrelated \
+                         messages in different applications); it may then run alongside \
+                         them."
+                },
                 "operation": {
                     "type": "string",
                     "description": "An operation id exactly as listed."
