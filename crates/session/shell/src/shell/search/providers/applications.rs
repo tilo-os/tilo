@@ -1118,17 +1118,11 @@ impl SearchProvider for ApplicationsProvider {
         }
         let exhausted = !found.more && considered == found.hits.len();
         let next = offset.saturating_add(considered);
-        SearchPage {
-            revision: revision.clone(),
+        SearchPage::continuing(
+            revision,
             results,
-            next_cursor: (!exhausted).then(|| SearchCursor {
-                revision,
-                token: format!("applications:{next}\u{1f}{}", ctx.needle),
-            }),
-            exhausted,
-            stale_cursor: false,
-            budget_exhausted: !exhausted,
-        }
+            (!exhausted).then(|| format!("applications:{next}\u{1f}{}", ctx.needle)),
+        )
     }
 }
 

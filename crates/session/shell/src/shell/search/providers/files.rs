@@ -622,17 +622,11 @@ impl FilesProvider {
         drop(index);
         let exhausted = !stopped_for_budget && !found.more;
         let next = offset.saturating_add(consumed);
-        SearchPage {
-            revision: revision.clone(),
+        SearchPage::continuing(
+            revision,
             results,
-            next_cursor: (!exhausted).then(|| SearchCursor {
-                revision,
-                token: format!("{needle}\u{1f}{next}"),
-            }),
-            exhausted,
-            stale_cursor: false,
-            budget_exhausted: !exhausted,
-        }
+            (!exhausted).then(|| format!("{needle}\u{1f}{next}")),
+        )
     }
 }
 

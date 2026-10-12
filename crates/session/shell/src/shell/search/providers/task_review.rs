@@ -398,16 +398,10 @@ impl SearchProvider for TaskReviewProvider {
             row_index = 0;
         }
         let exhausted = task_index >= snapshot.tasks.len();
-        SearchPage {
-            revision: revision.clone(),
+        SearchPage::continuing(
+            revision,
             results,
-            next_cursor: (!exhausted).then(|| SearchCursor {
-                revision,
-                token: format!("{task_index}:{row_index}"),
-            }),
-            exhausted,
-            stale_cursor: false,
-            budget_exhausted: !exhausted,
-        }
+            (!exhausted).then(|| format!("{task_index}:{row_index}")),
+        )
     }
 }
