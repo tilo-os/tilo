@@ -198,12 +198,7 @@ impl App {
                 })
             })
             .collect();
-        for button in self.document_history.in_window_controls_mut() {
-            crate::widget::controls::refresh_control_action_availability(button, &allowed);
-        }
-        if let Some(pane) = self.document_history.pane_mut() {
-            crate::widget::controls::refresh_control_action_availability(pane, &allowed);
-        }
+        self.document_history.refresh_control_availability(&allowed);
         allowed
             .into_iter()
             .filter(|address| address.resource == crate::standalone_history_host::HISTORY_RESOURCE)
@@ -400,19 +395,8 @@ impl App {
         if !self.history_chrome_enabled {
             return 0;
         }
-        let mut pending = Vec::new();
-        for button in self.document_history.in_window_controls_mut() {
-            while let Some(intent) = crate::widget::controls::take_control_invocation(button) {
-                pending.push(intent);
-            }
-        }
-        if let Some(pane) = self.document_history.pane_mut() {
-            while let Some(intent) = crate::widget::controls::take_control_invocation(pane) {
-                pending.push(intent);
-            }
-        }
         let mut count = 0usize;
-        for intent in pending {
+        for intent in self.document_history.take_control_invocations() {
             let argument = format!(
                 "{}{}",
                 tilo_actions::ARGUMENTS_JSON_PREFIX,
@@ -421,20 +405,8 @@ impl App {
             let result = self
                 .invoke_history_address_local(&intent.address, Some(&argument))
                 .unwrap_or_else(|| Err(tilo_actions::DoorError::Unknown(intent.address.clone())));
-            for button in self.document_history.in_window_controls_mut() {
-                crate::widget::controls::on_control_invocation_result(
-                    button,
-                    &intent.address,
-                    &result,
-                );
-            }
-            if let Some(pane) = self.document_history.pane_mut() {
-                crate::widget::controls::on_control_invocation_result(
-                    pane,
-                    &intent.address,
-                    &result,
-                );
-            }
+            self.document_history
+                .report_control_result(&intent.address, &result);
             if result.is_ok() {
                 count = count.saturating_add(1);
             }
@@ -769,65 +741,20 @@ impl App {
     }
 
     pub(super) fn capture_history_target(&self) -> Result<HistoryTarget, HistoryError> {
-        let mut binding = self
-            .focused_node
-            .and_then(|node| self.bindings.binding_for(node))
-            .or_else(|| self.root_widget.callback_binding());
-        if binding.is_none() {
-            for node in self.layout.node_map.keys() {
-                let Some(candidate) = self.bindings.binding_for(*node) else {
-                    continue;
-                };
-                if binding
-                    .as_ref()
-                    .is_some_and(|current| current.lifetime_id != candidate.lifetime_id)
-                {
-                    return Err(HistoryError::Unavailable);
-                }
-                binding = Some(candidate);
-            }
-        }
-        if binding.is_none()
-            && self
-                .persistence
-                .records
-                .as_ref()
-                .is_some_and(|records| records.active().is_none())
-        {
-            return Err(HistoryError::Unavailable);
-        }
-        Ok(binding.map_or_else(
-            || HistoryTarget::Legacy {
-                app_id: crate::collaboration::local_app_id(),
-                record: self
-                    .persistence
-                    .records
-                    .as_ref()
-                    .and_then(|records| records.active())
-                    .cloned(),
-                document_identity: self.state.document_identity(),
-            },
-            |binding| HistoryTarget::Bound(Box::new(binding)),
-        ))
+        crate::standalone_history_host::capture_history_target(
+            self.focused_node
+                .and_then(|node| self.bindings.binding_for(node))
+                .or_else(|| self.root_widget.callback_binding()),
+            &self.bindings,
+            self.layout.node_map.keys().copied(),
+            self.persistence.records.as_ref(),
+            self.state.document_identity(),
+        )
     }
 
     pub(super) fn is_history_node(&self, node: taffy::NodeId) -> bool {
-        let Some(layout) = self.history_layout else {
-            return false;
-        };
-        let mut pending: Vec<_> = layout.toolbar.into_iter().collect();
-        pending.extend(layout.search);
-        pending.extend(layout.pane);
-        pending.extend(layout.preview);
-        while let Some(next) = pending.pop() {
-            if next == node {
-                return true;
-            }
-            if let Ok(children) = self.layout.taffy.children(next) {
-                pending.extend(children);
-            }
-        }
-        false
+        self.history_layout
+            .is_some_and(|layout| layout.contains(&self.layout.taffy, node))
     }
 
     pub(super) fn remember_history_content(&mut self) {
