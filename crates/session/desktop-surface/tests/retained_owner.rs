@@ -51,25 +51,6 @@ impl Widget for Root {
         nodes.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
-    fn apply_layout(
-        &mut self,
-        _: &ui::taffy::TaffyTree<()>,
-        _: ui::taffy::NodeId,
-        _: ui::kurbo::Point,
-    ) {
-    }
-    fn draw(
-        &mut self,
-        _: &mut ui::vello::Scene,
-        _: ui::kurbo::Affine,
-        _: &mut ui::TextRenderer,
-        _: &ui::Theme,
-        _: &ui::presence::PresenceCtx,
-    ) {
-    }
-    fn get_rect(&self) -> ui::kurbo::Rect {
-        ui::kurbo::Rect::ZERO
-    }
 }
 impl AppWidget for Root {
     fn app_kind(&self) -> AppKind {

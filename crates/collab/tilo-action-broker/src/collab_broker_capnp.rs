@@ -3290,6 +3290,8 @@ impl CapnpBrokerState {
     pub(crate) fn request_stop(&self) {
         self.accepting.store(false, Ordering::Release);
         self.local_turn.notify_one();
+        // Held committed-read waits re-check custody, which now refuses.
+        tilo_identity_host::policy_change::announce();
     }
 
     /// Hold the broker lifecycle read side for one complete shell-facade
@@ -8186,11 +8188,30 @@ impl channel_handle::Server for CapnpChannelHandle {
         params: channel_handle::CommittedDocumentParams,
         mut results: channel_handle::CommittedDocumentResults,
     ) -> Promise<(), capnp::Error> {
-        Promise::from((|| {
+        use runtime_collab::committed_document::Request;
+        let decoded = (|| {
             let reader = params.get()?;
-            let request =
-                runtime_collab::committed_document::Request::decode(reader.get_request()?)
-                    .map_err(|e| capnp::Error::failed(e.into()))?;
+            Request::decode(reader.get_request()?).map_err(|e| capnp::Error::failed(e.into()))
+        })();
+        let request = match decoded {
+            Ok(request) => request,
+            Err(error) => return Promise::err(error),
+        };
+        if let Request::Await { known_revision } = request {
+            // Held without blocking the channel: answered on this LocalSet
+            // when the read may have changed.
+            return Promise::from_future(async move {
+                let reply = self
+                    .await_committed_change(known_revision)
+                    .await
+                    .map_err(capnp::Error::failed)?;
+                results
+                    .get()
+                    .set_reply(&reply.encode().map_err(|e| capnp::Error::failed(e.into()))?);
+                Ok(())
+            });
+        }
+        Promise::from((|| {
             let reply = self
                 .committed_document_dispatch(&request)
                 .map_err(capnp::Error::failed)?;

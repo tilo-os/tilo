@@ -51,7 +51,7 @@ impl FrameworkHistoryTopology for FocusHistoryRoot {
 
 impl Widget for FocusHistoryRoot {
     crate::provides!(dyn FrameworkHistoryTopology);
-    crate::testing::inert_widget_methods!(draw, name = "History focus probe");
+    crate::testing::inert_widget_methods!(name = "History focus probe");
 
     fn build_layout(
         &mut self,

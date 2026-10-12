@@ -455,9 +455,6 @@ impl Widget for SplitHandle {
         self.layout_dirty
     }
 
-    // The split owns the whole pane bounds needed to place this divider.
-    fn apply_layout(&mut self, _taffy: &TaffyTree<()>, _node: NodeId, _origin: Point) {}
-
     fn draw(
         &mut self,
         scene: &mut Scene,
@@ -1145,16 +1142,6 @@ mod tests {
 
         fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
             self.rect = crate::widget::layout_rect(taffy, node, origin);
-        }
-
-        fn draw(
-            &mut self,
-            _scene: &mut Scene,
-            _transform: Affine,
-            _text_renderer: &mut TextRenderer,
-            _theme: &Theme,
-            _presence: &PresenceCtx,
-        ) {
         }
 
         fn name(&self) -> &'static str {
