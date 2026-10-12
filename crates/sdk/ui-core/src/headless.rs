@@ -8406,9 +8406,12 @@ fn collect_effect_access_nodes(
     controls: &mut HashSet<String>,
 ) {
     let effect = (filter.include)(node)
+        && !(node.state.read_only
+            && matches!(node.role, Role::TextInput | Role::MultilineTextInput))
         && (matches!(
             node.role,
             Role::Button
+                | Role::Tab
                 | Role::ToggleButton
                 | Role::Checkbox
                 | Role::RadioButton
@@ -10522,6 +10525,149 @@ mod tests {
         );
         let audit = driver.native_app_audit();
         assert!(audit.is_certified(), "{audit:?}");
+    }
+
+    /// Same shared action producer with the tab semantics a navigation
+    /// selector exposes. Rendering is irrelevant to this public contract.
+    struct AuditTab(Button);
+
+    impl Widget for AuditTab {
+        crate::testing::inert_widget_methods!(leaf_layout);
+
+        fn name(&self) -> &'static str {
+            "AuditTab"
+        }
+        fn test_id(&self) -> Option<&str> {
+            Some("audit-tab")
+        }
+        fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+            let mut node = self.0.accessibility()?;
+            node.role = crate::a11y::Role::Tab;
+            node.action_target = Some("audit-tab".into());
+            Some(node)
+        }
+        fn provide<'a>(&'a self, request: &mut crate::widget::capability::Request<'a, '_>) {
+            self.0.provide(request);
+        }
+        fn provide_mut<'a>(
+            &'a mut self,
+            request: &mut crate::widget::capability::RequestMut<'a, '_>,
+        ) {
+            self.0.provide_mut(request);
+        }
+        fn perform_action(
+            &mut self,
+            action: &crate::a11y::Action,
+            key_path: &[u64],
+            state: &mut crate::widget::Edits<'_>,
+            path: &crate::widget::ModelPath,
+        ) -> bool {
+            self.0.perform_action(action, key_path, state, path)
+        }
+    }
+
+    #[test]
+    fn tab_controls_require_live_action_bindings_and_bound_tabs_invoke_them() {
+        let resource = crate::widget::resource_actions::resource(
+            "tab-navigation",
+            "Navigation",
+            "open",
+            "Open tab",
+        );
+        let binding = tilo_actions::ActionBinding::unit_for(&resource, "open").unwrap();
+        let calls = std::rc::Rc::new(std::cell::Cell::new(0_usize));
+        let observed = calls.clone();
+        let root = crate::widget::resource_actions::immediate(
+            Box::new(AuditTab(
+                Button::new("audit-tab", "Review").on_action(binding),
+            )),
+            resource,
+            move |_| {
+                observed.set(observed.get().saturating_add(1));
+                Ok(tilo_actions::ActionOutput::default())
+            },
+        );
+        let mut driver = FrameHarness::new(State::new(), root, (320, 160));
+        let audit = driver.native_app_audit();
+        assert!(audit.is_certified(), "{audit:?}");
+        driver
+            .perform_named("audit-tab", &crate::a11y::Action::Activate)
+            .unwrap();
+        assert_eq!(calls.get(), 1);
+
+        let omitted = FrameHarness::new(
+            State::new(),
+            Box::new(AuditTab(Button::new("audit-tab", "Review"))),
+            (320, 160),
+        );
+        let audit = omitted.native_app_audit();
+        assert!(audit.issues.iter().any(|issue| issue.control == "audit-tab" && issue.code == "missing-action-binding"), "{audit:?}");
+    }
+
+    struct SemanticAuditTab(std::rc::Rc<std::cell::Cell<usize>>);
+
+    impl Widget for SemanticAuditTab {
+        crate::testing::inert_widget_methods!(leaf_layout);
+        fn name(&self) -> &'static str {
+            "SemanticAuditTab"
+        }
+        fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+            Some(
+                crate::a11y::AccessNode::new(crate::a11y::Role::Tab)
+                    .with_name("Review")
+                    .with_action_target("semantic-review-tab")
+                    .with_state(crate::a11y::AccessState::new().focusable(true)),
+            )
+        }
+        fn perform_semantic_action(
+            &mut self,
+            target: &str,
+            action: &crate::a11y::Action,
+            state: &mut crate::widget::Edits<'_>,
+            path: &crate::widget::ModelPath,
+        ) -> bool {
+            target == "semantic-review-tab" && self.perform_action(action, &[], state, path)
+        }
+
+        fn perform_action(
+            &mut self,
+            action: &crate::a11y::Action,
+            _key_path: &[u64],
+            _state: &mut crate::widget::Edits<'_>,
+            _path: &crate::widget::ModelPath,
+        ) -> bool {
+            if matches!(action, crate::a11y::Action::Activate) {
+                self.0.set(self.0.get().saturating_add(1));
+                return true;
+            }
+            false
+        }
+    }
+
+    #[test]
+    fn tabs_using_default_semantic_action_provenance_are_certified_and_invoked() {
+        let calls = std::rc::Rc::new(std::cell::Cell::new(0_usize));
+        let mut driver = FrameHarness::new(
+            State::new(),
+            Box::new(SemanticAuditTab(calls.clone())),
+            (320, 160),
+        );
+        let bindings = crate::widget::controls::control_action_bindings(driver.root_widget());
+        assert!(
+            bindings
+                .iter()
+                .any(|binding| binding.control_id == "semantic-review-tab"
+                    && matches!(
+                        binding.kind,
+                        crate::widget::ControlBindingKind::SemanticAction(_)
+                    ))
+        );
+        let audit = driver.native_app_audit();
+        assert!(audit.is_certified(), "{audit:?}");
+        driver
+            .perform_named("semantic-review-tab", &crate::a11y::Action::Activate)
+            .unwrap();
+        assert_eq!(calls.get(), 1);
     }
 
     #[test]
