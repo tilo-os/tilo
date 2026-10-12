@@ -39,8 +39,6 @@ audio = ["dep:gstreamer", "dep:tokio", "media/voice"]
 # InnerTube client. Shots/tests select their hermetic backend at runtime; `reqwest`
 # supports `--probe` verification.
 live = ["dep:rustypipe", "dep:tokio", "dep:reqwest", "dep:tilo-invidious", "tilo-net/http", "tilo-net/blocking", "dep:tilo-spotify"]
-# Enable network lyrics without the full live backend; live already enables them.
-lyrics = ["tilo-net/http", "tilo-net/blocking"]
 
 [dependencies]
 tilo-spotify = { path = "../../crates/platform/tilo-spotify", optional = true }

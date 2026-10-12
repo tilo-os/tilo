@@ -49,8 +49,9 @@ impl ResourceApp for DocumentApp {
 }
 fn invoke(action: &str, args: Map<String, Value>, expected: Option<&str>) -> Action {
     Action::Invoke(Invocation {
-        address: tilo_actions::ActionAddress::new("test.retained-document", action),
-        arguments: args,
+        resource: "test.retained-document".into(),
+        action: action.into(),
+        args,
         confirm: false,
         confirmation_phrase: None,
         expect_error: expected.map(str::to_owned),
