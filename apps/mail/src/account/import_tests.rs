@@ -10,6 +10,7 @@ fn pending_metadata_is_visible_without_hydrating_or_changing_an_existing_secret(
     let mut shared = SharedStore::new();
     let mut stored = StoredAccount::new(id.clone(), accounts::thunderbird::PENDING_TYPE);
     stored.set_config(&AccountConfig {
+        display_name: "Imported Reader".into(),
         email: id.as_str().into(),
         username: "mailbox-login".into(),
         imap_host: "imap.example.org".into(),
@@ -27,6 +28,14 @@ fn pending_metadata_is_visible_without_hydrating_or_changing_an_existing_secret(
     let reopened = AccountStore::load_in(temp.path());
     assert_eq!(reopened.accounts.len(), 1);
     assert!(reopened.accounts.first().unwrap().config.import_pending);
+    assert_eq!(
+        SharedStore::load_in(temp.path())
+            .get(&id)
+            .unwrap()
+            .display_name,
+        "Imported Reader",
+        "Mail saves the shared AccountConfig label for pending accounts"
+    );
     assert!(
         SharedStore::load_in(temp.path())
             .list(&TYPE_ID.into())

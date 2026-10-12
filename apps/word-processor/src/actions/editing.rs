@@ -1029,10 +1029,8 @@ pub fn new_paragraph_in(
     }
     let ordered = block
         .as_ref()
-        .and_then(|entry| match entry.attrs.get("ordered") {
-            Some(tilo_doc::AttrVal::Bool(value)) if kind == "list_item" => Some(*value),
-            _ => None,
-        });
+        .filter(|_| kind == "list_item")
+        .and_then(|entry| entry.bool_attr("ordered"));
     let new_kind = if kind == "list_item" {
         "list_item"
     } else {
@@ -1485,19 +1483,13 @@ fn markdown_clip_blocks(markdown: &str) -> Result<Vec<ClipBlock>, EditingError> 
         .blocks
         .into_iter()
         .map(|block| {
-            let int = |key: &str| match block.attrs.get(key) {
-                Some(tilo_doc::AttrVal::Int(value)) => Some(*value),
-                _ => None,
-            };
-            let flag = |key: &str| match block.attrs.get(key) {
-                Some(tilo_doc::AttrVal::Bool(value)) => Some(*value),
-                _ => None,
-            };
+            let int = |key: &str| block.int_attr(key);
+            let flag = |key: &str| block.bool_attr(key);
             let cell = block.kind == "cell";
             let mut attrs = std::collections::BTreeMap::default();
             if cell {
-                if let Some(tilo_doc::AttrVal::Str(table)) = block.attrs.get("table") {
-                    attrs.insert("table".to_owned(), ClipAttr::Str(table.clone()));
+                if let Some(table) = block.str_attr("table") {
+                    attrs.insert("table".to_owned(), ClipAttr::Str(table.to_owned()));
                 }
                 for key in ["row", "col"] {
                     if let Some(value) = int(key) {
@@ -2041,10 +2033,8 @@ mod tests {
         }
         let ordered = block
             .as_ref()
-            .and_then(|entry| match entry.attrs.get("ordered") {
-                Some(tilo_doc::AttrVal::Bool(value)) if kind == "list_item" => Some(*value),
-                _ => None,
-            });
+            .filter(|_| kind == "list_item")
+            .and_then(|entry| entry.bool_attr("ordered"));
         let new_kind = if kind == "list_item" {
             "list_item"
         } else {
@@ -3036,10 +3026,7 @@ mod tests {
         );
         let tables: std::collections::BTreeSet<_> = blocks
             .iter()
-            .filter_map(|block| match block.attrs.get("table") {
-                Some(tilo_doc::AttrVal::Str(table)) => Some(table.clone()),
-                _ => None,
-            })
+            .filter_map(|block| block.str_attr("table").map(str::to_owned))
             .collect();
         assert_eq!(tables.len(), 2, "each paste is its own table: {tables:?}");
     }
