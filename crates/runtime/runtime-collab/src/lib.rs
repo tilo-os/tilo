@@ -333,6 +333,16 @@ pub struct TaskAction<'a> {
     pub argument: Option<&'a str>,
 }
 
+/// How a native task's re-ask of its own child may be held by the broker:
+/// until the child moves past `seen` or settles, the run is cancelled, or
+/// `wait_ms` (capped by the broker) passes. A broker that predates it
+/// answers at once.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TaskChildWait {
+    pub wait_ms: u32,
+    pub seen: tilo_actions::remote::UpdateMark,
+}
+
 /// A subscribed-to channel. Holds a typed capability backed by the
 /// broker; dropping the handle closes the subscription. Cheap to
 /// clone (the underlying capability is reference-counted).
@@ -1564,6 +1574,51 @@ impl ChannelHandle {
             params.set_confirmation_json(confirmation_json);
             params.set_invocation(invocation);
         }
+        Self::task_action_reply(request).await
+    }
+
+    /// Re-ask for a native task's child `invocation`, started earlier with
+    /// the same request, and let the broker hold the answer as `wait` says
+    /// ([`TaskChildWait`]). The answer is the child's state when it is
+    /// given, observed and authorized then, exactly as an immediate re-ask.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::invoke_task_action`].
+    pub async fn observe_task_child(
+        &self,
+        run_id: u64,
+        lease: &str,
+        target: TaskAction<'_>,
+        invocation: &str,
+        wait: TaskChildWait,
+    ) -> Result<(u64, String), NotAvailable> {
+        let seen = serde_json::to_string(&wait.seen)
+            .map_err(|error| capnp::Error::failed(format!("invalid update mark: {error}")))?;
+        let mut request = self.inner.invoke_task_action_request();
+        {
+            let mut params = request.get();
+            params.set_run_id(run_id);
+            params.set_lease(lease);
+            params.set_peer_id(target.peer_id);
+            params.set_resource(target.resource);
+            params.set_action(target.action);
+            params.set_argument(target.argument.unwrap_or(""));
+            params.set_has_argument(target.argument.is_some());
+            params.set_confirmation_json("");
+            params.set_invocation(invocation);
+            params.set_wait_ms(wait.wait_ms);
+            params.set_seen_json(&seen);
+        }
+        Self::task_action_reply(request).await
+    }
+
+    async fn task_action_reply(
+        request: capnp::capability::Request<
+            crate::collab_capnp::channel_handle::invoke_task_action_params::Owned,
+            crate::collab_capnp::channel_handle::invoke_task_action_results::Owned,
+        >,
+    ) -> Result<(u64, String), NotAvailable> {
         let reply = request.send().promise.await?;
         let result = reply.get()?;
         Ok((
