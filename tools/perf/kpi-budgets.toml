@@ -1283,6 +1283,17 @@ source = "vm-acceptance R04: compositor CPU (frame trace cpu_us) per painted fra
 # 9.50 MB, max within 0.5 % of p50), so their ceilings sit about 15 % above:
 # a delta resent whole or a presence storm fails at once. CPU and latency
 # share the runner and get the fs gate's wider tolerances.
+#
+# Baseline change, 2026-10-11: the nightly runs the relay on two CPUs
+# (`relay_load --relay-cpus 2`, record meta `relay_cpus = "2"`), the priced
+# 2-vCPU VM's shape, where it had run on all of the runner's (four runtime
+# workers, meta `relay_cpus = "all"` or absent). A scratch profile on the same
+# commit (Perf / scheduled 97584) measured 13.9 s CPU per collaborator-hour at
+# four workers and 12.4 s at two CPUs, fan-out p99 75.9 ms and 138.1 ms: fewer
+# idle workers woken to steal work, more queueing. The first two-CPU run
+# (Perf / scheduled on main, kpis=hosting, accept=all) starts the new
+# baseline, so neither series is compared with the other; the ceilings below
+# hold for both.
 
 [kpi."hosting.relay.cpu_s_per_collab_hour.n100"]
 unit = "s"
@@ -1313,6 +1324,46 @@ unit = "bytes"
 p50 = 10900000.0
 enforce = true
 source = "relay_load: framed bytes written to peer sessions per active collaborator-hour"
+
+# Packets (the levers after bytes): a change that sends the same bytes in more
+# packets passes every byte budget, and costs egress, relay CPU and client
+# radio time all the same. Counted on the collaborators' QUIC connections
+# (`Connection::stats`; loopback, so what they received is what the relay
+# sent). The relay's ACK-only datagrams answer client packets that carried
+# nothing to acknowledge back, so a client sending more packets shows twice.
+#
+# Measured in Perf / scheduled A/B runs 97792 and 97793 (8 rounds each): client
+# packets 23,838-23,923, of which data 6,188-6,210; relay datagrams
+# 26,652-26,736, of which ACK-only 7,790-8,103 (p99 up to 8,230). The first
+# three vary by under 1 % between rounds, so their ceilings sit about 15 %
+# above, as the byte budgets do; ACK-only datagrams follow timing (which
+# packets an ACK can ride) and vary by about 5 %, so theirs sits about 20 %
+# above. Run 97792's base, the bench on the commit before client pointer
+# pacing, measured 27,753 client packets, 9,086 data packets and 10,995
+# ACK-only datagrams: undoing that pacing fails three of the four at once.
+[kpi."hosting.relay.client_packets_per_collab_hour.n100"]
+unit = "count"
+p50 = 27500.0
+enforce = true
+source = "relay_load: UDP datagrams the collaborators sent the relay per active collaborator-hour"
+
+[kpi."hosting.relay.client_data_packets_per_collab_hour.n100"]
+unit = "count"
+p50 = 7150.0
+enforce = true
+source = "relay_load: collaborator datagrams carrying stream data per active collaborator-hour"
+
+[kpi."hosting.relay.datagrams_per_collab_hour.n100"]
+unit = "count"
+p50 = 30700.0
+enforce = true
+source = "relay_load: UDP datagrams the relay sent the collaborators per active collaborator-hour"
+
+[kpi."hosting.relay.ack_only_datagrams_per_collab_hour.n100"]
+unit = "count"
+p50 = 9700.0
+enforce = true
+source = "relay_load: relay datagrams carrying only acknowledgements per active collaborator-hour"
 
 [kpi."hosting.relay.fanout_ms.n100"]
 unit = "ms"

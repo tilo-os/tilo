@@ -354,7 +354,11 @@ def load_report(collaborators: int = 100, minutes: int = 2) -> dict:
     per_minute = {"hosting.relay.cpu_s_per_collab_hour": ("s", 36.0),
                   "hosting.relay.rss_mib_per_collab": ("MiB", 1.0),
                   "hosting.relay.egress_bytes_per_collab_hour": ("bytes", 10e6),
-                  "hosting.relay.frame_bytes_per_collab_hour": ("bytes", 8e6)}
+                  "hosting.relay.frame_bytes_per_collab_hour": ("bytes", 8e6),
+                  "hosting.relay.client_packets_per_collab_hour": ("count", 23_000.0),
+                  "hosting.relay.client_data_packets_per_collab_hour": ("count", 6_000.0),
+                  "hosting.relay.datagrams_per_collab_hour": ("count", 26_000.0),
+                  "hosting.relay.ack_only_datagrams_per_collab_hour": ("count", 7_500.0)}
     kpis = {kpi: {"unit": unit, "samples": [value] * minutes} for kpi, (unit, value) in per_minute.items()}
     kpis["hosting.relay.fanout_ms"] = {"unit": "ms", "samples": [4.0, 6.0, 30.0]}
     kpis["hosting.relay.presence_pointer_ms"] = {"unit": "ms", "samples": [20.0, 40.0, 55.0]}
@@ -377,7 +381,15 @@ class HostingLoad(unittest.TestCase):
         self.assertEqual((cpu.unit, cpu.n, cpu.p50), ("s", 2, 36.0))
         fanout = records["hosting.relay.fanout_ms.n100"]
         self.assertEqual((fanout.n, fanout.p50, fanout.max), (3, 6.0, 30.0))
+        acks = records["hosting.relay.ack_only_datagrams_per_collab_hour.n100"]
+        self.assertEqual((acks.unit, acks.n, acks.p50), ("count", 2, 7_500.0))
         self.assertEqual(cpu.meta["prices_checked"], self.prices["checked"])
+        self.assertEqual(cpu.meta["relay_cpus"], "all")
+
+    def test_records_say_how_many_cpus_the_relay_ran_on(self):
+        report = {**load_report(), "relay_cpus": 2}
+        records = adapters.hosting_load(report, self.prices, ENV)
+        self.assertEqual({item.meta["relay_cpus"] for item in records}, {"2"})
 
     def test_the_price_sheet_prices_each_minute(self):
         records = {item.kpi: item for item in adapters.hosting_load(load_report(), self.prices, ENV)}
