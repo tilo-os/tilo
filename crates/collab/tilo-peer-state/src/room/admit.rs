@@ -137,6 +137,8 @@ pub enum RoomRefusal {
     Coverage(String),
     /// The batch rewinds a durable receipt.
     Durability(String),
+    /// Room governance cannot be installed until all its causal parents arrive.
+    MissingDependencies,
     /// The media policy is malformed or its transition is not permitted.
     Media(media::MediaPolicyError),
 }
@@ -158,6 +160,9 @@ impl std::fmt::Display for RoomRefusal {
                  machine owns"
             ),
             Self::ReceiptImmutable => f.write_str("effect receipt is immutable"),
+            Self::MissingDependencies => {
+                f.write_str("room governance requires causal dependencies")
+            }
             Self::Media(error) => write!(f, "{error}"),
         }
     }
@@ -233,6 +238,9 @@ pub fn admit_room_changes(
     }
     crate::coverage::monotonic(before, &candidate).map_err(RoomRefusal::Coverage)?;
     crate::durability::monotonic(before, &candidate).map_err(RoomRefusal::Durability)?;
+    if !candidate.get_missing_deps(&[]).is_empty() {
+        return Err(RoomRefusal::MissingDependencies);
+    }
     let media = media::validate_transition(before, &candidate, media::TransitionMode::Admission)
         .map_err(RoomRefusal::Media)?;
     Ok(AdmittedRoom { candidate, media })

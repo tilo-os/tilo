@@ -123,13 +123,34 @@ pub fn raw_fixture() -> (
 ) {
     raw_fixture_at(SystemTime::now())
 }
+pub fn raw_fixture_without_media() -> (
+    VerifiedNativeEnrollmentIntent,
+    join::JoinBootstrap,
+    Vec<NeighbourMsg>,
+    [u8; 32],
+    SystemTime,
+) {
+    raw_fixture_with_media_at(SystemTime::now(), false)
+}
+pub fn raw_fixture_at(
+    now: SystemTime,
+) -> (
+    VerifiedNativeEnrollmentIntent,
+    join::JoinBootstrap,
+    Vec<NeighbourMsg>,
+    [u8; 32],
+    SystemTime,
+) {
+    raw_fixture_with_media_at(now, true)
+}
 #[allow(
     clippy::too_many_lines,
     reason = "one linear signed-enrollment fixture; splitting it would scatter the protocol \
               steps each test depends on"
 )]
-pub fn raw_fixture_at(
+fn raw_fixture_with_media_at(
     now: SystemTime,
+    with_media: bool,
 ) -> (
     VerifiedNativeEnrollmentIntent,
     join::JoinBootstrap,
@@ -276,12 +297,14 @@ pub fn raw_fixture_at(
             },
         )]),
     };
-    peer.author_media_policy(&policy, &governor_key, now)
-        .unwrap();
+    if with_media {
+        peer.author_media_policy(&policy, &governor_key, now)
+            .unwrap();
+    }
     let messages = peer
         .durable_bootstrap_messages(&governor_key, now, 1)
         .unwrap();
-    assert!(peer.validated_media_policy().unwrap().is_some());
+    assert_eq!(peer.validated_media_policy().unwrap().is_some(), with_media);
     let bootstrap = join::JoinBootstrap {
         version: 1,
         invite_id: verified.invite_id(),

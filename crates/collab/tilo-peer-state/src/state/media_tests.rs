@@ -1093,3 +1093,201 @@ fn room_media_governed_revocation_fence_cannot_be_removed_by_higher_revision() {
     );
     assert_eq!(durable, peer.durable().unwrap());
 }
+
+#[test]
+fn governance_receipt_waits_for_causal_parent_across_restore() {
+    for (with_media, child_first) in [(false, false), (false, true), (true, false), (true, true)] {
+        let (mut peer, key, now) = fixture();
+        let enabled = policy(&peer);
+        if with_media {
+            install_policy(&mut peer, &key, now, &enabled).unwrap();
+        }
+        let before = peer.admitted_room().unwrap().base_heads();
+        let mut authored = peer.admitted_room().unwrap().clone();
+        authored.put(ROOT, "name", "Causal parent").unwrap();
+        let parent_heads = authored.get_heads();
+        let parent = NeighbourMsg::SyncResp {
+            room: ROOM.into(),
+            changes: authored
+                .get_changes(&before)
+                .into_iter()
+                .map(|change| change.raw_bytes().to_vec())
+                .collect(),
+        };
+        let receipt = tilo_desktop_model::WorkspaceEffectReceipt::redacted(
+            tilo_actions::InvocationId::new(),
+            &hex::encode(peer.core.authority.user_public_key),
+            tilo_actions::ActionContext::default(),
+            tilo_actions::EffectReceiptStatus::Succeeded,
+            2000,
+        );
+        tilo_desktop_model::projection::project_effect_receipts(
+            &mut authored,
+            std::slice::from_ref(&receipt),
+        )
+        .unwrap();
+        let child = NeighbourMsg::SyncResp {
+            room: ROOM.into(),
+            changes: authored
+                .get_changes(&parent_heads)
+                .into_iter()
+                .map(|change| change.raw_bytes().to_vec())
+                .collect(),
+        };
+        let origin = TransportOrigin::RetainedRelayDelta(key.verifying_key().to_bytes());
+        if child_first {
+            let report = peer
+                .receive_from_report(origin, child.clone(), now)
+                .unwrap();
+            assert_eq!(
+                report.primary(),
+                &InputDisposition::RetryLater(MissingPrerequisite::CausalDependencies)
+            );
+            assert_eq!(peer.admitted_room().unwrap().base_heads(), before);
+            assert!(
+                peer.admitted_room()
+                    .unwrap()
+                    .get_missing_deps(&[])
+                    .is_empty()
+            );
+            assert!(
+                tilo_desktop_model::projection::workspace_effect_receipts_of(
+                    peer.admitted_room().unwrap()
+                )
+                .is_empty()
+            );
+            peer.receive_from_report(origin, child.clone(), now)
+                .unwrap();
+            assert_eq!(
+                peer.pending_count(),
+                1,
+                "duplicate orphan must not consume queue entries"
+            );
+            peer = StatePeer::restore(
+                &peer.durable().unwrap(),
+                ROOM,
+                peer.core.authority.clone(),
+                vec![],
+                RevocationList::new(),
+                now,
+            )
+            .unwrap();
+            assert_eq!(peer.pending_count(), 1);
+        }
+        peer.receive_from_report(origin, parent, now).unwrap();
+        if !child_first {
+            peer.receive_from_report(origin, child, now).unwrap();
+        }
+        assert_eq!(peer.pending_count(), 0);
+        assert_eq!(
+            peer.validated_media_policy().unwrap(),
+            with_media.then_some(enabled)
+        );
+        assert_eq!(
+            tilo_desktop_model::projection::workspace_effect_receipts_of(
+                peer.admitted_room().unwrap()
+            ),
+            vec![receipt]
+        );
+        assert!(
+            peer.admitted_room()
+                .unwrap()
+                .get_missing_deps(&[])
+                .is_empty()
+        );
+    }
+}
+
+#[test]
+fn orphan_governance_is_not_retained_for_a_member_writer() {
+    for with_media in [false, true] {
+        let (mut peer, governor, members, now) = members();
+        let enabled = policy(&peer);
+        if with_media {
+            install_policy(&mut peer, &governor, now, &enabled).unwrap();
+        }
+        let before = peer.durable().unwrap();
+        let mut authored = peer.admitted_room().unwrap().clone();
+        authored.put(ROOT, "name", "Absent parent").unwrap();
+        let parent_heads = authored.get_heads();
+        authored.put(ROOT, "name", "Orphan child").unwrap();
+        let child = NeighbourMsg::SyncResp {
+            room: ROOM.into(),
+            changes: authored
+                .get_changes(&parent_heads)
+                .into_iter()
+                .map(|change| change.raw_bytes().to_vec())
+                .collect(),
+        };
+        assert!(
+            peer.receive_from_report(
+                TransportOrigin::RelayDelta(members[0].0.verifying_key().to_bytes()),
+                child,
+                now,
+            )
+            .is_err()
+        );
+        assert_eq!(peer.pending_count(), 0);
+        assert_eq!(peer.durable().unwrap(), before);
+    }
+}
+
+#[test]
+fn restore_refuses_incomplete_room_even_without_media() {
+    let (mut peer, _, now) = fixture();
+    let complete = peer.durable().unwrap();
+    assert!(
+        BoundedStatePeer::restore(
+            &complete,
+            ROOM,
+            peer.authority(),
+            &peer.certificates(),
+            &RevocationList::new(),
+            now,
+            &PeerLimits::default()
+        )
+        .is_ok()
+    );
+    let mut authored = peer.admitted_room().unwrap().clone();
+    authored.put(ROOT, "name", "Absent predecessor").unwrap();
+    let parent = authored.get_heads();
+    authored.put(ROOT, "name", "Legacy orphan").unwrap();
+    let changes = authored.get_changes(&parent);
+    peer.core
+        .room_doc
+        .as_mut()
+        .unwrap()
+        .apply_incoming(changes)
+        .unwrap();
+    assert!(
+        !peer
+            .admitted_room()
+            .unwrap()
+            .get_missing_deps(&[])
+            .is_empty()
+    );
+    let bytes = peer.durable().unwrap();
+    assert!(
+        BoundedStatePeer::restore(
+            &bytes,
+            ROOM,
+            peer.authority(),
+            &peer.certificates(),
+            &RevocationList::new(),
+            now,
+            &PeerLimits::default()
+        )
+        .is_err()
+    );
+    assert!(
+        StatePeer::restore(
+            &bytes,
+            ROOM,
+            peer.core.authority.clone(),
+            vec![],
+            RevocationList::new(),
+            now
+        )
+        .is_err()
+    );
+}
