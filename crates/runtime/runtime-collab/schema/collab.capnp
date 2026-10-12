@@ -259,15 +259,11 @@ interface ChannelHandle {
   # attribution/context crosses this method. `invocation` is the caller's
   # tilo_actions::InvocationId: a retry with the same id reports the
   # original invocation, which remoteAction (@42) observes and cancels.
-  # `stepIndex` (when `hasStep`) names the task's durable parent step: the
-  # host maps it to exactly one child before execution and returns that
-  # child again on retry. `continuation` is the parent's committed next-step
-  # continuation, present only once the step's exact result is committed.
   invokeTaskAction @30 (runId :UInt64, lease :Text, peerId :UInt64,
                         resource :Text, action :Text, argument :Text,
                         hasArgument :Bool, confirmationJson :Text,
-                        invocation :Text, stepIndex :UInt32, hasStep :Bool)
-      -> (id :UInt64, updateJson :Text, continuation :Data);
+                        invocation :Text)
+      -> (id :UInt64, updateJson :Text);
   # Cooperative cancellation for a leased task. The broker reflects a Task
   # Center cancellation; it never lets an agent cancel a task by itself.
   taskRunCancelled @31 (runId :UInt64, lease :Text) -> (cancelled :Bool, controlJson :Text);
@@ -342,11 +338,12 @@ interface ChannelHandle {
   # channel's room; nothing in the frame names the caller.
   remoteAction @42 (frame :Data) -> (frame :Data);
 
-  # Private enrolled tasks; old peers without these methods are unavailable.
-  subscribeEnrolledTasks @43 () -> (stream :EnrolledTaskStream);
-  # Exact recipient acceptance; successful RPC reply precedes all task work.
-  acceptEnrolledTask @44 (acceptanceJson :Text) -> ();
-  reportEnrolledTask @45 (acceptanceJson :Text, sequence :UInt64, updateJson :Text) -> ();
+  # Retired per-recipient task delivery verbs keep their ordinals because
+  # Cap'n Proto requires declarations to remain sequential. They carry no
+  # data and have no effect.
+  retiredTaskDelivery @43 () -> ();
+  retiredTaskDeliveryAccept @44 () -> ();
+  retiredTaskDeliveryReport @45 () -> ();
 
   # Local governed call controls. The broker retains genuine kernel/launcher
   # process evidence and derives the exact app/workspace/record from this
@@ -925,11 +922,6 @@ struct ScrollbackBatch {
   earliestSeq @1 :UInt64;
   latestSeq   @2 :UInt64;
   done        @3 :Bool;
-}
-
-# Independently versioned enrolled envelope; legacy TaskRunStream is unchanged.
-interface EnrolledTaskStream {
-  read @0 () -> (taskJson :Text);
 }
 
 # One application's view of the session's settings, from `settings`.

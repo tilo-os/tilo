@@ -776,15 +776,9 @@ pub fn image(bytes: &[u8]) -> Result<(String, Bytes), Refusal> {
 /// The picture format of `bytes`, when it is one notes show.
 #[must_use]
 pub fn image_mime(bytes: &[u8]) -> Option<&'static str> {
-    if bytes.starts_with(&[137, 80, 78, 71, 13, 10, 26, 10]) {
-        Some("image/png")
-    } else if bytes.starts_with(&[0xff, 0xd8, 0xff]) {
-        Some("image/jpeg")
-    } else if bytes.get(..4) == Some(b"RIFF") && bytes.get(8..12) == Some(b"WEBP") {
-        Some("image/webp")
-    } else {
-        None
-    }
+    tilo_content::image_format(bytes)
+        .map(|format| format.mime)
+        .filter(|mime| matches!(*mime, "image/png" | "image/jpeg" | "image/webp"))
 }
 
 /// The object note `page`'s body is kept in, in `doc`.

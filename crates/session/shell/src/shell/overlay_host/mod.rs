@@ -3949,6 +3949,15 @@ impl ShellOverlayHost {
         started
     }
 
+    /// Keep OS identification labels in the current shared display order.
+    pub(crate) fn number_identified_displays(
+        &mut self,
+        layout: &settings_store::person_displays::Layout,
+    ) {
+        self.display_identify
+            .number_by_shared_order(&self.outputs, layout);
+    }
+
     /// Ask the person to keep or revert display transaction `transaction`,
     /// which a layout tool applied. Settings and the Super+P sheet ask in
     /// their own UI; this is for changes from anywhere else.
@@ -9896,16 +9905,21 @@ impl ShellOverlayHost {
     /// Mirror of the geometry in `draw_quick_settings`. The panel is sized
     /// from the controls actually visible on this device, not a fixed grid of
     /// unavailable radios.
-    fn quick_settings_rect(&self) -> Rect {
+    fn quick_settings_width(&self) -> f64 {
         // Under the tray, on the display whose full top bar holds it.
         let area = self.tray_area();
-        let popover_w = if area.width() >= 1200.0 {
+        if area.width() >= 1200.0 {
             400.0
         } else if area.width() >= 720.0 {
             360.0
         } else {
             320.0
-        };
+        }
+    }
+
+    fn quick_settings_rect(&self) -> Rect {
+        let area = self.tray_area();
+        let popover_w = self.quick_settings_width();
         let x1 = area.x1 - 16.0;
         let y0 = area.y0 + 48.0;
         let desired_h = self.chrome.as_ref().map_or(360.0, |chrome| {
@@ -9995,9 +10009,11 @@ impl ShellOverlayHost {
                 let rows = state.quick_settings.vpns.len();
                 DrillInList::list_height(qs::LIST_TOP, rows)
             }
-            QsLevel::Notifications => self
-                .notification_center
-                .preferred_height(state.notification_log(), self.qs_type_lines),
+            QsLevel::Notifications => self.notification_center.preferred_height_for_width(
+                state.notification_log(),
+                self.qs_type_lines,
+                self.quick_settings_width(),
+            ),
             QsLevel::Clipboard => {
                 let rows = self.filtered_clipboard_history().len().min(7);
                 (70.0 + 70.0 * f64::from(u32::try_from(rows).unwrap_or(u32::MAX)))
