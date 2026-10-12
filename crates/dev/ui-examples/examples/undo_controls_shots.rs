@@ -80,7 +80,7 @@ fn shoot(theme: &Theme, out: &Path, case: Case) -> Result<(), String> {
         Case::Undoable | Case::Hovered => type_action(&mut state, "hello")?,
         Case::Redoable => {
             type_action(&mut state, "hello")?;
-            if state.undo_as(Some(&author()), None, None).is_none() {
+            if state.undo_as(Some(&author()), None, None, None).is_none() {
                 return Err("seed edit could not be undone".to_owned());
             }
         }

@@ -431,6 +431,24 @@ pub fn build_bwrap_argv(
     )
 }
 
+/// The surface the package ships (`surface.toml` at its payload root), by
+/// its path in the sandbox and its hash: the app reads it from there, checks
+/// the hash and names it in every change it signs. A package without one
+/// names none, and its changes wait wherever surfaces decide them.
+fn push_surface(argv: &mut Vec<String>, payload_root: &Path, payload_mount: &Path) {
+    let Ok(bytes) = std::fs::read(payload_root.join("surface.toml")) else {
+        return;
+    };
+    argv.extend([
+        "--setenv".to_string(),
+        "TILO_SURFACE".to_string(),
+        payload_mount.join("surface.toml").display().to_string(),
+        "--setenv".to_string(),
+        "TILO_SURFACE_HASH".to_string(),
+        blake3::hash(&bytes).to_hex().to_string(),
+    ]);
+}
+
 fn push_continuity_environment(argv: &mut Vec<String>) {
     for key in [
         "TILO_CONTINUITY_INSTANCE",
@@ -646,6 +664,7 @@ pub fn build_bwrap_argv_for_entry(
     argv.push("--setenv".to_string());
     argv.push("TILO_PACKAGE_ID".to_string());
     argv.push(manifest.package_id.clone());
+    push_surface(&mut argv, payload_root, &payload_mount);
 
     // Same-identity continuation is launcher-authored metadata. bwrap clears
     // the parent environment, so forward only the compact identifiers/payload
@@ -1323,6 +1342,49 @@ mod tests {
                 .expect("payload host path in argv");
             assert_eq!(argv[pos - 1], "--ro-bind");
             assert_eq!(argv[pos + 1], "/var/tilo-apps/com.example.notes");
+        }
+        // Phase `argv_names_the_surface_the_package_ships`.
+        {
+            let m = mk_manifest("off");
+            let payload = tempfile::tempdir().unwrap();
+            let named = |argv: &[String], key: &str| {
+                argv.windows(3)
+                    .find(|w| w[0] == "--setenv" && w[1] == key)
+                    .map(|w| w[2].clone())
+            };
+            let without = build_bwrap_argv(
+                &m,
+                payload.path(),
+                None,
+                &[],
+                None,
+                None,
+                &CapabilityPlan::empty(),
+            );
+            assert_eq!(
+                named(&without, "TILO_SURFACE"),
+                None,
+                "a package without a surface names none"
+            );
+            std::fs::write(payload.path().join("surface.toml"), b"[[resources]]\n").unwrap();
+            let with = build_bwrap_argv(
+                &m,
+                payload.path(),
+                None,
+                &[],
+                None,
+                None,
+                &CapabilityPlan::empty(),
+            );
+            assert_eq!(
+                named(&with, "TILO_SURFACE").as_deref(),
+                Some("/var/tilo-apps/com.example.notes/surface.toml"),
+                "the file in the sandbox's payload"
+            );
+            assert_eq!(
+                named(&with, "TILO_SURFACE_HASH"),
+                Some(blake3::hash(b"[[resources]]\n").to_hex().to_string())
+            );
         }
         // Phase `argv_reads_come_from_the_system_profile_not_the_manifest`.
         // The reads a launch gets are the system profile's; a manifest naming
@@ -2327,7 +2389,7 @@ mod tests {
     // Capability enforcement: assert on the production argv itself — a path
     // missing from it is a path the app cannot reach, whatever the UI says.
 
-    use collab_types::caps::{CapOverride, Expiry, Scope, Subject, Verb};
+    use collab_types::caps::{Access, CapOverride, Expiry, Scope, Subject};
 
     /// Deterministic stand-in for the host's device nodes, so a camera
     /// assertion doesn't depend on the test machine owning one.
@@ -2366,7 +2428,7 @@ mod tests {
             .collect()
     }
 
-    fn fs_grant(app: &str, path: &str, verb: Verb) -> CapOverride {
+    fn fs_grant(app: &str, path: &str, verb: Access) -> CapOverride {
         CapOverride::grant(Subject::app(app), Scope::FsPath(path.to_string()), verb)
     }
 
@@ -2432,7 +2494,7 @@ mod tests {
             let caps = vec![fs_grant(
                 "so.tilo.books",
                 "/var/workspace/books",
-                Verb::Read,
+                Access::Read,
             )];
             let argv = argv_with_caps("so.tilo.books", &caps, 1_000);
             assert!(
@@ -2461,7 +2523,7 @@ mod tests {
             let caps = vec![fs_grant(
                 "so.tilo.books",
                 "/var/workspace/books",
-                Verb::Write,
+                Access::Write,
             )];
             let argv = argv_with_caps("so.tilo.books", &caps, 1_000);
             assert!(
@@ -2492,7 +2554,7 @@ mod tests {
             let caps = vec![CapOverride::grant(
                 Subject::app("so.tilo.meet"),
                 Scope::Device("camera".to_string()),
-                Verb::Read,
+                Access::Read,
             )];
             let with = argv_with_caps("so.tilo.meet", &caps, 1_000);
             assert!(
@@ -2505,16 +2567,16 @@ mod tests {
         // Phase `a_capability_for_another_app_never_reaches_this_apps_argv`.
         {
             let caps = vec![
-                fs_grant("so.tilo.other", "/var/workspace/secrets", Verb::Write),
+                fs_grant("so.tilo.other", "/var/workspace/secrets", Access::Write),
                 CapOverride::grant(
                     Subject::app("so.tilo.other"),
                     Scope::Device("camera".to_string()),
-                    Verb::Read,
+                    Access::Read,
                 ),
                 CapOverride::grant(
                     Subject::app("so.tilo.other"),
                     Scope::NetHost("*".to_string()),
-                    Verb::Write,
+                    Access::Write,
                 ),
             ];
             let argv = argv_with_caps("so.tilo.books", &caps, 1_000);
@@ -2541,7 +2603,7 @@ mod tests {
             // The argv builder reads the session environment.
             let _env = tilo_test_env::lock();
             let caps = vec![
-                fs_grant("so.tilo.books", "/var/workspace/books", Verb::Write)
+                fs_grant("so.tilo.books", "/var/workspace/books", Access::Write)
                     .expiring(Expiry::AtUnix(500)),
             ];
             let expired = argv_with_caps("so.tilo.books", &caps, 1_000);
@@ -2581,7 +2643,7 @@ mod tests {
             let caps = vec![CapOverride::grant(
                 Subject::app("so.tilo.mail"),
                 Scope::NetHost("*".to_string()),
-                Verb::Write,
+                Access::Write,
             )];
             let granted = argv_with_caps("so.tilo.mail", &caps, 1_000);
             assert!(
@@ -2598,7 +2660,7 @@ mod tests {
             let caps = vec![CapOverride::grant(
                 Subject::app("so.tilo.mail"),
                 Scope::NetHost("github.com".to_string()),
-                Verb::Write,
+                Access::Write,
             )];
             let argv = argv_with_caps("so.tilo.mail", &caps, 1_000);
 

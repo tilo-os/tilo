@@ -168,7 +168,7 @@ impl Topbar {
             }
         }
 
-        let task_label = crate::tasks_i18n::t("calendar-task-new");
+        let task_label = crate::resource::t("calendar-tasks-new");
         let new_label = if view == View::Tasks {
             task_label.as_str()
         } else {
@@ -318,7 +318,7 @@ fn solve(
     let title_need = title_width(variants, band, text, theme);
 
     let today_label_w = ButtonFace::new(Rect::ZERO, TODAY).intrinsic_width(text, theme);
-    let task_label = crate::tasks_i18n::t("calendar-task-new");
+    let task_label = crate::resource::t("calendar-tasks-new");
     let new_label_w = ButtonFace::new(
         Rect::ZERO,
         if view == View::Tasks {
@@ -432,7 +432,7 @@ fn title_width(variants: &[String], band: Rect, text: &mut TextRenderer, theme: 
 
 fn period_title_variants(view: View, anchor: NaiveDate) -> Vec<String> {
     match view {
-        View::Tasks => vec![crate::tasks_i18n::t("calendar-tasks-title")],
+        View::Tasks => vec![crate::resource::t("calendar-tasks-title")],
         View::Month => vec![
             date::month_title(anchor),
             date::month_title_short(anchor),
@@ -494,7 +494,7 @@ mod tests {
                 );
                 assert_eq!(
                     period_title_variants(View::Tasks, anchor()),
-                    vec![crate::tasks_i18n::t("calendar-tasks-title")]
+                    vec![crate::resource::t("calendar-tasks-title")]
                 );
             }
         }

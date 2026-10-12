@@ -11,8 +11,7 @@
 //! The whole batch is refused or the whole candidate is returned: a partial
 //! merge would advance local heads past refused operations.
 use automerge::AutoCommit;
-use collab_types::caps::{Actor, CapDecision, Principal, ResourceRef, Verb, decide_capability};
-use collab_types::{Ed25519PublicKey, Role};
+use tilo_action_policy::{ActionKind, Answer, Context, TreePath};
 
 use super::media;
 
@@ -48,15 +47,13 @@ impl AuthorityPin<'_> {
 /// How the receiver knows the sender's standing in the room.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Standing {
-    /// The receiver resolved the sender to this person root and the role it
-    /// holds (`None`: not a member). The batch needs `Write` on the room under
-    /// the capabilities the receiver already holds.
-    Member {
-        person: [u8; 32],
-        role: Option<Role>,
-    },
-    /// The receiver's transport decided this sender's `Write` before it
-    /// delivered the batch, and the receiver has no roster entry of its own to
+    /// The receiver resolved the sender to this person root, from a device
+    /// held to the foreign-device bound or not. The batch needs undoable
+    /// changes on the room allowed under the policy the receiver already
+    /// holds.
+    Member { person: [u8; 32], foreign: bool },
+    /// The receiver's transport decided this sender may change the room before
+    /// it delivered the batch, and the receiver has no roster entry of its own to
     /// decide it again (the shell's network gate, `peer_room_allows`). Every
     /// other check still applies.
     TransportAuthorized,
@@ -104,7 +101,7 @@ pub struct RoomAdmission<'a> {
     pub source: Writer<'a>,
     pub authority: AuthorityPin<'a>,
     pub contents: ContentOwnership,
-    /// Seconds since the Unix epoch, for capability expiry.
+    /// Seconds since the Unix epoch, for grant expiry.
     pub caps_now: u64,
 }
 
@@ -122,7 +119,7 @@ pub enum RoomRefusal {
     /// The sender is not the governance writer and nothing is held to check
     /// its membership against.
     GovernanceMissing,
-    /// The sender does not hold `Write` on the room.
+    /// The sender may not change the room.
     WriteForbidden,
     /// The batch does not decode, or isolated admission refused it.
     Malformed(String),
@@ -171,8 +168,8 @@ impl std::error::Error for RoomRefusal {}
 /// Admit `changes` to `input.before`: build the candidate and run every check a
 /// room document must pass, in one place for every receiver.
 ///
-/// 1. The sender holds `Write` on the room, unless it is the pinned governance
-///    writer (who may grant itself anything) — [`Standing`].
+/// 1. The sender may make undoable changes on the room, unless it is the
+///    pinned governance writer (who may grant itself anything) — [`Standing`].
 /// 2. The batch decodes under the shared incoming limits ([`super::candidate`]).
 /// 3. The document names this room ([`super::declared_room_mismatches`]).
 /// 4. A governance change — owner, capabilities, identities, media,
@@ -241,28 +238,31 @@ pub fn admit_room_changes(
     Ok(AdmittedRoom { candidate, media })
 }
 
-/// `Write` on the room for a sender that is not the governance writer, decided
-/// against the capabilities already held — never the ones the batch brings.
+/// Undoable changes on the room for a sender that is not the governance
+/// writer, decided against the policy already held — never the one the batch
+/// brings.
 fn may_write(
     before: Option<&AutoCommit>,
     room: &str,
     source: &Writer<'_>,
     caps_now: u64,
 ) -> Result<(), RoomRefusal> {
-    let Standing::Member { person, role } = source.standing else {
+    let Standing::Member { person, foreign } = source.standing else {
         return Ok(());
     };
     let before = before.ok_or(RoomRefusal::GovernanceMissing)?;
-    let (_, _, caps) = super::extract_governed_fields(before);
-    let person = Principal::person_from_key(Ed25519PublicKey::from_bytes(person));
-    let actor = Actor::person(role, person.id()).in_room(room.to_owned());
-    if decide_capability(
-        &actor,
-        &ResourceRef::Room(room.to_owned()),
-        Verb::Write,
-        &caps,
-        Some(caps_now),
-    ) == CapDecision::Allow
+    let policy = tilo_desktop_model::projection::room_policy_of(before, room);
+    let person = hex::encode(person);
+    if policy.active_role(&person).is_none() {
+        return Err(RoomRefusal::WriteForbidden);
+    }
+    let bound = tilo_action_policy::roles::foreign_device_bound();
+    let authority = policy.person_on_device(&person, foreign, &bound);
+    let cx = Context::at_secs(caps_now);
+    if authority
+        .decide(&TreePath::room(room), ActionKind::Undoable, &cx)
+        .answer
+        == Answer::Allow
     {
         Ok(())
     } else {

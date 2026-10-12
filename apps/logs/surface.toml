@@ -1,0 +1,42 @@
+# The app's public surface, written by `tilo-app surface`: its resources' verbs
+# and stored fields. Review changes to it like an API change; `tilo-app check`
+# fails when the code and this file disagree.
+
+[[resources]]
+kind = "logs.journal"
+label = "System journal"
+version = 1
+
+[[resources.fields]]
+owner = "logs"
+path = "severity"
+stored = "value"
+title = "The least severe priority shown"
+type = "Priority"
+
+[[resources.fields]]
+owner = "logs"
+path = "unit"
+stored = "value"
+title = "Exact unit, or empty for every unit"
+type = "Atom"
+
+[[resources.fields]]
+owner = "logs"
+path = "boot"
+stored = "value"
+title = "Exact boot id, or empty for every boot"
+type = "Atom"
+
+[[resources.fields]]
+owner = "logs"
+path = "search"
+stored = "value"
+title = "Text to find in messages, units or identifiers"
+type = "String"
+
+[[resources.verbs]]
+id = "clear-filters"
+kind = "undoable"
+label = "Clear every journal filter"
+params = []

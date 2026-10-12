@@ -89,7 +89,7 @@ impl Session {
         let profile = crate::identity_registry::selected_identity_profile(&room_id)?
             .ok_or_else(|| io::Error::other("runtime workspace has no selected identity"))?;
         let actor = profile.principal_id();
-        if workspace.owner.is_none() {
+        if workspace.owner().is_none() {
             workspace.set_owner(actor.clone());
         }
         stage("saving the workspace");

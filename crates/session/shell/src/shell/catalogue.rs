@@ -19,7 +19,7 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 
 use crate::shell::launcher::{self, LaunchEvent, LaunchEventKind};
-use crate::shell::state::{CapOverride, RoomId};
+use crate::shell::state::RoomId;
 
 /// Much longer than the installed-apps TTL: that re-reads two local
 /// files, this talks to a network service.
@@ -379,7 +379,7 @@ pub fn take_pending_notice(package_id: &str) -> Option<u64> {
     })
 }
 
-/// `capabilities` is the activating workspace's grant list, captured
+/// `capabilities` is the activating workspace's launch grants, captured
 /// on the frame thread rather than read fresh — an install takes
 /// seconds, and the app must land in the sandbox it was opened from,
 /// not whichever workspace is active when the download finishes.
@@ -387,7 +387,7 @@ pub fn install_and_launch(
     package_id: String,
     display_name: String,
     room: RoomId,
-    capabilities: Vec<CapOverride>,
+    capabilities: collab_types::caps::LaunchGrants,
 ) {
     let Some(bin) = resolve_catalogue_bin() else {
         push_failure(

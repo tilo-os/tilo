@@ -343,10 +343,7 @@ pub(super) fn kept_as_copy(st: &mut ChromeState, plan: &Plan, carried: &Carried)
         &plan.app_id,
         &plan.title,
         &carried.target,
-        t_args(
-            "window-transfer-receipt-copied",
-            &[("window", window.into()), ("from", from.into())],
-        ),
+        transferred(COPY_WINDOW_IN, &[("window", window), ("from", from)]),
     );
     st.push_warning_notification(
         t_args(

@@ -1084,9 +1084,9 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
     let definition = definition(config.app.as_deref())?;
     let store = crate::storage::load(&config.profile, &config.device, &hydrated)?;
     let dyn_store: Rc<dyn durable_store::DurableStore> = store.clone();
-    let permissions = Rc::new(RefCell::new(PermissionContext::from_capabilities(
-        collab_types::caps::Actor::person(Some(collab_types::role::Role::Owner), config.author()),
-        Vec::new(),
+    let permissions = Rc::new(RefCell::new(PermissionContext::member(
+        config.author(),
+        collab_types::role::Role::Owner,
     )));
     let Presentation {
         root,
@@ -2487,22 +2487,6 @@ pub fn desktop_apply_tree(id: u64, tree: &str) -> Result<(), JsValue> {
         m.pending = true;
         m.window.request_redraw();
         Ok(())
-    })
-}
-
-/// The desktop's current tree as `DesktopTree` JSON, for peers; `None` for
-/// a single-application mount.
-///
-/// # Errors
-///
-/// Rejects a closed mount or a failure to serialize the tree.
-#[wasm_bindgen]
-pub fn desktop_tree(id: u64) -> Result<Option<String>, JsValue> {
-    with_mount(id, |m| {
-        m.desktop
-            .as_ref()
-            .map(|d| d.handle.read(serde_json::to_string).map_err(error))
-            .transpose()
     })
 }
 

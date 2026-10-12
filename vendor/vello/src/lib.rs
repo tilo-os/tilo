@@ -148,6 +148,11 @@ pub use wgpu;
 
 #[cfg(feature = "wgpu")]
 pub use image_source::ImageSource;
+/// A stable identity of the compute shaders this build of vello creates
+/// pipelines from: a pipeline cache kept across processes is only valid for
+/// the fingerprint it was filled with.
+#[cfg(feature = "wgpu")]
+pub use vello_shaders::SOURCE_FINGERPRINT as SHADER_FINGERPRINT;
 pub use scene::{DrawGlyphs, Scene};
 pub use vello_encoding::ImageCacheStats;
 pub use vello_encoding::{FontEmbolden, Glyph, NormalizedCoord};
@@ -1215,6 +1220,35 @@ pub struct RenderParams {
     pub antialiasing_method: AaConfig,
 }
 
+/// Which of its pipelines [`Renderer::new_deferring`] builds before it
+/// returns (Tilo patch). A deferred pipeline is built by
+/// [`Renderer::start_deferred_pipelines`]' background thread, or by the first
+/// render that dispatches it; no dispatch ever runs without its pipeline.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PipelineDeferral {
+    /// Every pipeline, as [`Renderer::new`].
+    #[default]
+    None,
+    /// Only the pipelines a full frame on the default path dispatches. The
+    /// three-level path-tag scan, the GPU draw reduce and leaf (while the CPU
+    /// draw prefix serves), the indirect path stages (while the direct ones
+    /// serve), the clip reduce and the sparse fine stage wait.
+    Unused,
+    /// None: for a caller that rasterizes its frames another way and renders
+    /// with vello only now and then.
+    All,
+}
+
+/// [`Renderer::deferred_pipelines`]: what a deferring renderer has not built.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DeferredPipelines {
+    /// Deferred pipelines not installed yet.
+    pub pending: usize,
+    /// Deferred pipelines a render needed before the background thread had
+    /// built them, so it built them itself.
+    pub built_inline: u64,
+}
+
 #[cfg(feature = "wgpu")]
 /// Options which are set at renderer creation time, used in [`Renderer::new`].
 pub struct RendererOptions {
@@ -1719,21 +1753,40 @@ impl Renderer {
     }
 
     /// Creates a new renderer for the specified device.
-    pub fn new(device: &Device, mut options: RendererOptions) -> Result<Self> {
+    pub fn new(device: &Device, options: RendererOptions) -> Result<Self> {
+        Self::new_deferring(device, options, PipelineDeferral::None)
+    }
+
+    /// [`Self::new`], building before it returns only the pipelines
+    /// `deferral` does not defer (Tilo patch). Call
+    /// [`Self::start_deferred_pipelines`] once the first frame is out.
+    pub fn new_deferring(
+        device: &Device,
+        mut options: RendererOptions,
+        mut deferral: PipelineDeferral,
+    ) -> Result<Self> {
         let mut engine = WgpuEngine::new(options.use_cpu, options.pipeline_cache.clone());
         engine.initialize_gpu_timestamps(device);
         // The GL backend has one context, and every pipeline compile holds
         // its lock. Worker threads only queue on that lock, and a slow driver
-        // keeps one waiting past wgpu-hal's lock timeout, which panics.
+        // keeps one waiting past wgpu-hal's lock timeout, which panics. A
+        // background build of deferred pipelines would be such a worker.
         if device.adapter_info().backend == wgpu::Backend::Gl {
             options.num_init_threads = NonZeroUsize::new(1);
+            deferral = PipelineDeferral::None;
         }
         // If we are running in parallel (i.e. the number of threads is not 1)
         if options.num_init_threads != NonZeroUsize::new(1) {
             #[cfg(not(target_arch = "wasm32"))]
             engine.use_parallel_initialisation();
         }
-        let shaders = shaders::full_shaders(device, &mut engine, &options)?;
+        engine.set_pipeline_deferral(deferral);
+        engine.set_deferred_build_threads(options.num_init_threads.map_or(1, NonZeroUsize::get));
+        let shaders = shaders::full_shaders(device, &mut engine, &options);
+        // Shaders registered later (canonical segment order, replays) build
+        // when they are added, as before.
+        engine.set_pipeline_deferral(PipelineDeferral::None);
+        let shaders = shaders?;
         #[cfg(not(target_arch = "wasm32"))]
         engine.build_shaders_if_needed(device, options.num_init_threads);
         Self::with_engine(device, options, engine, shaders)
@@ -1800,6 +1853,31 @@ impl Renderer {
             #[cfg(feature = "wgpu-profiler")]
             profile_result: None,
         })
+    }
+
+    /// Build the pipelines [`Self::new_deferring`] deferred, in the background
+    /// on the renderer's init threads: those a full frame on the default path
+    /// dispatches first, the largest of each group first. Renders install them
+    /// as they arrive, and wait for one they dispatch. `built`
+    /// runs once every one is built (on that thread), or at once when nothing
+    /// was deferred: the moment to keep a pipeline cache. A second call does
+    /// nothing and drops its `built`.
+    pub fn start_deferred_pipelines(
+        &mut self,
+        device: &Device,
+        built: impl FnOnce() + Send + 'static,
+    ) {
+        self.engine.start_deferred_pipelines(device, Box::new(built));
+    }
+
+    /// The pipelines [`Self::new_deferring`] deferred that are not installed
+    /// yet, and how many a render had to build itself.
+    pub fn deferred_pipelines(&mut self) -> DeferredPipelines {
+        let (pending, built_inline) = self.engine.deferred_pipeline_counts();
+        DeferredPipelines {
+            pending,
+            built_inline,
+        }
     }
 
     /// Return the GPU allocations whose byte sizes are directly known to the

@@ -17,7 +17,7 @@ pub use profiles::{
 };
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[serde(remote = "Self", rename_all = "snake_case")]
 pub enum OutputTransform {
     #[default]
     Normal,
@@ -25,6 +25,8 @@ pub enum OutputTransform {
     Rotate180,
     Rotate270,
 }
+
+crate::read_through_json_value!(OutputTransform);
 
 /// An output's extent in the logical desktop layout: its `mode` divided by
 /// its UI `scale`, then rotated. [`OutputConfig::x`]/[`OutputConfig::y`] are
@@ -62,12 +64,15 @@ pub fn logical_extent(mode: (u32, u32), scale: f64, transform: OutputTransform) 
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(remote = "Self")]
 pub struct OutputMode {
     pub width: u32,
     pub height: u32,
     /// Milli-Hz keeps 59.94 and 60 Hz distinct.
     pub refresh_mhz: u32,
 }
+
+crate::read_through_json_value!(OutputMode);
 
 impl OutputMode {
     /// How a person reads the mode: `1920 × 1080 at 60 Hz`, with the rate's
@@ -81,7 +86,7 @@ impl OutputMode {
 
 /// What a sink's EDID says it is. Empty strings mean the EDID did not say.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(remote = "Self", default)]
 pub struct MonitorIdentity {
     /// Manufacturer name, or its three-letter PNP id when the name is not
     /// known, e.g. `Dell` or `XYZ`.
@@ -93,6 +98,8 @@ pub struct MonitorIdentity {
     pub serial: String,
     pub physical_size_mm: Option<(u32, u32)>,
 }
+
+crate::read_through_json_value!(MonitorIdentity);
 
 impl MonitorIdentity {
     /// The name a person recognises, e.g. `Dell U2720Q`. Monitor-name
@@ -118,6 +125,7 @@ impl MonitorIdentity {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(remote = "Self")]
 pub struct OutputDescriptor {
     /// Collision-free output key used by persisted display intent. This is
     /// the familiar DRM connector label when it is unique, and a
@@ -135,6 +143,8 @@ pub struct OutputDescriptor {
     /// EDID identity, `None` for a sink that exposes no readable EDID.
     pub monitor: Option<MonitorIdentity>,
 }
+
+crate::read_through_json_value!(OutputDescriptor);
 
 impl OutputDescriptor {
     /// Connector label suitable for a compact user-facing description. The
@@ -163,6 +173,7 @@ impl OutputDescriptor {
 /// authority that can say which modes and output features are actually
 /// usable by the active renderer.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(remote = "Self")]
 pub struct DisplayOutputSnapshot {
     pub descriptor: OutputDescriptor,
     pub current_mode: OutputMode,
@@ -189,6 +200,8 @@ pub struct DisplayOutputSnapshot {
     pub color_profile_labels: BTreeMap<String, String>,
 }
 
+crate::read_through_json_value!(DisplayOutputSnapshot);
+
 impl DisplayOutputSnapshot {
     /// The entry that describes this output as it runs with none saved: the
     /// defaults at the compositor's own scale.
@@ -199,7 +212,7 @@ impl DisplayOutputSnapshot {
 
 /// Why an HDR-capable sink cannot be driven in HDR by the compositor.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[serde(remote = "Self", rename_all = "snake_case")]
 pub enum HdrUnavailable {
     /// The kernel driver lacks a connector property HDR signalling needs:
     /// `HDR_OUTPUT_METADATA`, a `BT2020_RGB` `Colorspace`, or a `max bpc`
@@ -211,9 +224,11 @@ pub enum HdrUnavailable {
     DriverRejected,
 }
 
+crate::read_through_json_value!(HdrUnavailable);
+
 /// Why an adaptive-sync-capable sink cannot have it enabled by the compositor.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[serde(remote = "Self", rename_all = "snake_case")]
 pub enum AdaptiveSyncUnavailable {
     /// The kernel driver offers no `VRR_ENABLED` property on any CRTC that
     /// could drive this connector.
@@ -222,11 +237,13 @@ pub enum AdaptiveSyncUnavailable {
     DriverRejected,
 }
 
+crate::read_through_json_value!(AdaptiveSyncUnavailable);
+
 /// Read-only state written atomically by the compositor in the private user
 /// runtime directory. It is deliberately separate from durable intent:
 /// unplugging a monitor changes this document, not the user's saved layout.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(remote = "Self", default)]
 pub struct DisplayHardwareSnapshot {
     pub generated_unix_ms: u64,
     pub backend: String,
@@ -241,8 +258,11 @@ pub struct DisplayHardwareSnapshot {
     pub layout: Vec<LiveOutputPlacement>,
 }
 
+crate::read_through_json_value!(DisplayHardwareSnapshot);
+
 /// One enabled output's live rectangle in combined desktop coordinates.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(remote = "Self")]
 pub struct LiveOutputPlacement {
     /// Collision-free output key, as in [`OutputDescriptor::connector`].
     pub connector: String,
@@ -251,6 +271,8 @@ pub struct LiveOutputPlacement {
     pub width: u32,
     pub height: u32,
 }
+
+crate::read_through_json_value!(LiveOutputPlacement);
 
 impl DisplayHardwareSnapshot {
     pub fn load() -> Option<Self> {
@@ -363,7 +385,7 @@ pub fn process_start_ticks(pid: u32) -> Option<u64> {
 /// commits durable intent. A timeout or `RevertRequested` restores
 /// `previous`, including after Settings itself crashed.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[serde(remote = "Self", rename_all = "snake_case")]
 pub enum DisplayTransactionState {
     #[default]
     Requested,
@@ -375,11 +397,13 @@ pub enum DisplayTransactionState {
     Rejected,
 }
 
+crate::read_through_json_value!(DisplayTransactionState);
+
 /// The section a [`DisplayTransaction`] is stored in, whole.
 pub const DISPLAY_TRANSACTION_SECTION: &str = "display_transaction";
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(remote = "Self", default)]
 pub struct DisplayTransaction {
     pub id: u64,
     pub state: DisplayTransactionState,
@@ -391,6 +415,8 @@ pub struct DisplayTransaction {
     pub deadline_unix_ms: Option<u64>,
     pub message: Option<String>,
 }
+
+crate::read_through_json_value!(DisplayTransaction);
 
 impl Default for DisplayTransaction {
     fn default() -> Self {
@@ -637,8 +663,9 @@ pub const TABLETS_KEY: &str = "tablets";
 /// What a pen barrel button does. `Default` reports the button as itself:
 /// tablet-aware apps see a pen button, everything else a right (lower
 /// button) or middle (upper button) click.
+#[cfg_attr(feature = "model", derive(tilo_resource::JsonSchema))]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[serde(remote = "Self", rename_all = "snake_case")]
 pub enum StylusButtonAction {
     #[default]
     Default,
@@ -652,10 +679,13 @@ pub enum StylusButtonAction {
     Disabled,
 }
 
+crate::read_through_json_value!(StylusButtonAction);
+
 /// What the eraser end of a pen does. `Native` reports it as an eraser:
 /// tablet-aware apps erase with it, everything else sees a left click.
+#[cfg_attr(feature = "model", derive(tilo_resource::JsonSchema))]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[serde(remote = "Self", rename_all = "snake_case")]
 pub enum EraserAction {
     #[default]
     Native,
@@ -669,11 +699,14 @@ pub enum EraserAction {
     Shortcut(ShortcutAction),
 }
 
+crate::read_through_json_value!(EraserAction);
+
 /// What turning a pad's touch ring or sliding along its strip does in an app
 /// that does not take tablet input itself. Tablet-aware apps always get the
 /// ring and strip as they are.
+#[cfg_attr(feature = "model", derive(tilo_resource::JsonSchema))]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[serde(remote = "Self", rename_all = "snake_case")]
 pub enum PadDialAction {
     Nothing,
     /// Scroll whatever is under the pointer.
@@ -688,6 +721,8 @@ pub enum PadDialAction {
     /// Step the display brightness.
     Brightness,
 }
+
+crate::read_through_json_value!(PadDialAction);
 
 /// A pad control that turns or slides.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -748,8 +783,9 @@ pub fn feel_for_pressure_curve(curve: [f64; 4]) -> f64 {
 
 /// One drawing tablet's settings, stored per device identity so each
 /// tablet keeps its own mapping when several are used.
+#[cfg_attr(feature = "model", derive(tilo_resource::JsonSchema))]
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(remote = "Self", default)]
 pub struct TabletConfig {
     /// Collision-free output key ([`OutputDescriptor::connector`]) the
     /// tablet maps onto; `None` spans the whole desktop.
@@ -782,6 +818,11 @@ pub struct TabletConfig {
     /// [`Self::pad_rings`].
     pub pad_strips: BTreeMap<u32, Vec<PadDialAction>>,
 }
+
+crate::read_through_json_value!(TabletConfig);
+
+#[cfg(feature = "model")]
+tilo_resource::json_model!(TabletConfig);
 
 impl TabletConfig {
     fn dials(&self, dial: PadDial) -> (&BTreeMap<u32, Vec<PadDialAction>>, u32) {
@@ -895,7 +936,7 @@ pub fn lenient_tablets<'de, D: serde::Deserializer<'de>>(
               other crates read and persist them directly"
 )]
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(remote = "Self", default)]
 pub struct OutputConfig {
     pub enabled: bool,
     pub primary: bool,
@@ -917,6 +958,8 @@ pub struct OutputConfig {
     pub vrr: bool,
     pub color_profile: Option<String>,
 }
+
+crate::read_through_json_value!(OutputConfig);
 
 impl OutputConfig {
     /// The defaults at `scale`, or at 1x when `scale` is not a usable
@@ -959,10 +1002,12 @@ pub const DEFAULT_SDR_BRIGHTNESS_NITS: u16 = 203;
 pub const SDR_BRIGHTNESS_NITS_RANGE: std::ops::RangeInclusive<u16> = 80..=480;
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(remote = "Self", default)]
 pub struct DisplayConfig {
     pub outputs: BTreeMap<String, OutputConfig>,
 }
+
+crate::read_through_json_value!(DisplayConfig);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DisplayConfigError {
@@ -1182,8 +1227,9 @@ pub const NIGHT_LIGHT: crate::Key<bool> = crate::Key::new(DISPLAY_SECTION, "nigh
 /// How a clickpad (a touchpad whose whole surface is the button) decides
 /// which button a physical press means. libinput decides per device which of
 /// these it supports; the compositor asks only for a supported one.
+#[cfg_attr(feature = "model", derive(tilo_resource::Model))]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[serde(remote = "Self", rename_all = "snake_case")]
 pub enum TouchpadClickMethod {
     /// The bottom strip is split into left, middle and right button areas.
     Areas,
@@ -1198,13 +1244,16 @@ pub enum TouchpadClickMethod {
     Default,
 }
 
+crate::read_through_json_value!(TouchpadClickMethod);
+
 impl TouchpadClickMethod {
     pub const ALL: [Self; 3] = [Self::Default, Self::Areas, Self::Clickfinger];
 }
 
 /// When a touchpad produces scrolling instead of pointer motion.
+#[cfg_attr(feature = "model", derive(tilo_resource::Model))]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[serde(remote = "Self", rename_all = "snake_case")]
 pub enum TouchpadScrollMethod {
     /// One finger along the right or bottom edge scrolls.
     Edge,
@@ -1214,6 +1263,8 @@ pub enum TouchpadScrollMethod {
     #[serde(other)]
     TwoFinger,
 }
+
+crate::read_through_json_value!(TouchpadScrollMethod);
 
 impl TouchpadScrollMethod {
     pub const ALL: [Self; 2] = [Self::TwoFinger, Self::Edge];
@@ -1256,6 +1307,14 @@ pub fn scroll_speed_to_slider(speed: f64) -> f64 {
     let span = SCROLL_SPEED_MAX.log2();
     f64::midpoint(clamp_scroll_speed(speed).log2() / span, 1.0).clamp(0.0, 1.0)
 }
+
+/// Default bounce-keys window: a second press of the same key this soon
+/// after its release is treated as a bounce, not a keystroke.
+pub const BOUNCE_KEYS_DEFAULT_DELAY_MS: u32 = 300;
+/// Shortest bounce-keys window Settings offers.
+pub const BOUNCE_KEYS_MIN_DELAY_MS: u32 = 50;
+/// Longest bounce-keys window Settings offers.
+pub const BOUNCE_KEYS_MAX_DELAY_MS: u32 = 1_000;
 
 fn default_scroll_speed() -> f64 {
     1.0
@@ -1485,6 +1544,11 @@ fn valid_xkb_name(value: &str) -> bool {
 }
 
 impl RichInputConfig {
+    /// The persisted input section, parsed by [`Self::from_section`].
+    pub fn load() -> Self {
+        Self::from_section(&super::load_section(INPUT_SECTION))
+    }
+
     /// Parse the input section field by field: a missing or wrong-typed
     /// value only resets itself to its default. Old single-layout documents
     /// are then reconciled with the ordered source list, so
@@ -1664,8 +1728,9 @@ impl RichInputConfig {
     }
 }
 
+#[cfg_attr(feature = "model", derive(tilo_resource::JsonSchema))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[serde(remote = "Self", rename_all = "snake_case")]
 pub enum ShortcutAction {
     Search,
     WorkspaceOverview,
@@ -1729,6 +1794,8 @@ pub enum ShortcutAction {
     DictationFinish,
     DictationCancel,
 }
+
+crate::read_through_json_value!(ShortcutAction);
 
 impl ShortcutAction {
     /// The strip position a `FocusGroupN` action selects, counting from 0.

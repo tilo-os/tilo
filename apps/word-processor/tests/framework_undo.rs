@@ -9,7 +9,7 @@ use word_processor::framework::{Document, WordProcessorApp};
 
 fn snapshot(app: &TestApp<WordProcessorApp>) -> tilo_doc::DocSnapshot {
     app.read_document(|doc| {
-        let c = tilo_doc::model::open(doc, &automerge::ROOT).unwrap();
+        let c = word_processor::model::open(doc).unwrap();
         tilo_doc::model::materialize(doc, &c)
     })
 }
@@ -29,7 +29,7 @@ fn open_with(markdown: &str) -> TestApp<WordProcessorApp> {
     let load = RichTextAction::ReplaceBody {
         markdown: markdown.to_owned(),
     };
-    app.invoke_confirmed(Invoke::<Document>::apply(&load).unwrap())
+    app.invoke_confirmed(Invoke::<Document>::edit(&word_processor::model::edit(&load)).unwrap())
         .unwrap();
     app
 }
@@ -47,7 +47,7 @@ fn block(app: &TestApp<WordProcessorApp>, prefix: &str) -> String {
 fn group(app: &mut TestApp<WordProcessorApp>, actions: &[RichTextAction]) {
     let members = actions
         .iter()
-        .map(|action| Invoke::<Document>::apply(action).unwrap());
+        .map(|action| Invoke::<Document>::edit(&word_processor::model::edit(action)).unwrap());
     app.invoke_confirmed(Invoke::group(members)).unwrap();
 }
 
@@ -73,7 +73,6 @@ fn bold(spans: Vec<Span>, on: bool) -> RichTextAction {
 
 #[test]
 fn undo_takes_back_only_your_own_steps_around_a_collaborators_words() {
-    use tilo_actions::Action as _;
     ui::i18n::I18nManager::init("en-US");
     let mut app = TestApp::<WordProcessorApp>::new().unwrap();
     app.harness().type_text("hello");
@@ -82,7 +81,7 @@ fn undo_takes_back_only_your_own_steps_around_a_collaborators_words() {
     // A collaborator types into the new paragraph.
     let new = snapshot(&app).blocks[1].id.clone();
     app.merge_peer_edit(|doc| {
-        splice(&new, 0, 0, "their words").apply(doc).unwrap();
+        word_processor::model::apply(doc, &splice(&new, 0, 0, "their words")).unwrap();
     });
     assert_eq!(texts(&app), ["hello", "their words"]);
 

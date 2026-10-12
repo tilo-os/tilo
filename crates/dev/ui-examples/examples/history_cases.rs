@@ -562,7 +562,7 @@ fn synthetic_entry(i: i32) -> HistoryEntry {
     HistoryEntry {
         id: tilo_ui::HistoryEntryId(synthetic_id(i)),
         author: tilo_ui::HistoryAuthor::new(format!("Person {}", i / 2), hue, "0badf00d"),
-        op_class: collab_types::OpClass::Splice,
+        entry_kind: tilo_ui::widget::EntryKind::Text,
         artifact_kind: collab_types::ArtifactKind::Note,
         timestamp: now()
             .checked_sub(std::time::Duration::from_secs(elapsed))

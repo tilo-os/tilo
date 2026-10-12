@@ -3,17 +3,21 @@
 Retrieve this task with `tilo-app guide permissions --json`; `roles` and
 `access` are aliases. No project, network connection or full manual is needed.
 
-Keep permissions on the resource action. Ordinary edits require writing;
-`#[action(permission = "comment")]` allows a commenting operation and
-`#[action(permission = "admin")]` requires administration. Bind controls to
-those generated descriptors: they follow current access automatically.
-Scripts, agents and accessibility invoke the same checked action.
+Keep permissions on the resource action. Every action has a kind the
+framework derives: a view reads (`ActionKind::Read`), a verb or field edit
+changes the document (`ActionKind::Undoable`), and an effect or a verb that
+queues an outside consequence reaches outside it (`ActionKind::Outside`). The
+room's grants answer each kind at each place in the published tree: allow, ask
+first, or deny. `#[action(field = "comments")]` puts a verb under the comments
+a commenter may add. Bind controls to the generated descriptors: they follow
+current access automatically. Scripts, agents and accessibility invoke the
+same checked action.
 
 For an owner-only pane or a permission-specific explanation, observe live
 host state from the view instead of storing a role in the shared model:
 
 ```rust
-let admin = cx.permission_state(PermissionRequirement::Admin);
+let admin = cx.govern_state();
 let owner_tools = cx.switch(&admin, |_, allowed| {
     if *allowed {
         Box::new(Text::new("app-owner-tools"))
@@ -23,10 +27,13 @@ let owner_tools = cx.switch(&admin, |_, allowed| {
 });
 ```
 
+`cx.permission_state(ActionNeed::of(ActionKind::Outside))` observes whether
+the participant may reach outside the document here in the same way.
+
 Put `owner_tools` into the view and declare `app-owner-tools` in your Fluent
 locale. The pane follows revocation and restoration without reopening the app
-or changing its document. Editor access still permits writing when admin
-access is revoked. History views have no live owner authority.
+or changing its document. An editor still changes the document when
+governing the room is taken away. History views have no live owner authority.
 
 Hiding a pane is presentation, not authorization or data isolation. Actions
 and effects must enforce their own requirements. Device-private information

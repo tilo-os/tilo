@@ -50,7 +50,7 @@ impl VersionPreview {
     fn read(doc: &AutoCommit, version: &str) -> Option<Artwork> {
         let heads = ui::history_source::steps::resolve(doc, version).ok()?;
         let past = doc.committed_fork_at(&heads).ok()?;
-        Some(crate::doc::read(&past))
+        Artwork::from_doc(&past).ok()
     }
 
     fn rect(&self) -> Rect {

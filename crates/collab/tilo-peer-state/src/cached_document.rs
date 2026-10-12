@@ -22,8 +22,26 @@ pub(crate) type IdentityViews =
     std::collections::BTreeMap<String, Result<crate::state::GovernedIdentity, String>>;
 pub(crate) struct PolicyData {
     pub owner: Option<String>,
-    pub caps: Vec<collab_types::caps::CapOverride>,
+    pub members: std::collections::BTreeMap<String, tilo_action_policy::Role>,
+    pub grants: Vec<tilo_action_policy::Grant>,
     pub identities: std::collections::BTreeMap<String, Vec<u8>>,
+}
+impl PolicyData {
+    /// The room's authority as recorded: owner, members and the grants on
+    /// `room`'s nodes.
+    pub(crate) fn room_policy(&self, room: &str) -> tilo_action_policy::RoomPolicy {
+        tilo_action_policy::RoomPolicy {
+            room: room.to_owned(),
+            owner: self.owner.clone(),
+            members: self.members.clone(),
+            grants: self
+                .grants
+                .iter()
+                .filter(|grant| grant.node.room_id() == Some(room))
+                .cloned()
+                .collect(),
+        }
+    }
 }
 impl From<AutoCommit> for CachedDocument {
     fn from(doc: AutoCommit) -> Self {

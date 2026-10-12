@@ -4209,7 +4209,7 @@ mod tests {
                     self.pending_invite_is_durable = ada.is_some_and(|person| {
                         person.invited
                             && person.active_tab.is_none()
-                            && workspace.role_of(&"ada".to_string()).is_some()
+                            && workspace.role_of("ada").is_some()
                     });
                 }
                 "04-attributed-history" => {

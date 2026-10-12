@@ -9,6 +9,7 @@ use std::rc::Rc;
 use serde::{Deserialize, Serialize};
 use tilo_app::prelude::*;
 
+use tilo_app::advanced::{NodeId, TaffyTree};
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Log {
     pub title: String,
@@ -105,9 +106,6 @@ impl Widget for PlacementProbe {
 
     fn apply_layout(&mut self, _: &TaffyTree<()>, _: NodeId, origin: Point) {
         self.rect = Rect::from_origin_size(origin, Size::ZERO);
-    }
-
-    fn draw(&mut self, _: &mut Scene, _: Affine, _: &mut TextRenderer, _: &Theme, _: &PresenceCtx) {
     }
 
     fn name(&self) -> &'static str {

@@ -117,7 +117,7 @@ fn check(scenario: Option<&str>, viewport: (u32, u32)) -> Result<(), String> {
     let mut app = TestApp::<NotesShell>::capture_at(scenario, viewport)
         .map_err(|error| format!("capture failed: {error:?}"))?;
     let Some(title) = shown_title(scenario) else {
-        let pages = app.read_document(notes::doc::NotesDoc::list_pages);
+        let pages = app.read_document(notes::read::list_pages);
         return if pages.is_empty() {
             Ok(())
         } else {
@@ -125,7 +125,7 @@ fn check(scenario: Option<&str>, viewport: (u32, u32)) -> Result<(), String> {
         };
     };
     let panel = app.read_document(|doc| {
-        let workspace = notes::notebook::project(doc, None)?;
+        let workspace = notes::read::project(doc)?;
         let page = workspace
             .pages()
             .iter()

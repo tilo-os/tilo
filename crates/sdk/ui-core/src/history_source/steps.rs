@@ -29,7 +29,7 @@ use crate::history_source::authors::AuthorDirectory;
 use crate::history_source::revert::revert_changes;
 
 /// Prefix of the root keys naming each undone change, by its full hash.
-pub const UNDONE_KEY: &str = "tilo:undone:";
+pub use tilo_actions::UNDONE_KEY;
 /// Prefix of the root keys holding named versions.
 pub const CHECKPOINT_KEY: &str = "tilo:checkpoint:";
 /// Prefix every bookkeeping root key shares; a restore leaves them alone.
@@ -74,7 +74,8 @@ impl Scope {
         )
     }
 
-    fn owns(&self, version: &Version) -> bool {
+    /// Whether a change is one of this scope's steps.
+    pub fn owns(&self, version: &Version) -> bool {
         let context = version.context.as_ref();
         let run = context
             .and_then(|context| context.group.as_ref())
@@ -187,7 +188,8 @@ fn nothing_to_undo(doc: &mut AutoCommit, scope: &Scope) -> String {
 }
 
 /// What one change was to the steps of its scope.
-enum Kind {
+#[derive(Clone, Debug)]
+pub(crate) enum Kind {
     /// An undo: the changes it took back.
     Undo(Vec<String>),
     /// A redo: the changes whose undo it reverted.
@@ -215,7 +217,126 @@ pub fn is_bookkeeping(patch: &Patch) -> bool {
     root_key(patch).is_some_and(|key| key.starts_with(BOOKKEEPING_PREFIX))
 }
 
-fn kind_of(doc: &mut AutoCommit, version: &Version) -> Kind {
+fn kind_of(doc: &AutoCommit, version: &Version) -> Kind {
+    kind_in(doc.committed_document(), version)
+}
+
+/// What `version` was, read from the change's own operations: its writes to
+/// [`UNDONE_KEY`] root keys, and whether it touches anything outside the
+/// bookkeeping root keys. Never a diff of the document, so classifying a
+/// change costs the same however large the document is.
+fn kind_in(doc: &automerge::Automerge, version: &Version) -> Kind {
+    use automerge::legacy::{Key, ObjectId, OpType};
+    if tilo_doc::model::is_schema_genesis(version)
+        || version
+            .context
+            .as_ref()
+            .is_some_and(|context| !context.change.is_step())
+    {
+        return Kind::Bookkeeping;
+    }
+    let Some(change) = doc.get_change_by_hash(&version.hash) else {
+        return Kind::Bookkeeping;
+    };
+    let change = change.decode();
+    let start = change.start_op.get();
+    let own = |id: &automerge::legacy::OpId| {
+        id.actor() == &change.actor_id
+            && id
+                .counter()
+                .checked_sub(start)
+                .is_some_and(|at| usize::try_from(at).is_ok_and(|at| at < change.operations.len()))
+    };
+    // What the change wrote and took back again itself (a key put and
+    // deleted, a value overwritten) is no effect of it.
+    let superseded: HashSet<u64> = change
+        .operations
+        .iter()
+        .filter(|op| !matches!(op.action, OpType::Increment(_)))
+        .flat_map(|op| op.pred.iter())
+        .filter(|pred| own(pred))
+        .map(automerge::legacy::OpId::counter)
+        .collect();
+    let mut undone: Vec<String> = Vec::new();
+    let mut redone: Vec<String> = Vec::new();
+    let mut edits = false;
+    // The root key each object the change writes into sits under.
+    let mut roots: std::collections::HashMap<ObjectId, Option<String>> =
+        std::collections::HashMap::new();
+    for (counter, op) in (start..).zip(&change.operations) {
+        let visible = match op.action {
+            // A delete shows only where it removes what was there before.
+            OpType::Delete => op.pred.iter().any(|pred| !own(pred)),
+            _ => !superseded.contains(&counter),
+        };
+        if !visible {
+            continue;
+        }
+        let root = match (&op.obj, &op.key) {
+            (ObjectId::Root, Key::Map(key)) => match &op.action {
+                // Native Redo is an intent on the canonical original, not a
+                // new document patch whose inverse could bypass native
+                // compensation.
+                OpType::Put(value)
+                    if key.starts_with(UNDONE_KEY)
+                        && value.as_i64().is_some_and(|attempt| attempt > 0) =>
+                {
+                    return Kind::Bookkeeping;
+                }
+                OpType::Put(_) | OpType::Make(_) | OpType::Delete => {
+                    let ledger = if matches!(op.action, OpType::Delete) {
+                        &mut redone
+                    } else {
+                        &mut undone
+                    };
+                    if let Some(hash) = key.strip_prefix(UNDONE_KEY)
+                        && !ledger.iter().any(|known| known == hash)
+                    {
+                        ledger.push(hash.to_owned());
+                    }
+                    Some(key.to_string())
+                }
+                // A counter or mark on the root names no key of its own.
+                _ => None,
+            },
+            (ObjectId::Root, Key::Seq(_)) => None,
+            (obj, _) => roots
+                .entry(obj.clone())
+                .or_insert_with(|| root_key_of(doc, obj))
+                .clone(),
+        };
+        if !root.is_some_and(|key| key.starts_with(BOOKKEEPING_PREFIX)) {
+            edits = true;
+        }
+    }
+    // In the order the document keeps its root keys, as a reading of the
+    // document lists them.
+    undone.sort_unstable();
+    redone.sort_unstable();
+    if !undone.is_empty() {
+        Kind::Undo(undone)
+    } else if !redone.is_empty() {
+        Kind::Redo(redone)
+    } else if edits {
+        Kind::Edit
+    } else {
+        Kind::Bookkeeping
+    }
+}
+
+/// The root key the object `obj` sits under, if it is still in `doc`.
+fn root_key_of(doc: &automerge::Automerge, obj: &automerge::legacy::ObjectId) -> Option<String> {
+    let id = doc.import_obj(&obj.to_string()).ok()?;
+    match doc.parents(&id).ok()?.last()?.prop {
+        Prop::Map(key) => Some(key),
+        Prop::Seq(_) => None,
+    }
+}
+
+/// [`kind_in`] as a diff of the change against its dependencies reads it:
+/// the reference its reading of the change's own operations must equal.
+#[cfg(test)]
+fn kind_by_diff(doc: &automerge::Automerge, version: &Version) -> Kind {
     if tilo_doc::model::is_schema_genesis(version)
         || version
             .context
@@ -291,98 +412,365 @@ pub fn pending_compensations(doc: &AutoCommit) -> Vec<ChangeHash> {
         .collect()
 }
 
-/// Whether an unresolved outside compensation is a restoration. This value
-/// describes history only; it grants no permission to perform native I/O.
-pub fn compensation_is_redo(doc: &AutoCommit, hash: ChangeHash) -> bool {
-    doc.get(automerge::ROOT, format!("{UNDONE_KEY}{hash}"))
-        .ok()
-        .flatten()
-        .and_then(|(value, _)| value.as_i64())
-        .is_some_and(|attempt| attempt > 0)
-}
-
-/// Mark an outside inverse completed after its admitted settlement verifies
-/// the actual host receipt. Pending attempts themselves remain history steps.
-///
-/// # Errors
-/// Refuses an absent, completed or invalid pending compensation marker.
-pub fn settle_compensation(doc: &mut AutoCommit, hash: ChangeHash) -> Result<(), String> {
-    let key = format!("{UNDONE_KEY}{hash}");
-    let pending = doc
-        .get(automerge::ROOT, &key)
-        .map_err(|error| error.to_string())?
-        .and_then(|(value, _)| value.as_i64())
-        .filter(|attempt| *attempt != 0);
-    let pending = pending.ok_or("history compensation is not pending")?;
-    if pending < 0 {
-        doc.put(automerge::ROOT, key, ScalarValue::Boolean(true))
-    } else {
-        doc.delete(automerge::ROOT, key)
-    }
-    .map_err(|error| error.to_string())
-}
-
-/// The steps `undo` would take back for `scope`, newest first: its changes
-/// that are in effect, at most `limit` of them.
+/// The changes `undo` would take back for `scope`, newest first: its steps
+/// that are in effect, at most `limit` of them. The changes of one gesture
+/// (the keystrokes of a word) are one step.
 fn undo_targets(doc: &mut AutoCommit, scope: &Scope, limit: usize) -> Vec<Version> {
-    let versions = tilo_resource::history::versions(doc);
-    let undone = undone(doc);
-    let mut superseded: HashSet<String> = HashSet::new();
-    let mut targets = Vec::new();
-    for version in versions.iter().rev().filter(|version| scope.owns(version)) {
-        if targets.len() >= limit {
-            break;
-        }
-        let hash = version.hash.to_string();
-        match kind_of(doc, version) {
-            Kind::Undo(_) | Kind::Bookkeeping => continue,
-            // A redo stands for the steps it brought back: undoing it again
-            // takes them back, so they are not steps of their own any more.
-            Kind::Redo(brought_back) => superseded.extend(brought_back),
-            Kind::Edit if superseded.contains(&hash) => continue,
-            Kind::Edit => {}
-        }
-        if !undone.contains(&hash) {
-            targets.push(version.clone());
+    doc.get_heads();
+    steps_in_effect(doc, &|version| scope.owns(version), limit)
+        .into_iter()
+        .flatten()
+        .collect()
+}
+
+/// What [`StepIndex`] keeps of a change: what telling its steps apart needs
+/// (its author, time, run, invoker, gesture and change kind). The rest of
+/// its entry (what it did, the action it ran, its resource) stays in the
+/// document and is read again for the steps an undo or redo takes
+/// ([`StepIndex::full`]): an index of a long history holds a few dozen bytes
+/// per change, not the whole entry.
+struct Step {
+    hash: ChangeHash,
+    /// Shared by every change of the same author.
+    actor: std::rc::Rc<str>,
+    time_ms: i64,
+    /// Of its entry, when it has one.
+    entry: Option<Box<StepEntry>>,
+    /// The raw message of a change without an entry.
+    message: Option<Box<str>>,
+}
+
+struct StepEntry {
+    group: Option<tilo_actions::ActionGroup>,
+    invoker: Option<tilo_actions::ActionInvoker>,
+    gesture: Option<tilo_actions::ActionId>,
+    kind: Option<tilo_actions::ActionKind>,
+    change: tilo_actions::ChangeKind,
+}
+
+impl Step {
+    fn of(version: Version, actor: std::rc::Rc<str>) -> Self {
+        let entry = version.context.map(|context| {
+            Box::new(StepEntry {
+                group: context.group,
+                invoker: context.invoker,
+                gesture: context.gesture,
+                kind: context.kind,
+                change: context.change,
+            })
+        });
+        Self {
+            hash: version.hash,
+            actor,
+            time_ms: version.time_ms,
+            message: version
+                .message
+                .filter(|_| entry.is_none())
+                .map(String::into_boxed_str),
+            entry,
         }
     }
-    targets
+
+    /// The change as a version holding what the index keeps of it.
+    fn version(&self) -> Version {
+        Version {
+            hash: self.hash,
+            actor: self.actor.to_string(),
+            time_ms: self.time_ms,
+            context: self
+                .entry
+                .as_deref()
+                .map(|entry| tilo_actions::ActionContext {
+                    group: entry.group.clone(),
+                    invoker: entry.invoker.clone(),
+                    gesture: entry.gesture,
+                    kind: entry.kind,
+                    change: entry.change,
+                    ..tilo_actions::ActionContext::default()
+                }),
+            message: self.message.as_deref().map(str::to_owned),
+        }
+    }
+}
+
+/// A document's history read once and kept up to date: its changes in
+/// causal order and what each one was to the steps of its author. A
+/// change's kind never changes, so it is read once; new changes are read
+/// as they arrive.
+#[derive(Default)]
+pub struct StepIndex {
+    steps: Vec<Step>,
+    actors: HashSet<std::rc::Rc<str>>,
+    positions: std::collections::HashMap<ChangeHash, usize>,
+    kinds: std::collections::HashMap<ChangeHash, Kind>,
+    heads: Vec<ChangeHash>,
+    /// The changes last read whole, newest last: an undo or redo asks for
+    /// the same few again (its targets, their labels, what they brought
+    /// back). Bounded, so the index stays small however long the history.
+    read_whole: std::cell::RefCell<std::collections::VecDeque<Version>>,
+}
+
+/// How many changes [`StepIndex::full`] keeps read whole.
+const KEPT_WHOLE: usize = 64;
+
+impl StepIndex {
+    /// Bring the index up to `doc`'s committed heads.
+    pub fn refresh(&mut self, doc: &AutoCommit) {
+        let heads = doc.base_heads();
+        if heads == self.heads {
+            return;
+        }
+        let document = doc.committed_document();
+        let fresh = document.get_changes_meta(&self.heads);
+        for meta in &fresh {
+            if self.positions.contains_key(&meta.hash) {
+                continue;
+            }
+            let version = tilo_resource::history::version_of(document, meta);
+            let actor = if let Some(actor) = self.actors.get(version.actor.as_str()) {
+                std::rc::Rc::clone(actor)
+            } else {
+                let actor: std::rc::Rc<str> = version.actor.as_str().into();
+                self.actors.insert(std::rc::Rc::clone(&actor));
+                actor
+            };
+            self.positions.insert(version.hash, self.steps.len());
+            self.steps.push(Step::of(version, actor));
+        }
+        self.heads = heads;
+    }
+
+    /// How many changes the index holds.
+    pub fn len(&self) -> usize {
+        self.steps.len()
+    }
+
+    /// Whether the index holds no change.
+    pub fn is_empty(&self) -> bool {
+        self.steps.is_empty()
+    }
+
+    /// The hash of the change at `position` in causal order.
+    pub fn hash(&self, position: usize) -> Option<ChangeHash> {
+        self.steps.get(position).map(|step| step.hash)
+    }
+
+    /// The change at `position` with everything its entry records, read
+    /// again from `doc`.
+    pub fn full(&self, doc: &AutoCommit, position: usize) -> Option<Version> {
+        let hash = self.steps.get(position)?.hash;
+        let mut kept = self.read_whole.borrow_mut();
+        if let Some(at) = kept.iter().position(|version| version.hash == hash) {
+            let version = kept.remove(at)?;
+            kept.push_back(version.clone());
+            return Some(version);
+        }
+        let document = doc.committed_document();
+        let meta = document.get_change_meta_by_hash(&hash)?;
+        let version = tilo_resource::history::version_of(document, &meta);
+        if kept.len() >= KEPT_WHOLE {
+            kept.pop_front();
+        }
+        kept.push_back(version.clone());
+        Some(version)
+    }
+
+    /// What the redo change `version` brought back, by full hash; empty
+    /// for any other change ([`brought_back`], kept per change).
+    pub fn brought_back(&mut self, doc: &AutoCommit, version: &Version) -> Vec<String> {
+        match self.kind(doc, version) {
+            Kind::Redo(hashes) => hashes,
+            _ => Vec::new(),
+        }
+    }
+
+    /// Where a change sits in causal order.
+    pub fn position(&self, hash: &ChangeHash) -> Option<usize> {
+        self.positions.get(hash).copied()
+    }
+
+    fn kind(&mut self, doc: &AutoCommit, version: &Version) -> Kind {
+        if let Some(kind) = self.kinds.get(&version.hash) {
+            return kind.clone();
+        }
+        let kind = kind_in(doc.committed_document(), version);
+        self.kinds.insert(version.hash, kind.clone());
+        kind
+    }
+
+    /// The steps in effect that `owns` claims, newest first, at most
+    /// `limit`: each step the consecutive changes `step_of` puts together
+    /// (one gesture), newest first. A step undone, or superseded by a redo
+    /// that stands for it, is not in effect. What one engine undoes,
+    /// whoever asks (Ctrl+Z, an agent's or a script's `undo`).
+    pub fn steps(
+        &mut self,
+        doc: &AutoCommit,
+        owns: &dyn Fn(&Version) -> bool,
+        step_of: &dyn Fn(&Version) -> Option<String>,
+        limit: usize,
+    ) -> Vec<Vec<Version>> {
+        self.refresh(doc);
+        let undone = undone(doc);
+        let mut superseded: HashSet<String> = HashSet::new();
+        let mut steps: Vec<Vec<Version>> = Vec::new();
+        let mut gesture = None;
+        for index in (0..self.steps.len()).rev() {
+            let Some(version) = self.steps.get(index).map(Step::version) else {
+                continue;
+            };
+            if !owns(&version) {
+                continue;
+            }
+            let hash = version.hash.to_string();
+            match self.kind(doc, &version) {
+                Kind::Undo(_) | Kind::Bookkeeping => continue,
+                // Taken back again once what it brought back is undone.
+                Kind::Redo(brought_back)
+                    if brought_back.iter().all(|change| undone.contains(change)) =>
+                {
+                    continue;
+                }
+                // A redo stands for the steps it brought back: undoing it
+                // again takes them back, so they are not steps of their own.
+                Kind::Redo(brought_back) => superseded.extend(brought_back),
+                Kind::Edit if superseded.contains(&hash) => continue,
+                Kind::Edit => {}
+            }
+            if undone.contains(&hash) {
+                gesture = None;
+                continue;
+            }
+            let of = step_of(&version);
+            let Some(full) = self.full(doc, index) else {
+                continue;
+            };
+            if of.is_some()
+                && of == gesture
+                && let Some(step) = steps.last_mut()
+            {
+                step.push(full);
+                continue;
+            }
+            if steps.len() >= limit {
+                break;
+            }
+            gesture = of;
+            steps.push(vec![full]);
+        }
+        steps
+    }
+
+    /// The undos in effect that `owns` claims, newest first, at most
+    /// `limit`: what `redo` brings back. A newer step of the same owner ends
+    /// them.
+    pub fn undos(
+        &mut self,
+        doc: &AutoCommit,
+        owns: &dyn Fn(&Version) -> bool,
+        limit: usize,
+    ) -> Vec<Version> {
+        self.refresh(doc);
+        let undone = undone(doc);
+        let mut superseded: HashSet<String> = HashSet::new();
+        let mut targets = Vec::new();
+        for index in (0..self.steps.len()).rev() {
+            if targets.len() >= limit {
+                break;
+            }
+            let Some(version) = self.steps.get(index).map(Step::version) else {
+                continue;
+            };
+            if !owns(&version) {
+                continue;
+            }
+            let hash = version.hash.to_string();
+            match self.kind(doc, &version) {
+                Kind::Undo(took_back) => {
+                    if took_back.iter().any(|change| undone.contains(change))
+                        && let Some(version) = self.full(doc, index)
+                    {
+                        targets.push(version);
+                    }
+                }
+                Kind::Redo(brought_back) => superseded.extend(brought_back),
+                Kind::Bookkeeping => {}
+                Kind::Edit if undone.contains(&hash) || superseded.contains(&hash) => {}
+                Kind::Edit => break,
+            }
+        }
+        targets
+    }
+}
+
+pub fn steps_in_effect(
+    doc: &AutoCommit,
+    owns: &dyn Fn(&Version) -> bool,
+    limit: usize,
+) -> Vec<Vec<Version>> {
+    StepIndex::default().steps(doc, owns, &gesture_of, limit)
+}
+
+/// The step a change recorded it belongs to.
+pub fn gesture_of(version: &Version) -> Option<String> {
+    version
+        .context
+        .as_ref()
+        .and_then(|context| context.gesture)
+        .map(|gesture| gesture.0.to_string())
+}
+
+/// What `undo` would take back for `scope` now: its last `limit` steps in
+/// effect, newest first.
+pub fn undo_preview(doc: &AutoCommit, scope: &Scope, limit: usize) -> Vec<Version> {
+    steps_in_effect(doc, &|version| scope.owns(version), limit)
+        .into_iter()
+        .flatten()
+        .collect()
 }
 
 /// The undo changes `redo` would revert for `scope`, newest first. A step
 /// of the scope's own made after its undos ends them: redo never brings
 /// back work over newer work.
 fn redo_targets(doc: &mut AutoCommit, scope: &Scope, limit: usize) -> Vec<Version> {
-    let versions = tilo_resource::history::versions(doc);
-    let undone = undone(doc);
-    let mut superseded: HashSet<String> = HashSet::new();
-    let mut targets = Vec::new();
-    for version in versions.iter().rev().filter(|version| scope.owns(version)) {
-        if targets.len() >= limit {
-            break;
-        }
-        let hash = version.hash.to_string();
-        match kind_of(doc, version) {
-            Kind::Undo(took_back) => {
-                if took_back.iter().any(|change| undone.contains(change)) {
-                    targets.push(version.clone());
-                }
-            }
-            Kind::Redo(brought_back) => superseded.extend(brought_back),
-            Kind::Bookkeeping => {}
-            Kind::Edit if undone.contains(&hash) || superseded.contains(&hash) => {}
-            Kind::Edit => break,
-        }
+    doc.get_heads();
+    undos_in_effect(doc, &|version| scope.owns(version), limit)
+}
+
+/// The undos in effect that `owns` claims, newest first, at most `limit`
+/// (see [`StepIndex::undos`]).
+pub fn undos_in_effect(
+    doc: &AutoCommit,
+    owns: &dyn Fn(&Version) -> bool,
+    limit: usize,
+) -> Vec<Version> {
+    StepIndex::default().undos(doc, owns, limit)
+}
+
+/// What one undo change took back, by full hash; empty for any other
+/// change.
+pub fn took_back(doc: &AutoCommit, version: &Version) -> Vec<String> {
+    match kind_in(doc.committed_document(), version) {
+        Kind::Undo(hashes) => hashes,
+        _ => Vec::new(),
     }
-    targets
+}
+
+/// What one redo change brought back, by full hash; empty for any other
+/// change.
+pub fn brought_back(doc: &AutoCommit, version: &Version) -> Vec<String> {
+    match kind_in(doc.committed_document(), version) {
+        Kind::Redo(hashes) => hashes,
+        _ => Vec::new(),
+    }
 }
 
 /// A one-line name of a step for a sentence.
 pub fn step_label(version: &Version) -> String {
     let change = short(&version.hash);
     match version.context.as_ref() {
-        Some(context) if !context.action_label.is_empty() => {
-            format!("{} ({change})", context.action_label)
+        Some(context) if context.what.is_some() => {
+            format!("{} ({change})", super::sentence::sentence(context))
         }
         _ => change,
     }
@@ -426,98 +814,30 @@ fn revert(doc: &mut AutoCommit, targets: &[Version], verb: &str) -> Result<(), S
     Ok(())
 }
 
+/// The verified inverse action of a step, when it has one (it queued an
+/// outside consequence): applied instead of reverting its patches. Supplied
+/// by the caller's registry; it carries no authority of its own.
+pub type Inverse = Box<dyn tilo_actions::Action>;
+
 /// Take back `scope`'s last `limit` steps that are in effect, as one new
-/// change in `doc`'s open transaction. Returns the steps, newest first.
-/// On a refusal some of it may already be written: the caller discards the
-/// transaction, as the action executor does for a refused action.
+/// change in `doc`'s open transaction: each through the inverse `compensate`
+/// gives for it, else by reverting its patches. Returns the steps, newest
+/// first. On a refusal some of it may already be written: the caller
+/// discards the transaction, as the action executor does for a refused
+/// action.
 ///
 /// # Errors
-/// Says why nothing was undone: there is nothing of the scope's to undo, or
-/// somebody else has since changed what a step touched.
-pub fn undo(doc: &mut AutoCommit, scope: &Scope, limit: usize) -> Result<Vec<Version>, String> {
-    let targets = undo_targets(doc, scope, limit);
-    take_back(doc, scope, targets)
-}
-
-/// A verified inverse and whether its outside consequence must settle first.
-#[derive(Debug)]
-pub struct UndoCompensation {
-    /// The original registered action's verified inverse.
-    pub action: Box<dyn tilo_actions::Action>,
-    /// Completion remains unconfirmed until the admitted outside receipt.
-    pub requires_settlement: bool,
-}
-
-/// Take back the caller's steps, using a registered document compensation
-/// where one exists and normal selective patches for other changes.
-/// The callback supplies no authority: it runs within the current Undo action.
-///
-/// # Errors
-/// As [`undo`], or when a recorded compensation cannot be applied.
-pub fn undo_with(
+/// Says why nothing was undone: there is nothing of the scope's to undo,
+/// somebody else has since changed what a step touched, or an inverse
+/// cannot be applied.
+pub fn undo(
     doc: &mut AutoCommit,
     scope: &Scope,
     limit: usize,
-    compensate: impl FnMut(&Version) -> Result<Option<UndoCompensation>, String>,
+    compensate: impl FnMut(&Version) -> Result<Option<Inverse>, String>,
 ) -> Result<Vec<Version>, String> {
     let targets = undo_targets(doc, scope, limit);
-    take_back_with(doc, scope, targets, compensate)
-}
-
-fn take_back_with(
-    doc: &mut AutoCommit,
-    scope: &Scope,
-    targets: Vec<Version>,
-    mut compensate: impl FnMut(&Version) -> Result<Option<UndoCompensation>, String>,
-) -> Result<Vec<Version>, String> {
-    if targets.is_empty() {
-        return Err(nothing_to_undo(doc, scope));
-    }
-    // Preparing every inversion before writing preserves one open Undo
-    // transaction. Reading history between writes would auto-commit a
-    // partial Undo and make Redo restore only the final step.
-    let mut actions = Vec::new();
-    let mut pending = HashSet::new();
-    let mut patches = Vec::new();
-    for target in &targets {
-        match compensate(target)? {
-            Some(compensation) => {
-                if compensation.requires_settlement {
-                    pending.insert(target.hash);
-                }
-                actions.push(compensation.action);
-            }
-            None => patches.push(target.clone()),
-        }
-    }
-    if !patches.is_empty() {
-        revert(doc, &patches, "undo")?;
-    }
-    for action in actions {
-        action.apply(doc).map_err(|error| error.to_string())?;
-    }
-    for target in &targets {
-        let key = format!("{UNDONE_KEY}{}", target.hash);
-        let marker = if pending.contains(&target.hash) {
-            // Each retry writes a distinct deterministic pending marker. It
-            // remains an Undo step, but the original is in effect until the
-            // current admitted consequence confirms its host receipt.
-            let attempt = doc
-                .get(automerge::ROOT, &key)
-                .map_err(|error| error.to_string())?
-                .and_then(|(value, _)| value.as_i64())
-                .filter(|value| *value < 0)
-                .unwrap_or(0)
-                .checked_sub(1)
-                .ok_or("undo settlement attempts exceed the budget")?;
-            ScalarValue::Int(attempt)
-        } else {
-            ScalarValue::Boolean(true)
-        };
-        doc.put(automerge::ROOT, key, marker)
-            .map_err(|error| error.to_string())?;
-    }
-    Ok(targets)
+    take_back(doc, scope, targets, compensate)
 }
 
 /// Take back every step of `scope`'s in effect made after the version
@@ -530,29 +850,7 @@ pub fn undo_since(
     doc: &mut AutoCommit,
     scope: &Scope,
     heads: &[ChangeHash],
-) -> Result<Vec<Version>, String> {
-    let since: HashSet<ChangeHash> = doc
-        .get_changes(heads)
-        .iter()
-        .map(|change| change.hash())
-        .collect();
-    let targets: Vec<Version> = undo_targets(doc, scope, usize::MAX)
-        .into_iter()
-        .filter(|version| since.contains(&version.hash))
-        .collect();
-    take_back(doc, scope, targets)
-}
-
-/// Take back steps after a version through the same compensation door as
-/// [`undo_with`].
-///
-/// # Errors
-/// As [`undo_with`].
-pub fn undo_since_with(
-    doc: &mut AutoCommit,
-    scope: &Scope,
-    heads: &[ChangeHash],
-    compensate: impl FnMut(&Version) -> Result<Option<UndoCompensation>, String>,
+    compensate: impl FnMut(&Version) -> Result<Option<Inverse>, String>,
 ) -> Result<Vec<Version>, String> {
     let since: HashSet<ChangeHash> = doc
         .get_changes(heads)
@@ -563,47 +861,83 @@ pub fn undo_since_with(
         .into_iter()
         .filter(|version| since.contains(&version.hash))
         .collect();
-    take_back_with(doc, scope, targets, compensate)
+    take_back(doc, scope, targets, compensate)
 }
 
 fn take_back(
     doc: &mut AutoCommit,
     scope: &Scope,
     targets: Vec<Version>,
+    mut compensate: impl FnMut(&Version) -> Result<Option<Inverse>, String>,
 ) -> Result<Vec<Version>, String> {
     if targets.is_empty() {
         return Err(nothing_to_undo(doc, scope));
     }
-    revert(doc, &targets, "undo")?;
+    // Preparing every inversion before writing preserves one open Undo
+    // transaction. Reading history between writes would auto-commit a
+    // partial Undo and make Redo restore only the final step.
+    let mut actions = Vec::new();
+    let mut patches = Vec::new();
     for target in &targets {
-        let key = format!("{UNDONE_KEY}{}", target.hash);
-        doc.put(automerge::ROOT, key, ScalarValue::Boolean(true))
+        match compensate(target)? {
+            Some(action) => actions.push((target.hash, action)),
+            None => patches.push(target.clone()),
+        }
+    }
+    if !patches.is_empty() {
+        revert(doc, &patches, "undo")?;
+    }
+    let pending = apply_awaiting(doc, actions)?;
+    for target in &targets {
+        if pending.contains(&target.hash) {
+            // The step stays in effect until the outside consequence its
+            // inverse queued confirms it.
+            tilo_actions::await_settlement(doc, &target.hash.to_string(), false)
+                .map_err(|error| error.to_string())?;
+        } else {
+            doc.put(
+                automerge::ROOT,
+                format!("{UNDONE_KEY}{}", target.hash),
+                ScalarValue::Boolean(true),
+            )
             .map_err(|error| error.to_string())?;
+        }
     }
     Ok(targets)
 }
 
-/// Bring back the last `limit` undos of `scope`, as one new change.
-/// Returns the undo changes it reverted, newest first.
-///
-/// # Errors
-/// Says why nothing was redone: no undo of the scope's is in effect, or a
-/// newer step of its own came after it.
-pub fn redo(doc: &mut AutoCommit, scope: &Scope, limit: usize) -> Result<Vec<Version>, String> {
-    redo_checked(doc, scope, limit, |_| Ok(()))
+/// Apply each step's inverse (or restoration) inside a scope naming the
+/// step: the steps whose action queued an outside consequence that settles
+/// them.
+fn apply_awaiting(
+    doc: &mut AutoCommit,
+    actions: Vec<(ChangeHash, Inverse)>,
+) -> Result<HashSet<ChangeHash>, String> {
+    let mut awaited = HashSet::new();
+    for (hash, action) in actions {
+        let compensating = tilo_actions::CompensatingScope::enter(vec![hash.to_string()]);
+        action.apply(doc).map_err(|error| error.to_string())?;
+        if compensating.awaited() {
+            awaited.insert(hash);
+        }
+    }
+    Ok(awaited)
 }
 
-/// Bring back undos only after checking every original step they would
-/// restore. An outside operation must not be acknowledged by patching its
-/// document receipt alone. The check runs before any redo writes.
+/// Bring back the last `limit` undos of `scope`, as one new change: an
+/// outside step through the action `restore` gives for it (its recorded
+/// action, run again), any other by reverting the undo. A positive pending
+/// marker keeps such a step undone until its restoration settles. Returns
+/// the undo changes it brought back, newest first.
 ///
 /// # Errors
-/// As [`redo`], or when a target cannot be restored through document patches.
-pub fn redo_checked(
+/// Says why nothing was redone: no undo of the scope's is in effect, a
+/// newer step of its own came after it, or a restoration cannot be applied.
+pub fn redo(
     doc: &mut AutoCommit,
     scope: &Scope,
     limit: usize,
-    mut check: impl FnMut(&Version) -> Result<(), String>,
+    mut restore: impl FnMut(&Version) -> Result<Option<Inverse>, String>,
 ) -> Result<Vec<Version>, String> {
     let targets = redo_targets(doc, scope, limit);
     if targets.is_empty() {
@@ -611,37 +945,6 @@ pub fn redo_checked(
             "{} nothing to redo: redo brings back an undo only while no newer step of the same author follows it.",
             scope.subject(*scope == Scope::invoking(doc))
         ));
-    }
-    let versions = tilo_resource::history::versions(doc);
-    for target in &targets {
-        if let Kind::Undo(originals) = kind_of(doc, target) {
-            for original in originals {
-                let version = versions
-                    .iter()
-                    .find(|version| version.hash.to_string() == original)
-                    .ok_or("redo cannot resolve its original step")?;
-                check(version)?;
-            }
-        }
-    }
-    revert(doc, &targets, "redo")?;
-    Ok(targets)
-}
-
-/// Restore declared outside operations through their verified action instead
-/// of reverting their document receipt. A positive pending marker keeps the
-/// original undone until its fresh admitted native restoration settles.
-/// # Errors
-/// As [`redo`], including unverifiable or unavailable outside restorations.
-pub fn redo_with(
-    doc: &mut AutoCommit,
-    scope: &Scope,
-    limit: usize,
-    mut restore: impl FnMut(&Version) -> Result<Option<UndoCompensation>, String>,
-) -> Result<Vec<Version>, String> {
-    let targets = redo_targets(doc, scope, limit);
-    if targets.is_empty() {
-        return Err("nothing to redo while no newer own step follows the Undo".into());
     }
     let versions = tilo_resource::history::versions(doc);
     let mut patches = Vec::new();
@@ -658,10 +961,10 @@ pub fn redo_with(
                 .iter()
                 .find(|version| version.hash.to_string() == hash)
                 .ok_or("redo cannot resolve its original step")?;
-            if let Some(compensation) = restore(original)? {
+            if let Some(action) = restore(original)? {
                 outside = true;
-                actions.push(compensation.action);
-                originals.push((original.hash, compensation.requires_settlement));
+                actions.push((original.hash, action));
+                originals.push(original.hash);
             } else {
                 ordinary = true;
             }
@@ -678,24 +981,13 @@ pub fn redo_with(
     if !patches.is_empty() {
         revert(doc, &patches, "redo")?;
     }
-    for action in actions {
-        action.apply(doc).map_err(|error| error.to_string())?;
-    }
-    for (hash, pending) in originals {
-        let key = format!("{UNDONE_KEY}{hash}");
-        if pending {
-            let attempt = doc
-                .get(automerge::ROOT, &key)
-                .map_err(|error| error.to_string())?
-                .and_then(|(value, _)| value.as_i64())
-                .filter(|attempt| *attempt > 0)
-                .unwrap_or(0)
-                .checked_add(1)
-                .ok_or("redo settlement attempts exceed the budget")?;
-            doc.put(automerge::ROOT, key, ScalarValue::Int(attempt))
+    let awaited = apply_awaiting(doc, actions)?;
+    for hash in originals {
+        if awaited.contains(&hash) {
+            tilo_actions::await_settlement(doc, &hash.to_string(), true)
                 .map_err(|error| error.to_string())?;
         } else {
-            doc.delete(automerge::ROOT, key)
+            doc.delete(automerge::ROOT, format!("{UNDONE_KEY}{hash}"))
                 .map_err(|error| error.to_string())?;
         }
     }

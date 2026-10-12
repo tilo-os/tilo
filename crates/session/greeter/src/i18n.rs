@@ -5,7 +5,7 @@
 //! embedded, so a `--shots` render and a unit test resolve exactly what the
 //! login screen does.
 
-ui::embedded_catalog!(pub fn, "greeter-sign-in", ["en-US", "de-DE"]);
+ui::embedded_catalog!(pub fn, ["en-US", "de-DE"]);
 
 /// Load the catalogue on this thread if it is not loaded yet.
 pub fn ensure() {

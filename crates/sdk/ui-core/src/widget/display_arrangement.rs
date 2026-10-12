@@ -792,7 +792,7 @@ mod tests {
                     ui::tilo_actions::Resource::new("settings.root", "settings.root", "Settings")
                         .with_action(spec.clone());
                 let connector = display.connector.clone();
-                let binding = ui::tilo_actions::ActionBinding::new(
+                let binding = ui::tilo_actions::ActionBinding::fallible(
                     &resource,
                     &spec,
                     move |(x, y): (i32, i32)| {

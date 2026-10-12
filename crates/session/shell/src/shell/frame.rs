@@ -166,6 +166,27 @@ pub struct FrameCache {
     /// is panned, in the same order.
     pub strips: Vec<StripBlit>,
     pub layers: FrameLayers,
+    /// Tells this drawing of the desktop as layers apart from every other
+    /// one its producer made, so a presenter knows which drawing each of
+    /// its layer textures holds.
+    pub generation: u64,
+    /// Where [`FrameLayers::chrome`] differs from an earlier drawing's
+    /// chrome; `None` when that is not known.
+    pub chrome_damage: Option<ChromeDamage>,
+}
+
+/// Where the chrome of a drawing of the desktop as layers differs from the
+/// chrome of the drawing `since` ([`FrameCache::generation`]), in scene
+/// pixels and whole 16-pixel tiles: a presenter whose chrome texture still
+/// holds that drawing's chrome brings it up to date by rasterising only
+/// these rects. Measured on a pan's frames from the frame before and on the
+/// layers drawn while the desktop rests ([`FrameBuilder::layers_at_rest`])
+/// from the drawing at rest before, so the strip rail moving during a pan or
+/// a clock tick at rest rasterises a few tiles, not the whole layer.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ChromeDamage {
+    pub since: u64,
+    pub rects: Vec<FineDamageRect>,
 }
 
 /// The desktop's sections as layers, bottom to top, in scene pixels.
@@ -186,6 +207,10 @@ pub struct FrameLayers {
     /// drawings meet (each draws its shadows past its row) each draw over
     /// the other there, as on screen.
     pub strips: Vec<Scene>,
+    /// The damage parts each of `strips` marked, in the same order: one per
+    /// window group, so a presenter rasterises only where a group's drawing
+    /// changed. `None` for a strip drawn without well-nested parts.
+    pub strip_parts: Vec<Option<ui::scene_parts::SectionParts>>,
     /// The docked wheel, drawn on its own above the strips.
     pub wheel: Option<WheelSprite>,
     /// Everything above: notices over the desktop, the top bar, quick
@@ -207,6 +232,15 @@ pub struct WheelSprite {
     /// screen to the left once the strip it rides has panned it away.
     pub x: i32,
     pub y: i32,
+}
+
+/// The strips and the docked wheel the host drew apart for a frame drawn as
+/// layers, in scene pixels ([`FrameBuilder::panned_pieces`]).
+struct PannedPieces {
+    strips: Vec<Scene>,
+    /// Each strip's damage parts, in the same order.
+    parts: Vec<Option<ui::scene_parts::SectionParts>>,
+    wheel: Option<WheelSprite>,
 }
 
 /// Widest workspace layer, in scene pixels. Past this the strips keep their
@@ -347,11 +381,14 @@ impl FramePaint {
         if let Some(FrameCache {
             width: _,
             strips: _,
+            generation: _,
+            chrome_damage: _,
             layers:
                 FrameLayers {
                     backdrop,
                     workspace,
                     strips,
+                    strip_parts: _,
                     wheel,
                     chrome,
                 },
@@ -381,6 +418,16 @@ impl FramePaint {
             backdrop: None,
             cache: None,
             scanout: None,
+        }
+    }
+
+    /// Layers drawn while the desktop rests
+    /// ([`FrameBuilder::layers_at_rest`]), for a presenter to retain
+    /// ([`crate::shell::present::PresentPipe::warm`]): nothing to present.
+    pub fn layers_at_rest(cache: FrameCache) -> Self {
+        Self {
+            cache: Some(cache),
+            ..Self::full(Scene::new())
         }
     }
 
@@ -436,6 +483,9 @@ struct ProducedSections {
     workspace_overlays: Scene,
     /// Strips drawn in canvas coordinates, as the scene showed them.
     strips: Option<Vec<StripBlit>>,
+    /// The [`FrameCache::generation`] of the frame these sections were drawn
+    /// as layers in; `None` for a frame drawn in screen space.
+    layers_generation: Option<u64>,
     topbar_bounds: Option<Rect>,
     quick_settings: Scene,
     above_quick_settings: Scene,
@@ -484,7 +534,7 @@ impl OpaqueParts {
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 struct Tint {
     night_light: Option<Color>,
-    color_filter: ColorFilter,
+    color_filter: DesktopColorFilter,
     viewport: (f64, f64),
 }
 
@@ -586,32 +636,55 @@ fn night_light_on(manual: bool, scheduled: bool, night: Option<bool>) -> bool {
     }
 }
 
-use settings_store::accessibility::{AccessibilitySettings, ColorFilter};
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum DesktopColorFilter {
+    #[default]
+    None,
+    Grayscale,
+    Inverted,
+    GrayscaleInverted,
+}
+
 use settings_store::magnifier::{MagnifierState, MagnifierView};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct VisualAccessibility {
-    color_filter: ColorFilter,
+    color_filter: DesktopColorFilter,
     magnifier: MagnifierState,
     cursor_crosshair: bool,
 }
 
 impl Default for VisualAccessibility {
     fn default() -> Self {
-        Self::of(AccessibilitySettings::default())
+        Self {
+            color_filter: DesktopColorFilter::None,
+            magnifier: MagnifierState {
+                zoom: settings_store::magnifier::OFF,
+                view: MagnifierView::Lens,
+            },
+            cursor_crosshair: false,
+        }
     }
 }
 
 impl VisualAccessibility {
     fn load() -> Self {
-        Self::of(AccessibilitySettings::load())
-    }
-
-    fn of(settings: AccessibilitySettings) -> Self {
+        let section = settings_store::load_section("accessibility");
         Self {
-            color_filter: settings.color_filter,
-            magnifier: settings.magnifier(),
-            cursor_crosshair: settings.cursor_crosshair,
+            color_filter: match section
+                .get("color_filter")
+                .and_then(serde_json::Value::as_str)
+            {
+                Some("grayscale") => DesktopColorFilter::Grayscale,
+                Some("inverted") => DesktopColorFilter::Inverted,
+                Some("grayscale_inverted") => DesktopColorFilter::GrayscaleInverted,
+                _ => DesktopColorFilter::None,
+            },
+            magnifier: MagnifierState::from_section(&section),
+            cursor_crosshair: section
+                .get("cursor_crosshair")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false),
         }
     }
 }
@@ -760,6 +833,18 @@ pub struct FrameBuilder {
     layer_policy: LayerPolicy,
     /// What [`LayerPolicy::WhilePanning`] tells a pan by.
     strip_motion: StripMotion,
+    /// The frame being drawn is the desktop as layers whatever the policy
+    /// ([`Self::layers_at_rest`]), not a frame.
+    drawing_layers_at_rest: bool,
+    /// A frame changed the desktop since the presenter's layers were last
+    /// drawn ([`Self::layers_stale`]).
+    layers_stale: bool,
+    /// The last [`FrameCache::generation`] handed out.
+    layers_generation: u64,
+    /// The sections of the latest drawing of the desktop as layers made at
+    /// rest, and its generation: what the next one's [`ChromeDamage`] is
+    /// measured from. `None` once a frame came as layers of its own.
+    layers_drawn: Option<(u64, ProducedSections)>,
     /// What the presenter asks of strip pans
     /// ([`Self::set_strip_pan_presenter`]): whole-pixel pans, and layers.
     strip_pan_presenter: StripPanPresenter,
@@ -1039,6 +1124,10 @@ impl FrameBuilder {
             retained_layer_width: None,
             layer_policy: LayerPolicy::default(),
             strip_motion: StripMotion::default(),
+            drawing_layers_at_rest: false,
+            layers_stale: false,
+            layers_generation: 0,
+            layers_drawn: None,
             strip_pan_presenter: StripPanPresenter::default(),
             painted_hdr_layers: Vec::new(),
             painted_backdrop: None,
@@ -1716,6 +1805,18 @@ impl FrameBuilder {
             settled = true;
             self.host.sync(doc, root);
         }
+        // `update` may have dropped widgets the pointer map still names: a
+        // workspace's content is rebuilt when its first window opens or its
+        // last one closes (the top bar and its toolbar go with it), and
+        // groups are spliced out. Rebuild the map now, not at the next
+        // paint: a backed-up renderer defers that paint for frames, and the
+        // loop reads the focused node through the map on every iteration
+        // (`focused_ime_requires_deferred_ack`), which then called through a
+        // freed widget and ended the session.
+        if self.host.take_structure_dirty() {
+            self.rebuild_layout_tree();
+            self.relayout();
+        }
         let update_done = std::time::Instant::now();
         let total = update_done.duration_since(started);
         if total >= std::time::Duration::from_millis(50) {
@@ -1901,7 +2002,10 @@ impl FrameBuilder {
     fn hdr_layers_composited(&self) -> bool {
         !(self.watch_configured_theme
             && (self.night_light
-                || !matches!(self.visual_accessibility.color_filter, ColorFilter::None)
+                || !matches!(
+                    self.visual_accessibility.color_filter,
+                    DesktopColorFilter::None
+                )
                 || self.visual_accessibility.magnifier.is_on()))
     }
 
@@ -2053,13 +2157,16 @@ impl FrameBuilder {
         let recording = self
             .hdr_layers_composited()
             .then(crate::shell::hdr_surface::HdrLayerRecording::begin);
-        let panning = self.strip_motion.note(
-            self.host
-                .strip_scroll_offsets()
-                .into_iter()
-                .map(|(id, scroll, _)| (id, scroll))
-                .collect(),
-        );
+        // Layers drawn at rest are no frame: they leave the pans' motion as
+        // the frames noted it.
+        let panning = self.drawing_layers_at_rest
+            || self.strip_motion.note(
+                self.host
+                    .strip_scroll_offsets()
+                    .into_iter()
+                    .map(|(id, scroll, _)| (id, scroll))
+                    .collect(),
+            );
         let plan = (layered
             && !global_filter
             && match self.layer_policy {
@@ -2168,9 +2275,10 @@ impl FrameBuilder {
             .as_ref()
             .filter(|_| unbake)
             .and_then(|plan| Self::panned_pieces(plan, panned))
-            .filter(|(strips, wheel)| {
-                strips.iter().all(separable_layer)
-                    && wheel
+            .filter(|pieces| {
+                pieces.strips.iter().all(separable_layer)
+                    && pieces
+                        .wheel
                         .as_ref()
                         .is_none_or(|wheel| separable_layer(&wheel.scene))
             });
@@ -2235,8 +2343,31 @@ impl FrameBuilder {
             ]
             .into_iter()
             .all(separable_layer);
+        // Layers say where their chrome changed since the drawing a
+        // presenter most likely holds (the previous frame's layers, or the
+        // last drawing at rest), so one still holding it rasterises only
+        // those tiles of its chrome: a clock tick at rest, the strip rail
+        // during a pan.
+        let measured_from = if self.drawing_layers_at_rest {
+            self.layers_drawn
+                .as_ref()
+                .map(|(since, previous)| (*since, previous))
+        } else {
+            self.last_produced_sections
+                .as_ref()
+                .and_then(|previous| previous.layers_generation.map(|since| (since, previous)))
+        };
+        let chrome_damage =
+            measured_from
+                .filter(|_| plan.is_some())
+                .and_then(|(since, previous)| {
+                    let rects =
+                        self.chrome_damage(previous, &sections, &parts, (pointer_filter, tint))?;
+                    Some(ChromeDamage { since, rects })
+                });
+        let generation = self.layers_generation.saturating_add(1);
         // Strips drawn apart are in no section: the frame is its layers.
-        let layered = plan.zip(pieces).map(|(plan, (strip_scenes, wheel))| {
+        let layered = plan.zip(pieces).map(|(plan, pieces)| {
             let mut chrome = Scene::new();
             chrome.append(&sections.workspace_overlays, None);
             chrome.append(&sections.topbar, None);
@@ -2245,6 +2376,8 @@ impl FrameBuilder {
             FrameCache {
                 width: plan.width,
                 strips: plan.strips,
+                generation,
+                chrome_damage,
                 layers: FrameLayers {
                     backdrop: self.to_scene(sections.backdrop.clone()),
                     // Empty stays empty: magnified, it would gain the
@@ -2255,12 +2388,20 @@ impl FrameBuilder {
                     } else {
                         self.to_scene(sections.workspace.clone())
                     },
-                    strips: strip_scenes,
-                    wheel,
+                    strips: pieces.strips,
+                    strip_parts: pieces.parts,
+                    wheel: pieces.wheel,
                     chrome: self.to_scene(chrome),
                 },
             }
         });
+        if layered.is_some() {
+            self.layers_generation = generation;
+            if !self.drawing_layers_at_rest {
+                // The presenter's layers now come from this frame.
+                self.layers_drawn = None;
+            }
+        }
         let backdrop =
             self.backdrop_to_scene(backdrop_surfaces, |layer| sections.below_layer(layer));
         // A layered frame's scene is the one a full render of it draws,
@@ -2279,6 +2420,15 @@ impl FrameBuilder {
             (scene, scanout, None)
         };
 
+        let after_layers = self
+            .last_produced_sections
+            .as_ref()
+            .is_some_and(|previous| {
+                previous
+                    .strips
+                    .as_ref()
+                    .is_some_and(|strips| !strips.is_empty())
+            });
         self.last_produced_sections = Some(ProducedSections {
             foreign_images,
             backdrop: sections.backdrop,
@@ -2286,6 +2436,7 @@ impl FrameBuilder {
             workspace: sections.workspace,
             workspace_overlays: sections.workspace_overlays,
             strips,
+            layers_generation: cache.as_ref().map(|cache| cache.generation),
             topbar_bounds: sections.topbar_bounds,
             quick_settings: sections.quick_settings,
             above_quick_settings: sections.above_quick_settings,
@@ -2295,7 +2446,7 @@ impl FrameBuilder {
             tint,
             revision,
         });
-        FramePaint {
+        let mut frame = FramePaint {
             scene,
             revision,
             previous_revision,
@@ -2304,7 +2455,88 @@ impl FrameBuilder {
             backdrop,
             cache,
             scanout,
+        };
+        self.keep_layers_in_step(&mut frame, after_layers);
+        frame
+    }
+
+    /// Keep a presenter that composites strip pans from retained layers but
+    /// gets frames at rest in screen space ([`LayerPolicy::WhilePanning`])
+    /// in step with the frames. The first frame drawn in screen space after
+    /// a pan (`after_layers`) also carries the desktop as layers: the
+    /// presenter composites it from the layers it holds, which still show
+    /// the desktop (nothing changed: nothing is rasterised), instead of
+    /// rendering the whole output again. Any other frame that changes the
+    /// desktop leaves the layers stale until they are drawn at rest
+    /// ([`Self::layers_stale`], [`Self::layers_at_rest`]).
+    fn keep_layers_in_step(&mut self, frame: &mut FramePaint, after_layers: bool) {
+        if self.drawing_layers_at_rest || self.layer_policy != LayerPolicy::WhilePanning {
+            return;
         }
+        if frame.cache.is_none() && after_layers {
+            frame.cache = self.draw_layers_at_rest(true);
+        }
+        if frame.cache.is_some() {
+            self.layers_stale = false;
+        } else if !frame.damage_regions.as_ref().is_some_and(Vec::is_empty) {
+            // Only a desktop that can be drawn as layers has any to warm.
+            self.layers_stale = self.lone_output();
+        }
+    }
+
+    /// A frame changed the desktop since the layers a presenter composites
+    /// strip pans from were last drawn for it: [`Self::layers_at_rest`]
+    /// once the desktop rests brings them up to date.
+    pub fn layers_stale(&self) -> bool {
+        self.layers_stale
+    }
+
+    /// The desktop as layers, drawn now, for a presenter that composites
+    /// strip pans from retained layers and gets frames at rest in screen
+    /// space ([`LayerPolicy::WhilePanning`]). It warms its layers from them
+    /// while the desktop rests ([`crate::shell::present::PresentPipe::warm`]),
+    /// so the next pan's first frame only copies and composites. This is no
+    /// frame: the damage relation between frames, their revisions and the
+    /// pans' motion stay as the frames left them. `None` when the desktop is
+    /// not drawn as layers: on several displays, under a filter over the
+    /// whole desktop, with a strip panned between pixels or materials up.
+    ///
+    /// The desktop is drawn as layers twice. The first canvas draw after
+    /// frames drawn in screen space fills the widgets' canvas caches, and a
+    /// widget replayed from its cache encodes otherwise than one drawn
+    /// afresh; the second draw is what the frames of a pan then draw, so
+    /// the presenter's layers compare equal to the pan's first frame.
+    pub fn layers_at_rest(&mut self) -> Option<FrameCache> {
+        self.layers_stale = false;
+        self.draw_layers_at_rest(false)?;
+        self.draw_layers_at_rest(true)
+    }
+
+    /// One draw of [`Self::layers_at_rest`]. A drawing a presenter gets
+    /// (`handed_over`) is what the next one's [`ChromeDamage`] is measured
+    /// from.
+    fn draw_layers_at_rest(&mut self, handed_over: bool) -> Option<FrameCache> {
+        if self.drawing_layers_at_rest
+            || self.layer_policy != LayerPolicy::WhilePanning
+            || self.retained_layer_width.is_none()
+            || !self.lone_output()
+            || self.global_filter()
+        {
+            return None;
+        }
+        let sections = self.last_produced_sections.take();
+        let revision = self.next_scene_revision;
+        self.drawing_layers_at_rest = true;
+        let drawn = self.paint_with_damage();
+        self.drawing_layers_at_rest = false;
+        self.next_scene_revision = revision;
+        let drawn_sections = std::mem::replace(&mut self.last_produced_sections, sections);
+        if handed_over
+            && let (Some(cache), Some(drawn_sections)) = (drawn.cache.as_ref(), drawn_sections)
+        {
+            self.layers_drawn = Some((cache.generation, drawn_sections));
+        }
+        drawn.cache
     }
 
     /// The frame's scene from its sections, in scene pixels, with the
@@ -2414,16 +2646,19 @@ impl FrameBuilder {
     }
 
     /// Damage in the sections that are opaque outside their parts: the
-    /// workspace, its overlays and the sections above Quick Settings. Each is
-    /// unchanged, or changed only by foreign buffer replacements (their
-    /// buffers' damage), or changed only inside its parts (their old and new
-    /// bounds), or both; anything else is `None`.
+    /// workspace (`with_workspace`), its overlays and the sections above
+    /// Quick Settings. Each is unchanged, or changed only by foreign buffer
+    /// replacements (their buffers' damage), or changed only inside its parts
+    /// (their old and new bounds), or both; anything else is `None`.
     fn opaque_damage_regions(
         &self,
-        previous: &ProducedSections,
-        current: &crate::shell::overlay_host::ShellSceneSections,
+        (previous, current): (
+            &ProducedSections,
+            &crate::shell::overlay_host::ShellSceneSections,
+        ),
         parts: &OpaqueParts,
         images: &[super::foreign_damage::DrawnImage],
+        with_workspace: bool,
     ) -> Option<Vec<FineDamageRect>> {
         let old_scenes = [
             &previous.backdrop,
@@ -2448,7 +2683,8 @@ impl FrameBuilder {
         let normalizable = super::foreign_damage::unique_uses(old_scenes, &previous.foreign_images)
             && super::foreign_damage::unique_uses(new_scenes, images);
         let mut regions = Vec::new();
-        for (old, old_parts, new, new_parts) in [
+        // The workspace comes first.
+        for (_, (old, old_parts, new, new_parts)) in [
             (
                 &previous.workspace,
                 &previous.parts.workspace,
@@ -2467,7 +2703,11 @@ impl FrameBuilder {
                 &current.above_quick_settings,
                 &parts.above_quick_settings,
             ),
-        ] {
+        ]
+        .into_iter()
+        .enumerate()
+        .filter(|(index, _)| with_workspace || *index > 0)
+        {
             if old.encoding_eq(new) {
                 continue;
             }
@@ -2605,7 +2845,10 @@ impl FrameBuilder {
     fn global_filter(&self) -> bool {
         self.watch_configured_theme
             && (self.night_light
-                || !matches!(self.visual_accessibility.color_filter, ColorFilter::None)
+                || !matches!(
+                    self.visual_accessibility.color_filter,
+                    DesktopColorFilter::None
+                )
                 || self.visual_accessibility.magnifier.is_on()
                 || self.visual_accessibility.cursor_crosshair)
     }
@@ -2720,9 +2963,10 @@ impl FrameBuilder {
     fn panned_pieces(
         plan: &StripPlan,
         panned: crate::shell::overlay_host::PannedSections,
-    ) -> Option<(Vec<Scene>, Option<WheelSprite>)> {
+    ) -> Option<PannedPieces> {
         let crate::shell::overlay_host::PannedSections {
             strips,
+            strip_parts,
             wheel,
             floating_drawn,
         } = panned;
@@ -2732,18 +2976,24 @@ impl FrameBuilder {
                 .iter()
                 .zip(&plan.ids)
                 .any(|((drawn, _), planned)| drawn != planned)
+            || strip_parts.len() != strips.len()
         {
             return None;
         }
-        let scenes = strips
+        let (strips, parts) = strips
             .into_iter()
-            .map(|(_, scene)| magnified(scene, plan.to_scene))
-            .collect();
+            .zip(strip_parts)
+            .map(|((_, scene), parts)| magnified_with_parts(scene, parts, plan.to_scene))
+            .unzip();
         let wheel = match wheel {
             Some(wheel) => Some(Self::wheel_sprite(plan, &wheel)?),
             None => None,
         };
-        Some((scenes, wheel))
+        Some(PannedPieces {
+            strips,
+            parts,
+            wheel,
+        })
     }
 
     /// The docked wheel as a sprite: everything it paints, rounded out to
@@ -2809,16 +3059,52 @@ impl FrameBuilder {
         if !previous.backdrop.encoding_eq(&current.backdrop) {
             return None;
         }
-        let image_regions = self.opaque_damage_regions(previous, current, parts, images)?;
-        let topbar_changed = !previous.topbar.encoding_eq(&current.topbar);
-        let quick_settings_changed = !previous.quick_settings.encoding_eq(&current.quick_settings);
-        if !topbar_changed && !quick_settings_changed {
+        let mut regions = self.opaque_damage_regions((previous, current), parts, images, true)?;
+        let (bars_changed, bars) = self.bar_damage(previous, current, parts)?;
+        if !bars_changed {
             // Proven identical to the previous frame. `None` means "no
             // authority, redraw everything"; an empty list means the pixels
             // already on screen are still correct.
-            return Some(image_regions);
+            return Some(regions);
         }
-        let mut regions = image_regions;
+        regions.extend(bars);
+        (!regions.is_empty()).then_some(regions)
+    }
+
+    /// Where the chrome of a drawing of the desktop as layers ([`FrameLayers::chrome`]:
+    /// the workspace's overlays, the top bar, Quick Settings and the sections
+    /// above it) differs between the sections `previous` and `current`, in
+    /// scene pixels; `None` when that cannot be bounded. A foreign buffer
+    /// replaced in the chrome counts as a changed command: inside a part it
+    /// damages the part, outside one it leaves the chrome unbounded.
+    fn chrome_damage(
+        &self,
+        previous: &ProducedSections,
+        current: &crate::shell::overlay_host::ShellSceneSections,
+        parts: &OpaqueParts,
+        (pointer_filter, tint): (bool, Tint),
+    ) -> Option<Vec<FineDamageRect>> {
+        if previous.global_filter || pointer_filter || previous.tint != tint {
+            return None;
+        }
+        let mut regions = self.opaque_damage_regions((previous, current), parts, &[], false)?;
+        let (bars_changed, bars) = self.bar_damage(previous, current, parts)?;
+        regions.extend(bars);
+        (!bars_changed || !regions.is_empty()).then_some(regions)
+    }
+
+    /// Damage in the top bar and Quick Settings sections between `previous`
+    /// and `current`: whether either changed, and where; `None` when a
+    /// change cannot be bounded.
+    fn bar_damage(
+        &self,
+        previous: &ProducedSections,
+        current: &crate::shell::overlay_host::ShellSceneSections,
+        parts: &OpaqueParts,
+    ) -> Option<(bool, Vec<FineDamageRect>)> {
+        let topbar_changed = !previous.topbar.encoding_eq(&current.topbar);
+        let quick_settings_changed = !previous.quick_settings.encoding_eq(&current.quick_settings);
+        let mut regions = Vec::new();
         if topbar_changed {
             let old = self.topbar_damage_rect(&previous.topbar, previous.topbar_bounds)?;
             let new = self.topbar_damage_rect(&current.topbar, current.topbar_bounds)?;
@@ -2853,7 +3139,7 @@ impl FrameBuilder {
                 }
             }
         }
-        (!regions.is_empty()).then_some(regions)
+        Some((topbar_changed || quick_settings_changed, regions))
     }
 
     fn topbar_damage_rect(&self, section: &Scene, bounds: Option<Rect>) -> Option<FineDamageRect> {
@@ -2951,7 +3237,7 @@ impl FrameBuilder {
         };
         if matches!(
             self.visual_accessibility.color_filter,
-            ColorFilter::Grayscale | ColorFilter::GrayscaleInverted
+            DesktopColorFilter::Grayscale | DesktopColorFilter::GrayscaleInverted
         ) {
             // W3C `color` blend with an achromatic source preserves the
             // backdrop luminosity while replacing hue/saturation: true
@@ -2960,7 +3246,7 @@ impl FrameBuilder {
         }
         if matches!(
             self.visual_accessibility.color_filter,
-            ColorFilter::Inverted | ColorFilter::GrayscaleInverted
+            DesktopColorFilter::Inverted | DesktopColorFilter::GrayscaleInverted
         ) {
             // Difference against white is the exact per-channel inverse.
             overlay(Mix::Difference, Color::WHITE);
@@ -3104,11 +3390,8 @@ impl FrameBuilder {
             ) as u32;
         }
         self.visual_accessibility = VisualAccessibility::load();
-        self.narrator.set_enabled(
-            settings_store::accessibility::AccessibilitySettings::load()
-                .screen_reader()
-                .enabled,
-        );
+        self.narrator
+            .set_enabled(settings_store::screen_reader::ScreenReaderSettings::load().enabled);
     }
 
     /// Speak what changed in the chrome since the last frame (focus moves in
@@ -5057,6 +5340,45 @@ mod tests {
         tab_id
     }
 
+    /// The widget addresses the pointer map holds.
+    fn mapped_widgets(frame: &FrameBuilder) -> std::collections::BTreeSet<usize> {
+        frame
+            .node_map
+            .values()
+            .map(|widget| widget.cast::<()>().addr())
+            .collect()
+    }
+
+    /// A pump that rebuilds the workspace's content (here a new workspace;
+    /// equally its first window opening or its last closing) drops the old
+    /// content's widgets, the top bar among them. The frame loop reads the
+    /// focused node through the pointer map before the next paint, which a
+    /// backed-up renderer can defer for frames: the map must already name
+    /// the new widgets when the pump returns, never the dropped ones.
+    #[test]
+    fn a_pump_that_rebuilds_the_content_leaves_no_pointer_to_dropped_widgets() {
+        let mut frame = FrameBuilder::new((1280, 800));
+        let mut doc = AutoCommit::new();
+        frame.pump_apps(&mut doc, &automerge::ROOT);
+        frame.relayout();
+        let before = mapped_widgets(&frame);
+        frame.with_chrome(|chrome| {
+            chrome.add_workspace("content rebuilt by the pump");
+        });
+        frame.pump_apps(&mut doc, &automerge::ROOT);
+        let after_pump = mapped_widgets(&frame);
+        assert_ne!(
+            after_pump, before,
+            "the pump rebuilt the workspace's content"
+        );
+        frame.rebuild_layout_tree();
+        assert_eq!(
+            after_pump,
+            mapped_widgets(&frame),
+            "after the pump the pointer map names exactly the live widgets a rebuild maps"
+        );
+    }
+
     #[test]
     fn pump_room_contents_walks_the_tabs_only_after_the_tree_changes() {
         use crate::shell::peer_windows::work_counts;
@@ -5145,9 +5467,7 @@ mod tests {
         activate: impl FnOnce(&mut crate::shell::app_notice_card::AppNoticeCard),
     ) {
         use crate::shell::peer_windows::work_counts;
-        use crate::shell::state::{
-            CapOverride, Effect, Principal, Scope, Subject, TileContent, Verb,
-        };
+        use crate::shell::state::TileContent;
         use tilo_desktop_model::MissingApp;
 
         let mut frame = FrameBuilder::new((1280, 800));
@@ -5160,17 +5480,10 @@ mod tests {
             let chrome = frame.chrome.borrow();
             let mut tree = chrome.tree_mut();
             let workspace = tree.desktop.workspaces.last_mut().unwrap();
-            workspace.owner = Some("quinten".into());
             // The production install path must refuse before reaching the
-            // catalogue: this disposable fixture can never install an app.
-            let _ = workspace.grant_capability(CapOverride {
-                effect: Effect::Restrict,
-                ..CapOverride::grant(
-                    Subject::Principal(Principal::Person("quinten".into())),
-                    Scope::App("so.tilo.word-processor".into()),
-                    Verb::Read,
-                )
-            });
+            // catalogue: this disposable fixture has no owner, so no one may
+            // install an app into it.
+            assert!(workspace.owner().is_none());
             let TileContent::PeerWindow { note, missing, .. } =
                 &mut workspace.strips[0].window_groups[0].tabs[0].tile
             else {
@@ -5212,7 +5525,7 @@ mod tests {
             else {
                 panic!("a refused install must keep the peer window");
             };
-            assert!(note.contains("does not permit"), "existing refusal: {note}");
+            assert!(note.contains("no owner"), "existing refusal: {note}");
             assert_eq!(*missing, None);
         }
         assert_eq!(frame.peer_windows_poll(), None, "the request was drained");
@@ -5433,8 +5746,8 @@ mod tests {
                     .iter_mut()
                     .find(|workspace| workspace.id == source_id)
                     .expect("source workspace");
-                source.owner = None;
-                source.capabilities.clear();
+                source.policy.owner = None;
+                source.sandbox.clear();
                 tree.desktop.active = destination_id;
             }
             consume_record_requests(&chrome, &index);
@@ -5634,7 +5947,7 @@ mod tests {
         /// its rebuild on. Drives the ingest and per-frame pump.
         fn a_peers_changes_landing_make_the_frame_rebuild() {
             use crate::shell::state::PeerOrigin;
-            use collab_types::caps::{CapOverride, Scope, Subject, Verb};
+            use collab_types::caps::{Access, CapOverride, Scope, Subject};
 
             // A room owned by somebody else, with something in it.
             let owner = "quinten".to_string();
@@ -5644,13 +5957,13 @@ mod tests {
             let room = host
                 .room_of(host_ws)
                 .expect("the host's workspace has a room");
-            host.grant_in_workspace(
+            host.grant_sandbox_in_workspace(
                 host_ws,
                 &owner,
                 CapOverride::grant(
                     Subject::app("files"),
                     Scope::FsPath("/shared".to_string()),
-                    Verb::Read,
+                    Access::Read,
                 ),
             )
             .expect("the owner may grant in their own room");
@@ -8387,6 +8700,26 @@ fn scene_i32(value: f64) -> Option<i32> {
 /// `scene`, drawn in logical coordinates, magnified by `to_scene` into
 /// scene pixels without clipping it to the display: a strip's canvas runs
 /// past the display's right edge, and the pan brings that part in.
+/// [`magnified`] for a scene drawn with damage parts, which keep marking
+/// what they marked, their bounds magnified with it.
+fn magnified_with_parts(
+    scene: Scene,
+    parts: Option<ui::scene_parts::SectionParts>,
+    to_scene: Affine,
+) -> (Scene, Option<ui::scene_parts::SectionParts>) {
+    if to_scene == Affine::IDENTITY {
+        return (scene, parts);
+    }
+    let Some(parts) = parts else {
+        return (magnified(scene, to_scene), None);
+    };
+    let mut magnified = Scene::new();
+    let ((), parts) = ui::scene_parts::record(&mut magnified, |magnified| {
+        ui::scene_parts::append(magnified, &scene, Some(&parts), Some(to_scene));
+    });
+    (magnified, parts)
+}
+
 fn magnified(scene: Scene, to_scene: Affine) -> Scene {
     if to_scene == Affine::IDENTITY {
         return scene;

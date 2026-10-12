@@ -4,7 +4,6 @@ use super::{
     CatalogueQuery, DeviceCapabilities, DocumentRoute, Replica, Seed, common, enrol,
     record_provider, start,
 };
-use chat::doc::{ChatDoc, NewMessage};
 use tilo_actions::remote::ViewResourceQuery;
 use tilo_peer_state::join::MemberRole;
 
@@ -56,20 +55,29 @@ async fn remote_encrypted_chat_primary_is_discoverable_after_host_restart() {
     )
     .unwrap();
     let mut doc = source.read(Clone::clone).unwrap();
-    ChatDoc::create_workspace(&mut doc, "Remote encrypted space");
-    let channel = ChatDoc::list_channels(&doc)
-        .into_iter()
-        .find(|channel| channel.kind == chat::model::ChannelKind::Text)
-        .unwrap();
-    let message = ChatDoc::push_message(
+    let writer = hex::encode(writer_device.cert.user_public_key);
+    chat::demo::apply_as(
         &mut doc,
-        &channel.id,
-        NewMessage {
-            author: hex::encode(writer_device.cert.user_public_key),
-            text: "Retained encrypted é".into(),
-            ..NewMessage::default()
-        },
-    );
+        &writer,
+        chat::Chat::CREATE_WORKSPACE.with(chat::record::chat::CreateWorkspace {
+            name: "Remote encrypted space".into(),
+        }),
+    )
+    .unwrap();
+    let workspace = chat::projection::read(&doc)
+        .workspace_rows()
+        .into_iter()
+        .find(|workspace| workspace.name == "Remote encrypted space")
+        .unwrap()
+        .id;
+    let channel = chat::projection::read(&doc)
+        .channel_rows()
+        .into_iter()
+        .find(|channel| {
+            channel.workspace == workspace && channel.kind == chat::model::ChannelKind::Text
+        })
+        .unwrap();
+    let message = chat::demo::say(&mut doc, &writer, &channel.id, "Retained encrypted é").unwrap();
     source
         .apply(&collab_types::DocumentMutation::Snapshot(doc.save()))
         .unwrap();
@@ -102,12 +110,12 @@ async fn remote_encrypted_chat_primary_is_discoverable_after_host_restart() {
             if app_id == route.app_id && record_id == route.record &&
                 envelope.encryption.as_ref().is_some_and(|metadata| metadata.channel == expected_channel))
     }), "the real remote writer's retained primary must be encrypted on its exact channel");
-    let id = format!("chat.message:{message}");
+    let id = chat::projection::item_id("messages", &message);
     let query = CatalogueQuery {
         provider: Some(record_provider(&route)),
         view_resource: Some(ViewResourceQuery {
             id: id.clone(),
-            kind: "chat.message".into(),
+            kind: "chat.workspace.messages".into(),
         }),
         ..CatalogueQuery::default()
     };

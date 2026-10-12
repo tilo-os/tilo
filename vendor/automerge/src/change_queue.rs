@@ -107,6 +107,27 @@ impl ChangeQueue {
         });
     }
 
+    /// TILO(peer-change-check): leave the queue holding exactly the changes
+    /// whose hashes `queued` lists, in that order, taking them from those it
+    /// holds and from `popped` (vendor/automerge/TILO-PATCH.md).
+    pub(crate) fn restore(&mut self, queued: &[ChangeHash], popped: Vec<Change>) {
+        let mut held: HashMap<ChangeHash, Change> = std::mem::take(&mut self.changes)
+            .into_iter()
+            .chain(popped)
+            .map(|change| (change.hash(), change))
+            .collect();
+        self.hashes.clear();
+        self.incoming_actor_seqs.clear();
+        for hash in queued {
+            if let Some(change) = held.remove(hash) {
+                self.hashes.insert(*hash);
+                self.incoming_actor_seqs
+                    .insert((change.actor_id().clone(), change.seq()));
+                self.changes.push(change);
+            }
+        }
+    }
+
     pub(crate) fn extend(&mut self, batch: ChangeBatch) {
         for c in batch.changes {
             let incoming_actor_seq = (c.actor_id().clone(), c.seq());

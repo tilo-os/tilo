@@ -1,7 +1,7 @@
 //! Notes as the framework hosts it, for tests that drive the notebook
 //! surface: the app on a fresh profile, a notebook written with its own
 //! actions, and the surface itself for its test hooks.
-use notes::actions::{self, NotesAction};
+use notes::actions::{self, Action};
 use notes::{MainPanel, NotesApp, NotesShell, PageId};
 use ui::framework::testing::TestApp;
 use ui::tilo_resource::Invoke;
@@ -13,7 +13,7 @@ pub fn notes() -> TestApp<NotesShell> {
 }
 
 /// Apply `action` through the notebook's door, as a control does.
-pub fn apply(app: &mut TestApp<NotesShell>, action: &NotesAction) {
+pub fn apply(app: &mut TestApp<NotesShell>, action: &Action) {
     app.invoke(Invoke::apply(action).unwrap()).unwrap();
 }
 
@@ -21,7 +21,7 @@ pub fn apply(app: &mut TestApp<NotesShell>, action: &NotesAction) {
 /// notes the notebook already has.
 pub fn add_note(app: &mut TestApp<NotesShell>, title: &str, body: &str) -> PageId {
     let page = PageId::new_v4();
-    apply(app, &actions::append_page_action(page, None, title));
+    apply(app, &actions::create_page_action(page, None, title));
     if !body.is_empty() {
         let blocks = MainPanel::seed_blocks(body, |_| None);
         apply(app, &actions::write_body_action(page, &blocks));
@@ -50,7 +50,7 @@ pub fn surface<T>(app: &mut TestApp<NotesShell>, visit: impl FnOnce(&mut NotesAp
 /// The text of `page`'s blocks, in order.
 pub fn body(app: &TestApp<NotesShell>, page: PageId) -> Vec<String> {
     app.read_document(|doc| {
-        notes::doc::NotesDoc::page_block_snapshots(doc, page)
+        notes::read::page_block_snapshots(doc, page)
             .into_iter()
             .map(|(_, text)| text)
             .collect()
@@ -63,9 +63,25 @@ pub fn send(app: &mut TestApp<NotesShell>, event: &winit::event::WindowEvent) ->
         .dispatch_to_root_with(event, &winit::event::Modifiers::default())
 }
 
+/// Apply rich-text `op` to `page`'s body, as an agent does: one field edit.
+pub fn edit_body(app: &mut TestApp<NotesShell>, page: PageId, op: &tilo_document::RichTextAction) {
+    let edit = notes::Notebook::paths()
+        .pages
+        .item(&notes::notebook::page_id(page))
+        .body
+        .perform(op)
+        .unwrap();
+    app.invoke(Invoke::edit(&edit).unwrap()).unwrap();
+}
+
+/// The notebook `app` shows, as its window shows it.
+pub fn shown(app: &TestApp<NotesShell>) -> notes::Workspace {
+    notes::Workspace::of(std::rc::Rc::new(app.state()), &notes::Workspace::default())
+}
+
 /// The notes at the notebook's root, in their order.
 pub fn root_order(app: &TestApp<NotesShell>) -> Vec<PageId> {
-    app.state()
+    notes::Workspace::of(std::rc::Rc::new(app.state()), &notes::Workspace::default())
         .children_of(None)
         .iter()
         .map(|page| page.id)

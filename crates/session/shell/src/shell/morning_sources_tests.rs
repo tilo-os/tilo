@@ -96,7 +96,7 @@ fn row() -> CatalogueRow {
         "address": {"resource": "fixture:chosen", "action": "refresh"},
         "resource_kind": "fixture", "resource_label": "Chosen feed", "action_label": "Refresh",
         "locus": tilo_actions::ExecutionLocus::default(), "kind": tilo_actions::OperationKind::Effect,
-        "contract": tilo_actions::ActionContract { permission: tilo_actions::PermissionRequirement::Read, ..Default::default() }, "input": tilo_actions::InputSpec::None, "params": []
+        "contract": tilo_actions::ActionContract::view(), "input": tilo_actions::InputSpec::None, "params": []
     })).unwrap();
     CatalogueRow {
         provider: "synthetic".into(),
@@ -254,20 +254,16 @@ fn morning_refresh_and_scheduling_draft_use_existing_room_bound_door_and_grant_n
     };
     assert!(draft.grant.is_empty());
     assert!(draft.triggers.is_empty());
-    assert!(draft.consents.is_empty());
     assert!(draft.saved_by.is_none());
     let tilo_automation::StepKind::Invoke {
-        app_id,
-        resource,
-        action,
-        ..
+        resource, action, ..
     } = &draft.steps[0].kind
     else {
         panic!("exact source step")
     };
-    assert_eq!(app_id, &source.app);
+    assert_eq!(action.app, source.app);
+    assert_eq!(action.action, "refresh");
     assert_eq!(resource, &tilo_automation::Selector::Fixed(source.resource));
-    assert_eq!(action, "refresh");
 }
 
 #[test]
@@ -462,7 +458,6 @@ fn morning_scheduled_refresh_updates_the_same_chosen_payload_through_production_
             mode: tilo_automation::RunMode::Unattended,
             trigger: tilo_automation::RunTrigger::Fired(fired[0].trigger.clone()),
             inputs: fired[0].inputs.clone(),
-            consents: Vec::new(),
         },
     ));
     assert_eq!(report.outcome, tilo_automation::RunOutcome::Completed);
@@ -500,13 +495,13 @@ fn morning_scheduled_refresh_updates_the_same_chosen_payload_through_production_
 fn saved_synthetic_refresh(source: &MorningSource) -> tilo_automation::Shortcut {
     let mut saved = refresh_draft(source);
     saved.saved_by = Some("synthetic".into());
-    saved.grant = vec![collab_types::PermissionProfileRule::grant(
-        collab_types::Scope::Action {
-            app: source.app.clone(),
-            resource: source.resource.clone(),
-            action: "refresh".into(),
-        },
-        collab_types::Verb::Read,
+    saved.grant = vec![tilo_automation::action_rule(
+        &source.app,
+        "fixture",
+        Some(&source.resource),
+        "refresh",
+        tilo_action_policy::KindSet::READ,
+        tilo_action_policy::Answer::Allow,
     )];
     saved.triggers = vec![tilo_automation::TriggerSpec::Schedule {
         schedule: tilo_automation::Schedule::Interval { seconds: 3600 },

@@ -9,16 +9,22 @@
 //! ([`DocSettings`], stored in the document); [`EffectiveLocale`] is the two
 //! layered.
 
+// `#[derive(Model)]` names the crate as `tilo_resource`.
+use ui::tilo_resource::{self, Model};
+
 use tilo_locale::{Currency, DateStyle, Locale};
 use ui::clock::TimeStyle;
 
 /// Per-document locale overrides. `None` on a field means "inherit the
-/// global default". Stored in the workbook's CRDT so collaborators share
-/// the document's conventions.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+/// global default". Stored in the workbook so collaborators share the
+/// document's conventions.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Model)]
 pub struct DocSettings {
+    /// Currency
     pub currency: Option<Currency>,
+    /// Date format
     pub date_format: Option<DateStyle>,
+    /// Time format
     pub time_format: Option<TimeStyle>,
 }
 

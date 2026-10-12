@@ -496,6 +496,7 @@ pub fn run() -> std::process::ExitCode {
         eprintln!("error: {refusal}");
         return std::process::ExitCode::from(2);
     }
+    shell::shell::decide_receipt_against_surfaces();
     if let Err(error) = shell::shell::install_approved_checks_from_args(std::env::args_os().skip(1))
     {
         eprintln!("approved project check configuration refused: {error}");

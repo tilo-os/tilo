@@ -1,11 +1,11 @@
 //! Durable local RPCs use the existing journal and invocation dispatcher.
 use super::{
-    AdmissionProvenance, AdmittedJoinIdentity, BrokerActor, CallerInvocation, CapDecision,
-    CapnpBrokerState, CapnpChannelHandle, CrdtRoute, DIRECTORY_MAX_CONFIRMATION_BYTES,
+    AdmissionProvenance, AdmittedJoinIdentity, BrokerActor, CallerInvocation, CapnpBrokerState,
+    CapnpChannelHandle, CrdtRoute, DIRECTORY_MAX_CONFIRMATION_BYTES,
     DIRECTORY_MAX_IDENTIFIER_BYTES, DIRECTORY_MAX_PARAMS_BYTES, DIRECTORY_MAX_QUERY_REVISION_BYTES,
     DirectoryActionConfirmation, DurableInvocation, InvocationCaller, InvocationEnvelope,
     InvocationInputs, InvocationKey, InvocationOwner, LocalActionDirectoryRegistry, Promise,
-    PublishedAction, PublishedSurface, Rc, ResourceRef, VerifiedActionCaller, channel_handle, mpsc,
+    PublishedAction, PublishedSurface, Rc, VerifiedActionCaller, channel_handle, mpsc,
     resolved_invocation, validate_directory_identifier, validate_directory_text,
 };
 use resolved_invocation::ResolvedOffer;
@@ -84,21 +84,26 @@ impl LocalCaller {
             .get("resource")
             .and_then(serde_json::Value::as_str)
             .ok_or("retained task resource absent")?;
+        let resource_kind = record
+            .intent
+            .get("resource_kind")
+            .and_then(serde_json::Value::as_str)
+            .ok_or("retained task resource kind absent")?;
         let now = state.checked_policy_time(Some(&self.time))?.1 / 1_000_000_000;
+        let need = contract.need();
         state.authorize_invocation_permission(
             &self.route.cluster_id,
-            app,
-            resource,
-            action,
-            contract.permission,
+            (app, resource_kind, resource, action),
+            &need,
             &current.broker_actor(),
             now,
         )?;
         Ok(crate::services::NativeTaskActionRequirement {
             app: app.into(),
+            resource_kind: resource_kind.into(),
             resource: resource.into(),
             action: action.into(),
-            permission: contract.permission,
+            need,
         })
     }
     fn current(&self, state: &CapnpBrokerState) -> Result<AdmittedJoinIdentity, String> {
@@ -248,10 +253,13 @@ impl<'a> DurableContext<'a> {
         let now = state.checked_policy_time(self.time())?.1 / 1_000_000_000;
         state.authorize_invocation_permission(
             &offered.0.route.cluster_id,
-            &offered.0.app_id,
-            &offered.1.resource,
-            &offered.1.action,
-            offered.1.contract.permission,
+            (
+                &offered.0.app_id,
+                &offered.1.resource_kind,
+                &offered.1.resource,
+                &offered.1.action,
+            ),
+            &offered.1.contract.need(),
             &current.broker_actor(),
             now,
         )?;
@@ -264,41 +272,42 @@ impl<'a> DurableContext<'a> {
 /// sample of exactly that room's committed workspace.
 pub(super) fn authorize_action_in(
     workspace: &tilo_desktop_model::Workspace,
-    app: &str,
-    resource: &str,
-    action: &str,
-    permission: tilo_actions::PermissionRequirement,
+    (app, resource_kind, resource, action): (&str, &str, &str, &str),
+    need: &tilo_actions::ActionNeed,
     actor: &BrokerActor,
     now: u64,
 ) -> Result<(), String> {
-    // Preserve the existing common dispatch policy projection. Genuine
-    // durable callers revalidate live membership/delegation separately.
-    let caller = actor.policy_in(workspace, now);
-    if super::permission_verb(permission).is_some_and(|verb| {
-        workspace.decide_at(
-            &caller,
-            &ResourceRef::Action {
-                app: app.into(),
-                resource: resource.into(),
-                action: action.into(),
-            },
-            verb,
-            now,
-        ) != CapDecision::Allow
-    }) {
+    // Genuine durable callers revalidate live membership and delegation
+    // separately; this is the action's own grant.
+    if !actor
+        .action_answer_in(workspace, app, (resource_kind, resource, action), need, now)
+        .admits(actor.direct())
+    {
         return Err("caller no longer authorized for invocation".into());
     }
     Ok(())
 }
 
 impl CapnpBrokerState {
+    /// Revoke the `Once` grants an admitted action spent in `room`
+    /// ([`tilo_action_policy::Verdict::spent`]), through the host that
+    /// records the room's grants.
+    pub(super) fn spend_once_grants(&self, room: &str, spent: &[tilo_action_policy::GrantId]) {
+        let Some(grants) = self.services.app_action_grants.as_ref() else {
+            return;
+        };
+        for grant in spent {
+            grants.revoke(room, grant.as_str());
+        }
+    }
+}
+
+impl CapnpBrokerState {
     pub(super) fn authorize_invocation_permission(
         &self,
         room: &str,
-        app: &str,
-        resource: &str,
-        action: &str,
-        permission: tilo_actions::PermissionRequirement,
+        (app, resource_kind, resource, action): (&str, &str, &str, &str),
+        need: &tilo_actions::ActionNeed,
         actor: &BrokerActor,
         now: u64,
     ) -> Result<(), String> {
@@ -307,7 +316,13 @@ impl CapnpBrokerState {
             .ok_or("workspace authority unavailable")?
             .decide_in_room(room, |workspace| {
                 let workspace = workspace.ok_or("workspace no longer hosted")?;
-                authorize_action_in(workspace, app, resource, action, permission, actor, now)
+                authorize_action_in(
+                    workspace,
+                    (app, resource_kind, resource, action),
+                    need,
+                    actor,
+                    now,
+                )
             })?
     }
     pub(super) fn require_current_stable_sender(
@@ -384,6 +399,11 @@ impl CapnpBrokerState {
                 .get("resource")
                 .and_then(serde_json::Value::as_str)
                 .ok_or("journal resource invalid")?;
+            let resource_kind = record
+                .intent
+                .get("resource_kind")
+                .and_then(serde_json::Value::as_str)
+                .ok_or("journal resource kind invalid")?;
             let action = record
                 .intent
                 .get("action")
@@ -392,10 +412,8 @@ impl CapnpBrokerState {
             let now = self.checked_policy_time(Some(&caller.time))?.1 / 1_000_000_000;
             self.authorize_invocation_permission(
                 &caller.route.cluster_id,
-                app,
-                resource,
-                action,
-                contract.permission,
+                (app, resource_kind, resource, action),
+                &contract.need(),
                 &current.broker_actor(),
                 now,
             )?;

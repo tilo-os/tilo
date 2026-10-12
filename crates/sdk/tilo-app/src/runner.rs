@@ -77,7 +77,7 @@ pub(crate) struct Presentation;
 
 #[cfg(target_family = "wasm")]
 impl Presentation {
-    pub(crate) fn new(_: Option<tilo_content::ContentStore>) -> Self {
+    pub(crate) fn new<R: tilo_resource::Resource>(_: &crate::framework::ViewCx<R>) -> Self {
         Self
     }
     pub(crate) fn track_theme(&mut self, _: &ui_core::Theme) {}

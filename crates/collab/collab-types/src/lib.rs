@@ -15,10 +15,10 @@
 //! - [`space`] — `Space`, the social-formation container grouping channels.
 //! - [`channel`] — `Channel`, `MemberRef`, `ChannelRef`, `ArtifactRef`,
 //!   `Artifact`: the working-area primitive mapping members to roles.
-//! - [`role`] — `Role`, `OpClass`, `ArtifactKind` plus the static
-//!   permission table ([`role::role_permits`]) — the coarse base layer.
-//! - [`caps`] — the richer `(subject × scope × verb)` capability model
-//!   stacked on the role table; wired into the validator's step 5a.
+//! - [`role`] — `Role`, `OpKind`, `ArtifactKind` of the op envelope; who may
+//!   make which change is decided by `tilo-action-policy` grants (step 5).
+//! - [`caps`] — the app sandbox: `(subject × scope × access)` capabilities
+//!   over paths, file records, devices and network hosts.
 //! - [`invite`] — attenuable capability invite tokens
 //!   ([`invite::InviteToken`]): a signed, delegable grant that can only narrow.
 //! - [`event`] — `ChannelEvent`, the append-only governance log.
@@ -58,15 +58,16 @@
     )
 )]
 
+pub mod action_authority;
 pub mod canonical;
 pub mod caps;
 pub mod channel;
+pub mod claim;
 pub mod compaction;
 pub mod crypto;
 pub mod document_import;
 pub mod document_transfer;
 pub mod event;
-pub mod foreign_device;
 pub mod history;
 pub mod identity;
 pub mod invite;
@@ -74,26 +75,37 @@ pub mod mls_governance;
 pub mod op;
 pub mod ownership_transfer;
 pub mod peer;
-pub mod permission_profile;
 pub mod person_room;
+pub mod receipt;
 pub mod redaction;
 pub mod role;
 pub mod space;
+pub mod surface;
 pub mod task_budget;
+pub mod units;
 pub mod validator;
 
+/// The URI scheme that asks an app to open one of its own records
+/// (`tilo-record:<record id>`): how a launch delivers an invocation to the
+/// view of the record it addresses. Every app accepts it; it names a record
+/// in the app's own store and grants nothing.
+pub const RECORD_URI_SCHEME: &str = "tilo-record";
+
 // Convenience re-exports so downstream callers can do
-// `use collab_types::{SignedOp, Role, OpClass, ArtifactKind, ...}`
+// `use collab_types::{SignedOp, Role, OpKind, ArtifactKind, ...}`
 // without reaching into individual modules.
 pub use canonical::{CanonicalError, canonical_bytes};
 pub use caps::{
-    Actor, CapDecision, CapOverride, Effect, Expiry, Principal, ResourceRef, ResourceScope, Scope,
-    Subject, Verb, decide, decide_actor, decide_capability, host_covers, path_covers,
-    role_base_applies, role_caps, verb_for_opclass,
+    Access, Actor, CapDecision, CapOverride, Effect, Expiry, FsAuthority, LaunchGrants, Principal,
+    ResourceRef, RoomMember, Scope, Subject, decide_capability, host_covers, path_covers,
 };
 pub use channel::{
     Artifact, ArtifactId, ArtifactRef, Channel, ChannelId, ChannelRef, ChannelSettingsDelta,
     DocumentHandle, MemberRef,
+};
+pub use claim::{
+    ChangeClaim, ClaimError, ClaimedAction, CommitNamed, FrameworkChange, UnitPath, check_claimed,
+    claims_of, field_edit_mutation, mutation_claims, parse_changes, record_unit,
 };
 pub use compaction::{
     CompactionCheckpoint, CompactionError, SEALED_COMPACTION_VERSION, SealedCompaction,
@@ -129,15 +141,20 @@ pub use ownership_transfer::{
     OwnershipTransferCancellationV1, OwnershipTransferError, OwnershipTransferProposalV1,
 };
 pub use peer::{PeerPresence, PeerPresencePayload};
-pub use permission_profile::{PermissionProfile, PermissionProfileError, PermissionProfileRule};
-pub use person_room::{is_person_room, person_room, person_room_of};
+pub use person_room::{
+    is_person_room, person_record_id, person_record_kind, person_room, person_room_of,
+};
+pub use receipt::{
+    Receipt, ReceiptRefusal, ReceiptSurface, Record, SurfaceSource, Surfaces, check_claims,
+    claim_node, decide_op, decide_op_pinned, record_node,
+};
 pub use redaction::{
     MAX_REDACTION_REASON_BYTES, OpId, RedactRequest, RedactedMarker, RedactionError,
     encode_redact_payload, hash_target_op, parse_redact_payload,
 };
-pub use role::{ArtifactKind, OpClass, Role, role_permits};
+pub use role::{ArtifactKind, OpKind, Role};
 pub use space::{Space, SpaceId};
 pub use validator::{
-    ChannelState, ValidationError, validate_admitted_inbound_op, validate_inbound_op,
-    validate_replayed_inbound_op,
+    ChannelState, DEFAULT_ROOM, ValidationError, document_node, validate_admitted_inbound_op,
+    validate_inbound_op, validate_replayed_inbound_op,
 };

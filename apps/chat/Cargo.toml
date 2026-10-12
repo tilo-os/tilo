@@ -25,7 +25,6 @@ thin = ["dep:runtime-dylib"]
 [dependencies]
 fnv.workspace = true
 emoji = { path = "../../crates/text/emoji" }
-tilo-clock = { path = "../../crates/platform/tilo-clock" }
 tilo-files = { path = "../../crates/platform/tilo-files" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 # The Tilo action model: the serializable, replayable unit of CRDT mutation

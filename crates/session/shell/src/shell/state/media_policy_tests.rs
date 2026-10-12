@@ -11,7 +11,7 @@ fn fixture() -> (WorkspaceTree, WorkspaceTree, RoomId, PeerOrigin) {
     let device = iroh::SecretKey::from_bytes(&[92; 32]);
     let endpoint = device.public();
     let owner = hex::encode(governor_root.verifying_key().as_bytes());
-    host.desktop.workspaces[0].owner = Some(owner.clone());
+    host.desktop.workspaces[0].set_owner(owner.clone());
     assert!(host.name_peer(room, &owner, &endpoint.to_string(), "Governor"));
     let mut cert = tilo_user_identity::DeviceCert {
         user_public_key: governor_root.verifying_key().to_bytes(),
@@ -364,7 +364,7 @@ fn local_security_projection_refreshes_revision_once_and_preserves_calls() {
     let doc = host.room_docs.get_mut(&room).unwrap();
     let value = policy(doc, room);
     put_policy(doc, &value);
-    let authority = host.desktop.workspaces[0].owner.clone().unwrap();
+    let authority = host.desktop.workspaces[0].owner().cloned().unwrap();
     let endpoint = iroh::SecretKey::from_bytes(&[92; 32]).public().to_string();
     assert!(host.name_peer(room, &authority, &endpoint, "Renamed governor"));
     assert_eq!(

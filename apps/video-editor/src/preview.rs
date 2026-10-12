@@ -772,7 +772,7 @@ mod tests {
     }
 
     use super::*;
-    use crate::doc::sample_project;
+    use crate::seed::sample_project;
 
     #[test]
     #[allow(
@@ -931,7 +931,8 @@ mod tests {
                 id: uuid::Uuid::new_v4(),
                 kind: EffectKind::Grayscale,
                 amount: 1.0,
-            }];
+            }]
+            .into();
             let CompositedFrame::Clip { base: after, .. } = composite(&p, 6.0) else {
                 panic!("expected clip");
             };
@@ -978,7 +979,6 @@ mod tests {
                 fps: 30.0,
                 palette: 0,
                 path: crate::media::workspace_path("s.mp4"),
-                hydration: crate::media::Hydration::Projected,
                 ..Default::default()
             });
             let tid = Uuid::new_v4();
@@ -1023,7 +1023,6 @@ mod tests {
             fps: 30.0,
             palette: 0,
             path: path.to_string_lossy().into_owned(),
-            hydration: crate::media::Hydration::Local,
             ..Default::default()
         });
         let tid = Uuid::new_v4();
@@ -1096,7 +1095,6 @@ mod tests {
                 palette: 0,
                 // Absolute path that does not exist → resolve reports Projected.
                 path: "/definitely/not/here-preview.mp4".into(),
-                hydration: crate::media::Hydration::Projected,
                 ..Default::default()
             });
             let tid = Uuid::new_v4();
@@ -1225,7 +1223,6 @@ mod tests {
                 fps: 30.0,
                 palette,
                 path: crate::media::workspace_path("m.mp4"),
-                hydration: crate::media::Hydration::Projected,
                 ..Default::default()
             });
             id
@@ -1373,7 +1370,8 @@ mod tests {
                     id: uuid::Uuid::new_v4(),
                     kind: EffectKind::Sepia,
                     amount: 0.5,
-                }];
+                }]
+                .into();
                 c.fade_in = 2.0;
                 c.opacity = 0.5;
             }

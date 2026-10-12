@@ -4,7 +4,9 @@
 //! (text patches with their marks, list patches with their conflicts) are
 //! byte for byte what crates.io automerge 0.12.0 produces from the same
 //! bytes, and the cost of a remote keystroke does not grow with the history
-//! behind it.
+//! behind it. A hand-built change whose op overwrites an op of another
+//! element or object is refused, where upstream takes it into a document
+//! that no longer loads.
 
 #![allow(
     clippy::unwrap_used,
@@ -28,7 +30,7 @@ use automerge::{
 use tilo_automerge::ApplyIncoming;
 
 mod upstream;
-use upstream::{Replica, Rng, agrees_with_upstream};
+use upstream::{History, Replica, Rng, agrees_with_upstream, refuses_only_what_upstream_corrupts};
 
 const SNIPPETS: &[&str] = &["x", "yz", "é", "😀", "\n", "e\u{301}", "abc"];
 const MARKS: &[&str] = &["bold", "link"];
@@ -44,9 +46,9 @@ const EXPANDS: &[ExpandMark] = &[
 /// with multi-unit characters, marks and unmarks, block markers; list items
 /// inserted, set and deleted, counters incremented, maps nested in a list;
 /// merges between the actors (so inserts at the same place race and later
-/// changes resolve conflicts), and now and then a hand-built change whose op
-/// overwrites an op of another element or another object.
-fn history(seed: u64, steps: usize) -> (Vec<u8>, Vec<Vec<u8>>) {
+/// changes resolve conflicts); and, kept apart, now and then a hand-built
+/// change whose op overwrites an op of another element or another object.
+fn history(seed: u64, steps: usize) -> History {
     let mut rng = Rng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1);
     let mut base = AutoCommit::new().with_actor(ActorId::from(&[0xaa][..]));
     let text = base.put_object(ROOT, "t", ObjType::Text).unwrap();
@@ -69,6 +71,7 @@ fn history(seed: u64, steps: usize) -> (Vec<u8>, Vec<Vec<u8>>) {
         })
         .collect();
     let mut changes = Vec::new();
+    let mut forged = Vec::new();
     let mut forgers = 0u8;
     for step in 0..steps {
         let a = rng.below(actors.len() as u64) as usize;
@@ -82,9 +85,9 @@ fn history(seed: u64, steps: usize) -> (Vec<u8>, Vec<Vec<u8>>) {
         // rebuilds the changes it sends from its ops, and cannot rebuild
         // this one, so a peer that took it could not merge into another.
         if rng.below(40) == 0
-            && let Some(change) = forged(&mut actors[a], &mut rng, &mut forgers)
+            && let Some(change) = forge(&mut actors[a], &mut rng, &mut forgers)
         {
-            changes.push(change.raw_bytes().to_vec());
+            forged.push(change.raw_bytes().to_vec());
             continue;
         }
         let heads = actors[a].get_heads();
@@ -97,7 +100,11 @@ fn history(seed: u64, steps: usize) -> (Vec<u8>, Vec<Vec<u8>>) {
             changes.push(bytes);
         }
     }
-    (base_bytes, changes)
+    History {
+        base: base_bytes,
+        changes,
+        forged,
+    }
 }
 
 fn obj(doc: &AutoCommit, key: &str) -> ObjId {
@@ -192,7 +199,7 @@ fn elements(doc: &mut AutoCommit, seq: &ObjId) -> Vec<OpId> {
 /// peer can send. (Setting a character this way makes crates.io automerge
 /// 0.12.0 itself panic once one of the character's two values is deleted,
 /// so the forged op sets a list item.)
-fn forged(doc: &mut AutoCommit, rng: &mut Rng, forgers: &mut u8) -> Option<Change> {
+fn forge(doc: &mut AutoCommit, rng: &mut Rng, forgers: &mut u8) -> Option<Change> {
     let list = obj(doc, "l");
     let pred_seq = if rng.below(2) == 0 {
         list.clone()
@@ -233,16 +240,21 @@ fn forged(doc: &mut AutoCommit, rng: &mut Rng, forgers: &mut u8) -> Option<Chang
     Some(Change::from(change))
 }
 
-fn agrees(seed: u64, diff: bool, encoding: TextEncoding) {
-    let (base, changes) = history(seed, 1_500);
-    agrees_with_upstream(seed, &base, &changes, Replica { diff, encoding });
+fn agrees(seed: u64, diff: bool, encoding: TextEncoding) -> History {
+    let history = history(seed, 1_500);
+    let replica = Replica { diff, encoding };
+    agrees_with_upstream(seed, &history.base, &history.changes, replica);
+    history
 }
 
 #[test]
 fn incoming_sequence_changes_match_upstream() {
+    let mut refused = 0;
     for seed in 1..=6 {
-        agrees(seed, false, TextEncoding::UnicodeCodePoint);
+        let h = agrees(seed, false, TextEncoding::UnicodeCodePoint);
+        refused += refuses_only_what_upstream_corrupts(seed, &h);
     }
+    assert!(refused > 0, "no forged change was refused");
 }
 
 #[test]

@@ -1,0 +1,10 @@
+# The app's public surface, written by `tilo-app surface`: its resources' verbs
+# and stored fields. Review changes to it like an API change; `tilo-app check`
+# fails when the code and this file disagree.
+
+[[resources]]
+fields = []
+kind = "passwords.vault"
+label = "Password vault"
+verbs = []
+version = 1

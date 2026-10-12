@@ -45,6 +45,9 @@ pub struct AuthorDirectory {
     /// `avatar_color`). Wins over [`crate::presence::user_color`] for
     /// that identity, matching [`crate::presence::PresenceCtx::color_for`].
     color_overrides: HashMap<String, (u8, u8, u8)>,
+    /// The principal of whoever reads the history, whose own changes read
+    /// as theirs.
+    reader: Option<String>,
 }
 
 impl AuthorDirectory {
@@ -99,6 +102,80 @@ impl AuthorDirectory {
         }
     }
 
+    /// Name the principal reading the history: their own changes read as
+    /// "You". Without one, the person this thread's app runs for
+    /// ([`read_as`]).
+    pub fn set_reader(&mut self, principal: impl Into<String>) {
+        self.reader = Some(principal.into());
+    }
+
+    fn reader(&self) -> Option<String> {
+        self.reader
+            .clone()
+            .or_else(|| THREAD_READER.with(|reader| reader.borrow().clone()))
+    }
+
+    /// Who wrote a change, by the authenticated invoker its entry records
+    /// (the writing actor only when it names nobody): its name, the person
+    /// it acted for, and who it is to the reader.
+    pub fn resolve_entry(
+        &self,
+        actor_hex: &str,
+        entry: Option<&tilo_actions::ActionContext>,
+    ) -> HistoryAuthor {
+        use crate::widget::history::AuthorRelation;
+        let reader = self.reader();
+        let Some(invoker) = entry.and_then(|entry| entry.invoker.as_ref()) else {
+            let author = self.resolve(actor_hex);
+            let reads = actor_handle(actor_hex)
+                .is_some_and(|handle| reader.as_deref() == Some(handle.as_str()));
+            return if reads {
+                author.with_relation(AuthorRelation::Reader)
+            } else {
+                author
+            };
+        };
+        // The person's own writer names them as the directory knows them;
+        // anyone else by their principal, without its namespace.
+        let author = if self.is_registered(actor_hex)
+            && actor_handle(actor_hex).as_deref() == Some(invoker.actor.as_str())
+        {
+            self.resolve(actor_hex)
+        } else {
+            let principal = hex::encode(invoker.actor.as_bytes());
+            let mut author = self.resolve(&principal);
+            if !self.is_registered(&principal) {
+                author.name = principal_name(&invoker.actor);
+            }
+            author
+        };
+        let reads = reader.as_deref() == Some(invoker.actor.as_str());
+        let relation = if reads {
+            AuthorRelation::Reader
+        } else if invoker.kind.acts_for_someone() {
+            AuthorRelation::Software
+        } else {
+            AuthorRelation::Person
+        };
+        let for_person = invoker
+            .on_behalf_of
+            .as_deref()
+            .map(|person| self.resolve(&hex::encode(person.as_bytes())).name);
+        let for_reader = reader.is_some() && reader == invoker.on_behalf_of;
+        let name = crate::history_source::sentence::with_reader(|words| {
+            words.actor(&tilo_history::Who {
+                actor: &author.name,
+                kind: invoker.kind,
+                for_person: for_person.as_deref(),
+                for_reader,
+                is_reader: reads,
+            })
+        });
+        let mut author = author.with_relation(relation);
+        author.name = name;
+        author
+    }
+
     /// Seed or replace this identity's colour so history agrees with
     /// [`crate::presence::PresenceCtx::color_for`].
     pub fn set_color_override(&mut self, identity: impl Into<String>, rgb: (u8, u8, u8)) {
@@ -137,6 +214,30 @@ impl AuthorDirectory {
 
     pub fn is_empty(&self) -> bool {
         self.by_actor.is_empty()
+    }
+}
+
+thread_local! {
+    static THREAD_READER: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+}
+
+/// The principal of the person this thread's app runs for: whose changes
+/// every history read on this thread shows as theirs.
+pub fn read_as(principal: &str) {
+    THREAD_READER.with(|reader| *reader.borrow_mut() = Some(principal.to_owned()));
+}
+
+/// A principal's name without its namespace (`agent:claude` → `claude`).
+fn principal_name(principal: &str) -> String {
+    let name = ["agent:", "shortcut:", "app:"]
+        .iter()
+        .find_map(|prefix| principal.trim().strip_prefix(prefix))
+        .unwrap_or(principal)
+        .trim();
+    if name.is_empty() {
+        UNKNOWN_AUTHOR_NAME.to_owned()
+    } else {
+        name.to_owned()
     }
 }
 
@@ -251,6 +352,34 @@ pub fn device_actor(handle: &str, device: &automerge::ActorId) -> Vec<u8> {
     let mut actor = format!("{handle}{DEVICE_SEPARATOR}").into_bytes();
     actor.extend(hex::encode(digest.get(..4).unwrap_or_default()).into_bytes());
     actor
+}
+
+/// The actors a device writes as, to tell its changes apart: its record
+/// writer, and the [`device_actor`] of any handle on it.
+#[derive(Clone, Debug)]
+pub struct DeviceActors {
+    writer: String,
+    suffix: Vec<u8>,
+}
+
+impl DeviceActors {
+    /// The actors of the device whose record writer is `device`.
+    pub fn of(device: &automerge::ActorId) -> Self {
+        use sha2::Digest as _;
+        let digest = sha2::Sha256::digest(device.to_bytes());
+        let mut suffix = vec![DEVICE_SEPARATOR as u8];
+        suffix.extend(hex::encode(digest.get(..4).unwrap_or_default()).into_bytes());
+        Self {
+            writer: device.to_hex_string(),
+            suffix,
+        }
+    }
+
+    /// Whether the actor `actor_hex` wrote from this device.
+    pub fn wrote(&self, actor_hex: &str) -> bool {
+        actor_hex == self.writer
+            || hex::decode(actor_hex).is_ok_and(|bytes| bytes.ends_with(&self.suffix))
+    }
 }
 
 /// The bare handle's actor of a [`device_actor`], hex-encoded.

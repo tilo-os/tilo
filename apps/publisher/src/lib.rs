@@ -27,8 +27,10 @@ use ui::secrets::SecretStore;
 use ui::widget::{BannerKind, Field};
 
 /// What to apply for, and where. Stored, synced and undoable; the key is not
-/// part of it.
+/// part of it. Each field is edited at its path; the registry must stay an
+/// address the client accepts, however it is changed.
 #[derive(Model, Debug, Clone, PartialEq)]
+#[model(check = Publisher::valid)]
 pub struct Publisher {
     /// The registry the key publishes to.
     pub registry: String,
@@ -51,38 +53,15 @@ impl Default for Publisher {
     }
 }
 
-#[resource(kind = "so.tilo.publisher.profile", label = "App Publisher")]
+#[resource(kind = "publisher.profile", label = "App Publisher")]
+impl Publisher {}
+
 impl Publisher {
-    /// Change the registry to publish to.
-    #[action]
-    pub fn set_registry(
-        &mut self,
-        #[param("Registry URL")] registry: String,
-    ) -> Result<(), String> {
-        RegistryClient::validate_url(&registry).map_err(|error| error.to_string())?;
-        self.registry = registry;
-        Ok(())
-    }
-
-    /// Change the domain to claim.
-    #[action]
-    pub fn set_domain(&mut self, #[param("Domain, such as example.com")] domain: String) {
-        self.domain = domain;
-    }
-
-    /// Change the forge account to claim.
-    #[action]
-    pub fn set_forge_account(
-        &mut self,
-        #[param("Forge account, such as github:ada")] account: String,
-    ) {
-        self.forge_account = account;
-    }
-
-    /// Change the contact address.
-    #[action]
-    pub fn set_contact(&mut self, #[param("Contact address")] contact: String) {
-        self.contact = contact;
+    /// The registry is HTTPS or this machine.
+    fn valid(&self) -> Result<(), Refusal> {
+        RegistryClient::validate_url(&self.registry)
+            .map(drop)
+            .map_err(|error| Refusal::new(error.to_string()))
     }
 }
 
@@ -175,12 +154,12 @@ struct Pane {
 #[effect(operation = "so.tilo.publisher.key", device_only)]
 pub enum KeyEffect {
     /// Create publisher key.
-    #[effect(privileged, permission = "admin")]
+    #[effect(privileged)]
     CreateKey,
     /// Copy namespace proof.
     CopyProof,
     /// Copy key for CI.
-    #[effect(privileged, permission = "admin")]
+    #[effect(privileged)]
     CopySecret,
     /// Apply for namespaces.
     #[effect(job)]
@@ -395,24 +374,20 @@ fn key_section(pane: &Pane, actions: &Actions<Publisher>) -> Element {
     Box::new(column)
 }
 
-/// The published namespace claims, bound to their canonical profile edits.
+/// The namespace claims, each input bound to its field.
 fn namespace_form(cx: &ViewCx<Publisher>) -> Column {
-    let registry = cx
-        .input(|profile| profile.registry.clone(), Publisher::SET_REGISTRY)
-        .with_id("registry-input");
+    let paths = cx.paths();
+    let registry = cx.input(paths.registry).with_id("registry-input");
     let domain = cx
-        .input(|profile| profile.domain.clone(), Publisher::SET_DOMAIN)
+        .input(paths.domain)
         .with_id("domain-input")
         .with_placeholder("publisher-domain-placeholder");
     let forge = cx
-        .input(
-            |profile| profile.forge_account.clone(),
-            Publisher::SET_FORGE_ACCOUNT,
-        )
+        .input(paths.forge_account)
         .with_id("forge-input")
         .with_placeholder("publisher-forge-placeholder");
     let contact = cx
-        .input(|profile| profile.contact.clone(), Publisher::SET_CONTACT)
+        .input(paths.contact)
         .with_id("contact-input")
         .with_placeholder("publisher-contact-placeholder");
     ui::column![
@@ -456,11 +431,15 @@ impl ResourceApp for App {
         if name == Some("no-key") {
             return Vec::new();
         }
-        vec![
-            Publisher::SET_DOMAIN.with("lovelace.dev".into()),
-            Publisher::SET_FORGE_ACCOUNT.with("codeberg:ada".into()),
-            Publisher::SET_CONTACT.with("ada@lovelace.dev".into()),
+        let paths = Publisher::paths();
+        [
+            paths.domain.replace("lovelace.dev"),
+            paths.forge_account.replace("codeberg:ada"),
+            paths.contact.replace("ada@lovelace.dev"),
         ]
+        .iter()
+        .filter_map(|edit| Invoke::edit(edit).ok())
+        .collect()
     }
 
     fn view(cx: &mut ViewCx<Publisher>) -> Element {

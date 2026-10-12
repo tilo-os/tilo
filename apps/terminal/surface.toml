@@ -1,0 +1,509 @@
+# The app's public surface, written by `tilo-app surface`: its resources' verbs
+# and stored fields. Review changes to it like an API change; `tilo-app check`
+# fails when the code and this file disagree.
+
+[[resources]]
+kind = "terminal.session"
+label = "Terminal"
+version = 1
+
+[[resources.fields]]
+owner = "terminal"
+path = "target"
+readonly = true
+stored = "value"
+title = "Where the session runs"
+type = "Option<Atom>"
+
+[[resources.fields]]
+owner = "terminal"
+path = "relay_session"
+readonly = true
+stored = "value"
+title = "Relay session"
+type = "Option<Atom>"
+
+[[resources.fields]]
+owner = "terminal"
+path = "pane"
+readonly = true
+stored = "value"
+title = "Pane"
+type = "Option<Atom>"
+
+[[resources.fields]]
+owner = "terminal"
+path = "runs"
+readonly = true
+stored = "collection"
+title = "Runs"
+type = "Collection<Run>"
+
+[[resources.fields]]
+label = true
+owner = "run"
+path = "runs.*.command"
+stored = "value"
+title = "Command"
+type = "Atom"
+
+[[resources.fields]]
+owner = "run"
+path = "runs.*.cwd"
+stored = "value"
+title = "Working directory"
+type = "Atom"
+
+[[resources.fields]]
+owner = "run"
+path = "runs.*.environment"
+stored = "value"
+title = "Where it ran: the session's encoded target"
+type = "Option<Atom>"
+
+[[resources.fields]]
+owner = "run"
+path = "runs.*.actor"
+stored = "value"
+title = "Who ran it: the person at the keyboard, or whoever asked with `run`"
+type = "Atom"
+
+[[resources.fields]]
+owner = "run"
+path = "runs.*.for_person"
+stored = "value"
+title = "The person an agent ran it for"
+type = "Option<Atom>"
+
+[[resources.fields]]
+owner = "run"
+path = "runs.*.started_ms"
+stored = "value"
+title = "Started, in milliseconds since the Unix epoch"
+type = "i64"
+
+[[resources.fields]]
+owner = "run"
+path = "runs.*.ended_ms"
+stored = "value"
+title = "Ended, in milliseconds since the Unix epoch"
+type = "i64"
+
+[[resources.fields]]
+owner = "run"
+path = "runs.*.exit"
+stored = "value"
+title = "Exit status"
+type = "i32"
+
+[[resources.fields]]
+owner = "run"
+path = "runs.*.output"
+stored = "value"
+title = "Everything it printed, escape sequences included"
+type = "Bytes"
+
+[[resources.fields]]
+owner = "run"
+path = "runs.*.truncated"
+stored = "value"
+title = "It printed more than the output keeps"
+type = "bool"
+
+[[resources.fields]]
+owner = "run"
+path = "runs.*.tool"
+stored = "value"
+title = "The tool whose parser read it"
+type = "Atom"
+
+[[resources.fields]]
+owner = "run"
+path = "runs.*.items"
+stored = "value"
+title = "What its parsers found"
+type = "Vec<RunItem>"
+
+[[resources.fields]]
+owner = "terminal"
+path = "requests"
+readonly = true
+stored = "value"
+title = "Commands asked to run"
+type = "Outbox<RunRequest, RunAnswer>"
+
+[[resources.verbs]]
+description = "Types it into the session's shell, on the device that runs the session, and answers with the run once it ends."
+id = "run"
+kind = "outside"
+label = "Run a command line in the session"
+
+[[resources.verbs.params]]
+name = "command"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs]]
+id = "rerun"
+kind = "outside"
+label = "Run a run's command line again"
+
+[[resources.verbs.params]]
+name = "runs"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs]]
+id = "rerun-test"
+kind = "outside"
+label = "Run one test of a run again, the way its tool runs one test"
+
+[[resources.verbs.params]]
+name = "runs"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "test"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs]]
+id = "record-run"
+kind = "undoable"
+label = "Record a run that ended"
+
+[[resources.verbs.params]]
+name = "command"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "cwd"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "started_ms"
+required = true
+
+[resources.verbs.params.schema]
+type = "integer"
+
+[[resources.verbs.params]]
+name = "ended_ms"
+required = true
+
+[resources.verbs.params.schema]
+type = "integer"
+
+[[resources.verbs.params]]
+name = "exit"
+required = true
+
+[resources.verbs.params.schema]
+maximum = 2147483647
+minimum = -2147483648
+type = "integer"
+
+[[resources.verbs.params]]
+name = "output"
+required = false
+
+[resources.verbs.params.schema]
+type = [
+    "string",
+    "null",
+]
+
+[[resources.verbs.params]]
+name = "output_len"
+required = true
+
+[resources.verbs.params.schema]
+minimum = 0
+type = "integer"
+
+[[resources.verbs.params]]
+name = "truncated"
+required = true
+
+[resources.verbs.params.schema]
+type = "boolean"
+
+[[resources.verbs.params]]
+name = "tool"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "items"
+required = true
+
+[resources.verbs.params.schema]
+type = "array"
+
+[resources.verbs.params.schema.items]
+additionalProperties = false
+description = "One thing a parser found in a run's output: a diagnostic, a location, a link, a test, a changed file."
+required = [
+    "kind",
+    "text",
+]
+type = "object"
+
+[resources.verbs.params.schema.items.properties.code]
+description = "A diagnostic's code, a test's name, a change's status."
+type = [
+    "string",
+    "null",
+]
+
+[resources.verbs.params.schema.items.properties.column]
+maximum = 4294967295
+minimum = 0
+type = [
+    "integer",
+    "null",
+]
+
+[resources.verbs.params.schema.items.properties.kind]
+description = "What it is."
+enum = [
+    "error",
+    "warning",
+    "location",
+    "url",
+    "test-passed",
+    "test-failed",
+    "test-ignored",
+    "change",
+]
+type = "string"
+
+[resources.verbs.params.schema.items.properties.line]
+maximum = 4294967295
+minimum = 0
+type = [
+    "integer",
+    "null",
+]
+
+[resources.verbs.params.schema.items.properties.path]
+description = "The file it is in, or the URL."
+type = [
+    "string",
+    "null",
+]
+
+[resources.verbs.params.schema.items.properties.text]
+description = "What the output says about it."
+type = "string"
+
+[[resources.verbs.params]]
+name = "request"
+required = false
+
+[resources.verbs.params.schema]
+type = [
+    "string",
+    "null",
+]
+
+[[resources.verbs.params]]
+name = "run"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs]]
+id = "record-target"
+kind = "undoable"
+label = "Record where the session runs"
+
+[[resources.verbs.params]]
+name = "target"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs]]
+id = "record-relay-session"
+kind = "undoable"
+label = "Record the relay session this session re-attaches to, or forget it"
+
+[[resources.verbs.params]]
+name = "session"
+required = false
+
+[resources.verbs.params.schema]
+type = [
+    "string",
+    "null",
+]
+
+[[resources.verbs]]
+id = "claim-pane"
+kind = "undoable"
+label = "Scope presence to a new process's pane"
+
+[[resources.verbs.params]]
+name = "pane"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources]]
+kind = "terminal.history"
+label = "Command history"
+person = true
+version = 1
+
+[[resources.fields]]
+owner = "command-history"
+path = "runs"
+readonly = true
+stored = "collection"
+title = "Runs, oldest first. Only the sessions that ran them add them"
+type = "Collection<Remembered>"
+
+[[resources.fields]]
+label = true
+owner = "remembered"
+path = "runs.*.command"
+stored = "value"
+title = "Command"
+type = "Atom"
+
+[[resources.fields]]
+owner = "remembered"
+path = "runs.*.cwd"
+stored = "value"
+title = "Working directory"
+type = "Atom"
+
+[[resources.fields]]
+owner = "remembered"
+path = "runs.*.environment"
+stored = "value"
+title = "Where it ran: the session's encoded target"
+type = "Option<Atom>"
+
+[[resources.fields]]
+owner = "remembered"
+path = "runs.*.exit"
+stored = "value"
+title = "Exit status"
+type = "i32"
+
+[[resources.fields]]
+owner = "remembered"
+path = "runs.*.ended_ms"
+stored = "value"
+title = "Ended, in milliseconds since the Unix epoch"
+type = "i64"
+
+[[resources.fields]]
+owner = "remembered"
+path = "runs.*.actor"
+stored = "value"
+title = "Who ran it"
+type = "Atom"
+
+[[resources.fields]]
+owner = "remembered"
+path = "runs.*.session"
+stored = "value"
+title = "The session that ran it: its record's address"
+type = "Atom"
+
+[[resources.fields]]
+owner = "remembered"
+path = "runs.*.run"
+stored = "value"
+title = "The run, an item of the session's `runs`"
+type = "Id"
+
+[[resources.verbs]]
+description = "The terminal keeping the person's history, not an edit of theirs to take back."
+id = "remember"
+kind = "undoable"
+label = "Remember a run a session recorded"
+
+[[resources.verbs.params]]
+name = "command"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "cwd"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "environment"
+required = false
+
+[resources.verbs.params.schema]
+type = [
+    "string",
+    "null",
+]
+
+[[resources.verbs.params]]
+name = "exit"
+required = true
+
+[resources.verbs.params.schema]
+maximum = 2147483647
+minimum = -2147483648
+type = "integer"
+
+[[resources.verbs.params]]
+name = "ended_ms"
+required = true
+
+[resources.verbs.params.schema]
+type = "integer"
+
+[[resources.verbs.params]]
+name = "actor"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "session"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "run"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"

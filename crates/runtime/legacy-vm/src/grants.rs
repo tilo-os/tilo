@@ -14,7 +14,7 @@
 use std::path::{Path, PathBuf};
 
 use collab_types::caps::{
-    Actor, CapDecision, CapOverride, Effect, Principal, ResourceRef, Scope, Subject, Verb,
+    Access, Actor, CapDecision, CapOverride, Effect, Principal, ResourceRef, Scope, Subject,
     decide_capability,
 };
 use legacy_agent_protocol::{GuestShare, share_path_allowed};
@@ -101,7 +101,11 @@ impl Grants {
             CapOverride::grant(
                 Subject::Principal(Principal::App(LEGACY_APP_ID.to_string())),
                 Scope::FsPath(raw),
-                if read_only { Verb::Read } else { Verb::Write },
+                if read_only {
+                    Access::Read
+                } else {
+                    Access::Write
+                },
             )
             .with_id(id.clone())
             .granted_by(Principal::Person("local".to_string())),
@@ -141,12 +145,12 @@ impl Grants {
                 decide_capability(&actor, &resource, verb, &self.capabilities, now)
                     == CapDecision::Allow
             };
-            if allows(Verb::Write) {
+            if allows(Access::Write) {
                 out.push(HostShare {
                     path,
                     read_only: false,
                 });
-            } else if allows(Verb::Read) {
+            } else if allows(Access::Read) {
                 out.push(HostShare {
                     path,
                     read_only: true,
@@ -205,7 +209,7 @@ mod tests {
             grants.capabilities.push(CapOverride::grant(
                 Subject::Principal(Principal::App("so.tilo.ush".into())),
                 Scope::FsPath("/var/home/you/other".into()),
-                Verb::Write,
+                Access::Write,
             ));
             assert!(grants.shares(Some(0)).is_empty());
         }
@@ -217,7 +221,7 @@ mod tests {
                 Subject::Principal(Principal::App(LEGACY_APP_ID.into())),
                 Scope::FsPath("/var/home/you/src".into()),
                 Effect::Restrict,
-                Verb::Read,
+                Access::Read,
             ));
             assert!(grants.shares(Some(0))[0].read_only);
             assert!(grants.revoke("/var/home/you/src"));

@@ -43,14 +43,6 @@ use ui::widget::{NavMode, SearchField};
 use ui::{AppKind, AppWidget, IconDescriptor};
 const MEASURE: f32 = ui::tokens::Metrics::BASE.panel_width_sheet;
 
-/// At or above this allocated width (logical px) the sidebar docks beside the
-/// content; below it the shell switches to the narrow list-vs-content screens.
-/// The toolkit's `compact_breakpoint` (HIG §9.6): a typical settings window is
-/// docked while a narrow / split-screen placement gets the phone layout. At a
-/// large-text preference the live breakpoint is this times the text scale
-/// (see `SettingsApp::build_shell`).
-pub const NAV_BREAKPOINT: f64 = ui::tokens::Metrics::BASE.compact_breakpoint as f64;
-
 /// One scroller's offset, shared with every scroller rebuilt in its place.
 type ScrollOffset = std::rc::Rc<std::cell::Cell<(f32, f32)>>;
 
@@ -246,6 +238,16 @@ impl SettingsApp {
         self.sidebar_selection.set(Some(category));
     }
 
+    /// Open the pane a search hit or an agent's `open` names by its row.
+    pub(crate) fn opener(&self) -> impl FnMut(&str) + 'static {
+        let selection = self.sidebar_selection.clone();
+        move |anchor| {
+            if let Some(category) = crate::effects::pane_of_row(anchor) {
+                selection.set(Some(category));
+            }
+        }
+    }
+
     /// Switch the active category. Flags `structure_dirty`, swaps the shell's
     /// nav + content, and (on a narrow layout) navigates from the list screen
     /// to the selected category's content screen.
@@ -384,11 +386,13 @@ impl SettingsApp {
             self.account_root = self.account_root.clone().with_person(record);
             // What the device's file held before it followed the record is
             // taken in once; then the services outside any app read the file
-            // as the record's projection.
-            if let Err(error) = self
-                .account_root
-                .take_in_device_accounts()
-                .and_then(|()| self.account_root.project())
+            // as the record's projection. A window that does not reach this
+            // device (a test's) leaves the device's file alone.
+            if cx.reaches_devices()
+                && let Err(error) = self
+                    .account_root
+                    .take_in_device_accounts()
+                    .and_then(|()| self.account_root.project())
             {
                 tracing::warn!(%error, "the device's account file could not follow the person's accounts");
             }

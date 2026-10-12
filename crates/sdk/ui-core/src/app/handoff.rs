@@ -156,15 +156,7 @@ impl App {
     /// A retired document is history: whoever holds it may still read it,
     /// nobody edits it here any more.
     fn stop_editing_retired_document(&mut self) {
-        let viewer = |current: &crate::permissions::PermissionContext| {
-            crate::permissions::PermissionContext::from_capabilities(
-                crate::permissions::Actor::person(
-                    Some(crate::permissions::Role::Viewer),
-                    current.user().0.clone(),
-                ),
-                Vec::new(),
-            )
-        };
+        let viewer = crate::permissions::PermissionContext::read_only;
         if let Some(sync) = self.actions.bound_record_sync.as_ref() {
             let read_only = viewer(&sync.binding.permissions.borrow());
             *sync.binding.permissions.borrow_mut() = read_only;

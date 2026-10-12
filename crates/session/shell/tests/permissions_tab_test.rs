@@ -28,8 +28,8 @@ use shell::shell::build_tilo_overlay_host_with_chrome;
 use shell::shell::chrome_state::{Chrome, WsTab};
 use shell::shell::overlay_host::ShellOverlayHost;
 use shell::shell::state::{
-    CapOverride, Capability, Expiry, GRANT_ALWAYS, GRANT_SESSION, ResourceRef, Scope, Subject,
-    Verb, Workspace, WorkspaceId, WorkspaceTree,
+    Access, CapOverride, Capability, Expiry, GRANT_ALWAYS, GRANT_SESSION, ResourceRef, Scope,
+    Subject, Workspace, WorkspaceId, WorkspaceTree,
 };
 use tilo_desktop::workspace_settings::{self, GrantDraft, SubjectKind};
 
@@ -112,11 +112,14 @@ fn tree_with_members() -> WorkspaceTree {
     let mut ws = Workspace::new(id, "perm-test");
     let owner = shell::shell::state::local_user_id_for_room(&ws.room);
     ws.set_owner(owner.clone());
-    let room = ws.id.raw().to_string();
-    for (person, verb) in [("ada", Verb::Read), ("bo", Verb::Read)] {
-        ws.grant_as(
+    for person in ["ada", "bo"] {
+        ws.govern_as_at(
             &owner,
-            CapOverride::membership(Subject::person(person), room.clone(), verb),
+            tilo_action_policy::Change::AddMember {
+                person: person.into(),
+                role: tilo_action_policy::Role::Viewer,
+            },
+            tilo_clock::unix_now(),
         )
         .expect("the owner may write a membership");
     }
@@ -130,8 +133,30 @@ fn capabilities(chrome: &Chrome) -> Vec<CapOverride> {
     let tree = st.tree();
     tree.desktop
         .active_workspace()
-        .map(|ws| ws.capabilities.clone())
+        .map(|ws| ws.sandbox.clone())
         .unwrap_or_default()
+}
+
+/// The active workspace's whole authority: its policy and its sandbox.
+fn authority(chrome: &Chrome) -> (Option<tilo_action_policy::RoomPolicy>, Vec<CapOverride>) {
+    let st = chrome.borrow();
+    let tree = st.tree();
+    (
+        tree.desktop.active_workspace().map(|ws| ws.policy.clone()),
+        tree.desktop
+            .active_workspace()
+            .map(|ws| ws.sandbox.clone())
+            .unwrap_or_default(),
+    )
+}
+
+/// Whether `person` may change the active room's contents outright.
+fn may_change(ws: &Workspace, person: &str) -> bool {
+    ws.person_allowed(
+        person,
+        &tilo_action_policy::TreePath::root(),
+        tilo_action_policy::ActionKind::Undoable,
+    )
 }
 
 // The Permissions tab is always reachable
@@ -322,7 +347,7 @@ fn grant_and_revoke_clicks_are_owner_only_and_deliberate() {
             assert!(!ws.allows(
                 &ws.actor_for_app("firefox"),
                 &ResourceRef::Device("microphone".into()),
-                Verb::Read
+                Access::Read
             ));
         }
 
@@ -336,12 +361,12 @@ fn grant_and_revoke_clicks_are_owner_only_and_deliberate() {
             ws.allows(
                 &ws.actor_for_app("firefox"),
                 &ResourceRef::Device("microphone".into()),
-                Verb::Read
+                Access::Read
             ),
             "the grant must start working, not merely start rendering"
         );
         let written = ws
-            .capabilities
+            .sandbox
             .iter()
             .find(|c| matches!(&c.scope, Scope::Device(d) if d == "microphone"))
             .expect("the capability is on the workspace");
@@ -505,14 +530,10 @@ fn members_tab_role_and_removal_controls_are_explicit_and_owner_only() {
             let t = st.tree();
             let ws = t.desktop.active_workspace().unwrap();
             assert_eq!(
-                ws.role_of(&"ada".to_string()),
+                ws.role_of("ada"),
                 Some(shell::shell::state::CapRole::Viewer)
             );
-            assert!(!ws.allows(
-                &ws.actor_for_person(&"ada".to_string()),
-                &ResourceRef::Workspace,
-                Verb::Write
-            ));
+            assert!(!may_change(ws, "ada"));
         }
 
         // Opening the chooser is inert; selecting Editor is the deliberate
@@ -543,15 +564,11 @@ fn members_tab_role_and_removal_controls_are_explicit_and_owner_only() {
         let t = st.tree();
         let ws = t.desktop.active_workspace().unwrap();
         assert_eq!(
-            ws.role_of(&"ada".to_string()),
+            ws.role_of("ada"),
             Some(shell::shell::state::CapRole::Editor)
         );
         assert!(
-            ws.allows(
-                &ws.actor_for_person(&"ada".to_string()),
-                &ResourceRef::Workspace,
-                Verb::Write
-            ),
+            may_change(ws, "ada"),
             "promoting to Editor must actually grant write authority"
         );
     }
@@ -572,7 +589,7 @@ fn members_tab_role_and_removal_controls_are_explicit_and_owner_only() {
                 CapOverride::grant(
                     Subject::person("ada"),
                     Scope::FsPath("/var/workspace".into()),
-                    Verb::Write,
+                    Access::Write,
                 ),
             )
             .expect("the owner may grant");
@@ -600,12 +617,12 @@ fn members_tab_role_and_removal_controls_are_explicit_and_owner_only() {
         let st = chrome.borrow();
         let t = st.tree();
         let ws = t.desktop.active_workspace().unwrap();
-        assert_eq!(ws.role_of(&"ada".to_string()), None, "no longer a member");
+        assert_eq!(ws.role_of("ada"), None, "no longer a member");
         assert!(
             !ws.allows(
                 &ws.actor_for_person(&"ada".to_string()),
                 &ResourceRef::FsPath("/var/workspace/notes".into()),
-                Verb::Write
+                Access::Write
             ),
             "removal must revoke what they held, not just hide the row"
         );
@@ -616,7 +633,7 @@ fn members_tab_role_and_removal_controls_are_explicit_and_owner_only() {
         let tree = tree_with_members();
         let (mut host, chrome, _scene) = render_at_tab(&tree, WsTab::Members);
         chrome.borrow_mut().test_only_owner_override = Some(false);
-        let before = capabilities(&chrome);
+        let before = authority(&chrome);
         let rows = host.member_control_rects().to_vec();
         assert!(!rows.is_empty());
 
@@ -626,7 +643,7 @@ fn members_tab_role_and_removal_controls_are_explicit_and_owner_only() {
         }
 
         assert_eq!(
-            capabilities(&chrome),
+            authority(&chrome),
             before,
             "a non-owner driving the member controls must change nothing"
         );
@@ -634,23 +651,48 @@ fn members_tab_role_and_removal_controls_are_explicit_and_owner_only() {
 
     // Phase `a_delegated_admin_can_change_roles_through_the_same_check`.
     {
-        // Administration delegated as a capability, not ownership: the
-        // click must pass the same capability check `member.role.set` does.
+        // Administration delegated as a grant, not ownership: the click
+        // must pass the same check `member.role.set` does.
         let mut tree = WorkspaceTree::default();
         let id = WorkspaceId::from(1);
         let mut ws = Workspace::new(id, "perm-test");
         let local = shell::shell::state::local_user_id_for_room(&ws.room);
         let owner = "someone-else".to_string();
         ws.set_owner(owner.clone());
-        let room = ws.room.to_string();
-        ws.grant_as(
+        let now = tilo_clock::unix_now();
+        ws.govern_as_at(
             &owner,
-            CapOverride::membership(Subject::person(local), room.clone(), Verb::Admin),
+            tilo_action_policy::Change::AddMember {
+                person: local.clone(),
+                role: tilo_action_policy::Role::Editor,
+            },
+            now,
+        )
+        .expect("the owner admits the delegate");
+        let set_role = tilo_action_policy::roles::governance_action(
+            &ws.room.to_string(),
+            tilo_action_policy::roles::governance::SET_ROLE,
+        );
+        ws.govern_as_at(
+            &owner,
+            tilo_action_policy::Change::Grant(tilo_action_policy::Grant::new(
+                "delegate-set-role",
+                tilo_action_policy::Subject::person(local),
+                set_role,
+                tilo_action_policy::KindSet::ALL,
+                tilo_action_policy::Answer::Allow,
+                tilo_action_policy::Subject::person(owner.clone()),
+            )),
+            now,
         )
         .expect("the owner may delegate administration");
-        ws.grant_as(
+        ws.govern_as_at(
             &owner,
-            CapOverride::membership(Subject::person("ada"), room, Verb::Read),
+            tilo_action_policy::Change::AddMember {
+                person: ("ada").to_string(),
+                role: tilo_action_policy::Role::Viewer,
+            },
+            tilo_clock::unix_now(),
         )
         .expect("the owner may write a membership");
         tree.desktop.workspaces.push(ws);
@@ -672,10 +714,7 @@ fn members_tab_role_and_removal_controls_are_explicit_and_owner_only() {
         let st = chrome.borrow();
         let t = st.tree();
         assert_eq!(
-            t.desktop
-                .active_workspace()
-                .unwrap()
-                .role_of(&"ada".to_string()),
+            t.desktop.active_workspace().unwrap().role_of("ada"),
             Some(shell::shell::state::CapRole::Editor),
             "a delegated administrator's choice takes effect"
         );
@@ -701,12 +740,12 @@ fn members_tab_role_and_removal_controls_are_explicit_and_owner_only() {
             .find(|(u, _, _)| *u == owner)
             .cloned()
             .expect("the owner is in the roster");
-        let before = capabilities(&chrome);
+        let before = authority(&chrome);
 
         click(&mut host, row.1);
         click(&mut host, row.2);
 
-        assert_eq!(capabilities(&chrome), before);
+        assert_eq!(authority(&chrome), before);
         let st = chrome.borrow();
         let t = st.tree();
         assert_eq!(
@@ -730,18 +769,23 @@ fn an_app_allowed_another_apps_action_is_listed_under_app_actions_and_revocable(
     let mut ws = Workspace::new(id, "perm-test");
     let owner = shell::shell::state::local_user_id_for_room(&ws.room);
     ws.set_owner(owner.clone());
-    let freeform = Scope::Action {
-        app: "so.tilo.agent".into(),
-        resource: "agent.transform:freeform".into(),
-        action: "freeform".into(),
-    };
-    let granted = ws
-        .grant_as(
-            &owner,
-            CapOverride::grant(Subject::app("so.tilo.shortcuts"), freeform, Verb::Write),
-        )
-        .expect("the owner may grant");
-    let room = ws.room.to_string();
+    let granted = workspace_settings::apply_governance(
+        &mut ws,
+        &owner,
+        workspace_settings::GovernanceOperation::GrantAppAction {
+            app: "so.tilo.shortcuts".into(),
+            target_app: "so.tilo.agent".into(),
+            resource: "agent.transform:freeform".into(),
+            action: "freeform".into(),
+            lifetime: "always".into(),
+        },
+        tilo_clock::unix_now(),
+    )
+    .expect("the owner may grant")
+    .edit
+    .granted[0]
+        .as_str()
+        .to_owned();
     tree.desktop.workspaces.push(ws);
     tree.set_active(id);
 
@@ -774,7 +818,9 @@ fn an_app_allowed_another_apps_action_is_listed_under_app_actions_and_revocable(
     click(&mut host, confirm);
 
     assert!(
-        !capabilities(&chrome).iter().any(|c| c.id == granted),
+        authority(&chrome)
+            .0
+            .is_some_and(|policy| policy.grants.iter().all(|g| g.id.as_str() != granted)),
         "revoking in Settings removes the grant"
     );
     let still_allowed = chrome
@@ -783,15 +829,18 @@ fn an_app_allowed_another_apps_action_is_listed_under_app_actions_and_revocable(
         .desktop
         .active_workspace()
         .is_some_and(|ws| {
-            ws.allows(
-                &shell::shell::state::Actor::app("so.tilo.shortcuts").in_room(room),
-                &ResourceRef::Action {
-                    app: "so.tilo.agent".into(),
-                    resource: "agent.transform:freeform".into(),
-                    action: "freeform".into(),
-                },
-                Verb::Write,
-            )
+            ws.subject_authority(tilo_action_policy::Subject::app("so.tilo.shortcuts"))
+                .decide(
+                    &ws.node()
+                        .app("so.tilo.agent")
+                        .kind("agent.transform")
+                        .resource("agent.transform:freeform")
+                        .action("freeform"),
+                    tilo_action_policy::ActionKind::Undoable,
+                    &tilo_desktop_model::context_at(tilo_clock::unix_now()),
+                )
+                .answer
+                == tilo_action_policy::Answer::Allow
         });
     assert!(!still_allowed, "the app may no longer use the action");
 }

@@ -425,6 +425,13 @@ client frames on the GPU and draws them on its presenting renderer from
 their textures; screenshots, recordings and renderers on other devices
 reach the same frames through the source, which reads them back on demand.
 
+## `vendor/automerge`: parse changes without applying them
+
+`Automerge::parse_changes(data)` parses and checksums the change chunks of an
+incremental save without applying them to a document, so a receiver reads
+each change's hash, message and dependencies (the signed claim of what each
+change is) before it decides to merge them.
+
 ## `vendor/vello/src/image_source.rs` (new), `lib.rs`, `wgpu_engine.rs`: images drawn from a texture
 
 `Renderer::draw_image_from(image, Some(ImageSource { texture, origin,
@@ -439,6 +446,34 @@ draws a client's dma-buf straight from its import with this one copy. The
 atlas texture gains `RENDER_ATTACHMENT` usage for it. A source takes
 precedence over an `override_image` texture for the same image.
 `Renderer::image_source_writes()` counts the writes and their bytes.
+
+## `vendor/vello_shaders/build.rs`, `vendor/vello/src/lib.rs`: shader fingerprint
+
+The build script also emits `SOURCE_FINGERPRINT`, an FNV-1a hash over every
+shader's name and WGSL text in name order, and vello re-exports it as
+`vello::SHADER_FINGERPRINT`. A `wgpu::PipelineCache` an app keeps across
+launches (`ui::pipeline_cache`) is keyed by it, so a cache filled by other
+shaders is never used. Nothing else reads it.
+
+## `vendor/vello/src/lib.rs`, `shaders.rs`, `wgpu_engine.rs`: deferred pipelines
+
+`Renderer::new_deferring(device, options, deferral)` registers every shader
+as `Renderer::new` does, but builds a pipeline before returning only when
+`deferral` allows. `PipelineDeferral::Unused` defers the registrations a full
+frame on the default path never dispatches: the three-level path-tag scan,
+the GPU draw reduce and leaf while the CPU draw prefix serves, the indirect
+path stages while the direct ones serve, the clip reduce and the sparse fine
+stage. `PipelineDeferral::All` defers every one, for a caller that rasterizes
+its frames another way. `start_deferred_pipelines` builds them in the
+background on the renderer's init threads, the default-path ones first and the
+largest of each group first, and runs a callback after the last. Before
+encoding, a render installs what the thread has finished. For a deferred
+pipeline it dispatches and that is not built yet, it waits for the thread, or
+builds it itself when no thread is running, so a dispatch never lacks its
+pipeline. On GL nothing is deferred (one context lock, see "one init thread
+on GL"). `Renderer::new` is unchanged except that the parallel initial build
+starts the longest shaders first. `deferred_pipelines()` reports what is
+pending and what a render had to build itself.
 
 ## zlink-macros
 
