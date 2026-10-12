@@ -49,6 +49,31 @@ class CheckAggregateTests(unittest.TestCase):
         self.bash = ("C:/Program Files/Git/bin/bash.exe" if os.name == "nt" else shutil.which("bash"))
         self.assertTrue(self.bash, "bash is required to observe the production aggregate")
 
+    def test_suite_admission_uses_completed_selection_and_explicit_cancellation(self):
+        job = section(self.workflow, "suites", 2)
+        match = re.search(r"(?m)^    if: \$\{\{ (.+) \}\}$", job)
+        self.assertIsNotNone(match, "observe the production job condition")
+
+        def admitted(select="success", required="true", cancelled=False):
+            expression = match[1].replace("!cancelled()", repr(not cancelled))
+            expression = expression.replace("needs.select.result", repr(select))
+            expression = expression.replace("needs.select.outputs.suites_required", repr(required))
+            expression = expression.replace("&&", " and ")
+            tree = ast.parse(expression, mode="eval")
+            allowed = (ast.Expression, ast.BoolOp, ast.And, ast.Compare, ast.Eq, ast.Constant)
+            self.assertTrue(all(isinstance(node, allowed) for node in ast.walk(tree)))
+            return eval(compile(tree, "production suite condition", "eval"), {"__builtins__": {}})
+
+        # The real non-compiling plan has security/native jobs skipped, but
+        # this job depends only on the successful selector and its suite list.
+        self.assertEqual(re.findall(r"needs\.([a-z_]+)\.", match[1]), ["select", "select"])
+        self.assertTrue(admitted())
+        self.assertFalse(admitted(cancelled=True))
+        for result in ("failure", "skipped", "cancelled", "running", ""):
+            self.assertFalse(admitted(select=result))
+        for required in ("false", "", "invalid"):
+            self.assertFalse(admitted(required=required))
+
     def test_compiler_cache_proxy_detection_cannot_download_an_unused_toolchain(self):
         package_env = section(section(self.workflow, "tapps", 2), "env", 4)
         self.assertRegex(package_env, r'(?m)^      RUSTUP_AUTO_INSTALL: "0"$')
@@ -442,7 +467,7 @@ class CheckAggregateTests(unittest.TestCase):
             self.doCleanups()
             self.setUp()
             job = section(self.workflow, "suites", 2)
-            self.assertIn("if: needs.select.outputs.suites_required == 'true'", job)
+            self.assertIn("if: ${{ !cancelled() && needs.select.result == 'success' && needs.select.outputs.suites_required == 'true' }}", job)
             self.assertIn("needs: [select]", job)
             self.assertIn("SUITES: ${{ needs.select.outputs.suites }}", job)
             self.assertIn("python3 tools/ci/suites.py run --jobs 2 $SUITES", job)
