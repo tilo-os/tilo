@@ -871,11 +871,7 @@ fn run_parsed(
     // instead of starting them after the compositor's first configure. Never
     // inside the event loop's `resumed`: see `prepare_native_renderer`.
     #[cfg(any(windows, target_os = "linux"))]
-    #[cfg_attr(
-        not(target_os = "linux"),
-        expect(unused_mut, reason = "only Linux opens the window early")
-    )]
-    let mut renderer = if opens_native_window(&args) {
+    let renderer = if opens_native_window(&args) {
         crate::app::prepare_native_renderer()
     } else {
         None
@@ -884,12 +880,6 @@ fn run_parsed(
     // the catalog verified and the fonts read.
     if opens_native_window(&args) {
         prepare_font_database_beside();
-    }
-    // And the window: on Wayland it exists, and the preparation configures
-    // its surface, while the app below constructs (`startup_window`).
-    #[cfg(target_os = "linux")]
-    if let Some(renderer) = renderer.as_mut() {
-        renderer.open_window_early();
     }
     match dispatch_definition(spec, &args)? {
         DefinitionDispatch::Native(app) => {
