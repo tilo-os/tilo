@@ -195,44 +195,63 @@ impl HistoryIndex {
             (0..self.indexed.len()).collect()
         };
         self.scanned = pool.len();
+        let terms: Vec<&str> = q.split_whitespace().collect();
         let hits: Vec<(usize, Tier)> = pool
             .into_iter()
             .filter_map(|at| {
                 self.indexed
                     .get(at)
-                    .and_then(|i| tier_of(i, q))
+                    .and_then(|i| tier_of(i, &terms))
                     .map(|t| (at, t))
             })
             .collect();
         q.clone_into(&mut self.last_query);
         self.candidates = hits.iter().map(|(at, _)| *at).collect();
 
-        let mut matches: Vec<Match> = hits
+        // Rank by index and copy out only the rows shown: on a short query
+        // every page matches, and cloning and fully sorting all of them is
+        // most of a keystroke's cost.
+        let mut ranked: Vec<(usize, Tier, f64)> = hits
             .into_iter()
             .filter_map(|(at, tier)| {
                 let entry = self.entries.get(at)?;
+                Some((at, tier, frecency(entry.visit_count, entry.last_visit, now)))
+            })
+            .collect();
+        let entries = &self.entries;
+        let order = |a: &(usize, Tier, f64), b: &(usize, Tier, f64)| {
+            let (url_a, url_b) = (
+                entries.get(a.0).map_or("", |e| e.url.as_str()),
+                entries.get(b.0).map_or("", |e| e.url.as_str()),
+            );
+            a.1.cmp(&b.1)
+                .then(b.2.total_cmp(&a.2))
+                .then(url_a.len().cmp(&url_b.len()))
+                .then(url_a.cmp(url_b))
+        };
+        if let Some(last) = limit.checked_sub(1)
+            && ranked.len() > limit
+        {
+            ranked.select_nth_unstable_by(last, order);
+            ranked.truncate(limit);
+        }
+        ranked.sort_unstable_by(order);
+        ranked.truncate(limit);
+        ranked
+            .into_iter()
+            .filter_map(|(at, tier, frecency)| {
                 Some(Match {
-                    frecency: frecency(entry.visit_count, entry.last_visit, now),
-                    entry: entry.clone(),
+                    frecency,
+                    entry: self.entries.get(at)?.clone(),
                     tier,
                 })
             })
-            .collect();
-        matches.sort_by(|a, b| {
-            a.tier
-                .cmp(&b.tier)
-                .then(b.frecency.total_cmp(&a.frecency))
-                .then(a.entry.url.len().cmp(&b.entry.url.len()))
-                .then(a.entry.url.cmp(&b.entry.url))
-        });
-        matches.truncate(limit);
-        matches
+            .collect()
     }
 }
 
-fn tier_of(item: &Indexed, q: &str) -> Option<Tier> {
-    let terms: Vec<&str> = q.split_whitespace().collect();
-    match terms.as_slice() {
+fn tier_of(item: &Indexed, terms: &[&str]) -> Option<Tier> {
+    match terms {
         [] => None,
         [one] => single_tier(item, one),
         many => {
