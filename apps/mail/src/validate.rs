@@ -65,6 +65,10 @@ pub fn validate_account<T: ProbeTransport + ?Sized>(
     cfg: &AccountConfig,
     transport: &T,
 ) -> ValidationState {
+    if cfg.import_pending {
+        return ValidationState::Invalid(crate::i18n::t("mail-import-sign-in-required"));
+    }
+
     if let Some((_, msg)) = cfg.validate().into_iter().next() {
         return ValidationState::Invalid(msg);
     }
@@ -376,6 +380,35 @@ mod live_probe {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pending_metadata_never_reaches_a_connection_probe() {
+        struct RefuseProbe(std::cell::Cell<usize>);
+        impl ProbeTransport for RefuseProbe {
+            fn imap_login(&self, _: &AccountConfig) -> Result<(), String> {
+                self.0.set(self.0.get() + 1);
+                Err("pending metadata must not open IMAP".into())
+            }
+            fn smtp_handshake(&self, _: &AccountConfig) -> Result<(), String> {
+                self.0.set(self.0.get() + 1);
+                Err("pending metadata must not open SMTP".into())
+            }
+        }
+        let config = AccountConfig {
+            import_pending: true,
+            ..good_cfg()
+        };
+        let probe = RefuseProbe(std::cell::Cell::new(0));
+        assert!(matches!(
+            validate_account(&config, &probe),
+            ValidationState::Invalid(_)
+        ));
+        assert_eq!(
+            probe.0.get(),
+            0,
+            "pending metadata must not open IMAP or SMTP"
+        );
+    }
 
     fn good_cfg() -> AccountConfig {
         AccountConfig {

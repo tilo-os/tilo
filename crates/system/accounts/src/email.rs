@@ -56,6 +56,10 @@ pub struct AccountConfig {
     /// (Gmail/Outlook) preset to [`AuthMethod::OAuth`].
     #[serde(default)]
     pub auth: AuthMethod,
+    /// Imported metadata must not reuse any existing secret or open a connection
+    /// until the person explicitly finishes this account's secure sign-in.
+    #[serde(default)]
+    pub import_pending: bool,
     /// Held only in memory: the secret lives in the [`crate::SecretVault`] and
     /// is injected at connect time, never written to the account store —
     /// hence `serde(skip)`.
@@ -76,6 +80,7 @@ impl Default for AccountConfig {
             smtp_tls: true,
             username: String::new(),
             auth: AuthMethod::Password,
+            import_pending: false,
             password: String::new(),
         }
     }
