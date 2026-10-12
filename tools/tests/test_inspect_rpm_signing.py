@@ -34,3 +34,7 @@ class ProbeTest(unittest.TestCase):
             report = PROBE.report({'TILO_RPM_SIGNING_FINGERPRINT': 'not-public-key-material'})
         self.assertIsNone(report['public_fingerprint']['value'])
         self.assertNotIn('not-public-key-material', str(report))
+
+
+if __name__ == '__main__':
+    unittest.main()

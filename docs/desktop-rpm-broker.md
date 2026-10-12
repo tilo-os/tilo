@@ -87,6 +87,13 @@ their generated package-local signer; production authority is a separate check.
 
 ## Exact separate live approval boundary
 
+The manual `inspect-rpm-signing.yml` maintenance workflow records only the fixed
+client path's ownership/digest metadata, public fingerprint configuration and
+public tool paths on the existing `runner` class. It does not execute the client,
+request OIDC, read a private key or qualify backend custody. A successful probe
+means metadata collection succeeded; missing client/pin/tools still block release
+signing. This provides deployed-runner evidence without enabling signing access.
+
 This code intentionally fails closed until an operator separately approves and
 installs the dedicated broker client/service and public verification tools in a
 qualified runner image, pins the actual public fingerprint, and protects desktop
