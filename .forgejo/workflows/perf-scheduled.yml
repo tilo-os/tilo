@@ -164,7 +164,7 @@ jobs:
       - name: Build the tilo-fs performance gate
         run: >-
           bash scripts/ci-run.sh "tilo-fs performance gate build" --
-          cargo test --locked -p tilo-fs --test performance_gate --no-run
+          cargo test --locked -p tilo-fs --test performance_gate --test document_media_footprint --no-run
 
       - name: Run the gate five times and record it
         env:
@@ -176,6 +176,9 @@ jobs:
           for run in 1 2 3 4 5; do
             cargo test --locked -p tilo-fs --test performance_gate -- --nocapture --test-threads=1 \
               2> "perf/fs-gate-$run.log" || status=$?
+            # The daemon heap KPIs (fs.*-heap), in the same run's log.
+            cargo test --locked -p tilo-fs --test document_media_footprint -- --nocapture \
+              2>> "perf/fs-gate-$run.log" || status=$?
             grep '^PERF\| PERF ' "perf/fs-gate-$run.log" || true
           done
           # The Kata runners are KVM guests; the gate draws nothing.
