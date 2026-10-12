@@ -54,9 +54,12 @@ const WARM_THUMBNAIL_SLO: Duration = Duration::from_millis(12); // p99 5.76, p50
 /// near the end of a 64 MiB attachment, the largest the capability accepts,
 /// as a seek to the end of a video asks for. Reads verify only the chunk
 /// groups they return; before, each loaded and verified the whole
-/// attachment. Provisional until CI runs give a p99.
-const MEDIA_STATUS_SLO: Duration = Duration::from_millis(5);
-const MEDIA_TAIL_READ_SLO: Duration = Duration::from_millis(30);
+/// attachment, which the first `real-fuse` run measured at 464.5 ms.
+/// Provisional until CI runs give a p99: twice that first run, rounded up as
+/// above. The status ceiling stays above one scheduler slice, as for
+/// `IDLE_SYNC_SLO`.
+const MEDIA_STATUS_SLO: Duration = Duration::from_millis(5); // first run 0.75
+const MEDIA_TAIL_READ_SLO: Duration = Duration::from_millis(40); // first run 17.6
 
 /// Namespace changes behind the two writers of the idle anti-entropy pass.
 const IDLE_SYNC_HISTORY: u64 = 50_000;
