@@ -26,9 +26,6 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-use getrandom::{SysRng, rand_core::UnwrapErr};
-use rand_core::Rng;
-
 use crate::shell::device_fabric::{DeviceFabric, FabricStamp, PersonalFabricAction};
 use crate::shell::fabric_clock::{ClockSyncFailure, ClockSyncState};
 use crate::shell::personal_continuity::DeviceId;
@@ -1830,16 +1827,6 @@ fn core() -> &'static Mutex<SpeakerGroupCore> {
     CORE.get_or_init(|| Mutex::new(SpeakerGroupCore::default()))
 }
 
-pub(crate) fn random_nonzero_16() -> [u8; 16] {
-    loop {
-        let mut value = [0_u8; 16];
-        UnwrapErr(SysRng).fill_bytes(&mut value);
-        if value != [0; 16] {
-            return value;
-        }
-    }
-}
-
 fn unavailable() -> String {
     crate::shell::i18n::t("speaker-error-unavailable")
 }
@@ -1961,7 +1948,7 @@ pub(crate) fn handle_action(
             &envelope.source,
             &envelope.action,
             Instant::now(),
-            &mut random_nonzero_16,
+            &mut crate::random::nonzero::<16>,
         )
     };
     match out {
@@ -2346,7 +2333,7 @@ pub fn create_group(
     members: &[MemberSpec],
 ) -> Result<SpeakerGroupId, String> {
     with_core(network, |core, fabric, local| {
-        let id = SpeakerGroupId(random_nonzero_16());
+        let id = SpeakerGroupId(crate::random::nonzero::<16>());
         let out = core.create_group(fabric, local, id, name, members, Instant::now())?;
         Ok((id, out))
     })
@@ -2492,7 +2479,7 @@ pub fn start_session(
     source: GroupAudioSource,
 ) -> Result<[u8; 16], String> {
     with_core(network, |core, fabric, local| {
-        let session_id = random_nonzero_16();
+        let session_id = crate::random::nonzero::<16>();
         let out = core.start_session(fabric, local, group, source, session_id, Instant::now())?;
         Ok((session_id, out))
     })
