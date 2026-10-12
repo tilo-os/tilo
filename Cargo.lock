@@ -20314,6 +20314,7 @@ dependencies = [
  "tilo-app",
  "tilo-automerge",
  "tilo-automerge-fork",
+ "tilo-content",
  "tilo-files",
  "tilo-media",
  "tilo-paths",

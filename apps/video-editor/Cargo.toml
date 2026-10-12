@@ -44,6 +44,8 @@ media = { package = "tilo-media", path = "../../crates/platform/tilo-media" }
 gstreamer-app = { version = "0.24", optional = true }
 # Bin swatches and filmstrip frames come from the shared preview pipeline.
 tilo-thumbnail = { path = "../../crates/media/thumbnail" }
+# Picture headers (format and size) are read by the shared content sniffer.
+tilo-content = { path = "../../crates/system/content", default-features = false }
 
 # GStreamer encode/decode tests share a `serial` group because the native
 # encoder is not safe to run concurrently in one process.
