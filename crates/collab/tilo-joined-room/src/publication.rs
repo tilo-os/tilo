@@ -51,7 +51,7 @@ pub(crate) struct StoredOutgoing {
     /// opaque bytes; entries written before that held JSON arrays of
     /// numbers, one line per byte pretty-printed, and still read back.
     #[serde(
-        serialize_with = "crate::record::bytes_compat::serialize",
+        serialize_with = "crate::record::base64_bytes::serialize",
         deserialize_with = "read_message_bytes"
     )]
     pub(crate) bytes: Vec<u8>,
