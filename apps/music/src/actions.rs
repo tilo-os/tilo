@@ -244,7 +244,7 @@ pub enum MusicEffect {
     ConnectSpotifyPlayback,
     /// Inspect Spotify account eligibility
     /// Reads existing grants only; returns product classifications and account matching.
-    #[effect(job, device_only, returns, idempotent, permission = "read")]
+    #[effect(job, device_only, returns, idempotent, kind = "read")]
     SpotifyAccountStatus,
     /// Refresh Spotify devices
     #[effect(job, device_only, returns)]

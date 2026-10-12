@@ -406,6 +406,7 @@ mod tests {
             .into_iter()
             .find(|spec| spec.id == "spotify-account-status")
             .expect("the semantic diagnostic must be registered");
+        assert_eq!(spec.contract.kind, tilo_actions::ActionKind::Read);
         let encoded = spec.build_json(&serde_json::Map::new()).unwrap();
         assert!(matches!(
             MusicEffect::from_payload(&encoded.payload).unwrap(),
