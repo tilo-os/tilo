@@ -144,21 +144,23 @@ containerfile="$repo/os/Containerfile"
 # executable mode; the component installer tests cover their staged sources.
 # The baked runtime, /usr/share/fonts/tilo and the font-catalogs tree arrive
 # in one COPY of the runtime-image-payload tree (hard links carry the font
-# catalog's bytes once, TIL-609): that row replaces the runtime's and the font
+# catalog's bytes once, #4003): that row replaces the runtime's and the font
 # catalogs' native-builder-payload rows; every installed path is unchanged and
 # /usr/share/fonts/tilo, formerly written by a RUN, is new to the contract.
 # The Plymouth theme arrives rendered from the plymouth-assets stage, which
 # replaces the context copy of its sources; make-plymouth-assets.py, which
-# rendered it inside the rootfs, no longer enters /usr/local/bin (TIL-733).
+# rendered it inside the rootfs, no longer enters /usr/local/bin.
 # The app store arrives from the app-store stage, the builder's store with the
-# env-runtime's host-identical files left out and named in its host-sources
-# (TIL-735); the installed path is unchanged.
+# env-runtime's host-identical files left out and named in its host-sources;
+# the installed path is unchanged.
 # tilo-network-start.service replaces tilo-network-start.timer: the network is
 # queued once logins are allowed instead of at OnBootSec=0, where it held the
-# greeter through network.target (TIL-767).
+# greeter through network.target.
 # The installer locale list is copied from the install-profile-model crate,
 # which compiles it in; the installed path is unchanged.
-expected_contract=034b3e3003b9077e17f816fdf1f4e466f0b2b86b38b74da7047d10ef1686c69e
+# The atomic firstboot file helper is one intentional payload addition in
+# the existing libexec COPY instruction; the layer budget is unchanged.
+expected_contract=e2c242e8adc8513350560d056eddaa04fa659277d18a9af17fad316a79fa3131
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {

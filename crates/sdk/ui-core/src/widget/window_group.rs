@@ -23,6 +23,18 @@ use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::Key;
 
 use crate::tokens::TextRole;
+/// Immutable presentation inspection in root logical coordinates.
+/// Reading this does not lay out, paint, reveal controls or drain input edges.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WindowGroupBounds {
+    pub group: Rect,
+    pub client: Option<Rect>,
+    pub tab_bar: Rect,
+    pub maximize: Option<Rect>,
+    pub restore: Option<Rect>,
+    pub close: Option<Rect>,
+}
+
 /// Group widths are the desktop model's: a fraction of the strip, never
 /// pixels, with one set of tiers and clamps for every host.
 pub use tilo_desktop_model::width::{
@@ -178,6 +190,8 @@ impl WindowGroup {
 // controls are 6px inset and 22px tall, ending at y=76; keep a small buffer
 // so the whole painted row remains shell-owned while it is visible.
 const MAXIMIZED_CHROME_REVEAL_Y: f64 = 80.0;
+const RESTORE_TARGET: &str = "window.restore";
+const CLOSE_TARGET: &str = "window.close";
 
 // Each bool below is an independent UI flag (resize-hover, maximized,
 // search-open, focus, ...), not a bitset encoding related states, and the
@@ -212,6 +226,8 @@ pub struct WindowGroup {
     /// the window's own edge/shadow rather than the group drawing a ring
     /// around both the tab row and the card.
     pub focused: bool,
+    maximized_controls: crate::widget::PaintedTargets,
+    registered_controls: Option<(Rect, Rect)>,
     restore_rect: Rect,
     restore_hover: bool,
     close_rect: Rect,
@@ -281,7 +297,8 @@ fn maximized_chip_height(theme: &Theme) -> f64 {
         .max(f64::from(caption.size * caption.line_height) + f64::from(theme.tokens.spacing.s1))
 }
 
-fn maximized_chrome_height(theme: &Theme) -> f64 {
+/// Theme-measured system lane reserved above a maximized client.
+pub fn maximized_chrome_height(theme: &Theme) -> f64 {
     // Taffy rounds physical layout edges; reserve up to the next pixel so
     // a fractional scaled chip never reaches into the client header.
     (maximized_chip_height(theme) + 2.0 * crate::widget::tabs::TAB_PILL_INSET_Y).ceil()
@@ -410,6 +427,8 @@ impl WindowGroup {
             maximized: false,
             search_active: false,
             focused: false,
+            maximized_controls: crate::widget::PaintedTargets::new(),
+            registered_controls: None,
             restore_rect: Rect::ZERO,
             restore_hover: false,
             close_rect: Rect::ZERO,
@@ -453,6 +472,9 @@ impl WindowGroup {
     }
 
     pub fn set_focused(&mut self, focused: bool) -> bool {
+        if !focused {
+            self.maximized_controls.cancel_pointer_press();
+        }
         if self.focused == focused {
             return false;
         }
@@ -1059,6 +1081,8 @@ impl WindowGroup {
             maximized: false,
             search_active: false,
             focused: false,
+            maximized_controls: crate::widget::PaintedTargets::new(),
+            registered_controls: None,
             restore_rect: Rect::ZERO,
             restore_hover: false,
             close_rect: Rect::ZERO,
@@ -1185,6 +1209,23 @@ impl WindowGroup {
         self.bar.active_id()
     }
 
+    /// Layout bounds and the control targets cached by production paint.
+    /// A missing target means it is not currently painted.
+    pub fn presentation_bounds(&self) -> WindowGroupBounds {
+        let painted = |rect: Rect| (rect.area() > 0.0).then_some(rect);
+        WindowGroupBounds {
+            group: self.rect,
+            client: self.active_host().map(Widget::get_rect),
+            tab_bar: self.bar.get_rect(),
+            maximize: (!self.maximized && !self.external_navigation)
+                .then(|| self.active_maximize_rect())
+                .flatten()
+                .and_then(painted),
+            restore: painted(self.restore_rect),
+            close: painted(self.close_rect),
+        }
+    }
+
     /// Painted maximize target for the active tab, if that tab currently has
     /// one. This is immutable presentation geometry used by accessibility and
     /// optional developer diagnostics.
@@ -1286,17 +1327,17 @@ impl WindowGroup {
         let restored = self.bar.cancel_close(tab_id);
         self.closing_hosts.remove(&tab_id);
         self.pending_close_commit.retain(|id| *id != tab_id);
-        if restored && self.closing_at.is_some() && !self.bar.tabs().is_empty() {
-            // The last tab started the group's own retirement. The client has
-            // not exited (it may be saving or asking), so the window stays and
-            // the retirement is abandoned. Leaving it running would fade and
-            // prune the group while its live tab remains canonical; resync then
-            // rebuilds it and the real destroy animates a second time.
-            self.closing_at = None;
-            self.close_requested = true;
-            self.width_spring = None;
-            self.last_width_step = None;
-            self.style_dirty = true;
+        if restored {
+            // Completed maximized Close waits at the host level without starting
+            // group retirement. Remember a final-tab request in either path so
+            // the client's eventual exit gets its one retirement.
+            self.close_requested |= self.bar.tabs().len() == 1;
+            // A client still saving or asking keeps its live window and input.
+            if self.closing_at.take().is_some() {
+                self.width_spring = None;
+                self.last_width_step = None;
+                self.style_dirty = true;
+            }
         }
         restored
     }
@@ -1358,7 +1399,7 @@ impl WindowGroup {
 
     #[cfg(any(test, debug_assertions))]
     pub fn active_host_rect_for_tests(&self) -> Option<Rect> {
-        self.active_host().map(Widget::get_rect)
+        self.presentation_bounds().client
     }
 
     #[cfg(any(test, debug_assertions))]
@@ -1429,6 +1470,63 @@ impl WindowGroup {
         self.close_hover = hover;
     }
 
+    fn clear_maximized_controls(&mut self) {
+        self.maximized_controls.cancel_pointer_press();
+        self.maximized_controls.begin_frame();
+        self.registered_controls = None;
+        self.restore_rect = Rect::ZERO;
+        self.close_rect = Rect::ZERO;
+        self.restore_hover = false;
+        self.close_hover = false;
+    }
+
+    fn handle_maximized_controls(
+        &mut self,
+        event: &WindowEvent,
+        ctx: &mut crate::widget::EventCtx<'_>,
+    ) {
+        if !self.maximized || self.external_navigation {
+            self.clear_maximized_controls();
+        }
+        // System chrome keeps the active client's keyboard focus. It only
+        // owns the pointer gesture, including its cancelled eventual release.
+        let prior_focus = *ctx.focus_target;
+        self.grip_dirty |= self.maximized_controls.handle_event(event, ctx);
+        *ctx.focus_target = prior_focus;
+        if matches!(
+            event,
+            WindowEvent::CursorLeft { .. } | WindowEvent::Focused(false)
+        ) {
+            self.restore_hover = false;
+            self.close_hover = false;
+        }
+        if matches!(event, WindowEvent::CursorLeft { .. }) {
+            self.last_cursor = Point::new(self.rect.x0, self.rect.y1 + 1.0);
+            self.clear_maximized_controls();
+        }
+        for action in self.maximized_controls.take_activated() {
+            if action == CLOSE_TARGET {
+                let active = self.bar.active_id();
+                self.bar.start_closing(active);
+                let _ = self.bar.take_close();
+                self.closing_hosts
+                    .entry(active)
+                    .or_insert_with(crate::time::now);
+                if !self.pending_close_commit.contains(&active) {
+                    self.pending_close_commit.push(active);
+                }
+            } else if action == RESTORE_TARGET {
+                self.begin_rect_spring_from_current();
+            } else {
+                continue;
+            }
+            self.maximized = false;
+            self.style_dirty = true;
+            self.pending_maximize_change = Some(false);
+            self.clear_maximized_controls();
+        }
+    }
+
     /// The event kinds a group's own resize handle, maximized-chrome
     /// close/restore chips, and pin shortcut own outright — decided before
     /// the tab bar or active tile ever see the event. Returns whether the
@@ -1471,51 +1569,6 @@ impl WindowGroup {
                     return true;
                 }
                 false
-            }
-            WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-                ..
-            } if !self.external_navigation
-                && self.maximized
-                && self.close_rect.contains(self.last_cursor) =>
-            {
-                // Route through the same deferred fade flow as the
-                // per-tab × click (`bar.start_closing` → `closing_hosts`
-                // → sweep) so the group shrinks coherently instead of
-                // popping away. Exit maximize immediately so the floating
-                // chrome stops painting over a tile it no longer owns.
-                let active_id = self.bar.active_id();
-                self.bar.start_closing(active_id);
-                // This direct-input branch returns before
-                // `drain_bar_signals`, so consume and publish the close here.
-                let _ = self.bar.take_close();
-                self.closing_hosts
-                    .entry(active_id)
-                    .or_insert_with(crate::time::now);
-                if !self.pending_close_commit.contains(&active_id) {
-                    self.pending_close_commit.push(active_id);
-                }
-                self.maximized = false;
-                self.style_dirty = true;
-                self.pending_maximize_change = Some(false);
-                true
-            }
-            WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-                ..
-            } if !self.external_navigation
-                && self.maximized
-                && self.restore_rect.contains(self.last_cursor) =>
-            {
-                // Handled here (not via bar.pending_max) so the click
-                // never races with a tab selection under the pill's geometry.
-                self.begin_rect_spring_from_current();
-                self.maximized = false;
-                self.style_dirty = true;
-                self.pending_maximize_change = Some(false);
-                true
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
@@ -1822,6 +1875,7 @@ impl WindowGroup {
         theme: &Theme,
     ) {
         if !self.should_show_maximized_chrome(Some(self.last_cursor.y)) {
+            self.clear_maximized_controls();
             return;
         }
         // `[app title]  …  [Restore][×]`, matching the concept layout. The
@@ -1928,6 +1982,18 @@ impl WindowGroup {
             .max(icon_inset + MAXIMIZED_ICON_PX + icon_inset + f64::from(lw) + icon_inset);
         let restore_x0 = close_x0 - restore_w - f64::from(theme.tokens.spacing.s1);
         self.restore_rect = Rect::new(restore_x0, y0, restore_x0 + restore_w, y0 + pill_h);
+        let geometry = (self.restore_rect, self.close_rect);
+        if self.registered_controls != Some(geometry) {
+            self.maximized_controls.begin_frame();
+            self.maximized_controls
+                .target(RESTORE_TARGET, self.restore_rect, &label);
+            self.maximized_controls.target(
+                CLOSE_TARGET,
+                self.close_rect,
+                crate::i18n::widget_format("host-window-close", &[]),
+            );
+            self.registered_controls = Some(geometry);
+        }
 
         crate::surface::shadow(
             scene,
@@ -1936,12 +2002,14 @@ impl WindowGroup {
             self.restore_rect.height() / 2.0,
             &theme.tokens.elevation.floating,
         );
-        crate::widget::chip::paint_pill_body(
+        let ink = crate::widget::chip::paint_pill_action_body(
             scene,
             transform,
             self.restore_rect,
-            crate::widget::ChipStyle::Neutral,
-            self.restore_hover,
+            crate::widget::activation::Interaction {
+                hovered: self.restore_hover,
+                ..self.maximized_controls.interaction(RESTORE_TARGET)
+            },
             theme,
         );
         // Text label kept (for screen readers/i18n), after a square icon
@@ -1961,7 +2029,7 @@ impl WindowGroup {
             transform,
             icon_slot,
             icons::Icon::Minimize2,
-            theme.tokens.colors.text_primary,
+            ink,
             icons::LUCIDE_DEFAULT_STROKE_PX,
         );
         let lx = icon_slot.x1 + f64::from(theme.tokens.spacing.s2);
@@ -1973,14 +2041,7 @@ impl WindowGroup {
             reason = "Affine `*` composes floating-point transform matrices, not integer arithmetic"
         )]
         let label_transform = transform * vello::kurbo::Affine::translate((lx, ly));
-        tr.draw_style(
-            scene,
-            &label,
-            theme.tokens.colors.text_primary,
-            label_transform,
-            None,
-            &title_style,
-        );
+        tr.draw_style(scene, &label, ink, label_transform, None, &title_style);
 
         self.draw_maximized_close_button(scene, transform, theme);
     }
@@ -1998,15 +2059,16 @@ impl WindowGroup {
         );
         // The quiet chip, lifted under the pointer. Closing a window is not
         // an error, so it is never danger red.
-        crate::widget::chip::paint_pill_body(
+        let glyph_color = crate::widget::chip::paint_pill_action_body(
             scene,
             transform,
             self.close_rect,
-            crate::widget::ChipStyle::Neutral,
-            self.close_hover,
+            crate::widget::activation::Interaction {
+                hovered: self.close_hover,
+                ..self.maximized_controls.interaction(CLOSE_TARGET)
+            },
             theme,
         );
-        let glyph_color = theme.tokens.colors.text_primary;
         icons::draw_icon(
             scene,
             transform,
@@ -2096,6 +2158,12 @@ impl FloatingSurfaceProvider for WindowGroup {
         }
     }
 
+    fn on_floating_surface_ime_source_changed(&mut self, id: Option<&str>) {
+        for (_, host) in &mut self.hosts {
+            FloatingSurfaceProvider::on_floating_surface_ime_source_changed(host, id);
+        }
+    }
+
     fn on_floating_surface_event_source(&mut self, id: Option<&str>) {
         for (_, host) in &mut self.hosts {
             FloatingSurfaceProvider::on_floating_surface_event_source(host, id);
@@ -2132,8 +2200,11 @@ impl FloatingSurfaceProvider for WindowGroup {
     fn take_floating_surface_request(
         &mut self,
     ) -> Option<crate::floating_surface::FloatingSurfaceRequest> {
-        self.active_host_mut()
-            .and_then(FloatingSurfaceProvider::take_floating_surface_request)
+        // A detached presentation remains interactive even when its source tab
+        // is not selected. Drain every retained owner, not only the tiled one.
+        self.hosts
+            .iter_mut()
+            .find_map(|(_, host)| FloatingSurfaceProvider::take_floating_surface_request(host))
     }
 
     fn take_capture_studio_request(&mut self) -> Option<super::CaptureMode> {
@@ -2169,6 +2240,28 @@ impl FloatingSurfaceProvider for WindowGroup {
             );
         }
         self.draw_tab_drag_visual(scene, transform, text_renderer, theme, presence);
+    }
+
+    fn draw_floating_surface(
+        &mut self,
+        id: &str,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) -> bool {
+        self.hosts.iter_mut().any(|(_, host)| {
+            FloatingSurfaceProvider::draw_floating_surface(
+                host,
+                id,
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                presence,
+            )
+        })
     }
 
     fn set_floating_surface_bounds(&mut self, bounds: Rect) {
@@ -2434,6 +2527,7 @@ impl Widget for WindowGroup {
         taffy.widget_node(style, &nodes, node_map, self)
     }
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        let previous = (self.rect, self.active_host().map(Widget::get_rect));
         self.rect = crate::widget::layout_rect(taffy, node, origin);
         self.retarget_rect_spring();
         let children = taffy.children(node).unwrap_or_default();
@@ -2449,6 +2543,9 @@ impl Widget for WindowGroup {
             children.get(usize::from(!self.external_navigation)),
         ) {
             h.apply_layout(taffy, tile_child, new_origin);
+        }
+        if previous != (self.rect, self.active_host().map(Widget::get_rect)) {
+            self.clear_maximized_controls();
         }
     }
     fn draw(
@@ -2586,8 +2683,7 @@ impl Widget for WindowGroup {
         if self.maximized {
             self.draw_maximized_chrome(scene, transform, tr, theme);
         } else {
-            self.restore_rect = Rect::ZERO;
-            self.close_rect = Rect::ZERO;
+            self.clear_maximized_controls();
         }
 
         // Matches the `spawn_active` push above.
@@ -2612,6 +2708,10 @@ impl Widget for WindowGroup {
             self.rect.x1,
             self.rect.y1,
         );
+        self.handle_maximized_controls(event, ctx);
+        if *ctx.handled {
+            return;
+        }
         if self.handle_direct_input(event, ctx.scale_factor, *ctx.modifiers, handle_rect) {
             *ctx.handled = true;
             return;
@@ -2673,7 +2773,8 @@ impl Widget for WindowGroup {
         }
     }
     fn wants_pointer_capture(&self) -> bool {
-        self.resize_origin.is_some()
+        self.maximized_controls.wants_pointer_capture()
+            || self.resize_origin.is_some()
             || self
                 .active_host()
                 .is_some_and(super::Widget::wants_pointer_capture)
@@ -3939,38 +4040,19 @@ mod tests {
 
         // Case `maximized_restore_rebuilds_the_tiled_layout`.
         {
-            use std::collections::HashMap;
-            use taffy::Style;
-            use taffy::prelude::TaffyMaxContent;
-            use winit::event::{ElementState, MouseButton};
-
-            let mut g = make_group();
-            let mut taffy = TaffyTree::<()>::new();
-            let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-            let group_node = g.build_layout(&mut taffy, &Theme::dark(), &mut node_map);
-            let root = taffy.parent_node(Style::default(), &[group_node]);
-            taffy
-                .compute_layout(root, taffy::Size::MAX_CONTENT)
-                .unwrap();
-            g.apply_layout(&taffy, group_node, Point::ZERO);
-            assert!(!g.take_structure_dirty());
-
-            g.maximized = true;
-            g.restore_rect = Rect::new(0.0, 0.0, 80.0, 40.0);
-            g.last_cursor = Point::new(20.0, 20.0);
-            let press = WindowEvent::MouseInput {
-                device_id: winit::event::DeviceId::dummy(),
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-            };
-            let handled = dispatch_at(&mut g, &taffy, group_node, &press);
-
-            assert!(handled);
-            assert!(!g.maximized);
-            assert_eq!(g.take_pending_maximize_change(), Some(false));
+            use crate::synthetic_input::PointerAction;
+            let mut fixture = MaximizedControlFixture::new(Theme::dark());
+            let _ = fixture.group.take_structure_dirty();
+            let restore = fixture.group.presentation_bounds().restore.unwrap();
+            fixture.pointer(PointerAction::MoveTo(restore.center()));
+            assert!(fixture.pointer(PointerAction::Press(MouseButton::Left)));
+            assert!(fixture.group.maximized, "press must wait for release");
+            assert!(fixture.pointer(PointerAction::Release(MouseButton::Left)));
+            assert!(!fixture.group.maximized);
+            assert_eq!(fixture.group.take_pending_maximize_change(), Some(false));
             assert!(
-                g.take_structure_dirty(),
-                "restore must invalidate the cached maximized geometry",
+                fixture.group.take_structure_dirty(),
+                "restore must invalidate the cached maximized geometry"
             );
         }
     }
@@ -5006,6 +5088,296 @@ mod tests {
         );
     }
 
+    struct MaximizedControlFixture {
+        group: WindowGroup,
+        theme: Theme,
+        taffy: TaffyTree<()>,
+        node: NodeId,
+        doc: AutoCommit,
+        focus: Option<NodeId>,
+        input_scale: f64,
+    }
+
+    impl MaximizedControlFixture {
+        fn new(theme: Theme) -> Self {
+            Self::with_group(make_group(), theme)
+        }
+
+        fn with_group(mut group: WindowGroup, theme: Theme) -> Self {
+            group.maximized = true;
+            group.last_cursor = Point::new(600.0, 49.0);
+            let mut fixture = Self {
+                group,
+                theme: theme.with_reduce_motion(true),
+                taffy: TaffyTree::new(),
+                node: NodeId::from(0u64),
+                doc: AutoCommit::new(),
+                focus: None,
+                input_scale: 1.0,
+            };
+            fixture.layout();
+            fixture.paint();
+            fixture
+        }
+
+        fn layout(&mut self) {
+            use taffy::prelude::TaffyMaxContent;
+            let mut map = HashMap::new();
+            self.taffy = TaffyTree::new();
+            self.node = self
+                .group
+                .build_layout(&mut self.taffy, &self.theme, &mut map);
+            let root = self.taffy.parent_node(
+                Style {
+                    size: Size {
+                        width: Dimension::length(1280.0),
+                        height: Dimension::length(752.0),
+                    },
+                    ..Default::default()
+                },
+                &[self.node],
+            );
+            self.taffy
+                .compute_layout(root, taffy::Size::MAX_CONTENT)
+                .unwrap();
+            self.group
+                .apply_layout(&self.taffy, self.node, Point::new(0.0, 48.0));
+        }
+
+        fn scene(&mut self) -> Scene {
+            let mut scene = Scene::new();
+            self.group.draw(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut TextRenderer::new(),
+                &self.theme,
+                &PresenceCtx::empty(),
+            );
+            scene
+        }
+
+        fn paint(&mut self) {
+            self.scene();
+        }
+
+        fn capture(&mut self, name: &str) {
+            if let Some(path) = ux1x_out(&self.theme, name) {
+                let scene = self.scene();
+                let pixels = crate::offscreen::OffscreenRenderer::new(1280, 800)
+                    .render(&scene, self.theme.tokens.colors.surfaces.base);
+                write_png(&pixels, 1280, 800, &path);
+            }
+        }
+
+        fn pointer(&mut self, action: crate::synthetic_input::PointerAction) -> bool {
+            self.drive(|group, ctx| action.dispatch(group, ctx))
+        }
+
+        fn drive(
+            &mut self,
+            send: impl FnOnce(&mut WindowGroup, &mut crate::widget::EventCtx<'_>),
+        ) -> bool {
+            let mut handled = false;
+            send(
+                &mut self.group,
+                &mut crate::widget::EventCtx {
+                    scale_factor: self.input_scale,
+                    modifiers: &winit::event::Modifiers::default(),
+                    state: crate::widget::Edits::lend(&mut self.doc),
+                    path: &automerge::ROOT,
+                    handled: &mut handled,
+                    focus_target: &mut self.focus,
+                    node_id: self.node,
+                    taffy: &self.taffy,
+                },
+            );
+            handled
+        }
+    }
+
+    #[test]
+    fn refused_final_tab_close_restores_live_group_input() {
+        let mut group = WindowGroup::new(
+            10,
+            vec![(
+                TabDescriptor::new(1, "solo"),
+                TileContent::Stub {
+                    kind: AppKind::Settings,
+                    label: "a".into(),
+                },
+            )],
+            1,
+            WindowWidth::Normal,
+        );
+        assert!(group.request_close_tab(1));
+        assert!(group.is_closing());
+        assert_eq!(group.keyboard_input_scope(), None);
+        assert!(group.cancel_tab_close(1));
+        assert!(!group.is_closing());
+        assert!(!group.has_closing_host(1));
+        assert_eq!(group.keyboard_input_scope(), Some(1));
+        assert!(group.has_host(1));
+    }
+
+    #[test]
+    fn deferred_maximized_close_remembers_the_final_client_request() {
+        use crate::synthetic_input::PointerAction;
+        let mut group = make_group();
+        assert!(group.detach_tab(2).is_some());
+        let mut fixture = MaximizedControlFixture::with_group(group, Theme::dark());
+        let close = fixture.group.presentation_bounds().close.unwrap();
+        fixture.pointer(PointerAction::MoveTo(close.center()));
+        assert!(fixture.pointer(PointerAction::Press(MouseButton::Left)));
+        assert!(fixture.pointer(PointerAction::Release(MouseButton::Left)));
+        assert_eq!(fixture.group.take_pending_close_commits(), vec![1]);
+        assert!(!fixture.group.is_closing());
+        assert!(!fixture.group.close_was_requested());
+        assert!(fixture.group.cancel_tab_close(1));
+        assert!(fixture.group.close_was_requested());
+        assert!(!fixture.group.is_closing());
+        assert!(!fixture.group.has_closing_host(1));
+        assert_eq!(fixture.group.keyboard_input_scope(), Some(1));
+        assert!(fixture.group.has_host(1));
+    }
+
+    #[test]
+    fn maximized_control_bounds_capture_visible_chrome_across_themes() {
+        for (theme, size) in [
+            (Theme::dark(), "default"),
+            (Theme::light(), "default"),
+            (Theme::dark().with_text_scale(2.0), "text-200"),
+            (Theme::light().with_text_scale(2.0), "text-200"),
+        ] {
+            let mut fixture = MaximizedControlFixture::new(theme);
+            let bounds = fixture.group.presentation_bounds();
+            assert_eq!(bounds.group, Rect::new(0.0, 48.0, 1280.0, 800.0));
+            let client = bounds.client.expect("active client laid out");
+            assert!(client.height() > 0.0);
+            for control in [bounds.restore, bounds.close] {
+                let control = control.expect("visible painted control");
+                assert_eq!(control.intersect(bounds.group), control);
+                assert!(control.y1 <= client.y0, "system controls clear the client");
+                assert!(control.area() > 0.0);
+            }
+            assert!(bounds.maximize.is_none());
+            assert_eq!(bounds.tab_bar.height(), 0.0);
+            for _ in 0..3 {
+                assert_eq!(fixture.group.presentation_bounds(), bounds);
+            }
+            assert_eq!(fixture.group.take_pending_maximize_change(), None);
+            assert!(fixture.group.take_pending_close_commits().is_empty());
+            fixture.capture(&format!("maximized-controls-{size}.png"));
+        }
+    }
+
+    #[test]
+    fn maximized_controls_require_a_completed_pointer_gesture() {
+        use crate::synthetic_input::PointerAction;
+        for close in [false, true] {
+            let mut fixture = MaximizedControlFixture::new(Theme::dark());
+            let bounds = fixture.group.presentation_bounds();
+            let target = if close { bounds.close } else { bounds.restore }.unwrap();
+            fixture.pointer(PointerAction::MoveTo(target.center()));
+            assert!(fixture.pointer(PointerAction::Press(MouseButton::Left)));
+            fixture.capture(if close {
+                "maximized-close-held.png"
+            } else {
+                "maximized-restore-held.png"
+            });
+            assert!(
+                fixture.group.maximized,
+                "a press must await its matching release"
+            );
+            assert!(Widget::wants_pointer_capture(&fixture.group));
+            assert!(fixture.group.take_pending_close_commits().is_empty());
+            assert!(fixture.pointer(PointerAction::Release(MouseButton::Left)));
+            assert!(!fixture.group.maximized);
+            assert_eq!(fixture.group.take_pending_maximize_change(), Some(false));
+            assert_eq!(
+                fixture.group.take_pending_close_commits().len(),
+                usize::from(close)
+            );
+            assert!(!Widget::wants_pointer_capture(&fixture.group));
+        }
+    }
+
+    #[test]
+    fn maximized_controls_cancel_interrupted_or_moved_gestures() {
+        use crate::synthetic_input::PointerAction;
+        for close in [false, true] {
+            for interruption in 0..6 {
+                let mut fixture = MaximizedControlFixture::new(Theme::dark());
+                let bounds = fixture.group.presentation_bounds();
+                let target = if close { bounds.close } else { bounds.restore }.unwrap();
+                fixture.pointer(PointerAction::MoveTo(target.center()));
+                fixture.pointer(PointerAction::Press(MouseButton::Left));
+                match interruption {
+                    0 => {
+                        fixture.pointer(PointerAction::Leave);
+                    }
+                    1 => {
+                        fixture.pointer(PointerAction::LoseFocus);
+                    }
+                    2 => {
+                        fixture.pointer(PointerAction::MoveTo(bounds.client.unwrap().center()));
+                        fixture.paint();
+                        let hidden = fixture.group.presentation_bounds();
+                        assert!(
+                            hidden.restore.is_none() && hidden.close.is_none(),
+                            "unpainted controls cannot remain pointer targets"
+                        );
+                    }
+                    3 => {
+                        fixture.theme =
+                            Theme::light().with_text_scale(2.0).with_reduce_motion(true);
+                        fixture.layout();
+                        fixture.paint();
+                        let moved = fixture.group.presentation_bounds();
+                        let next = if close { moved.close } else { moved.restore }.unwrap();
+                        assert_ne!(next, target);
+                        fixture.pointer(PointerAction::MoveTo(next.center()));
+                    }
+                    4 => {
+                        fixture.input_scale = 1.5;
+                    }
+                    5 => {
+                        let escape =
+                            crate::synthetic_input::named_key(winit::keyboard::NamedKey::Escape);
+                        fixture.drive(|group, ctx| group.handle_event(&escape, ctx));
+                    }
+                    _ => unreachable!(),
+                }
+                assert!(
+                    fixture.pointer(PointerAction::Release(MouseButton::Left)),
+                    "the cancelled release stays owned by chrome"
+                );
+                assert!(fixture.group.maximized);
+                assert_eq!(fixture.group.take_pending_maximize_change(), None);
+                assert!(fixture.group.take_pending_close_commits().is_empty());
+                assert!(!Widget::wants_pointer_capture(&fixture.group));
+                if !close && matches!(interruption, 2 | 3 | 5) {
+                    fixture.capture(&format!("maximized-restore-cancel-{interruption}.png"));
+                }
+                fixture.pointer(PointerAction::MoveTo(Point::new(600.0, 49.0)));
+                fixture.paint();
+                let fresh = fixture.group.presentation_bounds();
+                let fresh = if close { fresh.close } else { fresh.restore }.unwrap();
+                fixture.pointer(PointerAction::MoveTo(fresh.center()));
+                fixture.pointer(PointerAction::Press(MouseButton::Left));
+                assert!(fixture.group.maximized);
+                fixture.pointer(PointerAction::Release(MouseButton::Left));
+                assert!(
+                    !fixture.group.maximized,
+                    "a fresh complete gesture still works"
+                );
+                assert_eq!(
+                    fixture.group.take_pending_close_commits().len(),
+                    usize::from(close)
+                );
+            }
+        }
+    }
+
     #[test]
     fn maximized_chrome_shows_near_the_top_with_tokenised_chips() {
         // Case `window_group_close_glyph_is_lucide_x`.
@@ -5488,49 +5860,23 @@ mod tests {
 
         // Case `maximized_close_uses_deferred_flow`.
         {
-            use crate::theme::Theme;
-            use std::collections::HashMap;
-            use taffy::Style;
-            use taffy::prelude::TaffyMaxContent;
-            use winit::event::{ElementState, MouseButton};
-
-            // Single-tab group so the sweep has a clear "last tab just
-            // left" trigger for the group-level close fade.
-            let tabs: Vec<(TabDescriptor, TileContent)> = vec![(
+            use crate::synthetic_input::PointerAction;
+            let tabs = vec![(
                 TabDescriptor::new(1, "solo"),
                 TileContent::Stub {
                     kind: AppKind::Settings,
                     label: "a".into(),
                 },
             )];
-            let mut g = WindowGroup::new(10, tabs, 1, WindowWidth::Normal);
-
-            let theme = Theme::dark();
-            let mut taffy = TaffyTree::<()>::new();
-            let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-            let group_node = g.build_layout(&mut taffy, &theme, &mut node_map);
-            let root = taffy.parent_node(Style::default(), &[group_node]);
-            taffy
-                .compute_layout(root, taffy::Size::MAX_CONTENT)
-                .unwrap();
-            g.apply_layout(&taffy, group_node, Point::ZERO);
-
-            // `close_rect` normally gets populated in `draw` while maximized;
-            // tests don't paint so we seed it directly.
-            g.maximized = true;
-            g.close_rect = Rect::new(0.0, 0.0, 20.0, 20.0);
-            g.last_cursor = Point::new(5.0, 5.0);
-
-            let press = WindowEvent::MouseInput {
-                device_id: winit::event::DeviceId::dummy(),
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-            };
-
-            let handled = dispatch_at(&mut g, &taffy, group_node, &press);
-
-            assert!(handled, "press must be consumed by the close arm");
-            assert!(!g.maximized, "maximize must drop immediately");
+            let group = WindowGroup::new(10, tabs, 1, WindowWidth::Normal);
+            let mut fixture = MaximizedControlFixture::with_group(group, Theme::dark());
+            let close = fixture.group.presentation_bounds().close.unwrap();
+            fixture.pointer(PointerAction::MoveTo(close.center()));
+            assert!(fixture.pointer(PointerAction::Press(MouseButton::Left)));
+            assert!(fixture.group.maximized);
+            assert!(fixture.pointer(PointerAction::Release(MouseButton::Left)));
+            let g = &mut fixture.group;
+            assert!(!g.maximized, "completed close leaves maximize");
             assert!(
                 g.take_structure_dirty(),
                 "leaving maximize must rebuild the cached tiled layout",
@@ -5558,11 +5904,8 @@ mod tests {
             );
 
             g.force_expire_closing(1);
-            let moved = WindowEvent::CursorMoved {
-                device_id: winit::event::DeviceId::dummy(),
-                position: winit::dpi::PhysicalPosition::new(9000.0, 9000.0),
-            };
-            dispatch_at(&mut g, &taffy, group_node, &moved);
+            fixture.pointer(PointerAction::MoveTo(Point::new(9000.0, 9000.0)));
+            let g = &fixture.group;
 
             assert!(!g.has_host(1), "sweep drops the host once the fade expires");
             assert!(
@@ -5634,7 +5977,7 @@ mod tests {
     fn ux1x_out(theme: &Theme, name: &str) -> Option<std::path::PathBuf> {
         let dir = std::path::PathBuf::from(std::env::var_os("UX1X_F4_OUT")?)
             .join(theme.name.to_lowercase());
-        std::fs::create_dir_all(&dir).ok()?;
+        std::fs::create_dir_all(&dir).expect("create requested screenshot evidence directory");
         Some(dir.join(name))
     }
 

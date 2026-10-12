@@ -1,6 +1,7 @@
 //! Display layout and identification, end to end through the real overlay
 //! host over a compositor-published display snapshot: Super+P opens the
-//! layout sheet, keys choose a layout, and the staged display transaction
+//! layout sheet, keys choose a layout, which the sheet makes through the
+//! published `display.layout.*` action, and the staged display transaction
 //! the compositor applies is read back from the settings file it watches;
 //! an Identify request from Settings puts a numbered card on every display.
 
@@ -126,6 +127,12 @@ fn owner_chrome() -> shell::shell::chrome_state::Chrome {
 /// The real host over a workspace its person owns, so the published
 /// display actions are theirs to invoke.
 fn owner_host() -> (ShellOverlayHost, shell::shell::chrome_state::Chrome) {
+    host_owned_by(None)
+}
+
+/// The real host over a workspace `owner` owns; `None` is the person at
+/// this machine.
+fn host_owned_by(owner: Option<&str>) -> (ShellOverlayHost, shell::shell::chrome_state::Chrome) {
     use shell::shell::state::{FreshId as _, Workspace, WorkspaceId};
     let mut tree = WorkspaceTree::default();
     let id = WorkspaceId::new();
@@ -133,7 +140,7 @@ fn owner_host() -> (ShellOverlayHost, shell::shell::chrome_state::Chrome) {
     // The public host keeps the real session registry principal.
     // Give that actual person ownership rather than inventing a fixture actor.
     let person = shell::shell::state::local_user_id_for_room(&workspace.room);
-    workspace.set_owner(person);
+    workspace.set_owner(owner.map_or(person, str::to_owned));
     tree.desktop.workspaces.push(workspace);
     tree.desktop.active = id;
     build_tilo_overlay_host_with_chrome(&tree)
@@ -214,7 +221,7 @@ fn highlighted_layout(host: &ShellOverlayHost) -> String {
 fn super_p_arrow_enter_stages_a_mirror_transaction() {
     let _home = tilo_test_env::TestHome::new().unwrap();
     publish_laptop_with_monitor();
-    let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&WorkspaceTree::bootstrap_demo());
+    let (mut host, chrome) = owner_host();
     let layout = layout_host(&mut host);
 
     super_p(&mut host, &layout);
@@ -254,6 +261,9 @@ fn super_p_arrow_enter_stages_a_mirror_transaction() {
     assert_eq!(panel.mode, Some(mode(1920, 1080)));
     assert_eq!(monitor.mode, Some(mode(1920, 1080)));
 
+    // The compositor tick: the host update takes the stored change into the
+    // sheet; painting only draws what it took.
+    host.update(&automerge::AutoCommit::new(), &automerge::ROOT);
     paint(&mut host);
     let sheet = display_sheet(&host);
     for name in ["Keep", "Revert"] {
@@ -277,7 +287,7 @@ fn layout_dispatch_remains_responsive_until_the_request_is_durable() {
     let session = Arc::new(settings_store::SessionSettings::open(paths.clone()).unwrap());
     settings_store::install_source(Some(session.host_view().unwrap()));
     publish_laptop_with_monitor();
-    let (mut host, _chrome) = build_tilo_overlay_host_with_chrome(&WorkspaceTree::bootstrap_demo());
+    let (mut host, _chrome) = owner_host();
     let layout = layout_host(&mut host);
     super_p(&mut host, &layout);
     press(
@@ -330,7 +340,7 @@ fn layout_storage_failure_is_observed_by_the_ordinary_host_update_without_paint(
     let session = Arc::new(settings_store::SessionSettings::open(paths.clone()).unwrap());
     settings_store::install_source(Some(session.host_view().unwrap()));
     publish_laptop_with_monitor();
-    let (mut host, _) = build_tilo_overlay_host_with_chrome(&WorkspaceTree::bootstrap_demo());
+    let (mut host, _) = owner_host();
     let layout = layout_host(&mut host);
     super_p(&mut host, &layout);
     std::fs::create_dir_all(paths.device.parent().unwrap()).unwrap();
@@ -475,7 +485,7 @@ fn published_layout_reports_actual_record_failure_without_publishing_intent() {
 fn super_p_again_cycles_and_enter_applies_the_highlighted_layout() {
     let _home = tilo_test_env::TestHome::new().unwrap();
     publish_laptop_with_monitor();
-    let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&WorkspaceTree::bootstrap_demo());
+    let (mut host, chrome) = owner_host();
     let layout = layout_host(&mut host);
 
     super_p(&mut host, &layout);
@@ -510,6 +520,94 @@ fn super_p_again_cycles_and_enter_applies_the_highlighted_layout() {
     let transaction = staged();
     assert!(transaction.candidate.outputs["eDP-1"].enabled);
     assert!(!transaction.candidate.outputs["HDMI-A-1"].enabled);
+}
+
+/// The sheet is a caller of the published layout action, not a second door
+/// beside it: where the workspace does not let this person change the
+/// displays, Super+P, Mirror, Enter is refused exactly as the action is,
+/// stages nothing, and says why.
+#[test]
+fn a_sheet_choice_is_refused_where_the_published_action_is() {
+    let _home = tilo_test_env::TestHome::new().unwrap();
+    publish_laptop_with_monitor();
+    let (mut host, chrome) = host_owned_by(Some("foreign-owner"));
+    let layout = layout_host(&mut host);
+    let mut doc = automerge::AutoCommit::new();
+    assert!(
+        display_action(&chrome, "display.layout.mirror")
+            .on_begin_invoke
+            .as_ref()
+            .expect("display lifecycle")(
+            &mut ui::widget::Edits::lend(&mut doc),
+            &automerge::ROOT,
+            &chrome,
+            &shell::shell::search::action_api::ActionArgs::none(),
+        )
+        .is_err(),
+        "the published action is refused to a person this workspace does not let change displays"
+    );
+
+    super_p(&mut host, &layout);
+    press(
+        &mut host,
+        &layout,
+        Key::Named(NamedKey::ArrowDown),
+        ModifiersState::empty(),
+    );
+    assert_eq!(highlighted_layout(&host), "Mirror");
+    press(
+        &mut host,
+        &layout,
+        Key::Named(NamedKey::Enter),
+        ModifiersState::empty(),
+    );
+    shell::shell::durable_writer::global().flush();
+    host.update(&automerge::AutoCommit::new(), &automerge::ROOT);
+    assert!(
+        DisplayTransaction::load().is_none(),
+        "the sheet stages nothing the action would refuse"
+    );
+    let description = display_sheet(&host).description.unwrap_or_default();
+    assert!(
+        description.contains("no longer permits"),
+        "the sheet says why the choice was refused: {description}"
+    );
+}
+
+/// The open sheet takes the compositor's displays from what it published in
+/// memory: painting it, again and again, reads no file at all, and it still
+/// shows the displays once their runtime file is gone.
+#[test]
+fn painting_the_open_sheet_reads_no_storage() {
+    let _home = tilo_test_env::TestHome::new().unwrap();
+    publish_laptop_with_monitor();
+    let (mut host, chrome) = owner_host();
+    let layout = layout_host(&mut host);
+    super_p(&mut host, &layout);
+    // The compositor tick takes the open-time state; it may read settings.
+    host.update(&automerge::AutoCommit::new(), &automerge::ROOT);
+    std::fs::remove_file(settings_store::hardware::display_snapshot_path().unwrap())
+        .expect("the published snapshot file");
+    let before = settings_store::published::file_reads_on_this_thread();
+    for _ in 0..10 {
+        paint(&mut host);
+    }
+    assert_eq!(
+        settings_store::published::file_reads_on_this_thread(),
+        before,
+        "painting the open display sheet must not read settings or runtime files"
+    );
+    assert!(chrome.borrow().overlays.projection);
+    let sheet = display_sheet(&host);
+    let mirror = sheet
+        .children
+        .iter()
+        .find(|node| node.name.as_deref() == Some("Mirror"))
+        .expect("the Mirror layout row");
+    assert!(
+        !mirror.state.disabled,
+        "two published displays can be mirrored, though their file is gone"
+    );
 }
 
 #[test]

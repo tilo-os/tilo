@@ -5,6 +5,7 @@ use std::io::Write as _;
 use std::net::{Ipv4Addr, SocketAddrV4, UdpSocket};
 use std::path::PathBuf;
 use std::time::Duration;
+use tilo_relay::root_signer::{RootSigner, load_root as load_approval_root};
 
 use anyhow::{Context, bail};
 use clap::{Parser, Subcommand};
@@ -106,6 +107,9 @@ enum Command {
     Approve {
         #[arg(long, default_value = "/var/lib/tilo")]
         identity_root: PathBuf,
+        /// Existing person record, opened through its ordinary secret provider.
+        #[arg(long)]
+        identity_dir: Option<PathBuf>,
         #[arg(long, default_value_t = 60)]
         timeout: u64,
         #[arg(long, default_value = "/var/cache/quick-fs")]
@@ -991,18 +995,6 @@ fn commit_staged_personal_enrollment(
         &std::fs::read(staged(&stage_dir, "registry.json"))?,
         0o600,
     )?;
-    // The joined identity is the one this device now acts for: select it, or
-    // the next login resolves the absent default and asks to create one. Only
-    // the directory's owner can select (the selector is theirs alone); a
-    // root-run join into someone else's directory leaves it to them.
-    if owns_directory(&marker.identity_dir)? {
-        let record_id = record
-            .file_stem()
-            .and_then(|stem| stem.to_str())
-            .context("joined identity record has no runtime id")?;
-        runtime_identity::set_active_identity(&marker.identity_dir, record_id)
-            .context("select the joined identity")?;
-    }
     checkpoint(PersonalCommitCheckpoint::UserPublicKey)?;
     // The public key and certificates are public, whatever the umask this
     // commit runs under: the session reads them to verify the device, and
@@ -1033,6 +1025,20 @@ fn commit_staged_personal_enrollment(
     // Publish this last: every projection file has been durably installed.
     checkpoint(PersonalCommitCheckpoint::DefaultCert)?;
     tilo_files::native::atomic::write_with_mode(&paths.device_cert, &cert_bytes, public)?;
+    // The joined identity is the one this device now acts for: select it, or
+    // the next login resolves the absent default and asks to create one. The
+    // first-use UI reads a selected joined identity as a finished join, so it
+    // is selected only once every file of the join is in place. Only the
+    // directory's owner can select (the selector is theirs alone); a root-run
+    // join into someone else's directory leaves it to them.
+    if owns_directory(&marker.identity_dir)? {
+        let record_id = record
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .context("joined identity record has no runtime id")?;
+        runtime_identity::set_active_identity(&marker.identity_dir, record_id)
+            .context("select the joined identity")?;
+    }
     // A root-run (headless) enrollment wrote these as root. Restore each
     // one's directory owner and group before the marker is cleared, so
     // recovery repeats this step if it is interrupted. Parents come before
@@ -1206,34 +1212,7 @@ fn response_preimage(payload: &ResponsePayload) -> anyhow::Result<Vec<u8>> {
     Ok(preimage)
 }
 
-/// The human root an approval signs with: a seed this device holds, or the
-/// person's single-device identity record.
-trait RootSigner {
-    fn public_key(&self) -> [u8; 32];
-    fn sign_message(&self, message: &[u8]) -> anyhow::Result<[u8; 64]>;
-}
-
-impl RootSigner for ed25519_dalek::SigningKey {
-    fn public_key(&self) -> [u8; 32] {
-        self.verifying_key().to_bytes()
-    }
-
-    fn sign_message(&self, message: &[u8]) -> anyhow::Result<[u8; 64]> {
-        Ok(self.sign(message).to_bytes())
-    }
-}
-
-impl RootSigner for runtime_identity::SigningIdentity {
-    fn public_key(&self) -> [u8; 32] {
-        self.group_public_key()
-    }
-
-    fn sign_message(&self, message: &[u8]) -> anyhow::Result<[u8; 64]> {
-        self.sign(message)
-            .map_err(|error| anyhow::anyhow!("sign with the identity record: {error}"))
-    }
-}
-
+/// Sign a device certificate using the authenticated person root.
 fn sign_root_cert(cert: &mut DeviceCert, root: &(impl RootSigner + ?Sized)) -> anyhow::Result<()> {
     if cert.user_public_key != root.public_key() {
         bail!("device certificate names a different identity than the signing root");
@@ -2188,44 +2167,7 @@ fn expected_pair(options: &ApprovalOptions<'_>) -> anyhow::Result<Option<([u8; 3
     }
 }
 
-/// The person's root: the seed under the identity root when this device holds
-/// one, otherwise the active record in the identity directory, the way
-/// onboarding keeps it. A record signs only while it is single-device.
-fn load_approval_root(
-    identity_root: &std::path::Path,
-    identity_dir: Option<&std::path::Path>,
-) -> anyhow::Result<Box<dyn RootSigner>> {
-    const MISSING_ROOT: &str =
-        "this device does not hold the identity root needed to approve enrollment";
-    let paths = IdentityPaths::under(identity_root);
-    let seed_absent = matches!(
-        std::fs::symlink_metadata(&paths.user_privkey),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound
-    );
-    let Some(identity_dir) = identity_dir.filter(|_| seed_absent) else {
-        let root = tilo_user_identity::persist::read_owned_signing_key(&paths.user_privkey)
-            .context(MISSING_ROOT)?;
-        return Ok(Box::new(root));
-    };
-    let record = runtime_identity::resolve_active_identity(identity_dir).with_context(|| {
-        format!(
-            "{MISSING_ROOT}: {} holds no active identity",
-            identity_dir.display()
-        )
-    })?;
-    let identity = runtime_identity::load_from_path(record.clone()).map_err(|error| {
-        anyhow::anyhow!(
-            "{MISSING_ROOT}: cannot open {}: {error} (run this as the account that owns the \
-             identity, in a session that can reach its secret store)",
-            record.display()
-        )
-    })?;
-    if !identity.is_single_device() {
-        bail!("threshold identity requires the multi-device certificate ceremony");
-    }
-    Ok(Box::new(identity))
-}
-
+/// Load the signer and verify that this device remains authorised to admit peers.
 fn load_approval_identity(options: &ApprovalOptions<'_>) -> anyhow::Result<ApprovalIdentity> {
     let paths = IdentityPaths::under(options.identity_root);
     let root = load_approval_root(options.identity_root, options.identity_dir)?;
@@ -2237,7 +2179,8 @@ fn load_approval_identity(options: &ApprovalOptions<'_>) -> anyhow::Result<Appro
     .or_else(|_| tilo_user_identity::persist::read_device_cert(&paths.device_cert))?;
     verify_device_cert_at(&issuer_cert, now_ns()?)
         .context("verify approving device certificate validity")?;
-    if issuer_cert.device_public_key != device.verifying_key().to_bytes()
+    if issuer_cert.user_public_key != user_public_key
+        || issuer_cert.device_public_key != device.verifying_key().to_bytes()
         || !issuer_cert.capabilities.can_admit_devices
     {
         bail!("this device is not authorised to approve enrollment");
@@ -2930,6 +2873,7 @@ fn run() -> anyhow::Result<()> {
         ),
         Command::Approve {
             identity_root,
+            identity_dir,
             timeout,
             workspace_cache,
             acl,
@@ -2938,7 +2882,7 @@ fn run() -> anyhow::Result<()> {
             expected_service,
         } => approve(&ApprovalOptions {
             identity_root: &identity_root,
-            identity_dir: None,
+            identity_dir: identity_dir.as_deref(),
             timeout,
             workspace_cache: &workspace_cache,
             acl: &acl,
@@ -2979,6 +2923,92 @@ mod tests {
         DeviceCapabilities, RevocationEntry, RevocationReason, sign_device_cert,
         sign_revocation_entry,
     };
+
+    #[test]
+    fn host_record_approval_keeps_admission_and_revocation_checks() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("tilo");
+        let identities = temp.path().join("identities");
+        let paths = IdentityPaths::under(&root);
+        tilo_identity_host::provisioning::ensure_collaboration_identity(
+            &identities,
+            &paths,
+            tilo_identity_host::provisioning::IdentityStorage::Files,
+        )
+        .unwrap();
+        assert!(!paths.user_privkey.exists());
+        let options = ApprovalOptions {
+            identity_root: &root,
+            identity_dir: Some(&identities),
+            timeout: 1,
+            workspace_cache: temp.path(),
+            acl: temp.path(),
+            relay_workspace_ids: &[],
+            expected_device: None,
+            expected_service: None,
+            kind: EnrollmentKind::HomePeer,
+            port: 0,
+            ready: None,
+        };
+        let identity = load_approval_identity(&options).unwrap();
+        let mut cert = payload(&ed25519_dalek::SigningKey::from_bytes(&[74; 32])).cert;
+        cert.user_public_key = identity.user_public_key;
+        sign_root_cert(&mut cert, identity.root.as_ref()).unwrap();
+        verify_device_cert(&cert).unwrap();
+        let mut revocation = RevocationEntry {
+            user_public_key: identity.user_public_key,
+            revoked_device_public_key: identity.device.verifying_key().to_bytes(),
+            revoked_at_ns: 1,
+            reason: RevocationReason::Retired,
+            signature: [0; 64],
+        };
+        revocation.signature = identity
+            .root
+            .sign_message(&tilo_user_identity::revocation_signing_digest(&revocation).unwrap())
+            .unwrap();
+        let path = fleet_path(&identities, identity.user_public_key);
+        let mut fleet: FleetProjection =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        fleet.revocations.push(revocation);
+        std::fs::write(&path, serde_json::to_vec(&fleet).unwrap()).unwrap();
+        let error = load_approval_identity(&options).err().unwrap();
+        assert!(error.to_string().contains("revoked"));
+        fleet.revocations.clear();
+        std::fs::write(&path, serde_json::to_vec(&fleet).unwrap()).unwrap();
+        let mut issuer = tilo_user_identity::persist::read_device_cert(&paths.device_cert).unwrap();
+        issuer.capabilities = DeviceCapabilities::member();
+        sign_root_cert(&mut issuer, identity.root.as_ref()).unwrap();
+        tilo_user_identity::persist::write_device_cert(
+            &paths.device_cert_for_user(&identity.user_public_key),
+            &issuer,
+        )
+        .unwrap();
+        let error = load_approval_identity(&options).err().unwrap();
+        assert!(error.to_string().contains("not authorised"));
+        issuer.capabilities = DeviceCapabilities::primary();
+        issuer.issued_at_ns = 1;
+        issuer.expires_at_ns = Some(2);
+        sign_root_cert(&mut issuer, identity.root.as_ref()).unwrap();
+        tilo_user_identity::persist::write_device_cert(
+            &paths.device_cert_for_user(&identity.user_public_key),
+            &issuer,
+        )
+        .unwrap();
+        let error = load_approval_identity(&options).err().unwrap();
+        assert!(error.to_string().contains("validity"));
+        let unrelated_root = ed25519_dalek::SigningKey::from_bytes(&[76; 32]);
+        issuer.expires_at_ns = None;
+        issuer.user_public_key = unrelated_root.verifying_key().to_bytes();
+        sign_device_cert(&mut issuer, &unrelated_root).unwrap();
+        tilo_user_identity::persist::write_device_cert(
+            &paths.device_cert_for_user(&identity.user_public_key),
+            &issuer,
+        )
+        .unwrap();
+        let error = load_approval_identity(&options).err().unwrap();
+        assert!(error.to_string().contains("not authorised"));
+        assert!(!paths.user_privkey.exists());
+    }
 
     /// The root a device holds certifies a developer's machine for
     /// administration and lists it in the person's fleet, where Settings can
@@ -3407,6 +3437,13 @@ mod tests {
                 .is_err()
             );
             assert_eq!(std::fs::read(&paths.device_cert).unwrap(), before_cert);
+            // First use reads a selected joined identity as a finished join;
+            // an interrupted commit has selected nothing yet.
+            assert_eq!(
+                runtime_identity::resolve_active_identity(identity_dir.path()),
+                None,
+                "an unfinished join selected its identity"
+            );
             requester.kill().unwrap();
             requester.wait().unwrap();
             assert!(lease.validate().is_err());
@@ -3457,6 +3494,10 @@ mod tests {
             assert_eq!(
                 recorded,
                 vec![hex::encode(member.verifying_key().to_bytes())]
+            );
+            assert!(
+                runtime_identity::resolve_active_identity(identity_dir.path()).is_some(),
+                "the finished join selects its identity"
             );
         }
         // Phase `personal_projection_loads_without_root_signing_material`.

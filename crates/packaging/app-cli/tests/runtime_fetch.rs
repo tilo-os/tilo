@@ -430,8 +430,18 @@ fn a_registry_build_for_another_runtime_fetches_that_runtime_or_is_refused() {
     let second = snapshot(vec![app_entry, runtime_entry], &owner, Some(&first));
     served.put("/entries", serde_json::to_vec(&second).unwrap());
 
-    let explicit = std::process::Command::new(env!("CARGO_BIN_EXE_app"))
-        .args(["runtime", "install", &needed, "--repo", "local"])
+    let archive = root.join("runtime.tapp");
+    std::fs::write(&archive, &thin).unwrap();
+    let publisher_hex = hex::encode(publisher().verifying_key().to_bytes());
+    let explicit = std::process::Command::new(&installer)
+        .arg("install")
+        .arg(&archive)
+        .args([
+            "--require-publisher",
+            &publisher_hex,
+            "--payload-from",
+            &base,
+        ])
         .output()
         .unwrap();
     assert!(
@@ -466,8 +476,15 @@ fn a_registry_build_for_another_runtime_fetches_that_runtime_or_is_refused() {
             .unwrap()
             .is_intact()
     );
-    let repeat = std::process::Command::new(env!("CARGO_BIN_EXE_app"))
-        .args(["runtime", "install", &needed, "--repo", "local"])
+    let repeat = std::process::Command::new(&installer)
+        .arg("install")
+        .arg(&archive)
+        .args([
+            "--require-publisher",
+            &publisher_hex,
+            "--payload-from",
+            &base,
+        ])
         .output()
         .unwrap();
     assert!(
@@ -533,8 +550,17 @@ fn a_registry_build_for_another_runtime_fetches_that_runtime_or_is_refused() {
         Some(&second),
     );
     served.put("/entries", serde_json::to_vec(&newer).unwrap());
-    let update = std::process::Command::new(env!("CARGO_BIN_EXE_app"))
-        .args(["runtime", "install", &new_needed, "--repo", "local"])
+    let new_archive = root.join("new-runtime.tapp");
+    std::fs::write(&new_archive, &new_tapp).unwrap();
+    let update = std::process::Command::new(&installer)
+        .args([
+            "update",
+            registry_types::NATIVE_RUNTIME_PACKAGE_ID,
+            "--require-publisher",
+            &publisher_hex,
+            "--from",
+        ])
+        .arg(&new_archive)
         .output()
         .unwrap();
     assert!(
@@ -567,8 +593,15 @@ fn a_registry_build_for_another_runtime_fetches_that_runtime_or_is_refused() {
         b"tampered",
     )
     .unwrap();
-    let damaged = std::process::Command::new(env!("CARGO_BIN_EXE_app"))
-        .args(["runtime", "install", &new_needed, "--repo", "local"])
+    let damaged = std::process::Command::new(&installer)
+        .args([
+            "update",
+            registry_types::NATIVE_RUNTIME_PACKAGE_ID,
+            "--require-publisher",
+            &publisher_hex,
+            "--from",
+        ])
+        .arg(&new_archive)
         .output()
         .unwrap();
     assert!(

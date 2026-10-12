@@ -324,7 +324,8 @@ use smithay::wayland::pointer_gestures::PointerGesturesState;
 use smithay::wayland::relative_pointer::RelativePointerManagerState;
 use smithay::wayland::tablet_manager::TabletSeatHandler;
 use smithay::wayland::input_method::{
-    InputMethodHandler, InputMethodManagerState, PopupSurface as InputMethodPopupSurface,
+    InputMethodHandler, InputMethodManagerState, InputMethodSeat,
+    PopupSurface as InputMethodPopupSurface,
 };
 use smithay::wayland::text_input::{TextInputManagerState, TextInputSeat};
 use smithay::wayland::session_lock::{
@@ -739,6 +740,46 @@ mod personal_fabric_input_holder_tests {
 /// session.
 pub(crate) const CLOSING_FRAME_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum InputMethodPreeditState {
+    #[default]
+    Inactive,
+    Pending {
+        previous: bool,
+        next: bool,
+    },
+    Active,
+}
+
+impl InputMethodPreeditState {
+    fn stage(&mut self, next: bool) {
+        let previous = match *self {
+            Self::Active => true,
+            Self::Inactive => false,
+            Self::Pending { previous, .. } => previous,
+        };
+        *self = Self::Pending { previous, next };
+    }
+
+    fn finish(&mut self, accepted: bool) {
+        if let Self::Pending { previous, next } = *self {
+            *self = if if accepted { next } else { previous } {
+                Self::Active
+            } else {
+                Self::Inactive
+            };
+        }
+    }
+}
+
+impl InputMethodPreeditState {
+    pub(crate) fn is_active(self) -> bool {
+        // Staged requests cannot end an already accepted composition before
+        // their Commit passes the real client, serial and active-field gates.
+        matches!(self, Self::Active | Self::Pending { previous: true, .. })
+    }
+}
+
 pub struct State {
     /// Calloop loop handle — for registering input devices, session signals, libinput sources, etc.
     pub loop_handle: LoopHandle<'static, Self>,
@@ -1071,6 +1112,18 @@ pub struct State {
     /// Text commits the on-screen keyboard has made into focused fields this
     /// session: what a person typed on it, counted but never kept.
     pub osk_commits: u64,
+    /// Whether the trusted composing input method has a live, uncommitted
+    /// preedit. This is content-free protocol state used only to keep an
+    /// exact same-owner floating handoff from deactivating the composer.
+    pub(crate) input_method_preedit: InputMethodPreeditState,
+    /// Client holding the seat's single admitted input-method-v2 resource.
+    /// A second resource retires the connection instead of being allowed to
+    /// mutate protocol observations after Smithay marked it unavailable.
+    pub(crate) input_method_resource_client: Option<ClientId>,
+    /// Serial Smithay has most recently sent to the admitted input method.
+    /// This mirrors only content-free protocol ordering; mismatches fail
+    /// closed by retaining the last committed preedit state.
+    pub(crate) input_method_serial: u32,
     /// Whether one of the shell's own text fields holds the seat's
     /// text-input focus (see `compositor::shell_text_input`).
     pub(crate) shell_field_active: bool,
@@ -1092,7 +1145,9 @@ pub struct State {
     pub(crate) pending_floating_toplevels: Vec<PendingFloatingToplevel>,
     /// Live app-owned secondary surfaces, outside the normal workspace tree.
     pub(crate) floating_toplevels: Vec<FloatingToplevel>,
+    pub(crate) native_agent_markers: HashMap<u64, super::native::NativeAgentMarkerSource>,
     pub(crate) floating_toplevel_events: Vec<FloatingToplevelEvent>,
+    floating_focus_handoffs: HashMap<(u64, String), floating_focus::SourceFocus>,
     /// What transient surfaces' capture protection was last derived from.
     capture_protection_sync: CaptureProtectionSync,
 }
@@ -1163,6 +1218,17 @@ pub(crate) fn foreign_root(surface: &WlSurface) -> Option<WlSurface> {
 }
 
 impl State {
+    pub(crate) fn surface_launch_custody(
+        &self,
+        surface_id: u64,
+    ) -> Option<crate::shell::launcher::VerifiedLaunchCustody> {
+        self.client_input
+            .surface(surface_id)?
+            .client()?
+            .get_data::<ClientState>()?
+            .launch_custody
+    }
+
     pub(crate) fn authorize_floating_toplevel(&mut self, pending: PendingFloatingToplevel) {
         self.pending_floating_toplevels.retain(|candidate| {
             candidate.connection != pending.connection || candidate.public_id != pending.public_id
@@ -1184,12 +1250,14 @@ impl State {
         let pending = self.pending_floating_toplevels.remove(index);
         self.client_input.promote_to_overlay(surface_id);
         let surface = FloatingToplevel {
+            owner: pending.owner,
             surface_id,
             token: pending.token,
             connection: pending.connection,
             public_id: pending.public_id,
             app_id: pending.app_id,
             content_rect: pending.content_rect,
+            input_rect: pending.input_rect,
             rect: pending.rect,
             transfer_frame: pending.transfer_frame,
             transfer_source: pending.transfer_source,
@@ -1198,6 +1266,73 @@ impl State {
         };
         self.floating_toplevels.push(surface);
         true
+    }
+
+    pub(crate) fn floating_owner_for_surface(
+        &self,
+        surface_id: u64,
+    ) -> Result<Arc<FloatingToplevelOwner>, &'static str> {
+        let client = self
+            .surface_handles
+            .get(&surface_id)
+            .and_then(WlSurface::client)
+            .ok_or("floating source has no current Wayland connection")?;
+        let (_, room) = authenticated_toplevel_identity(client.get_data::<ClientState>(), None)?;
+        Ok(Arc::new(FloatingToplevelOwner {
+            client: client.id(),
+            room,
+        }))
+    }
+
+    fn resolve_toplevel_identity(
+        &self,
+        surface_id: u64,
+        client: Option<&smithay::reexports::wayland_server::Client>,
+        announced: Option<String>,
+    ) -> Result<(Option<String>, Option<crate::shell::state::RoomId>), &'static str> {
+        let owner = announced
+            .as_deref()
+            .and_then(floating_capability_token)
+            .and_then(|token| {
+                self.pending_floating_toplevels
+                    .iter()
+                    .find(|pending| pending.token == token)
+                    .map(|pending| (pending.owner.as_deref(), pending.app_id.as_str()))
+                    .or_else(|| {
+                        self.floating_toplevels
+                            .iter()
+                            .find(|surface| {
+                                surface.token == token && surface.surface_id == surface_id
+                            })
+                            .map(|surface| (surface.owner.as_deref(), surface.app_id.as_str()))
+                    })
+            });
+        authenticated_floating_toplevel_identity(client, announced, owner)
+    }
+
+    pub(crate) fn validate_floating_resume_owner(
+        &self,
+        connection: u64,
+        public_id: &str,
+        owner: Option<&FloatingToplevelOwner>,
+    ) -> Result<(), &'static str> {
+        let previous = self
+            .pending_floating_toplevels
+            .iter()
+            .find(|pending| pending.connection == connection && pending.public_id == public_id)
+            .map(|pending| pending.owner.as_deref())
+            .or_else(|| {
+                self.floating_toplevels
+                    .iter()
+                    .find(|surface| {
+                        surface.connection == connection && surface.public_id == public_id
+                    })
+                    .map(|surface| surface.owner.as_deref())
+            });
+        if owner.is_none() || previous.is_some_and(|previous| previous != owner) {
+            return Err("floating capability cannot change its source owner");
+        }
+        Ok(())
     }
 
     fn mark_floating_toplevel_presented(&mut self, surface_id: u64) {
@@ -1214,7 +1349,7 @@ impl State {
         surface.presented = true;
         if !surface.suspended {
             self.floating_toplevel_events
-                .push(FloatingToplevelEvent::Mapped(surface.clone()));
+                .push(FloatingToplevelEvent::Mapped(Box::new(surface.clone())));
         }
     }
 
@@ -1224,15 +1359,27 @@ impl State {
         public_id: &str,
         rect: vello::kurbo::Rect,
         content_rect: vello::kurbo::Rect,
+        input_rect: Option<vello::kurbo::Rect>,
     ) -> bool {
+        if ui::floating_surface::protocol_input_rect(
+            rect,
+            input_rect.map(ui::floating_surface::protocol_rect_array),
+        )
+        .is_err()
+        {
+            return false;
+        }
         if let Some(surface) = self
             .floating_toplevels
             .iter_mut()
             .find(|surface| surface.connection == connection && surface.public_id == public_id)
         {
-            let changed = surface.rect != rect || surface.content_rect != content_rect;
+            let changed = surface.rect != rect
+                || surface.content_rect != content_rect
+                || surface.input_rect != input_rect;
             surface.rect = rect;
             surface.content_rect = content_rect;
+            surface.input_rect = input_rect;
             return changed;
         }
         if let Some(pending) = self
@@ -1240,12 +1387,48 @@ impl State {
             .iter_mut()
             .find(|pending| pending.connection == connection && pending.public_id == public_id)
         {
-            let changed = pending.rect != rect || pending.content_rect != content_rect;
+            let changed = pending.rect != rect
+                || pending.content_rect != content_rect
+                || pending.input_rect != input_rect;
             pending.rect = rect;
             pending.content_rect = content_rect;
+            pending.input_rect = input_rect;
             return changed;
         }
         false
+    }
+
+    /// Suspend carries geometry, not a new input declaration. Preserve and
+    /// translate the last authenticated constraint rather than widening it.
+    pub(crate) fn update_retained_floating_geometry(
+        &mut self,
+        connection: u64,
+        public_id: &str,
+        rect: vello::kurbo::Rect,
+        content_rect: vello::kurbo::Rect,
+    ) -> bool {
+        let previous = self
+            .floating_toplevels
+            .iter()
+            .find(|surface| surface.connection == connection && surface.public_id == public_id)
+            .map(|surface| (surface.content_rect, surface.input_rect))
+            .or_else(|| {
+                self.pending_floating_toplevels
+                    .iter()
+                    .find(|surface| {
+                        surface.connection == connection && surface.public_id == public_id
+                    })
+                    .map(|surface| (surface.content_rect, surface.input_rect))
+            });
+        let Some((previous_content, input_rect)) = previous else {
+            return false;
+        };
+        let input_rect = ui::floating_surface::translate_input_rect(
+            input_rect,
+            previous_content.origin(),
+            content_rect.origin(),
+        );
+        self.update_floating_toplevel_rect(connection, public_id, rect, content_rect, input_rect)
     }
 
     /// Hide one app-owned surface without invalidating its capability or
@@ -1257,6 +1440,7 @@ impl State {
         public_id: &str,
         return_frame: Option<FloatingTransferFrame>,
     ) -> bool {
+        self.arm_floating_return_focus(connection, public_id);
         if let Some(frame) = return_frame
             && let Some(surface) = self
                 .floating_toplevels
@@ -1284,12 +1468,14 @@ impl State {
         connection: u64,
         public_id: &str,
     ) -> bool {
-        complete_floating_return_entries(
+        let focus_ready = self.floating_return_presented(connection, public_id);
+        let changed = complete_floating_return_entries(
             &mut self.pending_floating_toplevels,
             &mut self.floating_toplevels,
             connection,
             public_id,
-        )
+        );
+        changed || focus_ready
     }
 
     /// Release the source-frame gate only after the app's primary render
@@ -1332,7 +1518,41 @@ impl State {
         )
     }
 
+    /// Distinguish a fresh request from a refused retained capability. Callers
+    /// must not mint replacement authority after incompatible retained geometry.
+    pub(crate) fn resume_floating_request(
+        &mut self,
+        connection: u64,
+        public_id: &str,
+        geometry: (vello::kurbo::Rect, vello::kurbo::Rect),
+        transfer_frame: Option<FloatingTransferFrame>,
+        transfer_source: Option<FloatingTransferSource>,
+    ) -> Result<Option<String>, &'static str> {
+        let retained =
+            self.floating_toplevels
+                .iter()
+                .any(|surface| surface.connection == connection && surface.public_id == public_id)
+                || self.pending_floating_toplevels.iter().any(|surface| {
+                    surface.connection == connection && surface.public_id == public_id
+                });
+        let resumed = self.resume_floating_toplevel(
+            connection,
+            public_id,
+            geometry.0,
+            geometry.1,
+            transfer_frame,
+            transfer_source,
+        );
+        if retained && resumed.is_none() {
+            Err("floating resume rejected incompatible input geometry")
+        } else {
+            Ok(resumed)
+        }
+    }
+
     pub(crate) fn dismiss_floating_toplevel(&mut self, connection: u64, public_id: &str) -> bool {
+        self.floating_focus_handoffs
+            .remove(&(connection, public_id.to_owned()));
         dismiss_floating_entries(
             &mut self.pending_floating_toplevels,
             &mut self.floating_toplevels,
@@ -1342,6 +1562,8 @@ impl State {
     }
 
     pub(crate) fn dismiss_floating_connection(&mut self, connection: u64) -> bool {
+        self.floating_focus_handoffs
+            .retain(|(owner, _), _| *owner != connection);
         let pending_before = self.pending_floating_toplevels.len();
         let live_before = self.floating_toplevels.len();
         self.pending_floating_toplevels
@@ -1505,11 +1727,21 @@ impl State {
             serde_json::json!({"surface": id, "root_surface": root, "app_id": app_id, "role": role})
         };
         let keyboard = self.seat.get_keyboard();
+        let pointer = self.seat.get_pointer();
+        let (grab_kind, grab_surface, buttons_down) = self.client_input.pointer_custody();
         serde_json::json!({
             "keyboard": keyboard.as_ref().and_then(smithay::input::keyboard::KeyboardHandle::current_focus).map(describe),
             "routed_keyboard_surface": self.client_input.keyboard_focus(),
+            "pointer_observable": pointer.is_some(),
+            "pointer": pointer.as_ref().and_then(smithay::input::pointer::PointerHandle::current_focus).map(describe),
+            "routed_pointer_surface": self.client_input.pointer_focus(),
+            "pointer_grab": pointer.as_ref().map(|_| serde_json::json!({"kind": grab_kind, "surface": grab_surface})),
+            "pointer_buttons_down": pointer.as_ref().map(|_| buttons_down),
             "text_input": self.seat.text_input().focus().map(describe),
             "text_input_active": self.text_input_active(),
+            "input_method_connected": self.input_method_resource_client.is_some(),
+            "input_method_keyboard_grabbed": self.seat.input_method().keyboard_grabbed(),
+            "input_method_preedit_active": self.input_method_preedit.is_active(),
             "on_screen_keyboard_surface": self.osk_surface,
         })
     }
@@ -1717,12 +1949,17 @@ impl State {
             text_commit: crate::compositor::text_commit::TextCommit::default(),
             osk_surface: None,
             osk_commits: 0,
+            input_method_preedit: InputMethodPreeditState::Inactive,
+            input_method_resource_client: None,
+            input_method_serial: 0,
             shell_field_active: false,
             shell_field_keys: Vec::new(),
             virtual_keymaps: std::collections::HashMap::new(),
             closing_toplevels: HashMap::new(),
             pending_floating_toplevels: Vec::new(),
+            floating_focus_handoffs: HashMap::new(),
             floating_toplevels: Vec::new(),
+            native_agent_markers: HashMap::new(),
             floating_toplevel_events: Vec::new(),
             capture_protection_sync: CaptureProtectionSync::default(),
         };
@@ -4554,6 +4791,10 @@ pub struct ClientState {
     /// Durable workspace room from the same host-owned launch record. A client
     /// cannot select or change this through Wayland protocol state.
     pub workspace_id: Option<String>,
+    /// Exact supervised launch which owns this Wayland connection. Combined
+    /// with `workspace_id` and `package_id`, this distinguishes independent
+    /// processes of the same app without trusting a client-provided token.
+    pub(crate) launch_custody: Option<crate::shell::launcher::VerifiedLaunchCustody>,
     /// Whether package/app-id equality is part of this connection's sandbox
     /// boundary. Unconfined host launches keep their desktop compatibility ids.
     pub enforce_package_id: bool,
@@ -4565,6 +4806,9 @@ pub struct ClientState {
     /// Used to recognise xwayland-satellite after its last toplevel dies
     /// while leftover X clients (Wine) still hold the X socket.
     pub pid: Option<u32>,
+    /// Kernel process lifetime observed when this connection was admitted.
+    /// A reused PID can never authorize a mapped-file diagnostic.
+    pub pid_start_time: Option<u64>,
     /// Set when the connection is a legacy VM's Wayland forwarder: every app
     /// id it announces becomes `legacy.<guest>.<app id>`. Claiming this only
     /// lowers what a window is trusted with, so it needs no proof.
@@ -4587,9 +4831,11 @@ impl Default for ClientState {
             input_method: None,
             package_id: None,
             workspace_id: None,
+            launch_custody: None,
             enforce_package_id: false,
             executable: None,
             pid: None,
+            pid_start_time: None,
             legacy_guest: None,
             touch_bound: std::sync::atomic::AtomicBool::new(false),
         }
@@ -4618,15 +4864,26 @@ impl ClientState {
 
     /// Per-client state for an ordinary app whose process ancestry was
     /// authenticated at the public socket boundary.
+    #[cfg(test)]
     pub(crate) fn attributed_arc(
         identity: crate::shell::launcher::VerifiedLaunchIdentity,
+        pid: u32,
+    ) -> Arc<Self> {
+        Self::attributed_with_custody_arc(identity, None, pid)
+    }
+
+    pub(crate) fn attributed_with_custody_arc(
+        identity: crate::shell::launcher::VerifiedLaunchIdentity,
+        launch_custody: Option<crate::shell::launcher::VerifiedLaunchCustody>,
         pid: u32,
     ) -> Arc<Self> {
         Arc::new(Self {
             package_id: Some(identity.package_id),
             workspace_id: identity.workspace_id,
+            launch_custody,
             enforce_package_id: identity.confined,
             pid: Some(pid),
+            pid_start_time: crate::shell::launcher::proc_stat(pid).map(|(_, start)| start),
             ..Self::default()
         })
     }
@@ -4740,6 +4997,38 @@ fn launched_package(client: Option<&ClientState>) -> Option<String> {
     }
     client.package_id.clone()
 }
+
+fn authenticated_floating_toplevel_identity(
+    client: Option<&smithay::reexports::wayland_server::Client>,
+    announced: Option<String>,
+    owner: Option<(Option<&FloatingToplevelOwner>, &str)>,
+) -> Result<(Option<String>, Option<crate::shell::state::RoomId>), &'static str> {
+    let state = client.and_then(|client| client.get_data::<ClientState>());
+    if let Some((owner, app_id)) = owner {
+        let owner = owner.ok_or("floating capability has no source owner")?;
+        let client = client.ok_or("floating capability has no requesting client")?;
+        if client.id() != owner.client {
+            return Err("floating capability belongs to another Wayland connection");
+        }
+        let (canonical, room) = authenticated_toplevel_identity(state, None)?;
+        if room != owner.room
+            || state.is_some_and(|state| {
+                state.enforce_package_id && canonical.as_deref() != Some(app_id)
+            })
+        {
+            return Err("floating capability owner identity changed");
+        }
+        return Ok((announced, room));
+    }
+    authenticated_toplevel_identity(state, announced)
+}
+
+#[cfg(test)]
+#[path = "floating_identity_tests.rs"]
+mod floating_identity_tests;
+
+#[path = "floating_focus.rs"]
+mod floating_focus;
 
 fn authenticated_toplevel_identity(
     client: Option<&ClientState>,
@@ -4955,6 +5244,7 @@ impl CompositorHandler for State {
         let root = foreign_root(surface);
         self.drop_transients_for_surface(id);
         self.surface_handles.remove(&id);
+        self.retire_floating_focus_source(id);
         self.presentation_feedback.destroyed(id);
         self.surface_tracker.forget(id);
         self.unregister_share_session(id);
@@ -5053,13 +5343,54 @@ fn trusted_osk_identity(surface: &WlSurface, app_id: Option<&str>) -> bool {
     osk_identity_is_trusted(app_id, trusted_osk_connection(surface))
 }
 
+struct SurfaceAdoptionId(uuid::Uuid);
+
+pub(crate) fn surface_adoption_id(surface: &WlSurface) -> Option<uuid::Uuid> {
+    surface.data::<smithay::wayland::compositor::SurfaceUserData>()?;
+    wl_compositor::with_states(surface, |states| {
+        states
+            .data_map
+            .get::<SurfaceAdoptionId>()
+            .map(|identity| identity.0)
+    })
+}
+
+fn ensure_surface_adoption_id(surface: &WlSurface) -> Option<uuid::Uuid> {
+    surface.data::<smithay::wayland::compositor::SurfaceUserData>()?;
+    wl_compositor::with_states(surface, |states| {
+        states
+            .data_map
+            .insert_if_missing(|| SurfaceAdoptionId(uuid::Uuid::new_v4()));
+    });
+    surface_adoption_id(surface)
+}
+
 fn observe_toplevel_startup(surface: &ToplevelSurface) {
-    if let Some(pid) = surface
-        .wl_surface()
-        .client()
-        .and_then(|client| client.get_data::<ClientState>().and_then(|state| state.pid))
+    if let Some(client) = surface.wl_surface().client()
+        && let Some(state) = client.get_data::<ClientState>()
+        && let Some(pid) = state.pid
     {
-        crate::shell::launcher::record_startup_window(pid);
+        let adoption = state
+            .package_id
+            .as_ref()
+            .zip(state.workspace_id.as_ref())
+            .filter(|_| {
+                state.enforce_package_id
+                    && !state.privileged
+                    && state.pid_start_time.is_some_and(|expected| {
+                        crate::shell::launcher::proc_stat(pid)
+                            .is_some_and(|(_, start)| start == expected)
+                    })
+            })
+            .and_then(|(package, room)| {
+                Some(tilo_action_broker::services::LaunchAdoption {
+                    adoption_id: ensure_surface_adoption_id(surface.wl_surface())?,
+                    surface_id: surface_id(surface.wl_surface()),
+                    package_id: package.clone(),
+                    room: room.clone(),
+                })
+            });
+        crate::shell::launcher::record_startup_window(pid, adoption);
     }
 }
 
@@ -5394,6 +5725,10 @@ impl State {
     ) {
         if self.seat_input_method.get() != owner {
             self.cancel_active_dictation();
+            self.input_method_preedit = InputMethodPreeditState::Inactive;
+            self.input_method_resource_client = None;
+            self.input_method_serial = 0;
+            self.text_fields.protocol_focus_left();
         }
         self.seat_input_method.set(owner);
         let handle = self.display_handle.clone();
@@ -5444,6 +5779,11 @@ impl State {
         self.input_method_popup_surfaces()
     }
 
+    /// Content-free composing state for the input-method wire regression.
+    pub fn input_method_preedit_active_for_tests(&self) -> bool {
+        self.input_method_preedit.is_active()
+    }
+
     /// The xdg popups mapped over a window, in the order they opened.
     pub fn xdg_popups(&self) -> impl Iterator<Item = &PopupSurface> + '_ {
         self.popups.iter().map(|popup| &popup.surface)
@@ -5486,6 +5826,7 @@ impl State {
             .retain(|popup| !removed.contains(&surface_id(popup.wl_surface())));
         for id in removed {
             self.client_input.unregister_transient(id);
+            self.cancel_floating_focus_on_transition(self.client_input.keyboard_focus());
             crate::compositor::foreign::store().forget(id);
         }
     }
@@ -5978,12 +6319,12 @@ impl XdgShellHandler for State {
         let (identity, package) = if let Some(client) = surface.wl_surface().client() {
             let client_state = client.get_data::<ClientState>();
             (
-                authenticated_toplevel_identity(client_state, announced_app_id),
+                self.resolve_toplevel_identity(surface_id, Some(&client), announced_app_id),
                 launched_package(client_state),
             )
         } else {
             (
-                authenticated_toplevel_identity(None, announced_app_id),
+                self.resolve_toplevel_identity(surface_id, None, announced_app_id),
                 None,
             )
         };
@@ -6036,6 +6377,7 @@ impl XdgShellHandler for State {
                 if adopted.is_none() {
                     tracing::warn!(surface_id, %room, "rejected Wayland toplevel for a stale workspace");
                     self.client_input.unregister_toplevel(surface_id);
+                    self.cancel_floating_focus_on_transition(self.client_input.keyboard_focus());
                     surface.send_close();
                     return;
                 }
@@ -6116,6 +6458,8 @@ impl XdgShellHandler for State {
             .position(|candidate| candidate.surface_id == surface_id)
         {
             let surface = self.floating_toplevels.remove(index);
+            self.floating_focus_handoffs
+                .remove(&(surface.connection, surface.public_id.clone()));
             self.floating_toplevel_events
                 .push(FloatingToplevelEvent::Destroyed {
                     connection: surface.connection,
@@ -6152,6 +6496,7 @@ impl XdgShellHandler for State {
         crate::compositor::foreign::store().forget(surface_id);
         // Drop the input router's handle so no event can target a dead surface, and queue the chrome-side tab reap for next tick.
         self.client_input.unregister_toplevel(surface_id);
+        self.cancel_floating_focus_on_transition(self.client_input.keyboard_focus());
     }
 
     fn app_id_changed(&mut self, surface: ToplevelSurface) {
@@ -6167,9 +6512,9 @@ impl XdgShellHandler for State {
                 .and_then(|data| data.lock().ok().and_then(|d| d.app_id.clone()))
         });
         let identity = if let Some(client) = surface.wl_surface().client() {
-            authenticated_toplevel_identity(client.get_data::<ClientState>(), new_app_id)
+            self.resolve_toplevel_identity(surface_id, Some(&client), new_app_id)
         } else {
-            authenticated_toplevel_identity(None, new_app_id)
+            self.resolve_toplevel_identity(surface_id, None, new_app_id)
         };
         let Ok((Some(app_id), _)) = identity else {
             tracing::warn!(surface_id, "ignored unauthenticated Wayland app-id change");
@@ -6591,6 +6936,7 @@ impl InputMethodHandler for State {
         self.input_method_popups
             .retain(|popup| popup.wl_surface() != surface.wl_surface());
         self.client_input.unregister_transient(id);
+        self.cancel_floating_focus_on_transition(self.client_input.keyboard_focus());
         crate::compositor::foreign::store().forget(id);
     }
 
@@ -6735,9 +7081,62 @@ smithay::reexports::wayland_server::delegate_global_dispatch!(State: [
     smithay::reexports::wayland_protocols_misc::zwp_input_method_v2::server::zwp_input_method_manager_v2::ZwpInputMethodManagerV2:
     smithay::wayland::input_method::InputMethodManagerGlobalData
 ] => InputMethodManagerState);
-smithay::reexports::wayland_server::delegate_dispatch!(State: [
-    smithay::reexports::wayland_protocols_misc::zwp_input_method_v2::server::zwp_input_method_manager_v2::ZwpInputMethodManagerV2: ()
-] => InputMethodManagerState);
+impl
+    smithay::reexports::wayland_server::Dispatch<
+        smithay::reexports::wayland_protocols_misc::zwp_input_method_v2::server::zwp_input_method_manager_v2::ZwpInputMethodManagerV2,
+        (),
+    > for State
+{
+    fn request(
+        state: &mut Self,
+        client: &Client,
+        resource: &smithay::reexports::wayland_protocols_misc::zwp_input_method_v2::server::zwp_input_method_manager_v2::ZwpInputMethodManagerV2,
+        request: smithay::reexports::wayland_protocols_misc::zwp_input_method_v2::server::zwp_input_method_manager_v2::Request,
+        data: &(),
+        dhandle: &DisplayHandle,
+        data_init: &mut smithay::reexports::wayland_server::DataInit<'_, Self>,
+    ) {
+        let get_input_method = matches!(
+            request,
+            smithay::reexports::wayland_protocols_misc::zwp_input_method_v2::server::zwp_input_method_manager_v2::Request::GetInputMethod { .. }
+        );
+        let duplicate = get_input_method && state.input_method_resource_client.is_some();
+        if get_input_method && !duplicate {
+            state.input_method_resource_client = Some(client.id());
+            state.input_method_serial = 0;
+            state.input_method_preedit = InputMethodPreeditState::Inactive;
+            state.text_fields.protocol_focus_left();
+        }
+        <InputMethodManagerState as smithay::reexports::wayland_server::Dispatch<
+            smithay::reexports::wayland_protocols_misc::zwp_input_method_v2::server::zwp_input_method_manager_v2::ZwpInputMethodManagerV2,
+            (),
+            State,
+        >>::request(state, client, resource, request, data, dhandle, data_init);
+        if duplicate {
+            state.input_method_resource_client = None;
+            state.input_method_serial = 0;
+            state.input_method_preedit = InputMethodPreeditState::Inactive;
+            state.text_fields.protocol_focus_left();
+            state.display_handle.backend_handle().kill_client(
+                client.id(),
+                DisconnectReason::ConnectionClosed,
+            );
+        }
+    }
+
+    fn destroyed(
+        state: &mut Self,
+        client: ClientId,
+        resource: &smithay::reexports::wayland_protocols_misc::zwp_input_method_v2::server::zwp_input_method_manager_v2::ZwpInputMethodManagerV2,
+        data: &(),
+    ) {
+        <InputMethodManagerState as smithay::reexports::wayland_server::Dispatch<
+            smithay::reexports::wayland_protocols_misc::zwp_input_method_v2::server::zwp_input_method_manager_v2::ZwpInputMethodManagerV2,
+            (),
+            State,
+        >>::destroyed(state, client, resource, data);
+    }
+}
 smithay::reexports::wayland_server::delegate_dispatch!(State: [
     smithay::reexports::wayland_protocols_misc::zwp_input_method_v2::server::zwp_input_method_keyboard_grab_v2::ZwpInputMethodKeyboardGrabV2:
     smithay::wayland::input_method::InputMethodKeyboardUserData<State>
@@ -6763,6 +7162,26 @@ impl
         data_init: &mut smithay::reexports::wayland_server::DataInit<'_, Self>,
     ) {
         use smithay::reexports::wayland_protocols_misc::zwp_input_method_v2::server::zwp_input_method_v2::Request;
+        match &request {
+            Request::SetPreeditString { text, .. } => {
+                state.input_method_preedit.stage(!text.is_empty());
+            }
+            Request::CommitString { .. } => {
+                state.input_method_preedit.stage(false);
+            }
+            Request::Commit { serial } => {
+                let mut has_active_text_input = false;
+                state
+                    .seat
+                    .text_input()
+                    .with_active_text_input(|_, _| has_active_text_input = true);
+                let accepted = state.input_method_resource_client.as_ref() == Some(&client.id())
+                    && *serial == state.input_method_serial
+                    && has_active_text_input;
+                state.input_method_preedit.finish(accepted);
+            }
+            _ => {}
+        }
         if matches!(request, Request::CommitString { .. })
             && client.get_data::<ClientState>().is_some_and(|data| {
                 data.input_method
@@ -6784,6 +7203,12 @@ impl
         resource: &smithay::reexports::wayland_protocols_misc::zwp_input_method_v2::server::zwp_input_method_v2::ZwpInputMethodV2,
         data: &smithay::wayland::input_method::InputMethodUserData<State>,
     ) {
+        if state.input_method_resource_client.as_ref() == Some(&client) {
+            state.input_method_resource_client = None;
+            state.input_method_serial = 0;
+            state.input_method_preedit = InputMethodPreeditState::Inactive;
+            state.text_fields.protocol_focus_left();
+        }
         <InputMethodManagerState as smithay::reexports::wayland_server::Dispatch<
             smithay::reexports::wayland_protocols_misc::zwp_input_method_v2::server::zwp_input_method_v2::ZwpInputMethodV2,
             smithay::wayland::input_method::InputMethodUserData<State>,

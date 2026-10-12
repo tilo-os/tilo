@@ -1,9 +1,10 @@
 name: CI / app SDK
 
 # One app source, three targets. These lanes prove that the SDK builds Tilo
-# apps for Linux, macOS and the web through `tilo-app`, that a generated app
-# builds outside this repository, that every web-capable app runs in headless
-# Chromium, and that web bundles only shrink.
+# apps for Linux and the web through `tilo-app`, that a generated app builds
+# outside this repository, that every web-capable app runs in headless
+# Chromium, and that web bundles only shrink. The macOS lane runs on the one
+# macOS runner in dev-apps-macos.yml.
 on:
   # Pull requests and pushes share one path list. The lander requires this
   # workflow's checks only on a head it reported on.
@@ -150,8 +151,7 @@ jobs:
           else
             # A pull request compares the merge with the main it merged; a push
             # compares with its parent.
-            python3 tools/ci/app_sdk_affected.py ${MAIN:+--base "$MAIN"} --github-output "$GITHUB_OUTPUT"
-            python3 tools/ci/app_sdk_affected.py ${MAIN:+--base "$MAIN"} --lane linux --github-output "$GITHUB_OUTPUT"
+            python3 tools/ci/app_sdk_affected.py ${MAIN:+--base "$MAIN"} --lane both --github-output "$GITHUB_OUTPUT"
           fi
 
   # Linux: the CLI's own tests, the Linux artifact and .tapp of a
@@ -230,64 +230,6 @@ jobs:
         if: always()
         run: bash tools/ci/sccache.sh report || true
 
-  # macOS: the generated template outside the repository, Calculator and
-  # Notes as ad-hoc-signed .app bundles rendered offscreen, and a packaged
-  # .app zip (Developer ID signing and notarization need release secrets;
-  # without them `package` signs ad hoc) that becomes a signed registry
-  # entry for the macOS artifact format.
-  macos:
-    # Disabled: no runner serves the imager-macos-* labels yet.
-    if: false
-    runs-on: imager-macos-aarch64
-    timeout-minutes: 180
-    steps:
-      - name: Checkout
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          fetch-depth: 1
-      - name: Build tilo-app and tilo-app-package
-        run: cargo build --locked -p tilo-app-cli -p tilo-app-package-cli --bin tilo-app --bin tilo-app-package
-      - name: Template outside the repository, as a git dependency
-        env:
-          TILO_SDK_SOURCE: git
-        run: |
-          rustup target add wasm32-unknown-unknown
-          cargo test --locked -p tilo-app-cli --test it outside_repo -- --ignored --nocapture
-      - name: Calculator and Notes as .app bundles
-        run: |
-          set -euo pipefail
-          shots="$RUNNER_TEMP/macos-shots"
-          mkdir -p "$shots"
-          for app in calculator notes; do
-            bundle="$(target/debug/tilo-app build --target macos "apps/$app" | tail -n 1)"
-            plutil -lint "$bundle/Contents/Info.plist"
-            codesign --verify --deep --strict "$bundle"
-            "$bundle/Contents/MacOS/$app" --shots "$shots/$app.png"
-            test -s "$shots/$app.png"
-          done
-      - name: Package Calculator for macOS
-        run: |
-          target/debug/tilo-app package --target macos apps/calculator \
-            --output "$RUNNER_TEMP/Calculator-macos.zip" --force
-          test -s "$RUNNER_TEMP/Calculator-macos.zip"
-          test -s "$RUNNER_TEMP/Calculator-macos.zip.json"
-      - name: The .app zip becomes a signed macOS registry entry
-        run: |
-          set -euo pipefail
-          target/debug/tilo-app-package keygen --out "$RUNNER_TEMP/publisher.json"
-          target/debug/tilo-app-package entry --platform macos \
-            --url https://apps.tilo.so/artifacts/calculator/Calculator-macos.zip \
-            --identity "$RUNNER_TEMP/publisher.json" "$RUNNER_TEMP/Calculator-macos.zip" \
-            > "$RUNNER_TEMP/calculator-macos-entry.json"
-          python3 -c 'import json,sys; v=json.load(open(sys.argv[1]))["versions"][0]; assert v["target"]["platform"]=="macos" and v["artifact"]["format"]=="macos-app-zip", v' \
-            "$RUNNER_TEMP/calculator-macos-entry.json"
-      - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
-        if: always()
-        with:
-          name: app-sdk-macos-shots
-          path: ${{ runner.temp }}/macos-shots
-          if-no-files-found: ignore
-
   # Web: the desktop bundle built from the app manifests and every registered
   # app mounted in headless Chromium on WebGPU.
   web:
@@ -334,8 +276,7 @@ jobs:
       - name: Headless Chromium for Testing
         run: |
           # Chrome's shared-library dependencies; present on current builders.
-          dnf install -y nss atk at-spi2-atk cups-libs libdrm libXcomposite libXdamage \
-            libXrandr mesa-libgbm pango alsa-lib libxkbcommon || true
+          bash tools/ci/ensure-browser-dependencies.sh
           npx --yes @puppeteer/browsers@2 install chrome@stable --path "$RUNNER_TEMP/chrome" \
             | tee "$RUNNER_TEMP/chrome.txt"
           echo "CHROME=$(awk '{print $2}' "$RUNNER_TEMP/chrome.txt" | tail -n 1)" >> "$GITHUB_ENV"
@@ -471,8 +412,7 @@ jobs:
         run: |
           command -v node || dnf install -y nodejs
           # Chrome's shared-library dependencies; present on current builders.
-          dnf install -y nss atk at-spi2-atk cups-libs libdrm libXcomposite libXdamage \
-            libXrandr mesa-libgbm pango alsa-lib libxkbcommon || true
+          bash tools/ci/ensure-browser-dependencies.sh
           npx --yes @puppeteer/browsers@2 install chrome@stable --path "$RUNNER_TEMP/chrome" \
             | tee "$RUNNER_TEMP/chrome.txt"
           echo "CHROME=$(awk '{print $2}' "$RUNNER_TEMP/chrome.txt" | tail -n 1)" >> "$GITHUB_ENV"

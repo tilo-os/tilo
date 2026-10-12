@@ -32,6 +32,7 @@
 
 use std::collections::HashMap;
 use tilo_automerge::ApplyIncoming;
+use tilo_automerge::ReadTyped as _;
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
@@ -317,7 +318,7 @@ impl WorkspaceDirectory {
         let obj = self.ensure_workspace_obj(id)?;
         match governor {
             Some(governor) => self.put_text_if_changed(&obj, "governor", governor),
-            None if self.read_text(&obj, "governor").is_some() => self
+            None if self.doc.str_at(&obj, "governor").is_some() => self
                 .doc
                 .delete(&obj, "governor")
                 .map_err(|e| DirectoryError::Automerge(e.to_string())),
@@ -331,7 +332,7 @@ impl WorkspaceDirectory {
         key: &str,
         value: &str,
     ) -> Result<(), DirectoryError> {
-        if self.read_text(obj, key).as_deref() == Some(value) {
+        if self.doc.str_at(obj, key).as_deref() == Some(value) {
             return Ok(());
         }
         self.doc
@@ -352,13 +353,7 @@ impl WorkspaceDirectory {
             return Ok(());
         }
         let obj = self.ensure_workspace_obj(id)?;
-        let current = match self.doc.get(&obj, "order") {
-            Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
-                ScalarValue::F64(v) => Some(*v),
-                _ => None,
-            },
-            _ => None,
-        };
+        let current = self.doc.f64_at(&obj, "order");
         if current == Some(order) {
             return Ok(());
         }
@@ -406,7 +401,7 @@ impl WorkspaceDirectory {
                 else {
                     return None;
                 };
-                Some((device, self.read_text(&obj, "label").unwrap_or_default()))
+                Some((device, self.doc.str_at(&obj, "label").unwrap_or_default()))
             })
             .collect();
         out.sort();
@@ -415,16 +410,6 @@ impl WorkspaceDirectory {
 
     fn device_key(device: &[u8; 32]) -> String {
         format!("d:{}", hex::encode(device))
-    }
-
-    fn read_text(&self, obj: &ObjId, key: &str) -> Option<String> {
-        match self.doc.get(obj, key) {
-            Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
-                ScalarValue::Str(s) => Some(s.to_string()),
-                _ => None,
-            },
-            _ => None,
-        }
     }
 
     /// Remove a workspace from the directory. If the workspace does
@@ -581,9 +566,9 @@ impl WorkspaceDirectory {
             let Ok(Some((Value::Object(ObjType::Map), obj))) = self.doc.get(ROOT, &key) else {
                 continue;
             };
-            let name = self.read_text(&obj, "name").unwrap_or_default();
-            let room = self.read_text(&obj, "room");
-            let governor = self.read_text(&obj, "governor");
+            let name = self.doc.str_at(&obj, "name").unwrap_or_default();
+            let room = self.doc.str_at(&obj, "room");
+            let governor = self.doc.str_at(&obj, "governor");
             let order = match self.doc.get(&obj, "order") {
                 Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
                     ScalarValue::F64(v) if v.is_finite() => Some(*v),

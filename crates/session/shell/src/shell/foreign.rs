@@ -2509,16 +2509,24 @@ impl ForeignFrameStore {
 
     /// Exact completed pixel generation; pending/superseded captures are not proof.
     pub fn presentation_pixels(&self, id: SurfaceId) -> Option<(u64, u64)> {
+        self.presentation_capture_state(id).0
+    }
+
+    /// Observe completed pixels and an exact surface's pending capture under
+    /// one lock. Pending capture is neither pixels nor presentation authority.
+    pub fn presentation_capture_state(&self, id: SurfaceId) -> (Option<(u64, u64)>, bool) {
         let entries = self
             .entries
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let entry = entries.get(&id)?;
-        let result =
-            (!entry.capturing() && entry.last_error.is_none() && entry.mapped && entry.seq != 0)
-                .then_some((entry.seq, entry.shm_done));
+        let Some(entry) = entries.get(&id) else {
+            return (None, false);
+        };
+        let pending = entry.capturing();
+        let pixels = (!pending && entry.last_error.is_none() && entry.mapped && entry.seq != 0)
+            .then_some((entry.seq, entry.shm_done));
         drop(entries);
-        result
+        (pixels, pending)
     }
 
     pub fn begin_presentation_frame(&self, viewport: Rect) {
@@ -3736,6 +3744,13 @@ impl ForeignFrameStore {
         guard.get(&id).map_or(tile, |e| e.target_box(tile))
     }
 
+    /// Exact current captured-image presentation, using the same fit as the
+    /// native foreign-surface painter. No frame means no painted geometry.
+    pub(crate) fn painted_frame_rect(&self, id: SurfaceId, tile: Rect) -> Option<Rect> {
+        let (width, height) = self.frame_size(id)?;
+        fit_image_rect(self.target_box(id, tile), width, height)
+    }
+
     /// Where desktop point `at` falls on `id`'s surface, in surface-local
     /// logical pixels, when `id` is shown in `tile` — the inverse of how the
     /// tile draws it. The window's geometry is drawn at the corner of
@@ -3748,7 +3763,7 @@ impl ForeignFrameStore {
             return (x - target.x0, y - target.y0);
         };
         let (_, _, width, height) = layout.content;
-        let Some(drawn) = fit_into(target, width, height) else {
+        let Some(drawn) = fit_image_rect(target, width, height) else {
             return (x - target.x0, y - target.y0);
         };
         let scale_x = drawn.width() / f64::from(width);
@@ -3805,6 +3820,43 @@ impl ForeignFrameStore {
     pub fn frame_size(&self, id: SurfaceId) -> Option<(u32, u32)> {
         let (_, _, w, h) = self.layout(id)?.content;
         (w > 0 && h > 0).then_some((w, h))
+    }
+
+    /// Numeric, read-only evidence for diagnosing client-buffer scaling.
+    /// `frame_size` describes the cropped image; this also preserves the raw
+    /// allocation and the protocol sizes that determine that crop and fit.
+    pub fn frame_geometry(&self, id: SurfaceId) -> Option<serde_json::Value> {
+        let children = self.children_of(id);
+        let guard = self
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let entry = guard.get(&id)?;
+        let (width, height, content, configured_extent, min_size, max_size, geometry, scale) = (
+            entry.width,
+            entry.height,
+            layout_of(&guard, id, &children)?.content,
+            entry.configured_extent,
+            entry.min_size,
+            entry.max_size,
+            entry.geometry,
+            entry.scale,
+        );
+        drop(guard);
+        let (x, y, w, h) = content;
+        Some(serde_json::json!({
+            "raw_buffer": {"w": width, "h": height},
+            "content_crop": {"x": x, "y": y, "w": w, "h": h},
+            "configured_extent": configured_extent.map(|(w, h)| serde_json::json!({"w": w, "h": h})),
+            "min_size": {"w": min_size.0, "h": min_size.1},
+            "max_size": {"w": max_size.0, "h": max_size.1},
+            "window_geometry": geometry.map(|geometry| serde_json::json!({
+                "x": geometry.x, "y": geometry.y,
+                "w": geometry.width, "h": geometry.height,
+                "viewport_destination": scale.destination.map(|(w, h)| serde_json::json!({"w": w, "h": h})),
+                "buffer_scale": scale.buffer_scale,
+            })),
+        }))
     }
 
     /// Whether `id`'s window has been shown — the latched answer from [`Self::mark_presented`], read without changing it.
@@ -4160,6 +4212,7 @@ pub struct ForeignSurfaceWidget {
     /// never showed a usable frame. The lookup consults launches then installed manifests, so it's not repeated on every rebuild.
     name: std::cell::OnceCell<String>,
     preserve_transparency: bool,
+    floating_input_rect: Option<Rect>,
     last_draw: Option<std::time::Instant>,
 }
 
@@ -4177,6 +4230,7 @@ impl ForeignSurfaceWidget {
             test_id: format!("foreign-surface-{surface_id}"),
             name: std::cell::OnceCell::new(),
             preserve_transparency: false,
+            floating_input_rect: None,
             last_draw: None,
         }
     }
@@ -4186,6 +4240,20 @@ impl ForeignSurfaceWidget {
             preserve_transparency: true,
             ..Self::new(surface_id, app_id)
         }
+    }
+
+    pub fn set_floating_input_rect(&mut self, rect: Option<Rect>) {
+        self.floating_input_rect = rect;
+    }
+
+    pub fn floating_input_contains(&self, point: Point) -> bool {
+        self.floating_input_rect
+            .unwrap_or(self.rect)
+            .contains(point)
+    }
+
+    pub fn floating_input_rect(&self) -> Option<Rect> {
+        self.floating_input_rect
     }
 
     /// The app's name, as the tab above this surface says it.
@@ -4432,14 +4500,14 @@ impl ForeignSurfaceWidget {
         }
         // A window whose maximum size keeps it smaller than the tab is fitted
         // into its centred box instead; `surface_point` maps input the same way.
-        fit_into(store().target_box(self.surface_id, self.rect), img_w, img_h)
+        fit_image_rect(store().target_box(self.surface_id, self.rect), img_w, img_h)
     }
 }
 
 /// An `img_w`×`img_h` image scaled to fit `bounds` with its aspect ratio
 /// kept, anchored at the top-left corner: how a tile draws its window, and so
 /// what input inverts.
-fn fit_into(bounds: Rect, img_w: u32, img_h: u32) -> Option<Rect> {
+fn fit_image_rect(bounds: Rect, img_w: u32, img_h: u32) -> Option<Rect> {
     if img_w == 0 || img_h == 0 || bounds.width() <= 0.0 || bounds.height() <= 0.0 {
         return None;
     }
@@ -6191,6 +6259,11 @@ mod tests {
         widget.rect = tile;
         let dst = widget.fit_rect(200, 200).expect("fit");
         assert_eq!(
+            store().painted_frame_rect(id, tile),
+            Some(dst),
+            "marker publication observes the same cropped frame as the native painter"
+        );
+        assert_eq!(
             (dst.x0 - 80.0, dst.y0 - 30.0),
             (20.0, 20.0),
             "the painted geometry corner is surface-local (20, 20)"
@@ -6218,6 +6291,11 @@ mod tests {
             widget.fit_rect(600, 800),
             Some(target),
             "drawn 1:1 in its centred box, not stretched across the tab"
+        );
+        assert_eq!(
+            store().painted_frame_rect(id, tile),
+            widget.fit_rect(600, 800),
+            "marker projection follows the actually painted centred window"
         );
         assert_eq!(store().surface_origin(id, tile, (300.0, 0.0)), (300.0, 0.0));
         assert!(

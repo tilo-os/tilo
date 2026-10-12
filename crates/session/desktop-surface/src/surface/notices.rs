@@ -487,7 +487,8 @@ impl NotificationLayer {
         let r = self.rect;
         let width = PANEL_WIDTH.min(r.width() - 2.0 * PANEL_INSET).max(0.0);
         let y0 = r.y0 + PANEL_INSET;
-        let wanted = center.preferred_height(&self.notifications.log(), self.type_lines);
+        let wanted =
+            center.preferred_height_for_width(&self.notifications.log(), self.type_lines, width);
         let height = wanted.min(r.y1 - PANEL_INSET - y0).max(0.0);
         let x1 = r.x1 - PANEL_INSET;
         Some(CenterLayout::new(

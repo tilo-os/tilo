@@ -123,8 +123,6 @@ pub mod sync;
 #[cfg(feature = "filesystem")]
 pub mod sync_folder;
 #[cfg(feature = "filesystem")]
-pub mod syncstate;
-#[cfg(feature = "filesystem")]
 pub mod thumbs;
 #[cfg(feature = "filesystem")]
 pub mod transaction_coordinator;
@@ -168,9 +166,7 @@ pub use fs_protocol::{
     RecipientFailureV1, RecipientSubscriptionKeyV1, RecipientSubscriptionStatusV1,
 };
 #[cfg(feature = "filesystem")]
-pub use history::{
-    FileHistoryStore, HISTORY_XATTR, HistoryError, HistoryProjectionV1, RecordHistorySnapshot,
-};
+pub use history::{FileHistoryStore, HistoryError, RecordHistorySnapshot};
 #[cfg(feature = "filesystem")]
 pub use hydration::Hydrator;
 #[cfg(feature = "filesystem")]
@@ -253,11 +249,7 @@ pub use replica_ack::{
     TILO_FS_REPLICA_ACK_ALPN,
 };
 #[cfg(feature = "filesystem")]
-pub use share_authority::{
-    MAX_SHARE_PROJECTION_BYTES, MAX_SHARES_PER_RECORD, Redemption, SHARE_PROJECTION_VERSION,
-    ShareAuthority, ShareAuthorityError, ShareGrantProjectionV1, ShareGrantStatus,
-    ShareProjectionError, ShareProjectionV1, ShareSubjectProjection,
-};
+pub use share_authority::{Redemption, ShareAuthority, ShareAuthorityError};
 #[cfg(feature = "filesystem")]
 pub use share_control::{
     MAX_SHARE_CONTROL_CONNECTIONS, MAX_SHARE_CONTROL_FRAME_BYTES,
@@ -282,8 +274,6 @@ pub use store::{BackendGcRelease, StoreEvictionError};
 pub use store::{ContentStore, DEFAULT_BLOB_GC_INTERVAL};
 #[cfg(feature = "filesystem")]
 pub use sync::{FsTransportIdentity, RecordServices, Ticket, Workspace};
-#[cfg(feature = "filesystem")]
-pub use syncstate::{SHARE_CONTROL_XATTR, SHARE_XATTR, SYNC_XATTR, SyncState, THUMB_XATTR};
 #[cfg(feature = "filesystem")]
 pub use thumbs::ThumbProvider;
 #[cfg(feature = "filesystem")]

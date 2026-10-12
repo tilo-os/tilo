@@ -14,15 +14,20 @@
 //! acknowledged, that edit's whole recovery history, one dependency at a
 //! time: 5.7 s of broker CPU per edit at 48,000 characters (1.2 s at
 //! 10,000), which starved the reader's round trips past their deadlines
-//! into renewals, each a whole read. The budgets below hold the broker at a
-//! fraction of that.
-use super::blocked_read::commit_edit;
+//! into renewals, each a whole read. Then the app sent every edit it read
+//! back to the owner, twice, as its own (once per route publishing the
+//! record), and every commit wrote the owner's whole record out as JSON
+//! about seven times, its outgoing bytes a line per byte: 725 ms of broker
+//! CPU per edit at 48,000 characters. The app now sends nothing it only
+//! read, so the broker's share is its reads, flat in the document's size;
+//! the edit's own commit, which persists the record, is the process's.
 use super::*;
 use std::fmt::Write as _;
 use std::sync::atomic::{AtomicU64, Ordering};
 use tilo_action_broker::services::{
     HeldRevision, NativeDocumentRead, NativeDocumentReadContext, NativeDocumentReads,
 };
+use tilo_actions::Action as _;
 
 /// Lines written per edit while the document is made large.
 const LINES_PER_EDIT: usize = 250;
@@ -33,8 +38,9 @@ const EDITS: usize = 10;
 const READER_BYTES_PER_EDIT_BUDGET: u64 = 4096;
 
 /// A document of about 10,000 characters (200 lines, one text op each).
-/// Measured in this debug harness on the shared runner: 236–250 ms of
-/// broker CPU per edit, 1.2 s before.
+/// Measured in this debug harness on the shared runner, per edit: 18 ms of
+/// broker CPU (1.2 s, then 247 ms before), 382 ms of process CPU (1.0 s)
+/// and 241 ms to show (577 ms).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_large_shared_document_under_remote_editing_is_reread_by_the_edit() {
     trace_publication_hops();
@@ -46,9 +52,9 @@ async fn a_large_shared_document_under_remote_editing_is_reread_by_the_edit() {
     .await;
 }
 
-/// About 48,000 characters (1,000 lines). Measured: 641 ms of broker CPU per
-/// edit, 5.7 s before; nearly all of what is left persists the owner's
-/// record.
+/// About 48,000 characters (1,000 lines). Measured per edit: 20 ms of broker
+/// CPU (5.7 s, then 725 ms before), 574 ms of process CPU (2.3 s) and 344 ms
+/// to show (1.5 s).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_long_shared_document_under_remote_editing_keeps_its_broker_responsive() {
     trace_publication_hops();
@@ -60,10 +66,17 @@ async fn a_long_shared_document_under_remote_editing_keeps_its_broker_responsive
     .await;
 }
 
-/// Broker CPU a one-line edit may cost, by document size in lines.
-fn broker_ms_per_edit_budget(lines: usize) -> u128 {
-    if lines <= 200 { 600 } else { 1500 }
+/// Broker CPU a one-line edit may cost at either size: the broker only
+/// answers the app's reads, which hand it the edit.
+const BROKER_MS_PER_EDIT_BUDGET: u128 = 100;
+/// CPU the whole test process may spend per one-line edit, by document size
+/// in lines: both devices, the relay, the app showing the edit and the
+/// owner's commit of it, which persists the owner's record.
+fn process_ms_per_edit_budget(lines: usize) -> u128 {
+    if lines <= 200 { 800 } else { 1100 }
 }
+/// How long half the edits may take to show, at either size.
+const LATENCY_P50_MS_BUDGET: u128 = 1000;
 
 /// What the first mounted app's committed readers were handed by the owner.
 #[derive(Default)]
@@ -245,7 +258,17 @@ async fn shown(target: &mut Mounted, body: &str, what: &str) -> std::time::Durat
     tilo_test_env::within(what, async {
         loop {
             target.frame();
-            if target.has_body(body) {
+            assert!(
+                target.code.app.collaboration_is_connected(),
+                "collaboration failed while awaiting {what}"
+            );
+            let phase = super::blocked_read::phase(target);
+            if target.has_body(body)
+                && phase["committed_read_ready"] == true
+                && phase["merge_ready"] == true
+                && phase["pending_remote"] == false
+                && phase["committed_queue"] == 0
+            {
                 break;
             }
             tokio::time::sleep(std::time::Duration::from_millis(5)).await;
@@ -253,6 +276,88 @@ async fn shown(target: &mut Mounted, body: &str, what: &str) -> std::time::Durat
     })
     .await;
     started.elapsed()
+}
+
+/// The measured collaborator has no mounted SDK sharing its signer. A fixture
+/// write must not overtake an earlier SDK write from either mounted device.
+pub(super) async fn enroll_writer(
+    context: &Context<'_>,
+    authority: &ActualAuthority,
+    receiving_custody: &Arc<Mutex<Option<NativeWorkspaceOwner>>>,
+) -> Option<Device> {
+    if !matches!(context.journey, Journey::ActiveReads { .. }) {
+        return None;
+    }
+    Some(
+        Box::pin(enroll_device(
+            context,
+            authority,
+            receiving_custody,
+            84,
+            "Active document collaborator",
+        ))
+        .await,
+    )
+}
+
+pub(super) async fn close_writer(writer: Option<Device>) {
+    if let Some(writer) = writer {
+        writer.endpoint.close().await;
+    }
+}
+
+/// Receive a genuine remote edit from the independently enrolled collaborator.
+/// Its signer is never used by either mounted SDK, so a queued SDK write cannot
+/// be made stale by a later synthetic sequence committed ahead of it.
+fn commit_edit(device: &Device, owner: &NativeWorkspaceOwner, base: &str, expected: &str) {
+    let room = RoomId::parse(tilo_joined_room::testing::ROOM).unwrap();
+    assert_ne!(
+        device.identity.device_cert.device_public_key,
+        owner
+            .with_current(room, |view| Ok(view.device().device_public_key))
+            .unwrap(),
+        "the measured remote collaborator must not share the mounted reader's signer"
+    );
+    let changes = owner
+        .with_current(room, |view| {
+            let mut document =
+                automerge::AutoCommit::load(&view.peer().document(APP, cold_code::RECORD).unwrap())
+                    .unwrap();
+            document.set_actor(automerge::ActorId::from(
+                device.identity.device_cert.device_public_key.to_vec(),
+            ));
+            let before = document.get_heads();
+            code_editor::actions::text_edit_action(FILE, base, expected)
+                .apply(&mut document)
+                .unwrap();
+            collab_types::CommitNamed::commit_edit(
+                &mut document,
+                cold_code::PROJECT_KIND,
+                "buffers",
+            );
+            Ok(document.save_after(&before))
+        })
+        .unwrap();
+    let message = cold_code::unordered_document_message(
+        room,
+        changes,
+        &device.identity.device_signing_key,
+        SystemTime::now(),
+    );
+    owner
+        .receive(
+            room,
+            tilo_peer_state::TransportOrigin::RelayDelta(
+                device.identity.device_cert.device_public_key,
+            ),
+            message,
+            SystemTime::now(),
+        )
+        .expect("the native owner must admit the signed collaborator edit");
+    assert!(
+        has_committed_body(owner, expected),
+        "the received edit must be committed, not pending"
+    );
 }
 
 /// Make the shared document large, then edit it a line at a time, each a
@@ -268,6 +373,9 @@ pub(super) async fn run(device: &Device, target: &mut Mounted, lines: usize) {
         .clone()
         .expect("the active journey measures the mounted app's reads");
     let owner = target.network.native_owner().unwrap();
+    // A visible body alone does not establish the reader's applied revision.
+    // Finish opening the original committed route before any synthetic edit.
+    shown(target, BODY, "the initial shared document read to settle").await;
     // Written in edits a signed text edit can carry (16 KiB each).
     let mut body = String::from(BODY);
     for batch in (0..lines).collect::<Vec<_>>().chunks(LINES_PER_EDIT) {
@@ -307,18 +415,20 @@ pub(super) async fn run(device: &Device, target: &mut Mounted, lines: usize) {
     let per_edit = |total: u128| total.checked_div(u128::from(edits)).unwrap_or(0);
     let bytes_per_edit = read.bytes.checked_div(edits).unwrap_or(0);
     let broker_ms_per_edit = per_edit(parts.first().map_or(0, std::time::Duration::as_millis));
+    let process_ms_per_edit = per_edit(cpu.as_millis());
+    let latency_ms_p50 = latencies
+        .get(EDITS / 2)
+        .map_or(0, std::time::Duration::as_millis);
     eprintln!(
         "ACTIVE-SHARED-DOCUMENT doc_chars={} edits={EDITS} full_captures={} changes={} reader_bytes_per_edit={bytes_per_edit} owner_read_us_per_edit={} process_cpu_ms_per_edit={} broker_cpu_ms_per_edit={} shovel_cpu_ms_per_edit={} latency_ms_p50={} latency_ms_max={}",
         body.len(),
         read.captures,
         read.changes,
         per_edit(u128::from(read.owner_ns)) / 1_000,
-        per_edit(cpu.as_millis()),
+        process_ms_per_edit,
         broker_ms_per_edit,
         per_edit(parts.get(1).map_or(0, std::time::Duration::as_millis)),
-        latencies
-            .get(EDITS / 2)
-            .map_or(0, std::time::Duration::as_millis),
+        latency_ms_p50,
         latencies.last().map_or(0, std::time::Duration::as_millis),
     );
     assert!(
@@ -334,10 +444,20 @@ pub(super) async fn run(device: &Device, target: &mut Mounted, lines: usize) {
         "each one-line edit handed the reader {bytes_per_edit} bytes (budget {READER_BYTES_PER_EDIT_BUDGET}); the document is {} characters",
         body.len()
     );
-    let budget = broker_ms_per_edit_budget(lines);
     assert!(
-        broker_ms_per_edit <= budget,
-        "each one-line edit cost the broker thread {broker_ms_per_edit} ms of CPU (budget {budget} ms); the document is {} characters",
+        broker_ms_per_edit <= BROKER_MS_PER_EDIT_BUDGET,
+        "each one-line edit cost the broker thread {broker_ms_per_edit} ms of CPU (budget {BROKER_MS_PER_EDIT_BUDGET} ms); the document is {} characters",
+        body.len()
+    );
+    let budget = process_ms_per_edit_budget(lines);
+    assert!(
+        process_ms_per_edit <= budget,
+        "each one-line edit cost the process {process_ms_per_edit} ms of CPU (budget {budget} ms); the document is {} characters",
+        body.len()
+    );
+    assert!(
+        latency_ms_p50 <= LATENCY_P50_MS_BUDGET,
+        "half the edits took over {latency_ms_p50} ms to show (budget {LATENCY_P50_MS_BUDGET} ms); the document is {} characters",
         body.len()
     );
 }

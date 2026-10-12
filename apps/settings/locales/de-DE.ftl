@@ -1807,6 +1807,15 @@ net-sim-pin-caption = Gib die PIN der ausgewählten SIM ein, um Mobilfunk zu ent
 net-ipv4-caption = Verwende automatische Adressen, sofern dein Netzwerk keine feste Adresse erfordert.
 net-vpn-caption = Wähle ein gespeichertes VPN zum Verbinden. Füge Verbindungen in VPN Studio hinzu.
 
+net-wake-network = Aufwecken über { $name }
+net-wake-disabled = Magic-Packet-Aufwecken für diese Verbindung aktivieren. Ob dieser Computer dadurch aufwacht, muss separat getestet werden.
+net-wake-unverified = Magic-Packet-Aufwecken ist gespeichert und im Treiber aktiviert. Das Aufwecken dieses Computers wurde noch nicht überprüft.
+net-wake-connect-first = Verbinde dich mit diesem Netzwerk, um das Gerät zu prüfen und Aufweckeinstellungen anzuwenden.
+net-wake-unsupported = Der Treiber dieser Verbindung meldet keine Unterstützung für Magic-Packet-Aufwecken.
+net-wake-unavailable = Aufweckeinstellungen konnten nicht gelesen werden.
+net-wake-pending = Die Aufweckeinstellung ist gespeichert, muss aber noch auf diese Verbindung angewendet werden.
+net-wake-saved = Aufweckkonfiguration gespeichert. Das tatsächliche Aufwecken wurde noch nicht überprüft.
+
 # Copy used by Settings panes and their status/error branches.
 a11y-mouse-keys-caption = Mit dem Ziffernblock kannst du den Zeiger bewegen und klicken.
 a11y-shared-caption = Tilo-Apps verwenden diese gemeinsamen Einstellungen zur Barrierefreiheit.
@@ -2420,3 +2429,37 @@ settings-allow-capability = { $on ->
     [true] { $capability } für Continuity erlaubt
    *[false] { $capability } für Continuity beendet
 }
+
+accounts-import-title = Thunderbird-Kontoeinstellungen importieren
+accounts-import-choose = prefs.js auswählen
+accounts-import-about = Konten, Server und Anmeldeverfahren prüfen. Passwörter und Tokens werden nicht importiert. Konten bleiben inaktiv, bis du dich ausdrücklich anmeldest und Synchronisierung und Versand erlaubst.
+accounts-import-reading = Kontometadaten werden gelesen…
+accounts-import-review = Kontoeinstellungen auswählen und für jedes Konto ein Anmeldeverfahren wählen.
+accounts-import-none = In diesen Einstellungen wurden keine IMAP-Konten gefunden.
+accounts-import-auth-unspecified = Thunderbird hat nicht alle Authentifizierungsverfahren angegeben. Wähle ein unterstütztes Anmeldeverfahren; ein Passwortverfahren wird nicht angenommen.
+accounts-import-endpoints = IMAP { $imap }:{ $imap-port } ({ $incoming-transport }) · SMTP { $smtp }:{ $smtp-port } ({ $outgoing-transport })
+accounts-import-logins = Empfangsanmeldung: { $imap-user } · Versandanmeldung: { $smtp-user }
+accounts-import-identity = { $name } — { $email }
+accounts-import-password-choice = Für Passwortanmeldung auswählen
+accounts-import-oauth-choice = Für Browseranmeldung auswählen
+accounts-import-unselect = Konto abwählen
+accounts-import-continue = Ausgewählte Einstellungen importieren
+accounts-import-cancel = Prüfung abbrechen
+accounts-import-saved = { $count } neue Kontoeinstellungen importiert. Bestehende Konten wurden erhalten. Jedes importierte Konto benötigt noch eine ausdrückliche Anmeldung.
+accounts-import-password-step = Gib ein neues Passwort oder App-Passwort direkt hier ein. Speichern erlaubt die Synchronisierung und den Versand für dieses Konto. Keine Thunderbird-Zugangsdaten werden kopiert.
+accounts-import-oauth-step = Öffne Mail, bearbeite dieses Konto und wähle die Browseranmeldung. Microsoft fragt nach IMAP-Zugriff, SMTP-Versand und Offline-Zugriff. Der Metadatenimport führt keine Anmeldung aus.
+accounts-import-stale = Diese Prüfung wurde geändert. Lies die aktuelle Kontoprüfung und versuche es erneut.
+accounts-import-accounts-changed = Konten wurden während der Prüfung geändert. Ermittle und prüfe die Metadaten erneut.
+accounts-import-auth-required = Wähle ausdrücklich ein unterstütztes Authentifizierungsverfahren.
+accounts-import-select = Wähle vor dem Fortfahren mindestens ein Konto aus.
+accounts-import-save-failed = Kontoeinstellungen konnten nicht gespeichert werden. Keine Zugangsdaten wurden importiert.
+accounts-import-read-failed = Thunderbird-Kontometadaten konnten nicht gelesen werden.
+accounts-import-prefs-required = Wähle ausschließlich Thunderbirds normale Datei prefs.js.
+accounts-import-too-large = Diese Kontoeinstellungen überschreiten die Importgrenze.
+accounts-import-malformed = Diese Kontoeinstellungen sind unvollständig oder fehlerhaft.
+accounts-import-unsupported = Diese Server-, Authentifizierungs- oder Transporteinstellung wird nicht unverändert unterstützt. Richte das Konto stattdessen manuell ein.
+accounts-import-duplicate = Zwei ausgewählte Konten verwenden dieselbe Adresse. Wähle eine Konfiguration aus.
+accounts-import-chooser-unavailable = Die Dateiauswahl ist nur in einem interaktiven Einstellungsfenster verfügbar. Ein freigegebener Einstellungspfad kann über die Kontoaktion gelesen werden.
+accounts-import-plain = Unverschlüsselt
+accounts-import-starttls = STARTTLS
+accounts-import-tls = TLS

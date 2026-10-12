@@ -4,7 +4,7 @@
 Every thin app maps one Rust dylib, ``libruntime_dylib.so``
 (crates/runtime/runtime-dylib), so each crate in it costs every app process
 its load-time relocations and the memory they dirty, and every device
-downloads it. Two rules hold for its dependency graph (TIL-353):
+downloads it. Two rules hold for its dependency graph:
 
 - **No OS internals.** The FUSE filesystem daemon, the sandbox launcher, the
   app host and the install CLI, the peer transport and the other daemons
@@ -160,7 +160,7 @@ def violations(tree: str, apps: list[str], target: str) -> list[str]:
             f"{RUNTIME} reaches {name}, {ENGINES[name]}, for {target}: an engine with a library "
             "of its own stays out of the runtime every app maps; keep it out of the runtime's "
             "dependencies, and out of the workspace-hack by building it with one feature set "
-            "across the workspace (DEVELOPMENT.md, \"Runtime size\")"
+            "across the workspace (docs/measurements/runtime-size.md)"
         )
     absent = sorted(set(apps) - set(roots))
     if absent:

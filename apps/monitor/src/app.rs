@@ -1562,12 +1562,6 @@ impl Widget for MonitorApp {
         children
     }
 
-    fn for_each_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) {
-        for child in self.children() {
-            visitor(child);
-        }
-    }
-
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         let mut children: Vec<&mut (dyn Widget + '_)> = vec![&mut self.shell];
         if self.cadence_menu.is_open() {

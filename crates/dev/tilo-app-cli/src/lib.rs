@@ -128,21 +128,25 @@ pub fn templates_json() -> serde_json::Value {
         .collect()
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, clap::ValueEnum)]
 pub enum ScreenTemplate {
+    /// A localized title and starter body.
     #[default]
     Blank,
+    /// Labeled inputs, a checkbox, draft bindings, and a save action.
     Form,
+    /// Labeled preferences, stable bindings, and a save action.
     Settings,
+    /// Explanatory copy and a primary recovery action.
     EmptyState,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, clap::ValueEnum)]
 pub enum ComponentTemplate {
-    /// A reusable typed-props heading and detail view.
+    /// Typed props rendered as an accessible heading and detail.
     #[default]
     Display,
-    /// A reusable form with explicit cloneable local state.
+    /// Typed local state bound to labeled text and boolean controls.
     Form,
     /// A source-agnostic virtualized tree with typed configuration.
     Tree,
@@ -566,7 +570,7 @@ pub struct PackageRequest {
 }
 
 /// The system a package is built for.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, clap::ValueEnum)]
 pub enum PackagePlatform {
     /// A thin Tilo OS app, linked against the toolkit the OS ships.
     #[default]
@@ -7046,7 +7050,10 @@ fn attach_model_gateway(
     // for here as optional, and says what is missing.
     let wanted = std::collections::BTreeMap::from([(
         name.to_owned(),
-        format!("optional@{}", requirement.version),
+        tilo_app_package::ServiceReq {
+            requirement: tilo_app_package::Requirement::Optional,
+            ..requirement.clone()
+        },
     )]);
     let context = launcher::services::ServiceLaunchContext {
         app_id: &manifest.package.id,

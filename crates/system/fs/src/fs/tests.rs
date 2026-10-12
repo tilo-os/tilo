@@ -296,7 +296,7 @@ mod availability_control_tests {
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .create_file(folder, "later.txt", None, 0, 2)
                 .unwrap();
-            let projected = crate::syncstate::AvailabilityProjectionV1::parse_xattr(
+            let projected = fs_protocol::AvailabilityProjectionV1::parse_xattr(
                 &fs.availability_for(child).unwrap(),
             )
             .unwrap();
@@ -526,7 +526,7 @@ mod availability_control_tests {
         endpoint.close().await;
     }
 
-    /// TIL-750. The faults the repair tick existed for, with no tick to
+    /// #4130. The faults the repair tick existed for, with no tick to
     /// lean on (an hour's backstop): a pinned folder gains a file through a
     /// namespace change no FUSE callback saw (as a remote apply does), and
     /// a folder is pinned by a registry writer other than this mount (as
@@ -933,10 +933,11 @@ mod availability_control_tests {
 mod share_projection_tests {
     use super::*;
     use crate::namespace::ROOT_INO;
-    use crate::share_authority::{ShareAuthority, ShareGrantStatus, ShareProjectionV1};
+    use crate::share_authority::ShareAuthority;
     use crate::store::ContentStore;
     use collab_types::Ed25519PublicKey;
     use fs_protocol::{FileInviteSpec, FileInviteSubject, FilePermission, mint_file_invite};
+    use fs_protocol::{ShareGrantStatus, ShareProjectionV1};
     use iroh::endpoint::{Endpoint, presets};
 
     #[tokio::test]
@@ -986,7 +987,7 @@ mod share_projection_tests {
         assert_eq!(projected.grants[0].status, ShareGrantStatus::Active);
         assert_eq!(
             projected.grants[0].subject,
-            crate::share_authority::ShareSubjectProjection::Person {
+            fs_protocol::ShareSubjectProjection::Person {
                 person: Ed25519PublicKey::from_bytes(*recipient.as_bytes())
             }
         );
@@ -1415,7 +1416,7 @@ mod predictive_tests {
             let fs = fs.with_acl(acl, ME);
 
             let bytes = fs.record_index_projection().expect("root record catalog");
-            let projection: crate::syncstate::RecordIndexProjectionV1 =
+            let projection: fs_protocol::projection::RecordIndexProjectionV1 =
                 serde_json::from_slice(&bytes).unwrap();
             projection.validate().unwrap();
             assert!(projection.records.iter().any(|entry| {
@@ -1436,7 +1437,7 @@ mod predictive_tests {
                 let mut ns = namespace
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
-                for index in 0..crate::syncstate::RECORD_INDEX_PAGE_ENTRIES + 1 {
+                for index in 0..fs_protocol::projection::RECORD_INDEX_PAGE_ENTRIES + 1 {
                     let byte = u8::try_from(index).expect("fixture index fits in one byte");
                     ns.create_file(
                         ROOT_INO,
@@ -1448,25 +1449,25 @@ mod predictive_tests {
                     .unwrap();
                 }
             }
-            let manifest: crate::syncstate::RecordIndexManifestV2 =
+            let manifest: fs_protocol::projection::RecordIndexManifestV2 =
                 serde_json::from_slice(&fs.record_index_manifest_v2().unwrap()).unwrap();
             manifest.validate().unwrap();
             assert_eq!(
                 manifest.records,
-                crate::syncstate::RECORD_INDEX_PAGE_ENTRIES + 1
+                fs_protocol::projection::RECORD_INDEX_PAGE_ENTRIES + 1
             );
-            let first: crate::syncstate::RecordIndexPageV2 =
+            let first: fs_protocol::projection::RecordIndexPageV2 =
                 serde_json::from_slice(&fs.record_index_page_v2(&manifest.revision, 0).unwrap())
                     .unwrap();
             let second_offset = first.next_offset.expect("continuation page");
-            let second: crate::syncstate::RecordIndexPageV2 = serde_json::from_slice(
+            let second: fs_protocol::projection::RecordIndexPageV2 = serde_json::from_slice(
                 &fs.record_index_page_v2(&manifest.revision, second_offset)
                     .unwrap(),
             )
             .unwrap();
             assert_eq!(second.records.len(), 1);
             assert!(fs.record_index_projection().is_some_and(
-                |legacy| legacy.len() <= crate::syncstate::MAX_RECORD_INDEX_XATTR_BYTES
+                |legacy| legacy.len() <= fs_protocol::projection::MAX_RECORD_INDEX_XATTR_BYTES
             ));
 
             namespace
@@ -1492,11 +1493,11 @@ mod predictive_tests {
             policy.grant_read(ME, "/visible.txt");
             let handle = AclHandle::new(policy.clone());
             let fs = fs.with_acl(handle.clone(), ME);
-            let before: crate::syncstate::RecordIndexManifestV2 =
+            let before: fs_protocol::projection::RecordIndexManifestV2 =
                 serde_json::from_slice(&fs.record_index_manifest_v2().unwrap()).unwrap();
 
             handle.replace(policy);
-            let after: crate::syncstate::RecordIndexManifestV2 =
+            let after: fs_protocol::projection::RecordIndexManifestV2 =
                 serde_json::from_slice(&fs.record_index_manifest_v2().unwrap()).unwrap();
             assert_ne!(before.revision, after.revision);
             assert!(
@@ -1518,7 +1519,7 @@ mod predictive_tests {
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
                 // A deliberately large denied prefix must not change either the
                 // public manifest shape or the work of the visible page.
-                for index in 0..(crate::syncstate::RECORD_INDEX_PAGE_ENTRIES * 2) {
+                for index in 0..(fs_protocol::projection::RECORD_INDEX_PAGE_ENTRIES * 2) {
                     ns.create_file(ROOT_INO, format!("hidden-{index:04}"), None, 0, 1)
                         .unwrap();
                 }
@@ -1530,11 +1531,11 @@ mod predictive_tests {
             let fs = fs.with_acl(AclHandle::new(policy), ME);
 
             let before = fs.record_index_manifest_v3().unwrap();
-            let manifest: crate::syncstate::RecordIndexManifestV3 =
+            let manifest: fs_protocol::projection::RecordIndexManifestV3 =
                 serde_json::from_slice(&before).unwrap();
             manifest.validate().unwrap();
             assert_eq!(manifest.initial_cursor.len(), 36);
-            let first: crate::syncstate::RecordIndexPageV3 = serde_json::from_slice(
+            let first: fs_protocol::projection::RecordIndexPageV3 = serde_json::from_slice(
                 &fs.record_index_page_v3(&manifest.revision, &manifest.initial_cursor)
                     .unwrap(),
             )
@@ -1577,7 +1578,7 @@ mod predictive_tests {
             policy.grant_read(ME, "/");
             let handle = AclHandle::new(policy.clone());
             let fs = fs.with_acl(handle.clone(), ME);
-            let before: crate::syncstate::RecordIndexManifestV3 =
+            let before: fs_protocol::projection::RecordIndexManifestV3 =
                 serde_json::from_slice(&fs.record_index_manifest_v3().unwrap()).unwrap();
             assert!(fs.record_index_by_id_v2(first_record).is_some());
 
@@ -1587,7 +1588,7 @@ mod predictive_tests {
                 .create_file(ROOT_INO, "second.txt", None, 0, 1)
                 .unwrap();
             fs.refresh_acl_visible_record_index();
-            let after: crate::syncstate::RecordIndexManifestV3 =
+            let after: fs_protocol::projection::RecordIndexManifestV3 =
                 serde_json::from_slice(&fs.record_index_manifest_v3().unwrap()).unwrap();
             assert_ne!(before.revision, after.revision);
             assert!(
@@ -1604,7 +1605,7 @@ mod predictive_tests {
                 }
                 tokio::time::sleep(std::time::Duration::from_millis(1)).await;
             }
-            let revoked: crate::syncstate::RecordIndexManifestV3 =
+            let revoked: fs_protocol::projection::RecordIndexManifestV3 =
                 serde_json::from_slice(&revoked.unwrap()).unwrap();
             assert_ne!(after.revision, revoked.revision);
             assert!(
@@ -1633,7 +1634,7 @@ mod predictive_tests {
                 let mut ns = namespace
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
-                for index in 0..=crate::syncstate::RECORD_INDEX_PAGE_ENTRIES {
+                for index in 0..=fs_protocol::projection::RECORD_INDEX_PAGE_ENTRIES {
                     ns.create_projected_file(
                         ROOT_INO,
                         format!("visible-{index:04}"),
@@ -1648,7 +1649,7 @@ mod predictive_tests {
             let mut policy = WorkspaceAcl::new();
             policy.grant_read(ME, "/");
             let fs = fs.with_acl(policy, ME);
-            let manifest: crate::syncstate::RecordIndexManifestV3 =
+            let manifest: fs_protocol::projection::RecordIndexManifestV3 =
                 serde_json::from_slice(&fs.record_index_manifest_v3().unwrap()).unwrap();
             let rebuilds = namespace
                 .lock()
@@ -1658,16 +1659,16 @@ mod predictive_tests {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .record_index_page_read_count();
-            let first: crate::syncstate::RecordIndexPageV3 = serde_json::from_slice(
+            let first: fs_protocol::projection::RecordIndexPageV3 = serde_json::from_slice(
                 &fs.record_index_page_v3(&manifest.revision, &manifest.initial_cursor)
                     .unwrap(),
             )
             .unwrap();
             assert_eq!(
                 first.records.len(),
-                crate::syncstate::RECORD_INDEX_PAGE_ENTRIES
+                fs_protocol::projection::RECORD_INDEX_PAGE_ENTRIES
             );
-            let second: crate::syncstate::RecordIndexPageV3 = serde_json::from_slice(
+            let second: fs_protocol::projection::RecordIndexPageV3 = serde_json::from_slice(
                 &fs.record_index_page_v3(&manifest.revision, first.next_cursor.as_deref().unwrap())
                     .unwrap(),
             )
@@ -1713,7 +1714,7 @@ mod predictive_tests {
             policy.grant_read(ME, "/visible");
             let sync = crate::sync::SyncHandle::test_handle();
             let fs = fs.with_sync(sync.clone()).with_acl(policy, ME);
-            let before: crate::syncstate::RecordIndexManifestV3 =
+            let before: fs_protocol::projection::RecordIndexManifestV3 =
                 serde_json::from_slice(&fs.record_index_manifest_v3().unwrap()).unwrap();
             let page_reads = namespace
                 .lock()
@@ -1766,7 +1767,7 @@ mod predictive_tests {
                 }
                 tokio::time::sleep(std::time::Duration::from_millis(1)).await;
             }
-            let updated: crate::syncstate::RecordIndexManifestV3 =
+            let updated: fs_protocol::projection::RecordIndexManifestV3 =
                 serde_json::from_slice(&updated.unwrap()).unwrap();
             assert_ne!(updated.revision, before.revision);
         }

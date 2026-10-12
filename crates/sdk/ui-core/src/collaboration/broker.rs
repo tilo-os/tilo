@@ -5,11 +5,13 @@
 //! `LocalSet`, because capnp-rpc futures are `!Send`. The owner thread
 //! reaches it over a pair of bounded queues: [`CollabTransport::submit`]
 //! enqueues commands and [`CollabTransport::drain`] empties the event queue.
-//! Overload never closes the bridge. Only transient presence is shed;
+//! Ordinary command overload never closes the bridge. Only transient presence is shed;
 //! other durable commands that do not fit wait in the owner's ordered spill
 //! (a newer action surface replaces an older one) until the shovel frees
 //! room. Document mutations have their own budget and are deferred (`Busy`)
-//! or refused (`TooLarge`). Joining,
+//! or refused (`TooLarge`). Publication receipts require a worker-admitted
+//! marker: refusal is fail-closed rather than returning a receipt whose
+//! blocked owner would have to advance the spill. Joining,
 //! document signing and envelope verification all happen on the worker with
 //! the certified launcher (or host-supplied) identity.
 #![allow(
@@ -50,7 +52,7 @@ use getrandom::{SysRng, rand_core::UnwrapErr};
 use runtime_portal::RawFd;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::thread;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::mpsc as tokio_mpsc;
@@ -86,6 +88,13 @@ const HOST_IDENTITY_EXCHANGE_TIMEOUT: Duration = Duration::from_secs(5);
 /// This deliberately caps commands, rather than bytes, because the protocol
 /// already bounds its payloads at each broker boundary.
 const SDK_COMMAND_QUEUE: usize = 256;
+/// Leave one slot for a publication marker: its owner may block waiting for
+/// the receipt, so unlike ordinary durable commands it cannot wait in spill.
+/// Single-slot test/host queues still admit their first document.
+fn publication_headroom(tx: &tokio_mpsc::Sender<QueuedSdkCommand>) -> usize {
+    usize::from(tx.max_capacity() > 1)
+}
+
 /// Maximum number of shovel-to-UI events waiting behind a busy event loop.
 const SDK_EVENT_QUEUE: usize = 256;
 /// Aggregate retained payload budget for each cross-thread queue. This is
@@ -318,9 +327,11 @@ impl BrokerTransport {
     /// not fit waits in [`Self::spill`] (in order, with a newer action
     /// surface replacing an older one) and is sent as the shovel frees room.
     /// Presence is shed and document changes report `Busy`, as before.
+    /// Blocking publication receipts use direct admission instead.
     fn enqueue(&mut self, command: SdkCommand) -> Result<(), TransportError> {
         self.flush_spill();
         if !self.spill.is_empty() {
+            check_control_command_size(&command)?;
             // Everything behind a parked command stays behind it.
             if command.is_transient_presence() {
                 return Err(TransportError::Shed);
@@ -559,12 +570,27 @@ impl CollabTransport for BrokerTransport {
         &mut self,
     ) -> Result<DocumentPublicationReceipt, DocumentPublicationError> {
         let (reply, receiver) = mpsc::sync_channel(1);
-        if let Err(error) = self.enqueue(SdkCommand::PublicationBarrier(reply)) {
-            return Err(self
-                .state
-                .publication_result()
-                .err()
-                .unwrap_or(DocumentPublicationError::Failed(format!("{error:?}"))));
+        self.flush_spill();
+        // A receipt is allowed to block its owner. Parking its marker would
+        // then require that blocked owner to drain the spill, so only return
+        // a receipt once the worker queue has actually admitted the marker.
+        let admitted = if self.spill.is_empty() {
+            try_enqueue_sdk_command(
+                &self.outbound_tx,
+                SdkCommand::PublicationBarrier(reply),
+                &self.state,
+            )
+        } else {
+            Err(TransportError::Busy)
+        };
+        if let Err(error) = admitted {
+            return Err(self.state.publication_result().err().unwrap_or_else(|| {
+                self.state.publication_failed(
+                    "outbound publication marker rejected",
+                    format!("{error:?}"),
+                    true,
+                )
+            }));
         }
         let state = self.state.clone();
         Ok(DocumentPublicationReceipt::new(receiver)
@@ -594,6 +620,16 @@ impl CollabTransport for BrokerTransport {
         self.state
             .action_surface_failed
             .swap(false, Ordering::AcqRel)
+    }
+
+    fn action_directory_publication_counts(&self) -> Option<(u64, u64)> {
+        self.state
+            .directory_observation_enabled
+            .store(true, Ordering::Release);
+        Some((
+            self.state.directory_rpc_successes.load(Ordering::Acquire),
+            self.state.directory_rpc_failures.load(Ordering::Acquire),
+        ))
     }
 
     fn send_native_media(
@@ -1062,16 +1098,6 @@ fn request_bytes(request: &CollabRequest) -> Option<usize> {
             json_map_bytes(arguments, &mut meter);
             json_bytes(confirmation, &mut meter);
         }
-        CollabRequest::SubscribeEnrolledTasks { .. } => {}
-        CollabRequest::AcceptEnrolledTask { acceptance, .. } => {
-            serialized_bytes(acceptance, &mut meter)
-        }
-        CollabRequest::ReportEnrolledTask {
-            acceptance, update, ..
-        } => {
-            serialized_bytes(acceptance, &mut meter);
-            serialized_bytes(update, &mut meter);
-        }
         CollabRequest::ReportTaskRun { lease, update, .. } => {
             meter.string_capacity(lease);
             serialized_bytes(update, &mut meter);
@@ -1518,33 +1544,12 @@ fn event_diagnostics(event: &CollabEvent) -> (&'static str, Option<usize>) {
             }
             "InstalledApplicationLaunchResult"
         }
-        CollabEvent::TaskActionInvocationResult {
-            result,
-            continuation,
-            ..
-        } => {
+        CollabEvent::TaskActionInvocationResult { result, .. } => {
             match result {
                 Ok((_, update)) => serialized_bytes(update, &mut meter),
                 Err(error) => meter.string_capacity(error),
             }
-            if let Some(continuation) = continuation {
-                meter.add(continuation.capacity());
-            }
             "TaskActionInvocationResult"
-        }
-        CollabEvent::EnrolledTask(run) => {
-            serialized_bytes(run, &mut meter);
-            "EnrolledTask"
-        }
-        CollabEvent::EnrolledTaskReply { result, .. } => {
-            if let Err(error) = result {
-                meter.string_capacity(error);
-            }
-            "EnrolledTaskReply"
-        }
-        CollabEvent::EnrolledTaskDisconnected { detail } => {
-            meter.string_capacity(detail);
-            "EnrolledTaskDisconnected"
         }
         CollabEvent::TaskRun(run) => {
             task_run_bytes(run, &mut meter);
@@ -1611,6 +1616,19 @@ fn event_diagnostics(event: &CollabEvent) -> (&'static str, Option<usize>) {
             serialized_bytes(event, &mut meter);
             "Realtime"
         }
+        CollabEvent::HistoryAgents { cluster_id, agents } => {
+            meter.string_capacity(cluster_id);
+            meter.add_product(
+                agents.capacity(),
+                std::mem::size_of::<crate::history_source::RosterAgent>(),
+            );
+            for agent in agents {
+                meter.string_capacity(&agent.person_name);
+                meter.string_capacity(&agent.agent_id);
+                meter.string_capacity(&agent.label);
+            }
+            "HistoryAgents"
+        }
     };
     (kind, meter.finish())
 }
@@ -1634,6 +1652,9 @@ struct BridgeState {
     /// The broker refused or failed an action-surface publication; the owner
     /// takes this and republishes.
     action_surface_failed: Arc<AtomicBool>,
+    directory_rpc_successes: Arc<AtomicU64>,
+    directory_rpc_failures: Arc<AtomicU64>,
+    directory_observation_enabled: Arc<AtomicBool>,
     command_bytes: ByteBudget,
     event_bytes: ByteBudget,
     document_command_bytes: ByteBudget,
@@ -1781,6 +1802,9 @@ impl BridgeState {
             healthy: Arc::new(AtomicBool::new(true)),
             publication_failure: Arc::new(std::sync::Mutex::new(None)),
             action_surface_failed: Arc::new(AtomicBool::new(false)),
+            directory_rpc_successes: Arc::new(AtomicU64::new(0)),
+            directory_rpc_failures: Arc::new(AtomicU64::new(0)),
+            directory_observation_enabled: Arc::new(AtomicBool::new(false)),
             command_bytes: ByteBudget::with_room_wake(outbound_room.clone()),
             event_bytes: ByteBudget::new(),
             document_command_bytes: ByteBudget::with_room_wake(outbound_room),
@@ -1962,6 +1986,35 @@ fn try_enqueue_sdk_command(
     admit_sdk_command(tx, command, state).map_err(|refused| refused.error)
 }
 
+/// Bulk publications may progress alone above the ordinary queue budget.
+/// RPC requests must still fit it, including spare retained capacity; parking
+/// an oversized request would only move an admission violation into the spill.
+fn check_control_command_size(command: &SdkCommand) -> Result<usize, TransportError> {
+    if command.document_len().is_some() {
+        return Ok(0);
+    }
+    let bytes = command_bytes(command).ok_or(TransportError::TooLarge {
+        actual: usize::MAX,
+        max: SDK_COMMAND_QUEUE_BYTES,
+    })?;
+    let bulk_publication = matches!(
+        command,
+        SdkCommand::Primary(
+            CollabRequest::PublishActions { .. } | CollabRequest::ReportHandoff { .. }
+        ) | SdkCommand::ToRoute(
+            _,
+            CollabRequest::PublishActions { .. } | CollabRequest::ReportHandoff { .. }
+        )
+    );
+    if bytes > SDK_COMMAND_QUEUE_BYTES && !bulk_publication {
+        return Err(TransportError::TooLarge {
+            actual: bytes,
+            max: SDK_COMMAND_QUEUE_BYTES,
+        });
+    }
+    Ok(bytes)
+}
+
 /// Enqueue with an explicit outcome. Document mutations are checked against
 /// the transport limit here, before anything is queued, and use their own
 /// budget: a full budget is [`TransportError::Busy`] (retry later) and an
@@ -1976,6 +2029,7 @@ fn admit_sdk_command(
     if !state.is_healthy() {
         return Err(Refused::error(TransportError::Closed));
     }
+    let control_bytes = check_control_command_size(&command).map_err(Refused::error)?;
     if let Some(len) = command.document_len() {
         if let Err(collab_types::DocumentMutationEncodeError::TooLarge { actual, max }) =
             collab_types::document_transfer::check_transfer_len(len)
@@ -2003,6 +2057,15 @@ fn admit_sdk_command(
             );
             return Err(Refused::error(TransportError::Busy));
         };
+        if tx.capacity() <= publication_headroom(tx) {
+            drop(reservation);
+            budget.arm_room_wake();
+            // A dequeue may have raced the refusal before the wake was armed.
+            if tx.capacity() > publication_headroom(tx) {
+                state.owner_wake.notify_events();
+            }
+            return Err(Refused::error(TransportError::Busy));
+        }
         return match tx.try_send(QueuedSdkCommand {
             command,
             _reservation: reservation,
@@ -2026,13 +2089,11 @@ fn admit_sdk_command(
         };
     }
     let transient = command.is_transient_presence();
-    let bytes = command_bytes(&command);
-    // A command alone above the budget is admitted into an empty one, so it
-    // can always make progress; a metering overflow is treated as that.
-    let Some(reservation) = state.command_bytes.reserve_sole(
-        bytes.unwrap_or(SDK_COMMAND_QUEUE_BYTES),
-        SDK_COMMAND_QUEUE_BYTES,
-    ) else {
+    // Validated bulk publications may exceed the budget only when alone.
+    let Some(reservation) = state
+        .command_bytes
+        .reserve_sole(control_bytes, SDK_COMMAND_QUEUE_BYTES)
+    else {
         if transient {
             return Err(Refused::error(TransportError::Shed));
         }
@@ -4168,7 +4229,23 @@ async fn drive_shovel(
                     .publish_action_directory(&app_id, directory)
                     .await
                 {
+                    inbound_tx
+                        .state
+                        .directory_rpc_failures
+                        .fetch_add(1, Ordering::AcqRel);
                     tracing::warn!(%error, "collab: publishing pull resource/action directory failed");
+                } else {
+                    inbound_tx
+                        .state
+                        .directory_rpc_successes
+                        .fetch_add(1, Ordering::AcqRel);
+                }
+                if inbound_tx
+                    .state
+                    .directory_observation_enabled
+                    .load(Ordering::Acquire)
+                {
+                    inbound_tx.state.notify_events();
                 }
             }
             SdkCommand::WifiContinuity {
@@ -4635,23 +4712,46 @@ async fn spawn_context_stream(
                     if !tx.send_durable(CollabEvent::DocumentSnapshotRequested {
                         route: route.clone(),
                     }) {
-                        break;
+                        return;
                     }
                     continue;
                 }
                 if let Some(peer_id) = context.follow_changed {
                     if !tx.send_durable(CollabEvent::FollowChanged { peer_id }) {
-                        break;
+                        return;
                     }
                     continue;
                 }
                 if let Some(message) = context.handoff {
                     if let Some(request) = super::handoff::HandoffRequest::decode(&message) {
                         if !tx.send_durable(CollabEvent::Handoff { request }) {
-                            break;
+                            return;
                         }
                     } else {
                         tracing::warn!("collab: malformed handoff request dropped");
+                    }
+                    continue;
+                }
+                if let Some(agents) = context.history_agents {
+                    let agents = agents
+                        .into_iter()
+                        .map(|agent| {
+                            let [_, red, green, blue] = agent.color.to_be_bytes();
+                            crate::history_source::RosterAgent {
+                                device: agent.device,
+                                person: agent.person,
+                                person_name: agent.person_name,
+                                agent_id: agent.agent_id,
+                                label: agent.label,
+                                color: [red, green, blue],
+                            }
+                        })
+                        .collect();
+                    if !tx.send_durable(CollabEvent::HistoryAgents {
+                        cluster_id: route.cluster_id.to_string(),
+                        agents,
+                    }) {
+                        break;
                     }
                     continue;
                 }
@@ -4670,9 +4770,15 @@ async fn spawn_context_stream(
                     collaborators,
                     permissions: context.permissions,
                 }) {
-                    break;
+                    return;
                 }
             }
+            // Context is a complete owner-backed membership snapshot. Losing
+            // that source must withdraw it rather than retain stale people.
+            let _ = tx.send_durable(CollabEvent::Context {
+                collaborators: Vec::new(),
+                permissions: Vec::new(),
+            });
         });
     }
 }
@@ -6100,30 +6206,6 @@ fn parse_task_update(id: u64, update: &str) -> TaskActionResult {
         .map_err(|error| error.to_string())
 }
 
-/// Project a stepped task reply onto the event fields: a committed step
-/// carries its continuation; a pending or lost step asks the caller to
-/// re-send the identical step.
-fn task_step_event(
-    reply: Result<runtime_collab::TaskStepReply, String>,
-) -> (TaskActionResult, Option<Vec<u8>>, bool) {
-    match reply {
-        Ok(runtime_collab::TaskStepReply::Committed {
-            update_json,
-            continuation,
-        }) => (
-            parse_task_update(0, &update_json),
-            Some(continuation),
-            false,
-        ),
-        Ok(runtime_collab::TaskStepReply::Retry) => (
-            Err("task step pending; retry the same step".into()),
-            None,
-            true,
-        ),
-        Err(error) => (Err(error), None, false),
-    }
-}
-
 // Not `Send`: `route.channel` wraps a capnp-rpc handle (`Rc`-based,
 // `!Send`), and this only ever runs inside the shovel thread's `LocalSet`.
 #[allow(
@@ -6520,43 +6602,11 @@ async fn dispatch_sdk_request(
         }
         #[cfg(unix)]
         CollabRequest::ManagedInvocationAttempt { attempt } => {
-            use crate::host_worker::managed_sender::{AttemptFailure, RequestView};
-            use managed_sender_transport::{Failure, Request};
             let result = match attempt.claim(&route.spec) {
                 None => return true, // A clone cannot dispatch the same local attempt twice.
                 Some(Err(error)) => Err(error),
-                Some(Ok(view)) => {
-                    let request = match view {
-                        RequestView::Invoke {
-                            invocation,
-                            binding,
-                            revision,
-                            resource,
-                            action,
-                            argument,
-                            confirmation_json,
-                        } => Request::Invoke {
-                            invocation,
-                            binding,
-                            revision,
-                            resource,
-                            action,
-                            argument,
-                            confirmation_json,
-                        },
-                        RequestView::Observe { host, invocation } => {
-                            Request::Observe { host, invocation }
-                        }
-                        RequestView::Cancel { host, invocation } => {
-                            Request::Cancel { host, invocation }
-                        }
-                    };
-                    managed_sender_transport::send(route, request, attempt.deadline())
-                        .await
-                        .map_err(|error| match error {
-                            Failure::Deadline => AttemptFailure::Deadline,
-                            Failure::Unavailable => AttemptFailure::Unavailable,
-                        })
+                Some(Ok(request)) => {
+                    managed_sender_transport::send(route, request, attempt.deadline()).await
                 }
             };
             if let Some(result) = attempt.finish(result) {
@@ -6707,66 +6757,6 @@ async fn dispatch_sdk_request(
             let _ = inbound_tx
                 .send_durable(CollabEvent::InstalledApplicationLaunchResult { request_id, result });
         }
-        CollabRequest::SubscribeEnrolledTasks { request_id } => {
-            let result = route
-                .channel
-                .subscribe_enrolled_tasks()
-                .await
-                .map_err(|error| error.to_string());
-            let reply = match result {
-                Ok(stream) => {
-                    let tx = inbound_tx.clone();
-                    tokio::task::spawn_local(async move {
-                        loop {
-                            match stream.read().await {
-                                Ok(run) => {
-                                    if !tx.send_durable(CollabEvent::EnrolledTask(run)) {
-                                        break;
-                                    }
-                                }
-                                Err(error) => {
-                                    let _ =
-                                        tx.send_durable(CollabEvent::EnrolledTaskDisconnected {
-                                            detail: error.to_string(),
-                                        });
-                                    break;
-                                }
-                            }
-                        }
-                    });
-                    Ok(())
-                }
-                Err(error) => Err(error),
-            };
-            let _ = inbound_tx.send_durable(CollabEvent::EnrolledTaskReply {
-                request_id,
-                result: reply,
-            });
-        }
-        CollabRequest::AcceptEnrolledTask {
-            request_id,
-            acceptance,
-        } => {
-            let result = route
-                .channel
-                .accept_enrolled_task(&acceptance)
-                .await
-                .map_err(|error| error.to_string());
-            let _ = inbound_tx.send_durable(CollabEvent::EnrolledTaskReply { request_id, result });
-        }
-        CollabRequest::ReportEnrolledTask {
-            request_id,
-            acceptance,
-            sequence,
-            update,
-        } => {
-            let result = route
-                .channel
-                .report_enrolled_task(&acceptance, sequence, &update)
-                .await
-                .map_err(|error| error.to_string());
-            let _ = inbound_tx.send_durable(CollabEvent::EnrolledTaskReply { request_id, result });
-        }
         CollabRequest::ReportTaskRun {
             request_id,
             run_id,
@@ -6790,11 +6780,63 @@ async fn dispatch_sdk_request(
             invocation,
             run_id,
             lease,
-            step,
             peer_id,
             resource,
             action,
             arguments,
+            wait: Some(wait),
+        } => {
+            // The broker holds this answer until the child moves; the
+            // connection's other traffic must not wait behind it. Polled
+            // once here, so the re-ask still goes out in the order it was
+            // asked, as a waiting remote action does.
+            let channel = route.channel.clone();
+            let mut round_trip = Box::pin(async move {
+                let argument = format!(
+                    "{}{}",
+                    tilo_actions::ARGUMENTS_JSON_PREFIX,
+                    serde_json::Value::Object(arguments)
+                );
+                let target = runtime_collab::TaskAction {
+                    peer_id,
+                    resource: &resource,
+                    action: &action,
+                    argument: Some(&argument),
+                };
+                channel
+                    .observe_task_child(run_id, &lease, target, &invocation.0.to_string(), wait)
+                    .await
+                    .map_err(|error| error.to_string())
+                    .and_then(|(id, update)| parse_task_update(id, &update))
+            });
+            let first = std::future::poll_fn(|context| {
+                std::task::Poll::Ready(round_trip.as_mut().poll(context))
+            })
+            .await;
+            let event =
+                move |result| CollabEvent::TaskActionInvocationResult { request_id, result };
+            match first {
+                std::task::Poll::Ready(result) => {
+                    let _ = inbound_tx.send_durable(event(result));
+                }
+                std::task::Poll::Pending => {
+                    let inbound = inbound_tx.clone();
+                    tokio::task::spawn_local(async move {
+                        let _ = inbound.send_durable(event(round_trip.await));
+                    });
+                }
+            }
+        }
+        CollabRequest::InvokeTaskAction {
+            request_id,
+            invocation,
+            run_id,
+            lease,
+            peer_id,
+            resource,
+            action,
+            arguments,
+            ..
         } => {
             let argument = format!(
                 "{}{}",
@@ -6807,31 +6849,14 @@ async fn dispatch_sdk_request(
                 action: &action,
                 argument: Some(&argument),
             };
-            let (result, continuation, retry_step) = match step {
-                Some(step) => task_step_event(
-                    route
-                        .channel
-                        .invoke_task_step(run_id, &lease, step, target)
-                        .await
-                        .map_err(|error| error.to_string()),
-                ),
-                None => (
-                    route
-                        .channel
-                        .invoke_task_action(run_id, &lease, target, "", &invocation.0.to_string())
-                        .await
-                        .map_err(|error| error.to_string())
-                        .and_then(|(id, update)| parse_task_update(id, &update)),
-                    None,
-                    false,
-                ),
-            };
-            let _ = inbound_tx.send_durable(CollabEvent::TaskActionInvocationResult {
-                request_id,
-                result,
-                continuation,
-                retry_step,
-            });
+            let result = route
+                .channel
+                .invoke_task_action(run_id, &lease, target, "", &invocation.0.to_string())
+                .await
+                .map_err(|error| error.to_string())
+                .and_then(|(id, update)| parse_task_update(id, &update));
+            let _ = inbound_tx
+                .send_durable(CollabEvent::TaskActionInvocationResult { request_id, result });
         }
         CollabRequest::TaskRunCancellation {
             request_id,
@@ -7185,6 +7210,9 @@ mod tests {
         refuse_action_publications: usize,
         refused_action_publications: usize,
         action_directories: Vec<String>,
+        refuse_action_directories: usize,
+        directory_attempts: Vec<std::time::Instant>,
+        directory_ack: Option<Arc<tokio::sync::Notify>>,
         action_catalogue_fixture: Option<Vec<String>>,
         action_catalogue_subscriptions: usize,
         action_catalogue_reads: usize,
@@ -7518,6 +7546,7 @@ mod tests {
 
     struct FakeContextStream {
         backlog: Rc<RefCell<Vec<SeedContext>>>,
+        terminate_after_backlog: bool,
     }
 
     impl context_stream::Server for FakeContextStream {
@@ -7528,6 +7557,11 @@ mod tests {
         ) -> Promise<(), capnp::Error> {
             let mut backlog = self.backlog.borrow_mut();
             if backlog.is_empty() {
+                if self.terminate_after_backlog {
+                    return Promise::err(capnp::Error::disconnected(
+                        "fixture context source gone".into(),
+                    ));
+                }
                 return Promise::from_future(std::future::pending::<Result<(), capnp::Error>>());
             }
             let seed = backlog.remove(0);
@@ -7559,6 +7593,7 @@ mod tests {
         op_backlog: OpBacklog,
         presence_backlog: Rc<RefCell<Vec<SeedPresence>>>,
         context_backlog: Rc<RefCell<Vec<SeedContext>>>,
+        terminate_context_stream: bool,
         scrollback_response: Rc<RefCell<Option<SeedScrollback>>>,
     }
 
@@ -7699,12 +7734,27 @@ mod tests {
             _results: channel_handle::PublishActionDirectoryResults,
         ) -> Promise<(), capnp::Error> {
             let request = params.get().unwrap();
-            self.captures
-                .lock()
-                .unwrap()
+            let mut captures = self.captures.lock().unwrap();
+            captures.directory_attempts.push(std::time::Instant::now());
+            let refused = captures.refuse_action_directories > 0;
+            if refused {
+                captures.refuse_action_directories -= 1;
+            }
+            captures
                 .action_directories
                 .push(request.get_app_id().unwrap().to_str().unwrap().to_owned());
-            Promise::ok(())
+            let ack = captures.directory_ack.clone();
+            drop(captures);
+            Promise::from_future(async move {
+                if let Some(ack) = ack {
+                    ack.notified().await;
+                }
+                if refused {
+                    Err(capnp::Error::failed("fixture directory refusal".into()))
+                } else {
+                    Ok(())
+                }
+            })
         }
 
         #[cfg(unix)]
@@ -8010,6 +8060,7 @@ mod tests {
         ) -> Promise<(), capnp::Error> {
             let client: context_stream::Client = capnp_rpc::new_client(FakeContextStream {
                 backlog: self.context_backlog.clone(),
+                terminate_after_backlog: self.terminate_context_stream,
             });
             results.get().set_stream(client);
             Promise::ok(())
@@ -8085,6 +8136,7 @@ mod tests {
         op_backlog: Vec<(Vec<u8>, String)>,
         presence_backlog: Vec<SeedPresence>,
         context_backlog: Vec<SeedContext>,
+        terminate_context_stream: bool,
         scrollback_response: Option<SeedScrollback>,
     }
 
@@ -8130,6 +8182,7 @@ mod tests {
                 op_backlog: Rc::new(RefCell::new(self.op_backlog.clone())),
                 presence_backlog: Rc::new(RefCell::new(self.presence_backlog.clone())),
                 context_backlog: Rc::new(RefCell::new(self.context_backlog.clone())),
+                terminate_context_stream: self.terminate_context_stream,
                 scrollback_response: Rc::new(RefCell::new(self.scrollback_response.clone())),
             };
             let client: channel_handle::Client = capnp_rpc::new_client(chan);
@@ -8903,6 +8956,7 @@ mod tests {
             op_backlog: vec![],
             presence_backlog: vec![],
             context_backlog: vec![],
+            terminate_context_stream: false,
             scrollback_response: None,
         };
         let (fd, captures, thread) = stand_up_fake_broker(broker);
@@ -9060,6 +9114,96 @@ mod tests {
         transport.drain(&mut events);
         assert!(transport.spill.is_empty());
         assert!(shovel.try_recv().is_ok());
+    }
+
+    #[test]
+    fn document_flood_leaves_room_for_a_worker_admitted_publication_marker() {
+        let (mut transport, mut shovel) = parking_transport(4);
+        for _ in 0..3 {
+            assert_eq!(
+                transport.submit(TransportCommand::Primary(
+                    CollabRequest::document_incremental(b"edit".to_vec())
+                )),
+                Ok(())
+            );
+        }
+        assert_eq!(
+            transport.submit(TransportCommand::Primary(
+                CollabRequest::document_incremental(b"retry".to_vec())
+            )),
+            Err(TransportError::Busy)
+        );
+        let receipt = transport.publication_barrier().unwrap();
+        assert!(transport.spill.is_empty());
+        for _ in 0..3 {
+            assert!(matches!(
+                shovel.try_recv().unwrap().command,
+                SdkCommand::Primary(CollabRequest::Document { .. })
+            ));
+        }
+        let SdkCommand::PublicationBarrier(reply) = shovel.try_recv().unwrap().command else {
+            panic!("the marker must follow every admitted document");
+        };
+        reply.send(transport.state.publication_result()).unwrap();
+        assert_eq!(receipt.wait(Some(Instant::now())), Ok(()));
+        assert!(transport.state.is_healthy());
+    }
+
+    #[test]
+    fn oversized_rpc_is_refused_even_behind_a_parked_command() {
+        let (mut transport, mut shovel) = parking_transport(1);
+        for _ in 0..2 {
+            assert_eq!(
+                transport.submit(TransportCommand::Primary(CollabRequest::ReportHandoff {
+                    app_id: "notes".into(),
+                    message: Vec::new(),
+                })),
+                Ok(())
+            );
+        }
+        let mut revision = String::with_capacity(SDK_COMMAND_QUEUE_BYTES + 1);
+        revision.push_str("revision");
+        assert!(matches!(
+            transport.submit(TransportCommand::Primary(
+                CollabRequest::ResolvePublishedAction {
+                    request_id: 1,
+                    peer_id: 2,
+                    revision,
+                    resource: "notes".into(),
+                    action: "open".into(),
+                }
+            )),
+            Err(TransportError::TooLarge { .. })
+        ));
+        assert_eq!(transport.spill.len(), 1);
+        assert!(transport.state.is_healthy());
+        drop(shovel.try_recv().unwrap());
+        transport.flush_spill();
+        assert!(matches!(
+            shovel.try_recv().unwrap().command,
+            SdkCommand::Primary(CollabRequest::ReportHandoff { .. })
+        ));
+        assert!(shovel.try_recv().is_err());
+    }
+
+    #[test]
+    fn publication_marker_cannot_overtake_or_wait_in_owner_spill() {
+        let (mut transport, _shovel) = parking_transport(1);
+        for _ in 0..2 {
+            assert_eq!(
+                transport.submit(TransportCommand::Primary(CollabRequest::ReportHandoff {
+                    app_id: "notes".into(),
+                    message: Vec::new(),
+                })),
+                Ok(())
+            );
+        }
+        assert!(matches!(
+            transport.publication_barrier(),
+            Err(DocumentPublicationError::Failed(_))
+        ));
+        assert_eq!(transport.spill.len(), 1, "a refused marker is never parked");
+        assert!(!transport.state.is_healthy());
     }
 
     #[cfg(unix)]
@@ -9556,7 +9700,7 @@ mod tests {
         (manager, asked, thread)
     }
 
-    /// TIL-598: an endpoint holding its route's keys asks for them again only
+    /// #3964: an endpoint holding its route's keys asks for them again only
     /// when the broker says the channel changed, once per change, and never
     /// on a timer: an idle app costs the identity service nothing.
     #[test]
@@ -11453,6 +11597,88 @@ mod tests {
     }
 
     #[test]
+    fn native_admission_ack_wakes_parked_owner_without_an_action() {
+        held_directory_observation(false);
+    }
+
+    #[test]
+    fn native_admission_failure_wakes_owner_without_claiming_retry() {
+        held_directory_observation(true);
+    }
+
+    fn held_directory_observation(refused: bool) {
+        let ack = Arc::new(tokio::sync::Notify::new());
+        let broker = FakeBroker {
+            captures: Arc::new(std::sync::Mutex::new(Captures {
+                directory_ack: Some(ack.clone()),
+                refuse_action_directories: usize::from(refused),
+                ..Captures::default()
+            })),
+            op_backlog: vec![],
+            presence_backlog: vec![],
+            context_backlog: vec![],
+            terminate_context_stream: false,
+            scrollback_response: None,
+        };
+        let (scope, wakes) = wake_channel();
+        let _entry = scope.enter();
+        let (fd, captures, worker) = stand_up_fake_broker(broker);
+        let manager = CollaborationManager::from_sdk_fd_for_test(
+            fd,
+            &crate::collaboration::local_app_id(),
+            Uuid::new_v4(),
+        );
+        let mut app = crate::App::with_collaboration_manager(
+            crate::State::new(),
+            Box::new(crate::widget::Button::new("complete", "Complete").on_view(|| {})),
+            manager,
+        );
+        crate::app::draw_prepared_component_test_frame(&mut app);
+        eventually("directory RPC reaches actual host", || {
+            !captures.lock().unwrap().directory_attempts.is_empty()
+        });
+        app.pump_collab_presence();
+        let before = app.native_admission_snapshot();
+        while wakes.try_recv().is_ok() {}
+        ack.notify_one();
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        let observed = loop {
+            if wakes
+                .recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
+                .is_err()
+            {
+                break false;
+            }
+            app.pump_collab_presence();
+            let snapshot = app.native_admission_snapshot();
+            if snapshot.directory.transport_directory_rpc_successes == Some(u64::from(!refused))
+                && snapshot.directory.transport_directory_rpc_failures == Some(u64::from(refused))
+            {
+                break true;
+            }
+        };
+        drop(app);
+        worker.join().unwrap();
+        assert_eq!(
+            before.directory.transport_directory_rpc_successes,
+            Some(0),
+            "enqueue is not RPC success"
+        );
+        assert_eq!(before.directory.transport_directory_rpc_failures, Some(0));
+        assert!(before.directory.directory_enqueued);
+        assert!(before.connection.manager_connected);
+        assert!(
+            observed,
+            "actual RPC result must wake the profiled owner before any app action"
+        );
+        assert_eq!(
+            captures.lock().unwrap().directory_attempts.len(),
+            1,
+            "observation introduces no retries"
+        );
+    }
+
+    #[test]
     fn disconnected_manager_is_a_no_op() {
         // No SDK, no legacy socket set — falls through to `Backend::Disabled`.
         let mut env = tilo_test_env::ScopedEnv::new();
@@ -12114,6 +12340,7 @@ mod tests {
                     ],
                     permissions: vec!["edit".to_owned(), "share".to_owned()],
                 }],
+                terminate_context_stream: true,
                 ..FakeBroker::default()
             };
             let (fd, _captures, _th) = stand_up_fake_broker(broker);
@@ -12121,27 +12348,32 @@ mod tests {
             let events = poll_until(&mut mgr, |events| {
                 events
                     .iter()
-                    .any(|e| matches!(e, CollabEvent::Context { .. }))
+                    .filter(|event| matches!(event, CollabEvent::Context { .. }))
+                    .count()
+                    == 2
             });
 
-            let ctx = events
+            let contexts = events
                 .iter()
-                .find_map(|e| match e {
+                .filter_map(|e| match e {
                     CollabEvent::Context {
                         collaborators,
                         permissions,
                     } => Some((collaborators.clone(), permissions.clone())),
                     _ => None,
                 })
-                .expect("must receive a Context event");
-            let (collabs, perms) = ctx;
+                .collect::<Vec<_>>();
+            assert_eq!(contexts.len(), 2, "source loss must withdraw its context");
+            let (collabs, perms) = &contexts[0];
             assert_eq!(collabs.len(), 2);
             assert_eq!(collabs[0].id, "alice");
             assert_eq!(collabs[0].name, "Alice");
             // 0x00FF8000 is an orange; 0 says no colour.
             assert_eq!(collabs[0].colour, Some(crate::tokens::PresenceHue::Orange));
             assert_eq!(collabs[1].colour, None);
-            assert_eq!(perms, vec!["edit".to_owned(), "share".to_owned()]);
+            assert_eq!(perms, &["edit".to_owned(), "share".to_owned()]);
+            assert!(contexts[1].0.is_empty());
+            assert!(contexts[1].1.is_empty());
         }
 
         // Case `presence_stream_translates_cursor_and_all_other_variants`.
@@ -12370,34 +12602,6 @@ mod tests {
             assert_eq!(parse_invocation_context(8, "  "), None);
             assert_eq!(parse_invocation_context(9, "{not-json"), None);
         }
-    }
-
-    #[test]
-    fn task_step_replies_keep_committed_and_retry_apart() {
-        let update = serde_json::to_string(&tilo_actions::InvocationUpdate::Succeeded {
-            invocation: tilo_actions::InvocationId::new(),
-            output: tilo_actions::ActionOutput::default(),
-        })
-        .unwrap();
-        let (result, continuation, retry) =
-            task_step_event(Ok(runtime_collab::TaskStepReply::Committed {
-                update_json: update,
-                continuation: b"{\"succeeded\":{}}".to_vec(),
-            }));
-        assert!(matches!(
-            result,
-            Ok((0, tilo_actions::InvocationUpdate::Succeeded { .. }))
-        ));
-        assert_eq!(continuation.as_deref(), Some(&b"{\"succeeded\":{}}"[..]));
-        assert!(!retry);
-
-        let (result, continuation, retry) =
-            task_step_event(Ok(runtime_collab::TaskStepReply::Retry));
-        assert!(result.is_err() && continuation.is_none() && retry);
-
-        let (result, _, retry) = task_step_event(Err("task action is no longer live".into()));
-        assert_eq!(result.unwrap_err(), "task action is no longer live");
-        assert!(!retry, "a refusal is terminal, not a pending step");
     }
 
     fn assert_document_publication_failure(manager: &mut CollaborationManager, expected: &str) {

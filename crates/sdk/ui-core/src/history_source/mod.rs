@@ -47,10 +47,11 @@ pub mod schema_ops;
 pub mod seen;
 pub mod sentence;
 pub mod steps;
+pub(crate) use authors::room_agents_revision;
 pub use authors::{
-    AuthorDirectory, HistoryAgent, UNKNOWN_AUTHOR_NAME, actor_handle, agent_display_label,
-    agent_principal_name, author_coloured, author_for_identity, local_identity_author,
-    participant_display_label, short_id, stable_hue,
+    AuthorDirectory, HistoryAgent, RosterAgent, UNKNOWN_AUTHOR_NAME, actor_handle,
+    agent_display_label, agent_principal_name, author_coloured, author_for_identity,
+    local_identity_author, participant_display_label, set_room_agents, short_id, stable_hue,
 };
 pub use compare::{CompareError, HistoryComparison, compare_entries};
 pub use detail::{HistoryResourceTarget, HistorySelectionDetail};

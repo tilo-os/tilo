@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+fail() {
+  printf '%s\n' "$*" >&2
+  exit 1
+}
+
 repo="$(cd "$(dirname "$0")/../.." && pwd)"
 work="$(mktemp -d)"; trap 'rm -rf "$work"' EXIT
 mkdir -p "$work/zram0"
@@ -334,7 +339,7 @@ grep -Fq 'systemctl disable NetworkManager.service firewalld.service chronyd.ser
 # After=network.target: a NetworkManager start job queued any earlier (a timer
 # at OnBootSec=0 did) holds the greeter for NetworkManager's whole start. The
 # network is queued from a unit that runs once logins are allowed, and is not
-# waited for (TIL-767).
+# waited for.
 grep -Fq 'systemctl enable tilo-network-start.service' "$repo/os/Containerfile"
 if [ -e "$repo/os/usr/lib/systemd/system/tilo-network-start.timer" ] \
    || grep -Fq 'tilo-network-start.timer' "$repo/os/Containerfile"; then

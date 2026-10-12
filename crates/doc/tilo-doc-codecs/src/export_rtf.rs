@@ -191,17 +191,9 @@ fn render_code(out: &mut String, block: &BlockView) {
     out.push_str("\\par}\n");
 }
 
-/// List `level` (0-based nesting depth) → indent step count.
-fn list_level(block: &BlockView) -> i64 {
-    match block.attrs.get("level") {
-        Some(AttrVal::Int(n)) => (*n).max(0),
-        _ => 0,
-    }
-}
-
 fn render_list_item(out: &mut String, block: &BlockView, colors: &ColorTable) {
-    let level = list_level(block);
-    let ordered = matches!(block.attrs.get("ordered"), Some(AttrVal::Bool(true)));
+    let level = ExportBlock::new(block).list_level();
+    let ordered = ExportBlock::new(block).ordered();
     out.push_str("{\\pard");
     // Hanging indent: left margin one step past the bullet at this nesting level.
     push_indent(out, level.saturating_add(1));
@@ -231,10 +223,7 @@ fn render_image(out: &mut String, block: &BlockView, indent_level: i64) {
     // Pixel embedding is out of scope; fall back to alt text so the
     // block isn't lost, or skip if there's no alt text.
     let alt = if block.text.is_empty() {
-        match block.attrs.get("alt") {
-            Some(AttrVal::Str(s)) => s.clone(),
-            _ => String::new(),
-        }
+        block.str_attr("alt").unwrap_or_default().to_owned()
     } else {
         block.text.clone()
     };

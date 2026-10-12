@@ -232,7 +232,7 @@ class IdleThreads(unittest.TestCase):
                                   "session age 30.0 s)")
 
 
-# Run 91460's R01 in small (TIL-739): the clock frame rasterised by lavapipe. The compute pool
+# Run 91460's R01 in small: the clock frame rasterised by lavapipe. The compute pool
 # that ran it (`tilo-gpu-driver`, 1.4%) and the rasteriser threads (`llvmpipe-0`) next to the
 # present thread (0.1%) and the network runtime (0.2%): the compositor's own threads 0.3%.
 RASTER_SAMPLE = """\

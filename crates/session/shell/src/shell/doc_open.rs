@@ -730,7 +730,7 @@ pub fn continuation_file_reference_for_surface(
         .path
         .clone();
     drop(open);
-    let record_id = xattr::get(&path, "user.tilo.record-id")
+    let record_id = xattr::get(&path, fs_protocol::RECORD_ID_XATTR)
         .ok()
         .flatten()
         .and_then(|bytes| <[u8; 16]>::try_from(bytes).ok())
@@ -747,13 +747,13 @@ pub fn continuation_file_reference_for_surface(
             .find(|record| record.path == *path)
             .map(|record| *record.record_id.as_bytes())
         })?;
-    let content_hash = xattr::get(&path, "user.tilo.content-hash")
+    let content_hash = xattr::get(&path, fs_protocol::CONTENT_HASH_XATTR)
         .ok()
         .flatten()
         .and_then(|bytes| <[u8; 32]>::try_from(bytes).ok());
     // FUSE exposes preview bytes, never a path. Persist only their hash so
     // the receiver can request/cache its own projected thumbnail.
-    let thumbnail_hash = xattr::get(&path, "user.tilo.thumb")
+    let thumbnail_hash = xattr::get(&path, fs_protocol::THUMB_XATTR)
         .ok()
         .flatten()
         .map(|bytes| *blake3::hash(&bytes).as_bytes());
@@ -1090,7 +1090,7 @@ mod tests {
             });
             xattr::set(
                 root.path(),
-                file_explorer::model::RECORD_INDEX_XATTR,
+                fs_protocol::projection::RECORD_INDEX_XATTR,
                 &serde_json::to_vec(&projection).unwrap(),
             )
             .unwrap();
@@ -1124,9 +1124,9 @@ mod tests {
             let record = [0x71; 16];
             let content = [0x42; 32];
             let thumbnail = b"projected thumbnail";
-            xattr::set(&path, "user.tilo.record-id", &record).unwrap();
-            xattr::set(&path, "user.tilo.content-hash", &content).unwrap();
-            xattr::set(&path, "user.tilo.thumb", thumbnail).unwrap();
+            xattr::set(&path, fs_protocol::RECORD_ID_XATTR, &record).unwrap();
+            xattr::set(&path, fs_protocol::CONTENT_HASH_XATTR, &content).unwrap();
+            xattr::set(&path, fs_protocol::THUMB_XATTR, thumbnail).unwrap();
             let uuid = uuid::Uuid::from_bytes(record);
             let exact = serde_json::json!({
                 "schema_version": 2,
@@ -1141,7 +1141,7 @@ mod tests {
                 root.path(),
                 format!(
                     "{}{}",
-                    file_explorer::model::RECORD_INDEX_BY_ID_XATTR_PREFIX,
+                    fs_protocol::projection::RECORD_INDEX_BY_ID_XATTR_PREFIX,
                     uuid
                 ),
                 &serde_json::to_vec(&exact).unwrap(),
@@ -1156,8 +1156,8 @@ mod tests {
 
             // A change after capture must not make the record unopenable: the
             // FileRecordId, rather than stale content/preview hashes, routes it.
-            xattr::set(&path, "user.tilo.content-hash", &[0x43; 32]).unwrap();
-            xattr::set(&path, "user.tilo.thumb", b"fresh preview").unwrap();
+            xattr::set(&path, fs_protocol::CONTENT_HASH_XATTR, &[0x43; 32]).unwrap();
+            xattr::set(&path, fs_protocol::THUMB_XATTR, b"fresh preview").unwrap();
 
             let mut env = tilo_test_env::ScopedEnv::new();
             env.set("TILO_WORKSPACE_ROOTS", root.path());
