@@ -75,7 +75,7 @@ pub(crate) fn sections(state: &MailState) -> Vec<NavSection> {
                 })
                 .collect();
             let title = if account.config.email.is_empty() {
-                account.label().to_owned()
+                account.config.label().to_owned()
             } else {
                 account.config.email.clone()
             };

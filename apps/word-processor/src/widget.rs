@@ -4538,10 +4538,7 @@ impl WordProcessorWidget {
             .blocks
             .iter()
             .find(|b| b.id == self.inner.caret.block)
-            .and_then(|b| match b.attrs.get("tab_stops") {
-                Some(AttrVal::Str(s)) => Some(s.clone()),
-                _ => None,
-            })
+            .and_then(|b| b.str_attr("tab_stops").map(str::to_owned))
             .unwrap_or_default();
         crate::word_processor::parse_tab_stops(&raw)
     }
@@ -5367,12 +5364,9 @@ impl WordProcessorWidget {
             .iter()
             .find(|b| Some(&b.id) == img_id.as_ref())
             .cloned();
-        let (fh, fv) = block.as_ref().map_or((false, false), |b| {
-            (
-                matches!(b.attrs.get("flip_h"), Some(AttrVal::Bool(true))),
-                matches!(b.attrs.get("flip_v"), Some(AttrVal::Bool(true))),
-            )
-        });
+        let (fh, fv) = block
+            .as_ref()
+            .map_or((false, false), |b| (b.flag("flip_h"), b.flag("flip_v")));
 
         for (label, first, second, toggles) in [
             (
@@ -7218,10 +7212,7 @@ impl WordProcessorWidget {
         text_renderer: &mut TextRenderer,
         new_cache: &mut HashMap<String, (u64, RichTextLayout)>,
     ) -> ResolvedImage {
-        let hash = match b.attrs.get("blob") {
-            Some(AttrVal::Str(s)) => s.clone(),
-            _ => String::new(),
-        };
+        let hash = b.str_attr("blob").unwrap_or_default().to_owned();
         if !hash.is_empty() && !self.image_cache.contains_key(&hash) {
             let decoded = self
                 .blobs
@@ -7438,7 +7429,7 @@ impl WordProcessorWidget {
             if cur.ol_counts.len() <= level {
                 cur.ol_counts.resize(level + 1, 0);
             }
-            let bullet = if matches!(b.attrs.get("ordered"), Some(AttrVal::Bool(true))) {
+            let bullet = if b.flag("ordered") {
                 let n = cur.ol_counts.get_mut(level).map_or(0, |c| {
                     *c += 1;
                     *c
@@ -11581,10 +11572,7 @@ impl WordProcessorWidget {
     fn current_block_style(&self) -> (String, Option<i64>) {
         let b = self.blocks.iter().find(|b| b.id == self.inner.caret.block);
         let kind = b.map_or_else(|| "paragraph".into(), |b| b.kind.clone());
-        let level = b.and_then(|b| match b.attrs.get("level") {
-            Some(AttrVal::Int(n)) => Some(*n),
-            _ => None,
-        });
+        let level = b.and_then(|b| b.int_attr("level"));
         (kind, level)
     }
 
@@ -11842,7 +11830,7 @@ impl WordProcessorWidget {
             .blocks
             .iter()
             .find(|b| b.id == id)
-            .is_some_and(|b| matches!(b.attrs.get(key), Some(AttrVal::Bool(true))));
+            .is_some_and(|b| b.flag(key));
         self.perform_action(
             state,
             &crate::actions::set_block_attr_action(
@@ -11865,10 +11853,7 @@ impl WordProcessorWidget {
         let Some(block) = self.blocks.iter().find(|b| b.id == id) else {
             return;
         };
-        let edge = |key: &str| match block.attrs.get(key) {
-            Some(AttrVal::Int(value)) => *value,
-            _ => 0,
-        };
+        let edge = |key: &str| block.int_attr(key).unwrap_or(0);
         let (mut left, mut top, mut right, mut bottom) = (
             edge("crop_left"),
             edge("crop_top"),
@@ -12200,10 +12185,7 @@ impl WordProcessorWidget {
         self.blocks
             .iter()
             .find(|b| b.id == self.inner.caret.block)
-            .and_then(|b| match b.attrs.get("align") {
-                Some(AttrVal::Str(s)) => Some(s.clone()),
-                _ => None,
-            })
+            .and_then(|b| b.str_attr("align").map(str::to_owned))
             .unwrap_or_else(|| "left".into())
     }
 

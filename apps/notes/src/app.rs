@@ -168,7 +168,7 @@ fn inline_images(markdown: &str, assets: &HashMap<String, Vec<u8>>) -> String {
             let bytes = assets
                 .get(source)
                 .filter(|_| source.starts_with("asset:"))?;
-            let media_type = image_media_type(bytes)?;
+            let media_type = crate::notebook::image_mime(bytes)?;
             let data = base64::engine::general_purpose::STANDARD.encode(bytes);
             Some(format!(
                 "{indent}![{alt}](data:{media_type};base64,{data}){newline}"
@@ -226,7 +226,7 @@ fn read_image_asset(source: &std::path::Path) -> Result<Vec<u8>, String> {
 /// must still work.
 fn fit_image_asset(bytes: Vec<u8>) -> Result<Vec<u8>, String> {
     const MAX: usize = crate::notebook::MAX_ASSET_BYTES;
-    image_media_type(&bytes).ok_or("Use a PNG, JPEG, or WebP image")?;
+    crate::notebook::image_mime(&bytes).ok_or("Use a PNG, JPEG, or WebP image")?;
     if bytes.len() <= MAX {
         return Ok(bytes);
     }
@@ -270,23 +270,10 @@ pub(crate) fn check_image(bytes: &[u8]) -> Result<(), String> {
     if bytes.len() > crate::notebook::MAX_ASSET_BYTES {
         return Err("Image is larger than 1 MiB".into());
     }
-    if image_media_type(bytes).is_none() {
+    if crate::notebook::image_mime(bytes).is_none() {
         return Err("Choose a PNG, JPEG, or WebP image".into());
     }
     Ok(())
-}
-
-/// The media type of image `bytes`, when they are one a notebook keeps.
-pub(crate) fn image_media_type(bytes: &[u8]) -> Option<&'static str> {
-    if bytes.starts_with(&[137, 80, 78, 71, 13, 10, 26, 10]) {
-        Some("image/png")
-    } else if bytes.starts_with(&[0xff, 0xd8, 0xff]) {
-        Some("image/jpeg")
-    } else if bytes.get(..4) == Some(b"RIFF") && bytes.get(8..12) == Some(b"WEBP") {
-        Some("image/webp")
-    } else {
-        None
-    }
 }
 
 #[allow(

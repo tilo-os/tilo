@@ -164,6 +164,16 @@ pub const SHEET_EXTENSIONS: &[&str] = &["xlsx", "ods"];
 /// compiles (a file manager asks this without linking any of them).
 pub const DOCUMENT_EXTENSIONS: &[&str] = &["md", "markdown", "odt", "docx", "rtf", "html", "htm"];
 
+/// The extension and media type an office package stores picture `bytes`
+/// under: PNG, JPEG and GIF as themselves, anything else as a binary part.
+pub(crate) fn office_image_part(bytes: &[u8]) -> (&'static str, &'static str) {
+    tilo_content::image_format(bytes)
+        .filter(|format| matches!(format.extension, "png" | "jpg" | "gif"))
+        .map_or(("bin", "application/octet-stream"), |format| {
+            (format.extension, format.mime)
+        })
+}
+
 /// A registry preloaded with the built-in providers this build enables. Third-party providers
 /// register on top.
 pub fn builtin_registry() -> Registry {

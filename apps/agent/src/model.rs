@@ -14,7 +14,7 @@
 //!   discovery only for what they leave out, then one `plan` naming the
 //!   steps (the local document and Chat runners).
 //! * [`TurnRequest`] / [`TurnEvent`] — one streamed model turn of the
-//!   discover → invoke → observe loop that enrolled tasks run
+//!   discover → invoke → observe loop that model tasks run
 //!   (`session::agent_loop`). The turn runs on its own thread so completed
 //!   tool calls can be executed while the model is still writing the next.
 //!

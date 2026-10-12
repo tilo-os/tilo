@@ -106,6 +106,7 @@ seccompiler.workspace = true
 libc.workspace = true
 
 [dev-dependencies]
+# Session tests read Writer's typed rich-text body after carrying content.
 tilo-document = { path = "../../doc/tilo-document" }
 tilo-crypto = { path = "../../system/tilo-crypto", features = ["tls-fixture"] }
 accounts = { path = "../../system/accounts", features = ["person"] }

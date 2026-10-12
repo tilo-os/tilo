@@ -5524,6 +5524,19 @@ fn pump_test_control_conn(
                                 continue;
                             }
                         }
+                        if let Some(response) =
+                            super::diagnostic_actions::owner_required(&request.command)
+                        {
+                            let progress = queue_test_control_response(conn, &response);
+                            if matches!(
+                                progress,
+                                PendingConnectionProgress::Closed
+                                    | PendingConnectionProgress::OutputPending
+                            ) {
+                                return injected_input;
+                            }
+                            continue;
+                        }
                         settle_for = super::control_invocation::settle_window(&request.command);
                         listing_wait = ListingWait::begin(
                             &request.command,
@@ -10731,8 +10744,24 @@ pub fn run() {
                     settings_store::hardware::DesktopControlsConfig::load(),
                 );
             }
-            if settings_change.display_identify() {
-                frame_builder.host_mut().poll_display_identify();
+            if settings_change.display_identify()
+                && frame_builder.host_mut().poll_display_identify()
+                && let Some(network) = peer_sync.as_ref()
+            {
+                // Identify can follow an arrangement edit in the same tick;
+                // resolve that explicit request instead of numbering from an
+                // older periodic sample.
+                crate::shell::device_fabric_runtime::person_layout::refresh(
+                    network,
+                    crate::shell::continuity_policy::ContinuityPolicySnapshot::load(),
+                );
+                if let Some(view) =
+                    crate::shell::device_fabric_runtime::person_layout::current(network)
+                {
+                    frame_builder
+                        .host_mut()
+                        .number_identified_displays(&view.layout);
+                }
             }
             input_steps.step("settings-shortcuts");
             if settings_change.appearance() {
@@ -17108,7 +17137,7 @@ mod tests {
         );
         assert!(matches!(
             socket_response(&mut reader),
-            test_control::Response::Err { .. }
+            test_control::Response::Err { code, .. } if code == "not_permitted"
         ));
         assert!(
             crate::shell::launcher::LaunchSession::current()
@@ -17124,6 +17153,13 @@ mod tests {
         );
         assert!(
             matches!(socket_response(&mut reader), test_control::Response::Answer(value) if value["diagnostics"]["presentation"] == true)
+        );
+        writer.write_all(b"{\"op\":\"actions_invoke\",\"provider\":\"session-diagnostics\",\"id\":\"inspect@session-diagnostics\",\"args\":{}}\n").unwrap();
+        pump_test_control_conn(
+            &mut conn, &mut fb, &mut ctx, &session, &mut lock, &mut state,
+        );
+        assert!(
+            matches!(socket_response(&mut reader), test_control::Response::Answer(value) if value["launch_history"]["attempts"].is_array())
         );
         writer
             .write_all(b"{\"op\":\"actions_enumerate\",\"query\":\"session-diagnostics\"}\n")
