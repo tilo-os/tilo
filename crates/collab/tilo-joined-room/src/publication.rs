@@ -12,7 +12,7 @@ use tilo_peer_state::{
 mod reservation;
 #[cfg(any(test, feature = "test-support"))]
 pub(crate) use reservation::check_actual_projection_bound;
-pub use reservation::{preflight_storage, reserved_file_bytes};
+pub use reservation::{authority_limit, preflight_storage, reserved_file_bytes};
 
 pub(crate) const MAX_ENTRIES: usize = 64;
 pub(crate) const MAX_BYTES: usize = 4 * 1024 * 1024;
@@ -47,7 +47,13 @@ impl Default for StoredPublication {
 pub(crate) struct StoredOutgoing {
     ordinal: u64,
     id: [u8; 32],
-    #[serde(deserialize_with = "read_message_bytes")]
+    /// Base64 text in the owner's JSON files, like the record's other
+    /// opaque bytes; entries written before that held JSON arrays of
+    /// numbers, one line per byte pretty-printed, and still read back.
+    #[serde(
+        serialize_with = "crate::record::bytes_compat::serialize",
+        deserialize_with = "read_message_bytes"
+    )]
     pub(crate) bytes: Vec<u8>,
     binding: CommitBinding,
     timestamp_ns: u64,
@@ -148,6 +154,18 @@ fn read_bytes<'de, D: serde::Deserializer<'de>>(
         fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
             f.write_str("bounded native publication bytes")
         }
+        fn visit_str<E: serde::de::Error>(self, text: &str) -> Result<Self::Value, E> {
+            use base64::{Engine as _, engine::general_purpose::STANDARD};
+            // Refuse oversized text before decoding any of it.
+            if text.len() > self.0.div_ceil(3).saturating_mul(4) {
+                return Err(E::custom("native publication bytes exceed limit"));
+            }
+            let bytes = STANDARD.decode(text).map_err(E::custom)?;
+            if bytes.len() > self.0 {
+                return Err(E::custom("native publication bytes exceed limit"));
+            }
+            Ok(bytes)
+        }
         fn visit_seq<A: serde::de::SeqAccess<'de>>(
             self,
             mut input: A,
@@ -169,7 +187,13 @@ fn read_bytes<'de, D: serde::Deserializer<'de>>(
             Ok(bytes)
         }
     }
-    input.deserialize_seq(Bytes(limit))
+    // Text or the legacy array in JSON; the unchanged sequence in a binary
+    // encoding, which writes one.
+    if input.is_human_readable() {
+        input.deserialize_any(Bytes(limit))
+    } else {
+        input.deserialize_seq(Bytes(limit))
+    }
 }
 fn read_message_bytes<'de, D: serde::Deserializer<'de>>(input: D) -> Result<Vec<u8>, D::Error> {
     read_bytes(input, MAX_BYTES)
@@ -946,5 +970,99 @@ impl NativeWorkspaceOwner {
             .checked_add(1)
             .ok_or("native owner generation exhausted")?;
         self.publish_room(room, candidate, None)
+    }
+}
+#[cfg(test)]
+mod encoding_tests {
+    use super::*;
+
+    fn entry(bytes: Vec<u8>) -> StoredOutgoing {
+        StoredOutgoing {
+            ordinal: 3,
+            id: [7; 32],
+            bytes,
+            binding: CommitBinding {
+                room: "room".into(),
+                target: tilo_peer_state::owner_commit::CommitTarget::Document {
+                    app: "so.tilo.code".into(),
+                    record: "a".into(),
+                },
+                request_digest: [1; 32],
+                basis: [2; 32],
+            },
+            timestamp_ns: 5,
+            channel: [9; 32],
+            incremental: true,
+        }
+    }
+
+    /// An entry's bytes are base64 text in JSON, an entry written as the
+    /// legacy array of numbers still reads back the same, and a binary
+    /// encoding keeps its unchanged sequence.
+    #[test]
+    fn outgoing_bytes_are_text_in_json_and_legacy_arrays_still_read() {
+        let stored = entry((0..=255).collect());
+        let json = serde_json::to_value(&stored).unwrap();
+        assert!(json["bytes"].is_string(), "{json}");
+        assert_eq!(
+            serde_json::from_value::<StoredOutgoing>(json).unwrap(),
+            stored
+        );
+        let mut legacy = serde_json::to_value(&stored).unwrap();
+        legacy["bytes"] = serde_json::to_value(&stored.bytes).unwrap();
+        assert!(legacy["bytes"].is_array());
+        assert_eq!(
+            serde_json::from_value::<StoredOutgoing>(legacy).unwrap(),
+            stored
+        );
+        let pretty = serde_json::to_vec_pretty(&stored).unwrap();
+        assert_eq!(
+            serde_json::from_slice::<StoredOutgoing>(&pretty).unwrap(),
+            stored
+        );
+        let binary = postcard::to_allocvec(&stored).unwrap();
+        assert_eq!(
+            binary,
+            postcard::to_allocvec(&(
+                stored.ordinal,
+                stored.id,
+                &stored.bytes,
+                &stored.binding,
+                stored.timestamp_ns,
+                stored.channel,
+                stored.incremental
+            ))
+            .unwrap(),
+            "the binary encoding is unchanged"
+        );
+        assert_eq!(
+            postcard::from_bytes::<StoredOutgoing>(&binary).unwrap(),
+            stored
+        );
+    }
+
+    /// Bytes past the cap are refused in either JSON form, text before it is
+    /// decoded.
+    #[test]
+    fn outgoing_bytes_past_the_cap_are_refused_as_text_and_as_arrays() {
+        let read = |json: &str| read_bytes(&mut serde_json::Deserializer::from_str(json), 4);
+        assert_eq!(read(r#""AAECAw==""#).unwrap(), [0, 1, 2, 3]);
+        assert_eq!(read("[0, 1, 2, 3]").unwrap(), [0, 1, 2, 3]);
+        assert!(read(r#""AAECAwQ=""#).is_err(), "five bytes");
+        assert!(
+            read(r#""AAECAwQFBg==""#).is_err(),
+            "text longer than four bytes'"
+        );
+        assert!(read("[0, 1, 2, 3, 4]").is_err());
+        assert!(read(r#""not base64""#).is_err());
+        let fits = entry(vec![0; MAX_BYTES]);
+        assert_eq!(
+            serde_json::from_value::<StoredOutgoing>(serde_json::to_value(&fits).unwrap()).unwrap(),
+            fits
+        );
+        let past = entry(vec![0; MAX_BYTES + 1]);
+        assert!(
+            serde_json::from_value::<StoredOutgoing>(serde_json::to_value(&past).unwrap()).is_err()
+        );
     }
 }

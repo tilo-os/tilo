@@ -1009,7 +1009,7 @@ fn native_outgoing_sanitized_foreign_title_cannot_consume_recovery_reserve() {
     internals::bump_revision(&mut prospective.native_authority);
     // Use the actual sanitizer/serializer on the small tree to derive this
     // fixture. Adding ASCII title text changes only title and durable label.
-    let small = persist::encode_tree(&prospective).unwrap();
+    let small = persist::encode_tree(&prospective).unwrap().bytes;
     let sanitized: crate::shell::state::WorkspaceTree = serde_json::from_slice(&small).unwrap();
     let reserved = publication::required_tree_bytes(&sanitized).unwrap() - small.len();
     assert!(reserved > 2);
