@@ -66,6 +66,15 @@ pub struct NativeOutgoingStatus {
     pub blocked: usize,
 }
 impl<'a> NativeOutgoing<'a> {
+    /// Every entry still in custody, whether or not it may be sent now.
+    pub fn queued(&self) -> impl Iterator<Item = [u8; 32]> + 'a {
+        self.state
+            .governance
+            .iter()
+            .chain(self.state.entries.iter())
+            .chain(self.state.projection.iter())
+            .map(|entry| entry.id)
+    }
     pub fn entries(&self) -> impl Iterator<Item = NativeOutgoingEntry<'a>> {
         let allowed = self.allowed;
         self.state
