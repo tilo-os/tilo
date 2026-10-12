@@ -8,7 +8,7 @@ license = "AGPL-3.0-only"
 # The binary path-includes the production model/profile/CLI modules below;
 # cargo-machete cannot follow those #[path] edges to these direct dependencies.
 [package.metadata.cargo-machete]
-ignored = ["hex", "libc", "serde", "sha2"]
+ignored = ["hex", "install-profile-model", "libc", "serde", "sha2"]
 
 # Deliberately isolated: building release-media tools must not resolve or build
 # the graphical application workspace. Production modules are shared below.
