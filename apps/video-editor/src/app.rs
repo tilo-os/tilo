@@ -7386,11 +7386,11 @@ impl Widget for VideoEditorApp {
                     crate::timecode::timecode(self.playhead, self.project.fps),
                     self.focus.pane.label()
                 ))
-                .with_state(AccessState {
-                    focusable: true,
-                    focused: self.presentation.keyboard_focus,
-                    ..Default::default()
-                })
+                .with_state(
+                    AccessState::new()
+                        .focusable(true)
+                        .focused(self.presentation.keyboard_focus),
+                )
                 .with_children(kids)
                 .with_keyed_action_routes("video-editor"),
         )

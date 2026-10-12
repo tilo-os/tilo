@@ -907,10 +907,8 @@ impl Widget for PieChart {
                 .with_name(&s.label)
                 .with_description(description);
                 if s.interactive {
-                    node.with_action_target(&s.id).with_state(AccessState {
-                        focusable: true,
-                        ..Default::default()
-                    })
+                    node.with_action_target(&s.id)
+                        .with_state(AccessState::new().focusable(true))
                 } else {
                     node
                 }
