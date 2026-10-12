@@ -1247,8 +1247,15 @@ pub struct NavShell {
     paint_dirty: bool,
     /// The window's transient notices, over its bottom trailing corner.
     toasts: ToastStack,
-    /// Where the notices were last painted, damaged when they change.
-    toasts_painted: Rect,
+    /// Every pixel the notices painted in the last draw, their shadows
+    /// included, and what they painted there.
+    toasts_painted: Option<Rect>,
+    toasts_scene: Scene,
+    /// [`Self::toasts_painted`] and [`Self::toasts_scene`] as of the last
+    /// frame the host presented ([`Widget::mark_drawn`]).
+    toasts_drawn: Option<Rect>,
+    toasts_drawn_scene: Scene,
+    /// A notice came, went or changed: the next draw paints it.
     toasts_dirty: bool,
 }
 
@@ -1329,7 +1336,10 @@ impl NavShell {
             layout_dirty: true,
             paint_dirty: true,
             toasts: ToastStack::new().with_max(1),
-            toasts_painted: Rect::ZERO,
+            toasts_painted: None,
+            toasts_scene: Scene::new(),
+            toasts_drawn: None,
+            toasts_drawn_scene: Scene::new(),
             toasts_dirty: false,
         }
     }
@@ -1360,6 +1370,13 @@ impl NavShell {
     /// The notice showing, if any.
     pub fn toast_text(&self) -> Option<&str> {
         self.toasts.iter().next().map(|toast| toast.text.as_str())
+    }
+
+    /// Whether the notices painted anything other than what the host last
+    /// presented: one came, went, expired, moved or changed its look.
+    fn toasts_changed(&self) -> bool {
+        self.toasts_painted != self.toasts_drawn
+            || !self.toasts_scene.encoding_eq(&self.toasts_drawn_scene)
     }
 
     fn toasts_expired(&self) -> bool {
@@ -3423,9 +3440,12 @@ impl Widget for NavShell {
         let window = presence.viewport.get().unwrap_or(self.rect);
         self.toasts
             .place_bottom_right(window, f64::from(theme.tokens.spacing.s6));
+        let mut painted = Scene::new();
         self.toasts
-            .draw(scene, transform, text_renderer, theme, presence);
-        self.toasts_painted = self.toasts.get_rect();
+            .draw(&mut painted, transform, text_renderer, theme, presence);
+        scene.append(&painted, None);
+        self.toasts_scene = painted;
+        self.toasts_painted = self.toasts.painted_bounds(theme);
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
@@ -3656,6 +3676,8 @@ impl Widget for NavShell {
     fn mark_drawn(&mut self) {
         self.paint_dirty = false;
         self.toasts_dirty = false;
+        self.toasts_drawn = self.toasts_painted;
+        self.toasts_drawn_scene.clone_from(&self.toasts_scene);
         self.for_each_owned_mut(|child| child.mark_drawn());
     }
 
@@ -3667,8 +3689,13 @@ impl Widget for NavShell {
             regions.push(self.rect);
         } else {
             self.for_each_owned(|child| child.collect_damage(regions));
-            if self.toasts_dirty || self.toasts_expired() {
-                regions.push(self.toasts_painted.union(self.toasts.get_rect()));
+            // The notices where they were and are, shadows included.
+            if self.toasts_changed() {
+                regions.extend(
+                    [self.toasts_drawn, self.toasts_painted]
+                        .into_iter()
+                        .flatten(),
+                );
             }
         }
     }
