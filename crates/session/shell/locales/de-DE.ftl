@@ -2573,3 +2573,7 @@ activity-morning-command-refused = Anfrage abgelehnt
 activity-morning-recorded = { $source } · letzte aufgezeichnete Arbeitsbereichsaktivität: { $time }
 
 activity-morning-next = Nächste ausgewählte Quelle
+qs-network-details = WLAN-Netzwerke
+qs-bluetooth-details = Bluetooth-Geräte
+search-action-quick-settings-network-subtitle = Verfügbare WLAN-Netzwerke durchsuchen
+search-action-quick-settings-bluetooth-subtitle = Gekoppelte Bluetooth-Geräte durchsuchen

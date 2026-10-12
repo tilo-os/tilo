@@ -2570,3 +2570,8 @@ activity-morning-command-refused = Request refused
 activity-morning-recorded = { $source } · last recorded workspace activity: { $time }
 
 activity-morning-next = Next chosen source
+
+qs-network-details = Wi-Fi networks
+qs-bluetooth-details = Bluetooth devices
+search-action-quick-settings-network-subtitle = Browse available Wi-Fi networks
+search-action-quick-settings-bluetooth-subtitle = Browse paired Bluetooth devices
