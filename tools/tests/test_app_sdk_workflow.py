@@ -67,8 +67,9 @@ class AppSdkWorkflow(unittest.TestCase):
             self.assertIn("needs.policy.result == 'success'", body)
         self.assertNotIn(selector, job('linux'))
 
-    def test_macos_stays_disabled_until_a_runner_serves_it(self) -> None:
-        self.assertIn("    if: false\n", job("macos"))
+    def test_macos_lane_lives_on_the_development_mac(self) -> None:
+        self.assertNotIn("macos", JOBS)
+        self.assertIn("dev-apps-macos.yml", SOURCE)
 
     def test_linux_uses_portable_native_prs_and_keeps_main_x86_qualification(self) -> None:
         body = job("linux")
