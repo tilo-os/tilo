@@ -4,6 +4,7 @@
 
 pub mod actions;
 pub mod applications;
+mod background_index;
 pub mod continuity;
 pub mod desktop_windows;
 pub mod files;

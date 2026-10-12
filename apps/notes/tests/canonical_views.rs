@@ -8,7 +8,7 @@ use automerge::transaction::Transactable;
 use notes::{actions, doc::NotesDoc};
 use ui::{
     application::RestoreInput,
-    headless::{Driver, SemanticExpectation},
+    headless::{FrameHarness, SemanticExpectation},
 };
 
 #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
@@ -59,7 +59,7 @@ fn owned_views_restore_selection_and_clamp_utf8_offsets() {
             .unwrap();
         let revision_before = revision(&f, &checkout);
         let component = restored_component(&f, 11, existing(&checkout), RestoreInput::Local(saved));
-        let mut a = Driver::from_component(component, (1000, 700), runner_inputs()).unwrap();
+        let mut a = FrameHarness::from_component(component, (1000, 700), runner_inputs()).unwrap();
         a.expect(
             &SemanticExpectation::named("note_title")
                 .value("Latest Launch")
@@ -366,7 +366,7 @@ fn stale_local_view_first_real_edit_uses_current_text_marks_and_one_owned_action
             .any(|(_, _, author)| author == &f.author.0)
     );
     let component = restored_component(&f, 11, existing(&checkout), RestoreInput::Local(saved));
-    let mut a = Driver::from_component(component, (1000, 500), runner_inputs()).unwrap();
+    let mut a = FrameHarness::from_component(component, (1000, 500), runner_inputs()).unwrap();
     a.expect(&SemanticExpectation::named("block_editor").focused(true))
         .unwrap();
     assert_eq!(fingerprint(&f, &checkout), before);
@@ -483,7 +483,7 @@ fn independent_scroll_close_before_layout_and_narrow_sidebar_resolve_once() {
     let local: notes::local_view::NotesLocalViewV1 =
         serde_json::from_slice(&app.capture_application_view().unwrap().unwrap().payload).unwrap();
     assert_eq!(local.focus, notes::local_view::NotesFocus::None);
-    let mut a = Driver::from_component(
+    let mut a = FrameHarness::from_component(
         restored_component(&f, 11, existing(&checkout), RestoreInput::Local(saved)),
         (1000, 250),
         runner_inputs(),
@@ -548,7 +548,7 @@ fn stale_or_malformed_view_payloads_fall_back_without_installing_state() {
         assert!(local.active_tag.is_none());
         assert_eq!(local.expanded_pages, vec![f.root]);
         let component = restored_component(&f, 11, existing(&checkout), RestoreInput::Local(saved));
-        let mut a = Driver::from_component(component, (1000, 500), runner_inputs()).unwrap();
+        let mut a = FrameHarness::from_component(component, (1000, 500), runner_inputs()).unwrap();
         a.expect(&SemanticExpectation::named("note_title").value("Projects"))
             .unwrap();
         assert_eq!(fingerprint(&f, &checkout), before);
@@ -590,7 +590,7 @@ fn stale_or_malformed_view_payloads_fall_back_without_installing_state() {
             existing(&checkout),
             RestoreInput::Local(empty_saved),
         );
-        let mut a = Driver::from_component(component, (1000, 500), runner_inputs()).unwrap();
+        let mut a = FrameHarness::from_component(component, (1000, 500), runner_inputs()).unwrap();
         a.type_text("f");
         // Closing ends the typed word's step.
         close_driver(&mut a);
@@ -736,7 +736,7 @@ fn stale_or_malformed_view_payloads_fall_back_without_installing_state() {
             existing(&checkout),
             RestoreInput::Local(saved.clone()),
         );
-        let mut a = Driver::from_component(component, (1000, 500), runner_inputs()).unwrap();
+        let mut a = FrameHarness::from_component(component, (1000, 500), runner_inputs()).unwrap();
         a.type_text("Q");
         f.records
             .read(&checkout.id, |doc| {

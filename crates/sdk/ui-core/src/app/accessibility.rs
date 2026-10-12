@@ -1,42 +1,11 @@
 // Accessibility configuration, semantic focus, announcements, and action routing.
 
 impl App {
-    fn persisted_accessibility_bool(key: &str) -> bool {
-        settings_store::load_section("accessibility")
-            .get(key)
-            .and_then(serde_json::Value::as_bool)
-            .unwrap_or(false)
-    }
-
-    fn configure_screen_reader(reader: &mut crate::screen_reader::ScreenReader) {
-        let section = settings_store::load_section("accessibility");
-        let rate_pct = section
-            .get("screen_reader_rate")
-            .and_then(serde_json::Value::as_u64)
-            .unwrap_or(100)
-            .clamp(50, 200);
-        // Always in 50..=200, so this always fits u8 losslessly.
-        let rate = f32::from(u8::try_from(rate_pct).unwrap_or(100)) / 100.0;
-        reader.set_rate(rate);
-        let voice = section
-            .get("screen_reader_voice")
-            .and_then(serde_json::Value::as_str)
-            .and_then(|voice| match voice {
-                "english_us" => Some("en-us"),
-                "english_gb" => Some("en-gb"),
-                "german" => Some("de"),
-                "french" => Some("fr"),
-                "spanish" => Some("es"),
-                _ => None,
-            });
-        if let Some(voice) = voice {
-            reader.set_voice(voice);
-        }
-    }
-
     fn configured_screen_reader() -> crate::screen_reader::ScreenReader {
         let mut reader = crate::screen_reader::ScreenReader::new();
-        Self::configure_screen_reader(&mut reader);
+        reader.configure(
+            &settings_store::accessibility::AccessibilitySettings::load().screen_reader(),
+        );
         reader
     }
 
@@ -69,7 +38,7 @@ impl App {
         self.accessibility.text_scale = factor;
         self.rebuild_theme();
         self.layout.layout_dirty = true;
-        self.layout.structure_dirty = true;
+        self.layout.request_rebuild();
     }
 
     pub fn ui_scale(&self) -> f32 {
@@ -81,7 +50,7 @@ impl App {
         self.accessibility.ui_scale = factor;
         self.rebuild_theme();
         self.layout.layout_dirty = true;
-        self.layout.structure_dirty = true;
+        self.layout.request_rebuild();
     }
 
     /// Override the host-detected input environment. Useful for platform
@@ -134,7 +103,7 @@ impl App {
         self.accessibility.a11y.high_contrast = on;
         self.rebuild_theme();
         self.layout.layout_dirty = true;
-        self.layout.structure_dirty = true;
+        self.layout.request_rebuild();
     }
 
     pub fn toggle_high_contrast(&mut self) -> bool {
@@ -163,7 +132,7 @@ impl App {
         self.accessibility.base_theme = theme;
         self.rebuild_theme();
         self.layout.layout_dirty = true;
-        self.layout.structure_dirty = true;
+        self.layout.request_rebuild();
     }
 
     /// Disabling stops in-flight speech and returns every narration call
@@ -1133,14 +1102,14 @@ impl App {
                         root,
                     )
                 } else if synthetic {
-                    widget.perform_action_at(
+                    widget.perform_action(
                         action,
                         &key_path,
                         &mut crate::widget::Edits::lend(doc),
                         root,
                     )
                 } else {
-                    widget.perform_action(action, &mut crate::widget::Edits::lend(doc), root)
+                    widget.perform_action(action, &[], &mut crate::widget::Edits::lend(doc), root)
                 }
             })
             .ok()?;
@@ -1476,7 +1445,7 @@ impl App {
                     let handled = self
                         .dispatch_node(taffy_id, |widget, doc, root| {
                             if let Some(key_path) = keyed_path {
-                                widget.perform_action_at(
+                                widget.perform_action(
                                     &verb,
                                     &key_path,
                                     &mut crate::widget::Edits::lend(doc),

@@ -2292,21 +2292,10 @@ impl BrowserWidget {
     }
 
     fn control_focused(&self, id: &str) -> bool {
-        fn walk(w: &dyn Widget, id: &str) -> Option<bool> {
-            if w.test_id() == Some(id) {
-                return Some(w.is_focused());
-            }
-            for c in w.children() {
-                if let Some(f) = walk(c, id) {
-                    return Some(f);
-                }
-            }
-            None
-        }
         self.composed
             .element()
-            .and_then(|c| walk(c, id))
-            .unwrap_or(false)
+            .and_then(|c| ui::widget::find_test_id(c, id))
+            .is_some_and(Widget::is_focused)
     }
 
     /// Fold engine events into this window's chrome state. Engine state is a
@@ -3270,23 +3259,18 @@ impl BrowserWidget {
             }
         }
         fn focus(widget: &mut dyn Widget, id: &str) -> bool {
-            if widget.test_id() == Some(id) {
-                widget.set_focus(true);
-                if let Some((_, text)) = widget.text_review() {
-                    if text.is_empty() {
-                        ui::undo::set_state(widget, "0");
-                    } else {
-                        ui::undo::set_state(widget, &format!("{}:b:0", text.len()));
-                    }
-                }
-                return true;
-            }
-            for child in widget.children_mut() {
-                if focus(child, id) {
-                    return true;
+            let Some(widget) = ui::widget::find_test_id_mut(widget, id) else {
+                return false;
+            };
+            widget.set_focus(true);
+            if let Some((_, text)) = widget.text_review() {
+                if text.is_empty() {
+                    ui::undo::set_state(widget, "0");
+                } else {
+                    ui::undo::set_state(widget, &format!("{}:b:0", text.len()));
                 }
             }
-            false
+            true
         }
         self.composed.element_mut().is_some_and(|composed| {
             clear(composed);
@@ -3295,13 +3279,6 @@ impl BrowserWidget {
     }
 
     fn focus_control_preserving_selection(&mut self, id: &str) {
-        fn state(widget: &dyn Widget, id: &str) -> Option<String> {
-            if widget.test_id() == Some(id) {
-                return ui::undo::get_state(widget);
-            }
-            widget.children().iter().find_map(|child| state(*child, id))
-        }
-
         fn restore(widget: &mut dyn Widget, id: &str, value: &str) {
             if widget.test_id() == Some(id) {
                 ui::undo::set_state(widget, value);
@@ -3310,7 +3287,11 @@ impl BrowserWidget {
                 restore(child, id, value);
             }
         }
-        let saved = self.composed.element().and_then(|widget| state(widget, id));
+        let saved = self
+            .composed
+            .element()
+            .and_then(|widget| ui::widget::find_test_id(widget, id))
+            .and_then(ui::undo::get_state);
         self.focus_control(id);
         if let (Some(value), Some(widget)) = (saved, self.composed.element_mut()) {
             restore(widget, id, &value);
@@ -3339,20 +3320,15 @@ impl BrowserWidget {
 
     /// Rect of the composed-tree widget with `test_id == id`, if present.
     fn find_rect(&self, id: &str) -> Option<Rect> {
-        fn walk(w: &dyn Widget, id: &str) -> Option<Rect> {
-            if w.test_id() == Some(id) {
-                return Some(w.get_rect());
-            }
-            w.children().iter().find_map(|c| walk(*c, id))
-        }
         self.composed
             .element()
-            .and_then(|c| walk(c, id))
+            .and_then(|c| ui::widget::find_test_id(c, id))
             .or_else(|| {
                 self.anchored_panel
                     .as_ref()
-                    .and_then(|panel| walk(panel.as_ref(), id))
+                    .and_then(|panel| ui::widget::find_test_id(panel.as_ref(), id))
             })
+            .map(Widget::get_rect)
     }
 
     /// Publish the `WebView` surface rect as window fractions for the
@@ -3834,10 +3810,7 @@ impl Widget for BrowserWidget {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let Ok(layout) = taffy.layout(node) else {
-            return;
-        };
-        self.rect = ui::widget::placed(layout, origin);
+        self.rect = ui::widget::layout_rect(taffy, node, origin);
         let compact = is_compact_chrome(self.chrome_width(), self.compact_breakpoint);
         if compact != self.compact_chrome {
             self.compact_chrome = compact;
@@ -6986,8 +6959,7 @@ mod tests {
         // Phase `dismissing_a_permission_question_declines_it`.
         {
             fn within(widget: &dyn Widget, id: &str) -> bool {
-                widget.test_id() == Some(id)
-                    || widget.children().iter().any(|child| within(*child, id))
+                ui::widget::find_test_id(widget, id).is_some()
             }
             let capture = TestEngine::new();
             let mut widget = BrowserWidget::with_engine(capture.clone(), true);

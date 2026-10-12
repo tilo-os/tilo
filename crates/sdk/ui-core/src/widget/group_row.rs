@@ -5,12 +5,13 @@
 //! Within-group reorder still lives in `TabBar` / `WindowGroup`.
 
 use crate::animation::{Curve, Transition};
+use crate::num::f32_of_f64;
 use crate::time::{Duration, Instant};
 use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 use taffy::{
-    Dimension, Display, FlexDirection, LengthPercentageAuto, NodeId, Position, Size, Style,
-    TaffyTree,
+    Dimension, Display, FlexDirection, LengthPercentageAuto, NodeId, Overflow, Position, Size,
+    Style, TaffyTree,
 };
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
@@ -261,8 +262,16 @@ pub struct GroupRow {
     /// Pan state of the whole row, or of the lane being worked on while
     /// [`Self::lanes`] is populated (see [`Pan`]).
     pan: Pan,
-    /// A CPU presenter may move existing pixels only at whole layout pixels.
-    pixel_aligned_scroll: bool,
+    /// The step a presenter that moves existing pixels needs the drawn pan
+    /// on, in layout pixels: one device pixel (`1 / scale`), or one layout
+    /// pixel for a CPU presenter. `None` draws the exact pan.
+    scroll_quantum: Option<f64>,
+    /// The row is drawn into a scene of its own ([`Self::draw_apart`]):
+    /// its parent's draw only records the transform it would have drawn
+    /// with.
+    drawn_apart: bool,
+    /// The transform the parent's draw passed while [`Self::drawn_apart`].
+    apart_transform: Option<Affine>,
     /// One per display the strip is partitioned across, left to right.
     /// Empty when the strip is one continuous row (a single display).
     lanes: Vec<Lane>,
@@ -349,6 +358,50 @@ pub struct GroupRow {
     /// Groups the last draw skipped as outside the row. They keep their
     /// dirty state, so cached scenes rebuild once they are painted again.
     culled_groups: Vec<u64>,
+    /// While the lane being drawn is in canvas coordinates (a presenter
+    /// keeps the strip): what of the canvas the screen shows this draw.
+    /// `None` in screen space.
+    apart_window: Option<ApartWindow>,
+    /// The canvas stretch each lane's last draw in canvas coordinates
+    /// showed, by lane index: a lane showing another one now is panning.
+    apart_spans: Vec<(usize, (f64, f64))>,
+    /// While the row is drawn in canvas coordinates: each group's last
+    /// drawing, which a group wholly off screen replays instead of drawing
+    /// again while the strip pans ([`Self::draw_group_apart`]). Emptied once
+    /// the row is drawn in screen space again.
+    apart_drawings: Vec<ApartDrawing>,
+}
+
+/// What of a strip drawn in canvas coordinates the screen shows this draw.
+#[derive(Clone, Copy)]
+struct ApartWindow {
+    /// `(x0, x1)` in the canvas's layout coordinates.
+    span: (f64, f64),
+    /// The screen shows another stretch than the lane's last draw did: the
+    /// strip is panning, and groups off screen replay their drawings.
+    panning: bool,
+}
+
+/// Whether `scene` draws an image whose pixels are not in it: a client's
+/// GPU buffer or another external frame carries no CPU pixels, every other
+/// image does.
+fn draws_external_pixels(scene: &Scene) -> bool {
+    scene.encoding().resources.patches.iter().any(|patch| {
+        matches!(patch, vello_encoding::Patch::Image { image, .. } if image.data.is_empty())
+    })
+}
+
+/// A group's drawing in canvas coordinates, kept while a presenter pans the
+/// strip it is in.
+struct ApartDrawing {
+    id: u64,
+    /// The group's canvas rect and the transform it was drawn with: the
+    /// drawing is reused only while both hold.
+    rect: Rect,
+    transform: Affine,
+    scene: Scene,
+    /// The drawing put a secret on screen; a replay notes it again.
+    shows_secret: bool,
 }
 
 /// One display's horizontal extent in the compositor's combined
@@ -825,6 +878,20 @@ impl Lane {
     }
 }
 
+/// Steps per layout pixel of [`on_binary_grid`].
+const BINARY_GRID: f64 = 1_048_576.0;
+
+/// `value` rounded to a multiple of 2⁻²⁰ layout pixels. A device-pixel pan
+/// step (two thirds of a layout pixel at 150 %) is no binary fraction, so
+/// moving a strip to canvas coordinates and back would round differently
+/// at every pan, and the canvas a presenter keeps would never be the same
+/// twice. On this grid the sums are exact (a desktop is far narrower than
+/// 2³² layout pixels), and the pan is off a device pixel by under 10⁻⁶ of
+/// one.
+fn on_binary_grid(value: f64) -> f64 {
+    (value * BINARY_GRID).round() / BINARY_GRID
+}
+
 /// Whether a strip panned to `scroll` (whole pixels) can be drawn in canvas
 /// coordinates: the retained canvas spans the content from no pan to the
 /// furthest, plus `pad` past either end for the rubber band.
@@ -904,7 +971,9 @@ impl GroupRow {
             tab_drop_target: None,
             cross_strip_drop_target: None,
             pan: Pan::default(),
-            pixel_aligned_scroll: false,
+            scroll_quantum: None,
+            drawn_apart: false,
+            apart_transform: None,
             lanes: Vec::new(),
             group_lanes: HashMap::new(),
             focus_lane: 0,
@@ -932,6 +1001,9 @@ impl GroupRow {
             sibling_fade_hold: None,
             fade_hero: None,
             culled_groups: Vec::new(),
+            apart_window: None,
+            apart_spans: Vec::new(),
+            apart_drawings: Vec::new(),
         }
     }
 
@@ -1762,19 +1834,39 @@ impl GroupRow {
         self.leading_pan().scroll_x
     }
 
-    /// Select the presenter's strip-pan precision. Fractional motion is the default.
-    pub fn set_pixel_aligned_scroll(&mut self, enabled: bool) {
-        if self.pixel_aligned_scroll != enabled {
-            self.pixel_aligned_scroll = enabled;
+    /// Select the presenter's strip-pan precision: the drawn pan lands on
+    /// multiples of `quantum` layout pixels (`1 / scale` puts it on whole
+    /// device pixels), or exactly where the gesture put it with `None`, the
+    /// default. A quantum that is not finite and positive is ignored.
+    pub fn set_scroll_quantum(&mut self, quantum: Option<f64>) {
+        let quantum = quantum.filter(|step| step.is_finite() && *step > 0.0);
+        if self.scroll_quantum != quantum {
+            self.scroll_quantum = quantum;
             self.scroll_dirty = true;
         }
     }
 
+    /// `value` on the presenter's pan step: the nearest multiple of the
+    /// quantum, or `value` itself without one.
+    fn quantized(&self, value: f64) -> f64 {
+        match self.scroll_quantum {
+            Some(step) => on_binary_grid((value / step).round() * step),
+            None => value,
+        }
+    }
+
     fn drawn_pan_x(&self, pan: &Pan) -> f64 {
-        if self.pixel_aligned_scroll {
-            pan.scroll_x.round()
-        } else {
-            pan.scroll_x
+        self.quantized(pan.scroll_x)
+    }
+
+    /// [`Pan::canvas_pad`] on the presenter's pan step, rounded up so the
+    /// canvas keeps at least that much room: with whole-device-pixel pans,
+    /// a canvas shift (`pan + pad`) is then whole device pixels too.
+    fn lane_canvas_pad(&self, pan: &Pan) -> f64 {
+        let pad = pan.canvas_pad();
+        match self.scroll_quantum {
+            Some(step) => on_binary_grid((pad / step).ceil() * step),
+            None => pad,
         }
     }
 
@@ -1815,7 +1907,35 @@ impl GroupRow {
     /// Room a retained canvas keeps left of the content and right of the
     /// furthest pan, in layout pixels.
     pub fn canvas_pad(&self) -> f64 {
-        self.leading_pan().canvas_pad()
+        self.lane_canvas_pad(self.leading_pan())
+    }
+
+    /// Have the parent's draw skip this row, recording only its transform,
+    /// so its owner draws it into a scene of its own with
+    /// [`Self::draw_apart`]: a presenter that pans each strip on its own
+    /// needs each strip's drawing apart from the others'.
+    pub fn set_drawn_apart(&mut self, apart: bool) {
+        self.drawn_apart = apart;
+        self.apart_transform = None;
+    }
+
+    /// Draw the row into `scene` with the transform its parent's draw
+    /// passed, once that draw skipped it ([`Self::set_drawn_apart`]).
+    /// `false`, drawing nothing, when the parent did not draw it.
+    pub fn draw_apart(
+        &mut self,
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) -> bool {
+        let Some(transform) = self.apart_transform.take() else {
+            return false;
+        };
+        self.drawn_apart = false;
+        self.draw(scene, transform, tr, theme, presence);
+        self.drawn_apart = true;
+        true
     }
 
     /// Set the real strip viewport to an absolute finite offset. Browser and
@@ -3258,7 +3378,7 @@ impl Widget for GroupRow {
                         && self.fullscreen_idx() == Some(i)
                     {
                         style.margin.left =
-                            LengthPercentageAuto::length(f64_to_f32(self.pan_of_lane(lane).inset));
+                            LengthPercentageAuto::length(f32_of_f64(self.pan_of_lane(lane).inset));
                     }
                 } else {
                     style.display = Display::None;
@@ -3270,6 +3390,16 @@ impl Widget for GroupRow {
         let run_style = |display: Display| Style {
             display,
             flex_direction: FlexDirection::Row,
+            // Groups past the viewport are the strip's to pan and clip, not
+            // extent of what holds it: without this, taffy carries their
+            // width up as every ancestor's content size and the desktop
+            // column reports itself as wide as the whole strip, reaching
+            // across and past every display. `Clip`, not `Hidden`: the
+            // automatic minimum size, and so the layout, stays as it was.
+            overflow: taffy::Point {
+                x: Overflow::Clip,
+                y: Overflow::Visible,
+            },
             // Zero here: the inter-group `ResizeHandle` widgets supply the
             // visible 8-px footprint per gap, so a non-zero gap on top of
             // that would double the inter-group distance.
@@ -3351,14 +3481,14 @@ impl Widget for GroupRow {
                 let style = Style {
                     position: Position::Absolute,
                     inset: taffy::Rect {
-                        left: LengthPercentageAuto::length(f64_to_f32(viewport.x0 - row.x0)),
+                        left: LengthPercentageAuto::length(f32_of_f64(viewport.x0 - row.x0)),
                         right: LengthPercentageAuto::auto(),
-                        top: LengthPercentageAuto::length(f64_to_f32(viewport.y0 - row.y0)),
+                        top: LengthPercentageAuto::length(f32_of_f64(viewport.y0 - row.y0)),
                         bottom: LengthPercentageAuto::auto(),
                     },
                     size: Size {
-                        width: Dimension::length(f64_to_f32(viewport.width())),
-                        height: Dimension::length(f64_to_f32(viewport.height())),
+                        width: Dimension::length(f32_of_f64(viewport.width())),
+                        height: Dimension::length(f32_of_f64(viewport.height())),
                     },
                     ..run_style(Display::Flex)
                 };
@@ -3560,6 +3690,10 @@ impl Widget for GroupRow {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
+        if self.drawn_apart {
+            self.apart_transform = Some(transform);
+            return;
+        }
         self.reduce_motion = theme.reduce_motion;
         self.sync_sibling_fade(theme);
         if self.external_navigation && self.hidden {
@@ -3597,7 +3731,7 @@ impl Widget for GroupRow {
             let pan = self.pan_of_lane(k);
             let scroll = self.drawn_pan_x(pan);
             let max_scroll = pan.max_scroll_x();
-            let pad = pan.canvas_pad();
+            let pad = self.lane_canvas_pad(pan);
             let unbake = crate::retained_present::unbake_scroll()
                 && pan_within_canvas(scroll, max_scroll, pad);
             let clip_right = if unbake {
@@ -3610,6 +3744,9 @@ impl Widget for GroupRow {
             if shifted {
                 self.offset_lane(k, shift);
             }
+            // The stretch of the canvas this draw's pan shows: the
+            // viewport, moved by the shift that took the groups there.
+            self.apart_window = unbake.then(|| self.apart_window_of_lane(k, viewport, shift));
             let clip = Rect {
                 x1: clip_right,
                 ..Self::drawn_bounds(viewport)
@@ -3654,6 +3791,11 @@ impl Widget for GroupRow {
             if shifted {
                 self.offset_lane(k, -shift);
             }
+        }
+        if self.apart_window.take().is_none() {
+            // In screen space again: the canvas drawings are stale.
+            self.apart_drawings.clear();
+            self.apart_spans.clear();
         }
         self.draw_group_drag_preview(scene, transform, tr, theme, presence);
         self.draw_reorder_capsule(scene, transform, theme);
@@ -4117,13 +4259,112 @@ impl GroupRow {
                     &rect.inflate(160.0, 160.0),
                 );
             }
-            self.groups[i].draw(scene, t, tr, theme, presence);
+            match self.apart_window {
+                // Only a group at rest in its slot: one moving, lifted or
+                // fading is drawn every frame.
+                Some(window)
+                    if !source_is_lifted && !fading_sibling && dx.abs() <= f64::EPSILON =>
+                {
+                    self.draw_group_apart(i, window, scene, t, (tr, theme, presence));
+                }
+                _ => self.groups[i].draw(scene, t, tr, theme, presence),
+            }
             if source_is_lifted {
                 scene.pop_layer();
             }
             if fading_sibling {
                 scene.pop_layer();
             }
+        }
+        if self.apart_window.is_some() {
+            let groups = &self.groups;
+            self.apart_drawings
+                .retain(|drawing| groups.iter().any(|group| group.id == drawing.id));
+        }
+    }
+
+    /// What of lane `k`'s canvas the screen shows, its `viewport` moved by
+    /// `shift`, and whether that is another stretch than its last canvas
+    /// draw showed; remembered for the next draw.
+    fn apart_window_of_lane(&mut self, k: usize, viewport: Rect, shift: f64) -> ApartWindow {
+        let span = (viewport.x0 + shift, viewport.x1 + shift);
+        let bits = |(x0, x1): (f64, f64)| (x0.to_bits(), x1.to_bits());
+        let last = self.apart_spans.iter_mut().find(|(lane, _)| *lane == k);
+        let panning = last
+            .as_ref()
+            .is_some_and(|(_, last)| bits(*last) != bits(span));
+        match last {
+            Some((_, last)) => *last = span,
+            None => self.apart_spans.push((k, span)),
+        }
+        ApartWindow { span, panning }
+    }
+
+    /// Draw group `i` of a row drawn in canvas coordinates, of which the
+    /// screen shows `window`. While the strip pans, a group wholly off
+    /// screen replays its last drawing when that was made at the same canvas
+    /// rect and transform; any other group is drawn, and its drawing kept.
+    /// A strip at rest draws every group, so each app presents as it would.
+    ///
+    /// No pixel of a group off screen is shown: a presenter panning the
+    /// strip shows only the canvas under the screen, and a group is drawn
+    /// afresh in every frame in which any of it is under the screen. So a
+    /// replayed drawing is never seen stale, and the strip's drawing stays
+    /// byte for byte the same while the pan only moves it, which is what
+    /// lets the presenter move its pixels instead of rasterising the strip.
+    /// In screen space the same group would not be drawn at all (it is
+    /// culled), so skipping its draw skips nothing a frame relies on; like
+    /// a culled group it keeps its dirty state for its next real draw.
+    fn draw_group_apart(
+        &mut self,
+        i: usize,
+        window: ApartWindow,
+        scene: &mut Scene,
+        transform: Affine,
+        (tr, theme, presence): (&mut TextRenderer, &Theme, &PresenceCtx),
+    ) {
+        let (id, rect) = (self.groups[i].id, self.groups[i].get_rect());
+        let reach = rect.inflate(GROUP_SPRITE_REACH_PX, 0.0);
+        let on_screen = reach.x1 > window.span.0 && reach.x0 < window.span.1;
+        let kept = self
+            .apart_drawings
+            .iter()
+            .position(|drawing| drawing.id == id);
+        if window.panning
+            && !on_screen
+            && let Some(drawing) = kept.and_then(|index| self.apart_drawings.get(index))
+            && drawing.rect == rect
+            && drawing.transform == transform
+        {
+            scene.append(&drawing.scene, Some(Affine::IDENTITY));
+            if drawing.shows_secret {
+                crate::secret_paint::note_secret_painted();
+            }
+            self.culled_groups.push(id);
+            return;
+        }
+        let mut local = kept
+            .map(|index| self.apart_drawings.swap_remove(index).scene)
+            .unwrap_or_default();
+        local.reset();
+        crate::backdrop::nest_scene(&local);
+        let secrets = crate::secret_paint::SecretPaint::begin();
+        self.groups[i].draw(&mut local, transform, tr, theme, presence);
+        let shows_secret = secrets.finish();
+        // A drawing that carries a blurred material is drawn every frame:
+        // replayed, the material would lose its backdrop. So is one that
+        // draws pixels living outside it (a client's GPU buffer): those are
+        // valid only for the frame that drew them, and a replay could read a
+        // buffer its client already got back.
+        let carries_material = crate::backdrop::append_nested(scene, &local, Affine::IDENTITY) > 0;
+        if !carries_material && !draws_external_pixels(&local) {
+            self.apart_drawings.push(ApartDrawing {
+                id,
+                rect,
+                transform,
+                scene: local,
+                shows_secret,
+            });
         }
     }
 
@@ -4590,15 +4831,6 @@ impl GroupRow {
     }
 }
 
-/// Logical-pixel geometry into taffy's `f32` lengths.
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "bounded logical-pixel desktop geometry; f32 precision is sufficient for layout"
-)]
-fn f64_to_f32(v: f64) -> f32 {
-    v as f32
-}
-
 /// `base` shifted right by `dx` px. Wrapped so the one
 /// `arithmetic_side_effects` allow lives in a single place: `Affine`'s
 /// `Mul` is pure floating-point matrix composition and cannot panic or
@@ -4634,18 +4866,6 @@ mod tests {
     use super::*;
     use crate::testing::Dispatch;
     use crate::widget::{TabDescriptor, TileContent, WindowWidth, min_group_px};
-
-    /// Narrows a fixture viewport width to the `f32` taffy layout expects.
-    /// Test fixtures only ever pass small literal pixel constants (hundreds
-    /// to low thousands), far inside `f32`'s exact-integer range, so this
-    /// cannot lose precision.
-    #[allow(
-        clippy::cast_possible_truncation,
-        reason = "test fixture viewport widths are small literal pixel constants, always exactly representable in f32"
-    )]
-    fn px32(v: f64) -> f32 {
-        v as f32
-    }
 
     /// `t` minus `ms` milliseconds, saturating rather than panicking in
     /// the astronomically unlikely case the subtraction would underflow
@@ -5176,7 +5396,7 @@ mod tests {
         let viewport = taffy.parent_node(
             Style {
                 size: Size {
-                    width: Dimension::length(px32(viewport_w)),
+                    width: Dimension::length(crate::num::f32_of_f64(viewport_w)),
                     height: Dimension::length(600.0),
                 },
                 ..Default::default()
@@ -5187,7 +5407,7 @@ mod tests {
             .compute_layout_with_measure(
                 viewport,
                 TSize {
-                    width: AvailableSpace::Definite(px32(viewport_w)),
+                    width: AvailableSpace::Definite(crate::num::f32_of_f64(viewport_w)),
                     height: AvailableSpace::Definite(600.0),
                 },
                 |_, _, _, _, _| taffy::Size::ZERO,
@@ -5222,7 +5442,7 @@ mod tests {
         let viewport = taffy.parent_node(
             Style {
                 size: Size {
-                    width: Dimension::length(px32(viewport_w)),
+                    width: Dimension::length(crate::num::f32_of_f64(viewport_w)),
                     height: Dimension::length(600.0),
                 },
                 ..Default::default()
@@ -5233,7 +5453,7 @@ mod tests {
             .compute_layout_with_measure(
                 viewport,
                 TSize {
-                    width: AvailableSpace::Definite(px32(viewport_w)),
+                    width: AvailableSpace::Definite(crate::num::f32_of_f64(viewport_w)),
                     height: AvailableSpace::Definite(600.0),
                 },
                 |_, _, _, _, _| taffy::Size::ZERO,
@@ -6443,7 +6663,7 @@ mod tests {
         let viewport = taffy.parent_node(
             Style {
                 size: Size {
-                    width: Dimension::length(px32(viewport_w)),
+                    width: Dimension::length(crate::num::f32_of_f64(viewport_w)),
                     height: Dimension::length(600.0),
                 },
                 ..Default::default()
@@ -6454,7 +6674,7 @@ mod tests {
             .compute_layout_with_measure(
                 viewport,
                 TSize {
-                    width: AvailableSpace::Definite(px32(viewport_w)),
+                    width: AvailableSpace::Definite(crate::num::f32_of_f64(viewport_w)),
                     height: AvailableSpace::Definite(600.0),
                 },
                 |_, _, _, _, _| taffy::Size::ZERO,
@@ -6462,6 +6682,100 @@ mod tests {
             .expect("taffy compute_layout");
         row.apply_layout(&taffy, root, Point::ORIGIN);
         (row, taffy, root)
+    }
+
+    /// Lay a column holding one strip of `count` groups out `viewport_w`
+    /// wide, twice so lanes set before the first pass are in its build, and
+    /// return the column's rect with the strip's pan bound.
+    fn column_around_strip(count: usize, viewport_w: f64, lanes: &[StripLane]) -> (Rect, f64) {
+        use crate::widget::Column;
+        use std::collections::HashMap;
+        use taffy::{AvailableSpace, Size as TSize};
+
+        let groups: Vec<WindowGroup> = (0..count)
+            .map(|i| {
+                let id = (i as u64).saturating_mul(100).saturating_add(100);
+                make_group(id, &[(i as u64).saturating_add(1)])
+            })
+            .collect();
+        let mut row = GroupRow::new(groups);
+        let assignment: HashMap<u64, u32> = row
+            .groups
+            .iter()
+            .map(|g| (g.id, lanes.first().map_or(0, |lane| lane.output)))
+            .collect();
+        row.set_lanes(lanes, &assignment);
+        let mut column = Column::new().with_no_padding().push(Box::new(row));
+        let theme = Theme::dark();
+        let mut rect = Rect::ZERO;
+        for _ in 0..2 {
+            let mut taffy: TaffyTree<()> = TaffyTree::new();
+            let mut node_map: HashMap<taffy::NodeId, *mut dyn Widget> = HashMap::new();
+            let node = column.build_layout(&mut taffy, &theme, &mut node_map);
+            let viewport = taffy.parent_node(
+                Style {
+                    size: Size {
+                        width: Dimension::length(crate::num::f32_of_f64(viewport_w)),
+                        height: Dimension::length(600.0),
+                    },
+                    ..Default::default()
+                },
+                &[node],
+            );
+            taffy
+                .compute_layout_with_measure(
+                    viewport,
+                    TSize {
+                        width: AvailableSpace::Definite(crate::num::f32_of_f64(viewport_w)),
+                        height: AvailableSpace::Definite(600.0),
+                    },
+                    |_, _, _, _, _| taffy::Size::ZERO,
+                )
+                .expect("taffy compute_layout");
+            column.apply_layout(&taffy, node, Point::ORIGIN);
+            rect = column.get_rect();
+        }
+        let max_scroll = column
+            .children_mut()
+            .into_iter()
+            .next()
+            .and_then(|row| row.as_any_mut())
+            .and_then(|row| row.downcast_mut::<GroupRow>())
+            .map_or(0.0, |row| row.max_scroll_x());
+        (rect, max_scroll)
+    }
+
+    /// Windows past a strip's viewport are the strip's to pan and clip: the
+    /// container holding it stays the width it was given, on one display
+    /// and on a strip split across two.
+    #[test]
+    fn a_strip_past_its_viewport_never_widens_its_container() {
+        let viewport_w = 2000.0;
+        let lanes = [
+            StripLane {
+                output: 0,
+                area: Rect::new(0.0, 0.0, 1200.0, 600.0),
+                usable: 1200.0,
+                leading: false,
+            },
+            StripLane {
+                output: 1,
+                area: Rect::new(1200.0, 0.0, viewport_w, 600.0),
+                usable: 800.0,
+                leading: false,
+            },
+        ];
+        for (what, lanes) in [("one run", &[][..]), ("a lane per display", &lanes[..])] {
+            let (rect, max_scroll) = column_around_strip(8, viewport_w, lanes);
+            assert!(
+                max_scroll > 0.0,
+                "{what}: eight groups overflow, so the strip pans ({max_scroll})"
+            );
+            assert!(
+                (rect.width() - viewport_w).abs() < 0.5,
+                "{what}: the column is {rect:?}, not the {viewport_w} it was given"
+            );
+        }
     }
 
     #[test]
@@ -6663,7 +6977,7 @@ mod tests {
         let viewport = taffy.parent_node(
             Style {
                 size: Size {
-                    width: Dimension::length(px32(viewport_w)),
+                    width: Dimension::length(crate::num::f32_of_f64(viewport_w)),
                     height: Dimension::length(1080.0),
                 },
                 ..Default::default()
@@ -6674,7 +6988,7 @@ mod tests {
             .compute_layout_with_measure(
                 viewport,
                 TSize {
-                    width: AvailableSpace::Definite(px32(viewport_w)),
+                    width: AvailableSpace::Definite(crate::num::f32_of_f64(viewport_w)),
                     height: AvailableSpace::Definite(1080.0),
                 },
                 |_, _, _, _, _| taffy::Size::ZERO,
@@ -6713,13 +7027,140 @@ mod tests {
         row.set_scroll_x_for_test(120.5);
         relayout_strip(&mut row, 800.0);
         assert_eq!(row.groups[0].get_rect().x0, initial - 120.5);
-        row.set_pixel_aligned_scroll(true);
+        row.set_scroll_quantum(Some(1.0));
         relayout_strip(&mut row, 800.0);
         assert_eq!(row.groups[0].get_rect().x0, initial - 121.0);
         assert_eq!(row.scroll_x(), 120.5, "the gesture retains its precision");
-        row.set_pixel_aligned_scroll(false);
+        row.set_scroll_quantum(None);
         relayout_strip(&mut row, 800.0);
         assert_eq!(row.groups[0].get_rect().x0, initial - 120.5);
+    }
+
+    /// At 150 % a device pixel is two thirds of a layout pixel: the drawn
+    /// pan and the canvas pad land on its multiples, so a canvas shift is a
+    /// whole number of device pixels and a presenter can move the strip's
+    /// pixels by copying them.
+    #[test]
+    fn a_device_pixel_quantum_puts_pan_and_canvas_shift_on_device_pixels() {
+        let scale = 1.5;
+        let mut row = strip_at(3, 800.0, 0.0, 1000);
+        let initial = row.groups[0].get_rect().x0;
+        let unaligned_pad = row.canvas_pad();
+        row.set_scroll_quantum(Some(1.0 / scale));
+        row.set_scroll_x_for_test(120.5);
+        relayout_strip(&mut row, 800.0);
+        let drawn = row.drawn_scroll_x();
+        let device = drawn * scale;
+        assert!(
+            (device - device.round()).abs() < 1e-5,
+            "the drawn pan {drawn} is {device} device pixels"
+        );
+        assert!(
+            (drawn - 120.5).abs() <= 1.0 / 3.0,
+            "the nearest step: {drawn}"
+        );
+        assert!((row.groups[0].get_rect().x0 - (initial - drawn)).abs() < 1e-9);
+        let pad = row.canvas_pad();
+        let pad_device = pad * scale;
+        assert!(
+            (pad_device - pad_device.round()).abs() < 1e-5 && pad >= unaligned_pad,
+            "the canvas pad {pad} (was {unaligned_pad}) is {pad_device} device pixels"
+        );
+        let _scope = crate::retained_present::RetainedScene::begin(true);
+        let shift = row.canvas_shift() * scale;
+        assert!(
+            (shift - shift.round()).abs() < 1e-5,
+            "the canvas shift is {shift} device pixels"
+        );
+        assert_eq!(row.scroll_x(), 120.5, "the gesture retains its precision");
+    }
+
+    /// While a presenter pans a strip drawn in canvas coordinates, a group
+    /// wholly off screen replays its last drawing instead of being drawn
+    /// again, every group the screen shows is drawn, and the strip's drawing
+    /// stays byte for byte the same while only the pan moves. Held still, the
+    /// strip draws every group; drawn in screen space again, the row drops
+    /// the drawings.
+    #[test]
+    fn a_panned_strip_replays_groups_off_screen_and_draws_those_on_it() {
+        fn draw(row: &mut GroupRow, text: &mut TextRenderer) -> Scene {
+            let mut scene = Scene::new();
+            row.draw(
+                &mut scene,
+                Affine::IDENTITY,
+                text,
+                &Theme::dark(),
+                &PresenceCtx::empty(),
+            );
+            scene
+        }
+        let text = &mut TextRenderer::new();
+        let mut row = strip_at(8, 800.0, 0.0, 1000);
+        relayout_strip(&mut row, 800.0);
+        let scope = crate::retained_present::RetainedScene::begin(true);
+        let first = draw(&mut row, text);
+        assert!(
+            row.culled_groups.is_empty(),
+            "the first canvas draw draws every group: {:?}",
+            row.culled_groups
+        );
+        let mut replayed_any = false;
+        for scroll in [37.0, 1300.0, 2900.0, 0.0] {
+            row.set_scroll_x_for_test(scroll);
+            relayout_strip(&mut row, 800.0);
+            let panned = draw(&mut row, text);
+            let shown = row.onscreen_group_ids();
+            assert!(!shown.is_empty(), "the screen shows a group at {scroll}");
+            assert!(
+                shown.iter().all(|id| !row.culled_groups.contains(id)),
+                "at {scroll} a group on screen ({shown:?}) was replayed: {:?}",
+                row.culled_groups
+            );
+            replayed_any |= !row.culled_groups.is_empty();
+            assert!(
+                first.encoding_eq(&panned),
+                "a pan to {scroll} leaves the strip's canvas drawing as it was"
+            );
+        }
+        assert!(replayed_any, "groups off screen replay their drawings");
+        assert!(!row.apart_drawings.is_empty());
+        // Held still, the strip draws every group again, so each app
+        // presents as it would at rest.
+        let held = draw(&mut row, text);
+        assert!(
+            row.culled_groups.is_empty(),
+            "a strip at rest replays nothing: {:?}",
+            row.culled_groups
+        );
+        assert!(first.encoding_eq(&held));
+        drop(scope);
+        let _ = draw(&mut row, text);
+        assert!(
+            row.apart_drawings.is_empty(),
+            "a screen-space draw drops the canvas drawings"
+        );
+    }
+
+    /// A drawing of a client's GPU buffer (an image with no CPU pixels) is
+    /// told apart from one of an image that carries its pixels.
+    #[test]
+    fn external_pixels_are_told_apart_from_carried_ones() {
+        use vello::peniko::{Blob, ImageAlphaType, ImageData, ImageFormat};
+        let image = |data: Vec<u8>| ImageData {
+            data: Blob::new(std::sync::Arc::new(data)),
+            format: ImageFormat::Rgba8,
+            alpha_type: ImageAlphaType::Alpha,
+            width: 2,
+            height: 2,
+        };
+        let drawn = |image: &ImageData| {
+            let mut scene = Scene::new();
+            scene.draw_image(image, Affine::IDENTITY);
+            scene
+        };
+        assert!(draws_external_pixels(&drawn(&image(Vec::new()))));
+        assert!(!draws_external_pixels(&drawn(&image(vec![0; 16]))));
+        assert!(!draws_external_pixels(&Scene::new()));
     }
 
     fn set_strip_permille(row: &mut GroupRow, permille: u16) {

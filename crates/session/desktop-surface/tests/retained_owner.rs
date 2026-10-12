@@ -199,7 +199,7 @@ fn inactive_retained_workspace_services_only_its_exact_current_checked_owner_bef
     };
     let (surface, handle) = DesktopSurface::new(tree, 23, Box::new(source));
     handle.set_viewport_width(1200.0);
-    let mut driver = ui::headless::Driver::new_with_controlled_inputs(
+    let mut driver = ui::headless::FrameHarness::new_with_controlled_inputs(
         ui::state::State::new(),
         Box::new(surface),
         (1200, 800),

@@ -70,18 +70,6 @@ impl DictationLanguage {
     pub fn label_key(self) -> String {
         format!("dictation-language-{}", self.0)
     }
-
-    pub fn load() -> Self {
-        Self::from_section(&super::load_section("accessibility"))
-    }
-
-    pub fn from_section(section: &serde_json::Map<String, Value>) -> Self {
-        section
-            .get("dictation_language")
-            .and_then(Value::as_str)
-            .and_then(Self::from_code)
-            .unwrap_or_default()
-    }
 }
 
 #[cfg(test)]

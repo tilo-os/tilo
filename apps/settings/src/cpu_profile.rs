@@ -39,7 +39,7 @@ fn measure(
     act: impl FnOnce(&mut TestApp<SettingsShell>),
 ) {
     app.harness().clear_profile_samples();
-    let ((elapsed, drain_elapsed, frames), phases) = ui::framework::profiling::observe(|| {
+    let ((elapsed, drain_elapsed, frames), phases) = ui::tilo_resource::profiling::observe(|| {
         let started = std::time::Instant::now();
         act(app);
         let elapsed = started.elapsed().as_nanos();
@@ -84,7 +84,7 @@ fn measure(
                 "last_layout_marked_dirty": layout.marked_dirty,
                 "last_layout_marked_leaves": layout.marked_leaves,
                 "event_elapsed_ns": elapsed, "profile_drain_elapsed_ns": drain_elapsed,
-                "framework_phases": phases, "frames": frames, "dirty_leaves_after_draw": leaves,
+                "phases": phases, "frames": frames, "dirty_leaves_after_draw": leaves,
                 "includes_cpu_layout_and_scene_draw": true,
                 "includes_gpu_or_display": false,
                 "execution_host": "mounted headless framework; no GPU or device presentation",

@@ -262,7 +262,7 @@ fn live_rows(shown: &Shown) -> Vec<LiveRow> {
         .presentation(ResourcePresentation {
             detail: Some(format!(
                 "At {0}, repeating {1}.",
-                alarm.local_time().format("%H:%M"),
+                ui::clock::time_of_day(&alarm.local_time()),
                 repeat_summary(&alarm.weekdays())
             )),
             badge: Some(if alarm.enabled { "On" } else { "Off" }.into()),

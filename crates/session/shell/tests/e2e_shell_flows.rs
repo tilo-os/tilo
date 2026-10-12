@@ -189,12 +189,6 @@ impl Harness {
         }
     }
 
-    /// Unused on `tilo-shell` — the sidebar wheel swallows clicks at the
-    /// topbar hit regions — kept for when that regression is fixed.
-    #[allow(
-        dead_code,
-        reason = "kept as a reusable interaction seam for the documented sidebar hit-routing regression"
-    )]
     fn click(&mut self, x: f64, y: f64) {
         self.pump(&cursor_moved(x, y));
         self.pump(&mouse_press());

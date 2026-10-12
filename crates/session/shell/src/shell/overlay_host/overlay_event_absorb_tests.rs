@@ -18,6 +18,9 @@ use winit::dpi::PhysicalPosition;
 use winit::event::{ElementState, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
+#[path = "overlay_event_absorb_tests/picker_scroll_tests.rs"]
+mod picker_scroll_tests;
+
 /// Mock content widget recording every [`Widget::handle_event`] call by
 /// event-variant name, so tests can assert which events reached it —
 /// and that absorbed ones did not.
@@ -53,8 +56,7 @@ impl Widget for RecordingContent {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).unwrap();
-        self.rect = ui::widget::placed(l, origin);
+        self.rect = ui::widget::layout_rect(taffy, node, origin);
     }
 
     fn draw(
@@ -236,8 +238,8 @@ pub(super) fn lay_out_host_with_theme(
         .new_with_children(
             Style {
                 size: Size {
-                    width: Dimension::length(f64_to_f32_lossy(vw)),
-                    height: Dimension::length(f64_to_f32_lossy(vh)),
+                    width: Dimension::length(ui::num::f32_of_f64(vw)),
+                    height: Dimension::length(ui::num::f32_of_f64(vh)),
                 },
                 ..Default::default()
             },
@@ -250,8 +252,8 @@ pub(super) fn lay_out_host_with_theme(
         .compute_layout_with_measure(
             viewport,
             Size {
-                width: AvailableSpace::Definite(f64_to_f32_lossy(vw)),
-                height: AvailableSpace::Definite(f64_to_f32_lossy(vh)),
+                width: AvailableSpace::Definite(ui::num::f32_of_f64(vw)),
+                height: AvailableSpace::Definite(ui::num::f32_of_f64(vh)),
             },
             |known, avail, node_id, _, _| {
                 if let Some(&ptr) = measure_map.get(&node_id) {

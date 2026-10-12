@@ -105,21 +105,21 @@ mod tests {
         let before = SectionDigest::of(&doc(&json!({
             "notifications": {"do_not_disturb": false},
             "display": {"scale": 1.5},
-            "input": {"tap_to_click": true, "natural_scroll": false},
+            "input": {"tap_to_click": true, "mouse_natural_scroll": false},
         })));
 
         // Only `notifications` moved.
         let dnd = SectionDigest::of(&doc(&json!({
             "notifications": {"do_not_disturb": true},
             "display": {"scale": 1.5},
-            "input": {"tap_to_click": true, "natural_scroll": false},
+            "input": {"tap_to_click": true, "mouse_natural_scroll": false},
         })));
         assert_eq!(dnd.changed_since(&before), names(&["notifications"]));
 
         // A section added and another removed are both changes.
         let reshaped = SectionDigest::of(&doc(&json!({
             "notifications": {"do_not_disturb": false},
-            "input": {"tap_to_click": true, "natural_scroll": false},
+            "input": {"tap_to_click": true, "mouse_natural_scroll": false},
             "appearance": {"theme": "dark"},
         })));
         assert_eq!(
@@ -129,7 +129,7 @@ mod tests {
 
         // Reordered keys inside a section, at any depth, are no change.
         let reordered = SectionDigest::of(&doc(&json!({
-            "input": {"natural_scroll": false, "tap_to_click": true},
+            "input": {"mouse_natural_scroll": false, "tap_to_click": true},
             "display": {"scale": 1.5},
             "notifications": {"do_not_disturb": false},
         })));

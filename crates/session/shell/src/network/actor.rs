@@ -27,7 +27,7 @@ use tilo_user_identity::{DeviceCert, RevocationList};
 use tokio::sync::mpsc;
 
 use crate::network::protocol::{MAX_PERSONAL_CONTINUITY_CHECKPOINT_BYTES, NeighbourMsg, SurfaceId};
-use crate::network::reachability::Reachability;
+use crate::network::reachability::{Need, Reachability};
 use neighbour_wire::{Retention, retention};
 
 #[cfg(test)]
@@ -767,10 +767,9 @@ impl TopicRuntime {
     /// comes later is never offered an older message: the shell syncs it
     /// when it joins (`NetEvent::PeerJoined`). All a broadcast into an
     /// empty topic would do is start the topic's cache sweep
-    /// ([`GOSSIP_CACHE_SWEEP`]), which iroh-gossip arms on the first message
-    /// and never stops, so a desktop alone with its rooms would wake to
-    /// sweep empty caches for the rest of the session. The first neighbour
-    /// arms it instead.
+    /// ([`GOSSIP_CACHE_SWEEP`]), which then runs until the message expires
+    /// (`gossip_caches_drain_within`), so a desktop alone with its rooms
+    /// would wake for every local change. Only a linked topic broadcasts.
     async fn broadcast(&self, bytes: Bytes) -> Result<(), iroh_gossip::api::ApiError> {
         if !self.linked {
             return Ok(());
@@ -987,7 +986,7 @@ impl ProtocolHandler for PersonalFabricProtocol {
 }
 
 /// Why `command` means a remote party is involved, so this device must be
-/// reachable from now on (`crate::network::reachability`): it dials a peer
+/// reachable for a while (`crate::network::reachability`): it dials a peer
 /// or host, enrols a device, administers a relay room, joins a call or
 /// sends to a named one of the person's devices. `None` for everything a
 /// lone desktop does by itself: joining and publishing to a topic nobody
@@ -3149,6 +3148,7 @@ impl ActorState {
             HostEvent::Voice(_) => "HostVoice",
             HostEvent::Closed => "HostClosed",
         });
+        let event = self.admit_native_governance(ws, event).await;
         let mapped = match event {
             HostEvent::NativeInput(input) => Some(NetEvent::NativeInput(input)),
             HostEvent::Ready => {
@@ -3297,6 +3297,42 @@ impl ActorState {
                 .subscribers
                 .keys()
                 .any(|ws| !self.topics.contains_key(ws))
+    }
+
+    /// The remote party this actor is connected to or keeps dialling, if
+    /// any, which holds this device's relays up ([`Need::Transport`]): a
+    /// peer it dials, a peer on one of its topics, a workspace host, a
+    /// governed room's relay, one of the person's devices, a window streamed
+    /// with a peer, a remote action waiting for its peer, a device being
+    /// enrolled or a Messages account its contacts text. A peer that left
+    /// stops counting once its membership lapses.
+    fn remote_party(&self) -> Option<&'static str> {
+        Some(if !self.peers.is_empty() {
+            "a peer this device dials"
+        } else if !self.peers_seen.is_empty() {
+            "a peer on one of its topics"
+        } else if !self.hosts.is_empty()
+            || !self.connecting_hosts.is_empty()
+            || !self.host_sessions.is_empty()
+        {
+            "a workspace host"
+        } else if !self.native_routes.is_empty() {
+            "a relay-governed room"
+        } else if !self.personal_fabric_connections.is_empty()
+            || !self.active_personal_transfers.is_empty()
+        {
+            "one of the person's devices"
+        } else if !self.surface_connections.is_empty() || !self.surface_fanout_viewers.is_empty() {
+            "a window streamed with a peer"
+        } else if !self.pending_remote_actions.is_empty() {
+            "a remote action waiting for its peer"
+        } else if self.native_enrollment.is_busy() {
+            "a device being enrolled"
+        } else if self.private_messages.is_bound() {
+            "a Messages account receives texts"
+        } else {
+            return None;
+        })
     }
 
     /// Retry any topic subscription, direct peer or workspace host not yet
@@ -3909,8 +3945,16 @@ async fn run(
     };
     let mut upkeep = None;
     let mut host_checkpoint = None;
+    let mut reported_party = None;
 
     loop {
+        // The relays stay up while a remote party lasts, and rest a while
+        // after the last one is gone (`crate::network::reachability`).
+        let party = state.remote_party();
+        if party != reported_party {
+            reported_party = party;
+            state.reachability.need(Need::Transport, party);
+        }
         // Evict when the soonest membership lapses, not on a polling tick:
         // linked peers have no deadline at all.
         let eviction = state.next_eviction();
@@ -4015,12 +4059,13 @@ async fn sleep_until_lapse(at: Option<Instant>) {
 }
 
 /// How often gossip sweeps a topic's message caches. iroh-gossip's 1 s
-/// sweep is a timer per topic that never stops, the one thing that woke an
-/// idle, converged session several times a second; swept every
-/// [`GOSSIP_CACHE_SWEEP`] instead, an idle topic wakes its runtime a tenth
-/// as often. iroh-gossip arms it on a topic's first message or neighbour,
-/// so a topic that never had a neighbour is never swept
-/// ([`TopicRuntime::broadcast`]).
+/// sweep was a timer per topic that never stopped, the one thing that woke
+/// an idle, converged session several times a second; swept every
+/// [`GOSSIP_CACHE_SWEEP`] instead, a topic with messages wakes its runtime
+/// a tenth as often. The vendored iroh-gossip (`vendor/iroh-gossip/
+/// TILO-PATCH.md`) arms it on a topic's first cached message and stops it
+/// once the caches are empty (`gossip_caches_drain_within`); a topic that
+/// never had a neighbour caches nothing ([`TopicRuntime::broadcast`]).
 const GOSSIP_CACHE_SWEEP: Duration = Duration::from_secs(10);
 /// How long gossip keeps a message to answer a neighbour's graft for it.
 /// iroh-gossip's 30 s less the longer sweep, so a message is still gone
@@ -4028,6 +4073,18 @@ const GOSSIP_CACHE_SWEEP: Duration = Duration::from_secs(10);
 /// and this cache holds whole messages of up to
 /// [`MAX_GOSSIP_MESSAGE_BYTES`].
 const GOSSIP_MESSAGE_RETENTION: Duration = Duration::from_secs(20);
+
+/// How long after its last message a topic stops sweeping: the message id
+/// outlives the message itself (iroh-gossip's 90 s, to refuse a late
+/// duplicate), and the sweep that finds both gone is the last.
+#[cfg(test)]
+pub(crate) fn gossip_caches_drain_within() -> Duration {
+    let config = broadcast_config();
+    config
+        .message_id_retention
+        .max(config.message_cache_retention)
+        .saturating_add(config.cache_evict_interval)
+}
 
 /// Plumtree broadcast settings: iroh-gossip's, with the cache swept every
 /// [`GOSSIP_CACHE_SWEEP`] instead of every second.

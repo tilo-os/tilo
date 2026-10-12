@@ -54,6 +54,54 @@ pub(super) fn native_session(
 }
 
 impl ActorState {
+    /// Admit authenticated governance through the same durable owner before
+    /// replayed app state can stall the compositor's event drain. This actor
+    /// awaits one blocking admission at a time; the live scope still
+    /// checks current custody, revocation and its exact session pin.
+    pub(super) async fn admit_native_governance(
+        &self,
+        ws: u64,
+        event: super::HostEvent,
+    ) -> super::HostEvent {
+        let input = match &event {
+            super::HostEvent::NativeInput(input)
+                if matches!(
+                    input.message(),
+                    tilo_peer_state::NeighbourMsg::SyncResp { .. }
+                ) =>
+            {
+                input.clone()
+            }
+            _ => return event,
+        };
+        let Some(identity) = self.host_identity.clone() else {
+            return event;
+        };
+        let room = input.room();
+        match tokio::task::spawn_blocking(move || {
+            let before = input.generation().ok();
+            input.admit(&identity)?;
+            Ok::<_, String>(before != input.generation().ok())
+        })
+        .await
+        {
+            Ok(Ok(changed)) => {
+                if changed {
+                    self.drive_native_publication(ws);
+                    if let Some(wake) = &self.wake {
+                        wake();
+                    }
+                }
+            }
+            Ok(Err(error)) => {
+                tracing::warn!(%error, %room, "native relay governance admission denied");
+            }
+            Err(error) => {
+                tracing::warn!(%error, %room, "native relay governance admission worker failed");
+            }
+        }
+        event
+    }
     /// Every native scope joined for the room on topic `ws`, with its relay
     /// session and this host's identity. Without an identity there are none.
     fn native_scopes(

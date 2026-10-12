@@ -17,41 +17,11 @@ use crate::text_render::{TextRenderer, TextWeight};
 use crate::theme::Theme;
 use crate::tokens::TextRole;
 use crate::widget::Widget;
+use crate::widget::chart_data::ChartItem;
 use crate::widget::chart_labels::format_compact;
 use crate::widget::chart_navigation::{
     ChartNavAction, ChartTouchTracker, InteractiveChart, handle_chart_event, moved_item,
 };
-
-#[derive(Clone, Debug)]
-pub struct FunnelStage {
-    pub id: String,
-    pub label: String,
-    pub value: f64,
-    pub color: Option<Color>,
-    pub detail: String,
-}
-
-impl FunnelStage {
-    pub fn new(id: impl Into<String>, label: impl Into<String>, value: f64) -> Self {
-        Self {
-            id: id.into(),
-            label: label.into(),
-            value,
-            color: None,
-            detail: String::new(),
-        }
-    }
-    #[must_use]
-    pub fn colored(mut self, color: Color) -> Self {
-        self.color = Some(color);
-        self
-    }
-    #[must_use]
-    pub fn with_detail(mut self, detail: impl Into<String>) -> Self {
-        self.detail = detail.into();
-        self
-    }
-}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FunnelDirection {
@@ -100,7 +70,7 @@ struct StageGeometry {
 }
 
 pub struct FunnelChart {
-    stages: Vec<FunnelStage>,
+    stages: Vec<ChartItem>,
     style: FunnelStyle,
     title: String,
     height: f32,
@@ -113,7 +83,7 @@ pub struct FunnelChart {
 }
 
 impl FunnelChart {
-    pub fn new(stages: Vec<FunnelStage>) -> Self {
+    pub fn new(stages: Vec<ChartItem>) -> Self {
         Self {
             stages,
             style: FunnelStyle::default(),
@@ -533,7 +503,7 @@ impl Widget for FunnelChart {
                 .with_children(children),
         )
     }
-    fn perform_action_at(
+    fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
         key_path: &[u64],
@@ -564,8 +534,8 @@ mod tests {
     #[test]
     fn invalid_stages_are_omitted() {
         let chart = FunnelChart::new(vec![
-            FunnelStage::new("bad", "Bad", f64::NAN),
-            FunnelStage::new("zero", "Zero", 0.0),
+            ChartItem::new("bad", "Bad", f64::NAN),
+            ChartItem::new("zero", "Zero", 0.0),
         ]);
         assert!(chart.valid().is_empty());
     }

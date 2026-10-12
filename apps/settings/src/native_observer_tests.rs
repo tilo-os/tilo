@@ -404,13 +404,7 @@ fn focused_seat_configuration_survives_page_recomposition_without_off_page_key_c
 #[test]
 fn narrow_keyboard_map_stays_prominent_and_live_readable() {
     fn find_rect(widget: &dyn Widget, id: &str) -> Option<vello::kurbo::Rect> {
-        if widget.test_id() == Some(id) {
-            return Some(widget.get_rect());
-        }
-        widget
-            .children()
-            .into_iter()
-            .find_map(|child| find_rect(child, id))
+        Some(ui::widget::find_test_id(widget, id)?.get_rect())
     }
     let config = crate::prefs::test_env::ScratchConfig::new();
     let mut h = hosted(&config, 600.0, 1800.0);

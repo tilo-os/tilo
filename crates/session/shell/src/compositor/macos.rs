@@ -162,7 +162,7 @@ fn run_session(options: Options) -> Result<(), Error> {
         _lock,
     } = prepare(&options)?;
     if let Some(path) = options.shots {
-        let driver = ui::headless::Driver::new(ui::State::new(), Box::new(host), (1280, 800));
+        let driver = ui::headless::FrameHarness::new(ui::State::new(), Box::new(host), (1280, 800));
         driver.render_png(&path);
         println!("Rendered {}", path.display());
     } else {

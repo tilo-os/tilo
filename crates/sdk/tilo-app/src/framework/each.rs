@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 use std::ops::Range;
 use std::rc::Rc;
-use ui_core::widget::{AppModel, ModelPath};
+use ui_core::widget::{AppModel, ModelPath, StructureChange};
 
 use taffy::style_helpers::{length, percent};
 use taffy::{NodeId, Style, TaffyTree};
@@ -14,7 +14,7 @@ use ui_core::presence::PresenceCtx;
 use ui_core::text_render::TextRenderer;
 use ui_core::vello::Scene;
 use ui_core::vello::kurbo::{Affine, Point, Rect};
-use ui_core::widget::{ContextMenu, Element, MenuItem, TaffyTreeExt, Widget};
+use ui_core::widget::{ContextMenu, Element, MenuItem, TaffyTreeExt, Widget, draw_child};
 use ui_core::winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use ui_core::winit::keyboard::{Key, NamedKey};
 use ui_core::{Theme, taffy};
@@ -205,7 +205,11 @@ pub struct Each<R: Resource> {
     visible: Option<(f64, f64)>,
     laid_out: bool,
     remounts: u8,
-    structure_dirty: bool,
+    /// The structure change the list has to report: a rebuild when rows it
+    /// showed left it or moved among the others, a described one when it
+    /// only mounted the rows a scroll brought near and let go of the ones it
+    /// took away, which the frame's damage describes.
+    structure: StructureChange,
     geometry_dirty: bool,
 }
 
@@ -239,7 +243,7 @@ impl<R: Resource> Each<R> {
             visible: None,
             laid_out: false,
             remounts: 0,
-            structure_dirty: false,
+            structure: StructureChange::None,
             geometry_dirty: false,
         };
         each.reconcile();
@@ -307,7 +311,7 @@ impl<R: Resource> Each<R> {
             .collect();
         let still_mounted = self.mounted().map(|(id, _)| id);
         if !still_mounted.eq(was_mounted.iter()) {
-            self.structure_dirty = true;
+            self.structure = StructureChange::Rebuild;
         }
         if self.builds == Builds::Every {
             self.build_all();
@@ -805,14 +809,14 @@ impl<R: Resource> Widget for Each<R> {
         let node = taffy.parent_node(style, &nodes);
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         self.node = Some(node);
-        self.structure_dirty = false;
+        self.structure = StructureChange::None;
         self.geometry_dirty = false;
         node
     }
 
     // Measured rows move the rows after them: read what Taffy measured and
     // place the mounted rows (and the list's height) to match.
-    fn adjust_layout_with_measure(
+    fn adjust_layout_style(
         &mut self,
         taffy: &mut TaffyTree<()>,
         node: NodeId,
@@ -872,16 +876,8 @@ impl<R: Resource> Widget for Each<R> {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        let x = origin.x + f64::from(layout.location.x);
-        let y = origin.y + f64::from(layout.location.y);
-        self.rect = Rect::new(
-            x,
-            y,
-            x + f64::from(layout.size.width),
-            y + f64::from(layout.size.height),
-        );
-        let inner = Point::new(x, y);
+        self.rect = ui_core::widget::layout_rect(taffy, node, origin);
+        let inner = self.rect.origin();
         self.for_each_mounted(|view| {
             if let Some(child) = view.node {
                 view.widget.apply_layout(taffy, child, inner);
@@ -892,7 +888,7 @@ impl<R: Resource> Widget for Each<R> {
         self.laid_out = true;
         if self.window_stale() && self.remounts < MAX_REMOUNTS_PER_FRAME {
             self.remounts = self.remounts.saturating_add(1);
-            self.structure_dirty = true;
+            self.structure = self.structure.join(StructureChange::Described);
         }
     }
 
@@ -906,9 +902,14 @@ impl<R: Resource> Widget for Each<R> {
     ) {
         self.remounts = 0;
         self.for_each_mounted(|view| {
-            if !presence.should_cull(view.widget.get_rect()) {
-                view.widget.draw(scene, transform, text, theme, presence);
-            }
+            draw_child(
+                view.widget.as_mut(),
+                scene,
+                transform,
+                text,
+                theme,
+                presence,
+            );
         });
     }
 
@@ -1002,9 +1003,19 @@ impl<R: Resource> Widget for Each<R> {
     }
 
     fn take_structure_dirty(&mut self) -> bool {
-        let mut dirty = std::mem::take(&mut self.structure_dirty);
+        let mut dirty = std::mem::take(&mut self.structure).rebuilds();
         self.for_each_mounted(|view| dirty |= view.widget.take_structure_dirty());
         dirty
+    }
+
+    /// Mounting the rows a scroll brought near, and letting go of the ones
+    /// it took away, is described: they came and went outside what the view
+    /// shows, or where the scroll exposed it, and a mounted row draws itself
+    /// whole. Rows that left the list or moved among the others are not.
+    fn take_structure_change(&mut self) -> StructureChange {
+        let mut change = std::mem::take(&mut self.structure);
+        self.for_each_mounted(|view| change = change.join(view.widget.take_structure_change()));
+        change
     }
 
     fn is_layout_dirty(&self) -> bool {
@@ -1024,6 +1035,13 @@ impl<R: Resource> Widget for Each<R> {
     // The mounted rows, and an open row menu: it is part of the tree, so
     // assistive technology and inspection see it; it lays itself out where
     // it opened.
+    /// The list draws only its mounted rows (and an open menu, in the top
+    /// layer): its damage is theirs. Rows that came, went or moved are the
+    /// host's to repaint, which compares every widget's box.
+    fn collect_damage(&self, regions: &mut Vec<Rect>) {
+        self.for_each_child(&mut |child| child.collect_damage(regions));
+    }
+
     fn children(&self) -> Vec<&dyn Widget> {
         let open = self
             .menu

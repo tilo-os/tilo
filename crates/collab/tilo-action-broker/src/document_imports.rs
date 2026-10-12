@@ -1,6 +1,7 @@
 //! Documents proposed into the room, and the owner's answers, as ordinary
 //! published Effect actions: each one leaves a receipt in the room's
 //! activity. The caller comes only from certified network admission.
+use super::room_service::{ServiceOutcome, refused};
 use super::{
     Arc, CapnpBrokerState, CrdtRoute, InvocationEnvelope, PublishedAction, PublishedInput,
     PublishedSurface,
@@ -23,79 +24,38 @@ impl CapnpBrokerState {
         let room = service.room().to_string();
         uuid::Uuid::parse_str(&room).map_err(|e| e.to_string())?;
         let peer_id = self.next_service_peer_id();
-        let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
-        self.invocation_subscribers
-            .lock()
-            .map_err(|_| "invocation subscribers unavailable")?
-            .insert(peer_id, sender);
-        self.stable_invocation_subscribers
-            .lock()
-            .map_err(|_| "stable invocation registry unavailable")?
-            .insert(peer_id);
-        self.surfaces
-            .lock()
-            .map_err(|_| "action surfaces unavailable")?
-            .insert(
-                peer_id,
-                PublishedSurface {
-                    peer_id,
-                    app_id: import::APP_ID.into(),
-                    route: CrdtRoute::record(import::APP_ID, &room, ""),
-                    live: true,
-                    actions: vec![
-                        import_action(PROPOSE, "Propose a document for this workspace"),
-                        import_action(ACCEPT, "Accept a proposed document"),
-                        import_action(DECLINE, "Decline a proposed document"),
-                    ],
-                },
-            );
-        let state = self.clone();
-        tokio::task::spawn_local(async move {
-            while let Some(envelope) = receiver.recv().await {
-                let outcome = state
-                    .execute_document_import(peer_id, &envelope, service.as_ref())
-                    .await;
-                let update = match outcome {
-                    Ok(output) => tilo_actions::InvocationUpdate::Succeeded {
-                        invocation: envelope.invocation,
-                        output: tilo_actions::ActionOutput {
-                            value: Some(output),
-                            resources: Vec::new(),
-                        },
-                    },
-                    Err(DesktopCommandError::Rejected(message)) => {
-                        tilo_actions::InvocationUpdate::Failed {
-                            invocation: envelope.invocation,
-                            error: tilo_actions::ActionFailure {
-                                code: "document_import_refused".into(),
-                                details: None,
-                                message,
-                                retryable: false,
-                            },
+        let surface = PublishedSurface {
+            peer_id,
+            app_id: import::APP_ID.into(),
+            route: CrdtRoute::record(import::APP_ID, &room, ""),
+            live: true,
+            actions: vec![
+                import_action(PROPOSE, "Propose a document for this workspace"),
+                import_action(ACCEPT, "Accept a proposed document"),
+                import_action(DECLINE, "Decline a proposed document"),
+            ],
+        };
+        self.serve_room(
+            surface,
+            move |state, envelope| {
+                let service = service.clone();
+                async move {
+                    match state
+                        .execute_document_import(peer_id, &envelope, service.as_ref())
+                        .await
+                    {
+                        Ok(output) => ServiceOutcome::Succeeded(output),
+                        Err(DesktopCommandError::Rejected(message)) => {
+                            refused("document_import_refused", message)
+                        }
+                        Err(DesktopCommandError::Uncertain(reason)) => {
+                            ServiceOutcome::Uncertain(reason)
                         }
                     }
-                    Err(DesktopCommandError::Uncertain(reason)) => {
-                        if let Ok(mut failure) = state.owner_commit_failure.lock() {
-                            failure.get_or_insert(reason);
-                        }
-                        break;
-                    }
-                };
-                if let Err(error) = state
-                    .apply_invocation_update(peer_id, envelope.id, update, None)
-                    .await
-                {
-                    if let Ok(mut failure) = state.owner_commit_failure.lock() {
-                        failure.get_or_insert(error.to_string());
-                    }
-                    break;
                 }
-            }
-            if let Ok(mut surfaces) = state.surfaces.lock() {
-                surfaces.remove(&peer_id);
-            }
-        });
-        Ok(())
+            },
+            |_, _| {},
+        )
     }
 
     async fn execute_document_import(

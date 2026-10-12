@@ -127,10 +127,6 @@ impl ResourceApp for PhotosShell {
         crate::sample::SCENARIOS
     }
 
-    fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
-        (1280, 800)
-    }
-
     /// The photographs a scenario shows live in the content store, not the
     /// document: their bytes are put there before the view is built.
     fn fixture(fixture: &mut Fixture<Photos>) {

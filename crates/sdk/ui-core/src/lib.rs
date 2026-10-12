@@ -157,6 +157,7 @@ pub mod doc;
 pub mod doc_source;
 #[cfg(any(all(windows, feature = "dx12-shader-cache"), test))]
 mod dx12_shader_cache;
+pub mod evdev;
 pub mod floating_surface;
 pub mod font_catalog;
 pub mod format;
@@ -210,6 +211,7 @@ pub mod pen;
 pub mod permissions;
 pub mod persist;
 pub mod platform;
+pub mod pointer_replay;
 pub mod portable_storage;
 pub mod presence;
 pub mod priority_contacts;
@@ -243,7 +245,7 @@ pub mod published;
 pub mod reader_hud;
 pub mod record;
 pub mod remote_actions;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "native", not(target_arch = "wasm32")))]
 pub mod render_thread;
 pub mod reorder;
 pub mod resources;
@@ -252,6 +254,7 @@ pub mod richtext;
 pub mod scale;
 pub mod scene_parts;
 pub mod screen_reader;
+pub mod scroll_copy;
 pub mod search;
 pub mod secret_paint;
 pub mod selection;
@@ -305,7 +308,7 @@ pub(crate) const HANG_BOUND: time::Duration = time::Duration::from_secs(30);
 
 // `kurbo` and `peniko` come through `vello`, where the geometry and paint
 // types in every `draw` signature live.
-/// The AccessKit types the bridge and [`headless::Driver`] hand back,
+/// The AccessKit types the bridge and [`headless::FrameHarness`] hand back,
 /// re-exported so an app crate can name them (`tilo_ui::accesskit::Role`) without
 /// taking its own dependency on a version that must match this one exactly.
 pub use accesskit;
@@ -526,7 +529,7 @@ pub mod synthetic_input;
 
 pub mod bound_dispatch;
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "native", not(target_arch = "wasm32")))]
 mod presentation_feedback;
 
 /// Emission-time local control custody.

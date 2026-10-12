@@ -8,6 +8,7 @@
 //! tree structurally dirty so the App rebuilds the composition on the next
 //! frame. See [`crate::command`].
 
+use ui::num::i64_of_usize;
 use ui::tilo_resource::Effect as _;
 use ui::widget::TaffyTreeExt;
 
@@ -435,10 +436,6 @@ fn certified_device_detail(device: &crate::identity_directory::TrustedDevice) ->
     )
 }
 
-fn fluent_count(value: usize) -> i64 {
-    i64::try_from(value).unwrap_or(i64::MAX)
-}
-
 fn transfer_phase_label(phase: crate::model::TransferPhase) -> String {
     t(match phase {
         crate::model::TransferPhase::Idle => "files-transfer-idle",
@@ -608,10 +605,21 @@ pub struct FileExplorerWidget {
     local_outcomes: HashMap<String, crate::file_ops::Outcome>,
     /// Transient status line (operation results), shown in the footer.
     status: Option<String>,
-    /// Filesystem/xattr changes have no winit event of their own. The widget
-    /// asks the host for this low-frequency wake so sync/availability/share/
-    /// history badges update without burning an animation frame loop.
-    next_metadata_refresh: Instant,
+    /// The next poll of what no change signal covers (see
+    /// [`metadata_refresh`]): a directory its watch does not fully cover,
+    /// the workspace record catalogue, an unwatched identity projection.
+    /// `None` when every source has a change signal, so an idle window with
+    /// an unchanged directory has no deadline at all.
+    next_metadata_refresh: Option<Instant>,
+    /// Reports changes to the open directory's entries and wakes the window.
+    directory_watch: crate::directory_watch::DirectoryWatch,
+    /// Reports changes to the trusted-identity projection's directory.
+    identity_watch: crate::directory_watch::DirectoryWatch,
+    /// The directory watch reported a change that has not been read yet
+    /// (held while a rename or pin drag defers the read).
+    directory_changed: bool,
+    /// When the open directory was last read, for [`metadata_refresh::change_read_gap`].
+    last_directory_read: Instant,
     /// When `Some(i)`, an inline rename of displayed entry `i` is in
     /// progress: the in-place editor is drawn over row/cell `i`. `None` = not
     /// renaming.
@@ -1015,7 +1023,7 @@ impl FileExplorerWidget {
                     self.last_trash_undo = undoable.then(|| id.to_owned());
                     self.status = Some(t_args(
                         "files-moved-to-trash",
-                        &[arg("count", fluent_count(count))],
+                        &[arg("count", i64_of_usize(count))],
                     ));
                 }
                 Some(error) => {
@@ -1032,16 +1040,16 @@ impl FileExplorerWidget {
                     None => t_args(
                         "files-moved-to-folder",
                         &[
-                            arg("count", fluent_count(moved)),
+                            arg("count", i64_of_usize(moved)),
                             arg("destination", destination),
                         ],
                     ),
                     Some(_) => t_args(
                         "files-moved-with-failures",
                         &[
-                            arg("moved", fluent_count(moved)),
+                            arg("moved", i64_of_usize(moved)),
                             arg("destination", destination),
-                            arg("failed", fluent_count(1)),
+                            arg("failed", i64_of_usize(1)),
                         ],
                     ),
                 });
@@ -1062,13 +1070,13 @@ impl FileExplorerWidget {
                         .retain(|path| !done.iter().any(|from| path.as_path() == Path::new(from)));
                 }
                 self.status = Some(if error.is_none() {
-                    t_args("files-pasted", &[arg("count", fluent_count(count))])
+                    t_args("files-pasted", &[arg("count", i64_of_usize(count))])
                 } else {
                     t_args(
                         "files-pasted-with-failures",
                         &[
-                            arg("count", fluent_count(done.len())),
-                            arg("failed", fluent_count(count - done.len())),
+                            arg("count", i64_of_usize(done.len())),
+                            arg("failed", i64_of_usize(count - done.len())),
                         ],
                     )
                 });
@@ -1077,7 +1085,7 @@ impl FileExplorerWidget {
                 self.status = Some(match error {
                     None => t_args(
                         "files-undo-trash-restored",
-                        &[arg("count", fluent_count(outcome.changes().len()))],
+                        &[arg("count", i64_of_usize(outcome.changes().len()))],
                     ),
                     Some(error) => t_args("files-undo-trash-failed", &[arg("error", error)]),
                 });
@@ -1094,11 +1102,11 @@ impl FileExplorerWidget {
                         } else {
                             "files-pasted"
                         },
-                        &[arg("count", fluent_count(completed))],
+                        &[arg("count", i64_of_usize(completed))],
                     ),
                     Some(error) => t_args(
                         "files-clipboard-partial",
-                        &[arg("count", fluent_count(completed)), arg("error", error)],
+                        &[arg("count", i64_of_usize(completed)), arg("error", error)],
                     ),
                 });
             }
@@ -1719,7 +1727,12 @@ impl FileExplorerWidget {
             ops_presented: false,
             local_outcomes: HashMap::new(),
             status: None,
-            next_metadata_refresh: ui::time::now() + metadata_refresh::LIVE_INTERVAL,
+            // Scheduled by the first sync, once the watches exist.
+            next_metadata_refresh: None,
+            directory_watch: crate::directory_watch::DirectoryWatch::new(ui::WakeHandle::new()),
+            identity_watch: crate::directory_watch::DirectoryWatch::new(ui::WakeHandle::new()),
+            directory_changed: false,
+            last_directory_read: ui::time::now(),
             renaming: None,
             rename_buffer: String::new(),
             rename_seed_pending: false,
@@ -2728,12 +2741,12 @@ impl FileExplorerWidget {
         let left = self
             .status
             .clone()
-            .unwrap_or_else(|| t_args("files-item-count", &[arg("count", fluent_count(count))]));
+            .unwrap_or_else(|| t_args("files-item-count", &[arg("count", i64_of_usize(count))]));
         let sel = self.selection.selected().len();
         if sel > 0 {
             t_args(
                 "files-selected-count",
-                &[arg("base", left), arg("count", fluent_count(sel))],
+                &[arg("base", left), arg("count", i64_of_usize(sel))],
             )
         } else {
             left
@@ -3216,6 +3229,15 @@ impl FileExplorerWidget {
         }
         let recent = crate::recent::is_location(&path);
         self.shown_folder = shown_selection::folder(&path);
+        // Watch before reading, so a change landing between the two is
+        // reported (and costs one more read) rather than lost.
+        let watched = self.watched_directory(&path);
+        self.directory_watch.point_at(watched.as_deref());
+        self.directory_changed = false;
+        // The new directory's watch decides whether and how often it is
+        // polled; the next sync schedules that.
+        self.next_metadata_refresh = None;
+        self.last_directory_read = ui::time::now();
         let loaded = if let Some((archive_path, prefix)) = crate::archive::location(&path) {
             crate::archive::list_directory(&archive_path, &prefix)
                 .map(|archive_entries| {
@@ -3324,29 +3346,99 @@ impl FileExplorerWidget {
         self.load(self.current_path.clone());
     }
 
-    /// Poll the visible directory without treating it as navigation. Stable
-    /// record identity preserves selection across remote rename/move metadata;
-    /// ordinary files fall back to their path. Scroll and transient operation
-    /// status remain untouched.
+    /// Re-read the visible directory without treating it as navigation, when
+    /// its watch reported a change or, where no watch covers it, when its
+    /// poll is due. Stable record identity preserves selection across remote
+    /// rename/move metadata; ordinary files fall back to their path. Scroll
+    /// and transient operation status remain untouched.
     fn refresh_metadata_if_due(&mut self, now: Instant) -> bool {
-        if now < self.next_metadata_refresh {
-            return false;
+        // The first sync after construction starts the watches; changes made
+        // before a watch started are covered by one more read.
+        let watched = self.watched_directory(&self.current_path);
+        if self.directory_watch.point_at(watched.as_deref()) {
+            self.directory_changed = true;
         }
-        // Set the next deadline before doing any I/O.  A transient read error
-        // must not accidentally turn a very large directory into a busy loop.
-        self.next_metadata_refresh = now + metadata_refresh::interval(self.entries.len());
-        let catalog_changed = self
-            .collaborative_record_pager
-            .borrow_mut()
-            .poll_generation();
+        let identities_watched = self.startup_accounts.is_none()
+            && self.identity_watch.point_at(
+                crate::identity_directory::TrustedHumanDirectory::default_path()
+                    .parent()
+                    .filter(|dir| !dir.as_os_str().is_empty()),
+            );
+        // A directory already known to have changed is not drained again
+        // until it is read: its events would only wake the window again.
+        if !self.directory_changed && self.directory_watch.take_changes() {
+            self.directory_changed = true;
+        }
+        let identity_signal = identities_watched || self.identity_watch.take_changes();
+        let poll_due = self.next_metadata_refresh.is_some_and(|due| now >= due);
+        if poll_due || self.next_metadata_refresh.is_none() {
+            // Set the next deadline before doing any I/O.  A transient read
+            // error must not accidentally turn a very large directory into a
+            // busy loop.
+            self.next_metadata_refresh = self.next_poll_interval().map(|interval| now + interval);
+        }
+        let catalog_changed = poll_due
+            && self
+                .collaborative_record_pager
+                .borrow_mut()
+                .poll_generation();
         // `sync` admits the one bounded page for this turn. Keep polling and
         // admission separate so an authority change cannot consume two pages
         // in one UI frame.
-        let identities_changed = self.refresh_trusted_identities(None);
-        if self.renaming.is_some() || self.pin_drag.is_some() {
+        let identities_changed = (identity_signal
+            || (poll_due
+                && self.identity_watch.coverage() != crate::directory_watch::Coverage::Complete))
+            && self.refresh_trusted_identities(None);
+        let directory_polled = poll_due
+            && self.directory_watch.coverage() != crate::directory_watch::Coverage::Complete;
+        let change_readable = self.directory_changed
+            && now
+                >= self.last_directory_read + metadata_refresh::change_read_gap(self.entries.len());
+        if !(directory_polled || change_readable)
+            || self.renaming.is_some()
+            || self.pin_drag.is_some()
+        {
             return identities_changed || catalog_changed;
         }
+        // Drain before reading: a change after this point wakes the window
+        // again and is read next time.
+        let _ = self.directory_watch.take_changes();
+        self.directory_changed = false;
+        self.last_directory_read = now;
         self.refresh_metadata_preserving_view() || identities_changed || catalog_changed
+    }
+
+    /// The directory to watch for `path`'s listing: `None` for listings that
+    /// are not one directory's entries (Recent, an archive, the hosted Trash
+    /// that merges two directories), which are polled instead.
+    fn watched_directory(&self, path: &Path) -> Option<PathBuf> {
+        let virtual_listing = crate::recent::is_location(path)
+            || crate::archive::location(path).is_some()
+            || (self.hosted_clipboard() && fileops::is_trash_dir(path));
+        (!virtual_listing).then(|| path.to_path_buf())
+    }
+
+    /// How often to poll what no change signal covers, or `None` when
+    /// nothing needs polling.
+    fn next_poll_interval(&self) -> Option<Duration> {
+        use crate::directory_watch::Coverage;
+        let entries = self.entries.len();
+        let directory = match self.directory_watch.coverage() {
+            Coverage::Complete => None,
+            // Local edits arrive as events; remote ones (tilo-fs gossip, a
+            // network share) only by reading, as promptly as before.
+            Coverage::Partial => Some(metadata_refresh::interval(entries)),
+            Coverage::None => Some(metadata_refresh::unwatched_interval(entries)),
+        };
+        let catalog = self
+            .collaborative_record_pager
+            .borrow()
+            .has_roots()
+            .then_some(metadata_refresh::BACKGROUND_INTERVAL);
+        let identities = (self.startup_accounts.is_none()
+            && self.identity_watch.coverage() != Coverage::Complete)
+            .then_some(metadata_refresh::BACKGROUND_INTERVAL);
+        [directory, catalog, identities].into_iter().flatten().min()
     }
 
     fn refresh_trusted_identities(&mut self, path: Option<&Path>) -> bool {
@@ -3658,12 +3750,12 @@ impl FileExplorerWidget {
                     self.status = Some(if value == b"pinned" {
                         t_args(
                             "files-keeping-offline",
-                            &[arg("count", fluent_count(paths.len()))],
+                            &[arg("count", i64_of_usize(paths.len()))],
                         )
                     } else {
                         t_args(
                             "files-using-automatic",
-                            &[arg("count", fluent_count(paths.len()))],
+                            &[arg("count", i64_of_usize(paths.len()))],
                         )
                     });
                 } else {
@@ -3716,7 +3808,7 @@ impl FileExplorerWidget {
                 } else if failures.is_empty() && safety_refusals.is_empty() {
                     t_args(
                         "files-freeing-local-space",
-                        &[arg("count", fluent_count(paths.len()))],
+                        &[arg("count", i64_of_usize(paths.len()))],
                     )
                 } else if failures.is_empty() {
                     t("files-eviction-needs-confirmation")
@@ -3732,7 +3824,7 @@ impl FileExplorerWidget {
                         title: t("files-destructive-eviction-title"),
                         summary: t_args(
                             "files-destructive-eviction-summary",
-                            &[arg("count", fluent_count(safety_refusals.len()))],
+                            &[arg("count", i64_of_usize(safety_refusals.len()))],
                         ),
                         lines: vec![
                             t("files-destructive-eviction-no-replica"),
@@ -3759,7 +3851,7 @@ impl FileExplorerWidget {
                 self.status = Some(if failures.is_empty() {
                     t_args(
                         "files-destructive-eviction-started",
-                        &[arg("count", fluent_count(paths.len()))],
+                        &[arg("count", i64_of_usize(paths.len()))],
                     )
                 } else {
                     t_args(
@@ -3802,7 +3894,7 @@ impl FileExplorerWidget {
                 } else if failures.is_empty() {
                     t_args(
                         "files-retrying-transfers",
-                        &[arg("count", fluent_count(paths.len()))],
+                        &[arg("count", i64_of_usize(paths.len()))],
                     )
                 } else {
                     t_args("files-retry-failed", &[arg("errors", failures.join("; "))])
@@ -3928,7 +4020,7 @@ impl FileExplorerWidget {
                     if let Some(share) = &entry.share {
                         lines.push(t_args(
                             "files-property-sharing",
-                            &[arg("count", fluent_count(share.active_grants()))],
+                            &[arg("count", i64_of_usize(share.active_grants()))],
                         ));
                     }
                     if let Some(history) = &entry.history {
@@ -3939,7 +4031,7 @@ impl FileExplorerWidget {
                                     "versions",
                                     i64::try_from(history.total_versions).unwrap_or(i64::MAX),
                                 ),
-                                arg("conflicts", fluent_count(history.open_conflicts().count())),
+                                arg("conflicts", i64_of_usize(history.open_conflicts().count())),
                             ],
                         ));
                     }
@@ -4249,7 +4341,7 @@ impl FileExplorerWidget {
                         title: t_args("files-sharing-title", &[arg("name", entry.name)]),
                         summary: t_args(
                             "files-sharing-summary",
-                            &[arg("count", fluent_count(active))],
+                            &[arg("count", i64_of_usize(active))],
                         ),
                         lines,
                         action: None,
@@ -4681,11 +4773,11 @@ impl FileExplorerWidget {
                     history: None,
                     title: t_args(
                         "files-permanent-delete-title",
-                        &[arg("count", fluent_count(paths.len()))],
+                        &[arg("count", i64_of_usize(paths.len()))],
                     ),
                     summary: t_args(
                         "files-permanent-delete-summary",
-                        &[arg("count", fluent_count(paths.len()))],
+                        &[arg("count", i64_of_usize(paths.len()))],
                     ),
                     lines: vec![t("files-permanent-delete-loss")],
                     action: Some(CollabPanelAction::PermanentDelete(paths)),
@@ -4734,7 +4826,7 @@ impl FileExplorerWidget {
                 self.refresh();
                 self.status = Some(t_args(
                     "files-permanently-deleted",
-                    &[arg("count", fluent_count(n))],
+                    &[arg("count", i64_of_usize(n))],
                 ));
             }
             Err(e) => {
@@ -4774,7 +4866,7 @@ impl FileExplorerWidget {
             match fileops::restore_entries(&paths) {
                 Ok(n) => {
                     self.refresh();
-                    self.status = Some(t_args("files-restored", &[arg("count", fluent_count(n))]));
+                    self.status = Some(t_args("files-restored", &[arg("count", i64_of_usize(n))]));
                 }
                 Err(e) => {
                     self.status = Some(t_args("files-restore-failed", &[arg("error", e)]));
@@ -4801,7 +4893,7 @@ impl FileExplorerWidget {
             title: t("files-empty-trash-title"),
             summary: t_args(
                 "files-empty-trash-summary",
-                &[arg("count", fluent_count(self.entries.len()))],
+                &[arg("count", i64_of_usize(self.entries.len()))],
             ),
             lines: vec![t("files-permanent-delete-loss")],
             action: Some(CollabPanelAction::EmptyTrash),
@@ -4822,7 +4914,7 @@ impl FileExplorerWidget {
                 self.status = Some(if n == 0 {
                     t("files-trash-already-empty")
                 } else {
-                    t_args("files-emptied-trash", &[arg("count", fluent_count(n))])
+                    t_args("files-emptied-trash", &[arg("count", i64_of_usize(n))])
                 });
             }
             Err(e) => {
@@ -5020,7 +5112,7 @@ impl FileExplorerWidget {
         self.clipboard_cut = false;
         self.status = Some(t_args(
             "files-copied",
-            &[arg("count", fluent_count(self.clipboard.len()))],
+            &[arg("count", i64_of_usize(self.clipboard.len()))],
         ));
         true
     }
@@ -5035,7 +5127,7 @@ impl FileExplorerWidget {
         self.clipboard_cut = true;
         self.status = Some(t_args(
             "files-cut",
-            &[arg("count", fluent_count(self.clipboard.len()))],
+            &[arg("count", i64_of_usize(self.clipboard.len()))],
         ));
         true
     }
@@ -5076,13 +5168,13 @@ impl FileExplorerWidget {
         self.status = Some(if failures.is_empty() {
             t_args(
                 "files-archive-extracted",
-                &[arg("count", fluent_count(count))],
+                &[arg("count", i64_of_usize(count))],
             )
         } else {
             t_args(
                 "files-archive-extracted-partial",
                 &[
-                    arg("count", fluent_count(count)),
+                    arg("count", i64_of_usize(count)),
                     arg("failures", failures.join("; ")),
                 ],
             )
@@ -5118,7 +5210,7 @@ impl FileExplorerWidget {
         self.status = Some(match crate::archive::extract(&archive, &destination) {
             Ok(entries) => t_args(
                 "files-archive-extracted",
-                &[arg("count", fluent_count(entries.len()))],
+                &[arg("count", i64_of_usize(entries.len()))],
             ),
             Err(error) => t_args(
                 "files-archive-extract-failed",
@@ -6001,8 +6093,7 @@ impl FileExplorerWidget {
     }
 
     /// Paint the app background and lazily build the composition if it is
-    /// missing (a tab activated after boot never ran `build_layout`). Shared
-    /// by [`Widget::draw`] and [`Widget::draw_with_presence`].
+    /// missing (a tab activated after boot never ran `build_layout`).
     fn paint_background(&mut self, theme: &ui::Theme) {
         // The window ground is the framework's; this only notices that the
         // chrome + body panes are normally built inside `build_layout`.
@@ -6259,7 +6350,7 @@ impl FileExplorerWidget {
         let count = self.drag_paths.len().max(1);
         let glyph = ui::icons::icon_for_path(path, path.is_dir());
         let label = if count > 1 {
-            t_args("files-drag-items", &[arg("count", fluent_count(count))])
+            t_args("files-drag-items", &[arg("count", i64_of_usize(count))])
         } else {
             path.file_name().map_or_else(
                 || path.display().to_string(),
@@ -8974,9 +9065,17 @@ impl Widget for FileExplorerWidget {
                     .ok()
                     .and_then(|reply| (!reply.is_pending(*token)).then(Instant::now))
             });
-        Some(self.next_metadata_refresh)
+        // A rename or pin drag defers the read; its end is input of its own,
+        // and a due deadline here would only spin until then.
+        let read_deferred = self.renaming.is_some() || self.pin_drag.is_some();
+        let changed_directory = (self.directory_changed && !read_deferred).then(|| {
+            self.last_directory_read + metadata_refresh::change_read_gap(self.entries.len())
+        });
+        self.nearby_send
+            .next_poll()
             .into_iter()
-            .chain(self.nearby_send.next_poll())
+            .chain(self.next_metadata_refresh)
+            .chain(changed_directory)
             .chain(document_open_reply)
             .chain(self.local_clipboard.next_wake())
             .chain(self.nav.next_wake_deadline())
@@ -9023,14 +9122,7 @@ impl Widget for FileExplorerWidget {
         node: taffy::NodeId,
         origin: vello::kurbo::Point,
     ) {
-        // `node` was created by `build_layout` in this same tree, so a
-        // lookup miss would mean the frame cycle called these out of order.
-        #[allow(
-            clippy::unwrap_used,
-            reason = "node was built in this tree by build_layout; a miss means the frame cycle called these out of order"
-        )]
-        let l = taffy.layout(node).unwrap();
-        self.rect = ui::widget::placed(l, origin);
+        self.rect = ui::widget::layout_rect(taffy, node, origin);
         let base = vello::kurbo::Point::new(self.rect.x0, self.rect.y0);
         if let Ok(children) = taffy.children(node)
             && let Some(&nav_n) = children.first()
@@ -9053,34 +9145,6 @@ impl Widget for FileExplorerWidget {
         self.paint_background(theme);
         self.nav
             .draw(scene, transform, text_renderer, theme, presence);
-        self.draw_state_surface(scene, transform, text_renderer, theme, presence);
-        self.draw_empty_state(scene, transform, text_renderer, theme);
-        self.draw_rename_editor(scene, transform, text_renderer, theme, presence);
-    }
-
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut vello::Scene,
-        transform: vello::kurbo::Affine,
-        text_renderer: &mut ui::text_render::TextRenderer,
-        theme: &ui::Theme,
-        presence: &ui::presence::PresenceCtx,
-        permissions: &ui::permissions::PermissionContext,
-    ) {
-        self.paint_background(theme);
-        // Recurse with `draw_with_presence` (not the plain `draw`) so the
-        // inner `Scrollable` pushes its viewport rect and the file list culls
-        // rows outside it. The default trait impl would call our own `draw`,
-        // which breaks that chain — a long directory would then emit every
-        // row's glyphs every frame regardless of what's visible.
-        self.nav.draw_with_presence(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            presence,
-            permissions,
-        );
         self.draw_state_surface(scene, transform, text_renderer, theme, presence);
         self.draw_empty_state(scene, transform, text_renderer, theme);
         self.draw_rename_editor(scene, transform, text_renderer, theme, presence);

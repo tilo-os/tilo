@@ -17,7 +17,6 @@ pub const GNOME_A11Y_INTERFACE: &str = "org.gnome.desktop.a11y.interface";
 const INTERFACE_FONT_POINTS: u32 = 11;
 /// Adwaita ships with every GTK install and is what GNOME applications expect by default.
 const CURSOR_THEME: &str = "Adwaita";
-const DEFAULT_CURSOR_SIZE: i32 = 24;
 
 /// GNOME's named accent colours with the sRGB values libadwaita renders for them.
 const GNOME_ACCENTS: [(&str, [u8; 3]); 9] = [
@@ -65,19 +64,9 @@ impl LegacyAppearance {
             + 0.7152 * f64::from(background.g)
             + 0.0722 * f64::from(background.b);
         let accent = theme.tokens.colors.intent.inverted.to_rgba8();
-        let large_cursor =
-            settings_store::bool_at(&document, "accessibility", "large_cursor").unwrap_or(false);
-        let cursor_size = if large_cursor {
-            document
-                .get("accessibility")
-                .and_then(|section| section.get("cursor_size"))
-                .and_then(serde_json::Value::as_i64)
-                .and_then(|size| i32::try_from(size).ok())
-                .unwrap_or(DEFAULT_CURSOR_SIZE)
-                .clamp(DEFAULT_CURSOR_SIZE, 64)
-        } else {
-            DEFAULT_CURSOR_SIZE
-        };
+        let accessibility = settings_store::accessibility::AccessibilitySettings::from_section(
+            &settings_store::section(text, settings_store::accessibility::SECTION),
+        );
         Self {
             dark: luma < 127.5,
             high_contrast,
@@ -95,7 +84,7 @@ impl LegacyAppearance {
                 0.5..=4.0,
                 1.0,
             ),
-            cursor_size,
+            cursor_size: i32::try_from(accessibility.effective_cursor_size()).unwrap_or(i32::MAX),
         }
     }
 

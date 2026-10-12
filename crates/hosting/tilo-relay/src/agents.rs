@@ -10,7 +10,11 @@
 //!   step and the host never holds the root.
 //! - **Admission.** Approved delegations are registered in the relay's agent
 //!   register, which confines the device to its rooms; withdrawn ones are
-//!   refused from the next access audit on.
+//!   refused from the next access audit on. Each room this relay governs
+//!   that the delegation names puts the agent on its governed roster
+//!   (`RoomOperation::AgentMembership`), and every change to its grant is
+//!   carried onto those rosters: a withdrawn or narrowed grant takes it off
+//!   the room and its channels.
 //!
 //! [`start`] wires both into a relay: the supervisor answers the agent
 //! vocabulary as the host's app-serving plane, and the host's own agents
@@ -27,7 +31,9 @@ use tilo_agent_participant::{
 };
 
 use tilo_relay_protocol::agents::{AgentDelegation, AgentProposal};
-use tilo_user_identity::{CERTIFICATION_SCHEMA_VERSION, CertificationRequest, DeviceCapabilities};
+use tilo_user_identity::{
+    CERTIFICATION_SCHEMA_VERSION, CertificationRequest, DeviceCapabilities, DeviceCert,
+};
 
 use crate::certification::CertificationProtocol;
 use crate::daemon::{Relay, RelayError, RelayIdentity};
@@ -42,6 +48,8 @@ pub struct RelayAgentLink {
     user_public_key: [u8; 32],
     certification: CertificationProtocol,
     agents: AgentRegistry,
+    /// The rooms this relay governs, whose rosters follow each agent's grant.
+    rooms: Option<crate::rooms::Rooms>,
     runtime: tokio::runtime::Handle,
 }
 
@@ -55,7 +63,21 @@ impl Relay {
             user_public_key: web.relay.own_user_pk,
             certification: web.certification.clone(),
             agents: web.relay.agents.clone(),
+            rooms: self.rooms().cloned(),
             runtime: tokio::runtime::Handle::current(),
+        }
+    }
+}
+
+impl RelayAgentLink {
+    /// Bring agent `device`'s place on the rosters of the governed rooms in
+    /// line with the register, off the caller's thread. `cert` is the
+    /// agent's certificate when it was just approved or restored.
+    fn reconcile_rooms(&self, device: [u8; 32], cert: Option<DeviceCert>) {
+        if let Some(rooms) = self.rooms.clone() {
+            self.runtime.spawn(async move {
+                rooms.reconcile_agent(device, cert.as_ref()).await;
+            });
         }
     }
 }
@@ -100,7 +122,7 @@ impl AgentHostLink for RelayAgentLink {
         Ok(pairing_code)
     }
 
-    fn register(&self, delegation: &AgentDelegation) -> Result<(), String> {
+    fn register(&self, cert: &DeviceCert, delegation: &AgentDelegation) -> Result<(), String> {
         delegation
             .verify(&self.user_public_key, tilo_clock::unix_now_ns())
             .map_err(|error| error.to_string())?;
@@ -110,6 +132,11 @@ impl AgentHostLink for RelayAgentLink {
             .insert(delegation.agent_device_public_key, Some(delegation.clone()));
         // A replacement may narrow an earlier delegation's rooms.
         crate::authority_epoch::bump();
+        if cert.device_public_key != delegation.agent_device_public_key {
+            return Err("the delegation names another device".into());
+        }
+        // The governed rooms it names put it on their rosters.
+        self.reconcile_rooms(delegation.agent_device_public_key, Some(cert.clone()));
         Ok(())
     }
 
@@ -119,6 +146,8 @@ impl AgentHostLink for RelayAgentLink {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(agent_device_public_key, None);
         crate::authority_epoch::bump();
+        // Governed rooms take it off their channels and refuse its writes.
+        self.reconcile_rooms(agent_device_public_key, None);
     }
 }
 
@@ -291,9 +320,11 @@ async fn start_inner(
             },
         }))
         .map_err(RelayError::Identity)?;
-    let link = Arc::new(relay.agent_link());
     agents
-        .start(HostEndpoint::iroh(relay.node_addr(), host_cert), link)
+        .start(
+            HostEndpoint::iroh(relay.node_addr(), host_cert),
+            Arc::new(relay.agent_link()),
+        )
         .map_err(RelayError::Identity)?;
     Ok((relay, agents))
 }

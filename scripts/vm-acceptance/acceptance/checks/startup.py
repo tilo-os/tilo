@@ -153,7 +153,9 @@ LATENCY_FIELDS = ("request_to_spawn", "spawn_to_map", "map_to_first_present", "r
 
 def parse_launch_latencies(log: str, package: str) -> dict[str, float]:
     """{field: ms} from the compositor's `tilo::launch_latency` lines for `package`, the
-    first value of each field in `log`; a field no line carries is absent."""
+    first value of each field in `log`; a field no line carries is absent. The spawn
+    line's `dispatch_phases` (where `request_to_spawn` went: each phase's interval, ending
+    at it) become `dispatch_phase.<phase>`."""
     out: dict[str, float] = {}
     for line in ANSI.sub("", log).splitlines():
         if f"package_id={package} " not in line + " " and f'package_id="{package}"' not in line:
@@ -162,6 +164,12 @@ def parse_launch_latencies(log: str, package: str) -> dict[str, float]:
             found = re.search(rf"\b{field}_us=(\d+)", line)
             if found and field not in out:
                 out[field] = round(int(found.group(1)) / 1e3, 1)
+        phases = re.search(r"\bdispatch_phases=(\S+)", line)
+        if phases and not any(name.startswith("dispatch_phase.") for name in out):
+            for entry in phases.group(1).split(","):
+                phase, _, ms = entry.partition(":")
+                if re.fullmatch(r"[a-z-]+", phase) and re.fullmatch(r"\d+(\.\d+)?", ms):
+                    out[f"dispatch_phase.{phase}"] = float(ms)
     return out
 
 
@@ -477,7 +485,7 @@ def warm_opens(ctx, res):
             stem, _, mark = name.partition(".")
             ctx.record(f"app.open.{stem}_ms.{short}" + (f".{mark}" if mark else ""), "ms", values, app=app,
                        what="one segment of the warm open (acceptance/checks/startup.py open_segments)")
-        budget = app_startup.budget_ms(app, kind)
+        budget = app_startup.warm_open_budget_ms(app, kind)
         summary[app] = {"open_ms": opens, "startup_ms": starts, "budget_ms": budget,
                         "median_ms": {name: median(values) for name, values in series.items()},
                         "opens": results}

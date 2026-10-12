@@ -593,13 +593,6 @@ impl GrantStoreHandle {
         WorkspaceTreeHandle::clone(&self.tree)
     }
 
-    /// Back-compat alias for [`Self::tree_handle`]. A handful of older
-    /// tests/portals still reference `.tree()`; both now return the shared `WorkspaceTreeHandle`.
-    // NOT cfg-gated: reachable from the shots harness, which is a release build.
-    pub fn tree(&self) -> WorkspaceTreeHandle {
-        WorkspaceTreeHandle::clone(&self.tree)
-    }
-
     /// Resolve a launcher-verified live application to one concrete local
     /// workspace. Multiple live rooms are intentionally ambiguous unless a
     /// future parent-window resolver identifies the exact surface.
@@ -1212,10 +1205,7 @@ pub async fn serve_with_inhibit_and_clipboard(
         InputCaptureBackend::new(ctx.clone(), lifecycle.clone(), connection.clone());
     let input_capture_sessions = input_capture.session_handle();
     let clipboard = ClipboardBackend::with_session_providers(
-        vec![
-            clipboard::ClipboardSessionProviderHandle::new(Arc::new(remote_sessions)),
-            clipboard::ClipboardSessionProviderHandle::new(Arc::new(input_capture_sessions)),
-        ],
+        vec![Arc::new(remote_sessions), Arc::new(input_capture_sessions)],
         clipboard_broker,
     )
     .with_session_wake(lifecycle.wake.clone());

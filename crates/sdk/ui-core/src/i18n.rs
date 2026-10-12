@@ -847,6 +847,47 @@ impl EmbeddedCatalog {
     }
 }
 
+/// Define the calling crate's [`EmbeddedCatalog`]: `locales/<locale>.ftl` in
+/// the crate, `en-US` as the source, the user's locale when no host chose one,
+/// and source copy pinned in the crate's own tests.
+///
+/// `embedded_catalog!(pub(crate) static STORE_CATALOG, "probe-key", ["en-US", "de-DE"])`
+/// defines just the static; `embedded_catalog!(pub fn, "probe-key", ["en-US"])`
+/// defines `static CATALOG` and the `t` / `t_args` lookups the crate's copy
+/// goes through.
+#[macro_export]
+macro_rules! embedded_catalog {
+    ($vis:vis static $name:ident, $probe:literal, [$($locale:literal),+ $(,)?]) => {
+        $vis static $name: $crate::i18n::EmbeddedCatalog = {
+            let catalog = $crate::i18n::EmbeddedCatalog::new(
+                "en-US",
+                &[$((
+                    $locale,
+                    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/locales/", $locale, ".ftl")),
+                )),+],
+                $probe,
+            )
+            .with_system_locale();
+            #[cfg(test)]
+            let catalog = catalog.with_pinned_locale("en-US");
+            catalog
+        };
+    };
+    ($vis:vis fn, $probe:literal, [$($locale:literal),+ $(,)?]) => {
+        $crate::embedded_catalog!(static CATALOG, $probe, [$($locale),+]);
+
+        #[allow(dead_code, reason = "a crate may resolve only plain or only interpolated copy")]
+        $vis fn t(key: &str) -> String {
+            CATALOG.t(key)
+        }
+
+        #[allow(dead_code, reason = "a crate may resolve only plain or only interpolated copy")]
+        $vis fn t_args(key: &str, args: &[(&str, $crate::i18n::ArgValue)]) -> String {
+            CATALOG.t_args(key, args)
+        }
+    };
+}
+
 #[macro_export]
 macro_rules! i18n {
     ($key:expr) => {

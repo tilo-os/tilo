@@ -441,6 +441,54 @@ impl ManagerWork {
 pub struct AgentModelsArea {
     cx: PaneCx,
     model: std::cell::OnceCell<Shared<AgentModelsModel>>,
+    /// The manager's snapshot and the hosted keys, asked off the UI thread
+    /// after the window's first frame ([`Self::start_read`]).
+    read: crate::device_read::DeviceRead<AgentModelsRead>,
+}
+
+/// What the agent models area asks of the device: the model manager's
+/// snapshot, and whether this device's vault holds the key of each hosted
+/// provider configured when it asked. Asked off the UI thread; the model is
+/// built from it on the UI thread ([`AgentModelsModel::from_read`]).
+pub(crate) struct AgentModelsRead {
+    snapshot: Result<LocalModelSnapshot, String>,
+    keys: HashMap<String, Result<bool, String>>,
+}
+
+impl AgentModelsRead {
+    /// Ask `control` for its snapshot and the gateway for the keys of the
+    /// `hosted` providers.
+    fn of(control: &dyn LocalModelControl, hosted: Vec<String>) -> Self {
+        Self {
+            snapshot: control.snapshot(),
+            keys: hosted_keys(hosted),
+        }
+    }
+}
+
+/// The ids of the hosted providers in `providers`, whose keys this
+/// device's vault holds or not.
+fn hosted_profiles(providers: &AgentProviders) -> Vec<String> {
+    providers
+        .config
+        .profiles
+        .iter()
+        .filter(|profile| profile.location == EndpointLocation::Hosted)
+        .map(|profile| profile.id.clone())
+        .collect()
+}
+
+/// Ask the gateway whether this device's vault holds each of `hosted`'s
+/// keys: one blocking request each.
+fn hosted_keys(hosted: Vec<String>) -> HashMap<String, Result<bool, String>> {
+    hosted
+        .into_iter()
+        .map(|id| {
+            let configured =
+                tilo_model_gateway::secret_configured(&id).map_err(|error| error.to_string());
+            (id, configured)
+        })
+        .collect()
 }
 
 fn request_limit_rows(profile: &ProviderProfile) -> Vec<LiveRow> {
@@ -485,23 +533,48 @@ impl AgentModelsArea {
         Self {
             cx: cx.clone(),
             model: std::cell::OnceCell::new(),
+            read: crate::device_read::DeviceRead::default(),
+        }
+    }
+
+    /// The model manager: this device's, or a sample one for a screenshot.
+    fn control(&self) -> Arc<dyn LocalModelControl> {
+        if self.cx.reaches_devices() {
+            Arc::new(ModelManagerCli)
+        } else {
+            Arc::new(SampleManager)
         }
     }
 
     /// The model, over the model manager, or over a sample one for a
-    /// screenshot.
+    /// screenshot: from the read [`Self::start_read`] started, waiting for
+    /// it if it still runs, else asked here.
     pub fn model(&self) -> &Shared<AgentModelsModel> {
         self.model.get_or_init(|| {
-            let control: Arc<dyn LocalModelControl> = if self.cx.reaches_devices() {
-                Arc::new(ModelManagerCli)
-            } else {
-                Arc::new(SampleManager)
+            let control = self.control();
+            let model = match self.read.take() {
+                Some(read) => AgentModelsModel::from_read(self.cx.clone(), control, read),
+                None => AgentModelsModel::new(self.cx.clone(), control),
             };
-            Rc::new(std::cell::RefCell::new(AgentModelsModel::new(
-                self.cx.clone(),
-                control,
-            )))
+            Rc::new(std::cell::RefCell::new(model))
         })
+    }
+
+    /// Ask the model manager and the gateway off the UI thread; `false`
+    /// when they have been asked or are being asked.
+    pub(crate) fn start_read(&self) -> bool {
+        if self.is_open() {
+            return false;
+        }
+        let control = self.control();
+        let hosted = hosted_profiles(self.cx.follow::<AgentProviders>().get());
+        self.read
+            .start(move || AgentModelsRead::of(control.as_ref(), hosted))
+    }
+
+    /// Whether the read [`Self::start_read`] started has ended.
+    pub(crate) fn read_finished(&self) -> bool {
+        self.read.is_finished()
     }
 
     /// Whether the area has read what its rows show: its pane was shown,
@@ -628,8 +701,18 @@ pub struct AgentModelsModel {
 }
 
 impl AgentModelsModel {
+    /// The model over `control`, asking it and the gateway here.
     fn new(cx: PaneCx, control: Arc<dyn LocalModelControl>) -> Self {
-        let (snapshot, manager_available, notice) = match control.snapshot() {
+        let hosted = hosted_profiles(cx.follow::<AgentProviders>().get());
+        let read = AgentModelsRead::of(control.as_ref(), hosted);
+        Self::from_read(cx, control, read)
+    }
+
+    /// The model over `control`, from what was asked of it and of the
+    /// gateway. Keys asked for a different set of hosted providers than the
+    /// person's settings now hold are asked again.
+    fn from_read(cx: PaneCx, control: Arc<dyn LocalModelControl>, read: AgentModelsRead) -> Self {
+        let (snapshot, manager_available, notice) = match read.snapshot {
             Ok(snapshot) => (snapshot, true, None),
             Err(error) => (
                 fallback_snapshot(),
@@ -659,28 +742,20 @@ impl AgentModelsModel {
             changed: false,
         };
         model.sync_local_profile();
-        model.read_keys();
+        let hosted = hosted_profiles(model.providers.get());
+        if hosted.len() == read.keys.len() && hosted.iter().all(|id| read.keys.contains_key(id)) {
+            model.keys = read.keys;
+            model.changed = true;
+        } else {
+            model.read_keys();
+        }
         model
     }
 
     /// Ask the gateway whether this device's vault holds each hosted
     /// provider's key.
     fn read_keys(&mut self) {
-        self.keys = self
-            .providers
-            .get()
-            .config
-            .profiles
-            .iter()
-            .filter(|profile| profile.location == EndpointLocation::Hosted)
-            .map(|profile| {
-                (
-                    profile.id.clone(),
-                    tilo_model_gateway::secret_configured(&profile.id)
-                        .map_err(|error| error.to_string()),
-                )
-            })
-            .collect();
+        self.keys = hosted_keys(hosted_profiles(self.providers.get()));
         self.changed = true;
     }
 
@@ -1858,16 +1933,6 @@ fn manager_run(args: &[&str], timeout: Duration) -> Result<bounded_command::Outp
     })
 }
 
-fn manager_diagnostic(bytes: &[u8]) -> String {
-    String::from_utf8_lossy(bytes)
-        .chars()
-        .filter(|character| !character.is_control() || matches!(character, ' ' | '\n' | '\t'))
-        .take(512)
-        .collect::<String>()
-        .trim()
-        .to_string()
-}
-
 #[derive(Clone)]
 struct HostedFieldBuffers {
     label: Arc<Mutex<String>>,
@@ -2120,7 +2185,7 @@ impl LocalModelControl for ModelManagerCli {
     fn snapshot(&self) -> Result<LocalModelSnapshot, String> {
         let output = manager_run(&["snapshot", "--format", "json"], Duration::from_secs(10))?;
         if !output.status.success() {
-            return Err(manager_diagnostic(&output.stderr));
+            return Err(output.stderr_diagnostic());
         }
         serde_json::from_slice(&output.stdout)
             .map_err(|error| format!("model service returned invalid status: {error}"))
@@ -2548,6 +2613,7 @@ mod tests {
             let area = AgentModelsArea {
                 cx: model.cx.clone(),
                 model: std::cell::OnceCell::from(Rc::new(std::cell::RefCell::new(model))),
+                read: crate::device_read::DeviceRead::default(),
             };
             let published = area
                 .rows()
@@ -3010,6 +3076,74 @@ mod tests {
                 on: true,
             })
             .is_err()
+        );
+    }
+
+    /// Wait for a background read to end, as the warm-up's wake would.
+    fn until_finished(finished: impl Fn() -> bool) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while !finished() {
+            assert!(std::time::Instant::now() < deadline, "the read ends");
+            std::thread::yield_now();
+        }
+    }
+
+    /// The warm-up asks the manager off the UI thread once; the model is
+    /// built from that answer, and nothing is asked again once it is.
+    #[test]
+    fn the_area_builds_its_model_from_the_read_it_started() {
+        let profile = tempfile::tempdir().unwrap();
+        let cx = PaneCx::in_file(profile.path().join("settings.json"));
+        let area = AgentModelsArea::new(&cx);
+        assert!(area.start_read(), "the first read starts");
+        assert!(!area.start_read(), "one read at a time");
+        assert!(!area.is_open(), "a running read publishes nothing yet");
+        until_finished(|| area.read_finished());
+        let installed = area.model().borrow().snapshot.recommendation.clone();
+        assert!(area.is_open());
+        assert_eq!(
+            installed.map(|package| package.id),
+            SampleManager
+                .snapshot()
+                .unwrap()
+                .recommendation
+                .map(|package| package.id),
+            "the model shows what the read asked"
+        );
+        assert!(!area.start_read(), "a built model is not read again");
+    }
+
+    /// What the read asked is what the model shows: the manager's answer,
+    /// or why it could not answer.
+    #[test]
+    fn a_model_shows_what_its_read_asked() {
+        let profile = tempfile::tempdir().unwrap();
+        let cx = PaneCx::in_file(profile.path().join("settings.json"));
+        let control = mock(snapshot(None));
+        let read = AgentModelsRead::of(control.as_ref(), Vec::new());
+        let model = AgentModelsModel::from_read(cx.clone(), control.clone(), read);
+        assert!(model.manager_available);
+        assert_eq!(
+            model
+                .snapshot
+                .recommendation
+                .as_ref()
+                .map(|package| package.id.clone()),
+            Some(package().id)
+        );
+        let down = AgentModelsRead {
+            snapshot: Err("the manager is not running".into()),
+            keys: HashMap::new(),
+        };
+        let model = AgentModelsModel::from_read(cx, control, down);
+        assert!(!model.manager_available);
+        assert_eq!(
+            model.notice,
+            Some(t_args(
+                "agent-notice-service-down",
+                &[("error", "the manager is not running".into())]
+            )),
+            "the person is told the manager is down"
         );
     }
 }

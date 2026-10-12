@@ -8,7 +8,7 @@ use ui::paint::PaintCtx;
 use ui::text_render::{TextRenderer, TextStyle};
 use ui::theme::Theme;
 use ui::tokens::TextRole;
-use ui::widget::Widget;
+use ui::widget::{TaffyTreeExt, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 
@@ -16,38 +16,21 @@ use crate::highlight::{self, Span};
 use crate::model::{Language, Snippet};
 
 /// A leaf node that fills what its parent gives it, registered for `widget`.
-#[allow(
-    clippy::expect_used,
-    reason = "TaffyTree::new_leaf only fails on allocation, which aborts anyway"
-)]
 pub(crate) fn fill_leaf<W: Widget + 'static>(
     taffy: &mut TaffyTree<()>,
     node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     widget: &mut W,
 ) -> NodeId {
-    let node = taffy
-        .new_leaf(Style {
+    taffy.widget_leaf(
+        Style {
             size: taffy::Size {
                 width: taffy::Dimension::percent(1.0),
                 height: taffy::Dimension::percent(1.0),
             },
             ..Default::default()
-        })
-        .expect("a leaf node");
-    node_map.insert(node, std::ptr::from_mut::<dyn Widget>(widget));
-    node
-}
-
-/// The rect taffy placed `node` at, in window coordinates.
-pub(crate) fn leaf_rect(taffy: &TaffyTree<()>, node: NodeId, origin: Point) -> Rect {
-    let layout = taffy.layout(node).copied().unwrap_or_default();
-    let x = origin.x + f64::from(layout.location.x);
-    let y = origin.y + f64::from(layout.location.y);
-    Rect::new(
-        x,
-        y,
-        x + f64::from(layout.size.width),
-        y + f64::from(layout.size.height),
+        },
+        node_map,
+        widget,
     )
 }
 

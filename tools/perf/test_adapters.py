@@ -277,6 +277,53 @@ class FrameworkOpen(unittest.TestCase):
         self.assertEqual(budgeted, produced)
 
 
+def scroll_log(pixels: int, differing: int = 0) -> str:
+    """framework-scaling's `scroll` output: the table, then one line per run."""
+    return "\n".join([
+        "tasks  step  copies  frames  whole  repainted px p50  max  copied px p50",
+        "",
+        "FRAMEWORK-SCROLL tasks=5000 step=40 copying=false pixels_p50=1024000 pixels_max=1024000 "
+        "copied_p50=0 whole=120 frames=120 cpu_ms=0.436 gpu_ms=1.647 gpu_full_ms=1.642 differing=0",
+        f"FRAMEWORK-SCROLL tasks=5000 step=40 copying=true pixels_p50={pixels} pixels_max={pixels * 2} "
+        f"copied_p50=700000 whole=0 frames=120 cpu_ms=0.512 gpu_ms=0.9 gpu_full_ms=1.6 differing={differing}",
+        "FRAMEWORK-SCROLL tasks=5000 step=40.5 copying=true pixels_p50=900000 pixels_max=900000 "
+        "copied_p50=0 whole=0 frames=120 cpu_ms=0.420 gpu_ms=1.6 gpu_full_ms=1.6 differing=0",
+    ])
+
+
+class FrameworkScroll(unittest.TestCase):
+    def test_the_copying_whole_pixel_run_is_recorded(self):
+        records = {item.kpi: item for item in adapters.framework_scroll([scroll_log(90000), scroll_log(110000)],
+                                                                        ENV)}
+        pixels = records["render.framework_scroll.pixels.5k"]
+        self.assertEqual((pixels.unit, pixels.n, pixels.max), ("pixels", 2, 110000.0))
+        self.assertEqual(records["render.framework_scroll.whole_frames.5k"].p50, 0.0)
+        self.assertEqual(records["render.framework_scroll.cpu_ms.5k"].unit, "ms")
+        self.assertEqual(records["render.framework_scroll.raster_ms.5k"].p50, 0.9)
+
+    def test_pixels_a_full_render_does_not_have_fail(self):
+        with self.assertRaisesRegex(ValueError, "full render"):
+            adapters.framework_scroll([scroll_log(90000, differing=3)], ENV)
+
+    def test_a_run_without_its_lines_fails(self):
+        with self.assertRaisesRegex(ValueError, "FRAMEWORK-SCROLL"):
+            adapters.framework_scroll(["tasks  step  copies"], ENV)
+
+    def test_the_fields_are_the_examples(self):
+        """The example prints the line the adapter reads."""
+        source = SCALING.read_text()
+        printed = source[source.index('"FRAMEWORK-SCROLL'):]
+        for field in ("tasks", "step", "copying", "pixels_p50", "pixels_max", "copied_p50", "whole",
+                      "frames", "cpu_ms", "gpu_ms", "gpu_full_ms", "differing"):
+            self.assertIn(f"{field}={{", printed)
+
+    def test_every_nightly_scroll_kpi_has_a_budget(self):
+        budgets = compare.load_budgets(compare.BUDGETS)
+        budgeted = {kpi for kpi in budgets.kpis if kpi.startswith("render.framework_scroll.")}
+        produced = {item.kpi for item in adapters.framework_scroll([scroll_log(90000)], ENV)}
+        self.assertEqual(budgeted, produced)
+
+
 LOAD_BENCH = ROOT / "crates/hosting/tilo-relay/examples/relay_load/main.rs"
 
 

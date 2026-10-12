@@ -207,16 +207,6 @@ fn overview_help_and_hidden_controls_expose_no_stray_targets_and_scale_once() {
         assert!(!chrome.borrow().overlays.shortcut_help);
     }
 
-    fn dismissed_palette_command_closes_focus_and_semantics() {
-        let mut h = host();
-        h.palette.open();
-        h.palette_visible = true;
-        h.dispatch_palette_command("unknown");
-        assert!(!h.palette_visible);
-        assert!(!h.palette.is_open());
-        assert!(h.palette.accessibility().unwrap().state.hidden);
-    }
-
     fn desktop_scrolled_settings_name_cannot_receive_projected_focus_or_hits() {
         let mut host = host_with(WorkspaceTree::bootstrap_default());
         {
@@ -329,7 +319,6 @@ fn overview_help_and_hidden_controls_expose_no_stray_targets_and_scale_once() {
     }
 
     app_content_has_no_floating_help_hit_target();
-    dismissed_palette_command_closes_focus_and_semantics();
     desktop_scrolled_settings_name_cannot_receive_projected_focus_or_hits();
     desktop_help_text_is_scaled_once_and_inside_its_hit_target();
     desktop_overlay_text_applies_accessibility_scale_once();
@@ -993,8 +982,8 @@ fn assert_overview_preview_focus_pixels(
     let tile = host.overview_window_tile_rect(0);
     let x = tile.x0 - f64::from(theme.tokens.spacing.s1) - 1.0;
     let y = tile.center().y;
-    let pixel_x = u32::try_from(f64_floor_to_usize_saturating(x.round())).expect("positive ring x");
-    let pixel_y = u32::try_from(f64_floor_to_usize_saturating(y.round())).expect("positive ring y");
+    let pixel_x = u32::try_from(ui::num::usize_of_f64(x.round())).expect("positive ring x");
+    let pixel_y = u32::try_from(ui::num::usize_of_f64(y.round())).expect("positive ring y");
     let pixels = renderer.render_resilient(scene, theme.tokens.colors.surfaces.base);
     let (red, green, blue, _) = OffscreenRenderer::sample(&pixels, width, pixel_x, pixel_y);
     let expected = theme.border_focus.to_rgba8();

@@ -13,7 +13,6 @@
     )
 )]
 
-use std::os::fd::FromRawFd;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -57,7 +56,9 @@ fn main() -> anyhow::Result<()> {
         .store
         .or_else(package_store::layout::default_user_root)
         .ok_or_else(|| anyhow::anyhow!("HOME / XDG_DATA_HOME not set: pass --store"))?;
-    let inherited_listener = systemd_listener(&socket)?;
+    // SAFETY: taken in main before the Tokio runtime or any other thread
+    // starts, so nothing else touches the environment.
+    let inherited_listener = unsafe { tilo_files::native::private::activated_socket(&socket)? };
     tracing::info!(
         socket = %socket.display(),
         store  = %root.display(),
@@ -97,59 +98,6 @@ fn main() -> anyhow::Result<()> {
         });
         transport::serve(listener, store, catalog, cli.max_store_bytes).await
     })
-}
-
-/// Consume the one listener supplied by systemd socket activation.
-///
-/// A matching `LISTEN_PID` with anything other than one descriptor is an error,
-/// rather than falling back to a second socket. The bound pathname is checked
-/// before the descriptor becomes Tokio-owned so an unrelated inherited fd can
-/// never become the privileged app-store endpoint.
-#[allow(
-    clippy::disallowed_methods,
-    reason = "systemd socket activation: LISTEN_* must not leak to app-launch children; cleared in main right after the descriptor is taken, before the Tokio runtime or any other thread starts"
-)]
-fn systemd_listener(
-    expected: &std::path::Path,
-) -> anyhow::Result<Option<std::os::unix::net::UnixListener>> {
-    const SYSTEMD_LISTEN_FD: libc::c_int = 3;
-
-    let pid_matches = std::env::var("LISTEN_PID")
-        .ok()
-        .and_then(|value| value.parse::<u32>().ok())
-        == Some(std::process::id());
-    if !pid_matches {
-        return Ok(None);
-    }
-    anyhow::ensure!(
-        std::env::var("LISTEN_FDS").as_deref() == Ok("1"),
-        "systemd must pass exactly one app-host listener"
-    );
-    // SAFETY: fcntl only checks whether the scalar descriptor is open.
-    anyhow::ensure!(
-        unsafe { libc::fcntl(SYSTEMD_LISTEN_FD, libc::F_GETFD) } != -1,
-        "systemd app-host listener fd is closed"
-    );
-    // SAFETY: the LISTEN_PID/FDS contract transfers fd 3 exactly once here.
-    let listener = unsafe { std::os::unix::net::UnixListener::from_raw_fd(SYSTEMD_LISTEN_FD) };
-    let actual = listener.local_addr()?;
-    anyhow::ensure!(
-        actual.as_pathname() == Some(expected),
-        "systemd app-host listener has an unexpected path"
-    );
-    // Do not leak the authenticated store endpoint into app-launch children.
-    anyhow::ensure!(
-        unsafe { libc::fcntl(SYSTEMD_LISTEN_FD, libc::F_SETFD, libc::FD_CLOEXEC) } != -1,
-        "cannot mark systemd app-host listener close-on-exec"
-    );
-    // SAFETY: activation metadata is consumed before the runtime starts any
-    // worker threads, so no concurrent environment reader exists.
-    unsafe {
-        std::env::remove_var("LISTEN_PID");
-        std::env::remove_var("LISTEN_FDS");
-        std::env::remove_var("LISTEN_FDNAMES");
-    }
-    Ok(Some(listener))
 }
 
 fn init_tracing() {

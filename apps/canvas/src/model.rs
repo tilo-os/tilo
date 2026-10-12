@@ -10,6 +10,8 @@
 )]
 
 use std::collections::BTreeMap;
+use ui::num::f32_of_f64;
+use ui::num::f64_of_usize;
 
 use serde::{Deserialize, Serialize};
 use ui::tilo_resource::{self, JsonSchema};
@@ -1094,31 +1096,23 @@ impl Shape {
         };
         if let Some(spacing) = hatch {
             return Some(tilo_wet_media::Form::Hatch {
-                spacing: narrow(*spacing),
-                angle: narrow(angle.unwrap_or(45.0)),
+                spacing: f32_of_f64(*spacing),
+                angle: f32_of_f64(angle.unwrap_or(45.0)),
             });
         }
         if let Some(forks) = forks {
             return Some(tilo_wet_media::Form::Branch {
                 forks: *forks,
-                spread: narrow(spread.unwrap_or(35.0)),
+                spread: f32_of_f64(spread.unwrap_or(35.0)),
             });
         }
         dabs.map(|count| tilo_wet_media::Form::Dabs {
             count,
-            scatter: narrow(scatter.unwrap_or(size * 2.0)),
-            length: narrow(dab_length.unwrap_or(0.0)),
-            angle: angle.map(narrow),
+            scatter: f32_of_f64(scatter.unwrap_or(size * 2.0)),
+            length: f32_of_f64(dab_length.unwrap_or(0.0)),
+            angle: angle.map(f32_of_f64),
         })
     }
-}
-
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "stroke geometry is bounded by the document's size limits"
-)]
-fn narrow(value: f64) -> f32 {
-    value as f32
 }
 
 impl Shape {
@@ -1263,10 +1257,6 @@ pub fn path_data(path: &BezPath) -> String {
     parts.join(" ")
 }
 
-fn count(n: usize) -> f64 {
-    f64::from(u32::try_from(n).unwrap_or(u32::MAX))
-}
-
 impl Shape {
     /// The box a text's lines take, estimated from its characters: what
     /// selection, hit-testing and `inspect` use without shaping it.
@@ -1300,7 +1290,7 @@ impl Shape {
             } + tracking.unwrap_or(0.0) / 1000.0);
         let lines: Vec<f64> = text
             .split('\n')
-            .map(|line| advance * count(line.chars().count()))
+            .map(|line| advance * f64_of_usize(line.chars().count()))
             .collect();
         let natural = lines.iter().copied().fold(0.0, f64::max);
         let (rows, wide) = match width {
@@ -1311,7 +1301,7 @@ impl Shape {
                     .sum::<f64>(),
                 *width,
             ),
-            None => (count(lines.len()), natural),
+            None => (f64_of_usize(lines.len()), natural),
         };
         let left = match (width, align.as_deref()) {
             (None, Some("center")) => x - wide / 2.0,

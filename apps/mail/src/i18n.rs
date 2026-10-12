@@ -5,15 +5,9 @@
 //! is no build step and no runtime file I/O — a `--shots` render and a unit test
 //! resolve the same strings a live session does.
 
-use ui::i18n::{ArgValue, EmbeddedCatalog};
+use ui::i18n::EmbeddedCatalog;
 
-/// Loaded per thread on first use; a host's manager is joined, never replaced.
-/// The probe is a key every catalogue revision defines.
-static CATALOG: EmbeddedCatalog = EmbeddedCatalog::new(
-    "en-US",
-    &[("en-US", include_str!("../locales/en-US.ftl"))],
-    "mail-setup-heading-add",
-);
+ui::embedded_catalog!(pub fn, "mail-setup-heading-add", ["en-US"]);
 
 /// The catalogue, which every host mounting Mail loads before its view.
 pub fn catalog() -> &'static EmbeddedCatalog {
@@ -23,21 +17,6 @@ pub fn catalog() -> &'static EmbeddedCatalog {
 /// Load the catalogue on this thread if it is not loaded yet.
 pub fn ensure() {
     CATALOG.ensure();
-}
-
-/// Resolve a Mail string key.
-pub fn t(key: &str) -> String {
-    CATALOG.t(key)
-}
-
-/// Resolve a Mail string key that interpolates variables.
-///
-/// The values are the app's own words — an operation's label, a participant's
-/// name — so the *sentence* around them stays in the catalogue and only the
-/// nouns are substituted. Building the line with `format!` instead would put
-/// English word order in the source and leave nothing to translate.
-pub fn t_args(key: &str, args: &[(&str, ArgValue)]) -> String {
-    CATALOG.t_args(key, args)
 }
 
 #[cfg(test)]

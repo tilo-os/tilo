@@ -381,6 +381,14 @@ impl ScreenReader {
         self.speaker.set_voice(voice);
     }
 
+    /// Speak at the rate and in the voice the person chose in Settings.
+    pub fn configure(&mut self, settings: &settings_store::accessibility::ScreenReaderSettings) {
+        self.set_rate(settings.rate);
+        if let Some(voice) = settings.voice.engine_voice() {
+            self.set_voice(voice);
+        }
+    }
+
     /// The single funnel every utterance goes through. An interrupting push
     /// first stops in-flight speech, then drains the coalesced queue into
     /// the speaker — immediately, which keeps the `NullSpeaker` test path

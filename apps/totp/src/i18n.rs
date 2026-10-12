@@ -5,24 +5,11 @@
 //! is no build step and no runtime file I/O — a `--shots` render and a unit test
 //! resolve the same strings a live session does.
 
-use ui::i18n::EmbeddedCatalog;
-
-/// Loaded per thread on first use; a host's manager is joined, never replaced.
-/// The probe is a key every catalogue revision defines.
-static CATALOG: EmbeddedCatalog = EmbeddedCatalog::new(
-    "en-US",
-    &[("en-US", include_str!("../locales/en-US.ftl"))],
-    "totp-add-cancel",
-);
+ui::embedded_catalog!(pub fn, "totp-add-cancel", ["en-US"]);
 
 /// Load the catalogue on this thread if it is not loaded yet.
 pub fn ensure() {
     CATALOG.ensure();
-}
-
-/// Resolve an Authenticator string key.
-pub fn t(key: &str) -> String {
-    CATALOG.t(key)
 }
 
 #[cfg(test)]

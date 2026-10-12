@@ -167,8 +167,7 @@ impl Widget for OverlayProbe {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).unwrap();
-        self.rect = crate::widget::placed(layout, origin);
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
     }
 
     fn draw_overlay(
@@ -719,21 +718,28 @@ fn typing_into_a_block_editor_re_measures_only_the_edited_line() {
     );
     frame.verify_retained_geometry().unwrap();
 
-    // Splitting the block is a structural change: the line count grows, so
-    // the tree is rebuilt (on the press frame; the release frame that follows
-    // retains the new tree). The block stack is one measured leaf, so the
-    // tree does not grow with the document.
+    // Splitting the block adds a line but no widget: the block stack is one
+    // measured leaf, so the editor restacks its lines in a relayout, and
+    // the composed tree (its node ids, focus) survives. The retained
+    // geometry check compares the result with a fresh composition.
     let rebuilt_before = frame.rebuilt_frames();
     frame.key("Enter");
+    assert_eq!(
+        frame.rebuilt_frames(),
+        rebuilt_before,
+        "inserting a block keeps the composition"
+    );
     assert!(
-        frame.rebuilt_frames() > rebuilt_before,
-        "inserting a block rebuilds the composition"
+        frame.last_relayout().measured,
+        "inserting a block re-solves sizes: {:?}",
+        frame.last_relayout()
     );
     assert_eq!(
-        frame.layout_node_ids().len(),
-        ids.len(),
-        "a split adds no layout node"
+        frame.layout_node_ids(),
+        ids,
+        "a split adds no layout node and keeps the others"
     );
+    assert_eq!(frame.focused(), focused, "focus survives a split");
     frame.verify_retained_geometry().unwrap();
 }
 

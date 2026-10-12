@@ -377,10 +377,6 @@ impl ResourceApp for ChatShell {
         SCENARIOS
     }
 
-    fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
-        (1280, 800)
-    }
-
     /// The first-run workspace for `starter`, the demo conversation for
     /// every other scenario, both read by the capture's own person.
     fn fixture(fixture: &mut ui::framework::Fixture<Chat>) {
@@ -751,6 +747,16 @@ mod tests {
     }
 
     #[test]
+    fn a_drawn_frame_hands_chat_the_hosts_permissions() {
+        let mut viewer = TestApp::<ChatShell>::with_role(ui::permissions::Role::Viewer).unwrap();
+        viewer.harness().resize((960, 720)).unwrap();
+        assert_eq!(
+            viewer.with_surface::<ChatApp, _>(|surface| surface.perms.can_participate()),
+            Some(false)
+        );
+    }
+
+    #[test]
     fn resource_range_opens_and_highlights_current_text_through_the_public_view() {
         let mut app = TestApp::<ChatShell>::new().unwrap();
         app.call_on(
@@ -813,6 +819,20 @@ mod tests {
         assert!(!app.surface_mut::<crate::ChatApp>().sharing_context);
         assert!(app.harness().a11y_node_named("Stop sharing").is_none());
         assert!(ui::view::capability::view_state(app.harness().root_widget()).is_none());
+    }
+
+    #[test]
+    fn stopping_shared_context_wakes_the_native_presentation() {
+        let mut app = TestApp::<ChatShell>::capture(Some("live-context")).unwrap();
+        assert!(app.surface_mut::<crate::ChatApp>().sharing_context);
+        assert!(!app.harness().root_widget().needs_redraw());
+        app.surface_mut::<crate::ChatApp>()
+            .answer_effect(crate::effects::ChatEffect::StopSharingLiveContext)
+            .unwrap();
+        assert!(
+            app.harness().root_widget().needs_redraw(),
+            "semantic Stop must schedule its privacy indicator and withdrawn view frame"
+        );
     }
 
     #[test]

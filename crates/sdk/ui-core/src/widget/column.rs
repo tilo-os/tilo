@@ -359,19 +359,10 @@ mod tests {
         let theme = Theme::dark();
         let mut tr = TextRenderer::new();
         let presence = crate::presence::PresenceCtx::default();
-        let perms = crate::permissions::PermissionContext::permissive();
         let mut scene = Scene::new();
-        // Use draw_with_presence so the column's cached-draw path (the
-        // buggy one) is exercised — that's where the leading Text was
+        // Draw through the column's cached-draw path (the buggy one) — that's where the leading Text was
         // dropped.
-        root.draw_with_presence(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut tr,
-            &theme,
-            &presence,
-            &perms,
-        );
+        root.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
         scene
             .encoding()
             .draw_tags

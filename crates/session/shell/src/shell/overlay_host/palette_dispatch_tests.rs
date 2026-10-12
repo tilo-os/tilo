@@ -1774,7 +1774,7 @@ fn invite_tokens_travel_through_the_clipboard_exactly() {
             PeerSyncRequest::IssueInviteFor { name, .. } => {
                 Ok(PeerSyncResponse::Message(format!("token-for-{name}")))
             }
-            PeerSyncRequest::IssueInvite | PeerSyncRequest::IssueInvitation(_) => {
+            PeerSyncRequest::IssueInvitation(_) => {
                 Ok(PeerSyncResponse::Message("token-for-nobody".to_string()))
             }
             PeerSyncRequest::ExportIdentity => Ok(PeerSyncResponse::Message(format!(
@@ -1790,6 +1790,7 @@ fn invite_tokens_travel_through_the_clipboard_exactly() {
             PeerSyncRequest::ResendInvitation(_) | PeerSyncRequest::CancelInvitation(_) => {
                 Err("not pending".into())
             }
+            PeerSyncRequest::PrepareInvitation => Ok(PeerSyncResponse::Message(String::new())),
         }));
         chrome
             .borrow_mut()

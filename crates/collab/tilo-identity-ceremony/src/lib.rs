@@ -22,6 +22,11 @@ use serde_bytes as serde_bytes_codec;
 use sha2::{Digest, Sha512};
 use threshold_identity::{EnrolmentRound1, EnrolmentRound2, ThresholdError, ThresholdIdentity};
 
+mod device_pairing;
+pub use device_pairing::HostPairing;
+#[cfg(not(target_arch = "wasm32"))]
+pub use device_pairing::pair_with_host;
+
 /// Disk-format record for a persisted identity.
 ///
 /// Schema 1 contains a legacy plaintext share. Schema 2 contains public

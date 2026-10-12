@@ -206,14 +206,6 @@ impl ui::widget::Decorator for TerminalView {
         self.serve_find_request();
         self.scope.build_layout(taffy, theme, node_map)
     }
-
-    fn as_any(&self) -> Option<&dyn std::any::Any> {
-        Some(self)
-    }
-
-    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
-        Some(self)
-    }
 }
 
 impl AppWidget for TerminalView {

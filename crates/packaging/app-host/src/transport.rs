@@ -7,10 +7,8 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use capnp_rpc::{RpcSystem, rpc_twoparty_capnp, twoparty};
 use tokio::io::AsyncReadExt;
 use tokio::net::UnixListener;
-use tokio_util::compat::TokioAsyncReadCompatExt;
 
 use crate::app_host_capnp::app_host;
 
@@ -30,17 +28,12 @@ use package_store::{Catalog, PackageStore};
 /// Returns an error if the parent directory cannot be created or the
 /// socket cannot be bound.
 pub fn bind(socket: &Path) -> anyhow::Result<UnixListener> {
-    use std::os::unix::fs::PermissionsExt;
-
     if let Some(dir) = socket.parent() {
         std::fs::create_dir_all(dir)?;
     }
-    // Remove a stale socket from a previous run — Unix bind() fails if
-    // the path already exists.
-    let _ = std::fs::remove_file(socket);
-    let listener = UnixListener::bind(socket)?;
-    let _ = std::fs::set_permissions(socket, std::fs::Permissions::from_mode(0o600));
-    Ok(listener)
+    let listener = tilo_files::native::private::bind_socket(socket)?;
+    listener.set_nonblocking(true)?;
+    Ok(UnixListener::from_std(listener)?)
 }
 
 /// Run an accept loop forever. Each accepted stream gets its own
@@ -121,17 +114,9 @@ pub async fn handle_connection(
             .await?
             .map_err(Into::into);
     }
-    let (reader, writer) = stream.into_split();
-    let reader = reader.compat();
-    let writer = tokio_util::compat::TokioAsyncWriteCompatExt::compat_write(writer);
-    let network = Box::new(twoparty::VatNetwork::new(
-        futures_util::io::BufReader::new(reader),
-        futures_util::io::BufWriter::new(writer),
-        rpc_twoparty_capnp::Side::Server,
-        capnp::message::ReaderOptions::default(),
-    ));
     let service = AppHostServer::new(store, catalog, max_store_bytes);
     let client: app_host::Client = capnp_rpc::new_client(service);
-    let rpc_system = RpcSystem::new(network, Some(client.client));
-    rpc_system.await.map_err(|e| anyhow::anyhow!("{e}"))
+    runtime_portal::serve_connected_io(stream, client.client)
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))
 }

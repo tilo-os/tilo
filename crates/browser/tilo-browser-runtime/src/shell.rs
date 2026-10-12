@@ -110,10 +110,10 @@ fn minute() -> i64 {
 
 /// The page's wall clock as the bar shows it.
 fn clock_snapshot() -> ClockSnapshot {
-    let now = chrono::Local::now();
+    let now = ui::clock::local_now();
     ClockSnapshot {
         unix_seconds: now.timestamp(),
-        clock: now.format("%H:%M").to_string(),
+        clock: ui::clock::time_of_day(&now),
         weekday: now.format("%a").to_string(),
         date: now.format("%-d %B").to_string(),
     }
@@ -670,26 +670,9 @@ impl Widget for BrowserShell {
     ) {
         self.drawn_minute.set(minute());
         self.backdrop.draw(scene, transform, text, theme, presence);
-        self.area.draw(scene, transform, text, theme, presence);
+        ui::widget::draw_child(&mut self.area, scene, transform, text, theme, presence);
         self.overview.draw(scene, transform, text, theme, presence);
         // Last, so what the bar opens below its band stays above windows.
-        self.bar.draw(scene, transform, text, theme, presence);
-    }
-
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        permissions: &ui::permissions::PermissionContext,
-    ) {
-        self.drawn_minute.set(minute());
-        self.backdrop.draw(scene, transform, text, theme, presence);
-        self.area
-            .draw_with_presence(scene, transform, text, theme, presence, permissions);
-        self.overview.draw(scene, transform, text, theme, presence);
         self.bar.draw(scene, transform, text, theme, presence);
     }
 

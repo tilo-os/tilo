@@ -554,9 +554,11 @@ jobs:
             echo "::error::the acceptance run wrote no performance records (it aborted, or measured nothing)"
             exit 1
           fi
-          # A run of every check owes every group; a subset is compared for what it measured.
+          # A run of every check owes every group of its lane in
+          # tools/perf/kpi-budgets.toml (render: only the KPIs this lane
+          # claims); a subset is compared for what it measured.
           groups=""
-          [[ -n ${ONLY:-} ]] || groups=boot,idle,memory,app,render
+          [[ -n ${ONLY:-} ]] || groups=boot,session,idle,memory,disk,app,render
           publish=false
           if [[ $GITHUB_REF == refs/heads/main && -z ${ONLY:-} ]]; then
             case $EVENT in
@@ -568,7 +570,7 @@ jobs:
           fi
           status=0
           python3 tools/perf/compare.py --results results/records.jsonl --store "$GITHUB_SERVER_URL" \
-            --owner "$owner" --groups "$groups" --publish-dir publish \
+            --owner "$owner" --lane vm-acceptance --groups "$groups" --publish-dir publish \
             --run "$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-vm" --summary summary.md || status=1
           if [[ $publish == true ]]; then
             manifest=$(mktemp)

@@ -13,6 +13,7 @@
 use std::collections::HashMap;
 use std::sync::mpsc::{Receiver, Sender};
 use ui::time::Instant;
+use ui::widget::TaffyTreeExt;
 use ui::widget::{AppModel, ModelPath};
 
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -27,7 +28,6 @@ use ui::chrome::SelectionState;
 use ui::format::bytes as format_bytes;
 use ui::icons::Icon;
 use ui::paint::PaintCtx;
-use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
@@ -2302,9 +2302,9 @@ fn on_panel(theme: &Theme) -> Theme {
     theme.on_ground(ui::chrome::panel_ground(theme))
 }
 
-/// A travel time read as a clock: `10:57`.
+/// A travel time read as a clock: `10:57` or `10:57 AM`.
 fn clock_label(at: chrono::DateTime<chrono::Local>) -> String {
-    at.format("%H:%M").to_string()
+    ui::clock::time_of_day(&at)
 }
 
 // ===========================================================================
@@ -4652,30 +4652,23 @@ impl Widget for MapsApp {
         self.nav_card_size = navigation_card_size(theme);
         self.navigation_placement
             .set_preferred_size(self.nav_card_size);
-        #[allow(
-            clippy::unwrap_used,
-            reason = "a fresh leaf on a live taffy tree cannot fail short of OOM, and \
-                      `Widget::build_layout` returns `NodeId` directly with no fallible path"
-        )]
-        let node = taffy
-            .new_leaf(Style {
+        let node = taffy.widget_leaf(
+            Style {
                 size: Size {
                     width: Dimension::percent(1.0),
                     height: Dimension::percent(1.0),
                 },
                 ..Default::default()
-            })
-            .unwrap();
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
+            },
+            node_map,
+            self,
+        );
         self.node = Some(node);
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let Ok(layout) = taffy.layout(node) else {
-            return;
-        };
-        self.rect = ui::widget::placed(layout, origin);
+        self.rect = ui::widget::layout_rect(taffy, node, origin);
         // Arm the first POI fetch once a real viewport exists (live app only).
         if self.online
             && self.poi_fetched_bounds.is_none()
@@ -5203,19 +5196,6 @@ impl Widget for MapsApp {
 
     fn set_motion_reduced(&mut self, reduced: bool) {
         self.motion_reduced = reduced;
-    }
-
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        _permissions: &PermissionContext,
-    ) {
-        // Root fills the window — never cull.
-        self.draw(scene, transform, text_renderer, theme, presence);
     }
 }
 

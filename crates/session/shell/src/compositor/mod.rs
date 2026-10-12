@@ -20,8 +20,6 @@ pub mod agent_seats;
 mod audio_capture;
 pub mod backend;
 #[cfg(target_os = "linux")]
-pub mod bridge;
-#[cfg(target_os = "linux")]
 pub mod capture;
 #[cfg(target_os = "linux")]
 pub mod chooser_service;

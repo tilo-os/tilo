@@ -5084,13 +5084,8 @@ impl Widget for PdfApp {
         taffy.fill_leaf(node_map, self)
     }
 
-    #[allow(
-        clippy::unwrap_used,
-        reason = "Widget::apply_layout is infallible by trait contract; the node was created by this widget's own build_layout in the same tree, so a lookup failure means the taffy tree is already corrupted and there is no meaningful layout to fall back to"
-    )]
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).unwrap();
-        self.rect = ui::widget::placed(l, origin);
+        self.rect = ui::widget::layout_rect(taffy, node, origin);
         self.reconcile_overlay();
         self.recompute_regions();
         self.sync_viewport_frame();
@@ -8658,7 +8653,6 @@ mod tests {
         eprintln!("phase first_frame_defers_text_extraction");
         'phase: {
             use std::collections::HashMap;
-            use ui::permissions::PermissionContext;
             use ui::presence::PresenceCtx;
             use ui::text_render::TextRenderer;
             use ui::theme::Theme;
@@ -8712,13 +8706,12 @@ mod tests {
                     .unwrap();
                 app.apply_layout(&taffy, child, Point::ORIGIN);
                 let mut scene = Scene::new();
-                app.draw_with_presence(
+                app.draw(
                     &mut scene,
                     Affine::IDENTITY,
                     tr,
                     &theme,
                     &PresenceCtx::empty(),
-                    &PermissionContext::permissive(),
                 );
             };
 
@@ -8755,7 +8748,6 @@ mod tests {
         eprintln!("phase open_rasterises_only_the_budgeted_pages_on_the_first_frame");
         'phase: {
             use std::collections::HashMap;
-            use ui::permissions::PermissionContext;
             use ui::presence::PresenceCtx;
             use ui::text_render::TextRenderer;
             use ui::theme::Theme;
@@ -8805,13 +8797,12 @@ mod tests {
                     .unwrap();
                 app.apply_layout(&taffy, child, Point::ORIGIN);
                 let mut scene = Scene::new();
-                app.draw_with_presence(
+                app.draw(
                     &mut scene,
                     Affine::IDENTITY,
                     tr,
                     &theme,
                     &PresenceCtx::empty(),
-                    &PermissionContext::permissive(),
                 );
             };
 

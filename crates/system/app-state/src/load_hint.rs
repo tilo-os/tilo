@@ -1,5 +1,5 @@
 //! The change hashes of a saved document, kept beside it so loading it again
-//! need not rebuild and hash every change to learn them (TIL-762).
+//! need not rebuild and hash every change to learn them.
 //!
 //! A compacted Automerge document stores each change's metadata but not its
 //! hash, so a plain load re-encodes every change from the op set and hashes
@@ -12,14 +12,19 @@
 //! - it names the exact document chunk it was made for by BLAKE3 digest, so
 //!   it is used for those bytes or not at all (changes appended after the
 //!   chunk keep it valid; a replacement makes it stale and ignored);
-//! - only [`DocWriter`](crate::DocWriter) makes one, from the document it
-//!   holds, whose changes were verified when they entered it;
+//! - only the writer that saved those bytes makes one ([`DocWriter`]'s full
+//!   saves and [`DocStore::save`](crate::DocStore::save) as the document's
+//!   primary writer, and the compositor's own desktop document),
+//!   from the document it holds, whose changes were verified when they
+//!   entered it;
 //! - the store keeps it on this device beside the record and never syncs or
 //!   receives it: documents and changes from peers are always rebuilt and
 //!   verified in full.
 //!
 //! Automerge still checks a hint is one distinct hash per change whose
 //! dependency-free tips are the document's heads, and ignores it otherwise.
+//!
+//! [`DocWriter`]: crate::DocWriter
 
 use automerge::ChangeHash;
 
@@ -33,14 +38,22 @@ const DIGEST: usize = 32;
 const HASH: usize = 32;
 
 /// Below this a document loads in about a millisecond, and the hint (32
-/// bytes per change) would not pay for the file beside it.
-pub(crate) const MIN_HINTED_BYTES: usize = 64 * 1024;
+/// bytes per change) would not pay for the file beside it...
+pub const MIN_HINTED_BYTES: usize = 64 * 1024;
+
+/// ...unless it has at least this many changes. Loading costs per change as
+/// well as per byte, and a document of many small changes compresses to
+/// about a byte per change: the desktop document, one change per workspace
+/// switch, is 37 KB at 33,000 changes and takes 25 ms to load, 8 ms with a
+/// hint (M5 Max). At this count a load takes about 3 ms.
+pub const MIN_HINTED_CHANGES: usize = 4096;
 
 /// The hint for `saved` (bytes [`automerge::AutoCommit::save`] returned)
 /// listing `hashes` (its `change_hashes()` at that save), or `None` for a
 /// document too small to need one.
-pub(crate) fn encode(saved: &[u8], hashes: &[ChangeHash]) -> Option<Vec<u8>> {
-    if saved.len() < MIN_HINTED_BYTES {
+#[must_use]
+pub fn encode(saved: &[u8], hashes: &[ChangeHash]) -> Option<Vec<u8>> {
+    if saved.len() < MIN_HINTED_BYTES && hashes.len() < MIN_HINTED_CHANGES {
         return None;
     }
     let chunk = leading_document_chunk(saved)?;
@@ -60,7 +73,8 @@ pub(crate) fn encode(saved: &[u8], hashes: &[ChangeHash]) -> Option<Vec<u8>> {
 
 /// The change hashes `hint` lists, when it was made for the document chunk
 /// `stored` starts with; `None` for any other bytes or a malformed hint.
-pub(crate) fn hashes_for(hint: &[u8], stored: &[u8]) -> Option<Vec<ChangeHash>> {
+#[must_use]
+pub fn hashes_for(hint: &[u8], stored: &[u8]) -> Option<Vec<ChangeHash>> {
     let rest = hint.strip_prefix(MAGIC.as_slice())?;
     let (digest, hashes) = rest.split_at_checked(DIGEST)?;
     if !hashes.len().is_multiple_of(HASH) {
@@ -178,5 +192,21 @@ mod tests {
         let hashes = doc.committed_document().change_hashes().to_vec();
         assert!(saved.len() < MIN_HINTED_BYTES);
         assert_eq!(encode(&saved, &hashes), None);
+    }
+
+    #[test]
+    fn a_small_document_of_many_changes_gets_a_hint() {
+        // The desktop document's shape: one small change per workspace switch.
+        let mut doc = AutoCommit::new();
+        for i in 0..MIN_HINTED_CHANGES {
+            doc.put(ROOT, "active", u64::try_from(i % 6).unwrap())
+                .unwrap();
+            doc.commit();
+        }
+        let saved = doc.save();
+        let hashes = doc.committed_document().change_hashes().to_vec();
+        assert!(saved.len() < MIN_HINTED_BYTES, "{} bytes", saved.len());
+        let hint = encode(&saved, &hashes).expect("many changes are hinted");
+        assert_eq!(hashes_for(&hint, &saved), Some(hashes));
     }
 }

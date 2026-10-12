@@ -56,15 +56,25 @@ needed_absent = ["libgst", "libglib-2.0", "libgobject-2.0", "libgio-2.0"]
 # 90662 against 90776); aarch64 213053464 -> 188160992 bytes and 7380992 ->
 # 6615040 (90371 against 90511). Both together, Release / apps 90940:
 # 204606408 / 188035240 bytes, 6868992 / 6598656 bytes dirtied per process,
-# 10049 / 10076 symbol relocations.
+# 10049 / 10076 symbol relocations. Typst (62 crates and typst-assets' font
+# table) then moved into its own engine library beside the runtime,
+# libtilo_typst_engine.so, which only Typst Editor loads: aarch64
+# 188908456 -> 155133008 bytes, 6639616 -> 5722112 bytes dirtied per process
+# (Release / apps 94959 against 94951); x86_64 205836952 -> 170549744 bytes,
+# 6897664 -> 5955584 (same runs). Spotify playback (librespot, its
+# decoders and protobuf stack: 43 crates) then moved into
+# libtilo_spotify_engine.so, which only Music loads (Release / apps 98251
+# against 98250): x86_64 170118536 -> 158774624 bytes, 5931008 -> 5533696
+# bytes dirtied per process, 9196 -> 8773 symbol relocations; aarch64
+# 154733808 -> 143671024, 5709824 -> 5308416, 9219 -> 8793.
 [runtime.x86_64]
-bytes = 206897152
-relocation_bytes = 393216
-relocated_bytes = 6946816
-symbol_relocations = 10176
+bytes = 160366592
+relocation_bytes = 327680
+relocated_bytes = 5636096
+symbol_relocations = 8896
 
 [runtime.aarch64]
-bytes = 190054400
-relocation_bytes = 393216
-relocated_bytes = 6684672
-symbol_relocations = 10240
+bytes = 145162240
+relocation_bytes = 327680
+relocated_bytes = 5373952
+symbol_relocations = 8896

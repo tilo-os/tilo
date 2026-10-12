@@ -221,7 +221,7 @@ fn marks_from_span_style(style: &str) -> Vec<(&'static str, String)> {
                 }
             }
             "font-family" => {
-                let g = generic_font_family(val);
+                let g = crate::generic_font_family(val);
                 out.push(("fontFamily", g.to_string()));
             }
             _ => {}
@@ -247,21 +247,6 @@ fn normalize_css_color(v: &str) -> String {
         "white" => "#ffffff".into(),
         "yellow" => "#ffff00".into(),
         _ => t.to_string(),
-    }
-}
-
-fn generic_font_family(val: &str) -> &'static str {
-    let v = val.to_ascii_lowercase();
-    if v.contains("mono") || v.contains("courier") || v.contains("consol") {
-        "mono"
-    } else if (v.contains("serif") && !v.contains("sans"))
-        || v.contains("times")
-        || v.contains("georgia")
-        || v.contains("garamond")
-    {
-        "serif"
-    } else {
-        "sans"
     }
 }
 

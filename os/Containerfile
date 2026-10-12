@@ -378,6 +378,9 @@ COPY vendor /build/vendor
 COPY dist /build/dist
 COPY docs/developers/tasks /build/docs/developers/tasks
 COPY tools/ci/rustc-thin-app-wrapper.sh tools/ci/runtime-dylib-lazy-link.py /build/tools/ci/
+# build-thin-apps.sh routes a cached build through this dispatcher
+# (RUSTC_WRAPPER), which finds the size wrapper beside it in tools/ci/.
+COPY tools/ci/thin-app/sccache /build/tools/ci/thin-app/sccache
 COPY tools/policy/app_portability_rules.toml /build/tools/policy/app_portability_rules.toml
 COPY tools/policy/app_capability_usage.toml /build/tools/policy/app_capability_usage.toml
 COPY tools/protocols/airdrop_sender.py /build/tools/protocols/airdrop_sender.py
@@ -722,7 +725,7 @@ RUN --mount=type=cache,target=/build/.cargo-home \
     # (default collection), the Browser included; its engine is the separate
     # runtime built at the end of this step.
     && if [ "${TILO_WITH_BROWSER}" = "0" ]; then THIN_EXCLUDES="browser"; else THIN_EXCLUDES=""; fi \
-    && APP_FEATURES="music/audio,music/live,video-player/decode,camera/live-capture,tube/live,tube/media,tube/grayjay-sync,mail/live,disks/live,video-editor/decode,video-editor/gst" \
+    && APP_FEATURES="music/audio,music/live,music/runtime-engine,video-player/decode,camera/live-capture,tube/live,tube/media,tube/grayjay-sync,mail/live,disks/live,video-editor/decode,video-editor/gst,typst-editor/runtime-engine" \
     && if [ "${TILO_PREBUILT_DESKTOP}" = 1 ]; then \
          DESKTOP_RELEASE_ARGS=""; \
        else \
@@ -851,7 +854,10 @@ RUN --mount=type=cache,target=/build/.cargo-home \
          && cp /build/os/app-runtime/runtime-bundle-publisher.hex /out/ \
          && RUNTIME_DYLIB="$(find /usr/lib/tilo-runtime -name libruntime_dylib.so -print -quit)" \
          && [ -n "$RUNTIME_DYLIB" ] \
-         && cp "$RUNTIME_DYLIB" /out/libruntime_dylib.so; \
+         && cp "$RUNTIME_DYLIB" /out/libruntime_dylib.so \
+         && find "$(dirname "$RUNTIME_DYLIB")" -maxdepth 1 -name 'libtilo_*_engine.so' -printf '%f\n' \
+              | sort > /out/runtime-engines \
+         && while IFS= read -r engine; do cp "$(dirname "$RUNTIME_DYLIB")/$engine" /out/; done < /out/runtime-engines; \
        else \
          if [ -n "$thin_pid" ]; then \
            thin_status=0; wait "$thin_pid" || thin_status=$?; \
@@ -868,6 +874,10 @@ RUN --mount=type=cache,target=/build/.cargo-home \
               [ -z "$b" ] || cp "target/thin-app/$b" /out/thin-apps/; \
             done \
          && cp target/thin-app/libruntime_dylib.so /out/ \
+         # The runtime engines: libraries one app maps beside the
+         # runtime, which build-thin-apps.sh lists; signed into the bundle below.
+         && cp target/thin-app/runtime-engines /out/runtime-engines \
+         && while IFS= read -r engine; do cp "target/thin-app/$engine" /out/; done < /out/runtime-engines \
          && LIBSTD="$(find "$(rustc --print target-libdir)" -maxdepth 1 -name 'libstd-*.so' -print -quit)" \
          && [ -n "${LIBSTD}" ] \
          && cp "${LIBSTD}" /out/; \
@@ -910,7 +920,8 @@ RUN --mount=type=cache,target=/build/.cargo-home \
 RUN /build/os/scripts/verify-elf-hardening.sh /out \
     && { [ "${TILO_PREBUILT_APPS}" = 1 ] \
          || /build/os/scripts/verify-elf-hardening.sh /out/thin-apps; } \
-    && /build/os/scripts/verify-elf-hardening.sh /out/libruntime_dylib.so
+    && /build/os/scripts/verify-elf-hardening.sh /out/libruntime_dylib.so \
+         $(sed 's|^|/out/|' /out/runtime-engines)
 
 # ---- Bake a signed runtime bundle from THIS image's rootfs -----------------
 # Runs at image-build time so the produced OS image ships a pre-mounted
@@ -984,8 +995,10 @@ RUN --mount=type=bind,source=os/scripts/verify-runtime-bundle-closure.sh,target=
           --identity /out/runtime-bundle-identity.json \
           --out-root /usr/lib/tilo-runtime \
           --version-out /out/runtime-version); \
+        engines=(); \
+        while IFS= read -r engine; do engines+=("/out/$engine"); args+=(--include "/out/$engine"); done </out/runtime-engines; \
         dependencies="$(python3 /usr/local/libexec/tilo-collect-runtime-dependencies.py \
-          --library-dir /out /out/libruntime_dylib.so /out/thin-apps/*)"; \
+          --library-dir /out /out/libruntime_dylib.so "${engines[@]}" /out/thin-apps/*)"; \
         while IFS= read -r dependency; do args+=(--include "$dependency"); done <<<"$dependencies"; \
         "${args[@]}"' bundle "${RUST_LIBSTD}" \
       && /out/tilo-runtime-bundle key pubkey \
@@ -1055,7 +1068,19 @@ RUN --mount=type=secret,id=browser_runtime_identity \
 # Packages take the ordinary route — `tilo-app-package pack` then `tilo-install install`
 # — so a preinstalled app is described exactly as a user-installed one is, and
 # the launcher grants it exactly the same thing. See os/scripts/pack-apps.sh.
-RUN export TILO_IMAGE_BUILD=1 \
+#
+# Apps compiled here are signed by the identity in the `app_publisher_identity`
+# secret when the build is given one (Build / OS dev: DEV_APP_PUBLISHER_IDENTITY),
+# else by one minted for this build. Ed25519 signs deterministically, so with
+# the one identity the same binaries give the same package ids, payload paths
+# and cohort archives in every build, and an update re-sends only the apps
+# that changed. The key is in no trust list: see the store's COPY
+# below. Secrets are not part of BuildKit's cache key and never enter a layer.
+RUN --mount=type=secret,id=app_publisher_identity \
+    export TILO_IMAGE_BUILD=1 \
+    && if [ -s /run/secrets/app_publisher_identity ]; then \
+         export IDENTITY_JSON=/run/secrets/app_publisher_identity; \
+       fi \
     && BIN_DIR=/out/thin-apps \
     TAPP_DIR=/out/prebuilt-apps \
     COHORT_TAPP_DIR=/usr/share/tilo-apps/cohort \

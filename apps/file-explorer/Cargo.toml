@@ -65,6 +65,9 @@ tar.workspace = true
 flate2.workspace = true
 # Home, config, cache and the localized user folders.
 tilo-paths = { path = "../../crates/platform/tilo-paths" }
+# Change notification for the open directory (inotify, FSEvents), so an idle
+# window re-reads nothing on a timer.
+tilo-files = { path = "../../crates/platform/tilo-files", features = ["watch"] }
 tracing.workspace = true
 tracing-subscriber.workspace = true
 serde.workspace = true

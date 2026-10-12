@@ -79,7 +79,7 @@ use taffy::NodeId;
 use vello::kurbo::Rect;
 use winit::dpi::PhysicalPosition;
 use winit::event::{ElementState, Modifiers, MouseButton, MouseScrollDelta, WindowEvent};
-use winit::keyboard::{Key, KeyCode, ModifiersState, NamedKey, PhysicalKey, SmolStr};
+use winit::keyboard::{Key, ModifiersState, NamedKey, PhysicalKey, SmolStr};
 
 use crate::compositor::accessibility::{NativeAccessibility, Request as AccessibilityRequest};
 use crate::compositor::backend::drm::runtime::{DirectTouchDown, DirectTouchOwnership};
@@ -730,9 +730,9 @@ struct LockClock {
 
 impl LockClock {
     fn now() -> Self {
-        let now = chrono::Local::now();
+        let now = ui::clock::local_now();
         Self {
-            clock: now.format("%H:%M").to_string(),
+            clock: ui::clock::time_of_day(&now),
             date: now.format("%A, %B %-d").to_string(),
         }
     }
@@ -4518,9 +4518,16 @@ fn write_snapshot_png(
                 }
             }
         }
-        let Some(rgba) = slot.as_mut().map(|renderer| renderer.render_rgba(&scene)) else {
+        // A shot is one render with no next frame to repair it, so it waits
+        // out Vello growing its buffers: one that did not fit drops the paths
+        // encoded last, and the scene draws every display in turn, so the
+        // second display came back empty while the first looked whole.
+        let Some(rendered) = slot.as_mut().map(|renderer| {
+            renderer.try_render_resilient(&scene, vello::peniko::Color::TRANSPARENT)
+        }) else {
             return Err("no offscreen renderer".to_string());
         };
+        let rgba = rendered?;
         // `rgba` is now an owned buffer with no tie to the renderer, so the
         // mutex guard can go before the encode/write work below.
         drop(slot);
@@ -5707,112 +5714,13 @@ fn portal_capture_event(
             };
             Some(CapturedInput::Scroll { dx, dy })
         }
-        WindowEvent::KeyboardInput { event, .. } => {
-            keycode_for_eis(event.physical_key).map(|keycode| CapturedInput::Keyboard {
+        WindowEvent::KeyboardInput { event, .. } => ui::evdev::from_physical(event.physical_key)
+            .map(|keycode| CapturedInput::Keyboard {
                 keycode,
                 pressed: event.state == ElementState::Pressed,
-            })
-        }
+            }),
         _ => None,
     }
-}
-
-/// USB HID / evdev keycodes for keys whose physical positions winit exposes.
-/// This deliberately maps physical keys, never characters, so a non-US layout
-/// still sees the correct key event over EIS.
-fn keycode_for_eis(key: PhysicalKey) -> Option<u32> {
-    let PhysicalKey::Code(code) = key else {
-        return None;
-    };
-    Some(match code {
-        KeyCode::Escape => 1,
-        KeyCode::Digit1 => 2,
-        KeyCode::Digit2 => 3,
-        KeyCode::Digit3 => 4,
-        KeyCode::Digit4 => 5,
-        KeyCode::Digit5 => 6,
-        KeyCode::Digit6 => 7,
-        KeyCode::Digit7 => 8,
-        KeyCode::Digit8 => 9,
-        KeyCode::Digit9 => 10,
-        KeyCode::Digit0 => 11,
-        KeyCode::Minus => 12,
-        KeyCode::Equal => 13,
-        KeyCode::Backspace => 14,
-        KeyCode::Tab => 15,
-        KeyCode::KeyQ => 16,
-        KeyCode::KeyW => 17,
-        KeyCode::KeyE => 18,
-        KeyCode::KeyR => 19,
-        KeyCode::KeyT => 20,
-        KeyCode::KeyY => 21,
-        KeyCode::KeyU => 22,
-        KeyCode::KeyI => 23,
-        KeyCode::KeyO => 24,
-        KeyCode::KeyP => 25,
-        KeyCode::BracketLeft => 26,
-        KeyCode::BracketRight => 27,
-        KeyCode::Enter => 28,
-        KeyCode::ControlLeft => 29,
-        KeyCode::KeyA => 30,
-        KeyCode::KeyS => 31,
-        KeyCode::KeyD => 32,
-        KeyCode::KeyF => 33,
-        KeyCode::KeyG => 34,
-        KeyCode::KeyH => 35,
-        KeyCode::KeyJ => 36,
-        KeyCode::KeyK => 37,
-        KeyCode::KeyL => 38,
-        KeyCode::Semicolon => 39,
-        KeyCode::Quote => 40,
-        KeyCode::Backquote => 41,
-        KeyCode::ShiftLeft => 42,
-        KeyCode::Backslash => 43,
-        KeyCode::KeyZ => 44,
-        KeyCode::KeyX => 45,
-        KeyCode::KeyC => 46,
-        KeyCode::KeyV => 47,
-        KeyCode::KeyB => 48,
-        KeyCode::KeyN => 49,
-        KeyCode::KeyM => 50,
-        KeyCode::Comma => 51,
-        KeyCode::Period => 52,
-        KeyCode::Slash => 53,
-        KeyCode::ShiftRight => 54,
-        KeyCode::AltLeft => 56,
-        KeyCode::Space => 57,
-        KeyCode::CapsLock => 58,
-        KeyCode::F1 => 59,
-        KeyCode::F2 => 60,
-        KeyCode::F3 => 61,
-        KeyCode::F4 => 62,
-        KeyCode::F5 => 63,
-        KeyCode::F6 => 64,
-        KeyCode::F7 => 65,
-        KeyCode::F8 => 66,
-        KeyCode::F9 => 67,
-        KeyCode::F10 => 68,
-        KeyCode::NumLock => 69,
-        KeyCode::ScrollLock => 70,
-        KeyCode::F11 => 87,
-        KeyCode::F12 => 88,
-        KeyCode::ControlRight => 97,
-        KeyCode::AltRight => 100,
-        KeyCode::Home => 102,
-        KeyCode::ArrowUp => 103,
-        KeyCode::PageUp => 104,
-        KeyCode::ArrowLeft => 105,
-        KeyCode::ArrowRight => 106,
-        KeyCode::End => 107,
-        KeyCode::ArrowDown => 108,
-        KeyCode::PageDown => 109,
-        KeyCode::Insert => 110,
-        KeyCode::Delete => 111,
-        KeyCode::SuperLeft => 125,
-        KeyCode::SuperRight => 126,
-        KeyCode::ContextMenu => 127,
-        _ => return None,
-    })
 }
 
 #[derive(Clone, Debug)]
@@ -6498,7 +6406,7 @@ fn forward_spatial_window_event(
             }
         }
         WindowEvent::KeyboardInput { event, .. } => {
-            let Some(keycode) = keycode_for_eis(event.physical_key) else {
+            let Some(keycode) = ui::evdev::from_physical(event.physical_key) else {
                 return true;
             };
             crate::shell::device_fabric::FabricInputEvent::Key {
@@ -7362,9 +7270,7 @@ fn install_session_peer_sync(
         .set_peer_sync_bridge(std::rc::Rc::new(move |req| {
             let active = tree_handle.read().desktop.active;
             match req {
-                PeerSyncRequest::IssueInvite => bridge_net
-                    .issue_invite(active, INVITE_EXPIRY_SECONDS)
-                    .map(crate::shell::overlay_host::PeerSyncResponse::Message),
+                PeerSyncRequest::PrepareInvitation => Ok(bridge_net.prepare_invitation()),
                 PeerSyncRequest::ExportIdentity => bridge_net
                     .person_identity_card(active)
                     .map(crate::shell::overlay_host::PeerSyncResponse::Message),
@@ -10330,7 +10236,7 @@ pub fn run() {
                             }
                             Some(crate::shell::media_keys::Response::OpenDisplayModes) => {
                                 frame_builder.with_chrome(|st| {
-                                    st.overlays.projection = true;
+                                    st.open_projection();
                                     st.bump();
                                 });
                                 session_changed = true;
@@ -11697,26 +11603,7 @@ pub fn run() {
 
         // Per-output HiDPI: tell each client the scale of its current display.
         // Every tick, since a window dragged to another monitor's density is otherwise unobserved.
-        {
-            let mut placements: Vec<(u64, (f64, f64))> = state
-                .client_input
-                .placements()
-                .filter_map(|(surface_id, group)| {
-                    let rect = frame_builder.host().active_tile_rect(group)?;
-                    Some((surface_id, (rect.x0, rect.y0)))
-                })
-                .collect();
-            placements.extend(state.floating_toplevels.iter().map(|surface| {
-                let center = surface.content_rect.center();
-                (surface.surface_id, (center.x, center.y))
-            }));
-            placements.extend(state.output_presentation_placements());
-            placements.extend(transient_surfaces.iter().map(|(surface_id, rect)| {
-                let center = rect.center();
-                (*surface_id, (center.x, center.y))
-            }));
-            state.update_surface_scales(&placements);
-        }
+        push_surface_scales(&mut state, &frame_builder, &transient_surfaces);
         // An output change has already installed the backend's new geometry,
         // but the frame builder still exposes the previous frame's tile rects
         // until `relayout` below. Diffing that mismatched pair would send a
@@ -12576,13 +12463,14 @@ pub fn run() {
             frame_builder.relayout();
             frame_builder.reconcile_native_focus(&mut test_control_ctx.focus);
             // `relayout` publishes a new tile rect (for a tab switch, move,
-            // fullscreen or hotplug) immediately before painting it. Reconcile
-            // here as well as above so the client gets the output transition in
-            // the same frame rather than one idle tick later.
-            reconcile_surface_output_memberships(
+            // fullscreen or hotplug) immediately before painting it. Publish it
+            // here as well as above so the client gets the output transition and
+            // its new scale in the same frame, ahead of the configure below.
+            publish_layout_to_clients(
                 &mut surface_output_memberships,
-                &state,
+                &mut state,
                 &frame_builder,
+                &transient_surfaces,
                 backend.outputs(),
                 &output_globals,
             );
@@ -13143,10 +13031,12 @@ pub fn run() {
             // event hit-tests post-input rects, not the pre-overlay tree. Layout is ~0.01ms.
             frame_builder.relayout();
             frame_builder.reconcile_native_focus(&mut test_control_ctx.focus);
-            reconcile_surface_output_memberships(
+            // The post-dispatch `flush_configures` below sends this layout's sizes.
+            publish_layout_to_clients(
                 &mut surface_output_memberships,
-                &state,
+                &mut state,
                 &frame_builder,
+                &transient_surfaces,
                 backend.outputs(),
                 &output_globals,
             );
@@ -13927,7 +13817,8 @@ mod tests {
 
     #[test]
     fn pointer_hover_preserves_touch_keyboard_until_pointer_activation() {
-        use crate::compositor::input_method::{OskInput, OskPreference, osk_wanted};
+        use crate::compositor::input_method::{OskInput, osk_wanted};
+        use settings_store::accessibility::OnScreenKeyboard;
 
         let mut ctx = TestControlCtx::new();
         let mut fb = FrameBuilder::new((800, 600));
@@ -13942,17 +13833,20 @@ mod tests {
             &mut fb,
         );
         assert!(osk_wanted(
-            OskPreference::Auto,
+            OnScreenKeyboard::Auto,
             OskInput::from_environment(&ctx.input)
         ));
         ctx.note_injected_input(&PlannedAction::CursorMoved { x: 110.0, y: 100.0 }, &mut fb);
         assert!(
-            osk_wanted(OskPreference::Auto, OskInput::from_environment(&ctx.input)),
+            osk_wanted(
+                OnScreenKeyboard::Auto,
+                OskInput::from_environment(&ctx.input)
+            ),
             "incidental pointer hover must not dismiss a touch-started keyboard"
         );
         ctx.note_injected_input(&PlannedAction::MouseLeftButton { pressed: true }, &mut fb);
         assert!(!osk_wanted(
-            OskPreference::Auto,
+            OnScreenKeyboard::Auto,
             OskInput::from_environment(&ctx.input)
         ));
     }
@@ -15773,6 +15667,25 @@ mod tests {
             );
         }
 
+        fn assert_waiting_after_wake(
+            &mut self,
+            conn: &mut TestControlConn,
+            reader: &mut BufReader<UnixStream>,
+            settle_by: Instant,
+        ) {
+            self.event_loop
+                .dispatch(Some(Duration::ZERO), &mut self.state)
+                .expect("dispatch");
+            self.pump(conn);
+            assert_socket_pending(reader);
+            assert!(!conn.closed, "the original connection must remain open");
+            assert_eq!(
+                control_invocation_deadline(std::slice::from_ref(conn), Instant::now()),
+                Some(settle_by),
+                "an early wake must preserve the original settle deadline"
+            );
+        }
+
         fn wait_for_invoke_response(
             &mut self,
             conn: &mut TestControlConn,
@@ -15909,15 +15822,20 @@ mod tests {
 
     #[test]
     fn wait_ms_answers_the_settled_outcome_in_one_call() {
-        wait_ms_answer_with_loop_wake(false);
+        wait_ms_answer_with_loop_wake(false, false);
     }
 
     #[test]
     fn wait_ms_tolerates_an_unrelated_wake_before_the_completion_watch() {
-        wait_ms_answer_with_loop_wake(true);
+        wait_ms_answer_with_loop_wake(true, false);
     }
 
-    fn wait_ms_answer_with_loop_wake(unrelated_wake: bool) {
+    #[test]
+    fn wait_ms_tolerates_the_status_index_wake_before_job_progress() {
+        wait_ms_answer_with_loop_wake(false, true);
+    }
+
+    fn wait_ms_answer_with_loop_wake(unrelated_wake: bool, early_index_wake: bool) {
         use std::io::Write as _;
 
         let mut fixture = ControlFixture::new();
@@ -15937,7 +15855,7 @@ mod tests {
                 runs: std::rc::Rc::clone(&runs),
                 receipt: crate::shell::search::ActionReceipt {
                     broker_invocation_id: Some(job),
-                    update: accepted,
+                    update: accepted.clone(),
                 },
             }),
         );
@@ -15951,21 +15869,38 @@ mod tests {
         writer
             .write_all(format!("{invoke}\n").as_bytes())
             .expect("invoke");
+        let deadline = Instant::now()
+            .checked_add(Duration::from_secs(10))
+            .expect("observation deadline");
         fixture.pump(&mut conn);
         assert_socket_pending(&mut reader);
-        fixture
-            .event_loop
-            .dispatch(Some(Duration::ZERO), &mut fixture.state)
-            .expect("dispatch");
-        assert!(!woken.get(), "nothing has moved the job yet");
+        let settle_by = control_invocation_deadline(std::slice::from_ref(&conn), Instant::now())
+            .expect("the original request has a settle deadline");
+        if early_index_wake {
+            // Resolving the status starts the production action index worker.
+            // Observe its ping before recording any job progress, rather than
+            // relying on which thread wins the initial zero-time dispatch.
+            assert!(park_until_woken(
+                &mut fixture.event_loop,
+                &mut fixture.state,
+                &woken,
+                deadline.saturating_duration_since(Instant::now()),
+            ));
+        }
+        // Index readiness shares the invocation loop ping. A wake is a reason
+        // to serve the original request again, not proof that its job moved.
+        fixture.assert_waiting_after_wake(&mut conn, &mut reader, settle_by);
+        assert_eq!(
+            broker.status_for_actor(job, &actor),
+            Some(accepted),
+            "index readiness must not change the job's accepted receipt"
+        );
+        woken.set(false);
 
         let held = unrelated_wake.then(hold_session_workers);
         if held.is_some() {
             wake();
         }
-        let deadline = Instant::now()
-            .checked_add(Duration::from_secs(10))
-            .expect("observation deadline");
         broker.record_completion_for_test(
             job,
             &actor,
@@ -18707,6 +18642,66 @@ fn send_surface_output_changes(
     changes: Vec<SurfaceOutputChange>,
 ) {
     output_globals.send_surface_changes(&state.surface_handles, changes);
+}
+
+/// Per-output scale: push each placed client surface the preferred
+/// `wp_fractional_scale` of the display it is on — a tiled toplevel by its
+/// group's active tile, floating and transient surfaces by their centre.
+///
+/// Reads the frame builder's current tile rects, so run it again after every
+/// `relayout` that precedes a configure (see [`publish_layout_to_clients`]).
+/// Only changed scales reach the wire.
+pub fn push_surface_scales(
+    state: &mut State,
+    frame_builder: &FrameBuilder,
+    transient_surfaces: &[(u64, Rect)],
+) {
+    let mut placements: Vec<(u64, (f64, f64))> = state
+        .client_input
+        .placements()
+        .filter_map(|(surface_id, group)| {
+            let rect = frame_builder.host().active_tile_rect(group)?;
+            Some((surface_id, (rect.x0, rect.y0)))
+        })
+        .collect();
+    placements.extend(state.floating_toplevels.iter().map(|surface| {
+        let center = surface.content_rect.center();
+        (surface.surface_id, (center.x, center.y))
+    }));
+    placements.extend(state.output_presentation_placements());
+    placements.extend(transient_surfaces.iter().map(|(surface_id, rect)| {
+        let center = rect.center();
+        (*surface_id, (center.x, center.y))
+    }));
+    state.update_surface_scales(&placements);
+}
+
+/// Tell clients what a fresh `relayout` changed about where they are —
+/// the outputs each surface entered or left, and the scale of the one it
+/// now sits on — before `foreign::flush_configures` sends the sizes that
+/// layout produced.
+///
+/// The order is the contract: a client that sizes its buffer from a
+/// configure (xwayland-satellite sizes the X window as the configured size
+/// times the scale it holds at that moment) must already have the new
+/// output's scale, or it renders at the previous output's scale until its
+/// next configure.
+pub fn publish_layout_to_clients(
+    memberships: &mut SurfaceOutputMemberships,
+    state: &mut State,
+    frame_builder: &FrameBuilder,
+    transient_surfaces: &[(u64, Rect)],
+    outputs: &[Output],
+    output_globals: &output_globals::OutputGlobals,
+) {
+    reconcile_surface_output_memberships(
+        memberships,
+        state,
+        frame_builder,
+        outputs,
+        output_globals,
+    );
+    push_surface_scales(state, frame_builder, transient_surfaces);
 }
 
 fn reconcile_surface_output_memberships(
