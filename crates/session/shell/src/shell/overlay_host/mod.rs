@@ -979,6 +979,12 @@ pub struct PannedSections {
     /// Every strip with a row on screen, top to bottom, each drawn on its
     /// own in canvas coordinates, with the surfaces floating over it.
     pub strips: Vec<(StripId, Scene)>,
+    /// The damage parts each of `strips` marked, in the same order: each
+    /// window group is one ([`ui::widget::GroupRow::draw_apart`]),
+    /// so a presenter keeping a strip's pixels rasterises only where a
+    /// group's drawing changed. `None` for a strip whose parts were not
+    /// well nested.
+    pub strip_parts: Vec<Option<ui::scene_parts::SectionParts>>,
     /// The docked wheel, drawn on its own.
     pub wheel: Option<PannedWheel>,
     /// A strip's floating surfaces drew something. On screen they are drawn
@@ -1762,13 +1768,17 @@ impl ShellOverlayHost {
             // A blurred surface drawn into a strip is recorded as drawn into
             // the workspace, so the frame producer sees it.
             ui::backdrop::layer_scene(&scene, backdrop_layer::WORKSPACE);
-            // SAFETY: as above.
-            unsafe {
-                let row = &mut *row;
-                row.draw_apart(&mut scene, text_renderer, theme, presence);
-                row.set_drawn_apart(false);
-            }
+            // Each window group is a damage part of the strip's drawing.
+            let ((), parts) = ui::scene_parts::record(&mut scene, |scene| {
+                // SAFETY: as above.
+                unsafe {
+                    let row = &mut *row;
+                    row.draw_apart(scene, text_renderer, theme, presence);
+                    row.set_drawn_apart(false);
+                }
+            });
             panned.strips.push((strip, scene));
+            panned.strip_parts.push(parts);
         }
         ui::backdrop::layer_scene(workspace, backdrop_layer::WORKSPACE);
         if unbaked {
