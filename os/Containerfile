@@ -363,6 +363,7 @@ COPY tools/test-assets.py /build/tools/test-assets.py
 COPY tools/font-catalog.py /build/tools/font-catalog.py
 COPY os/legacy-guest-snapshot.env /build/os/legacy-guest-snapshot.env
 COPY scripts/browser/build-host.py scripts/browser/cef-lock.json /build/scripts/browser/
+COPY scripts/browser/fixtures/https-functional.json /build/scripts/browser/fixtures/https-functional.json
 COPY \
     os/scripts/cargo-freshness.sh \
     os/scripts/build-thin-apps.sh \

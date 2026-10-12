@@ -638,6 +638,12 @@ readers = [
 ]
 
 [[cargo]]
+package = "browser"
+# The HTTPS acceptance example reads its target site and links from the shared fixture.
+inputs = ["scripts/browser/fixtures/https-functional.json"]
+readers = ["apps/browser/examples/native_navigation_completion.rs"]
+
+[[cargo]]
 package = "greeter"
 # The greeter offers exactly the sessions the image ships.
 inputs = ["os/usr/share/wayland-sessions/*.desktop"]
