@@ -3,12 +3,11 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 static ROOT: OnceLock<PathBuf> = OnceLock::new();
 static PRIVATE_ROOT: OnceLock<PathBuf> = OnceLock::new();
-pub const PRIVATE_ROOT_PREFIX: &str = "tilo-browser-private-";
-pub const PRIVATE_ROOT_MARKER: &str = ".tilo-private-root-v1";
-pub const PRIVATE_ROOT_MARKER_CONTENT: &str = "tilo-browser-owned-private-root-v1\n";
-pub const PRIVATE_ROOT_LOCK: &str = ".tilo-private-root.lock";
+use ui::webview::chromium::{
+    PRIVATE_ROOT_HELPER, PRIVATE_ROOT_LOCK, PRIVATE_ROOT_MARKER, PRIVATE_ROOT_MARKER_CONTENT,
+    PRIVATE_ROOT_PREFIX, is_owned_private_root,
+};
 const PRIVATE_ROOT_OWNER: &str = ".tilo-private-owner-pid";
-const PRIVATE_ROOT_HELPER: &str = ".tilo-private-helper-pid";
 /// Configure the optional browser data root once for this process.
 ///
 /// # Errors
@@ -118,20 +117,6 @@ pub fn allocate_private_root() -> Result<PathBuf, String> {
         }
     }
     Err("Could not allocate a unique private browser root".into())
-}
-
-pub fn is_owned_private_root(root: &Path) -> bool {
-    std::fs::symlink_metadata(root)
-        .is_ok_and(|metadata| metadata.is_dir() && !metadata.file_type().is_symlink())
-        && root
-            .file_name()
-            .and_then(std::ffi::OsStr::to_str)
-            .is_some_and(|name| name.starts_with(PRIVATE_ROOT_PREFIX))
-        && std::fs::symlink_metadata(root.join(PRIVATE_ROOT_MARKER)).is_ok_and(|metadata| {
-            metadata.is_file() && !metadata.file_type().is_symlink() && metadata.len() <= 64
-        })
-        && std::fs::read_to_string(root.join(PRIVATE_ROOT_MARKER))
-            .is_ok_and(|value| value == PRIVATE_ROOT_MARKER_CONTENT)
 }
 
 fn write_private_root_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
