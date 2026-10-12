@@ -254,12 +254,9 @@ pub fn context_at(now: u64) -> Context<'static> {
     Context::at_secs(now).in_session(session_id())
 }
 
-/// The answer the grant sets of the tasks an invocation works in give for an
-/// action of `kind` at `node`, among `tasks` under `policy`: the task the
-/// invocation names (`named`), and every task `agent` (an agent's id, without
-/// its `agent:` prefix) is running — so a run is held to its task whether or
-/// not its calls say so. The least of them; `None` when none of those tasks
-/// carries a grant set.
+/// The named task's answer, never an intersection of unrelated agent tasks.
+/// Native execution additionally requires its owner-minted exact run ceiling.
+/// `None` means no named task grant set; it is not execution authorization.
 #[must_use]
 pub fn task_bound(
     policy: &RoomPolicy,
@@ -268,17 +265,15 @@ pub fn task_bound(
     (node, kind): (&TreePath, ActionKind),
     cx: &Context<'_>,
 ) -> Option<Answer> {
-    let running = tasks.iter().filter(|task| {
-        matches!(
-            task.status,
-            crate::WorkspaceTaskStatus::InProgress | crate::WorkspaceTaskStatus::Waiting
-        ) && agent.is_some_and(|agent| task.assigned_agent.as_deref() == Some(agent))
-    });
-    named
-        .into_iter()
-        .chain(running.map(|task| task.id.as_str()))
-        .filter_map(|task| policy.task_answer(task, node, kind, cx))
-        .min()
+    let task = named?;
+    if let Some(agent) = agent
+        && !tasks
+            .iter()
+            .any(|value| value.id == task && value.assigned_agent.as_deref() == Some(agent))
+    {
+        return Some(Answer::Deny);
+    }
+    policy.task_answer(task, node, kind, cx)
 }
 
 /// This process's session, which a grant given "until log out" names.
@@ -857,12 +852,8 @@ impl Workspace {
         self.policy.app_authors(app, &context_at(now))
     }
 
-    /// The answer the grant sets of the tasks an invocation works in give
-    /// for an action of `kind` at `node`: the task the invocation names, and
-    /// every task `agent` (an agent's id, without its `agent:` prefix) is
-    /// running here — so a run is held to its task whether or not its calls
-    /// say so. The least of them; `None` when none of those tasks carries a
-    /// grant set.
+    /// The named task's grant answer. Unrelated tasks of an agent do not
+    /// influence this call; native runs also enforce their frozen ceiling.
     #[must_use]
     pub fn task_bound_at(
         &self,

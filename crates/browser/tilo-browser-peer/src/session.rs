@@ -292,6 +292,7 @@ enum Command {
     Live(u64, Vec<u8>),
     SealLive(u64, Vec<u8>, LiveCompletion),
     OpenLive(u64, Vec<u8>, LiveCompletion),
+    OpenSemantic(DocumentRoute, [u8; 32], Vec<u8>, SemanticLiveCompletion),
     RemoteAction(u64, [u8; 32], Vec<u8>),
     Barrier(Completion),
     LiveGrant(u64, Option<String>, GrantCompletion),
@@ -339,6 +340,29 @@ pub type GrantCompletion =
 /// keys, or `None` when this device holds none; see
 /// [`PeerHandle::seal_live_then`] and [`PeerHandle::open_live_then`].
 pub type LiveCompletion = Box<dyn FnOnce(Option<Vec<u8>>) + Send>;
+/// A semantic frame opened under current exact-record membership and known
+/// certificate/revocation evidence. This does not prove app mutation or that a
+/// publisher ran a model. The carrier must authenticate `publisher` separately.
+#[derive(Clone, Debug)]
+pub struct VerifiedSemanticLive {
+    /// Device identity supplied by the authenticated carrier.
+    pub publisher: [u8; 32],
+    /// Root that certified the current publisher.
+    pub user: [u8; 32],
+    /// Current exact-record MLS membership epoch.
+    pub epoch: u64,
+    /// Local authority snapshot; compare synchronously before presenting a receipt.
+    pub authority_generation: u64,
+    /// Wall-clock verification time, independent of the source event timestamp.
+    pub authority_observed_at_ms: u64,
+    /// Earliest certificate expiry or known revocation deadline, rounded down.
+    pub authority_expires_at_ms: Option<u64>,
+    /// Canonical bounded semantic frame, with actor checked against this root.
+    pub frame: Vec<u8>,
+}
+/// Called once; missing authority yields no frame and never requests access.
+pub type SemanticLiveCompletion = Box<dyn FnOnce(Option<VerifiedSemanticLive>) + Send>;
+
 /// Called once with whether the host took a legacy window's input, see
 /// [`PeerHandle::legacy_input_then`].
 pub type InputCompletion = Box<dyn FnOnce(Result<bool, String>) + Send>;
@@ -352,6 +376,7 @@ pub type RoomsCompletion =
 type Queue = Arc<Mutex<VecDeque<PeerEvent>>>;
 
 struct Shared {
+    semantic_generation: u64,
     status: PeerStatus,
     queues: Vec<std::sync::Weak<Mutex<VecDeque<PeerEvent>>>>,
     wakes: Vec<Wake>,
@@ -391,7 +416,11 @@ fn lock(shared: &Mutex<Shared>) -> MutexGuard<'_, Shared> {
 fn change_status(shared: &Mutex<Shared>, change: impl FnOnce(&mut PeerStatus)) {
     let wakes = {
         let mut shared = lock(shared);
+        let before = (shared.status.phase, shared.status.rooms.clone());
         change(&mut shared.status);
+        if before != (shared.status.phase, shared.status.rooms.clone()) {
+            shared.semantic_generation = shared.semantic_generation.saturating_add(1);
+        }
         shared.status.generation = shared.status.generation.wrapping_add(1);
         shared.wakes.clone()
     };
@@ -445,6 +474,7 @@ impl PeerHandle {
     ) -> Self {
         let (commands, receiver) = mpsc::unbounded_channel();
         let shared = Arc::new(Mutex::new(Shared {
+            semantic_generation: 1,
             status: PeerStatus {
                 phase: TransportPhase::Connecting,
                 authenticated: false,
@@ -464,51 +494,7 @@ impl PeerHandle {
         }));
         let events: Queue = Arc::new(Mutex::new(VecDeque::new()));
         lock(&shared).queues.push(Arc::downgrade(&events));
-        let record = store.load().unwrap_or_default();
-        let mut channels = crate::channels::Channels::new(
-            config.cert.device_public_key,
-            config.cert.user_public_key,
-            store.channel_vault().unwrap_or_else(rand::random),
-        );
-        channels.govern_by_host(&config.host_cert);
-        let saved = store
-            .load_channels()
-            .and_then(|bytes| SavedPeerChannels::decode(&bytes))
-            .unwrap_or_default();
-        match saved.channels {
-            StoredChannels::Current(saved) => channels.restore(saved),
-            StoredChannels::Legacy(legacy) => channels.restore_legacy(legacy),
-        }
-        channels.restore_requests(saved.requests);
-        let task = Task {
-            config,
-            signer,
-            store,
-            shared: shared.clone(),
-            rooms: BTreeSet::new(),
-            live: BTreeSet::new(),
-            outbox: record.outbox.iter().cloned().collect(),
-            record,
-            ciphers: Ciphers::new(),
-            channels,
-            channel_changes: crate::channels::Changes::default(),
-            opened: BTreeMap::new(),
-            refused: (0, String::new()),
-            held_inbound: BTreeMap::new(),
-            ignored_apps: BTreeSet::new(),
-            held_live: crate::held_live::HeldLive::new(),
-            held_outbound: saved.held.into_iter().collect(),
-            reassembly: Reassembly::default(),
-            positions: BTreeMap::new(),
-            doc_seq: 0,
-            barriers: Vec::new(),
-            held_barriers: Vec::new(),
-            admission_since: None,
-            delivered: BTreeMap::new(),
-            received: BTreeSet::new(),
-            compactions: BTreeMap::new(),
-            voice: crate::voice::Participations::default(),
-        };
+        let task = Task::new(config, signer, store, Arc::clone(&shared));
         task.update(|status| {
             status.outgoing_pending = task.outbox.len();
             for entry in &task.outbox {
@@ -693,6 +679,22 @@ impl PeerHandle {
         done: LiveCompletion,
     ) -> Result<(), String> {
         self.send(Command::OpenLive(workspace_id, frame, done))
+    }
+
+    /// Open semantic activity from an authenticated carrier publisher for an
+    /// explicitly allowed exact record. Drops while disconnected or unadmitted;
+    /// never retains activity to replay after keys/admission arrive.
+    ///
+    /// # Errors
+    /// Returns an error once the session is closed.
+    pub fn open_semantic_live_then(
+        &self,
+        route: DocumentRoute,
+        publisher: [u8; 32],
+        frame: Vec<u8>,
+        done: SemanticLiveCompletion,
+    ) -> Result<(), String> {
+        self.send(Command::OpenSemantic(route, publisher, frame, done))
     }
 
     /// Send one remote-action frame to device `to` of the room (the host's
@@ -992,6 +994,11 @@ impl PeerHandle {
         PeerEvents(self.events.clone()).drain()
     }
 
+    /// Current local authority snapshot, invalidated on received authority or session changes.
+    pub fn semantic_generation(&self) -> u64 {
+        lock(&self.shared).semantic_generation
+    }
+
     /// A new, independent event queue.
     pub fn events(&self) -> PeerEvents {
         let queue: Queue = Arc::new(Mutex::new(VecDeque::new()));
@@ -1026,6 +1033,9 @@ struct Task {
     ciphers: Ciphers,
     /// This device's membership of the rooms' encrypted channels.
     channels: crate::channels::Channels,
+    semantic_storage_ready: bool,
+    /// Corrupt saved authority requires explicit recovery, never an ordinary save.
+    semantic_storage_trusted: bool,
     /// What channel state changed since the session last acted on it.
     channel_changes: crate::channels::Changes,
     /// Documents opened per route, and those refused with the last reason,
@@ -1079,6 +1089,62 @@ const MAX_DELIVERED_ENTRIES: usize = 1 << 17;
 const MAX_COMPACTIONS: usize = 16;
 
 impl Task {
+    fn new(
+        config: PeerConfig,
+        signer: Arc<dyn DeviceSigner>,
+        store: Arc<dyn PeerStore>,
+        shared: Arc<Mutex<Shared>>,
+    ) -> Self {
+        let record = store.load().unwrap_or_default();
+        let mut channels = crate::channels::Channels::new(
+            config.cert.device_public_key,
+            config.cert.user_public_key,
+            store.channel_vault().unwrap_or_else(rand::random),
+        );
+        channels.govern_by_host(&config.host_cert);
+        channels.note_revocations(config.revocations.iter());
+        let stored = store.load_channels();
+        let decoded = stored.as_deref().and_then(SavedPeerChannels::decode);
+        let semantic_storage_trusted = stored.is_none() || decoded.is_some();
+        let saved = decoded.unwrap_or_default();
+        match saved.channels {
+            StoredChannels::Current(saved) => channels.restore(saved),
+            StoredChannels::Legacy(legacy) => channels.restore_legacy(legacy),
+        }
+        channels.restore_requests(saved.requests);
+        Self {
+            config,
+            signer,
+            store,
+            shared,
+            rooms: BTreeSet::new(),
+            live: BTreeSet::new(),
+            outbox: record.outbox.iter().cloned().collect(),
+            record,
+            ciphers: Ciphers::new(),
+            channels,
+            semantic_storage_ready: true,
+            semantic_storage_trusted,
+            channel_changes: crate::channels::Changes::default(),
+            opened: BTreeMap::new(),
+            refused: (0, String::new()),
+            held_inbound: BTreeMap::new(),
+            ignored_apps: BTreeSet::new(),
+            held_live: crate::held_live::HeldLive::new(),
+            held_outbound: saved.held.into_iter().collect(),
+            reassembly: Reassembly::default(),
+            positions: BTreeMap::new(),
+            doc_seq: 0,
+            barriers: Vec::new(),
+            held_barriers: Vec::new(),
+            admission_since: None,
+            delivered: BTreeMap::new(),
+            received: BTreeSet::new(),
+            compactions: BTreeMap::new(),
+            voice: crate::voice::Participations::default(),
+        }
+    }
+
     fn note_delivered(&mut self, route: &DocumentRoute, entries: &[[u8; 32]]) {
         let known = self.delivered.entry(route.clone()).or_default();
         for entry in entries {
@@ -1181,6 +1247,11 @@ impl Task {
                 signature,
             })
             .is_ok()
+    }
+
+    fn invalidate_semantic(&self) {
+        let mut shared = lock(&self.shared);
+        shared.semantic_generation = shared.semantic_generation.saturating_add(1);
     }
 
     fn update(&self, change: impl FnOnce(&mut PeerStatus)) {
@@ -1570,8 +1641,12 @@ impl Task {
                 self.apply_live(command, client);
                 true
             }
+            Command::OpenSemantic(route, publisher, frame, done) => {
+                done(self.open_semantic_live(&route, publisher, &frame, client.is_some()));
+                true
+            }
             Command::RemoteAction(workspace_id, to, frame) => {
-                self.send_remote_action(workspace_id, to, frame, client);
+                self.publish_remote_action(workspace_id, to, frame, client);
                 true
             }
             Command::InstallCipher(route, cipher) => {
@@ -1609,6 +1684,7 @@ impl Task {
                 true
             }
             Command::PinGovernor(room, governor) => {
+                self.invalidate_semantic();
                 let changes =
                     self.channels
                         .pin_governor(&room, governor, tilo_clock::unix_now_ms());
@@ -1648,6 +1724,31 @@ impl Task {
             }
             // Handled by the caller's loop.
             Command::Reconnect | Command::Refresh | Command::Close => true,
+        }
+    }
+
+    fn publish_remote_action(
+        &self,
+        workspace_id: u64,
+        to: [u8; 32],
+        frame: Vec<u8>,
+        client: Option<&Link>,
+    ) {
+        if let Some(client) = client {
+            let _ = client.send(Envelope::RemoteAction {
+                workspace_id,
+                version: tilo_relay_protocol::transport::REMOTE_ACTION_ENVELOPE_VERSION,
+                to_device_public_key: to,
+                from_device_public_key: self.config.cert.device_public_key,
+                from_user_public_key: self.config.cert.user_public_key,
+                frame,
+            });
+        } else {
+            self.emit(&PeerEvent::RemoteActionUndeliverable {
+                workspace_id,
+                to,
+                reason: "not connected to the host".into(),
+            });
         }
     }
 
@@ -1791,33 +1892,6 @@ impl Task {
             #[cfg(feature = "iroh")]
             Some(Link::Iroh(_)) => done(Err("rooms are administered over HTTPS".into())),
             None => done(Err("not connected to the host".into())),
-        }
-    }
-
-    /// Send a remote action `frame` to device `to` in `workspace_id`, or
-    /// say it is undeliverable while not connected.
-    fn send_remote_action(
-        &self,
-        workspace_id: u64,
-        to: [u8; 32],
-        frame: Vec<u8>,
-        client: Option<&Link>,
-    ) {
-        if let Some(client) = client {
-            let _ = client.send(Envelope::RemoteAction {
-                workspace_id,
-                version: tilo_relay_protocol::transport::REMOTE_ACTION_ENVELOPE_VERSION,
-                to_device_public_key: to,
-                from_device_public_key: self.config.cert.device_public_key,
-                from_user_public_key: self.config.cert.user_public_key,
-                frame,
-            });
-        } else {
-            self.emit(&PeerEvent::RemoteActionUndeliverable {
-                workspace_id,
-                to,
-                reason: "not connected to the host".into(),
-            });
         }
     }
 
@@ -2028,6 +2102,37 @@ impl Task {
             .map_or(Opening::Dropped, Opening::Opened)
     }
 
+    fn open_semantic_live(
+        &mut self,
+        route: &DocumentRoute,
+        publisher: [u8; 32],
+        bytes: &[u8],
+        connected: bool,
+    ) -> Option<VerifiedSemanticLive> {
+        let ready = self.semantic_storage_trusted
+            && self.semantic_storage_ready
+            && connected
+            && route.workspace_id().ok().is_some_and(|workspace| {
+                let shared = lock(&self.shared);
+                shared.status.phase == TransportPhase::Connected
+                    && shared.status.rooms.get(&workspace) == Some(&true)
+            });
+        if !ready {
+            return None;
+        }
+        let now_ns = tilo_clock::unix_now_ms().checked_mul(1_000_000)?;
+        let cipher = self.ciphers.get_mut(route)?;
+        let mut receipt =
+            self.channels
+                .open_semantic(route, publisher, bytes, now_ns, cipher.as_mut())?;
+        let generation = lock(&self.shared).semantic_generation;
+        if generation == u64::MAX {
+            return None;
+        }
+        receipt.authority_generation = generation;
+        Some(receipt)
+    }
+
     async fn publish(
         &mut self,
         route: DocumentRoute,
@@ -2114,17 +2219,25 @@ impl Task {
         }
     }
 
+    fn set_room_admission(&self, workspace: u64, ready: bool) {
+        self.update(|status| {
+            status.rooms.insert(workspace, ready);
+        });
+    }
+
     fn inbound(&mut self, envelope: Envelope) {
         let now = tilo_clock::unix_now_ms();
         self.update(|status| status.last_contact_at_ms = Some(now));
         match envelope {
             Envelope::Ready { workspace_id, .. } => {
-                self.update(|status| {
-                    status.rooms.insert(workspace_id, true);
-                });
+                self.set_room_admission(workspace_id, true);
                 self.emit(&PeerEvent::Ready { workspace_id });
             }
-            Envelope::NotAuthorised { reason, .. } => {
+            Envelope::NotAuthorised {
+                workspace_id,
+                reason,
+            } => {
+                self.set_room_admission(workspace_id, false);
                 self.fail("permission-required", reason);
             }
             Envelope::Delta {
@@ -2217,11 +2330,16 @@ impl Task {
     fn inbound_body(&mut self, body: Vec<u8>, author: [u8; 32]) {
         let now = tilo_clock::unix_now_ms();
         match postcard::from_bytes::<neighbour_wire::NeighbourMsg>(&body) {
-            Ok(neighbour_wire::NeighbourMsg::IdentityHello { cert, .. }) => {
+            Ok(neighbour_wire::NeighbourMsg::IdentityHello {
+                cert, revocations, ..
+            }) => {
+                self.invalidate_semantic();
+                self.channels.note_revocations(&revocations);
                 let changes = self.channels.note_cert(author, *cert, now);
                 self.absorb(changes);
             }
             Ok(neighbour_wire::NeighbourMsg::MlsGovernance { room, frame, .. }) => {
+                self.invalidate_semantic();
                 let changes = self.channels.receive_frame(author, &room, *frame, now);
                 self.absorb(changes);
             }
@@ -2318,6 +2436,14 @@ impl Task {
     /// Store channel state and held edits when either changed, so a
     /// reloaded page keeps its access and what it wrote before the keys.
     fn persist_channels(&mut self, held_changed: bool) {
+        if !self.semantic_storage_trusted {
+            self.fail_on(
+                FailureSubject::Storage,
+                "storage-authority-corrupt",
+                "Saved channel authority is unreadable; explicit recovery is required",
+            );
+            return;
+        }
         let Some(channels) = self.channels.export_if_changed().or_else(|| {
             held_changed.then(|| {
                 self.channels.mark_changed();
@@ -2338,7 +2464,12 @@ impl Task {
         let result = saved
             .encode()
             .and_then(|bytes| self.store.save_channels(&bytes));
+        if self.semantic_storage_ready != result.is_ok() {
+            self.invalidate_semantic();
+        }
+        self.semantic_storage_ready = result.is_ok();
         if let Err(error) = result {
+            self.channels.mark_changed();
             self.fail_on(FailureSubject::Storage, "storage-transaction-failed", error);
         }
     }
@@ -2429,7 +2560,16 @@ struct SavedPeerChannels {
 /// retain the pending access request that belongs to its member keys.
 #[derive(serde::Serialize, serde::Deserialize)]
 struct V2SavedPeerChannels {
-    channels: crate::channels::SavedChannels,
+    channels: crate::channels::SavedChannelsV2,
+    held: Vec<(DocumentRoute, Vec<Vec<u8>>)>,
+}
+
+/// Version three also retained the access requests, before persistent
+/// semantic revocation knowledge was added in version four.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct V3SavedPeerChannels {
+    channels: crate::channels::SavedChannelsV2,
+    requests: Vec<collab_types::MlsAccessRequestV1>,
     held: Vec<(DocumentRoute, Vec<Vec<u8>>)>,
 }
 
@@ -2462,8 +2602,16 @@ struct LoadedChannels {
 /// Opens stored channel state that keeps its vault apart. State stored
 /// before starts with 32 random vault bytes instead, which match this only
 /// by a 2^-192 chance.
-const SAVED_CHANNELS_TAG: &[u8] = b"tilo.browser-channels.v3";
+const SAVED_CHANNELS_TAG: &[u8] = b"tilo.browser-channels.v4";
 const V2_SAVED_CHANNELS_TAG: &[u8] = b"tilo.browser-channels.v2";
+const V3_SAVED_CHANNELS_TAG: &[u8] = b"tilo.browser-channels.v3";
+
+/// Storage must decode completely: an incompatible layout or trailing
+/// authority evidence is corruption, never permission to discard that evidence.
+fn decode_saved_channels<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Option<T> {
+    let (saved, remaining) = postcard::take_from_bytes(bytes).ok()?;
+    remaining.is_empty().then_some(saved)
+}
 
 impl SavedPeerChannels {
     fn encode(&self) -> Result<Vec<u8>, String> {
@@ -2474,22 +2622,30 @@ impl SavedPeerChannels {
 
     fn decode(bytes: &[u8]) -> Option<LoadedChannels> {
         if let Some(current) = bytes.strip_prefix(SAVED_CHANNELS_TAG) {
-            let saved: Self = postcard::from_bytes(current).ok()?;
+            let saved: Self = decode_saved_channels(current)?;
             return Some(LoadedChannels {
                 channels: StoredChannels::Current(saved.channels),
                 requests: saved.requests,
                 held: saved.held,
             });
         }
-        if let Some(v2) = bytes.strip_prefix(V2_SAVED_CHANNELS_TAG) {
-            let saved: V2SavedPeerChannels = postcard::from_bytes(v2).ok()?;
+        if let Some(v3) = bytes.strip_prefix(V3_SAVED_CHANNELS_TAG) {
+            let saved: V3SavedPeerChannels = decode_saved_channels(v3)?;
             return Some(LoadedChannels {
-                channels: StoredChannels::Current(saved.channels),
+                channels: StoredChannels::Current(saved.channels.into()),
+                requests: saved.requests,
+                held: saved.held,
+            });
+        }
+        if let Some(v2) = bytes.strip_prefix(V2_SAVED_CHANNELS_TAG) {
+            let saved: V2SavedPeerChannels = decode_saved_channels(v2)?;
+            return Some(LoadedChannels {
+                channels: StoredChannels::Current(saved.channels.into()),
                 requests: Vec::new(),
                 held: saved.held,
             });
         }
-        let legacy: LegacySavedPeerChannels = postcard::from_bytes(bytes).ok()?;
+        let legacy: LegacySavedPeerChannels = decode_saved_channels(bytes)?;
         Some(LoadedChannels {
             channels: StoredChannels::Legacy(legacy.channels),
             requests: Vec::new(),
@@ -2821,7 +2977,10 @@ mod tests {
             record: "note".into(),
         };
         let saved = V2SavedPeerChannels {
-            channels: crate::channels::SavedChannels::default(),
+            channels: crate::channels::SavedChannelsV2 {
+                governors: Vec::new(),
+                members: Vec::new(),
+            },
             held: vec![(route, vec![b"before the reload".to_vec()])],
         };
         let mut bytes = V2_SAVED_CHANNELS_TAG.to_vec();
@@ -2860,7 +3019,7 @@ mod tests {
         Ok(())
     }
 
-    fn status(rooms: &[(u64, bool)]) -> PeerStatus {
+    pub(super) fn status(rooms: &[(u64, bool)]) -> PeerStatus {
         PeerStatus {
             phase: TransportPhase::Connected,
             authenticated: true,
@@ -2970,3 +3129,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "session/semantic_tests.rs"]
+mod semantic_tests;

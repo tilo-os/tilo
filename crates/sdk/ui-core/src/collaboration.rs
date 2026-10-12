@@ -883,6 +883,14 @@ pub enum PresencePayload {
     },
 }
 
+/// Explicit correlation supplied by owner-backed membership, never decoded
+/// from a participant label or an actor-id prefix.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CertifiedAgentIdentity {
+    pub participant_id: String,
+    pub agent_key: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct Collaborator {
     pub id: String,
