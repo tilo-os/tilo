@@ -7,10 +7,10 @@
 //! fan-out. Three subscribers read the frames the relay actually writes them:
 //! one on `tilo-relay/4`, which predates compact state, one on
 //! `tilo-relay/5`, and one on `tilo-relay/7`, whose deltas arrive coded
-//! against the previous one (TIL-755) and are rebuilt by the production
+//! against the previous one and are rebuilt by the production
 //! session reader. Afterwards the test walks the relay's state root.
 //!
-//! It prints one `HOSTING_COST key=value …` line for the cost model (TIL-625).
+//! It prints one `HOSTING_COST key=value …` line for the cost model.
 //! It gates only deterministic byte counts, as DEVELOPMENT.md "Performance
 //! results" requires of a per-PR check; the delivery latency it prints is a
 //! report, never an assertion.
@@ -76,7 +76,7 @@ const BUDGET_COMPACT_FRAME_P50_BYTES: u64 = 550;
 /// the 697 B of the frame before changes named their actions.
 const BUDGET_COMPACT_FRAME_MAX_BYTES: u64 = 697;
 /// Ceiling for the median keystroke frame on `tilo-relay/7`, coded against
-/// the author's previous keystroke on the same document (TIL-755). Measured
+/// the author's previous keystroke on the same document. Measured
 /// on Linux CI: 157 B against 482 B on `tilo-relay/5`, plus 15 %.
 const BUDGET_CODED_FRAME_P50_BYTES: u64 = 181;
 

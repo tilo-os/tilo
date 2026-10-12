@@ -38,13 +38,12 @@ const IDLE: Duration = Duration::from_secs(60);
 /// actors, endpoints and drains; not the thread driving their frame loops)
 /// may block while idle, together.
 ///
-/// Counted as voluntary switches, one per wakeup, as the lone gate is
-/// (TIL-749): preemptions measure the runner. Counting both, this gate failed
+/// Counted as voluntary switches, one per wakeup, as the lone gate is: preemptions measure the runner. Counting both, this gate failed
 /// the shell shard at 15.45 to 17.31/s against 15/s while its threads
 /// blocked about 12.8 times a second (forge #4035), and nightly run 91200
 /// measured 15.68/s, 3.63 of it preemptions.
 ///
-/// Measured blocking on CI (focused, TIL-752): main `f744af88ad` 6.12 to
+/// Measured blocking on CI (focused): main `f744af88ad` 6.12 to
 /// 6.98/s (runs 92709-92713); with the upkeep tick and the gossip sweep
 /// armed only while there are peers, which this pair has, 5.84 to 7.17/s
 /// (runs 92724, 92787-92796). What remains is the two network runtimes'
@@ -53,13 +52,13 @@ const IDLE: Duration = Duration::from_secs(60);
 ///
 /// Where the gate runs, loaded, its threads block more than when focused:
 /// nightly's 12.05/s against about 10/s focused on the same code before
-/// TIL-702 (TIL-690, `docs/benchmarks/idle-wakeups-2026-10-09.md`). The
+/// the network runtime was quieted (`docs/benchmarks/idle-wakeups-2026-10-09.md`). The
 /// focused p95, 7.2/s, a third more for that, plus a quarter: 12/s.
 const IDLE_WAKEUP_BUDGET: f64 = 12.0;
 /// Most CPU the two desktops' own threads may use while idle, in percent of
 /// one core: 600 ms over [`IDLE`]. The wakeup count leaves out preemptions,
 /// so this is what still catches a thread that spins without blocking.
-/// Measured 0.2 to 0.3 % focused (TIL-752) and 0.5 % in nightly run 91200.
+/// Measured 0.2 to 0.3 % focused and 0.5 % in nightly run 91200.
 const IDLE_CPU_BUDGET: f64 = 1.0;
 
 /// How long a lone desktop runs after it starts before it is measured, so
@@ -68,15 +67,13 @@ pub(super) const LONE_SETTLE: Duration = Duration::from_secs(15);
 pub(super) const LONE_IDLE: Duration = Duration::from_secs(20);
 /// Most times per second a lone desktop's own threads may wake while idle:
 /// one room of its own, no peer, and no frame loop driving it, as on a
-/// desktop nobody touches, whose compositor never ticks the network
-/// (TIL-702).
+/// desktop nobody touches, whose compositor never ticks the network.
 ///
 /// Measured on CI (focused, loopback): 2.79/s while gossip swept the room's
 /// topic every second (run 91402), 0.95/s and 1.05/s once it sweeps every
 /// 10 s (runs 91459, 91528), 0.90 to 1.05/s on main `f744af88ad` (runs
 /// 92709-92713). Most of that was the 5 s upkeep tick and the sweeps of the
-/// desktop's three topics, neither of which runs now while there is no peer
-/// (TIL-752): 0.30 to 0.45/s (runs 92724, 92787-92796, 92833), 0.25 to
+/// desktop's three topics, neither of which runs now while there is no peer: 0.30 to 0.45/s (runs 92724, 92787-92796, 92833), 0.25 to
 /// 0.40/s of it `tilo-net-rt`. A tracing probe (run 92833) names what is
 /// left: two iroh timers that ran whatever Tilo did, netwatch's 15 s
 /// wall-clock check and the socket's 20-26 s re-STUN tick, which with no
@@ -96,7 +93,7 @@ pub(super) const LONE_IDLE: Duration = Duration::from_secs(20);
 /// measure the runner: a loaded pull-request shard (run 92351, its cgroup at
 /// `memory.max` 2832 times) preempted the same two `tilo-net-rt` workers
 /// 1.35 times a second on top of the 0.95 times they blocked, and failed the
-/// gate at 2.30/s with nothing in the session changed (TIL-749).
+/// gate at 2.30/s with nothing in the session changed.
 pub(super) const LONE_WAKEUP_BUDGET: f64 = 0.25;
 /// Most CPU a lone idle desktop's threads may use, in percent of one core:
 /// 100 ms over [`LONE_IDLE`]. The wakeup count leaves out preemptions, so
@@ -450,7 +447,7 @@ fn a_converged_idle_pair_exchanges_no_messages_and_repaints_nothing_for_a_minute
 /// A desktop alone with a room of its own, as most are, wakes nothing while
 /// nobody uses it: no peer to keep alive, nothing to sync, and its
 /// compositor parked, so not even a frame tick reaches the network. Its
-/// relays wait the way an installed desktop's do (TIL-740): nobody could
+/// relays wait the way an installed desktop's do: nobody could
 /// dial it, so it neither probes them nor holds a home relay open.
 #[test]
 #[serial_test::serial]

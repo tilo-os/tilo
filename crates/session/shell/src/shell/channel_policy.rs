@@ -43,7 +43,7 @@ pub type AuthenticatedChanges = Box<dyn Fn(u64) -> Option<u64> + Send>;
 /// changed policy is released, the fleet on save and through the identity directory's watch,
 /// the network's authenticated devices on each change. Stewards re-check on
 /// those announcements and at [`ChannelDirectory::next_policy_change`]
-/// rather than every second (TIL-707), while the clock and the watch hold.
+/// rather than every second, while the clock and the watch hold.
 pub struct WorkspaceChannelDirectory {
     tree: WorkspaceTreeHandle,
     own_devices: OwnDevices,

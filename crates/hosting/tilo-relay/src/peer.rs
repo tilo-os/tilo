@@ -258,8 +258,7 @@ struct SessionCtx<'a> {
     resumes: &'a std::sync::Mutex<HashMap<u64, ResumeLog>>,
     /// Rooms whose live deliveries this connection could not take.
     lag: &'a Arc<Lag>,
-    /// Where this connection's rooms post the presence they fan out to it
-    /// (TIL-710); `None` takes each presence on the frame queue.
+    /// Where this connection's rooms post the presence they fan out to it; `None` takes each presence on the frame queue.
     presence: Option<&'a Arc<crate::presence_mailbox::PresenceMailbox>>,
 }
 
@@ -438,7 +437,7 @@ impl SessionProtocol {
     };
     /// `ALPN_CODED_DELTA_V1`: [`Self::PRESENCE_BATCH`] whose live deltas are
     /// written coded against the session's previous delta from the same
-    /// author (TIL-755).
+    /// author.
     pub(crate) const CODED_DELTA: Self = Self {
         framing: tilo_delivery_protocol::transport_v2::StateFraming::CodedDelta,
         signed_actions: true,
@@ -5180,9 +5179,9 @@ const PRESENCE_BATCH_ITEMS: usize = 64;
 /// its kind the writer writes, in order, as the reader's half does.
 #[derive(Default)]
 struct SessionCoding {
-    /// Presence batches (`tilo-relay/6`, TIL-710).
+    /// Presence batches (`tilo-relay/6`).
     presence: tilo_delivery_protocol::transport_v2::PresenceEncoder,
-    /// Live deltas (`tilo-relay/7`, TIL-755).
+    /// Live deltas (`tilo-relay/7`).
     deltas: tilo_delivery_protocol::transport_v2::DeltaEncoder,
 }
 
@@ -5316,7 +5315,7 @@ async fn write_state_delivery<W: tokio::io::AsyncWrite + Unpin>(
     }
     // One write, so one packet where it fits: the delta, its position, and
     // the presence that may ride along, above all the author's caret and
-    // typing for this keystroke, held for it (TIL-776).
+    // typing for this keystroke, held for it.
     let mut out = encode_delta_charged(&delivery.envelope, session, &mut coding.deltas)?;
     if let Some(position) = resume_record(session, *workspace_id, [&*delivery.envelope]) {
         out.extend(encode_charged(&position, session, false)?);

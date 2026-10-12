@@ -162,7 +162,7 @@ run here on every full run instead, on the dev disk under KVM:
   when the network (NetworkManager, firewalld, `network.target`) is on greetd's critical
   chain: greetd waits for `systemd-user-sessions.service`, which upstream orders after
   `network.target`, so a network start queued before logins are allowed holds the greeter
-  until NetworkManager is up (TIL-767).
+  until NetworkManager is up.
 - R07 runs `tilo-session-report --render-gate` in the slot's session with the KVM
   budgets (`render_frame_ms` 1000, `render_frame_work_ms` 100).
 - A15 opens Files, Notes and Settings once unmeasured and then ten times each. Every
@@ -172,7 +172,7 @@ run here on every full run instead, on the dev disk under KVM:
   the app's start; it waits for the app's processes to exit before the next open. The
   median is held to the app's warm-open budget on the session's renderer
   (`app_startup.warm_open_budget_ms`: 1.5 s on a CPU rasterizer, tighter than a launch's
-  3 s, otherwise the app's budget); on a GPU the p95 is also held to the KPI document's
+  3 s, otherwise the app's budget); on a GPU the p95 is also held to the KPI's
   target (`tools/perf/kpi-budgets.toml`).
   Each open is split into segments that add up to it (`open_segments`): request to the
   launcher's start, the launcher's own phases (the marks it hands the app in
@@ -224,7 +224,7 @@ the store (DEVELOPMENT.md, "Performance results") and publishes the nightly run'
 | `boot.greeter_s`, `boot.userspace_to_greeter_s` | s | R06 | kernel start, and userspace start, to greetd.service active |
 | `session.sign_in_{first,again}.{shell,first_frame,usable}_s` | s | R08 | greeter sign-in request to the compositor process, its first presented frame, and a usable desktop |
 | `idle.shell_cpu_pct`, `idle.session_cpu_pct` | percent | R01 | compositor and whole session CPU over the idle window |
-| `idle.gpu_driver_cpu_pct` | percent | R01 | the part of `idle.shell_cpu_pct` on threads the GPU driver started (`llvmpipe-N`, and `tilo-gpu-driver`, the name the compositor gives threads started while it opens the device). On lavapipe this is the window's frames rasterised, a GPU's work on real hardware, so R01 and R02 judge a software renderer's compositor CPU without it; with no frame painted it must stay under `idle_software_raster_cpu_pct` (TIL-739) |
+| `idle.gpu_driver_cpu_pct` | percent | R01 | the part of `idle.shell_cpu_pct` on threads the GPU driver started (`llvmpipe-N`, and `tilo-gpu-driver`, the name the compositor gives threads started while it opens the device). On lavapipe this is the window's frames rasterised, a GPU's work on real hardware, so R01 and R02 judge a software renderer's compositor CPU without it; with no frame painted it must stay under `idle_software_raster_cpu_pct` |
 | `idle.wakeups_per_s.shell`, `idle.loop_ticks_per_s` | per_s | R01 | context switches of the compositor's loop thread; loop ticks |
 | `idle.wakeups_per_s.shell_threads` | per_s | R01 | context switches of every thread of the compositor process |
 | `idle.frames` | count | R01 | frames painted while still |
@@ -240,7 +240,7 @@ the store (DEVELOPMENT.md, "Performance results") and publishes the nightly run'
 | `memory.shell_anon_mib`, `memory.session_mib`, `memory.app_mib.<app>`, `memory.app_anon_mib.<app>` | MiB | R03 | the compositor's anonymous RSS; the compositor's and apps' cgroups |
 | `disk.runtime_mib.per_user`, `disk.runtime_builds.per_user`, `disk.app_store_mib.per_user` | MiB, count | R03 | the slot user's downloaded runtime builds (`$XDG_DATA_HOME/tilo-runtime`) and app store (`$XDG_DATA_HOME/tilo-apps`) after the apps closed: what collection after each change leaves |
 | `memory.shell_anon_mib.empty` | MiB | R01 | the compositor's anonymous RSS with no app open |
-| `memory.compositor_memfd_mib{,.four_apps,.after_close}` | MiB | R01, R03 | shmem allocated to the memfds and `/dev/shm` files the compositor holds open, mapped or not (`stat -L` through `/proc/PID/fd`); `R0x-shell-smaps*.json` `shm_by_name` splits it by memfd name and `shm_fds` lists every memfd, dma-buf and DRM fd with its fdinfo (TIL-731) |
+| `memory.compositor_memfd_mib{,.four_apps,.after_close}` | MiB | R01, R03 | shmem allocated to the memfds and `/dev/shm` files the compositor holds open, mapped or not (`stat -L` through `/proc/PID/fd`); `R0x-shell-smaps*.json` `shm_by_name` splits it by memfd name and `shm_fds` lists every memfd, dma-buf and DRM fd with its fdinfo |
 | `memory.shell_parts_mib.<class>`, `memory.shell_parts_mib.malloc_{in_use,free}`, `memory.shell_threads` | MiB, count | R01 (and `.after_close`, R03) | the compositor's own resident memory per kind of mapping (`heap_main`, `heap_arenas`, `thread_stacks`, `anon_other`, `anon_exec`, `gpu_memfd`, `fonts`, `binary`, `gpu_driver_libs`, `libraries`, `files_other`, …), from `mincore` over `/proc/self/maps` in the compositor (`tilo-control raw '{"op":"process_memory"}'`; Tilo's kernel has no smaps); glibc's heap in use and free (`mallinfo2`); its thread count. The whole report is `R01-shell-memory-map.json` |
 | `app.open.warm_ms.<app>` | ms | A15 | open request to first presented frame, ten warm opens |
 | `app.startup_ms.<app>`, `app.startup_ms.file-explorer.first_in_session` | ms | A15, A14 | process start to first presented frame |
@@ -249,7 +249,7 @@ the store (DEVELOPMENT.md, "Performance results") and publishes the nightly run'
 | `app.open.{request_to_spawn,spawn_to_map,map_to_first_present,request_to_first_present}_ms.<app>` | ms | A15 | the compositor's own split of the open |
 | `render.frame_cpu_ms` | ms | R04 | compositor CPU per painted frame during interactions |
 
-`idle.ram_mib` stays the guest-wide figure the KPI document defines. Beside it, R01, R02
+`idle.ram_mib` stays the guest-wide figure the KPI targets define. Beside it, R01, R02
 and R03 write `R0x-footprint*.json` (`resources.footprint`): every user's processes by RSS
 split into anon, file and shmem (Tilo's kernel has no smaps, so there is no PSS), every
 cgroup's anon, file, shmem and kernel charge grouped into the buckets above, each tmpfs's

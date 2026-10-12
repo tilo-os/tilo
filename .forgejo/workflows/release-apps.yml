@@ -649,7 +649,7 @@ jobs:
       # relocation tables, relocation-dirtied pages and symbol lookups against
       # tools/perf/runtime-size-budget/ (DEVELOPMENT.md, "Runtime size"), and
       # what it and each built app of apps_without_media load at exec: never
-      # GLib or GStreamer, which the runtime loads on first use (TIL-713).
+      # GLib or GStreamer, which the runtime loads on first use.
       # package-apps.sh built it above for the whole default collection. The
       # engine libraries built with it are reported beside it, and
       # none may be loaded by those apps.
@@ -743,8 +743,7 @@ jobs:
           printf '%s apps drew their first frame against the runtime\n' "$drawn" | tee -a "$GITHUB_STEP_SUMMARY"
           rm -rf "$runtime"
           (( ${#failed[@]} == 0 )) || { echo "no first frame from: ${failed[*]}" >&2; exit 1; }
-      # A real media path through the runtime's lazily loaded GStreamer
-      # (TIL-713): Video Player decodes its H.264 fixture into a capture, which
+      # A real media path through the runtime's lazily loaded GStreamer: Video Player decodes its H.264 fixture into a capture, which
       # refuses to save without a decoded picture; the decoder (tilo-media) is
       # runtime code, so its GStreamer calls go through the trampolines. The
       # loader's trace says how libgstreamer arrived: by the runtime's dlopen,
