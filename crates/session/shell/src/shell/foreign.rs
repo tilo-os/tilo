@@ -211,6 +211,42 @@ enum CpuLayout {
     P010,
 }
 
+/// Whether the importer composites a client buffer of `code` under `modifier`:
+/// the same two checks [`validate_importable`] applies to it.
+#[cfg(target_os = "linux")]
+pub fn composites(code: Fourcc, modifier: Modifier) -> bool {
+    modifier_is_cpu_readable(modifier) && CpuLayout::for_fourcc(code).is_some()
+}
+
+/// Every format the importer composites, as the compositor advertises it: the
+/// single list behind `zwp_linux_dmabuf_v1` feedback, so a client can only pick
+/// what [`CpuLayout::for_fourcc`] reads. Each is `Linear`
+/// ([`modifier_is_cpu_readable`]).
+#[cfg(target_os = "linux")]
+pub fn importable_formats() -> Vec<smithay::backend::allocator::Format> {
+    use smithay::backend::allocator::Format;
+    [
+        Fourcc::Argb8888,
+        Fourcc::Xrgb8888,
+        Fourcc::Abgr8888,
+        Fourcc::Xbgr8888,
+        Fourcc::Abgr2101010,
+        Fourcc::Xbgr2101010,
+        Fourcc::Argb2101010,
+        Fourcc::Xrgb2101010,
+        Fourcc::Abgr16161616f,
+        Fourcc::Xbgr16161616f,
+        Fourcc::P010,
+    ]
+    .into_iter()
+    .filter(|code| composites(*code, Modifier::Linear))
+    .map(|code| Format {
+        code,
+        modifier: Modifier::Linear,
+    })
+    .collect()
+}
+
 #[cfg(any(test, target_os = "linux"))]
 impl CpuLayout {
     #[cfg(target_os = "linux")]
@@ -2349,7 +2385,7 @@ fn share_dmabuf(
     surface: SurfaceId,
     opaque: bool,
 ) -> Option<Arc<crate::shell::gpu_frames::GpuFrame>> {
-    static REPORTED: Mutex<Vec<String>> = Mutex::new(Vec::new());
+    static REPORTED: Mutex<Vec<crate::shell::gpu_frames::ImportFallback>> = Mutex::new(Vec::new());
     match crate::shell::gpu_frames::import_dmabuf(dmabuf, surface, opaque) {
         Ok(frame) => Some(frame),
         Err(reason) => {

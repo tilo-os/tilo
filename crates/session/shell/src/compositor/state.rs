@@ -411,9 +411,8 @@ impl DeclaredOpacity {
     }
 }
 
-use smithay::backend::allocator::Fourcc;
 use smithay::backend::allocator::dmabuf::Dmabuf;
-use smithay::backend::allocator::{Buffer, Format, Modifier};
+use smithay::backend::allocator::{Buffer, Format};
 use smithay::desktop::{
     PopupKeyboardGrab, PopupKind, PopupManager, PopupPointerGrab, find_popup_root_surface,
 };
@@ -1906,25 +1905,7 @@ impl State {
         //    CPU-maps the plane fd — correct only for single-plane RGBA under `Modifier::Linear`, so that's what goes on the wire.
         //    10-bit RGB, half float and P010 are converted there too, so
         //    HDR clients (PQ swapchains, 10-bit video) can hand them over.
-        let dmabuf_formats: Vec<Format> = [
-            Fourcc::Argb8888,
-            Fourcc::Xrgb8888,
-            Fourcc::Abgr8888,
-            Fourcc::Xbgr8888,
-            Fourcc::Abgr2101010,
-            Fourcc::Xbgr2101010,
-            Fourcc::Argb2101010,
-            Fourcc::Xrgb2101010,
-            Fourcc::Abgr16161616f,
-            Fourcc::Xbgr16161616f,
-            Fourcc::P010,
-        ]
-        .into_iter()
-        .map(|code| Format {
-            code,
-            modifier: Modifier::Linear,
-        })
-        .collect();
+        let dmabuf_formats: Vec<Format> = crate::shell::foreign::importable_formats();
         let dmabuf_device = crate::compositor::render_node::probe();
         let mut scanout_feedback = None;
         let dmabuf_global = match &dmabuf_device {
