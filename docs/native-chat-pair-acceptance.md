@@ -19,8 +19,9 @@ short real-daemon check: the owned bus exits and an adjacent private bus survive
 Its receipt remains `qualified: false`, with `mode: cleanup-proof`, because it
 proves cleanup rather than the native pair journey.
 
-Build and run in an owned disposable builder environment. Set `CARGO` to
-`cargo` or any Cargo drop-in configured for that environment:
+Build and run in an owned disposable builder environment. For a remote
+Cargo drop-in supporting `--on-builder` and `--fetch`, set `CARGO` to that client
+and keep the whole journey inside its supported on-builder session:
 
 ```sh
 "$CARGO" build --locked -p shell -p tilo-control --bin shell --bin tilo-control
@@ -28,10 +29,23 @@ Build and run in an owned disposable builder environment. Set `CARGO` to
   -p tilo-app-package-cli --bin tilo-app-package \
   -p tilo-app-cli --bin tilo-app -p install --bin tilo-install \
   -p runtime-bundle --bin tilo-runtime-bundle
-"$CARGO" run --locked \
+"$CARGO" --on-builder --fetch native-pair-proof/journey.json run --locked \
   -p shell --example native_pair_host -- \
   --journey --out target/native-pair-proof --pipewire /private/pipewire-payload
 ```
+
+`--on-builder` holds the worktree session lock through SDK package assembly,
+runtime-library collection, the native windows and cleanup. Raw `podman exec`
+builds do not hold that lock or record their Cargo units. Under disk pressure,
+the remote artifact collector can therefore prune their newly built thin-app fingerprints and `.rlib`
+files while the packager is still using them. This caused two native assembly
+failures; the supported session completed the same signed voice journey.
+Use `--no-fetch` for remote compile/check validation only when no local fixture
+needs the returned artifacts. A locally executed native fixture needs its
+libraries and generated font catalog as well as executables. The command above
+executes remotely and fetches only its nonsecret receipt; `--fetch` paths are
+relative to `target/`. Inside CI, ordinary Cargo is appropriate when the CI
+environment already owns the complete fixture lifetime.
 
 The disposable environment needs PipeWire utilities, WirePlumber, GStreamer
 `opusenc`/`opusdec`, and a matching server payload under `--pipewire`: `usr/bin/pipewire`,

@@ -31,7 +31,21 @@ use std::sync::{Mutex, PoisonError};
 use serde_json::{Map, Value};
 
 use crate::continuity::{SettingScope, classify};
-use crate::{SettingsSource, load_at, merge_section, write_atomic};
+use crate::{
+    ChangeOrigin, ConditionalUpdate, SectionChange, SettingsSource, load_at, merge_section,
+    write_atomic,
+};
+
+mod change_log;
+mod view;
+
+use change_log::LeafChange;
+
+#[derive(Clone)]
+struct Committed {
+    document: Map<String, Value>,
+    revision: u64,
+}
 
 /// Where the session keeps its records and its copy.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -64,6 +78,12 @@ impl SessionPaths {
     pub fn configured() -> Option<Self> {
         crate::settings_path().map(Self::beside)
     }
+
+    /// The bounded log of who changed which leaf, beside the records.
+    #[must_use]
+    pub fn change_log(&self) -> PathBuf {
+        change_log::path_beside(&self.person)
+    }
 }
 
 /// What tells two versions of the copy apart without reading it: its size
@@ -91,9 +111,17 @@ fn copy_identity(path: &Path) -> Option<CopyIdentity> {
 /// answer unless the copy is recent enough that a second write could share
 /// both; then its contents do.
 fn copy_changed(path: &Path, state: &State) -> bool {
-    let identity = copy_identity(path);
-    if identity != state.copy_identity {
-        return true;
+    identity_says_changed(copy_identity(path), state).unwrap_or_else(|| load_at(path) != state.copy)
+}
+
+/// What the copy's size and time alone say about whether it is not what
+/// `state` last wrote or read: `None` when it is recent enough that only its
+/// contents can tell.
+fn identity_says_changed(identity: Option<CopyIdentity>, state: &State) -> Option<bool> {
+    // A failed copy rewrite forgets its identity. If the obstruction is
+    // removed, both identities can be absent; refresh must still repair it.
+    if identity != state.copy_identity || identity.is_none() {
+        return Some(true);
     }
     let recent = identity.is_some_and(|identity| {
         identity
@@ -104,7 +132,7 @@ fn copy_changed(path: &Path, state: &State) -> bool {
                     < modified.as_millis().saturating_add(SAME_TICK.as_millis())
             })
     });
-    recent && load_at(path) != state.copy
+    (!recent).then_some(false)
 }
 
 struct State {
@@ -126,8 +154,15 @@ impl State {
         doc
     }
 
-    /// Store `value` at `section.leaf` in the record its scope names.
-    fn put(&mut self, section: &str, leaf: &str, value: Value) -> Touched {
+    /// Store `value` at `section.leaf` in the record its scope names, and
+    /// note the change in `log` when there is one.
+    fn put(
+        &mut self,
+        section: &str,
+        leaf: &str,
+        value: Value,
+        log: &mut Vec<LeafChange>,
+    ) -> Touched {
         let personal = classify(&format!("tilo.{section}.{leaf}")) == Some(SettingScope::Personal);
         let record = if personal {
             &mut self.person
@@ -146,7 +181,13 @@ impl State {
         if leaves.get(leaf) == Some(&value) {
             return Touched::default();
         }
-        leaves.insert(leaf.to_string(), value);
+        let before = leaves.insert(leaf.to_string(), value.clone());
+        log.push(LeafChange {
+            section: section.to_string(),
+            leaf: Some(leaf.to_string()),
+            before,
+            after: value,
+        });
         Touched {
             person: personal,
             device: !personal,
@@ -154,11 +195,17 @@ impl State {
     }
 
     /// A top-level value that is not a section (`version`): device-local.
-    fn put_top_level(&mut self, name: &str, value: Value) -> Touched {
+    fn put_top_level(&mut self, name: &str, value: Value, log: &mut Vec<LeafChange>) -> Touched {
         if self.device.get(name) == Some(&value) {
             return Touched::default();
         }
-        self.device.insert(name.to_string(), value);
+        let before = self.device.insert(name.to_string(), value.clone());
+        log.push(LeafChange {
+            section: name.to_string(),
+            leaf: None,
+            before,
+            after: value,
+        });
         Touched {
             person: false,
             device: true,
@@ -168,7 +215,12 @@ impl State {
     /// Apply every leaf of `doc` that differs from `previous`, the copy it
     /// replaced. Leaves `doc` no longer has are left alone: writers merge
     /// sections, they never remove keys.
-    fn take_in(&mut self, doc: &Map<String, Value>, previous: &Map<String, Value>) -> Touched {
+    fn take_in(
+        &mut self,
+        doc: &Map<String, Value>,
+        previous: &Map<String, Value>,
+        log: &mut Vec<LeafChange>,
+    ) -> Touched {
         let mut touched = Touched::default();
         for (name, value) in doc {
             match (value, previous.get(name)) {
@@ -176,12 +228,12 @@ impl State {
                     let before = before.and_then(Value::as_object);
                     for (leaf, value) in leaves {
                         if before.and_then(|b| b.get(leaf)) != Some(value) {
-                            touched = touched.or(self.put(name, leaf, value.clone()));
+                            touched = touched.or(self.put(name, leaf, value.clone(), log));
                         }
                     }
                 }
                 (value, before) if before != Some(value) => {
-                    touched = touched.or(self.put_top_level(name, value.clone()));
+                    touched = touched.or(self.put_top_level(name, value.clone(), log));
                 }
                 _ => {}
             }
@@ -211,6 +263,7 @@ pub struct SessionSettings {
     state: Mutex<State>,
     revision: AtomicU64,
     changes: crate::ChangeSignal,
+    committed: Mutex<std::sync::Arc<Committed>>,
 }
 
 impl SessionSettings {
@@ -231,16 +284,23 @@ impl SessionSettings {
         };
         let copy = load_at(&paths.copy);
         let previous = state.projection();
-        let touched = state.take_in(&copy, &previous);
+        let mut log = Vec::new();
+        let touched = state.take_in(&copy, &previous, &mut log);
         persist(&paths, &state, touched)?;
+        change_log::append(&paths.change_log(), &log, None);
         state.copy = copy;
         state.copy_identity = copy_identity(&paths.copy);
         write_copy(&paths, &mut state)?;
+        let committed = Committed {
+            document: state.projection(),
+            revision: 1,
+        };
         Ok(Self {
             paths,
             state: Mutex::new(state),
             revision: AtomicU64::new(1),
             changes: crate::ChangeSignal::default(),
+            committed: Mutex::new(std::sync::Arc::new(committed)),
         })
     }
 
@@ -248,6 +308,45 @@ impl SessionSettings {
     #[must_use]
     pub fn paths(&self) -> &SessionPaths {
         &self.paths
+    }
+
+    /// The source installed for ordinary host event-loop readers. Its worker
+    /// wakes only when read; another process's write to the copy reaches it
+    /// through the host's watch of the copy calling [`Self::refresh`].
+    ///
+    /// # Errors
+    /// Returns an error if its refresh worker cannot start.
+    pub fn host_view(
+        self: &std::sync::Arc<Self>,
+    ) -> std::io::Result<std::sync::Arc<dyn SettingsSource>> {
+        view::start(self, None)
+    }
+
+    /// [`Self::host_view`] for a host that could not watch the copy: the
+    /// view takes in another process's write to it every `interval` as well
+    /// as on each read, so readers that only wait for
+    /// [`SettingsSource::changes`] still hear of it.
+    ///
+    /// # Errors
+    /// Returns an error if its refresh worker cannot start.
+    pub fn host_view_polling_copy(
+        self: &std::sync::Arc<Self>,
+        interval: std::time::Duration,
+    ) -> std::io::Result<std::sync::Arc<dyn SettingsSource>> {
+        view::start(self, Some(interval))
+    }
+
+    fn publish_committed(&self, state: &State) {
+        self.revision.fetch_add(1, Ordering::AcqRel);
+        let committed = std::sync::Arc::new(Committed {
+            document: state.projection(),
+            revision: self.revision.load(Ordering::Acquire),
+        });
+        *self
+            .committed
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = committed;
+        self.changes.ring();
     }
 
     /// Take in a write another process made to the copy since this source
@@ -276,6 +375,22 @@ impl SessionSettings {
         }
     }
 
+    /// Whether [`Self::refresh`] may find another process's write: the
+    /// copy's size or time is not what this source last wrote or read, or it
+    /// is too recent for them to tell. One `stat`, no storage lock: a state
+    /// held by a writer answers yes and leaves the deciding to `refresh`. A
+    /// reader asks this before waking a refresh worker, so reads of an
+    /// unchanged copy wake nobody.
+    pub(super) fn copy_may_have_changed(&self) -> bool {
+        let identity = copy_identity(&self.paths.copy);
+        let state = match self.state.try_lock() {
+            Ok(state) => state,
+            Err(std::sync::TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
+            Err(std::sync::TryLockError::WouldBlock) => return true,
+        };
+        identity_says_changed(identity, &state).unwrap_or(true)
+    }
+
     /// With the copy locked: apply what another process wrote to it.
     fn take_in_copy(&self, state: &mut State) -> std::io::Result<()> {
         if !copy_changed(&self.paths.copy, state) {
@@ -284,19 +399,93 @@ impl SessionSettings {
         let identity = copy_identity(&self.paths.copy);
         let copy = load_at(&self.paths.copy);
         let (person, device) = (state.person.clone(), state.device.clone());
-        let touched = state.take_in(&copy, &state.copy.clone());
+        let mut log = Vec::new();
+        let touched = state.take_in(&copy, &state.copy.clone(), &mut log);
         if let Err(error) = persist(&self.paths, state, touched) {
             state.person = person;
             state.device = device;
             return Err(error);
         }
+        change_log::append(&self.paths.change_log(), &log, None);
         state.copy = copy;
         state.copy_identity = identity;
         if touched.person || touched.device {
-            self.revision.fetch_add(1, Ordering::AcqRel);
-            self.changes.ring();
+            self.publish_committed(state);
         }
         Ok(())
+    }
+}
+
+/// What a session write makes of the section it found (`None`: absent): the
+/// leaves to merge, or `None` when the caller's intent was superseded.
+type Decide<'a> = dyn FnMut(Option<&Value>) -> Option<Map<String, Value>> + 'a;
+
+impl SessionSettings {
+    /// The log of who changed which leaf, oldest first: one JSON object per
+    /// change with `section`, `leaf`, `before`, `after`, `action`,
+    /// `principal` and `via` (`session` for a write through this source,
+    /// `copy` for one another process made to the copy).
+    #[must_use]
+    pub fn change_log(&self) -> Vec<Value> {
+        change_log::read(&self.paths.change_log())
+    }
+
+    fn update_section_if(
+        &self,
+        name: &str,
+        expected: Option<&Map<String, Value>>,
+        values: Map<String, Value>,
+    ) -> std::io::Result<ConditionalUpdate> {
+        let mut values = Some(values);
+        self.update_section_where(name, &ChangeOrigin::default(), &mut |current| {
+            if expected.is_some_and(|expected| current != Some(&Value::Object(expected.clone()))) {
+                return None;
+            }
+            Some(values.take().unwrap_or_default())
+        })
+    }
+
+    /// Under the state and copy locks: take in the copy, let `decide` look
+    /// at section `name` as it now stands, and merge what it returns,
+    /// recording `origin` with each changed leaf.
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "canonical state and external-copy locks cover comparison, durable merge and publication"
+    )]
+    fn update_section_where(
+        &self,
+        name: &str,
+        origin: &ChangeOrigin,
+        decide: &mut Decide<'_>,
+    ) -> std::io::Result<ConditionalUpdate> {
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        let _lock = lock_copy(&self.paths.copy)?;
+        self.take_in_copy(&mut state)?;
+        let current = state.projection().get(name).cloned();
+        let Some(values) = decide(current.as_ref()) else {
+            return Ok(ConditionalUpdate::Superseded);
+        };
+        let (person, device) = (state.person.clone(), state.device.clone());
+        let mut touched = Touched::default();
+        let mut log = Vec::new();
+        for (leaf, value) in values {
+            touched = touched.or(state.put(name, &leaf, value, &mut log));
+        }
+        if let Err(error) = persist(&self.paths, &state, touched) {
+            state.person = person;
+            state.device = device;
+            return Err(error);
+        }
+        change_log::append(&self.paths.change_log(), &log, Some(origin));
+        if touched.person || touched.device {
+            self.publish_committed(&state);
+        }
+        // The records keep the change even when the copy cannot be written;
+        // the next change or refresh writes it again.
+        Ok(match write_copy(&self.paths, &mut state) {
+            Ok(()) => ConditionalUpdate::Stored,
+            Err(error) => ConditionalUpdate::StoredWithCopyRepair(error),
+        })
     }
 }
 
@@ -309,31 +498,101 @@ impl SettingsSource for SessionSettings {
             .projection()
     }
 
+    fn update_section(&self, name: &str, values: Map<String, Value>) -> std::io::Result<()> {
+        self.update_section_if(name, None, values)?
+            .into_sync_result()
+    }
+
+    fn update_section_by(
+        &self,
+        name: &str,
+        values: Map<String, Value>,
+        origin: &ChangeOrigin,
+    ) -> std::io::Result<()> {
+        let mut values = Some(values);
+        self.update_section_where(name, origin, &mut |_| values.take())?
+            .into_sync_result()
+    }
+
+    fn update_section_with(
+        &self,
+        name: &str,
+        origin: &ChangeOrigin,
+        change: &mut SectionChange<'_>,
+    ) -> std::io::Result<()> {
+        self.update_section_where(name, origin, &mut |current| {
+            let empty = Map::new();
+            Some(change(current.and_then(Value::as_object).unwrap_or(&empty)))
+        })?
+        .into_sync_result()
+    }
+
+    fn update_section_report(
+        &self,
+        name: &str,
+        values: Map<String, Value>,
+    ) -> std::io::Result<ConditionalUpdate> {
+        self.update_section_if(name, None, values)
+    }
+
+    fn compare_update_section(
+        &self,
+        name: &str,
+        expected: &Map<String, Value>,
+        values: Map<String, Value>,
+    ) -> std::io::Result<ConditionalUpdate> {
+        self.update_section_if(name, Some(expected), values)
+    }
+
     #[allow(
         clippy::significant_drop_tightening,
-        reason = "the state stays locked while the copy is, so one change is taken in and written at a time"
+        reason = "canonical state and copy locks cover atomic display comparison, persistence and publication"
     )]
-    fn update_section(&self, name: &str, values: Map<String, Value>) -> std::io::Result<()> {
+    fn compare_display_update(
+        &self,
+        update: crate::DisplayUpdate,
+    ) -> std::io::Result<ConditionalUpdate> {
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         let _lock = lock_copy(&self.paths.copy)?;
         self.take_in_copy(&mut state)?;
-        let (person, device) = (state.person.clone(), state.device.clone());
+        if !update.matches(&state.projection()) {
+            return Ok(ConditionalUpdate::Superseded);
+        }
+        let sections = update.sections();
+        if sections.iter().any(|(section, values)| {
+            values.keys().any(|leaf| {
+                classify(&format!("tilo.{section}.{leaf}")) == Some(SettingScope::Personal)
+            })
+        }) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "display intent must stay in one device record",
+            ));
+        }
+        let previous = state.device.clone();
         let mut touched = Touched::default();
-        for (leaf, value) in values {
-            touched = touched.or(state.put(name, &leaf, value));
+        let mut log = Vec::new();
+        for (section, values) in sections {
+            for (leaf, value) in values {
+                touched = touched.or(state.put(section, &leaf, value, &mut log));
+            }
         }
         if let Err(error) = persist(&self.paths, &state, touched) {
-            state.person = person;
-            state.device = device;
+            state.device = previous;
             return Err(error);
         }
-        if touched.person || touched.device {
-            self.revision.fetch_add(1, Ordering::AcqRel);
-            self.changes.ring();
+        change_log::append(
+            &self.paths.change_log(),
+            &log,
+            Some(&ChangeOrigin::default()),
+        );
+        if touched.device {
+            self.publish_committed(&state);
         }
-        // The records keep the change even when the copy cannot be written;
-        // the next change or refresh writes it again.
-        write_copy(&self.paths, &mut state)
+        Ok(match write_copy(&self.paths, &mut state) {
+            Ok(()) => ConditionalUpdate::Stored,
+            Err(error) => ConditionalUpdate::StoredWithCopyRepair(error),
+        })
     }
 
     fn revision(&self) -> u64 {
@@ -381,7 +640,7 @@ pub(crate) fn lock_path(path: &Path) -> PathBuf {
 }
 
 /// Lock the settings file at `path`, creating its directory if needed.
-fn lock_copy(path: &Path) -> std::io::Result<tilo_files::Lock> {
+pub(crate) fn lock_copy(path: &Path) -> std::io::Result<tilo_files::Lock> {
     let (dir, name) = tilo_files::file_at(&lock_path(path)).map_err(std::io::Error::other)?;
     tilo_files::blocking::lock(&dir, &name, tilo_files::LockMode::Exclusive)
         .map_err(std::io::Error::other)
@@ -391,6 +650,97 @@ fn lock_copy(path: &Path) -> std::io::Result<tilo_files::Lock> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn display_update_commits_transaction_and_profiles_in_one_device_record() {
+        let dir = tempfile::tempdir().unwrap();
+        let session = open(dir.path());
+        let update = crate::DisplayUpdate::new(
+            &session.load(),
+            object(json!({"id": 7, "state": "confirmed"})),
+            Some(object(json!({"profiles": {"panel": {"outputs": {}}}}))),
+        );
+        assert!(matches!(
+            session.compare_display_update(update).unwrap(),
+            ConditionalUpdate::Stored
+        ));
+        let document = session.load();
+        assert_eq!(document["display_transaction"]["id"], 7);
+        assert_eq!(
+            document["display_profiles"]["profiles"]["panel"]["outputs"],
+            json!({})
+        );
+        assert_eq!(
+            Value::Object(load_at(&session.paths.device)),
+            Value::Object(document.clone())
+        );
+        let reopened = SessionSettings::open(session.paths).unwrap();
+        assert_eq!(reopened.load(), document);
+    }
+
+    #[test]
+    fn display_update_refuses_a_new_external_profile_without_overwriting_either_section() {
+        let dir = tempfile::tempdir().unwrap();
+        let session = open(dir.path());
+        let update = crate::DisplayUpdate::new(
+            &session.load(),
+            object(json!({"id": 7})),
+            Some(object(json!({"profiles": {}}))),
+        );
+        crate::update_section_at(
+            &session.paths.copy,
+            "display_profiles",
+            object(json!({"external_revision": 8})),
+        )
+        .unwrap();
+        assert!(matches!(
+            session.compare_display_update(update).unwrap(),
+            ConditionalUpdate::Superseded
+        ));
+        let document = session.load();
+        assert!(!document.contains_key("display_transaction"));
+        assert_eq!(document["display_profiles"]["external_revision"], 8);
+    }
+
+    #[test]
+    fn display_update_record_failure_rolls_back_both_sections() {
+        let dir = tempfile::tempdir().unwrap();
+        let session = open(dir.path());
+        let before = session.load();
+        let update = crate::DisplayUpdate::new(
+            &before,
+            object(json!({"id": 7})),
+            Some(object(json!({"profiles": {}}))),
+        );
+        std::fs::create_dir_all(session.paths.device.parent().unwrap()).unwrap();
+        std::fs::create_dir(&session.paths.device).unwrap();
+        assert!(session.compare_display_update(update).is_err());
+        assert_eq!(session.load(), before);
+        assert_eq!(load_at(&session.paths.copy), before);
+    }
+
+    #[test]
+    fn display_update_copy_failure_reports_durable_both_sections_and_repairs_later() {
+        let dir = tempfile::tempdir().unwrap();
+        let session = open(dir.path());
+        let update = crate::DisplayUpdate::new(
+            &session.load(),
+            object(json!({"id": 7})),
+            Some(object(json!({"profiles": {}}))),
+        );
+        std::fs::remove_file(&session.paths.copy).unwrap();
+        std::fs::create_dir(&session.paths.copy).unwrap();
+        assert!(matches!(
+            session.compare_display_update(update).unwrap(),
+            ConditionalUpdate::StoredWithCopyRepair(_)
+        ));
+        let durable = load_at(&session.paths.device);
+        assert_eq!(durable["display_transaction"]["id"], 7);
+        assert_eq!(durable["display_profiles"]["profiles"], json!({}));
+        std::fs::remove_dir(&session.paths.copy).unwrap();
+        assert_eq!(session.load(), durable);
+        assert_eq!(load_at(&session.paths.copy), durable);
+    }
 
     #[test]
     fn every_change_rings_its_readers_and_nothing_else_does() {
@@ -445,6 +795,267 @@ mod tests {
     }
 
     #[test]
+    fn a_durable_write_wait_does_not_block_the_last_committed_read_snapshot() {
+        use std::sync::{Arc, TryLockError, mpsc};
+        use std::time::{Duration, Instant};
+
+        let dir = tempfile::tempdir().unwrap();
+        let session = Arc::new(open(dir.path()));
+        let before = (session.load(), session.revision());
+        // Another settings writer owns the real canonical copy lock. No
+        // injected persistence callback replaces the production file path.
+        let storage_lock = lock_copy(&session.paths.copy).unwrap();
+        let writing = Arc::clone(&session);
+        let writer =
+            std::thread::spawn(move || writing.update_section("power", object(json!({"idle": 5}))));
+        let limit = Instant::now().checked_add(Duration::from_secs(2)).unwrap();
+        let mut contended = false;
+        while Instant::now() < limit {
+            if matches!(session.state.try_lock(), Err(TryLockError::WouldBlock)) {
+                contended = true;
+                break;
+            }
+            std::thread::yield_now();
+        }
+        let reading = session.host_view().unwrap();
+        let (sender, receiver) = mpsc::channel();
+        let reader = std::thread::spawn(move || {
+            let snapshot = (reading.load(), reading.revision());
+            sender.send(snapshot).unwrap();
+        });
+        let observed = receiver.recv_timeout(Duration::from_secs(1));
+        // Always release and join before asserting, including the known-red
+        // baseline. A failed read proof must not leave a locked writer behind.
+        drop(storage_lock);
+        writer.join().unwrap().unwrap();
+        reader.join().unwrap();
+        assert!(contended, "the real writer reached the held storage lock");
+        assert_eq!(
+            observed.expect("committed reads must remain available during storage contention"),
+            before,
+            "an unpersisted write must not appear in the read snapshot"
+        );
+        let committed = session.load();
+        assert_eq!(committed["power"]["idle"], json!(5));
+        assert_eq!(open(dir.path()).load(), committed);
+    }
+
+    #[test]
+    fn host_view_refreshes_external_writes_and_notifies_after_the_committed_snapshot() {
+        use std::sync::{Arc, mpsc};
+        use std::time::Duration;
+
+        let dir = tempfile::tempdir().unwrap();
+        let session = Arc::new(open(dir.path()));
+        let view = session.host_view().unwrap();
+        let initial_revision = view.revision();
+        let observed_view = Arc::downgrade(&view);
+        let (sender, receiver) = mpsc::channel();
+        let listener: Arc<crate::Listener> = Arc::new(move || {
+            if let Some(view) = observed_view.upgrade() {
+                // This callback runs while the storage update owns its state
+                // lock. Reading the public host view must not recurse into it.
+                sender.send((view.load(), view.revision())).unwrap();
+            }
+        });
+        view.changes().listen(&listener);
+        crate::update_section_at(
+            &session.paths.copy,
+            "appearance",
+            object(json!({"theme": "Light"})),
+        )
+        .unwrap();
+        // No file watcher or manually forced refresh: ordinary view reads
+        // supply the fallback when the host's watcher is unavailable.
+        let _ = view.revision();
+        let (document, revision) = receiver.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert_eq!(document["appearance"]["theme"], json!("Light"));
+        assert!(revision > initial_revision);
+        assert_eq!(open(dir.path()).load(), document);
+    }
+
+    /// A view and a channel that hears each time its change signal rings.
+    fn ringing_view(
+        view: &std::sync::Arc<dyn SettingsSource>,
+    ) -> (
+        std::sync::Arc<crate::Listener>,
+        std::sync::mpsc::Receiver<()>,
+    ) {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let sender = std::sync::Mutex::new(sender);
+        let listener: std::sync::Arc<crate::Listener> = std::sync::Arc::new(move || {
+            let _ = sender.lock().unwrap().send(());
+        });
+        view.changes().listen(&listener);
+        (listener, receiver)
+    }
+
+    #[test]
+    fn a_host_view_looks_at_the_copy_only_when_read() {
+        use std::sync::Arc;
+        use std::time::Duration;
+
+        let dir = tempfile::tempdir().unwrap();
+        let session = Arc::new(open(dir.path()));
+        let view = session.host_view().unwrap();
+        let (_listener, rings) = ringing_view(&view);
+        crate::update_section_at(
+            &session.paths.copy,
+            "appearance",
+            object(json!({"theme": "Light"})),
+        )
+        .unwrap();
+        // No timer: the host's watch of the copy (or a read) takes the write
+        // in, so an idle view costs no wakeups. 1.5 s outlasts the 1 s
+        // stamp poll a reader used to drive.
+        assert!(
+            rings.recv_timeout(Duration::from_millis(1500)).is_err(),
+            "an unread view looked at the copy on its own"
+        );
+        let _ = view.revision();
+        rings.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert_eq!(view.load()["appearance"]["theme"], json!("Light"));
+    }
+
+    /// Age the copy past [`SAME_TICK`] and take that in, so its size and
+    /// time alone say it is unchanged, as for a copy last written a while ago.
+    fn settle_copy(session: &SessionSettings) {
+        let an_hour_ago = std::time::SystemTime::now()
+            .checked_sub(std::time::Duration::from_secs(3600))
+            .unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&session.paths.copy)
+            .unwrap()
+            .set_modified(an_hour_ago)
+            .unwrap();
+        session.refresh();
+    }
+
+    #[test]
+    fn a_settled_copy_needs_no_look_until_another_process_writes_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let session = open(dir.path());
+        assert!(
+            session.copy_may_have_changed(),
+            "a copy written within the file system's clock tick needs its contents read"
+        );
+        settle_copy(&session);
+        assert!(!session.copy_may_have_changed());
+        crate::update_section_at(
+            &session.paths.copy,
+            "appearance",
+            object(json!({"theme": "Light"})),
+        )
+        .unwrap();
+        assert!(session.copy_may_have_changed());
+        session.refresh();
+        assert_eq!(session.load()["appearance"]["theme"], json!("Light"));
+    }
+
+    /// Reads of an unchanged copy leave the view's refresh worker asleep:
+    /// an idle desktop reads settings at each clock-minute repaint, and
+    /// every read used to wake it (8 to 21 wakeups in one repaint).
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn reads_of_an_unchanged_copy_leave_the_refresh_worker_asleep() {
+        use std::sync::Arc;
+        use std::time::Duration;
+
+        let dir = tempfile::tempdir().unwrap();
+        let session = Arc::new(open(dir.path()));
+        settle_copy(&session);
+        let (view, worker) =
+            tilo_test_env::idle::spawned_thread("tilo-settings-r", || session.host_view().unwrap());
+        let (_listener, rings) = ringing_view(&view);
+        std::thread::sleep(Duration::from_millis(50));
+        let before = tilo_test_env::idle::context_switches(&worker);
+        for _ in 0..50 {
+            let _ = (view.load(), view.revision());
+        }
+        std::thread::sleep(Duration::from_millis(200));
+        let woke = tilo_test_env::idle::context_switches(&worker).saturating_sub(before);
+        assert_eq!(
+            woke, 0,
+            "50 reads of an unchanged copy woke the worker {woke} times"
+        );
+        crate::update_section_at(
+            &session.paths.copy,
+            "appearance",
+            object(json!({"theme": "Light"})),
+        )
+        .unwrap();
+        let _ = view.revision();
+        rings.recv_timeout(tilo_test_env::hang_bound()).unwrap();
+        assert_eq!(view.load()["appearance"]["theme"], json!("Light"));
+    }
+
+    #[test]
+    fn a_polling_host_view_takes_in_an_unwatched_copy_write_unread() {
+        use std::sync::Arc;
+        use std::time::Duration;
+
+        let dir = tempfile::tempdir().unwrap();
+        let session = Arc::new(open(dir.path()));
+        let view = session
+            .host_view_polling_copy(Duration::from_millis(50))
+            .unwrap();
+        let (_listener, rings) = ringing_view(&view);
+        crate::update_section_at(
+            &session.paths.copy,
+            "appearance",
+            object(json!({"theme": "Light"})),
+        )
+        .unwrap();
+        // Nothing reads the view: its own timer finds the write.
+        rings.recv_timeout(tilo_test_env::hang_bound()).unwrap();
+        assert_eq!(session.load()["appearance"]["theme"], json!("Light"));
+        drop(view);
+    }
+
+    #[test]
+    fn a_refused_record_write_never_replaces_the_host_committed_view() {
+        use std::sync::Arc;
+
+        let dir = tempfile::tempdir().unwrap();
+        let session = Arc::new(open(dir.path()));
+        let view = session.host_view().unwrap();
+        let before = (view.load(), view.revision());
+        // A directory at the canonical record's destination makes the real
+        // atomic replacement fail even when the test runner is privileged.
+        std::fs::create_dir_all(&session.paths.device).unwrap();
+        assert!(
+            view.update_section("power", object(json!({"idle": 5})))
+                .is_err()
+        );
+        assert_eq!((view.load(), view.revision()), before);
+        assert_eq!(session.load(), before.0);
+        assert_eq!(load_at(&session.paths.copy), before.0);
+    }
+
+    #[test]
+    fn dropping_the_last_host_view_retires_its_pending_reader_and_record_owner() {
+        use std::sync::Arc;
+
+        let dir = tempfile::tempdir().unwrap();
+        let session = Arc::new(open(dir.path()));
+        let owner = Arc::downgrade(&session);
+        let view = session.host_view().unwrap();
+        // Exercise the actual refresh channel before releasing custody.
+        let _ = view.load();
+        drop(session);
+        assert!(
+            owner.upgrade().is_some(),
+            "the live host view owns its records"
+        );
+        drop(view);
+        assert!(
+            owner.upgrade().is_none(),
+            "a queued refresh cannot retain the records after host-view teardown"
+        );
+    }
+
+    #[test]
     fn a_write_lands_in_its_scopes_record_reaches_the_copy_and_survives_a_restart() {
         let dir = tempfile::tempdir().unwrap();
         let session = open(dir.path());
@@ -479,6 +1090,122 @@ mod tests {
         drop(session);
         let restarted = open(dir.path());
         assert_eq!(Value::Object(restarted.load()), expected);
+    }
+
+    #[test]
+    fn origin_is_recorded() {
+        let dir = tempfile::tempdir().unwrap();
+        let session = open(dir.path());
+        let paths = session.paths().clone();
+        let origin = ChangeOrigin::action("x").by("agent:alice");
+        session
+            .update_section_by(
+                "input",
+                object(json!({"touchpad_enabled": false, "tap_to_click": true})),
+                &origin,
+            )
+            .unwrap();
+        // Writing what is already stored changes nothing and records nothing.
+        session
+            .update_section_by("input", object(json!({"tap_to_click": true})), &origin)
+            .unwrap();
+        crate::update_section_at(&paths.copy, "power", object(json!({"auto_suspend": false})))
+            .unwrap();
+        session.refresh();
+
+        let log = session.change_log();
+        let entry = |leaf: &str| {
+            log.iter()
+                .find(|entry| entry["leaf"] == leaf)
+                .unwrap_or_else(|| panic!("{leaf} is logged: {log:?}"))
+                .clone()
+        };
+        assert_eq!(log.len(), 3, "one line per changed leaf: {log:?}");
+        let touchpad = entry("touchpad_enabled");
+        assert_eq!(touchpad["section"], "input");
+        assert_eq!(touchpad["before"], Value::Null, "it was unset");
+        assert_eq!(touchpad["after"], false);
+        assert_eq!(touchpad["action"], "x");
+        assert_eq!(touchpad["principal"], "agent:alice");
+        assert_eq!(touchpad["via"], "session");
+        assert_eq!(entry("tap_to_click")["action"], "x");
+        let external = entry("auto_suspend");
+        assert_eq!(external["section"], "power");
+        assert_eq!(
+            external["action"],
+            Value::Null,
+            "a copy take-in has no origin"
+        );
+        assert_eq!(external["principal"], Value::Null);
+        assert_eq!(external["via"], "copy");
+    }
+
+    #[test]
+    fn a_section_change_reads_and_writes_under_the_records_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        let session = std::sync::Arc::new(open(dir.path()));
+        let threads: Vec<_> = (0..2)
+            .map(|_| {
+                let session = std::sync::Arc::clone(&session);
+                std::thread::spawn(move || {
+                    for _ in 0..100 {
+                        session
+                            .update_section_with(
+                                "input",
+                                &ChangeOrigin::local("media-key.touchpad-toggle"),
+                                &mut |section| {
+                                    let on = section
+                                        .get("touchpad_enabled")
+                                        .and_then(Value::as_bool)
+                                        .unwrap_or(true);
+                                    object(json!({"touchpad_enabled": !on}))
+                                },
+                            )
+                            .unwrap();
+                    }
+                })
+            })
+            .collect();
+        for thread in threads {
+            thread.join().unwrap();
+        }
+        assert_eq!(
+            session.load()["input"]["touchpad_enabled"],
+            true,
+            "200 flips from on end on only if none was lost"
+        );
+        assert_eq!(session.change_log().len(), 200, "every flip is attributed");
+    }
+
+    #[test]
+    fn the_change_log_keeps_its_newest_half_once_full() {
+        let dir = tempfile::tempdir().unwrap();
+        let session = open(dir.path());
+        let filler = "x".repeat(4096);
+        let mut writes = 0_u64;
+        while std::fs::metadata(session.paths().change_log()).map_or(0, |meta| meta.len())
+            <= change_log::CAPACITY.div_euclid(2)
+            || writes < 100
+        {
+            writes = writes.saturating_add(1);
+            session
+                .update_section(
+                    "notes",
+                    object(json!({"text": format!("{writes}{filler}")})),
+                )
+                .unwrap();
+        }
+        let size = std::fs::metadata(session.paths().change_log())
+            .unwrap()
+            .len();
+        assert!(size <= change_log::CAPACITY, "bounded: {size} bytes");
+        let log = session.change_log();
+        assert!(!log.is_empty(), "compaction keeps the newest entries");
+        assert_eq!(
+            log.last().unwrap()["after"],
+            format!("{writes}{filler}"),
+            "the newest write survives"
+        );
     }
 
     #[test]
@@ -544,14 +1271,14 @@ mod tests {
         crate::update_section_at(
             &copy,
             "input",
-            object(json!({"natural_scroll": true, "touchpad_enabled": false})),
+            object(json!({"mouse_natural_scroll": true, "touchpad_enabled": false})),
         )
         .unwrap();
         let session = open(dir.path());
         let paths = session.paths().clone();
         assert_eq!(
             Value::Object(load_at(&paths.person)),
-            json!({"input": {"natural_scroll": true}})
+            json!({"input": {"mouse_natural_scroll": true}})
         );
         assert_eq!(
             Value::Object(load_at(&paths.device)),
@@ -571,7 +1298,7 @@ mod tests {
         let session = open(dir.path());
         let expected = json!({
             "appearance": {"mode": "light"},
-            "input": {"natural_scroll": true, "touchpad_enabled": false}
+            "input": {"mouse_natural_scroll": true, "touchpad_enabled": false}
         });
         assert_eq!(Value::Object(session.load()), expected);
         assert_eq!(

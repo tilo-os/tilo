@@ -174,3 +174,32 @@ tube-notice-approval-unavailable = Device approval is unavailable
 tube-notice-revocation-unavailable = Device revocation is unavailable
 tube-notice-busy = Too many requests are pending. Please try again.
 tube-notice-stopped = Tube can't reach its sources here; it is offline.
+
+## History: what each change to the shared library did
+
+tube-library-likes = { $op ->
+    [remove] Took back a like
+   *[other] Liked a video
+}
+tube-library-queue = { $op ->
+    [remove] Removed a video from the shared queue
+   *[other] Added a video to the shared queue
+}
+tube-library-subscriptions = { $op ->
+    [remove] Unsubscribed from a creator
+   *[other] Subscribed to a creator
+}
+tube-library-comment-likes = { $op ->
+    [remove] Took back a comment like
+   *[other] Liked a comment
+}
+tube-library-replies = Changed the replies
+tube-reply-to-comment = Replied { $text }
+tube-retract = Retracted the reply { $item }
+
+## History: the person's own watch history
+
+tube-record = Watched a video
+tube-import = Brought in videos watched on another device
+tube-forget = Removed a video from the watch history
+tube-clear = Cleared the watch history

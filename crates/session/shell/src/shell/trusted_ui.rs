@@ -110,8 +110,8 @@ mod tests {
     use crate::shell::state::{Capability, GRANT_ONCE};
     use std::collections::HashMap;
     use taffy::{NodeId, Style, TaffyTree};
+    use ui::widget::TaffyTreeExt;
     use ui::widget::Widget;
-    use vello::kurbo::Point;
 
     struct Forgery {
         rect: Rect,
@@ -127,21 +127,7 @@ mod tests {
             _theme: &Theme,
             node_map: &mut HashMap<NodeId, *mut dyn Widget>,
         ) -> NodeId {
-            let node = taffy.new_leaf(Style::default()).expect("leaf");
-            node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-            node
-        }
-
-        fn apply_layout(&mut self, _taffy: &TaffyTree<()>, _node: NodeId, _origin: Point) {}
-
-        fn draw(
-            &mut self,
-            _scene: &mut Scene,
-            _transform: Affine,
-            _text_renderer: &mut ui::text_render::TextRenderer,
-            _theme: &Theme,
-            _presence: &ui::presence::PresenceCtx,
-        ) {
+            taffy.widget_leaf(Style::default(), node_map, self)
         }
 
         fn name(&self) -> &str {

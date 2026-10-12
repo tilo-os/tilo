@@ -221,6 +221,58 @@ fn package_signatures_bind_the_hash_chain_and_root() {
 
 #[cfg(unix)]
 #[test]
+fn signal_runtime_loader_executes_after_signed_thin_package_unpack() {
+    use std::os::unix::fs::PermissionsExt;
+    let (key, public) = fresh_identity();
+    let mut manifest = manifest_with_key(&public);
+    manifest.package.kind = tilo_app_package::Kind::Runtime;
+    manifest.package.runtime = None;
+    manifest.package.provides = Some(format!(
+        "tilo-runtime/2026.10.1-signal+native.{}",
+        "a".repeat(32)
+    ));
+    let loader = "lib/lib64/ld-linux-x86-64.so.2";
+    manifest.entrypoint.as_mut().unwrap().bin = loader.into();
+    let payload = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(payload.path().join("lib/lib64")).unwrap();
+    std::fs::write(
+        payload.path().join(loader),
+        b"#!/bin/sh\nprintf 'loader started\\n'\n",
+    )
+    .unwrap();
+    std::fs::write(payload.path().join("lib/java"), b"fixture Java executable").unwrap();
+    let packed = pack(
+        payload.path(),
+        &manifest,
+        &SigningIdentity::from_signing_key(key.clone()),
+    )
+    .unwrap();
+    let thin = tapp::to_bytes(&packed.meta, None).unwrap();
+    let decoded = tapp::read(thin.as_slice(), &mut BTreeMap::new()).unwrap();
+    assert!(matches!(
+        verify(&decoded.meta, &[key.verifying_key().to_bytes()]),
+        Verification::Trusted { .. }
+    ));
+    let output = tempfile::tempdir().unwrap();
+    let root = output.path().join("runtime");
+    unpack(&decoded.meta, &packed, &root).unwrap();
+    let process = std::process::Command::new(root.join(loader))
+        .output()
+        .unwrap();
+    assert!(process.status.success());
+    assert_eq!(process.stdout, b"loader started\n");
+    assert_eq!(
+        std::fs::metadata(root.join("lib/java"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o111,
+        0
+    );
+}
+
+#[cfg(unix)]
+#[test]
 fn thin_runtime_restores_only_its_signed_entrypoint_execute_bits() {
     use std::os::unix::fs::PermissionsExt;
     let (key, public) = fresh_identity();

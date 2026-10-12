@@ -7,7 +7,9 @@
 //! `(col, row)`; `A1` is `(0, 0)`. The `col_to_letters` / `a1_to_addr`
 //! helpers translate to and from the user-facing A1 strings.
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use tilo_locale::{Currency, DateStyle};
+use ui::clock::TimeStyle;
 
 /// Zero-based column index. `0` is column `A`.
 pub type Col = u32;
@@ -245,136 +247,6 @@ impl CellValue {
     pub fn is_numeric(&self) -> bool {
         matches!(self, CellValue::Number(_) | CellValue::Bool(_))
     }
-}
-
-/// A specific world currency. Each carries its own symbol, placement, and
-/// conventional number of decimals — `$1,234.50` vs `1.234,50 €` vs
-/// `¥1,235` (yen has no minor unit).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum Currency {
-    USD,
-    EUR,
-    GBP,
-    JPY,
-    CHF,
-    CAD,
-    AUD,
-    CNY,
-    INR,
-}
-
-impl Currency {
-    /// The currency's display symbol (or ISO code where there's no common
-    /// glyph, e.g. CHF).
-    pub fn symbol(self) -> &'static str {
-        match self {
-            Currency::USD | Currency::CAD | Currency::AUD => "$",
-            Currency::EUR => "\u{20AC}",                 // €
-            Currency::GBP => "\u{00A3}",                 // £
-            Currency::JPY | Currency::CNY => "\u{00A5}", // ¥
-            Currency::CHF => "CHF",
-            Currency::INR => "\u{20B9}", // ₹
-        }
-    }
-
-    /// ISO 4217 code, used as the stable serialized form.
-    pub fn code(self) -> &'static str {
-        match self {
-            Currency::USD => "USD",
-            Currency::EUR => "EUR",
-            Currency::GBP => "GBP",
-            Currency::JPY => "JPY",
-            Currency::CHF => "CHF",
-            Currency::CAD => "CAD",
-            Currency::AUD => "AUD",
-            Currency::CNY => "CNY",
-            Currency::INR => "INR",
-        }
-    }
-
-    pub fn from_code(s: &str) -> Option<Currency> {
-        Some(match s.to_ascii_uppercase().as_str() {
-            "USD" => Currency::USD,
-            "EUR" => Currency::EUR,
-            "GBP" => Currency::GBP,
-            "JPY" => Currency::JPY,
-            "CHF" => Currency::CHF,
-            "CAD" => Currency::CAD,
-            "AUD" => Currency::AUD,
-            "CNY" => Currency::CNY,
-            "INR" => Currency::INR,
-            _ => return None,
-        })
-    }
-
-    /// Conventional minor-unit digits: 2 for most, 0 for yen/yuan-as-yen.
-    pub fn decimals(self) -> usize {
-        match self {
-            Currency::JPY => 0,
-            _ => 2,
-        }
-    }
-
-    /// Whether the symbol leads the amount (`$5`) or trails it (`5 €`).
-    pub fn symbol_leads(self) -> bool {
-        !matches!(self, Currency::EUR | Currency::CHF)
-    }
-
-    /// Every currency the picker offers, in display order.
-    pub const ALL: [Currency; 9] = [
-        Currency::USD,
-        Currency::EUR,
-        Currency::GBP,
-        Currency::JPY,
-        Currency::CHF,
-        Currency::CAD,
-        Currency::AUD,
-        Currency::CNY,
-        Currency::INR,
-    ];
-
-    /// Map a bare currency *symbol* (as typed) to a currency. Ambiguous
-    /// symbols (`$`, `¥`) resolve to the most common owner so smart-entry
-    /// has a sensible default; the per-document currency can override it.
-    pub fn from_symbol(sym: &str) -> Option<Currency> {
-        Some(match sym {
-            "$" => Currency::USD,
-            "\u{20AC}" | "EUR" => Currency::EUR,
-            "\u{00A3}" => Currency::GBP,
-            "\u{00A5}" => Currency::JPY,
-            "CHF" => Currency::CHF,
-            "\u{20B9}" => Currency::INR,
-            _ => return None,
-        })
-    }
-}
-
-/// How dates render. The serde names match the codes used in the shared
-/// settings file (`ISO`/`US`/`EU`/`Long`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum DateStyle {
-    /// `2023-03-15`
-    #[serde(rename = "ISO")]
-    Iso,
-    /// `03/15/2023`
-    #[serde(rename = "US")]
-    Us,
-    /// `15/03/2023`
-    #[serde(rename = "EU")]
-    Eu,
-    /// `15 Mar 2023`
-    #[serde(rename = "Long")]
-    Long,
-}
-
-/// How times render. The serde names match the shared-settings codes
-/// (`H24`/`H12`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum TimeStyle {
-    /// `14:05`
-    H24,
-    /// `2:05 PM`
-    H12,
 }
 
 /// Per-cell display format. The raw input and computed value are
@@ -781,6 +653,81 @@ fn civil_from_days(z: i64) -> (i64, u32, u32) {
 /// date any document can mean, so it is bounded first.
 fn days_from_civil(y: i64, m: u32, d: u32) -> i64 {
     ui::date::days_from_civil(y.clamp(-10_000_000, 10_000_000), m, d)
+}
+
+/// A format is stored as its stable code (`currency:EUR`), written whole.
+impl ui::tilo_resource::Settable for CellFormat {}
+impl ui::tilo_resource::Model for CellFormat {
+    const SCALAR: bool = true;
+    ui::tilo_resource::leaf_paths!();
+    fn to_json(&self) -> serde_json::Value {
+        serde_json::Value::String(self.as_str())
+    }
+    fn from_json(value: &serde_json::Value) -> Result<Self, ui::tilo_resource::ModelError> {
+        match value {
+            serde_json::Value::String(code) => Self::parse_code(code).ok_or_else(|| {
+                ui::tilo_resource::ModelError::invalid(format!("no format `{code}`"))
+            }),
+            serde_json::Value::Null => Ok(Self::General),
+            _ => Err(ui::tilo_resource::ModelError::shape("a format code")),
+        }
+    }
+    fn load(
+        doc: &ui::tilo_resource::Doc,
+        value: &automerge::Value<'_>,
+        id: &automerge::ObjId,
+    ) -> Result<Self, ui::tilo_resource::ModelError> {
+        let code = <ui::tilo_resource::Atom as ui::tilo_resource::Model>::load(doc, value, id)?;
+        Ok(Self::from_str(&code.0))
+    }
+    fn missing() -> Result<Self, ui::tilo_resource::ModelError> {
+        Ok(Self::General)
+    }
+    fn store(
+        &self,
+        doc: &mut ui::tilo_resource::Doc,
+        slot: ui::tilo_resource::Slot<'_>,
+    ) -> Result<(), ui::tilo_resource::ModelError> {
+        slot.put_scalar(doc, automerge::ScalarValue::Str(self.as_str().into()))
+    }
+    fn stores_as(&self, before: &Self) -> bool {
+        self == before
+    }
+}
+
+impl Serialize for CellFormat {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for CellFormat {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let code = String::deserialize(deserializer)?;
+        Self::parse_code(&code)
+            .ok_or_else(|| serde::de::Error::custom(format!("no format `{code}`")))
+    }
+}
+
+impl ui::tilo_resource::JsonSchema for CellFormat {
+    fn json_schema() -> serde_json::Value {
+        serde_json::json!({
+            "type": "string",
+            "description": "general, number, currency, percent, date, time, boolean or text; \
+                            currency:EUR, date:US, time:H12 name a style",
+        })
+    }
+}
+
+impl CellFormat {
+    /// The format a code names: a category alone takes its default style.
+    /// `None` for anything that is not a format.
+    #[must_use]
+    pub fn parse_code(code: &str) -> Option<Self> {
+        let parsed = Self::from_str(code);
+        let head = code.split(':').next().unwrap_or_default();
+        (parsed != Self::General || head == "general").then_some(parsed)
+    }
 }
 
 #[cfg(test)]

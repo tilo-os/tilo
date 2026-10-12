@@ -183,12 +183,24 @@ async fn a_terminal_reaches_an_environment_on_the_persons_relay_and_re_attaches(
 
     let journey = tokio::task::spawn_blocking(move || {
         let deadline = Instant::now() + Duration::from_secs(10);
-        while !socket.exists() && Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(20));
-        }
+        // Binding creates the path before listen makes it connectable.
+        // Keep the original bound, but observe the service rather than its file.
+        let stream = loop {
+            match UnixStream::connect(&socket) {
+                Ok(stream) => break stream,
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
+                    ) && Instant::now() < deadline =>
+                {
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                Err(error) => panic!("supervisor did not become ready: {error}"),
+            }
+        };
 
         // The supervisor lists the relay for the picker.
-        let stream = UnixStream::connect(&socket).unwrap();
         (&stream).write_all(b"{\"op\":\"list-relays\"}\n").unwrap();
         let mut line = String::new();
         std::io::BufRead::read_line(&mut std::io::BufReader::new(&stream), &mut line).unwrap();

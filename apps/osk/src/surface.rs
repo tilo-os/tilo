@@ -20,7 +20,7 @@ use ui::framework::{
 use ui::widget::{AppModel, Decorator, ModelPath, Widget};
 
 use crate::actions::{OskEffect, SetPreference};
-use crate::learned::{Learned, LearnedAction};
+use crate::learned::{Learned, learned};
 use crate::resource::{
     HIT_OVERLAY_FLAG, INPUT_METHOD_FLAG, NO_INPUT_METHOD_FLAG, Osk, OskPreferences, PURPOSE_OPTION,
 };
@@ -30,6 +30,7 @@ use crate::{InputPurpose, OskWidget};
 /// The screenshot scenarios: a field of each kind the keyboard serves, the
 /// French layout, the emoji panel and a word being composed.
 pub(crate) const SCENARIOS: &[&str] = &[
+    "terminal",
     "number",
     "phone",
     "email",
@@ -49,9 +50,12 @@ pub struct OskSurface {
     /// What the keyboard learned from this person, and the revision of it
     /// the keyboard was last presented.
     learned: Option<(PersonRecord<Learned>, u64)>,
+    vocabulary: Option<ui::personal_dictionary::Snapshot>,
+    vocabulary_identity: (Option<[u8; 32]>, u64),
     /// Focus changes the input method reports, while the keyboard serves the
     /// session through one.
     focus: Option<service::FocusChanges>,
+    context: Option<service::ContextChanges>,
 }
 
 impl Default for OskSurface {
@@ -71,7 +75,10 @@ impl OskSurface {
             keyboard: keyboard.with_surface_height(),
             preferences: None,
             learned: None,
+            vocabulary: None,
+            vocabulary_identity: (None, 0),
             focus: None,
+            context: None,
         }
     }
 
@@ -114,8 +121,8 @@ impl OskSurface {
         self.keyboard.present_preferences(&current);
         if !current.personalization
             && let Some((learned, _)) = &self.learned
-            && !learned.with(crate::learned::LearnedTyping::is_empty)
-            && let Err(error) = learned.apply(&LearnedAction::Forget)
+            && !learned.with(Learned::is_empty)
+            && let Err(error) = learned.invoke(&Learned::FORGET.invoke())
         {
             tracing::warn!(%error, "osk: what the keyboard learned could not be forgotten");
         }
@@ -134,10 +141,10 @@ impl OskSurface {
             return;
         };
         let saved = if forget {
-            learned.apply(&LearnedAction::Forget)
+            learned.invoke(&Learned::FORGET.invoke())
         } else {
             lesson.map_or(Ok(()), |lesson| {
-                learned.apply(&LearnedAction::Learn(lesson))
+                learned.invoke(&Learned::LEARN.with(learned::Learn { lesson }))
             })
         };
         if let Err(error) = saved {
@@ -176,7 +183,9 @@ impl OskSurface {
                     self.keyboard.set_visible(false);
                 }
                 self.keyboard.set_output(connection.output);
+                self.keyboard.set_context_handler(connection.invoke_context);
                 self.focus = connection.focus;
+                self.context = connection.context;
             }
             Err(error) => required_input_method_missing(&error),
         }
@@ -211,17 +220,70 @@ impl Decorator for OskSurface {
                 self.keyboard.follow_input_method(transition);
             }
         }
+        if let Some(context) = &mut self.context {
+            for transition in context.take() {
+                match transition {
+                    service::ContextTransition::Context {
+                        generation,
+                        actions,
+                    } => {
+                        let items = actions
+                            .into_iter()
+                            .map(|item| {
+                                crate::toolbar::OskToolbarItem::new(
+                                    &format!("context:{}:{}", generation, item.slot),
+                                    None,
+                                    &item.label,
+                                    crate::toolbar::OskToolbarAction::Contextual {
+                                        generation,
+                                        slot: item.slot,
+                                    },
+                                )
+                            })
+                            .collect();
+                        self.keyboard.set_context_toolbar(generation, items);
+                    }
+                    service::ContextTransition::Result {
+                        generation,
+                        slot,
+                        succeeded,
+                        message,
+                    } => {
+                        self.keyboard
+                            .context_result(generation, slot, succeeded, message);
+                    }
+                }
+            }
+        }
         self.keyboard.sync(state, path);
         self.submit_edits();
         self.present_preferences();
         self.present_learned();
+        let identity = (
+            ui::local_identity::bound().map(|identity| identity.group_public_key),
+            ui::local_identity::generation(),
+        );
+        if identity != self.vocabulary_identity {
+            self.vocabulary_identity = identity;
+            self.keyboard
+                .set_personal_vocabulary(Some(ui::personal_dictionary::reader()));
+        }
+        let vocabulary = ui::personal_dictionary::snapshot().ok();
+        if vocabulary != self.vocabulary {
+            self.vocabulary = vocabulary;
+            self.keyboard.refresh_personal_vocabulary();
+        }
     }
 }
 
 impl ResourceSurface<Osk, OskEffect> for OskSurface {
-    fn present(&mut self, _state: &Rc<()>) {}
+    fn present(&mut self, _state: &Rc<Osk>) {}
 
     fn attach(&mut self, cx: SurfaceCx<Osk>) {
+        if cx.mode().is_live() {
+            self.keyboard
+                .set_personal_vocabulary(Some(ui::personal_dictionary::reader()));
+        }
         if let Some(purpose) = cx.launch_option(PURPOSE_OPTION).and_then(purpose_from_str) {
             self.keyboard.set_purpose(purpose);
         }
@@ -309,6 +371,7 @@ impl ResourceSurface<Osk, OskEffect> for OskSurface {
 pub(crate) fn purpose_from_str(name: &str) -> Option<InputPurpose> {
     Some(match name.to_ascii_lowercase().as_str() {
         "text" => InputPurpose::Text,
+        "terminal" | "code" => InputPurpose::Terminal,
         "number" | "numeric" => InputPurpose::Number,
         "decimal" => InputPurpose::Decimal,
         "phone" | "tel" | "telephone" => InputPurpose::Telephone,
@@ -320,4 +383,18 @@ pub(crate) fn purpose_from_str(name: &str) -> Option<InputPurpose> {
         "time" => InputPurpose::Time,
         _ => return None,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn terminal_scenario_presents_the_real_code_keyboard_purpose() {
+        let mut surface = OskSurface::new();
+        surface.stage(Some("terminal"));
+        assert_eq!(surface.keyboard().purpose(), InputPurpose::Terminal);
+        assert_eq!(purpose_from_str("code"), Some(InputPurpose::Terminal));
+        assert_eq!(purpose_from_str("wrong-kind"), None);
+    }
 }

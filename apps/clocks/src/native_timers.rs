@@ -254,9 +254,17 @@ fn reconcile_alarms(
             ))
         })
         .collect::<std::collections::BTreeMap<_, _>>();
+    delivery.native_completed_alarms.retain(|id, generation| {
+        clocks
+            .alarms
+            .get(&ui::prelude::Id::from_raw(id.as_str()))
+            .is_some_and(|alarm| {
+                alarm.repeat == 0 && *generation == crate::schedule::schedule_of(alarm)
+            })
+    });
     let mut result = Ok(());
     for id in delivery.native_alarm_owners.clone() {
-        if !wanted.contains_key(&id) {
+        if !wanted.contains_key(&id) && !delivery.native_completed_alarms.contains_key(&id) {
             host.cancel(&alarm_id(&id))?;
             delivery.native_alarm_owners.remove(&id);
             delivery.native_alarms_scheduled.remove(&id);
@@ -532,6 +540,78 @@ mod tests {
         assert!(host.pending().unwrap().is_empty());
         assert!(stored.borrow().native_alarm_owners.is_empty());
         assert!(stored.borrow().native_alarms_scheduled.is_empty());
+    }
+
+    #[test]
+    fn reopening_completed_one_shot_preserves_host_snooze_until_edit() {
+        let now = chrono::Local::now();
+        let due = now + chrono::Duration::minutes(2);
+        let id = Id::from_raw("completed-one-shot");
+        let mut clocks = Clocks::default();
+        clocks.alarms.push(
+            id.clone(),
+            crate::Alarm {
+                label: "Fixture".into(),
+                hour: u8::try_from(chrono::Timelike::hour(&due)).unwrap(),
+                minute: u8::try_from(chrono::Timelike::minute(&due)).unwrap(),
+                repeat: 0,
+                enabled: true,
+                enabled_at_ms: now.timestamp_millis(),
+            },
+        );
+        let mut delivery = Delivery::default();
+        let host = TestScheduler::default();
+        crate::schedule::tick(&clocks, &mut delivery, now.with_timezone(&Utc), now);
+        reconcile(
+            None,
+            &clocks,
+            &mut delivery,
+            &host,
+            now.with_timezone(&Utc),
+            |_| Ok(()),
+        )
+        .unwrap();
+        let deadline = delivery.alarms[id.as_str()].next_due_ms.unwrap();
+        let ring = DateTime::<Utc>::from_timestamp_millis(deadline).unwrap();
+        let tick = crate::schedule::tick(
+            &clocks,
+            &mut delivery,
+            ring,
+            ring.with_timezone(&chrono::Local),
+        );
+        assert_eq!(tick.finished_alarms, vec![id.clone()]);
+        assert!(matches!(
+            tick.due.as_slice(),
+            [crate::schedule::DueEvent::Alarm {
+                native_scheduled: true,
+                ..
+            }]
+        ));
+        // The app's existing automatic completion edit follows the tick.
+        clocks.alarms.get_mut(&id).unwrap().enabled = false;
+        let encoded = serde_json::to_vec(&delivery).unwrap();
+        let mut restarted: Delivery = serde_json::from_slice(&encoded).unwrap();
+        crate::schedule::tick(
+            &clocks,
+            &mut restarted,
+            ring,
+            ring.with_timezone(&chrono::Local),
+        );
+        reconcile(None, &clocks, &mut restarted, &host, ring, |_| Ok(())).unwrap();
+        assert!(
+            host.pending.borrow().contains_key(&alarm_id(id.as_str())),
+            "automatic completion canceled the retained host occurrence"
+        );
+        assert!(restarted.native_alarm_owners.contains(id.as_str()));
+        clocks.alarms.get_mut(&id).unwrap().minute =
+            (clocks.alarms.get(&id).unwrap().minute + 1) % 60;
+        reconcile(None, &clocks, &mut restarted, &host, ring, |_| Ok(())).unwrap();
+        assert!(
+            host.pending.borrow().is_empty(),
+            "editing a completed generation must cancel it"
+        );
+        assert!(restarted.native_completed_alarms.is_empty());
+        assert!(restarted.native_alarm_owners.is_empty());
     }
 
     #[test]

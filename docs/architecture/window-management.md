@@ -112,7 +112,7 @@ would show it; a chord opens the sheet and never bypasses it.
 | Previous / next tab | `tab.previous` / `-next` | Ctrl+Shift+Tab / Ctrl+Tab | click a tab | today |
 | Tab into the neighbouring group | `tab.move-to-group-previous` / `-next` | Super+[ / ] | drag the tab onto the group | today |
 | Tab into a new group | `tab.move-to-new-group` | Super+Shift+Enter | drag the tab into a gap | today |
-| New tab, close, reopen, duplicate | `tab.new.terminal.here`, `tab.close`, `tab.reopen`, `tab.duplicate` | Super+T, Super+W, Super+Shift+T, Super+D | `+` and × in the tab strip | today |
+| New tab, close, reopen, duplicate | `tab.new.terminal.here`, `tab.close`, `tab.reopen`, `tab.duplicate` | Super+T, Super+W, Ctrl+Shift+T, Super+D | `+` and × in the tab strip | today |
 
 **Maximize** makes the group fill its display's work area. The top bar and the
 workspace wheel stay, because they say where you are; the group's title,

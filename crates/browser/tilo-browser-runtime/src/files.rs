@@ -47,10 +47,3 @@ pub async fn flush_files() -> Result<(), JsValue> {
         .await
         .map_err(|e| JsValue::from_str(&e.to_string()))
 }
-
-/// Changes to apps' files not yet in OPFS.
-#[wasm_bindgen]
-#[must_use]
-pub fn pending_files() -> u32 {
-    u32::try_from(tilo_files::web::pending(&tilo_paths::default_profile())).unwrap_or(u32::MAX)
-}

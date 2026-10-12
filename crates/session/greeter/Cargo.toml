@@ -30,6 +30,10 @@ bounded-command = { path = "../../system/bounded-command" }
 greetd-client = { path = "../greetd-client" }
 console-control = { path = "../console-control" }
 serde_json.workspace = true
+settings-store = { path = "../../system/settings-store" }
+wayland-client.workspace = true
+wayland-protocols-wlr = { version = "0.3.10", features = ["client"] }
+rustix = { workspace = true, features = ["event"] }
 # The sign-in screen's clock reads local time, as the lock screen's does.
 chrono = { workspace = true, features = ["clock", "std"] }
 # Battery level and charging state for the status corner, read from sysfs.
@@ -39,6 +43,7 @@ workspace-hack = { version = "0.1" }
 [dev-dependencies]
 tilo-test-env = { path = "../../dev/test-env" }
 tempfile.workspace = true
+ui = { package = "tilo-ui", path = "../../sdk/ui-core", features = ["test-support"] }
 
 [lints]
 workspace = true

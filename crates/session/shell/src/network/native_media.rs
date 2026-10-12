@@ -5,6 +5,8 @@
 mod authority;
 mod devices;
 mod observer;
+mod output;
+pub(crate) use output::prepare_playback;
 mod session;
 pub(crate) use session::Factory;
 #[cfg(test)]

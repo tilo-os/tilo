@@ -8,9 +8,14 @@ publish = false
 [dependencies]
 hex.workspace = true
 bounded-command = { path = "../bounded-command" }
-tilo-xdg-paths = { path = "../xdg-paths" }
+postcard = { workspace = true, features = ["alloc"] }
+tilo-files = { path = "../../platform/tilo-files" }
+tilo-paths.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+thiserror.workspace = true
+wire-frame = { path = "../wire-frame", features = ["postcard"] }
+zeroize.workspace = true
 fcast-sender-sdk.workspace = true
 mdns-sd.workspace = true
 getrandom.workspace = true

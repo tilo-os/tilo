@@ -20,7 +20,7 @@ use winit::window::CursorIcon;
 /// Retained layout and widget lookup state.
 #[cfg_attr(
     not(feature = "native"),
-    allow(
+    expect(
         dead_code,
         reason = "the safe area and content origin are read only by the native event-loop runner"
     )
@@ -43,6 +43,18 @@ pub(super) struct LayoutRuntime {
     pub(super) safe_area: crate::scale::SafeArea,
     /// Where the root is placed: the safe area's top-left corner.
     pub(super) content_origin: vello::kurbo::Point,
+    /// How many times the taffy tree was rebuilt: a host comparing two
+    /// frames' widgets needs to know they are still the same ones.
+    pub(super) rebuilds: u64,
+    /// Whether every rebuild requested since the last one was a change the
+    /// widgets describe ([`crate::widget::StructureChange::Described`]).
+    /// Anything else that asks for a rebuild goes through
+    /// [`Self::request_rebuild`], which clears it.
+    pub(super) rebuild_described: bool,
+    /// Whether every rebuild since a host armed it (a frame that compares
+    /// itself with the last one) was described: that host keeps the frame's
+    /// damage instead of repainting whole.
+    pub(super) frame_rebuilds_described: bool,
 }
 
 impl LayoutRuntime {
@@ -57,20 +69,32 @@ impl LayoutRuntime {
             last_layout_logical: None,
             safe_area: crate::scale::SafeArea::default(),
             content_origin: vello::kurbo::Point::ORIGIN,
+            rebuilds: 0,
+            rebuild_described: true,
+            frame_rebuilds_described: false,
         }
+    }
+
+    /// Rebuild the tree before the next layout, for a reason no widget
+    /// describes: the frame that does it repaints whole.
+    pub(super) fn request_rebuild(&mut self) {
+        self.structure_dirty = true;
+        self.rebuild_described = false;
     }
 }
 
 /// Input modality, gesture, cursor, and tooltip state.
 #[cfg_attr(
     not(feature = "native"),
-    allow(
+    expect(
         dead_code,
-        reason = "some fields are read only by the native event-loop runner"
+        reason = "keyboard layout, gestures, cursor, tooltip, pen and pointer state are read only by the native event-loop runner"
     )
 )]
 pub(super) struct InputRuntime {
     pub(super) modifiers: winit::event::Modifiers,
+    /// Focused native configuration only; no logical key, compose or press history.
+    pub(super) keyboard_layout: Option<std::sync::Arc<winit::keyboard::KeyboardLayout>>,
     pub(super) interaction: crate::interaction::InteractionEnvironment,
     pub(super) platform: crate::platform::PlatformConventions,
     pub(super) nav_gestures: crate::gesture::NavGestureRecognizer,
@@ -81,12 +105,18 @@ pub(super) struct InputRuntime {
     /// The app is shown inside a host whose focus order continues past it:
     /// Tab at either end of the app's order leaves it for the host.
     pub(super) tab_order_continues_in_host: bool,
+    /// The pointer buttons held down, one bit each; see `input_publication`.
+    pub(super) pointer_buttons: u32,
+    /// Where the pointer last moved, replayed before a press or release
+    /// that follows a rebuild under a still pointer.
+    pub(super) pointer_replay: crate::pointer_replay::PointerReplay,
 }
 
 impl InputRuntime {
     pub(super) fn new() -> Self {
         Self {
             modifiers: winit::event::Modifiers::default(),
+            keyboard_layout: None,
             interaction: crate::interaction::InteractionEnvironment::default(),
             platform: crate::platform::PlatformConventions::default(),
             nav_gestures: crate::gesture::NavGestureRecognizer::new(),
@@ -94,6 +124,8 @@ impl InputRuntime {
             tooltip_host: crate::widget::TooltipHost::new(),
             pen: crate::pen::PenInput::default(),
             tab_order_continues_in_host: false,
+            pointer_buttons: 0,
+            pointer_replay: crate::pointer_replay::PointerReplay::default(),
         }
     }
 }
@@ -108,6 +140,9 @@ pub(super) struct ActionRuntime {
     pub(super) action_palette: Option<crate::action_palette::ActionPalette>,
     /// Stable opener identity, never a node or pointer from the modal's old tree.
     pub(super) ordinary_palette_return_focus: Option<crate::widget::layout::CompositionFocus>,
+    /// The control an accessibility action focused while the same action
+    /// replaced widgets: focused again once the next layout admits them.
+    pub(super) focus_after_rebuild: Option<crate::widget::layout::CompositionFocus>,
     pub(super) action_registry: tilo_actions::ActionRegistry,
     // Independent from scheduling invalidation: mutable unbound decoder access.
     pub(super) action_registry_generation: u64,
@@ -141,6 +176,7 @@ pub(super) struct ActionRuntime {
     pub(super) resource_generation: Cell<u64>,
     pub(super) permission_generation: Cell<u64>,
     pub(super) last_control_availability: Option<(ResourceCacheKey, u64)>,
+    pub(super) local_history_status: Option<(bool, bool, bool)>,
     pub(super) last_published_actions: Option<Vec<tilo_actions::ActionDescriptor>>,
     #[cfg(test)]
     pub(super) action_surface_publication_attempts: usize,
@@ -190,6 +226,7 @@ impl ActionRuntime {
             published_invocations: Default::default(),
             action_palette: None,
             ordinary_palette_return_focus: None,
+            focus_after_rebuild: None,
             action_registry: tilo_actions::ActionRegistry::new(),
             action_registry_generation: 0,
             action_transport: Box::new(tilo_actions::LocalTransport::new()),
@@ -210,6 +247,7 @@ impl ActionRuntime {
             resource_generation: Cell::new(0),
             permission_generation: Cell::new(0),
             last_control_availability: None,
+            local_history_status: None,
             last_published_actions: None,
             #[cfg(test)]
             action_surface_publication_attempts: 0,
@@ -289,13 +327,17 @@ impl PersistenceRuntime {
 
 /// Continuation publication and deferred restore state.
 pub(super) struct ContinuationRuntime {
+    pub(super) owner_view: crate::collaboration::owner_view::OwnerViewRuntime,
     pub(super) last_published: Option<crate::collaboration::ContinuationMetadata>,
+    /// Distinguish a queued clear from an unknown prior projection.
+    pub(super) publication_initialized: bool,
     pub(super) pending_restore: Option<crate::collaboration::ContinuationMetadata>,
     /// Generic view restoration waits until layout has built the focus order.
     pub(super) pending_view: Option<crate::view::View>,
     /// Route epoch for private continuity. A new acknowledged route must
     /// republish unchanged metadata and playback through that route only.
     pub(super) last_private_route: Option<crate::collaboration::PrimaryRouteWitness>,
+    pub(super) private_instance: Option<u64>,
     /// The document this window shows has left its workspace, and the
     /// window knows: it stopped editing and told its desktop once.
     pub(super) retired: bool,
@@ -304,10 +346,13 @@ pub(super) struct ContinuationRuntime {
 impl ContinuationRuntime {
     pub(super) fn new(pending_restore: Option<crate::collaboration::ContinuationMetadata>) -> Self {
         Self {
+            owner_view: Default::default(),
             last_published: None,
+            publication_initialized: false,
             pending_restore,
             pending_view: None,
             last_private_route: None,
+            private_instance: None,
             retired: false,
         }
     }
@@ -335,6 +380,7 @@ impl CollaborationRuntime {
         manager: CollaborationManager,
         local_author: crate::permissions::UserId,
     ) -> Self {
+        crate::history_source::authors::read_as(&local_author.0);
         Self {
             manager,
             room_manager: None,
@@ -349,9 +395,9 @@ impl CollaborationRuntime {
 /// Presence publication, follow, and frame-pump state.
 #[cfg_attr(
     not(feature = "native"),
-    allow(
+    expect(
         dead_code,
-        reason = "some fields are read only by the native event-loop runner"
+        reason = "the last published presence is read only by the native event-loop runner"
     )
 )]
 pub(super) struct PresenceRuntime {
@@ -400,9 +446,9 @@ impl HistoryRuntime {
 /// Host window identity and fullscreen reconciliation state.
 #[cfg_attr(
     not(feature = "native"),
-    allow(
+    expect(
         dead_code,
-        reason = "some fields are read only by the native event-loop runner"
+        reason = "fullscreen state is read only by the native event-loop runner"
     )
 )]
 pub(super) struct WindowRuntime {

@@ -13,33 +13,49 @@ def succeeded(reply):
     return update.get("output", {}).get("value")
 
 
-def invoke(vm, row, args, out, name, timeout=45, require_job=True):
+class PendingJob:
+    """One admitted invocation; permits a portal conversation before terminal polling."""
+    def __init__(self, vm, receipt, out, name):
+        self.vm, self.receipt, self.out, self.name = vm, receipt, out, name
+        self.job = receipt.get("receipt", {}).get("broker_invocation_id")
+        self.invocation = receipt.get("receipt", {}).get("update", {}).get("invocation")
+        require(isinstance(self.job, int) and not isinstance(self.job, bool), "missing broker job identity")
+        require(bool(self.invocation), "missing invocation identity")
+
+    def poll(self):
+        reply = self.vm.control_json("actions", "status", str(self.job))
+        update = reply.get("receipt", {}).get("update", {})
+        require(reply.get("receipt", {}).get("broker_invocation_id") == self.job
+                and update.get("invocation") == self.invocation, "action status changed invocation identity")
+        require(update.get("state") in ("accepted", "running", "succeeded", "failed", "cancelled"),
+                "unobservable action status")
+        return reply
+
+    def pending(self):
+        require(self.poll()["receipt"]["update"]["state"] in ("accepted", "running"),
+                "original action ended before chooser completion")
+
+    def finish(self, timeout=45):
+        def probe():
+            reply = self.poll()
+            return reply if reply["receipt"]["update"]["state"] in ("succeeded", "failed", "cancelled") else None
+        final = wait_until(probe, timeout, interval=0.5)
+        require(final is not None, "action did not reach authoritative terminal status")
+        (self.out / f"{self.name}-status.json").write_text(json.dumps(final, indent=2))
+        return succeeded(final)
+
+
+def begin(vm, row, args, out, name):
     receipt = vm.invoke(row["provider"], row["id"], args)
     (out / f"{name}-invoke.json").write_text(json.dumps(receipt, indent=2))
-    job = receipt.get("receipt", {}).get("broker_invocation_id")
-    if not require_job and job is None:
+    return PendingJob(vm, receipt, out, name)
+
+
+def invoke(vm, row, args, out, name, timeout=45, require_job=True):
+    if require_job:
+        return begin(vm, row, args, out, name).finish(timeout)
+    receipt = vm.invoke(row["provider"], row["id"], args)
+    (out / f"{name}-invoke.json").write_text(json.dumps(receipt, indent=2))
+    if receipt.get("receipt", {}).get("broker_invocation_id") is None:
         return succeeded(receipt)
-    require(isinstance(job, int) and not isinstance(job, bool), "missing broker job identity")
-    expected_invocation = receipt.get("receipt", {}).get("update", {}).get("invocation")
-    require(bool(expected_invocation), "missing invocation identity")
-
-    def probe():
-        reply = vm.control_json("actions", "status", str(job))
-        require(reply.get("receipt", {}).get("broker_invocation_id") == job
-                and reply.get("receipt", {}).get("update", {}).get("invocation") == expected_invocation,
-                "action status changed invocation identity")
-        state = reply.get("receipt", {}).get("update", {}).get("state")
-        if state in ("succeeded", "failed", "cancelled"):
-            return reply
-        require(state in ("accepted", "running"), "unobservable action status")
-        return None
-
-    final = wait_until(probe, timeout, interval=0.5)
-    require(final is not None, "action did not reach authoritative terminal status")
-    require(final.get("receipt", {}).get("broker_invocation_id") == job
-            and final["receipt"]["update"].get("invocation") == receipt["receipt"]["update"].get("invocation"),
-            "action status changed invocation identity")
-    (out / f"{name}-status.json").write_text(json.dumps(final, indent=2))
-    return succeeded(final)
-
-
+    return PendingJob(vm, receipt, out, name).finish(timeout)

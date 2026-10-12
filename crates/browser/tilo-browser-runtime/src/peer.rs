@@ -512,11 +512,7 @@ pub async fn ask_to_join(
         &root,
         signer.device_public_key(),
         &label,
-        web_time::SystemTime::now()
-            .duration_since(web_time::UNIX_EPOCH)
-            .ok()
-            .and_then(|elapsed| u64::try_from(elapsed.as_nanos()).ok())
-            .unwrap_or_default(),
+        ui::time::unix_now_ns(),
     )
     .await
     .map_err(js_error)?;
@@ -1226,7 +1222,6 @@ struct JsDelegation {
     device: String,
     rooms: Vec<String>,
     apps: Vec<String>,
-    may_confirm: bool,
     expires_at_ns: u64,
 }
 
@@ -1265,7 +1260,6 @@ pub fn verify_agent_delegation(
         device: hex::encode(delegation.agent_device_public_key),
         rooms: delegation.scope.rooms,
         apps: delegation.scope.apps,
-        may_confirm: delegation.scope.may_confirm,
         expires_at_ns: delegation.expires_at_ns,
     })
     .map_err(js_error)
@@ -1276,6 +1270,8 @@ pub fn verify_agent_delegation(
 pub struct WasmPeer {
     id: u32,
     device_key: [u8; 32],
+    reporter_cert: DeviceCert,
+    owner_cert: DeviceCert,
     handle: PeerHandle,
     durable_events: PeerEvents,
     remote_events: PeerEvents,
@@ -1347,6 +1343,8 @@ impl WasmPeer {
             })
         };
         let device_key = config.cert.device_public_key;
+        let reporter_cert = config.cert.clone();
+        let owner_cert = config.host_cert.clone();
         install_identity(&config.cert, config.display_name);
         let handle = PeerHandle::start(
             PeerConfig {
@@ -1379,6 +1377,7 @@ impl WasmPeer {
                         return;
                     };
                     crate::replication::pump(id);
+                    crate::feedback_delivery::pump(id);
                     let current = listeners.borrow().clone();
                     for listener in current {
                         let _ = listener.call0(&JsValue::NULL);
@@ -1389,6 +1388,8 @@ impl WasmPeer {
         Ok(Self {
             id,
             device_key,
+            reporter_cert,
+            owner_cert,
             durable_events: handle.events(),
             remote_events: handle.events(),
             voice_events: handle.events(),
@@ -1397,6 +1398,26 @@ impl WasmPeer {
             listeners,
             replication: RefCell::new(replication),
         })
+    }
+
+    /// Select an existing destination. Admission comes only from the connected
+    /// owner, asynchronously; mount after feedbackStatus reports ready.
+    /// # Errors
+    /// Refuses missing existing membership, record or a repeated configuration.
+    #[wasm_bindgen(js_name = configureFeedback)]
+    pub fn configure_feedback(&self, destination: &str) -> Result<(), JsError> {
+        crate::feedback_delivery::configure(
+            self.id,
+            self.handle.clone(),
+            self.reporter_cert.clone(),
+            self.owner_cert.clone(),
+            serde_json::from_str(destination).map_err(js_error)?,
+        )
+        .map_err(js_error)
+    }
+    #[wasm_bindgen(js_name = feedbackStatus)]
+    pub fn feedback_status(&self) -> String {
+        crate::feedback_delivery::status(self.id)
     }
 
     /// `PeerSnapshot` JSON.
@@ -1526,11 +1547,7 @@ impl WasmPeer {
         }
         let options: Options = serde_json::from_str(&options).map_err(js_error)?;
         let root = PageSigner::from_js(&root)?;
-        let now_ns = web_time::SystemTime::now()
-            .duration_since(web_time::UNIX_EPOCH)
-            .ok()
-            .and_then(|elapsed| u64::try_from(elapsed.as_nanos()).ok())
-            .unwrap_or_default();
+        let now_ns = ui::time::unix_now_ns();
         let mut grant = tilo_relay_protocol::rooms::PreAdmission {
             room: options.room,
             role: options.role,
@@ -1937,17 +1954,5 @@ impl WasmPeer {
         self.handle.close();
         crate::replication::close(self.id);
         ui::local_identity::install_source(None);
-    }
-}
-
-impl WasmPeer {
-    /// A toolkit transport over this session for the desktop's
-    /// `CollaborationManager::with_transport`.
-    #[allow(
-        dead_code,
-        reason = "consumed by the desktop mount (milestone 3), which lands separately"
-    )]
-    pub(crate) fn collab_transport(&self) -> tilo_browser_peer::transport::RelayCollabTransport {
-        tilo_browser_peer::transport::RelayCollabTransport::new(self.handle.clone())
     }
 }

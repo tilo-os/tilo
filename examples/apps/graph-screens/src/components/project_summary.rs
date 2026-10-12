@@ -65,7 +65,7 @@ mod tests {
     #[test]
     fn component_exposes_typed_props_and_stable_semantics() {
         let props = ProjectSummaryProps::new("Example title", "Example detail");
-        let mut app = ui::headless::Driver::new(
+        let mut app = ui::headless::FrameHarness::new(
             ui::State::new(),
             Box::new(project_summary("example", &props)),
             (480, 240),
@@ -93,7 +93,7 @@ mod tests {
         let context = register_ui_graph(UiBuildContext::default());
         let widget = ui::UiDocumentExt::build_with(&document, &ui::Theme::default(), &context)
             .expect("registered component");
-        let mut app = ui::headless::Driver::new(ui::State::new(), widget, (480, 240));
+        let mut app = ui::headless::FrameHarness::new(ui::State::new(), widget, (480, 240));
         app.expect(
             &SemanticExpectation::named("example-title")
                 .role(Role::Heading { level: 2 })

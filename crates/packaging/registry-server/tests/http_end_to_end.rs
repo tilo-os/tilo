@@ -134,10 +134,7 @@ async fn moderation_http_is_signed_authorised_and_bounded() {
             .unwrap();
         approve(&h, "so.tilo.editor");
 
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
+        let now = tilo_clock::try_unix_now().unwrap();
         let report = signed_report(&h.outsider, "http-report-one", now);
         let response = client
             .post(url(h.addr, "/moderation/mutations"))
@@ -266,10 +263,7 @@ fn publish_snapshot(storage: &Storage, allowlist: &PublisherAllowlist, owner: &S
     let previous = storage.load_snapshot().unwrap();
     let mut entries = storage.load_entries().unwrap();
     entries.sort_by(|left, right| left.package_id.cmp(&right.package_id));
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
+    let now = tilo_clock::try_unix_now().unwrap();
     let mut snapshot = SignedRegistrySnapshot {
         protocol: registry_types::SNAPSHOT_PROTOCOL,
         sequence: previous
@@ -484,6 +478,77 @@ async fn server_serves_identity_snapshot_and_staged_blobs() {
                 .await
                 .is_err()
         );
+
+        // phase: stored_objects_are_served_as_checked_compressed_twins
+        // Storing an object writes its zstd twin; the twin is served as an
+        // immutable `application/zstd` body with no Content-Encoding, and
+        // only while it decompresses to the object it is named for.
+        let binary_hex = binary.to_hex();
+        let decompress = |body: &[u8], limit: usize| {
+            let mut out = Vec::new();
+            tilo_app_package::compressed::decompress_bounded(body, limit as u64, &mut out)
+                .expect("twin decompresses");
+            out
+        };
+        for (path, raw) in [
+            (
+                format!("/blobs/{binary_hex}.zst"),
+                b"reviewed binary".to_vec(),
+            ),
+            (format!("/artifacts/{digest}.tapp.zst"), full.clone()),
+        ] {
+            let served = client.get(url(h.addr, &path)).send().await.unwrap();
+            assert_eq!(served.status(), reqwest::StatusCode::OK, "{path}");
+            assert_eq!(served.headers()["content-type"], "application/zstd");
+            assert_eq!(
+                served
+                    .headers()
+                    .get_all("cache-control")
+                    .iter()
+                    .collect::<Vec<_>>(),
+                ["public, max-age=31536000, immutable"],
+                "exactly one Cache-Control, so an edge cache may keep it"
+            );
+            assert!(served.headers().get("content-encoding").is_none());
+            let body = served.bytes().await.unwrap();
+            assert_eq!(decompress(&body, raw.len()), raw, "{path}");
+        }
+        let data = h.tmp.path();
+        let twin_file = data.join("payload-blobs").join(format!("{binary_hex}.zst"));
+        assert!(twin_file.exists(), "storing the blob wrote its twin");
+        // A twin of other bytes is never served under this name.
+        std::fs::write(
+            &twin_file,
+            tilo_app_package::compressed::compress(b"reviewed binarY").unwrap(),
+        )
+        .unwrap();
+        let tampered = client
+            .get(url(h.addr, &format!("/blobs/{binary_hex}.zst")))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            tampered.status(),
+            reqwest::StatusCode::INTERNAL_SERVER_ERROR
+        );
+        // Without a twin the route is a 404 and clients take the raw blob.
+        std::fs::remove_file(&twin_file).unwrap();
+        let missing = client
+            .get(url(h.addr, &format!("/blobs/{binary_hex}.zst")))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(missing.status(), reqwest::StatusCode::NOT_FOUND);
+        assert_eq!(
+            blobs.fetch_all(&[binary]).await.unwrap()[0].as_ref(),
+            b"reviewed binary"
+        );
+        // The backfill writes exactly the missing twin.
+        let report = h.storage.compress_stored_objects().unwrap();
+        assert_eq!(report.written, 1, "{report:?}");
+        assert!(report.present >= 2, "{report:?}");
+        assert!(twin_file.exists());
+        assert_eq!(h.storage.compress_stored_objects().unwrap().written, 0);
     }
 }
 
@@ -886,6 +951,43 @@ async fn package_ids_must_lie_in_a_verified_namespace() {
         .await
         .expect("send");
     assert_eq!(resp.status(), reqwest::StatusCode::FORBIDDEN);
+}
+
+/// An allowlisted publisher whose row names no namespace — a hand-written or
+/// pre-namespace `publishers.toml` row — owns nothing, so it cannot claim Tilo's
+/// own `so.tilo.store`.
+#[tokio::test]
+async fn publisher_without_namespace_cannot_add_so_tilo_entry() {
+    let h = spawn_server(true).await;
+    std::fs::write(
+        h.storage.publishers_path(),
+        format!(
+            "[[publisher]]\npubkey_hex = \"{}\"\ncan_add_new = true\nnote = \"community\"\n",
+            hex::encode(h.publisher.verifying_key().to_bytes())
+        ),
+    )
+    .unwrap();
+    let row = h.storage.load_allowlist().unwrap().publishers[0].clone();
+    assert!(row.can_add_new);
+    assert!(row.namespaces.is_empty());
+
+    let client = tilo_net::http::client().build().expect("http client");
+    let mut store = sample_entry(&h.publisher, 100);
+    store.package_id = "so.tilo.store".into();
+    registry_types::sign_entry(&mut store, &h.publisher);
+    let resp = client
+        .post(url(h.addr, "/entries"))
+        .json(&sign_change_request(EntryAction::Add, store, &h.publisher))
+        .send()
+        .await
+        .expect("send");
+    assert_eq!(resp.status(), reqwest::StatusCode::FORBIDDEN);
+    let body = resp.text().await.unwrap();
+    assert!(
+        body.contains("package id so.tilo.store is outside this publisher's verified namespaces"),
+        "{body}"
+    );
+    assert!(h.storage.load_pending_submissions().unwrap().is_empty());
 }
 
 /// A package signed by `key`, in full.

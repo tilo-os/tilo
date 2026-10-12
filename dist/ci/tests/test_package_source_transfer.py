@@ -131,6 +131,9 @@ with (root / "calls").open("a") as calls:
     calls.write(" ".join(args) + "\\n")
 if args[0] == "create":
     print("fixture-container")
+elif args[0] == "start" and os.environ.get("TRANSFER_TEST_FAILURE") == "runtime":
+    print("late package validation deliberately failed", file=sys.stderr)
+    sys.exit(64)
 elif args[:2] == ["cp", "-"]:
     assert args[2] == "fixture-container:/", args
     (root / "received.tar").write_bytes(sys.stdin.buffer.read())
@@ -152,6 +155,14 @@ elif args[0] == "cp":
                                  "fixture", "fixture-image", "amd64"],
                                 env=env, capture_output=True, text=True)
         return result, (self.root / "calls").read_text()
+
+    def test_failed_validation_copies_artifacts_before_container_cleanup(self):
+        result, calls = self.run_packaging_boundary("runtime")
+        self.assertEqual(result.returncode, 64, result.stderr)
+        self.assertTrue((self.source / "dist/ci-output/fixture-amd64/new-package.deb").is_file())
+        self.assertIn("status=64", (self.source / "dist/ci-output/fixture-amd64/CI_FAILURE").read_text())
+        self.assertLess(calls.index("start --attach"), calls.index("cp fixture-container:/artifacts/."))
+        self.assertLess(calls.index("cp fixture-container:/artifacts/."), calls.index("rm --force fixture-container"))
 
     def test_packaging_streams_filtered_source_and_failed_copies_prevent_build(self):
         with self.subTest(phase="packaging uses filtered stream and preserves all outputs"):

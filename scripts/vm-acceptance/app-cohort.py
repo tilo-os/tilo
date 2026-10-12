@@ -7,6 +7,7 @@ Run only after the deployment owner hands off the matched cohort.
 import argparse
 import json
 import re
+import shlex
 import time
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -90,18 +91,6 @@ def windows(state, app):
 
 
 # Public package/process metadata only; no argv, environment or document content.
-MAPPED = r'''
-import hashlib,json,os,pathlib,sys
-rows=[]
-for p in pathlib.Path('/proc').iterdir():
- if not p.name.isdigit(): continue
- try:
-  if p.stat().st_uid!=os.getuid() or (p/'comm').read_text().strip()!=sys.argv[1]: continue
-  paths=sorted({l.split()[-1] for l in (p/'maps').read_text().splitlines() if '/run/tilo-runtime/' in l})
-  rows.append({'pid':int(p.name),'runtime':[{'path':f,'sha256':hashlib.sha256((p/'root'/f.lstrip('/')).read_bytes()).hexdigest()} for f in paths]})
- except (FileNotFoundError,ProcessLookupError): continue
-print(json.dumps({'uid':os.getuid(),'processes':rows}))
-'''
 BASELINE = r'''
 import json,os,pathlib,subprocess,tomllib
 apps=subprocess.run(['flatpak','list','--app','--columns=application,installation'],capture_output=True,text=True,check=True).stdout.splitlines()
@@ -134,10 +123,16 @@ def cohort(vm, args, out):
     return receipt, shown, installed
 
 
-def mapped(vm, comm, installed, uid, out):
-    value = first_json(vm.run("slot", "exec", "--", "python3", "-c", MAPPED, comm))
+def mapped(vm, comm, installed, uid, out, *, executable=None):
+    source = Path(__file__).with_name("acceptance").joinpath("runtime_backing.py").read_text()
+    value = first_json(vm.root_exec("python3 -c " + shlex.quote(source) + " " + shlex.quote(comm) + " " + str(uid)))
+    require(value.get("method") == "proc-map-files-fd" and value.get("reader_uid") == 0,
+            "exact read-only mapped backing observation unavailable")
     require(value["uid"] == uid and value["processes"], "native worker unobservable")
     for process in value["processes"]:
+        if executable is not None:
+            require(process.get("executable", {}).get("sha256") == executable,
+                    "resident app executable differs from verified installed package")
         rows = process["runtime"]
         require(any(r["path"].endswith("/lib/libruntime_dylib.so") for r in rows)
                 and all(installed.get(r["path"]) == r["sha256"] for r in rows), "mapped SDK differs from verified cohort")
@@ -217,6 +212,19 @@ def package_flow(door, spec, local):
             "installed_before": baseline, "claim": "update/reuse" if baseline else "first-install"}
 
 
+def mapped_record(state, tab, application):
+    """Resolve a tab through the host's public launch association, never tab ID."""
+    record = state.get("workspace_tree", {}).get("local_app_records", {}).get(tab[1])
+    if record is None:
+        return None  # The toplevel may map before its launch association arrives.
+    require(isinstance(record, dict) and record.get("room") == tab[0]
+            and record.get("app_id") == application, "mapped tab has a foreign launch association")
+    instance = record.get("record_instance")
+    require(isinstance(instance, int) and not isinstance(instance, bool) and 0 < instance < 2**64,
+            "mapped tab record instance unavailable")
+    return f"derived:default@tab:{instance:016x}"
+
+
 def fresh_browser(vm, out):
     before_tabs = windows(vm.state(), BROWSER)
     before_rows = catalog(vm, BROWSER)
@@ -226,18 +234,24 @@ def fresh_browser(vm, out):
     invoke(vm, opens[0], {"app": BROWSER}, out, "new-browser-tab", require_job=False)
 
     def probe():
-        tabs = windows(vm.state(), BROWSER)
-        require(before_tabs <= tabs, "existing Browser window changed or vanished")
+        state = vm.state()
+        tabs = windows(state, BROWSER)
+        require(before_tabs <= tabs, "an existing Browser tab changed; acceptance stopped")
         fresh = tabs - before_tabs
-        rows = [r for r in catalog(vm, BROWSER) if (r.get("semantic_identity") or {}).get("kind") == "browser.page"
-                and binding(r) not in old]
-        new = {binding(r) for r in rows}
-        require(len(fresh) <= 1 and len(new) <= 1, "fresh Browser instance ambiguous")
-        if len(fresh) == len(new) == 1:
+        require(len(fresh) <= 1, "fresh Browser window ambiguous")
+        if fresh:
             tab = next(iter(fresh))
-            bound = next(iter(new))
-            require(tab[0] == bound[1] and bound[2] not in {b[2] for b in old}, "new tab did not publish a distinct same-room record")
-            return bound, tab
+            record = mapped_record(state, tab, BROWSER)
+            if record is None:
+                return None
+            require(record not in {b[2] for b in old}, "new tab reused an existing Browser record")
+            rows = [r for r in catalog(vm, BROWSER)
+                    if (r.get("semantic_identity") or {}).get("kind") == "browser.page"
+                    and r.get("room") == tab[0] and r.get("record") == record]
+            bound = {binding(r) for r in rows}
+            require(len(bound) <= 1, "new tab published ambiguous page bindings")
+            if bound:
+                return next(iter(bound)), tab
         return None
 
     result = wait_until(probe, 60)

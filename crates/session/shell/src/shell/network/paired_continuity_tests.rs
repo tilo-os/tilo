@@ -7,7 +7,7 @@ use crate::shell::personal_continuity::DeviceId;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
 
 struct Session {
-    network: ShellNetwork,
+    network: Arc<ShellNetwork>,
     endpoint: iroh::Endpoint,
     actor: Option<tokio::task::JoinHandle<()>>,
     cert: DeviceCert,
@@ -15,6 +15,10 @@ struct Session {
 }
 
 impl Session {
+    fn network_mut(&mut self) -> &mut ShellNetwork {
+        Arc::get_mut(&mut self.network).expect("configure a fixture before sharing its network")
+    }
+
     async fn new(root: &ed25519_dalek::SigningKey, tag: u8, tree: WorkspaceTree) -> Self {
         let device = iroh::SecretKey::from_bytes(&[tag; 32]);
         let lookup = MemoryLookup::new();
@@ -61,7 +65,7 @@ impl Session {
         network.host_identity = Some(identity());
         network.continuity_policy_override = Some(policy());
         Self {
-            network,
+            network: Arc::new(network),
             endpoint,
             actor: Some(actor),
             cert,
@@ -93,6 +97,27 @@ impl Session {
             })
             .await
             .unwrap();
+    }
+
+    fn authenticated_on(&self, topic: u64, peer: iroh::EndpointId) -> bool {
+        if topic == personal_continuity_topic_id(&self.cert.user_public_key) {
+            return self
+                .network
+                .authenticated_personal_routes
+                .lock()
+                .unwrap()
+                .contains_key(&(topic, peer));
+        }
+        self.network
+            .workspace_control_direct
+            .lock()
+            .unwrap()
+            .contains(&(topic, peer))
+            && self
+                .network
+                .peer_identities
+                .get(&crate::shell::state::PeerOrigin::peer(&peer))
+                .is_some_and(|identity| identity.is_same_user(&self.cert.user_public_key))
     }
 
     fn admit_without_app_cache(&self) {
@@ -139,6 +164,10 @@ fn policy() -> crate::shell::continuity_policy::ContinuityPolicySnapshot {
 
 async fn pair(left: &Session, right: &Session) {
     let topic = personal_continuity_topic_id(&left.cert.user_public_key);
+    pair_on_topic(left, right, topic).await;
+}
+
+async fn pair_on_topic(left: &Session, right: &Session, topic: u64) {
     left.join(topic).await;
     right.join(topic).await;
     left.network
@@ -177,18 +206,8 @@ async fn pair(left: &Session, right: &Session) {
         loop {
             left.network.tick();
             right.admit_without_app_cache();
-            if left
-                .network
-                .authenticated_personal_routes
-                .lock()
-                .unwrap()
-                .contains_key(&(topic, right.endpoint.id()))
-                && right
-                    .network
-                    .authenticated_personal_routes
-                    .lock()
-                    .unwrap()
-                    .contains_key(&(topic, left.endpoint.id()))
+            if left.authenticated_on(topic, right.endpoint.id())
+                && right.authenticated_on(topic, left.endpoint.id())
             {
                 break;
             }
@@ -197,6 +216,9 @@ async fn pair(left: &Session, right: &Session) {
     })
     .await;
 }
+
+#[path = "cold_editor_record_tests.rs"]
+mod cold_editor_record_tests;
 
 fn selection() -> SharedSelection {
     Arc::new(Mutex::new(selection::SelectionStore::default()))
@@ -482,7 +504,7 @@ async fn paired_continuity_catchup_preserves_browser_checkpoint_and_launcher_ide
     let tab = 0xC011_0094;
     let mut tree = WorkspaceTree::bootstrap_default();
     let workspace = &mut tree.desktop.workspaces[0];
-    workspace.room = room;
+    workspace.set_room(room);
     workspace.strips[0].window_groups.push(WindowGroup {
         id: crate::shell::state::next_id(),
         tabs: vec![Tab {
@@ -547,6 +569,9 @@ async fn paired_continuity_catchup_preserves_browser_checkpoint_and_launcher_ide
         .unwrap(),
     )
     .unwrap();
+    // Enrolled mid-session: take effect now rather than at the next recheck.
+    left.network.recheck_personal_device_peers();
+    right.network.recheck_personal_device_peers();
     let registry = crate::shell::personal_continuity_registry::global_registry();
     {
         let mut reports = registry.lock().unwrap();
@@ -721,4 +746,846 @@ async fn paired_continuity_catchup_preserves_browser_checkpoint_and_launcher_ide
     drop(left);
     right.close().await;
     drop(right);
+}
+
+struct OwnerRegistryScope(
+    Option<Arc<Mutex<crate::shell::personal_continuity_registry::ContinuationRegistry>>>,
+);
+impl Drop for OwnerRegistryScope {
+    fn drop(&mut self) {
+        crate::shell::personal_continuity_registry::replace_test_registry(self.0.take());
+    }
+}
+fn in_owner_registry<T>(
+    registry: &Arc<Mutex<crate::shell::personal_continuity_registry::ContinuationRegistry>>,
+    run: impl FnOnce() -> T,
+) -> T {
+    let _scope = OwnerRegistryScope(
+        crate::shell::personal_continuity_registry::replace_test_registry(Some(registry.clone())),
+    );
+    run()
+}
+
+type OwnerFixtureFuture<'local, T> =
+    std::pin::Pin<Box<dyn std::future::Future<Output = T> + 'local>>;
+
+struct NativeEditorPair {
+    home: tilo_test_env::TestHome,
+    _settings: SettingsReset,
+    left: Session,
+    right: Session,
+    source: tilo_app::framework::testing::TestApp<code_editor::CodeEditorShell>,
+    target: tilo_app::framework::testing::TestApp<code_editor::CodeEditorShell>,
+    room: RoomId,
+    tab: u64,
+    peers: PathBuf,
+    left_registry: Arc<Mutex<crate::shell::personal_continuity_registry::ContinuationRegistry>>,
+    right_registry: Arc<Mutex<crate::shell::personal_continuity_registry::ContinuationRegistry>>,
+}
+
+type MountedEditor = tilo_app::framework::testing::TestApp<code_editor::CodeEditorShell>;
+
+fn install_editor_package(home: &mut tilo_test_env::TestHome) {
+    let packages = home.data().join("apps");
+    let payload = packages.join("payloads/so.tilo.code-editor");
+    std::fs::create_dir_all(&payload).unwrap();
+    let manifest = payload.join("manifest.toml");
+    std::fs::copy(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps/code-editor/tilo-app.toml"),
+        &manifest,
+    )
+    .unwrap();
+    std::fs::write(
+        packages.join("registry.toml"),
+        format!(
+            "[[entry]]\nid = 'so.tilo.code-editor'\npayload_root = {:?}\nmanifest_path = {:?}\n",
+            payload.to_str().unwrap(),
+            manifest.to_str().unwrap(),
+        ),
+    )
+    .unwrap();
+    home.env().set("TILO_APPS_DATA_DIR", &packages);
+}
+
+fn mounted_editors(home: &tilo_test_env::TestHome) -> (MountedEditor, MountedEditor) {
+    let path = home.data().join("owner-fixture.rs");
+    code_editor::native_fixture::seed(&path).unwrap();
+    let mut source =
+        tilo_app::framework::testing::TestApp::<code_editor::CodeEditorShell>::launched(&[path
+            .to_str()
+            .unwrap()])
+        .unwrap();
+    source
+        .settings::<code_editor::settings::CodeSettings>()
+        .set(&code_editor::settings::CodeSettings {
+            language_servers: false,
+        })
+        .unwrap();
+    source.settle();
+    let mut document = source.peer_document();
+    let mut target =
+        tilo_app::framework::testing::TestApp::<code_editor::CodeEditorShell>::launched_replica(
+            &[path.to_str().unwrap()],
+            &mut document,
+        )
+        .unwrap();
+    target
+        .settings::<code_editor::settings::CodeSettings>()
+        .set(&code_editor::settings::CodeSettings {
+            language_servers: false,
+        })
+        .unwrap();
+    target.settle();
+    (source, target)
+}
+
+fn claim_editor(
+    editor: &mut MountedEditor,
+    registry: &Arc<Mutex<crate::shell::personal_continuity_registry::ContinuationRegistry>>,
+    room: RoomId,
+    instance: u64,
+    token: u64,
+    line: usize,
+) {
+    use tilo_action_broker::services::ContinuationServices;
+    use ui::widget::Continuable;
+    editor
+        .effect(&code_editor::CodeEditorEffect::GoToLine {
+            value: Some(line.to_string()),
+        })
+        .unwrap();
+    editor.settle();
+    let document = editor.peer_document();
+    let semantic = editor
+        .surface_mut::<code_editor::CodeApp>()
+        .continuation_metadata(&document, &automerge::ROOT)
+        .unwrap();
+    let metadata = ui::app::compose_structural_continuation_metadata(
+        ui::view::View::default(),
+        Some(semantic),
+    )
+    .unwrap();
+    in_owner_registry(registry, || {
+        crate::shell::broker_services::NativeContinuations
+            .handoff(
+                room,
+                "so.tilo.code-editor".into(),
+                instance,
+                ui::collaboration::handoff::HandoffReport::OwnerTakeover {
+                    token,
+                    schema: metadata.schema_version,
+                    metadata: metadata.bytes,
+                }
+                .encode(),
+            )
+            .unwrap();
+    });
+}
+
+impl NativeEditorPair {
+    fn new() -> OwnerFixtureFuture<'static, Self> {
+        Box::pin(async move {
+            use crate::shell::state::{Tab, TileContent, WindowGroup, WindowWidth};
+            use ui::widget::Continuable;
+            let mut home = tilo_test_env::TestHome::new().unwrap();
+            let peers = home.config().join("home-peers.json");
+            home.env().set("TILO_HOME_PEERS_PATH", &peers);
+            install_editor_package(&mut home);
+            let (source, mut target) = mounted_editors(&home);
+            let paths = settings_store::SessionPaths::beside(home.config().join("settings.json"));
+            settings_store::install_source(Some(Arc::new(
+                settings_store::SessionSettings::open(paths).unwrap(),
+            )));
+            settings_store::update_section(
+                "continuity",
+                serde_json::json!({
+                    "enabled": true, "app_continuations": true
+                })
+                .as_object()
+                .unwrap()
+                .clone(),
+            )
+            .unwrap();
+            let signer = ed25519_dalek::SigningKey::from_bytes(&[0xB1; 32]);
+            let room = RoomId::new();
+            let tab = 0xC011_00B1;
+            let mut tree = WorkspaceTree::bootstrap_default();
+            tree.desktop.workspaces[0].set_room(room);
+            tree.desktop.workspaces[0].strips[0]
+                .window_groups
+                .push(WindowGroup {
+                    id: crate::shell::state::next_id(),
+                    tabs: vec![Tab {
+                        id: tab,
+                        title: "Code".into(),
+                        tile: TileContent::Foreign {
+                            app_id: "so.tilo.code-editor".into(),
+                            surface_id: 0xB1,
+                        },
+                    }],
+                    active_tab: tab,
+                    width: WindowWidth::Normal,
+                    maximized: false,
+                });
+            let mut local = WorkspaceTree::bootstrap_default();
+            local.desktop.workspaces[0].set_room(room);
+            let mut left = Box::pin(Session::new(&signer, 0xB1, tree)).await;
+            let mut right = Box::pin(Session::new(&signer, 0xB2, local)).await;
+            left.network_mut().personal_continuity_path =
+                Some(home.data().join("left-continuity.bin"));
+            right.network_mut().personal_continuity_path =
+                Some(home.data().join("right-continuity.bin"));
+            let left_registry = Arc::new(Mutex::new(
+                crate::shell::personal_continuity_registry::ContinuationRegistry::default(),
+            ));
+            let right_registry = Arc::new(Mutex::new(
+                crate::shell::personal_continuity_registry::ContinuationRegistry::default(),
+            ));
+            for registry in [&left_registry, &right_registry] {
+                registry.lock().unwrap().bind_tab(
+                    crate::shell::personal_continuity::AppInstanceId(tab),
+                    crate::shell::personal_continuity::AppInstanceId(tab),
+                );
+            }
+            let target_document = target.peer_document();
+            let target_semantic = target
+                .surface_mut::<code_editor::CodeApp>()
+                .continuation_metadata(&target_document, &automerge::ROOT)
+                .unwrap();
+            let target_metadata = ui::app::compose_structural_continuation_metadata(
+                ui::view::View::default(),
+                Some(target_semantic),
+            )
+            .unwrap();
+            right_registry
+                .lock()
+                .unwrap()
+                .report(
+                    room,
+                    "so.tilo.code-editor",
+                    crate::shell::personal_continuity::AppInstanceId(tab),
+                    target_metadata.schema_version,
+                    target_metadata.bytes,
+                )
+                .unwrap();
+            pair(&left, &right).await;
+            Self {
+                home,
+                _settings: SettingsReset,
+                left,
+                right,
+                source,
+                target,
+                room,
+                tab,
+                peers,
+                left_registry,
+                right_registry,
+            }
+        })
+    }
+
+    fn enroll(&self) {
+        std::fs::write(
+            self.peers.with_file_name("personal-device-peers.json"),
+            serde_json::to_vec(&[
+                hex::encode(self.left.cert.device_public_key),
+                hex::encode(self.right.cert.device_public_key),
+            ])
+            .unwrap(),
+        )
+        .unwrap();
+        self.recheck_enrollment();
+    }
+
+    /// Enrolment changed mid-session: each shell sees it at its next recheck
+    /// of the file; make that now.
+    fn recheck_enrollment(&self) {
+        self.left.network.recheck_personal_device_peers();
+        self.right.network.recheck_personal_device_peers();
+    }
+
+    fn send_view(
+        &mut self,
+        line: usize,
+    ) -> OwnerFixtureFuture<'_, Vec<ui::collaboration::owner_view::OwnerView>> {
+        Box::pin(async move {
+            use ui::widget::Continuable;
+            self.source
+                .effect(&code_editor::CodeEditorEffect::GoToLine {
+                    value: Some(line.to_string()),
+                })
+                .unwrap();
+            self.source.settle();
+            let document = self.source.peer_document();
+            let semantic = self
+                .source
+                .surface_mut::<code_editor::CodeApp>()
+                .continuation_metadata(&document, &automerge::ROOT)
+                .unwrap();
+            let metadata = ui::app::compose_structural_continuation_metadata(
+                ui::view::View::default(),
+                Some(semantic),
+            )
+            .unwrap();
+            self.left_registry
+                .lock()
+                .unwrap()
+                .report(
+                    self.room,
+                    "so.tilo.code-editor",
+                    crate::shell::personal_continuity::AppInstanceId(self.tab),
+                    metadata.schema_version,
+                    metadata.bytes.clone(),
+                )
+                .unwrap();
+            in_owner_registry(&self.left_registry, || {
+                self.left.network.publish_personal_continuity_if_changed();
+            });
+            {
+                let captured = self.left.network.personal_continuity.lock().unwrap();
+                let captured_app = captured
+                    .newest_app_state_in_room(
+                        self.room,
+                        crate::shell::personal_continuity::AppInstanceId(self.tab),
+                    )
+                    .expect("the real source app must appear in its production capture");
+                assert_eq!(
+                    captured_app
+                        .resume
+                        .as_ref()
+                        .expect("source has a safe view")
+                        .bytes(),
+                    metadata.bytes
+                );
+                drop(captured);
+            }
+            tilo_test_env::within("native editor owner view crosses certified Iroh", async {
+                loop {
+                    for (session, registry) in [
+                        (&self.left, &self.left_registry),
+                        (&self.right, &self.right_registry),
+                    ] {
+                        in_owner_registry(registry, || {
+                            session.network.tick();
+                            loop {
+                                let event =
+                                    session.deferred.lock().unwrap().pop_front().or_else(|| {
+                                        session.network.event_rx.lock().unwrap().try_recv().ok()
+                                    });
+                                let Some(event) = event else {
+                                    break;
+                                };
+                                session.network.dispatch_net_event(event);
+                            }
+                        });
+                    }
+                    let reached = self
+                        .right
+                        .network
+                        .personal_continuity
+                        .lock()
+                        .unwrap()
+                        .newest_app_state_in_room(
+                            self.room,
+                            crate::shell::personal_continuity::AppInstanceId(self.tab),
+                        )
+                        .is_some_and(|app| {
+                            app.resume
+                                .as_ref()
+                                .is_some_and(|resume| resume.bytes() == metadata.bytes)
+                        });
+                    if reached {
+                        break;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+            })
+            .await;
+            in_owner_registry(&self.right_registry, || {
+                self.right.network.pump_owner_views()
+            })
+            .into_iter()
+            .map(|(view, _)| view)
+            .collect()
+        })
+    }
+
+    fn apply_target(&mut self, view: &ui::collaboration::owner_view::OwnerView, line: usize) {
+        use ui::widget::{Continuable, Widget};
+        assert_eq!(view.room, self.room.to_string());
+        assert_eq!(view.app, "so.tilo.code-editor");
+        assert_eq!(view.instance, self.tab);
+        assert!(!view.local_claim);
+        let projection = view.projection.as_ref().unwrap();
+        let mut document = self.target.peer_document();
+        let heads = document.get_heads();
+        let target = self.target.surface_mut::<code_editor::CodeApp>();
+        let before = target
+            .native_input_snapshot(&document, &automerge::ROOT)
+            .unwrap();
+        assert!(target.restore_live_continuation_metadata(
+            &ui::collaboration::ContinuationMetadata {
+                schema_version: projection.schema_version,
+                bytes: projection.bytes.clone(),
+            },
+            &document,
+            &automerge::ROOT
+        ));
+        let after = target
+            .native_input_snapshot(&document, &automerge::ROOT)
+            .unwrap();
+        assert_eq!(after["caret_line"], line.checked_sub(1).unwrap());
+        assert_eq!(after["body_hash"], before["body_hash"]);
+        assert_eq!(after["editor_focused"], before["editor_focused"]);
+        assert_eq!(document.get_heads(), heads);
+    }
+
+    fn claim_target(&mut self, token: u64, line: usize) {
+        claim_editor(
+            &mut self.target,
+            &self.right_registry,
+            self.room,
+            self.tab,
+            token,
+            line,
+        );
+    }
+
+    fn adopt_target(&self) {
+        let tree = self.right.network.replica.lock().unwrap().tree.clone();
+        let mut tree = tree.write();
+        assert_eq!(
+            crate::shell::tab_binding::adopt_toplevel_at(
+                &mut tree,
+                0xB2,
+                Some("so.tilo.code-editor".into()),
+                crate::shell::tab_binding::Placement::IntoTab(self.tab)
+            ),
+            self.tab
+        );
+        assert!(tree.claim_continuation_tab(self.tab));
+        drop(tree);
+    }
+
+    fn dispatch(&self) {
+        for (session, registry) in [
+            (&self.left, &self.left_registry),
+            (&self.right, &self.right_registry),
+        ] {
+            in_owner_registry(registry, || {
+                session.network.tick();
+                loop {
+                    let event = session
+                        .deferred
+                        .lock()
+                        .unwrap()
+                        .pop_front()
+                        .or_else(|| session.network.event_rx.lock().unwrap().try_recv().ok());
+                    let Some(event) = event else {
+                        break;
+                    };
+                    session.network.dispatch_net_event(event);
+                }
+            });
+        }
+    }
+
+    fn target_snapshot(&self) -> crate::shell::personal_continuity::AppInstanceState {
+        self.right
+            .network
+            .personal_continuity
+            .lock()
+            .unwrap()
+            .snapshot_for(
+                self.right
+                    .network
+                    .personal_continuity_device
+                    .as_ref()
+                    .unwrap(),
+            )
+            .expect("a captured local target")
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.room == self.room)
+            .unwrap()
+            .apps
+            .iter()
+            .find(|app| app.id.0 == self.tab)
+            .unwrap()
+            .clone()
+    }
+
+    fn close(&mut self) -> OwnerFixtureFuture<'_, ()> {
+        Box::pin(async move {
+            self.left.close().await;
+            self.right.close().await;
+        })
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial_test::serial]
+async fn paired_native_editor_views_require_enrollment_and_cancel_on_revocation() {
+    use tilo_action_broker::services::ContinuationServices;
+    let mut pair = NativeEditorPair::new().await;
+    assert!(
+        pair.send_view(20).await.is_empty(),
+        "a shared certificate root is not enrollment"
+    );
+    pair.enroll();
+    let first = pair.send_view(40).await;
+    assert_eq!(first.len(), 1);
+    pair.apply_target(&first[0], 40);
+    let second = pair.send_view(70).await;
+    assert_eq!(second.len(), 1);
+    assert!(second[0].generation > first[0].generation);
+    pair.apply_target(&second[0], 70);
+    std::fs::remove_file(pair.peers.with_file_name("personal-device-peers.json")).unwrap();
+    pair.recheck_enrollment();
+    let stopped = in_owner_registry(&pair.right_registry, || {
+        pair.right.network.pump_owner_views()
+    });
+    assert_eq!(stopped.len(), 1);
+    assert!(stopped[0].0.projection.is_none());
+    assert!(stopped[0].0.generation > second[0].generation);
+    assert!(
+        in_owner_registry(&pair.right_registry, || pair
+            .right
+            .network
+            .pump_owner_views())
+        .is_empty()
+    );
+    pair.enroll();
+    let resumed = in_owner_registry(&pair.right_registry, || {
+        pair.right.network.pump_owner_views()
+    });
+    assert_eq!(resumed.len(), 1);
+    assert!(resumed[0].0.generation > stopped[0].0.generation);
+    pair.apply_target(&resumed[0].0, 70);
+    in_owner_registry(&pair.right_registry, || {
+        crate::shell::broker_services::NativeContinuations
+            .handoff(
+                pair.room,
+                "so.tilo.code-editor".into(),
+                pair.tab,
+                ui::collaboration::handoff::HandoffReport::OwnerSubscribe { version: 1 }.encode(),
+            )
+            .unwrap();
+    });
+    let subscribed = in_owner_registry(&pair.right_registry, || {
+        pair.right.network.pump_owner_views()
+    });
+    assert_eq!(subscribed.len(), 1);
+    assert!(subscribed[0].0.generation > resumed[0].0.generation);
+    pair.apply_target(&subscribed[0].0, 70);
+    // A departed authenticated session cannot keep a cached view alive.
+    let routes = pair
+        .right
+        .network
+        .authenticated_personal_routes
+        .lock()
+        .unwrap()
+        .clone();
+    pair.right
+        .network
+        .authenticated_personal_routes
+        .lock()
+        .unwrap()
+        .clear();
+    let offline = in_owner_registry(&pair.right_registry, || {
+        pair.right.network.pump_owner_views()
+    });
+    assert_eq!(offline.len(), 1);
+    assert!(offline[0].0.projection.is_none());
+    *pair
+        .right
+        .network
+        .authenticated_personal_routes
+        .lock()
+        .unwrap() = routes;
+    let online = in_owner_registry(&pair.right_registry, || {
+        pair.right.network.pump_owner_views()
+    });
+    assert_eq!(online.len(), 1);
+    assert!(online[0].0.generation > offline[0].0.generation);
+    pair.apply_target(&online[0].0, 70);
+    pair.right.network_mut().continuity_policy_override =
+        Some(crate::shell::continuity_policy::ContinuityPolicySnapshot::default());
+    let revoked = in_owner_registry(&pair.right_registry, || {
+        pair.right.network.pump_owner_views()
+    });
+    assert_eq!(revoked.len(), 1);
+    assert!(revoked[0].0.projection.is_none());
+    pair.close().await;
+    drop(pair);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial_test::serial]
+async fn paired_native_editor_takeover_is_durable_idempotent_and_survives_restart() {
+    let mut pair = NativeEditorPair::new().await;
+    pair.enroll();
+    let remote = pair.send_view(40).await;
+    assert_eq!(remote.len(), 1);
+    pair.apply_target(&remote[0], 40);
+    pair.adopt_target();
+    let durable = pair.right.network.personal_continuity_path.clone().unwrap();
+    let blocked = pair.home.data().join("blocked-write");
+    std::fs::create_dir(&blocked).unwrap();
+    pair.right.network_mut().personal_continuity_path = Some(blocked);
+    let token = remote[0].counter.checked_add(1).unwrap();
+    pair.claim_target(token, 55);
+    in_owner_registry(&pair.right_registry, || {
+        assert!(
+            pair.right
+                .network
+                .local_continuity_snapshot_bytes()
+                .is_some()
+        );
+    });
+    let interrupted = pair.target_snapshot();
+    assert!(interrupted.stamp.counter > remote[0].counter);
+    assert!(
+        pair.right_registry
+            .lock()
+            .unwrap()
+            .owner_claimed(pair.room, &interrupted)
+    );
+    assert!(
+        in_owner_registry(&pair.right_registry, || pair
+            .right
+            .network
+            .pump_owner_views())
+        .is_empty(),
+        "no takeover acknowledgement before durable write"
+    );
+    pair.right.network_mut().personal_continuity_path = Some(durable.clone());
+    in_owner_registry(&pair.right_registry, || {
+        assert!(
+            pair.right
+                .network
+                .local_continuity_snapshot_bytes()
+                .is_some()
+        );
+    });
+    let confirmed = pair.target_snapshot();
+    assert_eq!(
+        confirmed.stamp, interrupted.stamp,
+        "quiet retry does not invent another owner revision"
+    );
+    let ack = in_owner_registry(&pair.right_registry, || {
+        pair.right.network.pump_owner_views()
+    });
+    assert_eq!(ack.len(), 1);
+    assert!(ack[0].0.local_claim);
+    assert_eq!(ack[0].0.counter, confirmed.stamp.counter);
+    let revision = pair.right_registry.lock().unwrap().owner_claim_revision();
+    pair.claim_target(token, 80);
+    assert_eq!(
+        pair.right_registry.lock().unwrap().owner_claim_revision(),
+        revision
+    );
+    in_owner_registry(&pair.right_registry, || {
+        pair.right
+            .network
+            .local_continuity_snapshot_bytes()
+            .unwrap();
+    });
+    assert_eq!(
+        pair.target_snapshot().resume,
+        confirmed.resume,
+        "an old token cannot overwrite the confirmed view"
+    );
+    let restored = load_personal_continuity(&durable);
+    assert_eq!(
+        restored
+            .continuity
+            .snapshot_for(
+                pair.right
+                    .network
+                    .personal_continuity_device
+                    .as_ref()
+                    .unwrap()
+            )
+            .unwrap()
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.room == pair.room)
+            .unwrap()
+            .apps[0],
+        confirmed
+    );
+    *pair.right.network.personal_continuity.lock().unwrap() = restored.continuity;
+    *pair
+        .right
+        .network
+        .personal_continuity_counter
+        .lock()
+        .unwrap() = 0;
+    *pair
+        .right
+        .network
+        .personal_continuity_fingerprint
+        .lock()
+        .unwrap() = None;
+    pair.right_registry = Arc::new(Mutex::new(
+        crate::shell::personal_continuity_registry::ContinuationRegistry::default(),
+    ));
+    pair.right_registry.lock().unwrap().bind_tab(
+        crate::shell::personal_continuity::AppInstanceId(pair.tab),
+        crate::shell::personal_continuity::AppInstanceId(pair.tab),
+    );
+    let resume = confirmed.resume.clone().unwrap();
+    pair.right_registry
+        .lock()
+        .unwrap()
+        .report(
+            pair.room,
+            "so.tilo.code-editor",
+            crate::shell::personal_continuity::AppInstanceId(pair.tab),
+            resume.schema_version(),
+            resume.bytes().to_vec(),
+        )
+        .unwrap();
+    in_owner_registry(&pair.right_registry, || {
+        pair.right
+            .network
+            .local_continuity_snapshot_bytes()
+            .unwrap();
+    });
+    assert_eq!(
+        pair.target_snapshot().stamp,
+        confirmed.stamp,
+        "restart preserves unchanged owner revision"
+    );
+    pair.claim_target(confirmed.stamp.counter.checked_add(1).unwrap(), 90);
+    in_owner_registry(&pair.right_registry, || {
+        pair.right
+            .network
+            .local_continuity_snapshot_bytes()
+            .unwrap();
+    });
+    assert!(pair.target_snapshot().stamp.counter > confirmed.stamp.counter);
+    pair.close().await;
+    drop(pair);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial_test::serial]
+async fn paired_native_editor_concurrent_takeovers_converge_on_one_durable_stamp() {
+    let mut pair = NativeEditorPair::new().await;
+    pair.enroll();
+    let remote = pair.send_view(40).await;
+    assert_eq!(remote.len(), 1);
+    pair.apply_target(&remote[0], 40);
+    pair.adopt_target();
+    let token = remote[0].counter.checked_add(1).unwrap();
+    claim_editor(
+        &mut pair.source,
+        &pair.left_registry,
+        pair.room,
+        pair.tab,
+        token,
+        65,
+    );
+    pair.claim_target(token, 55);
+    for (session, registry) in [
+        (&pair.left, &pair.left_registry),
+        (&pair.right, &pair.right_registry),
+    ] {
+        in_owner_registry(registry, || {
+            session.network.publish_personal_continuity_if_changed();
+        });
+    }
+    let left = pair
+        .left
+        .network
+        .personal_continuity
+        .lock()
+        .unwrap()
+        .snapshot_for(
+            pair.left
+                .network
+                .personal_continuity_device
+                .as_ref()
+                .unwrap(),
+        )
+        .unwrap()
+        .workspaces
+        .iter()
+        .find(|workspace| workspace.room == pair.room)
+        .unwrap()
+        .apps[0]
+        .clone();
+    let right = pair.target_snapshot();
+    assert_eq!(
+        left.stamp.counter, right.stamp.counter,
+        "the fixture actually exercises concurrent equal Lamport counters"
+    );
+    let winner = if left.stamp.device > right.stamp.device {
+        left
+    } else {
+        right
+    };
+    tilo_test_env::within(
+        "concurrent native owner claims converge across certified Iroh",
+        async {
+            loop {
+                pair.dispatch();
+                if [&pair.left, &pair.right].into_iter().all(|session| {
+                    session
+                        .network
+                        .personal_continuity
+                        .lock()
+                        .unwrap()
+                        .newest_app_state_in_room(
+                            pair.room,
+                            crate::shell::personal_continuity::AppInstanceId(pair.tab),
+                        )
+                        == Some(&winner)
+                }) {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        },
+    )
+    .await;
+    for (session, registry) in [
+        (&pair.left, &pair.left_registry),
+        (&pair.right, &pair.right_registry),
+    ] {
+        let controls = in_owner_registry(registry, || session.network.pump_owner_views());
+        assert!(
+            controls[0].0.local_claim,
+            "even the losing concurrent claimant gets its durable ack first"
+        );
+        if session.network.personal_continuity_device.as_ref() != Some(&winner.stamp.device) {
+            assert_eq!(controls.len(), 2);
+            assert!(!controls[1].0.local_claim);
+            assert_eq!(controls[1].0.source, winner.stamp.device.as_str());
+            assert!(controls[1].0.generation > controls[0].0.generation);
+        }
+        // An unrelated workspace title update must not reelect its old local view.
+        let tree = session.network.replica.lock().unwrap().tree.clone();
+        tree.write().desktop.workspaces[0].name = "Local arrangement".into();
+        in_owner_registry(registry, || {
+            session.network.local_continuity_snapshot_bytes().unwrap();
+        });
+        assert_eq!(
+            session
+                .network
+                .personal_continuity
+                .lock()
+                .unwrap()
+                .newest_app_state_in_room(
+                    pair.room,
+                    crate::shell::personal_continuity::AppInstanceId(pair.tab)
+                ),
+            Some(&winner)
+        );
+    }
+    pair.close().await;
+    drop(pair);
 }

@@ -26,15 +26,15 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use launcher::appdir;
-use launcher::manifest::{Entrypoint, Fs, MinimalManifest, Net, Sandbox};
+use launcher::manifest::{Entrypoint, Fs, ManifestView, Net, Sandbox};
 use launcher::run::{RunError, RunOptions, run_with_captured};
 
 use crate::support::{isolated_options, roomtest_payload};
 
 const PACKAGE: &str = "so.tilo.roomtest";
 
-fn manifest() -> MinimalManifest {
-    MinimalManifest {
+fn manifest() -> ManifestView {
+    ManifestView {
         package_id: PACKAGE.to_string(),
         name: None,
         localized_names: BTreeMap::default(),
@@ -86,10 +86,20 @@ fn bwrap() -> PathBuf {
 
 /// Run the fixture in `room` with `argv`, returning its stdout.
 fn run_in_room(data: &DataHome, room: Option<&str>, argv: &[&str]) -> String {
+    run_in_room_with_landlock(data, room, argv, false)
+}
+
+fn run_in_room_with_landlock(
+    data: &DataHome,
+    room: Option<&str>,
+    argv: &[&str],
+    landlock_enforce: bool,
+) -> String {
     let opts = RunOptions {
         no_services: true,
         bwrap_bin: Some(bwrap()),
-        landlock_enforce: false,
+        landlock_enforce,
+        sandbox_shim_bin: Some(PathBuf::from(env!("CARGO_BIN_EXE_tilo-launcher"))),
         workspace_id: room.map(str::to_string),
         mode: launcher::run::LaunchMode::Cli {
             command: "roomtest".to_string(),
@@ -446,4 +456,26 @@ fn the_sandbox_filesystem_is_the_app_directory_plus_the_read_only_profile() {
             "a refused launch must not have created the path it named"
         );
     }
+}
+
+#[test]
+fn fedora_nss_trust_module_resolves_inside_the_app_sandbox() {
+    // NSS loads this module dynamically through Fedora's system alternative,
+    // so DT_NEEDED checks cannot observe a broken /etc/alternatives link.
+    let library = "/usr/lib64/libnssckbi.so";
+    let host = std::fs::read(library).expect("Fedora NSS trust module is required");
+    assert_eq!(
+        &host[..4],
+        b"\x7fELF",
+        "the host must supply an actual trust module"
+    );
+    let data = DataHome::new();
+    let observed = run_in_room_with_landlock(&data, Some("room-a"), &["elf", library], true);
+    assert_eq!(observed, format!("ELF {library} [127, 69, 76, 70]"));
+    let unrelated =
+        run_in_room_with_landlock(&data, Some("room-a"), &["read", "/etc/shadow"], true);
+    assert!(
+        unrelated.starts_with("ERR "),
+        "TLS trust must not expose private host configuration: {unrelated}"
+    );
 }

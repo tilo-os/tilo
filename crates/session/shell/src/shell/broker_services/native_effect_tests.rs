@@ -18,8 +18,59 @@ struct NativeFixture {
 }
 
 #[test]
+fn native_member_terminal_audit_uses_installed_governor_and_original_retry_receipt() {
+    use tilo_peer_state::owner_commit::{
+        CommitOperation, OwnerCommitRequest, OwnerCommitService as _,
+    };
+    let fixture = fixture();
+    let service = super::NativeOwnerCommitService::new(
+        native_workspace_owner::test_tree_of(&fixture.owner),
+        None,
+    );
+    let invocation = tilo_actions::InvocationId::new();
+    let effect = tilo_desktop_model::WorkspaceEffectReceipt::redacted(
+        invocation,
+        &hex::encode(fixture.certificate.user_public_key),
+        tilo_actions::ActionContext::default(),
+        tilo_actions::EffectReceiptStatus::Succeeded,
+        tilo_clock::unix_now_i64(),
+    );
+    let request = OwnerCommitRequest {
+        room: fixture.room.to_string(),
+        operation: CommitOperation::EffectReceipt {
+            invocation: invocation.0,
+            redacted: serde_json::to_vec(&effect).unwrap(),
+        },
+    };
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let committed = runtime
+        .block_on(
+            service.commit_member_effect_receipt(request.clone(), fixture.certificate.clone()),
+        )
+        .unwrap();
+    let persisted = std::fs::read(&fixture.path).unwrap();
+    let retry = runtime
+        .block_on(
+            service.commit_member_effect_receipt(request.clone(), fixture.certificate.clone()),
+        )
+        .unwrap();
+    assert_eq!(retry.binding, committed.binding);
+    assert_eq!(retry.generation, committed.generation);
+    assert_eq!(retry.aggregate_hash, committed.aggregate_hash);
+    let mut stale = fixture.certificate.clone();
+    stale.device_label = "changed caller evidence".into();
+    assert!(
+        runtime
+            .block_on(service.commit_member_effect_receipt(request, stale))
+            .is_err()
+    );
+    drop(service);
+    assert_eq!(std::fs::read(&fixture.path).unwrap(), persisted);
+    drop(fixture);
+}
+
+#[test]
 fn native_published_authorship_requires_admin_and_durably_enables_the_actual_app() {
-    use collab_types::caps::{Actor, CapDecision, ResourceRef, Verb, decide_capability};
     let fixture = fixture();
     let actions = fixture.broker.app_action_broker().unwrap();
     wait_for_membership_surface(&actions, fixture.room);
@@ -30,18 +81,13 @@ fn native_published_authorship_requires_admin_and_durably_enables_the_actual_app
                 let now = std::time::SystemTime::now();
                 view.peer()
                     .check_workspace_administration(fixture.certificate.device_public_key, now)?;
-                let (_, caps, _) = view
+                let member = view
                     .peer()
                     .permissions(fixture.certificate.device_public_key, now)?;
-                let seconds = now.duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
                 assert_eq!(
-                    decide_capability(
-                        &Actor::app("so.tilo.chat").in_room(fixture.room.to_string()),
-                        &ResourceRef::Workspace,
-                        Verb::Write,
-                        &caps,
-                        Some(seconds)
-                    ),
+                    member
+                        .policy
+                        .app_authors("so.tilo.chat", &tilo_action_policy::Context::at_time(now)),
                     expected
                 );
                 assert!(
@@ -52,7 +98,7 @@ fn native_published_authorship_requires_admin_and_durably_enables_the_actual_app
             })
             .unwrap();
     };
-    check(CapDecision::DeniedByRole);
+    check(false);
     let job = actions
         .change_workspace_membership(
             &fixture.room.to_string(),
@@ -68,7 +114,7 @@ fn native_published_authorship_requires_admin_and_durably_enables_the_actual_app
         actions.status(job.id),
         Some(InvocationUpdate::Succeeded { .. })
     ));
-    check(CapDecision::Allow);
+    check(true);
     drop(actions);
     drop(fixture.broker);
     crate::shell::persist::wait_for_saves();
@@ -79,18 +125,13 @@ fn native_published_authorship_requires_admin_and_durably_enables_the_actual_app
     reopened
         .with_current(fixture.room, |view| {
             let now = std::time::SystemTime::now();
-            let (_, caps, _) = view
+            let member = view
                 .peer()
                 .permissions(fixture.certificate.device_public_key, now)?;
-            assert_eq!(
-                decide_capability(
-                    &Actor::app("so.tilo.chat").in_room(fixture.room.to_string()),
-                    &ResourceRef::Workspace,
-                    Verb::Write,
-                    &caps,
-                    Some(now.duration_since(std::time::UNIX_EPOCH).unwrap().as_secs())
-                ),
-                CapDecision::Allow
+            assert!(
+                member
+                    .policy
+                    .app_authors("so.tilo.chat", &tilo_action_policy::Context::at_time(now))
             );
             assert!(view.peer().document("so.tilo.chat", "").is_none());
             Ok(())
@@ -519,6 +560,7 @@ fn failed_effect(
         confirmation: None,
         revision: None,
         on_behalf_of: None,
+        wait_ms: None,
     };
     let mut pending = host.invoke(&caller, request);
     let deadline = Instant::now().checked_add(Duration::from_secs(3)).unwrap();
@@ -548,4 +590,188 @@ fn failed_effect(
         );
         std::thread::sleep(Duration::from_millis(10));
     }
+}
+
+#[test]
+fn native_files_home_consent_refuses_unattested_identity_without_leaving_a_grant() {
+    use crate::portal::{GrantStoreHandle, PortalCaller};
+    use crate::shell::state::{Access, ResourceRef, Scope};
+    const FILES: &str = crate::shell::search::providers::applications::SYSTEM_FILE_MANAGER;
+    let fixture = fixture();
+    let tree = native_workspace_owner::test_tree_of(&fixture.owner);
+    let workspace = tree.read().desktop.active;
+    let paths = tilo_identity_host::provisioning::collaboration_identity_paths();
+    std::fs::remove_file(paths.device_cert_for_user(&fixture.certificate.user_public_key)).unwrap();
+    assert!(
+        tilo_identity_host::broker::trusted_current_device_public(&fixture.room.to_string())
+            .is_err()
+    );
+    assert!(
+        !crate::shell::search::providers::applications::grant_file_manager_home(
+            &mut tree.write(),
+            workspace,
+            FILES
+        )
+    );
+    let home = fixture.home.home().to_string_lossy().into_owned();
+    assert!(
+        !tree
+            .read()
+            .desktop
+            .active_workspace()
+            .unwrap()
+            .sandbox
+            .iter()
+            .any(|cap| cap.scope == Scope::FsPath(home.clone()))
+    );
+    let grants = GrantStoreHandle::new(tree);
+    let caller = PortalCaller::new(workspace, FILES);
+    let resource = ResourceRef::FsPath(format!("{home}/source/report.txt"));
+    assert!(!grants.permits(&caller, &resource, Access::Read));
+    assert!(!grants.permits(&caller, &resource, Access::Write));
+    // Keep the isolated identity/profile active through the final refusal.
+    drop(fixture);
+}
+
+#[test]
+fn native_files_home_consent_survives_authorship_and_revocation_does_not_resurrect() {
+    use crate::portal::{GrantStoreHandle, PortalCaller};
+    use crate::shell::state::{Access, ResourceRef, Scope};
+    const FILES: &str = crate::shell::search::providers::applications::SYSTEM_FILE_MANAGER;
+    let fixture = fixture();
+    let tree = native_workspace_owner::test_tree_of(&fixture.owner);
+    let actions = fixture.broker.app_action_broker().unwrap();
+    wait_for_membership_surface(&actions, fixture.room);
+    let workspace = tree.read().desktop.active;
+    assert!(
+        crate::shell::search::providers::applications::grant_file_manager_home(
+            &mut tree.write(),
+            workspace,
+            FILES
+        )
+    );
+    let home = fixture.home.home().to_string_lossy().into_owned();
+    let saved = tree
+        .read()
+        .desktop
+        .active_workspace()
+        .unwrap()
+        .sandbox
+        .iter()
+        .find(|cap| cap.scope == Scope::FsPath(home.clone()))
+        .unwrap()
+        .clone();
+    let grants = GrantStoreHandle::new(tree.clone());
+    let caller = PortalCaller::new(workspace, FILES);
+    let resource = ResourceRef::FsPath(format!("{home}/source/report.txt"));
+    let publish = |app: &str| {
+        let job = actions
+            .change_workspace_membership(
+                &fixture.room.to_string(),
+                &WorkspaceMembershipCommand::GrantAppAuthorship { app: app.into() },
+                &fixture.certificate,
+            )
+            .unwrap();
+        let completed = job.completion.recv_timeout(Duration::from_secs(3)).unwrap();
+        assert!(completed.code.is_empty(), "{}", completed.message);
+        assert!(matches!(
+            actions.status(job.id),
+            Some(InvocationUpdate::Succeeded { .. })
+        ));
+    };
+    publish(FILES);
+    assert!(
+        tree.read()
+            .desktop
+            .active_workspace()
+            .unwrap()
+            .sandbox
+            .contains(&saved)
+    );
+    assert!(grants.permits(&caller, &resource, Access::Read));
+    assert!(grants.permits(&caller, &resource, Access::Write));
+    assert!(!grants.permits(
+        &PortalCaller::new(workspace, "so.tilo.chat"),
+        &resource,
+        Access::Read
+    ));
+    let person = crate::shell::state::local_user_id_for_room(&fixture.room);
+    assert!(
+        tree.write()
+            .revoke_sandbox_in_workspace(workspace, &person, &saved.id)
+    );
+    assert!(!grants.permits(&caller, &resource, Access::Read));
+    publish("so.tilo.chat");
+    assert!(
+        !tree
+            .read()
+            .desktop
+            .active_workspace()
+            .unwrap()
+            .sandbox
+            .contains(&saved)
+    );
+    assert!(!grants.permits(&caller, &resource, Access::Read));
+    assert!(!grants.permits(&caller, &resource, Access::Write));
+    // Keep the isolated identity/profile active through the final refusal.
+    drop(fixture);
+}
+
+#[test]
+fn native_files_home_consent_is_not_reconstructed_when_session_reopens() {
+    use crate::portal::{GrantStoreHandle, PortalCaller};
+    use crate::shell::state::{Access, ResourceRef};
+    const FILES: &str = crate::shell::search::providers::applications::SYSTEM_FILE_MANAGER;
+    let fixture = fixture();
+    let tree = native_workspace_owner::test_tree_of(&fixture.owner);
+    let actions = fixture.broker.app_action_broker().unwrap();
+    wait_for_membership_surface(&actions, fixture.room);
+    let workspace = tree.read().desktop.active;
+    assert!(
+        crate::shell::search::providers::applications::grant_file_manager_home(
+            &mut tree.write(),
+            workspace,
+            FILES
+        )
+    );
+    let job = actions
+        .change_workspace_membership(
+            &fixture.room.to_string(),
+            &WorkspaceMembershipCommand::GrantAppAuthorship { app: FILES.into() },
+            &fixture.certificate,
+        )
+        .unwrap();
+    let completed = job.completion.recv_timeout(Duration::from_secs(3)).unwrap();
+    assert!(completed.code.is_empty(), "{}", completed.message);
+    let resource = ResourceRef::FsPath(fixture.home.home().to_string_lossy().into_owned());
+    let caller = PortalCaller::new(workspace, FILES);
+    assert!(GrantStoreHandle::new(tree.clone()).permits(&caller, &resource, Access::Read));
+    drop(actions);
+    drop(tree);
+    drop(fixture.broker);
+    crate::shell::persist::wait_for_saves();
+    drop(fixture.owner);
+    let mut stored = crate::shell::persist::load_tree_from(&fixture.path).unwrap();
+    stored.persist_path = Some(fixture.path);
+    let tree = stored.shared();
+    let reopened = native_workspace_owner::open(tree.clone()).unwrap();
+    reopened
+        .with_current(fixture.room, |view| {
+            let now = std::time::SystemTime::now();
+            let member = view
+                .peer()
+                .permissions(fixture.certificate.device_public_key, now)?;
+            assert!(
+                member
+                    .policy
+                    .app_authors(FILES, &tilo_action_policy::Context::at_time(now))
+            );
+            Ok(())
+        })
+        .unwrap();
+    let grants = GrantStoreHandle::new(tree);
+    assert!(!grants.permits(&caller, &resource, Access::Read));
+    assert!(!grants.permits(&caller, &resource, Access::Write));
+    // Keep the isolated identity/profile active through the final refusal.
+    drop(fixture.home);
 }

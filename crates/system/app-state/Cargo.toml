@@ -27,6 +27,8 @@ durable-store = { version = "0.1.0", path = "../durable-store" }
 tilo-paths = { version = "0.1.0", path = "../../platform/tilo-paths" }
 
 automerge.workspace = true
+# Binds a load hint to the exact document bytes it was made for.
+blake3.workspace = true
 hex.workspace = true
 thiserror.workspace = true
 tracing.workspace = true

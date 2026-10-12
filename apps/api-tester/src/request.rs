@@ -1,10 +1,12 @@
 //! The request builder: the URL bar, the variable hint, the tabs and what each
 //! tab edits.
 //!
-//! The method, the URL and the body live in the shared document, so their
-//! controls bind to it and keep their focus however the rest of the view is
-//! rebuilt. The other fields edit the request this person is composing; they
-//! tell the app what changed and the app keeps the request.
+//! Every field of the request in the builder is a field of the shared
+//! record: the method, the URL and the body, the rows, the authentication.
+//! Their controls submit field edits at their paths; the URL and the body
+//! are text controls whose every keystroke is a splice there, so they keep
+//! their focus however the rest of the view is rebuilt. Credentials stay on
+//! the device: their fields set them through an effect.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -21,6 +23,7 @@ use ui::widget::{
 use crate::commands::{AuthField, Cmd, FormMode, FormTarget, Sink, Table};
 use crate::kv::{self, KvQueue};
 use crate::model::{Auth, BodyMode, HttpMethod, KeyValue, Request, RequestTab};
+use crate::resource::Workspace;
 use crate::swap::{Swap, SwapHandle};
 use crate::vars;
 
@@ -105,24 +108,19 @@ pub(crate) fn url_bar(sink: &Sink) -> Element {
     )
     .with_id("api.method")
     .with_accessible_name("Method");
-    let method = match sink.actions.borrow().as_ref() {
-        Some(actions) => actions.bind(
-            method,
-            ui::tilo_resource::ActionRef::<crate::resource::ApiTester, String>::new(
-                "set-method",
-                &["method"],
-            ),
-        ),
-        None => method,
-    };
-    let url = RequestText::new(
+    let field = Workspace::paths().request.method;
+    let method = sink.bind_field(method, field.clone().cast::<String>(), move |_, method| {
+        field.set(HttpMethod::from_str(&method))
+    });
+    let url = request_text(
         TextInput::local()
             .with_kind(TextInputKind::Url)
             .with_id("api.url")
             .with_placeholder("Enter a URL")
             .with_accessible_name("Request URL"),
         sink,
-        false,
+        &sink.url.borrow(),
+        Workspace::paths().request.url,
     );
     let save = Button::new("api.save-request", "Save")
         .with_icon(Icon::Check)
@@ -143,7 +141,7 @@ pub(crate) fn url_bar(sink: &Sink) -> Element {
                     .with_no_padding()
                     .with_flex_grow()
                     .with_min_width(Metrics::BASE.min_pointer_target * 10.0)
-                    .with_child(Box::new(url)),
+                    .with_child(url),
             ))
             .push(Box::new(save))
             .push(Box::new(send)),
@@ -152,11 +150,13 @@ pub(crate) fn url_bar(sink: &Sink) -> Element {
 
 /// What the `{{variables}}` in the URL resolve to, as one quiet line. Empty
 /// when the URL has none.
-pub(crate) fn variable_hint(env: Rc<RefCell<HashMap<String, String>>>) -> Element {
+pub(crate) fn variable_hint(
+    env: Rc<RefCell<HashMap<String, String>>>,
+    url: Rc<RefCell<String>>,
+) -> Element {
     Box::new(
-        Text::from_document(move |doc, root| {
-            let url = ui::doc::read_str_or_text(doc, root, "url").unwrap_or_default();
-            let refs = vars::referenced_vars(&url);
+        Text::dynamic(move || {
+            let refs = vars::referenced_vars(&url.borrow());
             if refs.is_empty() {
                 return String::new();
             }
@@ -292,21 +292,18 @@ fn auth_input(sink: &Sink, which: AuthField, value: &str, secret: bool, name: &s
         })
         .with_initial_value(value)
         .with_accessible_name(name);
+    let auth = Workspace::paths().request.auth;
     let input = match sink.actions.borrow().as_ref() {
         Some(actions) if secret => {
             actions.bind_effect(input, crate::actions::ApiTesterEffect::SET_CREDENTIAL)
         }
-        Some(actions) => {
+        Some(_) => {
             let field = match which {
-                AuthField::Username => "username",
-                AuthField::Header => "header",
+                AuthField::Username => auth.username,
+                AuthField::Header => auth.header,
                 _ => return input.disabled(true),
             };
-            actions.bind_effect(
-                input,
-                crate::actions::ApiTesterEffect::EDIT_AUTH_FIELD
-                    .map(move |value: String| (field.to_owned(), value)),
-            )
+            sink.bind_field(input, field, ui::tilo_resource::Path::replace)
         }
         None => input.disabled(true),
     };
@@ -393,15 +390,16 @@ pub(crate) fn body_inner(
     match request.body_mode {
         BodyMode::None => (body("This request does not have a body."), None),
         BodyMode::Json | BodyMode::Raw => (
-            Box::new(RequestText::new(
+            request_text(
                 TextInput::local()
                     .multiline(true)
                     .with_mono()
                     .with_id("api.body")
                     .with_accessible_name("Request body"),
                 sink,
-                true,
-            )),
+                &request.body_text,
+                Workspace::paths().request.body,
+            ),
             None,
         ),
         BodyMode::Form => {
@@ -445,43 +443,21 @@ fn body_panel(request: &Request, blanks: &BlankRows, sink: &Sink) -> Panel {
     }
 }
 
-/// The shared toolkit text control bound to the builder's resource text.
-/// The dispatcher arrives when the framework attaches the retained surface.
-struct RequestText {
-    text: ui::framework::TextControl<TextInput>,
-    sink: Sink,
-    body: bool,
-}
-impl RequestText {
-    fn new(input: TextInput, sink: &Sink, body: bool) -> Self {
-        let locate = if body {
-            crate::doc::ApiDoc::body_text_id
-        } else {
-            crate::doc::ApiDoc::url_text_id
-        };
-        Self {
-            text: ui::framework::TextControl::view_only(input, locate),
-            sink: sink.clone(),
-            body,
-        }
-    }
-}
-impl ui::widget::Decorator for RequestText {
-    type Inner = ui::framework::TextControl<TextInput>;
-    fn inner(&self) -> &Self::Inner {
-        &self.text
-    }
-    fn inner_mut(&mut self) -> &mut Self::Inner {
-        &mut self.text
-    }
-    fn sync(&mut self, state: &ui::widget::AppModel, path: &ui::widget::ModelPath) {
-        if let Some(dispatch) = self.sink.dispatcher.borrow().as_ref() {
-            self.text.attach(if self.body {
-                crate::resource::body_dispatcher(dispatch)
-            } else {
-                crate::resource::url_dispatcher(dispatch)
-            });
-        }
-        ui::widget::Widget::sync(&mut self.text, state, path);
+/// `input` over the builder's text at `path`, every edit a splice there
+/// through the workspace's dispatcher. Before the framework attaches the
+/// window it only shows `shown`; the app builds it again once attached.
+fn request_text(
+    input: TextInput,
+    sink: &Sink,
+    shown: &str,
+    path: ui::tilo_resource::Path<Workspace, String>,
+) -> Element {
+    match sink.dispatcher.borrow().as_ref() {
+        Some(dispatcher) => Box::new(ui::framework::TextControl::at(
+            input,
+            dispatcher.clone(),
+            path,
+        )),
+        None => Box::new(input.with_initial_value(shown).disabled(true)),
     }
 }

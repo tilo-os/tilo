@@ -1,0 +1,24 @@
+[package]
+name = "tilo-keyboard-map"
+version = "0.1.0"
+edition = "2024"
+publish = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Bounded physical key and symbol observations from installed native keyboard metadata."
+
+[dependencies]
+ui = { package = "tilo-app", version = "0.1.0", path = "../../sdk/tilo-app" }
+vello.workspace = true
+winit.workspace = true
+
+[lints]
+workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+xkbcommon = "0.8"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# Native workspace feature unification must never reach a web bundle.
+workspace-hack = { version = "0.1" }

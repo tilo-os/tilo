@@ -37,6 +37,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
+use ui::widget::TaffyTreeExt;
 use ui::widget::{AppModel, ModelPath};
 
 use automerge::ObjId;
@@ -46,7 +47,6 @@ use vello::kurbo::{Affine, Point, Rect};
 use winit::event::WindowEvent;
 
 use ui::icons::Icon;
-use ui::permissions::PermissionContext;
 use ui::portal::{FileFilter, PickRequest};
 use ui::presence::PresenceCtx;
 use ui::text_render::{ParagraphAlign, TextRenderer};
@@ -58,7 +58,6 @@ use ui::widget::{
     TextInput, Tone, Widget,
 };
 
-use crate::actions::ImagerAction;
 use crate::customize::CzField;
 use crate::export_dialog::ExportDialog;
 use crate::model::{
@@ -66,7 +65,7 @@ use crate::model::{
     fmt_eta, fmt_rate, fmt_size,
 };
 use crate::page::{self, Frame};
-use crate::resource::{Imager, ImagerEffect, ImagerState};
+use crate::resource::{Imager, ImagerEffect};
 use crate::write::{JobControl, WriteRequest, spawn_job};
 use crate::write_setup::SetupField;
 use ui::framework::{
@@ -128,11 +127,11 @@ pub(crate) fn command_button(
 pub struct ImagerApp {
     // ---- collaborative records (cached each `sync`) ----
     source: Option<Source>,
-    next_recent_rank: i64,
     recent: Vec<Source>,
     profile: InstallProfile,
     /// Host-session Wi-Fi passphrase. Never enters the collaborative document.
     wifi_psk: String,
+    ssh_public_key: String,
     // ---- local machine/window state ----
     targets: Vec<TargetDrive>,
     /// Tilo releases offered on the Source step are a bounded local catalogue;
@@ -171,9 +170,8 @@ pub struct ImagerApp {
     startup_write_state_reconciled: bool,
     // ---- composition ----
     seeded: bool,
-    rect: Rect,
     /// The page the controls below were composed for.
-    composed: Option<Box<dyn Widget>>,
+    composed: ui::widget::Composed,
     /// What the composed page shows; a change composes the page again.
     view_key: Option<String>,
     structure_dirty: bool,
@@ -182,10 +180,8 @@ pub struct ImagerApp {
     /// and reset on every step change.
     scroll: Rc<Cell<(f32, f32)>>,
     /// Framework-owned action dispatch (the only action-dispatch state the app
-    /// holds). Every guided-customization profile edit dispatches its
-    /// [`ImagerAction`](crate::actions::ImagerAction) through this host, which
-    /// brackets the undo boundary and applies it through the executor so it
-    /// records one Ctrl+Z step and replays byte-identically on peers.
+    /// holds). Every profile edit is a field edit submitted through it, so it
+    /// is one Ctrl+Z step and replays on peers.
     dispatcher: Option<Dispatcher<Imager>>,
     control_actions: Option<ui::framework::Actions<Imager>>,
     live: bool,
@@ -214,7 +210,6 @@ impl ImagerApp {
     pub fn new() -> Self {
         Self {
             source: None,
-            next_recent_rank: 0,
             recent: Vec::new(),
             targets: Vec::new(),
             releases: Vec::new(),
@@ -222,6 +217,7 @@ impl ImagerApp {
             action: Action::Flash,
             profile: InstallProfile::default(),
             wifi_psk: String::new(),
+            ssh_public_key: String::new(),
             progress: Progress::default(),
             confirm_text: String::new(),
             status: String::new(),
@@ -239,8 +235,7 @@ impl ImagerApp {
             shot_focus: None,
             startup_write_state_reconciled: false,
             seeded: false,
-            rect: Rect::ZERO,
-            composed: None,
+            composed: ui::widget::Composed::default(),
             view_key: None,
             structure_dirty: true,
             commands: Rc::new(RefCell::new(Vec::new())),
@@ -322,6 +317,11 @@ impl ImagerApp {
     }
 
     #[cfg(test)]
+    pub(crate) fn ssh_key_for_test(&self) -> &str {
+        &self.ssh_public_key
+    }
+
+    #[cfg(test)]
     pub(crate) fn resource_source(&self) -> Option<&Source> {
         self.source.as_ref()
     }
@@ -360,10 +360,9 @@ impl ImagerApp {
 
     /// Show the selected image and install profile the framework resource holds.
     /// An empty projection does not wipe a selection that has not been published yet.
-    pub(crate) fn adopt_resource_state(&mut self, state: &ImagerState) {
+    pub(crate) fn adopt_resource_state(&mut self, state: &Imager) {
         self.source.clone_from(&state.source);
-        self.recent.clone_from(&state.recent);
-        self.next_recent_rank = state.next_recent_rank;
+        self.recent = state.recent_sources();
         self.profile = state.profile.clone();
 
         self.dirty = true;
@@ -379,23 +378,6 @@ impl ImagerApp {
         self.dispatcher = Some(dispatcher);
         self.jobs = Some(jobs);
         self.live = self.reaches_machine && mode.is_live();
-    }
-
-    /// Stage the peer-local confirmation for a deterministic offscreen frame.
-    #[doc(hidden)]
-    pub fn seed_confirmation_for_shot(&mut self, value: &str) {
-        self.confirm_text = value.to_string();
-        self.shot_confirmation_ready = true;
-        // The posed review shows the consent the write waits for.
-        self.shot_focus = Some("imager.confirm");
-    }
-
-    /// Headless-shot only: expose the long, searchable time-zone chooser so
-    /// its overlay placement is part of visual review.
-    pub fn shot_open_customize_timezone(&mut self) {
-        self.shot_timezone_open = true;
-        // The open chooser's field is scrolled into view with it.
-        self.shot_focus = Some("imager.profile.timezone");
     }
 
     /// Prime local-only state for deterministic offscreen review. None of this
@@ -466,12 +448,6 @@ impl ImagerApp {
             }
             _ => {}
         }
-    }
-
-    /// Local demo inventory/catalogue used by `--demo`; the collaborative
-    /// document still carries only the reviewed source/profile records.
-    pub fn seed_local_demo_state(&mut self) {
-        self.seed_local_shot_state("source");
     }
 
     fn confirm_matches(&self) -> bool {
@@ -961,6 +937,11 @@ impl ImagerApp {
                 "Pre-configured for {} on {}",
                 self.profile.user.username, self.profile.hostname
             )
+        } else if let Some(hostname) = crate::handoff::chosen_hostname(&self.profile) {
+            crate::setup::strings::t_args(
+                "imager-review-setup-hostname",
+                &[("hostname", ui::i18n::ArgValue::from(hostname))],
+            )
         } else {
             "Written unchanged, then verified".to_string()
         }
@@ -1015,6 +996,7 @@ impl ImagerApp {
             body = body.push(page::form_block(crate::write_setup::form(
                 &self.profile,
                 &self.wifi_psk,
+                &self.ssh_public_key,
                 &self.commands,
             )));
         }
@@ -1202,27 +1184,17 @@ impl ImagerApp {
     fn writer(&self) -> crate::write::WriteBackend {
         crate::write::WriteBackend::for_window(self.live)
     }
-    fn submit(&self, action: &ImagerAction) {
+    fn submit(&self, submit: impl ui::framework::Submit<Imager>) {
         if let Some(dispatcher) = &self.dispatcher {
-            dispatcher.apply(action);
+            dispatcher.submit(submit);
         }
     }
     fn select_source(&mut self, src: &Source) {
-        let previous = self
-            .source
-            .as_ref()
-            .filter(|previous| !previous.path.is_empty())
-            .cloned()
-            .map(Box::new);
         // A source outside the authenticated catalog cannot carry a profile.
         if !self.source_is_official(src) {
             self.action = Action::Flash;
         }
-        self.submit(&ImagerAction::SelectSource {
-            source: Box::new(src.clone()),
-            previous,
-            recent_rank: self.next_recent_rank,
-        });
+        self.submit(Imager::SELECT_SOURCE.with(src.clone()));
         self.source = Some(src.clone());
         self.set_status(&format!(
             "Selected {} — {}",
@@ -1492,18 +1464,38 @@ impl ImagerApp {
         if device != tgt.dev_path() {
             return Err("The selected target changed; review the write plan again.".into());
         }
-        // Stage Wi-Fi / enrollment for any image the operator configured on
-        // Confirm. Official media still embeds only the secret-free profile
-        // block; the passphrase and new device key stay in the staged tree
-        // and are copied onto the installed root after verification.
-        let handoff_stage =
-            if !self.profile.wifi_ssid.trim().is_empty() || self.profile.enroll_local_identity {
-                let local = crate::handoff::local_identity_from_env()?;
-                crate::handoff::stage_setup_handoff(&self.profile, &self.wifi_psk, &local)?
-                    .map(|stage| stage.root)
-            } else {
-                None
-            };
+        // Checked before the identity lookup, so a setup machine without an
+        // identity does not hide the missing passphrase behind that error.
+        if !self.profile.wifi_ssid.trim().is_empty() && self.wifi_psk.is_empty() {
+            return Err("A Wi-Fi password is required when a network name is set.".into());
+        }
+        crate::handoff::validate_bringup_ssh_key(&self.ssh_public_key)?;
+        // Stage Wi-Fi, the owner SSH key, and enrollment for any image the
+        // operator configured on Confirm. Official media still embeds only the
+        // secret-free profile block; the passphrase, key, and new device key
+        // stay in the staged tree and are copied onto the installed root
+        // after verification. Only enrollment needs this machine's identity.
+        let handoff_stage = if self.profile.enroll_local_identity {
+            let local = crate::handoff::local_identity_from_env()?;
+            let staged =
+                crate::handoff::stage_setup_handoff(&self.profile, &self.wifi_psk, &local)?;
+            if let Some(stage) = staged.as_ref()
+                && let Err(error) =
+                    crate::handoff::install_bringup_ssh_key(stage.path(), &self.ssh_public_key)
+            {
+                let _ = std::fs::remove_dir_all(stage.path());
+                return Err(error);
+            }
+            staged.map(|stage| stage.root)
+        } else {
+            crate::handoff::stage_access_handoff(
+                &self.profile,
+                &self.wifi_psk,
+                &self.ssh_public_key,
+                !src.installable,
+            )?
+            .map(|stage| stage.root)
+        };
         let src_size = src.size;
         let req = WriteRequest {
             source: src,
@@ -1832,6 +1824,42 @@ impl ImagerApp {
                 Ok(Effected::Pending)
             }
             ImagerEffect::Status => Ok(Effected::value(self.status_value())),
+            ImagerEffect::CustomizeImage {
+                image,
+                hostname,
+                wifi_ssid,
+                wifi_psk_file,
+                ssh_keys_file,
+                home_files,
+            } => {
+                let mut args = vec!["imager".into(), "--customize-image".into(), image];
+                for (flag, value) in [
+                    ("--hostname", hostname),
+                    ("--wifi-ssid", wifi_ssid),
+                    ("--wifi-psk-file", wifi_psk_file),
+                    ("--ssh-keys-file", ssh_keys_file),
+                ] {
+                    if let Some(value) = value {
+                        args.extend([flag.into(), value]);
+                    }
+                }
+                for path in home_files {
+                    args.extend(["--home-file".into(), path]);
+                }
+                Ok(cx.thread(
+                    move |_| {
+                        crate::customize_image::maybe_run(&args).map_err(|error| error.to_string())
+                    },
+                    |app: &mut Self, result, _| {
+                        let code = result?.ok_or(
+                            "the image customization helper did not recognize its request",
+                        )?;
+                        app.set_status("Image customization complete");
+                        app.dirty = true;
+                        Ok(Effected::value(serde_json::json!({ "exit_code": code })))
+                    },
+                ))
+            }
             ImagerEffect::ChooseImage => {
                 self.set_status("Opening the file picker…");
                 self.dirty = true;
@@ -1859,6 +1887,12 @@ impl ImagerApp {
             ImagerEffect::SetWifiPsk { value } => {
                 self.wifi_psk = value;
 
+                self.dirty = true;
+                Ok(Effected::done())
+            }
+            ImagerEffect::SetSshKey { value } => {
+                crate::handoff::validate_bringup_ssh_key(&value)?;
+                self.ssh_public_key = value;
                 self.dirty = true;
                 Ok(Effected::done())
             }
@@ -1966,7 +2000,7 @@ impl ImagerApp {
 }
 
 impl ImagerApp {
-    pub(crate) fn present_state(&mut self, state: &ImagerState) {
+    pub(crate) fn present_state(&mut self, state: &Imager) {
         self.adopt_resource_state(state);
     }
     fn go_to_station(&mut self, index: usize) {
@@ -2028,18 +2062,30 @@ impl ImagerApp {
             Command::Profile(field, shown) => {
                 if self.step == Step::Customize && self.customizable() {
                     match crate::customize::profile_value(field, &shown) {
-                        Some(value) => self.submit(&crate::customize::field_action(field, value)),
+                        Some(value) => match crate::customize::field_edit(field, value) {
+                            Some(edit) => self.submit(edit),
+                            None => self.fail(&format!("Choose a listed {}", field.label())),
+                        },
                         None => self.fail(&format!("Choose a listed {}", field.label())),
                     }
                 }
             }
             Command::WriteSetup(field, value) => {
                 if self.step == Step::Confirm && self.offers_write_setup() {
-                    match crate::write_setup::field_action(field, value.clone()) {
-                        Some(action) => self.submit(&action),
+                    match crate::write_setup::field_edit(field, value.clone()) {
+                        Some(edit) => self.submit(edit),
                         None => {
                             if let Some(dispatcher) = &self.dispatcher {
-                                dispatcher.effect(&ImagerEffect::SetWifiPsk { value });
+                                match field {
+                                    SetupField::WifiPsk => {
+                                        dispatcher.effect(&ImagerEffect::SetWifiPsk { value });
+                                    }
+                                    SetupField::SshKey => {
+                                        self.ssh_public_key = value;
+                                        self.dirty = true;
+                                    }
+                                    _ => {}
+                                }
                             }
                         }
                     }
@@ -2047,7 +2093,7 @@ impl ImagerApp {
             }
             Command::Enroll(on) => {
                 if self.step == Step::Confirm && self.offers_write_setup() {
-                    self.submit(&ImagerAction::SetEnrollLocalIdentity { on });
+                    self.submit(Imager::paths().profile.enroll_local_identity.set(on));
                 }
             }
         }
@@ -2118,16 +2164,14 @@ impl Widget for ImagerApp {
             self.export_config();
         }
         self.refresh_view();
-        if let Some(composed) = &mut self.composed {
-            composed.sync(_state, _path);
-        }
+        self.composed.sync(_state, _path);
         self.dirty = true;
     }
 
     fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
         self.refresh_view();
         self.composed
-            .as_mut()
+            .element_mut()
             .is_some_and(|view| view.update(state, path))
     }
 
@@ -2140,7 +2184,7 @@ impl Widget for ImagerApp {
         // A page composed again keeps keyboard focus on the same control.
         let focused = self
             .composed
-            .as_deref()
+            .element()
             .and_then(page::focused_id)
             .or_else(|| self.shot_focus.take().map(str::to_string));
         let mut composed = self.build_composition();
@@ -2148,42 +2192,24 @@ impl Widget for ImagerApp {
             page::refocus(composed.as_mut(), &id);
         }
         let child = composed.build_layout(taffy, theme, node_map);
-        self.composed = Some(composed);
+        self.composed.replace(composed);
         self.view_key = Some(self.view_key());
         self.structure_dirty = false;
-        let node = taffy
-            .new_with_children(
-                Style {
-                    display: taffy::Display::Flex,
-                    flex_direction: taffy::FlexDirection::Column,
-                    size: Size {
-                        width: Dimension::percent(1.0),
-                        height: Dimension::percent(1.0),
-                    },
-                    flex_grow: 1.0,
-                    ..Default::default()
-                },
-                &[child],
-            )
-            .unwrap_or(child);
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        let style = Style {
+            display: taffy::Display::Flex,
+            flex_direction: taffy::FlexDirection::Column,
+            size: Size {
+                width: Dimension::percent(1.0),
+                height: Dimension::percent(1.0),
+            },
+            flex_grow: 1.0,
+            ..Default::default()
+        };
+        taffy.widget_node(style, &[child], node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x + layout.size.width),
-            origin.y + f64::from(layout.location.y + layout.size.height),
-        );
-        if let Some(composed) = &mut self.composed
-            && let Ok(children) = taffy.children(node)
-            && let Some(&child) = children.first()
-        {
-            composed.apply_layout(taffy, child, Point::new(self.rect.x0, self.rect.y0));
-        }
+        self.composed.apply_layout(taffy, node, origin);
     }
 
     fn draw(
@@ -2196,10 +2222,10 @@ impl Widget for ImagerApp {
     ) {
         if self.export_dialog.is_open() {
             self.export_dialog
-                .layout_in(self.rect, theme, text_renderer);
+                .layout_in(self.composed.rect(), theme, text_renderer);
         }
         // The framework paints the window ground; the page is toolkit widgets.
-        if let Some(composed) = &mut self.composed {
+        if let Some(composed) = self.composed.element_mut() {
             composed.draw(scene, transform, text_renderer, theme, presence);
         }
     }
@@ -2215,7 +2241,7 @@ impl Widget for ImagerApp {
             *ctx.handled = true;
             return;
         }
-        if let Some(composed) = &mut self.composed
+        if let Some(composed) = self.composed.element_mut()
             && let Ok(children) = ctx.taffy.children(ctx.node_id)
             && let Some(&child) = children.first()
         {
@@ -2258,7 +2284,7 @@ impl Widget for ImagerApp {
         }
     }
     fn settle(&mut self, edits: &mut ui::widget::Edits<'_>, path: &ObjId) {
-        if let Some(view) = &mut self.composed {
+        if let Some(view) = self.composed.element_mut() {
             view.settle(edits, path);
         }
         if self.drain_commands() {
@@ -2266,19 +2292,11 @@ impl Widget for ImagerApp {
         }
     }
     fn children(&self) -> Vec<&dyn Widget> {
-        self.composed
-            .as_ref()
-            .map(|child| child.as_ref() as &dyn Widget)
-            .into_iter()
-            .collect()
+        self.composed.children()
     }
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        self.composed
-            .as_mut()
-            .map(|child| child.as_mut() as &mut (dyn Widget + '_))
-            .into_iter()
-            .collect()
+        self.composed.children_mut()
     }
 
     fn name(&self) -> &'static str {
@@ -2286,15 +2304,11 @@ impl Widget for ImagerApp {
     }
 
     fn get_rect(&self) -> Rect {
-        self.rect
+        self.composed.rect()
     }
 
     fn take_structure_dirty(&mut self) -> bool {
-        std::mem::take(&mut self.structure_dirty)
-            || self
-                .composed
-                .as_mut()
-                .is_some_and(|child| child.take_structure_dirty())
+        std::mem::take(&mut self.structure_dirty) || self.composed.take_structure_dirty()
     }
 
     /// Keep the event loop ticking while a job or file picker is in flight, so
@@ -2305,32 +2319,20 @@ impl Widget for ImagerApp {
             || self.release_download.is_some()
             || self
                 .composed
-                .as_ref()
+                .element()
                 .is_some_and(|child| child.needs_animation_frame())
     }
 
     fn needs_idle_sync(&self) -> bool {
         self.job_control.is_some() || false || self.release_download.is_some()
     }
-
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        _permissions: &PermissionContext,
-    ) {
-        self.draw(scene, transform, text_renderer, theme, presence);
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::doc::ImagerDoc;
     use automerge::AutoCommit;
+    use ui::tilo_resource::Fields as _;
 
     fn harness(
         app: ImagerApp,
@@ -2364,16 +2366,82 @@ mod tests {
         app.sync(&mut model, &automerge::ROOT);
     }
 
+    /// A document holding `state`.
+    fn document(state: &Imager) -> AutoCommit {
+        let mut doc = AutoCommit::new();
+        state.write_fields(&mut doc, &automerge::ROOT).unwrap();
+        doc
+    }
+
+    /// The demo record: a pre-selected Tilo image and a short recent-sources
+    /// history.
+    fn demo_state() -> Imager {
+        Imager {
+            source: Some(crate::model::sample_source()),
+            recent: crate::model::sample_recent_sources()
+                .into_iter()
+                .enumerate()
+                .map(|(rank, source)| crate::model::RecentSource {
+                    id: ui::tilo_resource::Id::from_raw(source.id()),
+                    rank: rank as i64,
+                    source,
+                })
+                .collect(),
+            profile: InstallProfile::default(),
+        }
+    }
+
     fn seeded_app() -> (ImagerApp, AutoCommit) {
         // Tests drive the wizard against the demo document (sample drives + a
         // Tilo image + recent history) — the same content the screenshot scenarios stage.
         let mut app = ImagerApp::new();
         app.targets = crate::model::sample_targets();
         app.releases = crate::model::sample_releases();
-        let mut doc = AutoCommit::new();
-        ImagerDoc::seed_demo(&mut doc);
+        let doc = document(&demo_state());
         present(&mut app, &doc);
         (app, doc)
+    }
+
+    #[test]
+    fn unchanged_disk_review_discloses_the_authored_hostname() {
+        use ui::tilo_resource::Resource as _;
+
+        let (mut app, mut doc) = seeded_app();
+        let mut source = app
+            .recent
+            .iter()
+            .find(|source| source.kind == SourceKind::IsoFile)
+            .unwrap()
+            .clone();
+        source.installable = false;
+        let mut state = Imager::read(&doc).unwrap();
+        state.select_source(source);
+        state.write_fields(&mut doc, &automerge::ROOT).unwrap();
+        present(&mut app, &doc);
+        app.goto(Step::Confirm);
+        assert!(!app.customizable());
+        assert_eq!(app.review_setup(), "Written unchanged, then verified");
+
+        Imager::paths()
+            .profile
+            .hostname
+            .replace("reviewed-host")
+            .apply_local(&mut doc)
+            .unwrap();
+        present(&mut app, &doc);
+        assert_eq!(
+            crate::handoff::chosen_hostname(&app.profile),
+            Some("reviewed-host")
+        );
+        let setup = app
+            .review_rows()
+            .into_iter()
+            .find(|(label, _)| *label == "Setup")
+            .unwrap()
+            .1;
+        assert!(setup.contains("reviewed-host"), "{setup}");
+        assert!(setup.contains("then verified"), "{setup}");
+        assert!(!setup.contains("Pre-configured"), "{setup}");
     }
 
     /// Blank start, demo seeding, local state and restart reconciliation.
@@ -2489,7 +2557,6 @@ mod tests {
             assert!(app.releases().is_empty(), "no fabricated Tilo releases");
 
             // ...and nothing on the Source step is clickable that would select one.
-            app.rect = Rect::new(0.0, 0.0, 1180.0, 820.0);
             let offered = ids(&app).iter().any(|id| id.starts_with("imager.release."));
             assert!(
                 !offered,
@@ -2504,9 +2571,8 @@ mod tests {
         // Phase `demo_document_offers_its_seeded_releases`.
         // The gate is a gate, not a deletion: the demo document still offers them.
         {
-            let (mut app, _doc) = seeded_app();
+            let (app, _doc) = seeded_app();
             assert_eq!(app.releases().len(), 2);
-            app.rect = Rect::new(0.0, 0.0, 1180.0, 820.0);
             let offered = ids(&app)
                 .iter()
                 .filter(|id| id.starts_with("imager.release."))
@@ -2908,6 +2974,107 @@ mod tests {
         }
     }
 
+    #[test]
+    fn write_setup_wifi_and_owner_key_stage_without_identity_enrollment() {
+        let (mut app, mut doc) = seeded_app();
+        app.select_target(0);
+        app.goto(Step::Confirm);
+        app.confirm_text = "sdb".into();
+        Imager::paths()
+            .profile
+            .wifi_ssid
+            .replace("studio")
+            .apply_local(&mut doc)
+            .unwrap();
+        Imager::paths()
+            .profile
+            .enroll_local_identity
+            .set(false)
+            .apply_local(&mut doc)
+            .unwrap();
+        present(&mut app, &doc);
+        app.wifi_psk = "correct-horse".into();
+        let key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA owner@example";
+        app.ssh_public_key = key.into();
+        assert!(!app.profile.enroll_local_identity);
+        let error = app
+            .begin_write("/dev/sdb", "sdb")
+            .expect_err("access staging reaches the disabled writer without enrollment");
+        assert!(
+            error.to_lowercase().contains("disabled") || error.to_lowercase().contains("backend"),
+            "expected the disabled write backend after staging access: {error}"
+        );
+        assert!(app.job_control.is_none());
+        assert_eq!(app.step, Step::Confirm);
+        // The shared Confirm form replaced the old Action summary. It must
+        // still expose the accepted owner key for review on the setup machine.
+        let view = harness(app, doc, (1180, 820));
+        assert!(
+            view.a11y_nodes()
+                .iter()
+                .any(|(_, node)| { node.value() == Some(key) }),
+            "the owner SSH key remains visible in the production Confirm form"
+        );
+    }
+
+    #[test]
+    fn write_setup_missing_wifi_password_is_reported_before_identity_lookup() {
+        let (mut app, mut doc) = seeded_app();
+        app.select_target(0);
+        app.goto(Step::Confirm);
+        app.confirm_text = "sdb".into();
+        Imager::paths()
+            .profile
+            .wifi_ssid
+            .replace("studio")
+            .apply_local(&mut doc)
+            .unwrap();
+        Imager::paths()
+            .profile
+            .enroll_local_identity
+            .set(true)
+            .apply_local(&mut doc)
+            .unwrap();
+        present(&mut app, &doc);
+        let error = app
+            .begin_write("/dev/sdb", "sdb")
+            .expect_err("Wi-Fi without a password must be refused before enrollment");
+        assert!(error.contains("Wi-Fi password is required"), "{error}");
+        assert!(app.job_control.is_none());
+        assert_eq!(app.step, Step::Confirm);
+    }
+
+    #[test]
+    fn write_setup_uses_the_newly_published_document_without_a_render_frame() {
+        use ui::tilo_resource::Resource as _;
+
+        let (mut app, mut doc) = seeded_app();
+        app.select_target(0);
+        app.goto(Step::Confirm);
+        app.confirm_text = "sdb".into();
+        assert!(app.profile.wifi_ssid.is_empty());
+        Imager::paths()
+            .profile
+            .wifi_ssid
+            .replace("studio")
+            .apply_local(&mut doc)
+            .unwrap();
+        assert!(
+            app.profile.wifi_ssid.is_empty(),
+            "the previous projection is still cached"
+        );
+        // Present the document through the actual ResourceSurface hook. No
+        // layout, draw, animation tick or test-only profile assignment intervenes.
+        app.present_state(&Imager::read(&doc).expect("the updated resource"));
+        let error = app
+            .begin_write("/dev/sdb", "sdb")
+            .expect_err("the newly published network requires its password");
+        assert!(error.contains("Wi-Fi password is required"), "{error}");
+        assert_eq!(app.profile.wifi_ssid, "studio");
+        assert!(app.job_control.is_none());
+        assert_eq!(app.step, Step::Confirm);
+    }
+
     /// Release download job presentation.
     #[test]
     #[allow(
@@ -2918,7 +3085,6 @@ mod tests {
         // Phase `active_release_download_replaces_selection_with_an_accessible_cancel_action`.
         {
             let (mut app, _doc) = seeded_app();
-            app.rect = Rect::new(0.0, 0.0, 1180.0, 820.0);
             app.release_download = Some(ReleaseDownload {
                 index: 0,
                 control: crate::release::DownloadControl::default(),
@@ -2997,6 +3163,31 @@ mod tests {
                     .any(|row| row.id() == "imager.download")
             );
         }
+    }
+
+    #[test]
+    fn owner_ssh_key_can_be_typed_before_the_complete_key_is_validated() {
+        let mut host =
+            ui::prelude::TestApp::<crate::resource::ImagerShell>::capture(Some("confirm")).unwrap();
+        host.harness()
+            .perform_named(
+                "imager.write-setup.ssh-key",
+                &ui::a11y::Action::SetValue("ssh-".into()),
+            )
+            .unwrap();
+        assert_eq!(
+            host.with_widget::<ImagerApp, _>(|app| app.ssh_public_key.clone())
+                .unwrap(),
+            "ssh-"
+        );
+        host.with_widget::<ImagerApp, _>(|app| {
+            let error = app
+                .begin_write("/dev/sdb", "sdb")
+                .expect_err("an incomplete key must refuse the write");
+            assert!(error.contains("public key"), "unexpected refusal: {error}");
+            assert!(app.job_control.is_none());
+        })
+        .expect("the hosted wizard");
     }
 
     /// The primary interaction, proven end to end by clicking the real
@@ -3156,12 +3347,13 @@ mod tests {
         // Phase `internal_and_system_disks_can_never_be_selected`.
         {
             let mut app = ImagerApp::new();
-            let mut doc = AutoCommit::new();
             let mut targets = crate::model::sample_targets();
             targets[1].is_system = true; // the internal NVMe is the system disk
             app.targets = targets.clone();
-            ImagerDoc::seed(&mut doc);
-            ImagerDoc::set_source(&mut doc, Some(&crate::model::sample_source()));
+            let doc = document(&Imager {
+                source: Some(crate::model::sample_source()),
+                ..Imager::default()
+            });
             present(&mut app, &doc);
 
             app.select_target(1);

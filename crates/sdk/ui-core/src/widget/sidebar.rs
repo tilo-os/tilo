@@ -255,9 +255,6 @@ impl SidebarDrawer {
     pub fn set_docked_width(&mut self, px: f64) {
         self.docked_width = self.docked_width.with_px(px);
     }
-    pub fn set_overlay_width(&mut self, px: f64) {
-        self.overlay_width = self.overlay_width.with_px(px);
-    }
     pub fn set_breakpoint(&mut self, px: f64) {
         self.breakpoint = self.breakpoint.with_px(px);
         self.content_min_width = None;
@@ -316,9 +313,6 @@ impl SidebarDrawer {
 
     // --- state --------------------------------------------------------------
 
-    pub fn anchored_side(&self) -> SidebarSide {
-        self.side
-    }
     /// Docked at/above the (resolved) breakpoint; always an overlay for
     /// [`Self::overlay_only`].
     pub fn layout_for(&self, width: f64) -> SplitLayout {
@@ -636,7 +630,7 @@ impl SidebarDrawer {
     }
 
     /// Toggle from the toggle's node (`key_path` from
-    /// `Widget::perform_action_at`); returns whether it did.
+    /// `Widget::perform_action`); returns whether it did.
     pub fn perform_toggle_action(
         &mut self,
         action: &crate::a11y::Action,
@@ -784,6 +778,9 @@ impl SidebarDrawer {
         }
         let extent = self.outer.width();
         let maximum = self.resize_max_width + self.rail_column_width();
+        let maximum = self.content_min_width.map_or(maximum, |minimum| {
+            maximum.min((extent - self.resolve_extent(minimum)).max(0.0))
+        });
         let share = self.sidebar_rect.width() / extent;
         let (position, min, max) = match self.side {
             SidebarSide::Left => (share, 0.0, (maximum / extent).min(1.0)),
@@ -1020,6 +1017,34 @@ mod tests {
             d.resolved_breakpoint(),
             f64::from(metrics.compact_breakpoint)
         );
+    }
+
+    #[test]
+    fn adaptive_sidebar_resize_keeps_the_content_minimum_and_handle_available() {
+        for side in [SidebarSide::Left, SidebarSide::Right] {
+            let mut drawer = SidebarDrawer::new()
+                .side(side)
+                .with_rail()
+                .content_min_width(360.0);
+            drawer.scale_for(&Theme::dark());
+            let area = Rect::new(40.0, 20.0, 800.0, 740.0);
+            drawer.resolve(area);
+            drawer.snap(true);
+            drawer.resolve(area);
+            let value = match side {
+                SidebarSide::Left => "90%",
+                SidebarSide::Right => "10%",
+            };
+            assert!(drawer.perform_resize_action(
+                drawer.resize_target(),
+                &crate::a11y::Action::SetValue(value.into()),
+            ));
+            drawer.resolve(area);
+            assert!(drawer.is_docked(), "resize must not turn into an overlay");
+            assert_eq!(drawer.content_rect().width(), 360.0);
+            assert_eq!(drawer.list_rect().width(), 324.0);
+            assert!(drawer.resize_accessibility().is_some());
+        }
     }
 
     #[test]
@@ -1483,7 +1508,7 @@ mod tests {
         );
 
         // The system shortcut closes it, as in every app.
-        let key = crate::synthetic_input::key_event(
+        let key = crate::synthetic_input::key_input(
             &winit::keyboard::Key::Character("L".into()),
             ElementState::Pressed,
         );

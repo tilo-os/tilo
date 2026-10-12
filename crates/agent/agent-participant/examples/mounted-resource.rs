@@ -1,4 +1,4 @@
-//! An explicit acceptance run, requiring a compiled desktop bundle and Chromium.
+//! An explicit acceptance run, requiring a compiled web bundle and Chromium.
 //! All identities, storage and governed rooms belong to this temporary fixture.
 #[cfg(not(test))]
 #[expect(
@@ -14,6 +14,9 @@ use fixture::support;
 #[cfg(not(test))]
 fn main() -> std::process::ExitCode {
     if let Some(code) = tilo_automerge_isolate::dispatch_early() {
+        return std::process::ExitCode::from(code);
+    }
+    if let Some(code) = tilo_agent_participant::worker::dispatch_early() {
         return std::process::ExitCode::from(code);
     }
     let Ok(runtime) = tokio::runtime::Runtime::new() else {

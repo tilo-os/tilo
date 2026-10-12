@@ -422,6 +422,10 @@ else
   bad "first-boot password hash grammar rejects valid installer output or accepts malformed input"
 fi
 
+if ! python3 -B "$repo_root/os/tests/test_installer_firstboot_runtime.py"; then
+  bad "installer does not provision firstboot accounts on older signed targets"
+fi
+
 firstboot_unit="$repo_root/os/usr/lib/systemd/system/tilo-firstboot-user.service"
 for policy in \
   'TimeoutStartSec=30' \
@@ -492,6 +496,14 @@ if grep -Fq '"$DEPLOY_ETC/systemd/system/sshd.service"' "$backend" \
   ok "live-only SSH state is removed from the installed target"
 else
   bad "live-medium SSH mask/enablement can leak into the target"
+fi
+
+if grep -Fq 'die "setup handoff contains the human root secret"' "$backend" \
+   && grep -Fq 'for public in user-identity/pubkey.bin device/cert.bin' "$backend" \
+   && grep -Fq 'find "$HANDOFF_VAR/lib/tilo/device/certs"' "$backend"; then
+  ok "installed handoff refuses the human root secret and keeps the enrolled identity's public files readable"
+else
+  bad "installed handoff can copy the human root secret or leave public identity files root-only"
 fi
 
 if grep -Fq 'chcon --reference=/etc/greetd/config.toml "$GREETD_CONFIG_TMP"' "$backend"; then

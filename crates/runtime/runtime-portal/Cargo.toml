@@ -41,9 +41,12 @@ serde_json.workspace = true
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
 # `fcntl(F_GETFD)` probes whether a fd is open before handing it to tokio.
-rustix.workspace = true
+rustix = { workspace = true, features = ["net"] }
 # Service descriptors are Unix sockets; other hosts report `NotAvailable`.
 tokio = { workspace = true, optional = true, features = ["net"] }
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+getrandom.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "net", "io-util", "macros", "sync", "time"] }

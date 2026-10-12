@@ -3,7 +3,7 @@
 //! must not index `row_rects` out of bounds (panicked at sidebar.rs:310
 //! in the live two-instance demo). Drives the real
 //! `sync → build_layout → compute → apply_layout → draw` cycle headless
-//! (no GPU — `draw_with_presence` just fills a vello Scene).
+//! (no GPU — `draw` just fills a vello Scene).
 
 #![allow(
     clippy::unwrap_used,
@@ -16,10 +16,8 @@
 )]
 
 use notes::NotesApp;
-use notes::doc::NotesDoc;
 use notes::model::PageMeta;
 use ui::headless::Framed;
-use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
@@ -38,29 +36,20 @@ fn relayout(app: &mut Framed<NotesApp>) -> Result<(), String> {
 
 fn draw(app: &mut NotesApp, theme: &Theme, tr: &mut TextRenderer) {
     let presence = PresenceCtx::empty();
-    let permission = PermissionContext::permissive();
     let mut scene = Scene::new();
-    app.draw_with_presence(
-        &mut scene,
-        Affine::IDENTITY,
-        tr,
-        theme,
-        &presence,
-        &permission,
-    );
+    app.draw(&mut scene, Affine::IDENTITY, tr, theme, &presence);
 }
 
 #[test]
 fn sidebar_survives_remote_page_added_between_layout_and_draw() {
     let mut state = ui::State::new();
-    notes::notebook::initialize_empty(&mut state.doc).unwrap();
-    NotesDoc::upsert_page_meta(
+    notes::read::initialize(&mut state.doc);
+    crate::component_support::upsert_page(
         &mut state.doc,
         &PageMeta {
             id: uuid::Uuid::new_v4(),
             title: "Local Page".into(),
             parent: None,
-            order: "a".into(),
         },
     );
     let app = NotesApp::from_document(&state.doc, &ui::permissions::UserId("me".into())).unwrap();
@@ -72,13 +61,12 @@ fn sidebar_survives_remote_page_added_between_layout_and_draw() {
     draw(&mut app, &theme, &mut tr);
 
     // A remote peer adds a second page to the SHARED doc.
-    NotesDoc::upsert_page_meta(
+    crate::component_support::upsert_page(
         &mut Framed::split(&mut app).1.doc,
         &PageMeta {
             id: uuid::Uuid::new_v4(),
             title: "Remote Page".into(),
             parent: None,
-            order: "b".into(),
         },
     );
 

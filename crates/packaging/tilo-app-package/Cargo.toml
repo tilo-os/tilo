@@ -23,7 +23,7 @@ path = "src/lib.rs"
 [dependencies]
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
 tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }
-tilo-xdg-paths = { version = "0.1.0", path = "../../../crates/system/xdg-paths" }
+tilo-paths.workspace = true
 # Threshold-shared Ed25519 identity. Signing goes through the
 # identity's group key; verify is a regular Ed25519 verify against
 # the group public key, so callers only need the verifying-key
@@ -60,3 +60,6 @@ workspace = true
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The workspace-hack's native feature set does not build for wasm32.
 workspace-hack = { version = "0.1" }
+# Compressed twins of packages and payload objects (`compressed`); the C
+# library does not build for wasm32, and the browser fetches raw objects.
+zstd.workspace = true

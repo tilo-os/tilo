@@ -1,11 +1,3 @@
-#![cfg_attr(
-    test,
-    allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        reason = "in a test these are assertions"
-    )
-)]
 //! Native Spotify sessions stay on one worker. Only observations cross to UI;
 //! streaming tokens never enter a resource, profile or collaborative document.
 
@@ -97,6 +89,7 @@ enum Command {
 }
 #[derive(Default)]
 struct Status {
+    stage: &'static str,
     transition: Option<String>,
     duration: u64,
     position: u64,
@@ -131,6 +124,7 @@ impl NativeAudio {
             cancel: cancel.clone(),
             next: next.clone(),
         };
+        shared.update(|state| state.stage = "credentials");
         tilo_rt::spawn_thread("music-spotify-audio", move || {
             let result = connection().and_then(|connection| {
                 tilo_rt::block_on(run(uri, account, output, receiver, &shared, connection))
@@ -213,6 +207,12 @@ impl NativeAudio {
     pub fn eos(&self) -> bool {
         self.status.lock().is_ok_and(|state| state.eos)
     }
+    pub fn duration_ms(&self) -> Option<u64> {
+        self.status
+            .lock()
+            .ok()
+            .and_then(|state| (state.duration > 0).then_some(state.duration))
+    }
     pub fn frames(&self) -> u64 {
         if self.status.lock().is_ok_and(|state| {
             state
@@ -227,6 +227,25 @@ impl NativeAudio {
     }
     pub fn sink(&self) -> Option<String> {
         self.status.lock().ok()?.sink.clone()
+    }
+    /// Non-secret startup observations; contains no account or grant data.
+    pub fn startup_stage(&self) -> &'static str {
+        self.status.lock().map_or("unavailable", |state| {
+            if state.error.is_some() {
+                "failed"
+            } else if state.eos {
+                "ended"
+            } else if self.frames.load(Ordering::Relaxed) > 0
+                && state
+                    .sink
+                    .as_ref()
+                    .is_some_and(|sink| !sink.contains("fakesink"))
+            {
+                if state.playing { "playing" } else { "paused" }
+            } else {
+                state.stage
+            }
+        })
     }
     pub fn error(&self) -> Option<String> {
         self.status.lock().ok()?.error.take()
@@ -335,6 +354,7 @@ async fn authorized_sink(
     shared: &Shared,
     output: &Output,
 ) -> Result<Option<PcmSink>, String> {
+    shared.update(|state| state.stage = "premium");
     let sink = verified_sink(
         session,
         &shared.cancel,
@@ -357,14 +377,14 @@ async fn run(
     shared: &Shared,
     connection: (SessionConfig, Credentials),
 ) -> Result<(), String> {
+    shared.update(|state| state.stage = "session");
     let session = connect_session(connection, &account).await?;
     let _shutdown = SessionShutdown(session.clone());
     if shared.cancel.load(Ordering::Acquire) {
         session.shutdown();
         return Ok(());
     }
-    let track =
-        SpotifyUri::from_uri(&uri).map_err(|_| "Invalid Spotify track identity".to_string())?;
+    let track = playback_metadata(&session, &uri).await?;
     let Some(sink) = authorized_sink(&session, shared, &output).await? else {
         return Ok(());
     };
@@ -372,32 +392,28 @@ async fn run(
     let source = sink.source.clone();
     let volume = sink.volume.clone();
     let actual_sink = sink.sink.clone();
-    let config = PlayerConfig {
-        bitrate: Bitrate::Bitrate320,
-        position_update_interval: Some(Duration::from_millis(250)),
-        ..PlayerConfig::default()
-    };
-    let player = Player::new(config, session.clone(), Box::new(NoOpVolume), move || {
-        Box::new(sink)
-    });
+    let governed_output = sink.governed_output.clone();
+    shared.update(|state| state.stage = "decoding");
+    let player = Player::new(
+        playback_config(),
+        session.clone(),
+        Box::new(NoOpVolume),
+        move || Box::new(sink),
+    );
     let mut events = player.get_player_event_channel();
     player.load(track, false, 0);
     let mut tick = tokio::time::interval(Duration::from_millis(100));
     let mut pending_transition = None;
     let mut pending_started: Option<tilo_clock::Instant> = None;
     loop {
-        if !matches!(premium_confirmed(&session), Ok(true)) {
-            shared.update(|state| {
-                state.error =
-                    Some("Spotify's native session no longer confirms Premium eligibility".into());
-                state.playing = false;
-            });
+        if !confirm_playback_session(&session, shared) {
             break;
         }
         tokio::select! {
             command = commands.recv() => match command {
-                Some(Command::Play) => player.play(), Some(Command::Pause) => player.pause(),
-                Some(Command::Seek(ms)) => player.seek(ms),
+                Some(Command::Play) => { if let Some(output) = &governed_output { output.pause(false); } player.play(); },
+                Some(Command::Pause) => { player.pause(); if let Some(output) = &governed_output { output.pause(true); } },
+                Some(Command::Seek(ms)) => { if let Some(output) = &governed_output { output.flush(); } player.seek(ms); },
                 Some(Command::Volume(value)) => volume.set_property("volume", f64::from(value)),
                 Some(Command::Preload(uri)) => {
                     if let Ok(uri) = SpotifyUri::from_uri(&uri) { player.preload(uri); }
@@ -422,6 +438,11 @@ async fn run(
                     if shared.status.lock().is_ok_and(|state| state.duration.saturating_sub(state.position) > 2_000) {
                         shared.update(|state| state.error = Some("Spotify audio ended before the track was decoded".into())); break;
                     }
+                    // EndOfTrack means the decoder is done; the clocked sink
+                    // may still hold its tail. Let that PCM finish first.
+                    source.end_of_stream().map_err(|_| "Spotify output could not finish the track".to_string())?;
+                    drain_output(&pipeline, &shared.cancel).await?;
+                    drain_governed_output(governed_output.as_deref(), &shared.cancel).await?;
                     let next = shared.next.lock().ok().and_then(|mut next| next.take());
                     if let Some(next) = next {
                         let uri = SpotifyUri::from_uri(&next).map_err(|_| "Invalid Spotify queue track".to_string())?;
@@ -430,18 +451,15 @@ async fn run(
                         player.load(uri, true, 0);
                         continue;
                     }
-                    // EndOfTrack means the decoder is done; the clocked sink
-                    // may still hold its tail. Let that PCM finish first.
-                    source.end_of_stream().map_err(|_| "Spotify output could not finish the track".to_string())?;
-                    drain_output(&pipeline, &shared.cancel).await?;
                     shared.update(|state| { state.eos = true; state.playing = false; }); break;
                 },
-                Some(PlayerEvent::Unavailable { .. }) => { shared.update(|state| state.error = Some("Spotify cannot play this track in your account or region".into())); break; },
+                Some(PlayerEvent::Unavailable { .. }) => { shared.update(|state| state.error = Some("Spotify could not load this track; check playback authorization and availability".into())); break; },
                 None => { shared.update(|state| state.error = Some("Spotify playback worker stopped".into())); break; },
                 _ => {},
             },
             _ = tick.tick() => {
                 if shared.cancel.load(Ordering::Acquire) { break; }
+                observe_governed_output(governed_output.as_deref(), shared)?;
                 if pending_started.is_some_and(|started| started.elapsed() > Duration::from_secs(30)) {
                     shared.update(|state| state.error = Some("Spotify did not start the next queued track".into())); break;
                 }
@@ -455,9 +473,90 @@ async fn run(
         }
     }
     let _ = pipeline.set_state(gst::State::Null);
+    if let Some(output) = &governed_output {
+        output.close();
+    }
     player.stop();
     session.shutdown();
     Ok(())
+}
+
+/// Runs native playback's own code with no account, network or audio device:
+/// parses a track identity and builds the session and player configuration a
+/// session starts from. Proves that the library carrying librespot (Music's
+/// engine library in a thin build) loads and runs; the report holds no
+/// account or device data.
+///
+/// # Errors
+/// librespot rejected a well-formed track identity.
+pub fn self_check() -> Result<String, String> {
+    let uri = SpotifyUri::from_uri("spotify:track:4uLU6hMCjMI75M1A2tKUQC")
+        .map_err(|error| format!("librespot rejected a track identity: {error}"))?;
+    let session = SessionConfig::default();
+    let player = playback_config();
+    Ok(format!(
+        "librespot {} parsed {uri}; a session starts with autoplay {:?} and plays at {:?}",
+        librespot::core::version::SEMVER,
+        session.autoplay,
+        player.bitrate,
+    ))
+}
+
+fn playback_config() -> PlayerConfig {
+    PlayerConfig {
+        bitrate: Bitrate::Bitrate320,
+        position_update_interval: Some(Duration::from_millis(250)),
+        ..PlayerConfig::default()
+    }
+}
+
+fn confirm_playback_session(session: &Session, shared: &Shared) -> bool {
+    if matches!(premium_confirmed(session), Ok(true)) {
+        return true;
+    }
+    shared.update(|state| {
+        state.error =
+            Some("Spotify's native session no longer confirms Premium eligibility".into());
+        state.playing = false;
+    });
+    false
+}
+
+fn observe_governed_output(
+    output: Option<&tilo_media::audio_output::gst::Bridge>,
+    shared: &Shared,
+) -> Result<(), String> {
+    let Some(output) = output else {
+        return Ok(());
+    };
+    if let Some(error) = output.error() {
+        return Err(error);
+    }
+    let observed = output.observation();
+    if observed.ready {
+        shared
+            .frames
+            .store(observed.rendered_frames, Ordering::Release);
+        shared.update(|state| state.sink = Some("tilo-governed-pipewire".into()));
+    }
+    Ok(())
+}
+
+async fn drain_governed_output(
+    output: Option<&tilo_media::audio_output::gst::Bridge>,
+    cancel: &AtomicBool,
+) -> Result<(), String> {
+    let Some(output) = output else {
+        return Ok(());
+    };
+    for _ in 0..30 {
+        let observed = output.refresh()?;
+        if observed.queued_frames == 0 || cancel.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    Err("Governed Spotify output did not drain".into())
 }
 
 struct SessionShutdown(Session);
@@ -467,12 +566,58 @@ impl Drop for SessionShutdown {
     }
 }
 
+async fn playback_metadata(session: &Session, uri: &str) -> Result<SpotifyUri, String> {
+    let track =
+        SpotifyUri::from_uri(uri).map_err(|_| "Invalid Spotify track identity".to_string())?;
+    tokio::time::timeout(
+        Duration::from_secs(15),
+        session.spclient().get_track_metadata(&track),
+    )
+    .await
+    .map_err(|_| "Spotify playback metadata request timed out".to_string())?
+    .map_err(|error| playback_metadata_error(&error))?;
+    Ok(track)
+}
+
+fn playback_metadata_error(error: &librespot::core::Error) -> String {
+    // Only the typed HTTP status is public. Other error sources can contain
+    // request headers, URLs or credentials and must never reach app state.
+    if let Some(librespot::core::http_client::HttpClientError::StatusCode(status)) =
+        error.error.downcast_ref()
+    {
+        return format!(
+            "Spotify refused the playback metadata request (HTTP {})",
+            status.as_u16()
+        );
+    }
+    if let Some(source) = error.error.downcast_ref::<std::io::Error>() {
+        return format!(
+            "Spotify playback metadata transport failed ({:?}, OS error {:?})",
+            source.kind(),
+            source.raw_os_error()
+        );
+    }
+    format!(
+        "Spotify playback metadata request failed ({:?})",
+        error.kind
+    )
+}
+
 async fn connect_session(
     connection: (SessionConfig, Credentials),
     account: &str,
 ) -> Result<Session, String> {
     let (config, credentials) = connection;
     let session = Session::new(config, None); // No disk credential or audio cache.
+    session.login5().set_external_token_provider(Arc::new(|| {
+        Box::pin(async {
+            tokio::task::spawn_blocking(custody_streaming_bearer)
+                .await
+                .map_err(|_| {
+                    librespot::core::Error::unavailable("Spotify credential worker stopped")
+                })?
+        })
+    }));
     let result = tokio::time::timeout(Duration::from_secs(20), session.connect(credentials, false))
         .await
         .map_err(|_| "Spotify streaming connection timed out".to_string())
@@ -486,6 +631,30 @@ async fn connect_session(
         return Err("Catalogue and playback are signed in to different Spotify accounts".into());
     }
     Ok(session)
+}
+
+fn custody_streaming_bearer() -> Result<librespot::core::token::Token, librespot::core::Error> {
+    let (token, expires) = account_custody::Custodian::live()
+        .oauth_access_token_with_expiry(
+            &accounts::AccountId::from(STREAMING_ACCOUNT.to_string()),
+            STREAMING_USE,
+            false,
+        )
+        .map_err(|_| {
+            librespot::core::Error::unauthenticated("Spotify playback authorization is unavailable")
+        })?;
+    let lifetime = expires
+        .and_then(|expiry| expiry.checked_sub(tilo_clock::unix_now()))
+        .ok_or_else(|| {
+            librespot::core::Error::unauthenticated("Spotify did not provide a valid bearer expiry")
+        })?;
+    Ok(librespot::core::token::Token {
+        access_token: token.as_str().to_owned(),
+        expires_in: Duration::from_secs(lifetime),
+        token_type: "Bearer".into(),
+        scopes: Vec::new(),
+        timestamp: tilo_clock::SystemTime::now(),
+    })
 }
 
 async fn drain_output(pipeline: &gst::Pipeline, cancel: &AtomicBool) -> Result<(), String> {
@@ -511,6 +680,8 @@ struct PcmSink {
     volume: gst::Element,
     sink: gst::Element,
     samples: u64,
+    rendered: Arc<AtomicU64>,
+    governed_output: Option<Arc<tilo_media::audio_output::gst::Bridge>>,
 }
 impl PcmSink {
     fn new(output: &Output, frames: &Arc<AtomicU64>) -> Result<Self, String> {
@@ -532,8 +703,20 @@ impl PcmSink {
         let volume = gst::ElementFactory::make("volume")
             .build()
             .map_err(|_| "Audio volume plugin is unavailable".to_string())?;
-        let (bin, sink) = build_audio_sink_bin(frames, output)
-            .ok_or_else(|| "System audio output is unavailable".to_string())?;
+        let (bin, sink, governed_output) = if matches!(output, Output::System)
+            && tilo_media::audio_output::is_governed()
+        {
+            let (bin, bridge) =
+                tilo_media::audio_output::gst::sink_bin("tilo_audiosink", "tilo_governed_gain")?;
+            let sink = bin
+                .by_name("tilo_audiosink")
+                .ok_or("Governed audio sink is unavailable")?;
+            (bin, sink, Some(bridge))
+        } else {
+            let (bin, sink) =
+                build_audio_sink_bin(frames, output).ok_or("System audio output is unavailable")?;
+            (bin, sink, None)
+        };
         pipeline
             .add_many([
                 source.upcast_ref::<gst::Element>(),
@@ -553,22 +736,31 @@ impl PcmSink {
             volume,
             sink,
             samples: 0,
+            rendered: frames.clone(),
+            governed_output,
         })
     }
 }
 impl Sink for PcmSink {
     fn start(&mut self) -> SinkResult<()> {
         self.samples = 0;
+        self.rendered.store(0, Ordering::Release);
         self.pipeline
             .set_state(gst::State::Playing)
             .map(|_| ())
             .map_err(|_| SinkError::StateChange("Cannot start system audio output".into()))
     }
     fn stop(&mut self) -> SinkResult<()> {
-        self.pipeline
+        let result = self
+            .pipeline
             .set_state(gst::State::Null)
             .map(|_| ())
-            .map_err(|_| SinkError::StateChange("Cannot stop system audio output".into()))
+            .map_err(|_| SinkError::StateChange("Cannot stop system audio output".into()));
+        if let Some(output) = &self.governed_output {
+            output.reset();
+        }
+        self.rendered.store(0, Ordering::Release);
+        result
     }
     fn write(&mut self, packet: AudioPacket, converter: &mut Converter) -> SinkResult<()> {
         let AudioPacket::Samples(samples) = packet else {
@@ -609,6 +801,9 @@ impl Sink for PcmSink {
 }
 impl Drop for PcmSink {
     fn drop(&mut self) {
+        if let Some(output) = &self.governed_output {
+            output.close();
+        }
         let _ = self.pipeline.set_state(gst::State::Null);
     }
 }
@@ -616,6 +811,31 @@ impl Drop for PcmSink {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn playback_metadata_failure_preserves_provider_status_without_secret_sources() {
+        use librespot::core::http_client::HttpClientError;
+
+        for status in ["401", "402", "403"] {
+            let error = HttpClientError::StatusCode(status.parse().unwrap()).into();
+            assert_eq!(
+                playback_metadata_error(&error),
+                format!("Spotify refused the playback metadata request (HTTP {status})")
+            );
+        }
+        let error = librespot::core::Error::permission_denied(
+            "private bearer and request URL must not enter collaborative state",
+        );
+        assert_eq!(
+            playback_metadata_error(&error),
+            "Spotify playback metadata request failed (PermissionDenied)"
+        );
+        let error = std::io::Error::from_raw_os_error(13).into();
+        assert_eq!(
+            playback_metadata_error(&error),
+            "Spotify playback metadata transport failed (PermissionDenied, OS error Some(13))"
+        );
+    }
 
     fn eligibility_output() -> Output {
         Output::Capture(CaptureOutput {
@@ -874,5 +1094,63 @@ mod tests {
             "bounded commands must report refusal rather than fabricate success"
         );
         assert!(native.error().unwrap().contains("command queue"));
+    }
+    #[test]
+    fn external_oauth_bearer_never_uses_stored_credential_login5() {
+        use librespot::core::{Error, error::ErrorKind, token::Token};
+        use std::time::SystemTime;
+        tilo_rt::block_on(async {
+            let session = Session::new(
+                SessionConfig {
+                    client_id: "fixture-own-oauth-client".into(),
+                    ..Default::default()
+                },
+                None,
+            );
+            session
+                .login5()
+                .set_external_token_provider(std::sync::Arc::new(|| {
+                    Box::pin(async {
+                        Ok(Token {
+                            access_token: "fixture-approved-bearer".into(),
+                            expires_in: Duration::from_secs(60),
+                            token_type: "Bearer".into(),
+                            scopes: vec!["streaming".into()],
+                            timestamp: SystemTime::now(),
+                        })
+                    })
+                }));
+            let token = session.login5().auth_token().await.unwrap();
+            assert_eq!(token.access_token, "fixture-approved-bearer");
+            assert_eq!(session.client_id(), "fixture-own-oauth-client");
+            // This disconnected session has no AP stored credentials. A fallback
+            // to login5 would fail, and must never hide provider refusal/expiry.
+            session
+                .login5()
+                .set_external_token_provider(std::sync::Arc::new(|| {
+                    Box::pin(async { Err(Error::invalid_argument("fixture-provider-refusal")) })
+                }));
+            let error = session.login5().auth_token().await.unwrap_err();
+            assert_eq!(error.kind, ErrorKind::InvalidArgument);
+            assert!(error.to_string().contains("fixture-provider-refusal"));
+            session
+                .login5()
+                .set_external_token_provider(std::sync::Arc::new(|| {
+                    Box::pin(async {
+                        Ok(Token {
+                            access_token: "fixture-expired-bearer".into(),
+                            expires_in: Duration::ZERO,
+                            token_type: "Bearer".into(),
+                            scopes: Vec::new(),
+                            timestamp: SystemTime::now(),
+                        })
+                    })
+                }));
+            assert_eq!(
+                session.login5().auth_token().await.unwrap_err().kind,
+                ErrorKind::Unauthenticated
+            );
+        })
+        .unwrap();
     }
 }

@@ -110,8 +110,12 @@ class HardwareProfileTests(unittest.TestCase):
         with self.subTest(phase="firmware_provided_boot_profile_does_not_inject_a_device_tree"):
             definition = self.root / "usr/lib/tilo/hardware-profile-definition.json"
             value = json.loads(definition.read_text())
+            # A firmware-provided board is not the DTB-bound Lenovo quirk.
+            value["id"] = "firmware-board"
             value["devicetree"] = None
+            value.pop("wifi_wake_on_wlan")
             definition.write_text(json.dumps(value))
+            self.data["id"] = value["id"]
             self.data["devicetree"] = self.data["devicetree_sha256"] = None
             self.write_profile()
             self.assertIsNone(self.resolve())

@@ -35,11 +35,7 @@
 #![cfg_attr(
     test,
     allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
         clippy::string_slice,
-        clippy::panic,
         clippy::unreachable,
         reason = "in a test these are the assertion, not a hazard"
     )
@@ -48,7 +44,7 @@
 pub mod actions;
 pub mod adopt;
 pub mod app;
-pub mod doc;
+pub mod markup;
 pub mod model;
 pub mod render;
 pub mod resource;
@@ -58,7 +54,6 @@ pub mod text_layer;
 pub mod tiles;
 
 pub use app::PdfApp;
-pub use doc::PdfDoc;
 pub use model::{AnnoKind, Annotation, Comment, Document, Signature, SignatureInk, Swatch, Tool};
 
 pub mod scenarios;
@@ -66,7 +61,8 @@ pub mod source;
 
 /// The app as every host mounts it: the reader over its markup resource.
 pub fn definition() -> &'static ui::application::ApplicationDefinition {
-    ui::framework::definition::<PdfViewerShell>()
+    ui::built_in_definition!(PdfViewerShell)
 }
 
-pub use resource::{PdfMarkup, PdfViewer, PdfViewerShell};
+pub use markup::PdfMarkup;
+pub use resource::PdfViewerShell;

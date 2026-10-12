@@ -23,16 +23,6 @@
 
 #![deny(rust_2018_idioms)]
 #![warn(missing_docs)]
-#![cfg_attr(
-    test,
-    allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
-        clippy::panic,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
 
 pub mod carrier;
 mod channels;
@@ -43,8 +33,6 @@ pub mod health;
 mod held_live;
 pub mod invite;
 pub mod live;
-#[cfg(feature = "net")]
-pub mod net;
 pub mod remote_page;
 pub mod session;
 #[cfg(feature = "toolkit")]
@@ -52,6 +40,7 @@ pub mod transport;
 pub mod voice;
 
 pub use carrier::{HttpClient, HttpFuture, HttpsLink, LinkError};
+pub use channel_crypto::ChannelContentKeys;
 pub use custody::{
     CertifyError, IssuedRole, MemoryPeerStore, OutboxEntry, PeerRecord, PeerStore, certify,
     certify_with_root, issue_device_cert,
@@ -59,8 +48,6 @@ pub use custody::{
 pub use document::{ContentCipher, DocumentRoute, OpenedDocument, coalesce};
 pub use health::{PeerSnapshot, SessionHealth};
 pub use live::{LiveChange, LiveState, RemoteMember};
-#[cfg(feature = "net")]
-pub use net::NetHttp;
 pub use session::{
     Failure, FailureSubject, Host, LocalState, NodeCompletion, PAGE_FAILURE_CODES, PeerConfig,
     PeerEvent, PeerEvents, PeerHandle, PeerStatus, RoomsCompletion, TransportPhase,

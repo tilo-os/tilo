@@ -1,0 +1,542 @@
+{
+  "schema": 1,
+  "status": "Typed decoder cadence qualified on actual native pipe; unchanged default trained context1; production native model still held",
+  "change": "Image decoder declares FullContext or Incremental on Ready. Actor uses bounded2s/1s or500ms/500ms cadence, anchored to actual capture. Legacy Ready defaultsFullContext; model bytes/collaborators cannot choose arbitrary timers.",
+  "decision": "Earlier cadence improves exposed stable delivery with identical final text. Context0 barely changes English delivery, changes one capitalization, and worsens German delay/CPU, so context1 remains default. Context0 only explicit review comparison.",
+  "holds": "No production native admission, install/signing/deploy/microphone grant/resident daemon/holdout32 use",
+  "bounds_unchanged": "1GiBAS,960MiB guard,180s deadline; verified1.25GiB hard/1.125GiB high/zero swap/twoCPU/task64 scope",
+  "qualification_limits": "Retrospective exact stable prefix; two exposed clean clips; pressured builder/cache reclamation, no physical mic/older-device or causal stability claim; English raw4/19 errors unchanged, cleanup untouched",
+  "rows": [
+    {
+      "receipt": "voice-nemo-latency-default-en.log",
+      "variant": "default",
+      "case": "en_us-0",
+      "raw_errors": 4,
+      "raw_words": 19,
+      "identical_final_to_default": true,
+      "same_pcm_privately_verified": true,
+      "case_only_final_difference": false,
+      "first_partial_ms": 3220.8138680143747,
+      "first_stable_partial_ms": 3220.8138680143747,
+      "first_stable_partial_units": 1,
+      "first_meaningful_stable_partial_ms": 3644.990027009044,
+      "non_prefix_revisions_including_final": 0,
+      "stability_definition": "retrospective exact prefix of every later draft and final; not a causal guarantee",
+      "latest_pipe_audio_frame_to_first_stable_ms": 1240.7351850124542,
+      "ready_ms": 5091.154052002821,
+      "preparation_phases": {
+        "verify_ms": 4662.239227,
+        "native_ms": 425.686657
+      },
+      "right_context": 1,
+      "first_draft_seconds": 2,
+      "draft_interval_ms": 1000,
+      "worker_cadence_used": false,
+      "worker_draft_policy": null,
+      "cpu_seconds": 10.379999999999999,
+      "process_memory_peak": {
+        "VmPeak": 948752,
+        "VmSize": 854348,
+        "VmHWM": 794120,
+        "VmRSS": 784884,
+        "Threads": 3
+      },
+      "scope_memory_peak_bytes": 1208221696,
+      "scope_events_after": {
+        "low": 0,
+        "high": 1352,
+        "max": 0,
+        "oom": 0,
+        "oom_kill": 0,
+        "oom_group_kill": 0,
+        "sock_throttled": 0
+      },
+      "materialization_sha256": {
+        "worker": "598110f8cabdbd03bba55e3ba31f31d1e1be081855ec014a5d19552d95e8003f",
+        "tilo-speech-worker": "598110f8cabdbd03bba55e3ba31f31d1e1be081855ec014a5d19552d95e8003f",
+        "libnemo_speech_asr.so": "9475c188a55cb5abae0a0d08e392e6dc31c73345f38f21e287b547d0f67f78f0",
+        "libggml.so.0": "649ba42d24ce00b7cfbacf3b8d973a7473f991e2a4181814bf12b96b878aae01",
+        "libggml-cpu.so.0": "f7a524fd49cd62a8227e6809614f13073e3a62b3b7a50a03b657f572428bc78c",
+        "libggml-base.so.0": "caea5e3e5b0b01b6b2652115163a41b37dd7b26ffbc1b9b71ee1f5e9435303b9",
+        "probe.py": "b3e39531e6e1e1e9deb622b4444bec0961ddad81f8f1c6da6db92cbfee25e5d0",
+        "probe_speech_memory.py": "f29511fe493ede490c3593089dba2c1b7c140c4e14e1d9497d25d5f48dba499f",
+        "probe_asr_candidate.py": "0d8735e2233b950a99c4b718203c72a9a23cc67d668c6f3581215e35740ebc7c",
+        "summarize_speech_benchmark.py": "c5dd4a4ca3079978283af644b3726a70eb5e96c51b509f6253c4a797a62381a7"
+      },
+      "guarded": null,
+      "exit": 0
+    },
+    {
+      "receipt": "voice-nemo-latency-default-de.log",
+      "variant": "default",
+      "case": "de_de-0",
+      "raw_errors": 0,
+      "raw_words": 18,
+      "identical_final_to_default": true,
+      "same_pcm_privately_verified": true,
+      "case_only_final_difference": false,
+      "first_partial_ms": 5569.335934997071,
+      "first_stable_partial_ms": 5569.335934997071,
+      "first_stable_partial_units": 2,
+      "first_meaningful_stable_partial_ms": 6447.2204000048805,
+      "non_prefix_revisions_including_final": 0,
+      "stability_definition": "retrospective exact prefix of every later draft and final; not a causal guarantee",
+      "latest_pipe_audio_frame_to_first_stable_ms": 569.2104820045643,
+      "ready_ms": 5548.50785099552,
+      "preparation_phases": {
+        "verify_ms": 4680.035986,
+        "native_ms": 863.967122
+      },
+      "right_context": 1,
+      "first_draft_seconds": 2,
+      "draft_interval_ms": 1000,
+      "worker_cadence_used": false,
+      "worker_draft_policy": null,
+      "cpu_seconds": 16.59,
+      "process_memory_peak": {
+        "VmPeak": 949976,
+        "VmSize": 830840,
+        "VmHWM": 793668,
+        "VmRSS": 789876,
+        "Threads": 3
+      },
+      "scope_memory_peak_bytes": 1208369152,
+      "scope_events_after": {
+        "low": 0,
+        "high": 1449,
+        "max": 0,
+        "oom": 0,
+        "oom_kill": 0,
+        "oom_group_kill": 0,
+        "sock_throttled": 0
+      },
+      "materialization_sha256": {
+        "worker": "598110f8cabdbd03bba55e3ba31f31d1e1be081855ec014a5d19552d95e8003f",
+        "tilo-speech-worker": "598110f8cabdbd03bba55e3ba31f31d1e1be081855ec014a5d19552d95e8003f",
+        "libnemo_speech_asr.so": "9475c188a55cb5abae0a0d08e392e6dc31c73345f38f21e287b547d0f67f78f0",
+        "libggml.so.0": "649ba42d24ce00b7cfbacf3b8d973a7473f991e2a4181814bf12b96b878aae01",
+        "libggml-cpu.so.0": "f7a524fd49cd62a8227e6809614f13073e3a62b3b7a50a03b657f572428bc78c",
+        "libggml-base.so.0": "caea5e3e5b0b01b6b2652115163a41b37dd7b26ffbc1b9b71ee1f5e9435303b9",
+        "probe.py": "b3e39531e6e1e1e9deb622b4444bec0961ddad81f8f1c6da6db92cbfee25e5d0",
+        "probe_speech_memory.py": "f29511fe493ede490c3593089dba2c1b7c140c4e14e1d9497d25d5f48dba499f",
+        "probe_asr_candidate.py": "0d8735e2233b950a99c4b718203c72a9a23cc67d668c6f3581215e35740ebc7c",
+        "summarize_speech_benchmark.py": "c5dd4a4ca3079978283af644b3726a70eb5e96c51b509f6253c4a797a62381a7"
+      },
+      "guarded": null,
+      "exit": 0
+    },
+    {
+      "receipt": "voice-nemo-latency-early-en.log",
+      "variant": "early",
+      "case": "en_us-0",
+      "raw_errors": 4,
+      "raw_words": 19,
+      "identical_final_to_default": true,
+      "same_pcm_privately_verified": true,
+      "case_only_final_difference": false,
+      "first_partial_ms": 1680.6546389998402,
+      "first_stable_partial_ms": 1680.6546389998402,
+      "first_stable_partial_units": 1,
+      "first_meaningful_stable_partial_ms": 3174.126650003018,
+      "non_prefix_revisions_including_final": 0,
+      "stability_definition": "retrospective exact prefix of every later draft and final; not a causal guarantee",
+      "latest_pipe_audio_frame_to_first_stable_ms": 180.57431999477558,
+      "ready_ms": 5854.819516011048,
+      "preparation_phases": {
+        "verify_ms": 4707.333317,
+        "native_ms": 1143.0946079999999
+      },
+      "right_context": 1,
+      "first_draft_seconds": 0.5,
+      "draft_interval_ms": 500,
+      "worker_cadence_used": false,
+      "worker_draft_policy": null,
+      "cpu_seconds": 9.87,
+      "process_memory_peak": {
+        "VmPeak": 948412,
+        "VmSize": 830840,
+        "VmHWM": 794184,
+        "VmRSS": 793096,
+        "Threads": 3
+      },
+      "scope_memory_peak_bytes": 1208885248,
+      "scope_events_after": {
+        "low": 0,
+        "high": 1399,
+        "max": 0,
+        "oom": 0,
+        "oom_kill": 0,
+        "oom_group_kill": 0,
+        "sock_throttled": 0
+      },
+      "materialization_sha256": {
+        "worker": "598110f8cabdbd03bba55e3ba31f31d1e1be081855ec014a5d19552d95e8003f",
+        "tilo-speech-worker": "598110f8cabdbd03bba55e3ba31f31d1e1be081855ec014a5d19552d95e8003f",
+        "libnemo_speech_asr.so": "9475c188a55cb5abae0a0d08e392e6dc31c73345f38f21e287b547d0f67f78f0",
+        "libggml.so.0": "649ba42d24ce00b7cfbacf3b8d973a7473f991e2a4181814bf12b96b878aae01",
+        "libggml-cpu.so.0": "f7a524fd49cd62a8227e6809614f13073e3a62b3b7a50a03b657f572428bc78c",
+        "libggml-base.so.0": "caea5e3e5b0b01b6b2652115163a41b37dd7b26ffbc1b9b71ee1f5e9435303b9",
+        "probe.py": "b3e39531e6e1e1e9deb622b4444bec0961ddad81f8f1c6da6db92cbfee25e5d0",
+        "probe_speech_memory.py": "f29511fe493ede490c3593089dba2c1b7c140c4e14e1d9497d25d5f48dba499f",
+        "probe_asr_candidate.py": "0d8735e2233b950a99c4b718203c72a9a23cc67d668c6f3581215e35740ebc7c",
+        "summarize_speech_benchmark.py": "c5dd4a4ca3079978283af644b3726a70eb5e96c51b509f6253c4a797a62381a7"
+      },
+      "guarded": null,
+      "exit": 0
+    },
+    {
+      "receipt": "voice-nemo-latency-early-de.log",
+      "variant": "early",
+      "case": "de_de-0",
+      "raw_errors": 0,
+      "raw_words": 18,
+      "identical_final_to_default": true,
+      "same_pcm_privately_verified": true,
+      "case_only_final_difference": false,
+      "first_partial_ms": 5174.302008992527,
+      "first_stable_partial_ms": 5174.302008992527,
+      "first_stable_partial_units": 2,
+      "first_meaningful_stable_partial_ms": 5671.379014005652,
+      "non_prefix_revisions_including_final": 0,
+      "stability_definition": "retrospective exact prefix of every later draft and final; not a causal guarantee",
+      "latest_pipe_audio_frame_to_first_stable_ms": 174.03188301250339,
+      "ready_ms": 5093.140464974567,
+      "preparation_phases": {
+        "verify_ms": 4664.101529,
+        "native_ms": 426.06033199999996
+      },
+      "right_context": 1,
+      "first_draft_seconds": 0.5,
+      "draft_interval_ms": 500,
+      "worker_cadence_used": false,
+      "worker_draft_policy": null,
+      "cpu_seconds": 15.569999999999999,
+      "process_memory_peak": {
+        "VmPeak": 949636,
+        "VmSize": 826212,
+        "VmHWM": 793268,
+        "VmRSS": 786348,
+        "Threads": 3
+      },
+      "scope_memory_peak_bytes": 1208139776,
+      "scope_events_after": {
+        "low": 0,
+        "high": 1452,
+        "max": 0,
+        "oom": 0,
+        "oom_kill": 0,
+        "oom_group_kill": 0,
+        "sock_throttled": 0
+      },
+      "materialization_sha256": {
+        "worker": "598110f8cabdbd03bba55e3ba31f31d1e1be081855ec014a5d19552d95e8003f",
+        "tilo-speech-worker": "598110f8cabdbd03bba55e3ba31f31d1e1be081855ec014a5d19552d95e8003f",
+        "libnemo_speech_asr.so": "9475c188a55cb5abae0a0d08e392e6dc31c73345f38f21e287b547d0f67f78f0",
+        "libggml.so.0": "649ba42d24ce00b7cfbacf3b8d973a7473f991e2a4181814bf12b96b878aae01",
+        "libggml-cpu.so.0": "f7a524fd49cd62a8227e6809614f13073e3a62b3b7a50a03b657f572428bc78c",
+        "libggml-base.so.0": "caea5e3e5b0b01b6b2652115163a41b37dd7b26ffbc1b9b71ee1f5e9435303b9",
+        "probe.py": "b3e39531e6e1e1e9deb622b4444bec0961ddad81f8f1c6da6db92cbfee25e5d0",
+        "probe_speech_memory.py": "f29511fe493ede490c3593089dba2c1b7c140c4e14e1d9497d25d5f48dba499f",
+        "probe_asr_candidate.py": "0d8735e2233b950a99c4b718203c72a9a23cc67d668c6f3581215e35740ebc7c",
+        "summarize_speech_benchmark.py": "c5dd4a4ca3079978283af644b3726a70eb5e96c51b509f6253c4a797a62381a7"
+      },
+      "guarded": null,
+      "exit": 0
+    },
+    {
+      "receipt": "voice-nemo-latency-early-r0-en.log",
+      "variant": "early-r0",
+      "case": "en_us-0",
+      "raw_errors": 4,
+      "raw_words": 19,
+      "identical_final_to_default": false,
+      "same_pcm_privately_verified": true,
+      "case_only_final_difference": true,
+      "first_partial_ms": 1676.1537560087163,
+      "first_stable_partial_ms": 1676.1537560087163,
+      "first_stable_partial_units": 1,
+      "first_meaningful_stable_partial_ms": 3164.327194012003,
+      "non_prefix_revisions_including_final": 0,
+      "stability_definition": "retrospective exact prefix of every later draft and final; not a causal guarantee",
+      "latest_pipe_audio_frame_to_first_stable_ms": 176.02458701003343,
+      "ready_ms": 5285.928178025642,
+      "preparation_phases": {
+        "verify_ms": 4675.733335,
+        "native_ms": 605.009772
+      },
+      "right_context": 0,
+      "first_draft_seconds": 0.5,
+      "draft_interval_ms": 500,
+      "worker_cadence_used": false,
+      "worker_draft_policy": null,
+      "cpu_seconds": 10.09,
+      "process_memory_peak": {
+        "VmPeak": 947636,
+        "VmSize": 826020,
+        "VmHWM": 794192,
+        "VmRSS": 783920,
+        "Threads": 3
+      },
+      "scope_memory_peak_bytes": 1209700352,
+      "scope_events_after": {
+        "low": 0,
+        "high": 1450,
+        "max": 0,
+        "oom": 0,
+        "oom_kill": 0,
+        "oom_group_kill": 0,
+        "sock_throttled": 0
+      },
+      "materialization_sha256": {
+        "worker": "598110f8cabdbd03bba55e3ba31f31d1e1be081855ec014a5d19552d95e8003f",
+        "tilo-speech-worker": "598110f8cabdbd03bba55e3ba31f31d1e1be081855ec014a5d19552d95e8003f",
+        "libnemo_speech_asr.so": "9475c188a55cb5abae0a0d08e392e6dc31c73345f38f21e287b547d0f67f78f0",
+        "libggml.so.0": "649ba42d24ce00b7cfbacf3b8d973a7473f991e2a4181814bf12b96b878aae01",
+        "libggml-cpu.so.0": "f7a524fd49cd62a8227e6809614f13073e3a62b3b7a50a03b657f572428bc78c",
+        "libggml-base.so.0": "caea5e3e5b0b01b6b2652115163a41b37dd7b26ffbc1b9b71ee1f5e9435303b9",
+        "probe.py": "b3e39531e6e1e1e9deb622b4444bec0961ddad81f8f1c6da6db92cbfee25e5d0",
+        "probe_speech_memory.py": "f29511fe493ede490c3593089dba2c1b7c140c4e14e1d9497d25d5f48dba499f",
+        "probe_asr_candidate.py": "0d8735e2233b950a99c4b718203c72a9a23cc67d668c6f3581215e35740ebc7c",
+        "summarize_speech_benchmark.py": "c5dd4a4ca3079978283af644b3726a70eb5e96c51b509f6253c4a797a62381a7"
+      },
+      "guarded": null,
+      "exit": 0
+    },
+    {
+      "receipt": "voice-nemo-latency-early-r0-de.log",
+      "variant": "early-r0",
+      "case": "de_de-0",
+      "raw_errors": 0,
+      "raw_words": 18,
+      "identical_final_to_default": true,
+      "same_pcm_privately_verified": true,
+      "case_only_final_difference": false,
+      "first_partial_ms": 6554.872634005733,
+      "first_stable_partial_ms": 6554.872634005733,
+      "first_stable_partial_units": 3,
+      "first_meaningful_stable_partial_ms": 6554.872634005733,
+      "non_prefix_revisions_including_final": 0,
+      "stability_definition": "retrospective exact prefix of every later draft and final; not a causal guarantee",
+      "latest_pipe_audio_frame_to_first_stable_ms": 1014.7752420161851,
+      "ready_ms": 5405.922537000151,
+      "preparation_phases": {
+        "verify_ms": 4677.380105,
+        "native_ms": 724.9058590000001
+      },
+      "right_context": 0,
+      "first_draft_seconds": 0.5,
+      "draft_interval_ms": 500,
+      "worker_cadence_used": false,
+      "worker_draft_policy": null,
+      "cpu_seconds": 17.72,
+      "process_memory_peak": {
+        "VmPeak": 948976,
+        "VmSize": 830648,
+        "VmHWM": 794156,
+        "VmRSS": 789364,
+        "Threads": 3
+      },
+      "scope_memory_peak_bytes": 1208197120,
+      "scope_events_after": {
+        "low": 0,
+        "high": 1439,
+        "max": 0,
+        "oom": 0,
+        "oom_kill": 0,
+        "oom_group_kill": 0,
+        "sock_throttled": 0
+      },
+      "materialization_sha256": {
+        "worker": "598110f8cabdbd03bba55e3ba31f31d1e1be081855ec014a5d19552d95e8003f",
+        "tilo-speech-worker": "598110f8cabdbd03bba55e3ba31f31d1e1be081855ec014a5d19552d95e8003f",
+        "libnemo_speech_asr.so": "9475c188a55cb5abae0a0d08e392e6dc31c73345f38f21e287b547d0f67f78f0",
+        "libggml.so.0": "649ba42d24ce00b7cfbacf3b8d973a7473f991e2a4181814bf12b96b878aae01",
+        "libggml-cpu.so.0": "f7a524fd49cd62a8227e6809614f13073e3a62b3b7a50a03b657f572428bc78c",
+        "libggml-base.so.0": "caea5e3e5b0b01b6b2652115163a41b37dd7b26ffbc1b9b71ee1f5e9435303b9",
+        "probe.py": "b3e39531e6e1e1e9deb622b4444bec0961ddad81f8f1c6da6db92cbfee25e5d0",
+        "probe_speech_memory.py": "f29511fe493ede490c3593089dba2c1b7c140c4e14e1d9497d25d5f48dba499f",
+        "probe_asr_candidate.py": "0d8735e2233b950a99c4b718203c72a9a23cc67d668c6f3581215e35740ebc7c",
+        "summarize_speech_benchmark.py": "c5dd4a4ca3079978283af644b3726a70eb5e96c51b509f6253c4a797a62381a7"
+      },
+      "guarded": null,
+      "exit": 0
+    },
+    {
+      "receipt": "voice-nemo-latency-policy-en.log",
+      "variant": "policy",
+      "case": "en_us-0",
+      "raw_errors": 4,
+      "raw_words": 19,
+      "identical_final_to_default": true,
+      "same_pcm_privately_verified": true,
+      "case_only_final_difference": false,
+      "first_partial_ms": 1661.058397992747,
+      "first_stable_partial_ms": 1661.058397992747,
+      "first_stable_partial_units": 1,
+      "first_meaningful_stable_partial_ms": 3166.059203998884,
+      "non_prefix_revisions_including_final": 0,
+      "stability_definition": "retrospective exact prefix of every later draft and final; not a causal guarantee",
+      "latest_pipe_audio_frame_to_first_stable_ms": 160.96988899516873,
+      "ready_ms": 5942.403194989311,
+      "preparation_phases": {
+        "verify_ms": 4668.171947,
+        "native_ms": 1269.1146680000002
+      },
+      "right_context": 1,
+      "first_draft_seconds": 0.5,
+      "draft_interval_ms": 500.0,
+      "worker_cadence_used": true,
+      "worker_draft_policy": "incremental",
+      "cpu_seconds": 9.21,
+      "process_memory_peak": {
+        "VmPeak": 948416,
+        "VmSize": 828812,
+        "VmHWM": 794448,
+        "VmRSS": 787196,
+        "Threads": 3
+      },
+      "scope_memory_peak_bytes": 1208655872,
+      "scope_events_after": {
+        "low": 0,
+        "high": 1514,
+        "max": 0,
+        "oom": 0,
+        "oom_kill": 0,
+        "oom_group_kill": 0,
+        "sock_throttled": 0
+      },
+      "materialization_sha256": {
+        "worker": "d00af1f5142ee458980c4f8edc1dab8a86ad7850cbab987c311f0d2c7afbaa7c",
+        "tilo-speech-worker": "d00af1f5142ee458980c4f8edc1dab8a86ad7850cbab987c311f0d2c7afbaa7c",
+        "libnemo_speech_asr.so": "9475c188a55cb5abae0a0d08e392e6dc31c73345f38f21e287b547d0f67f78f0",
+        "libggml.so.0": "649ba42d24ce00b7cfbacf3b8d973a7473f991e2a4181814bf12b96b878aae01",
+        "libggml-cpu.so.0": "f7a524fd49cd62a8227e6809614f13073e3a62b3b7a50a03b657f572428bc78c",
+        "libggml-base.so.0": "caea5e3e5b0b01b6b2652115163a41b37dd7b26ffbc1b9b71ee1f5e9435303b9",
+        "probe.py": "390b149f1fe23dbfc3844f4171ea814e554f41e131c4539f0e7b47447d6f96de",
+        "probe_speech_memory.py": "f29511fe493ede490c3593089dba2c1b7c140c4e14e1d9497d25d5f48dba499f",
+        "probe_asr_candidate.py": "0d8735e2233b950a99c4b718203c72a9a23cc67d668c6f3581215e35740ebc7c",
+        "summarize_speech_benchmark.py": "c5dd4a4ca3079978283af644b3726a70eb5e96c51b509f6253c4a797a62381a7"
+      },
+      "guarded": null,
+      "exit": 0
+    },
+    {
+      "receipt": "voice-nemo-latency-policy-de.log",
+      "variant": "policy",
+      "case": "de_de-0",
+      "raw_errors": 0,
+      "raw_words": 18,
+      "identical_final_to_default": true,
+      "same_pcm_privately_verified": true,
+      "case_only_final_difference": false,
+      "first_partial_ms": 5163.310329982778,
+      "first_stable_partial_ms": 5163.310329982778,
+      "first_stable_partial_units": 2,
+      "first_meaningful_stable_partial_ms": 5660.238362994278,
+      "non_prefix_revisions_including_final": 0,
+      "stability_definition": "retrospective exact prefix of every later draft and final; not a causal guarantee",
+      "latest_pipe_audio_frame_to_first_stable_ms": 163.1662359868642,
+      "ready_ms": 5128.238266974222,
+      "preparation_phases": {
+        "verify_ms": 4711.903081,
+        "native_ms": 411.923676
+      },
+      "right_context": 1,
+      "first_draft_seconds": 0.5,
+      "draft_interval_ms": 500.0,
+      "worker_cadence_used": true,
+      "worker_draft_policy": "incremental",
+      "cpu_seconds": 14.67,
+      "process_memory_peak": {
+        "VmPeak": 949644,
+        "VmSize": 826216,
+        "VmHWM": 794268,
+        "VmRSS": 786280,
+        "Threads": 3
+      },
+      "scope_memory_peak_bytes": 1208045568,
+      "scope_events_after": {
+        "low": 0,
+        "high": 1453,
+        "max": 0,
+        "oom": 0,
+        "oom_kill": 0,
+        "oom_group_kill": 0,
+        "sock_throttled": 0
+      },
+      "materialization_sha256": {
+        "worker": "d00af1f5142ee458980c4f8edc1dab8a86ad7850cbab987c311f0d2c7afbaa7c",
+        "tilo-speech-worker": "d00af1f5142ee458980c4f8edc1dab8a86ad7850cbab987c311f0d2c7afbaa7c",
+        "libnemo_speech_asr.so": "9475c188a55cb5abae0a0d08e392e6dc31c73345f38f21e287b547d0f67f78f0",
+        "libggml.so.0": "649ba42d24ce00b7cfbacf3b8d973a7473f991e2a4181814bf12b96b878aae01",
+        "libggml-cpu.so.0": "f7a524fd49cd62a8227e6809614f13073e3a62b3b7a50a03b657f572428bc78c",
+        "libggml-base.so.0": "caea5e3e5b0b01b6b2652115163a41b37dd7b26ffbc1b9b71ee1f5e9435303b9",
+        "probe.py": "390b149f1fe23dbfc3844f4171ea814e554f41e131c4539f0e7b47447d6f96de",
+        "probe_speech_memory.py": "f29511fe493ede490c3593089dba2c1b7c140c4e14e1d9497d25d5f48dba499f",
+        "probe_asr_candidate.py": "0d8735e2233b950a99c4b718203c72a9a23cc67d668c6f3581215e35740ebc7c",
+        "summarize_speech_benchmark.py": "c5dd4a4ca3079978283af644b3726a70eb5e96c51b509f6253c4a797a62381a7"
+      },
+      "guarded": null,
+      "exit": 0
+    }
+  ],
+  "tests": {
+    "actual_confined_streams": 8,
+    "wire_compatibility": {
+      "passed": 1,
+      "seconds": 0.008,
+      "after_borrowing_adjustment": true
+    },
+    "production_worker": {
+      "passed": 3,
+      "seconds": 0.013
+    },
+    "production_actor": {
+      "passed": 7,
+      "seconds": 18.081
+    },
+    "not_run": [
+      "physical microphone",
+      "full app acceptance",
+      "ARM/physical older devices",
+      "holdout32"
+    ],
+    "default_all_target_clippy": {
+      "passed": true,
+      "seconds": 165,
+      "packages": [
+        "shell",
+        "agent-provider-config",
+        "local-model-service"
+      ]
+    },
+    "native_all_target_clippy": {
+      "passed": true,
+      "seconds": 3.7
+    },
+    "initial_clippy_failure": "trivially_copy_pass_by_ref on serde predicate; corrected through borrowing policy API, no lint allow; failed receipt retained",
+    "required_shell_test_target_check": {
+      "passed": true,
+      "seconds": 76
+    }
+  },
+  "qualification_source_sha256": {
+    "crates/agent/provider-config/src/speech.rs": "88da93a71638655d636fb21735e17968b79a3a51470d7fbc9994eec8cf92da34",
+    "crates/agent/local-model-service/src/speech/worker.rs": "0bc10f6d148f11e28bb2fa9f3d6694df704affe986cf9417cc1b3c2038763496",
+    "crates/agent/local-model-service/examples/nemo_speech_worker.rs": "7b66cbe6a279ed87a082c90e6082b18d303630e0038b791a7542b61eeea204e7",
+    "crates/session/shell/src/compositor/dictation/runtime.rs": "2ca41ee9ee892256cf1c85756dea5205e20ab0d7c77ae21d5fd422aa76bc34eb",
+    "tools/release/fixtures/nemo_worker_bridge.cpp": "1359eb221e2b220a7e28fe925f720dafef5a486dd3d20c9766f36b87e93d441f",
+    "tools/release/probe_speech_stream.py": "390b149f1fe23dbfc3844f4171ea814e554f41e131c4539f0e7b47447d6f96de",
+    "tools/release/qualify_sealed_speech_scope.py": "4a3a5328c5a002830cf073432b760561be6364cf5f7919f20b63baec390eb643"
+  },
+  "source_sha256": {
+    "crates/agent/provider-config/src/speech.rs": "080e1fc4caeb86c35f5c540cd3e17df7b5737d69ffa7a179dd541348251ee4b1",
+    "crates/agent/local-model-service/src/speech/worker.rs": "0bc10f6d148f11e28bb2fa9f3d6694df704affe986cf9417cc1b3c2038763496",
+    "crates/agent/local-model-service/examples/nemo_speech_worker.rs": "7b66cbe6a279ed87a082c90e6082b18d303630e0038b791a7542b61eeea204e7",
+    "crates/session/shell/src/compositor/dictation/runtime.rs": "2ca41ee9ee892256cf1c85756dea5205e20ab0d7c77ae21d5fd422aa76bc34eb",
+    "tools/release/fixtures/nemo_worker_bridge.cpp": "1359eb221e2b220a7e28fe925f720dafef5a486dd3d20c9766f36b87e93d441f",
+    "tools/release/probe_speech_stream.py": "390b149f1fe23dbfc3844f4171ea814e554f41e131c4539f0e7b47447d6f96de",
+    "tools/release/qualify_sealed_speech_scope.py": "4a3a5328c5a002830cf073432b760561be6364cf5f7919f20b63baec390eb643"
+  },
+  "verification_note": "Eight actual stream receipts precede the lint-only DraftPolicy Copy-to-borrowing API adjustment. Wire regression rerun after adjustment; final all-target lint/compile checks recorded separately. No scheduling value, native inference or worker-actor control flow changed in that adjustment."
+}

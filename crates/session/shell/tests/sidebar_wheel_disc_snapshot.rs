@@ -32,7 +32,7 @@ use ui::theme::Theme;
 use ui::widget::Widget;
 
 use crate::support::offscreen::OffscreenRenderer;
-use crate::support::snapshot::SnapshotAssertion;
+use crate::support::snapshot::{SnapshotAssertion, pinned_golden_path};
 
 fn goldens_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -204,7 +204,11 @@ fn sidebar_wheel_disc_snapshots_render_spokes_and_a_bounded_summoned_band() {
         // Guarded on `path.exists()` to match the soft-skip-on-missing-GPU
         // convention.
         if path.exists() {
-            SnapshotAssertion::new(path, goldens_dir().join("three-spokes.png")).assert();
+            SnapshotAssertion::new(
+                path,
+                pinned_golden_path(goldens_dir().join("three-spokes.png")),
+            )
+            .assert();
         }
     }
 

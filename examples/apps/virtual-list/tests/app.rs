@@ -20,11 +20,12 @@ fn semantics_of(node: &InspectionNode, id: &str) -> Option<AccessNode> {
 fn opening_an_activity_is_remembered() {
     let mut feed = Replica::<Feed>::new();
     for id in [1, 2, 3, 4, 5, 6, 2] {
-        feed.apply(Feed::OPEN.with(id)).expect("open an activity");
+        feed.apply(Feed::OPEN_ACTIVITY.with(id))
+            .expect("open an activity");
     }
     assert_eq!(feed.state().expect("feed").opened, [2, 6, 5, 4, 3]);
     let beyond = u64::try_from(ITEM_COUNT).expect("fits");
-    assert!(feed.apply(Feed::OPEN.with(beyond)).is_err());
+    assert!(feed.apply(Feed::OPEN_ACTIVITY.with(beyond)).is_err());
 }
 
 /// Only the viewport is mounted, rows load in the background, keys are

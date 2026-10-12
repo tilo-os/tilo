@@ -102,7 +102,8 @@ class Device:
             if update["state"] == "succeeded":
                 return update.get("output", {}).get("value")
             if update["state"] not in ("accepted", "running"):
-                raise RuntimeError("Notes action failed: " + json.dumps(update))
+                raise RuntimeError(
+                    f"Notes {operation} job {job} failed: " + json.dumps(update))
             if time.monotonic() >= deadline:
                 raise RuntimeError(f"Notes job {job} still pending; no retry was dispatched")
             time.sleep(.1)

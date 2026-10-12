@@ -27,8 +27,10 @@ use super::{
 };
 use crate::bindings;
 use crate::model::{StoreItem, StoreSource, StoreTrust};
-use crate::resource::{ReportProjection, StoreEffect, report_note_dispatcher};
-use crate::widgets::{CardAction, CardDetails, app_icon, category_label, provenance};
+use crate::resource::{ReportProjection, StoreEffect};
+use crate::widgets::{
+    CardAction, CardDetails, app_icon, category_label, provenance, visible_version,
+};
 
 /// How wide a page's content may grow, in lines of body text, so it widens
 /// with the text scale like every other text-sized measure.
@@ -149,9 +151,14 @@ impl StoreApp {
             ));
         }
         self.operation_error.as_ref().map(|error| {
+            let mut refresh = Button::new("store.error.refresh", &ui::i18n!("store-error-refresh"));
+            if let Some(binding) = bindings::effect(&StoreEffect::Refresh) {
+                refresh = refresh.on_action(binding);
+            }
             Box::new(
-                Banner::error("The last operation failed")
-                    .with_message(visible_operation_status(error)),
+                Banner::error(ui::i18n!("store-operation-failed"))
+                    .with_message(visible_operation_status(error))
+                    .with_action(refresh),
             ) as Element
         })
     }
@@ -196,7 +203,16 @@ impl StoreApp {
         if let Some(binding) = bindings::effect(&StoreEffect::Refresh) {
             refresh = refresh.on_action(binding);
         }
+        let mut import = Button::new("store.package.import", &ui::i18n!("store-package-review"));
+        if let Some(binding) = bindings::effect(&StoreEffect::ImportPackage {
+            path: None,
+            content: None,
+            reported_size: None,
+        }) {
+            import = import.on_action(binding);
+        }
         vec![
+            Box::new(import),
             Box::new(ui::search::search_button(
                 ui::search::SearchRequest::this_app(),
             )),
@@ -270,10 +286,12 @@ impl StoreApp {
     /// The catalogue has nothing to show: loading, offline, empty, or every
     /// app filtered out. One sentence and at most one recovery action.
     fn empty_catalogue(&self) -> Element {
-        if !self.items.is_empty() {
-            let mut empty = EmptyState::new("No apps found")
-                .with_message("Try a different search or category.")
-                .with_action("Clear filters")
+        if !self.items.is_empty()
+            || (self.filters_active() && !self.worker_busy && self.operation_error.is_none())
+        {
+            let mut empty = EmptyState::new(ui::i18n!("store-search-empty"))
+                .with_message(ui::i18n!("store-search-empty-help"))
+                .with_action(ui::i18n!("store-search-clear"))
                 .with_action_id("store.empty.clear");
             if let Some(binding) = bindings::effect(&StoreEffect::ClearFilters) {
                 empty = empty.on_action(binding);
@@ -423,7 +441,10 @@ impl StoreApp {
             .no_wrap()
             .with_gap(gap)
             .push(Box::new(self.availability_badge(item)));
-        if item.trust == StoreTrust::PublisherSigned {
+        if matches!(
+            item.trust,
+            StoreTrust::PublisherSigned | StoreTrust::TrustedAttestor
+        ) {
             row = row.push(Box::new(
                 Badge::text("Publisher verified").style(ChipStyle::Tinted(Tone::Success)),
             ));
@@ -435,9 +456,18 @@ impl StoreApp {
     /// then keeping it on the device and removing it.
     fn detail_actions(&self, item: &StoreItem) -> Element {
         let action = item.action_kind(self.flatpak_available);
+        let imported = self
+            .imported_review
+            .as_ref()
+            .is_some_and(|(id, _, _)| id == &item.id);
+        let label = if imported {
+            ui::i18n!("store-package-install")
+        } else {
+            self.package_label(action)
+        };
         let mut primary = Button::new(
             &format!("store.app.{}.{}", item.id, action_code(action)),
-            &self.package_label(action),
+            &label,
         )
         .role(ButtonRole::Primary)
         .with_enabled(item.unavailable_action(action).is_none())
@@ -445,7 +475,17 @@ impl StoreApp {
             || format!("{} {}", self.package_label(action), item.name),
             |(_, reason)| reason,
         ));
-        if let Some(binding) = bindings::package(item, action) {
+        let binding = if imported {
+            self.imported_review.as_ref().and_then(|(_, root, _)| {
+                bindings::effect(&StoreEffect::InstallImportedPackage {
+                    app: item.id.clone(),
+                    root: root.clone(),
+                })
+            })
+        } else {
+            bindings::package(item, action)
+        };
+        if let Some(binding) = binding {
             primary = primary.on_action(binding);
         }
         let mut row = Row::new()
@@ -530,6 +570,25 @@ impl StoreApp {
             children.push(notice);
         }
         children.push(self.detail_summary(item, theme));
+        if let Some((app, root, version)) = &self.imported_review
+            && app == &item.id
+        {
+            children.push(Box::new(Section::titled(
+                ui::i18n!("store-package-reviewed-file"),
+                vec![Box::new(PropertyList::new(vec![
+                    Property::new(ui::i18n!("store-package-reviewed-version"), version),
+                    Property::new(ui::i18n!("store-package-reviewed-root"), root),
+                    Property::new(
+                        ui::i18n!("store-package-reviewed-state"),
+                        if item.installed.is_installed() {
+                            ui::i18n!("store-package-reinstall")
+                        } else {
+                            ui::i18n!("store-package-new-install")
+                        },
+                    ),
+                ]))],
+            )));
+        }
         if let Some(store) = &self.images
             && !item.screenshot_urls.is_empty()
         {
@@ -578,7 +637,7 @@ impl StoreApp {
         );
         children.push(Box::new(Section::titled(
             "Trust",
-            vec![Self::prose(trust_explanation(item, locally_retained))],
+            vec![Self::prose(&trust_explanation(item, locally_retained))],
         )));
         children.push(self.technical_details(item));
         children.push(Self::report_section(item));
@@ -764,14 +823,10 @@ impl StoreApp {
             .with_id(&format!("store.report.note.{app_id}"))
             .multiline(true)
             .with_placeholder("Describe what happened");
-        let note_of = app_id.to_owned();
-        let locate =
-            move |doc: &ui::tilo_resource::Doc| crate::doc_actions::report_note(doc, &note_of);
+        let path = crate::reports::Reports::note(app_id);
         NoteField(match &self.dispatcher {
-            Some(dispatcher) => {
-                TextControl::new(input, report_note_dispatcher(dispatcher, app_id), locate)
-            }
-            None => TextControl::view_only(input, locate),
+            Some(dispatcher) => TextControl::at(input, dispatcher.clone(), path),
+            None => TextControl::view_only_at(input, path),
         })
     }
 
@@ -871,16 +926,16 @@ impl StoreApp {
 
 /// A report's note in a form field: the document-bound text control, named
 /// by its field's visible label.
-struct NoteField(TextControl<TextInput>);
+struct NoteField(TextControl<TextInput, crate::reports::Reports>);
 
 impl ui::widget::Decorator for NoteField {
-    type Inner = TextControl<TextInput>;
+    type Inner = TextControl<TextInput, crate::reports::Reports>;
 
-    fn inner(&self) -> &TextControl<TextInput> {
+    fn inner(&self) -> &TextControl<TextInput, crate::reports::Reports> {
         &self.0
     }
 
-    fn inner_mut(&mut self) -> &mut TextControl<TextInput> {
+    fn inner_mut(&mut self) -> &mut TextControl<TextInput, crate::reports::Reports> {
         &mut self.0
     }
 }
@@ -894,17 +949,18 @@ impl ui::widget::FormControl for NoteField {
 }
 
 /// What a trust claim does and does not promise.
-fn trust_explanation(item: &StoreItem, locally_retained: bool) -> &'static str {
+fn trust_explanation(item: &StoreItem, locally_retained: bool) -> String {
     if locally_retained {
-        return "Verified when installed. Current registry metadata is unavailable, so update availability is unknown.";
+        return "Verified when installed. Current registry metadata is unavailable, so update availability is unknown.".into();
     }
     match item.trust {
+        StoreTrust::TrustedAttestor => ui::i18n!("store-package-local-trust"),
         StoreTrust::PublisherSigned => {
-            "Publisher identity and package integrity are verified. This is not an independent quality review."
+            "Publisher identity and package integrity are verified. This is not an independent quality review.".into()
         }
-        StoreTrust::Flathub => "Tilo has not independently reviewed this app.",
+        StoreTrust::Flathub => "Tilo has not independently reviewed this app.".into(),
         StoreTrust::ConfiguredRemote => {
-            "This metadata comes from a configured repository. Tilo has not independently reviewed the app."
+            "This metadata comes from a configured repository. Tilo has not independently reviewed the app.".into()
         }
     }
 }
@@ -944,7 +1000,9 @@ fn package_properties(item: &StoreItem) -> Vec<Property> {
         ));
     }
     if let Some(version) = item.versions.first() {
-        rows.push(Property::new("Latest version", &version.version).with_kind(TextKind::Numeric));
+        rows.push(
+            Property::new("Latest version", visible_version(item)).with_kind(TextKind::Numeric),
+        );
         if version.size_bytes > 0 {
             rows.push(
                 Property::new("Download size", format_size(version.size_bytes))
@@ -991,6 +1049,13 @@ fn technical_properties(item: &StoreItem) -> Vec<Property> {
             .with_kind(TextKind::Identifier)
             .copyable(),
     ];
+    if !item.latest_version().is_empty() {
+        rows.push(
+            Property::new(ui::i18n!("store-build-version"), item.latest_version())
+                .with_kind(TextKind::Identifier)
+                .copyable(),
+        );
+    }
     if let Some(hash) = item
         .versions
         .first()

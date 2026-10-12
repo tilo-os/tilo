@@ -2,9 +2,9 @@ use crate::i18n::ArgValue;
 use crate::permissions::PermissionScope;
 use crate::presence::{PathSegment, PresenceKey};
 use crate::text_render::{
-    FIGURE_TAGS, FontChoice, HangingPunctuation, NumericStyle, OpenTypeTag, OpticalSizing,
-    ParagraphAlign, TextKind, TextLayoutConstraints, TextLayoutEngine, TextRenderer, TextScaling,
-    TextStyle, TextWeight, TextWrapMode,
+    FIGURE_TAGS, FontChoice, HangingPunctuation, Hyphenation, NumericStyle, OpenTypeTag,
+    OpticalSizing, ParagraphAlign, PreparedText, TextKind, TextLayoutConstraints, TextLayoutEngine,
+    TextRenderer, TextScaling, TextStyle, TextWeight, TextWrapMode,
 };
 use crate::theme::Theme;
 use crate::tokens::{TextRole, Typography};
@@ -15,6 +15,16 @@ use automerge::{AutoCommit, ObjId};
 use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point};
+
+// One retained input per Text, with a bounded owned payload. Renderer cache
+// budgets do not include this caller-owned storage. Custom engines/policies and
+// larger labels keep the original owned, per-operation input path.
+const PREPARED_TEXT_PAYLOAD_LIMIT: usize = 16 * 1024;
+
+enum RendererInput {
+    Prepared(PreparedText),
+    Owned(String, TextStyle),
+}
 
 type DynamicTextSource = Box<dyn FnMut() -> Option<String>>;
 type DocumentTextSource = Box<dyn FnMut(&AutoCommit, &ObjId) -> String>;
@@ -141,6 +151,9 @@ pub struct Text {
     /// The role resolved against the last theme seen, with the modifiers
     /// applied. `measure` has no theme parameter, so build/draw keep it here.
     style: TextStyle,
+    prepared_input: Option<PreparedText>,
+    renderer_epoch: Option<std::sync::Arc<()>>,
+    observed_renderer_text_scale: f32,
     heading_level: Option<u8>,
     /// Announce changes to this text without moving keyboard focus. Static
     /// copy leaves this unset; status and error text opt in explicitly.
@@ -202,6 +215,9 @@ impl Text {
             role: TextRole::Body,
             modifiers: TextModifiers::default(),
             style: crate::tokens::typography::stock().style(TextRole::Body),
+            prepared_input: None,
+            renderer_epoch: None,
+            observed_renderer_text_scale: 1.0,
             heading_level: None,
             live: None,
             layout_engine: None,
@@ -338,14 +354,8 @@ impl Text {
         self.layout_engine = Some(Box::new(engine));
         self.dirty = true;
         self.layout_dirty = true;
+        self.prepared_input = None;
         self
-    }
-
-    /// Force a remeasure/repaint after mutating engine state through a shared
-    /// owner whose revision cannot be observed automatically.
-    pub fn invalidate_layout_engine(&mut self) {
-        self.dirty = true;
-        self.layout_dirty = true;
     }
 
     fn observe_engine_revision(&mut self) {
@@ -357,6 +367,7 @@ impl Text {
             self.engine_revision = revision;
             self.dirty = true;
             self.layout_dirty = true;
+            self.prepared_input = None;
         }
     }
 
@@ -366,6 +377,7 @@ impl Text {
             self.i18n_revision = revision;
             self.dirty = true;
             self.layout_dirty = true;
+            self.prepared_input = None;
         }
     }
 
@@ -379,6 +391,73 @@ impl Text {
         self.role = role;
         self.restyle_default();
         self
+    }
+
+    fn renderer_input(&mut self) -> RendererInput {
+        if self.layout_engine.is_none()
+            && let Some(prepared) = &self.prepared_input
+        {
+            return RendererInput::Prepared(prepared.clone());
+        }
+        let label = self.resolved_label();
+        let style = self.style.clone();
+        let family_bytes = match &style.family {
+            FontChoice::Named(name) => name.capacity(),
+            _ => 0,
+        };
+        let language_bytes = match &style.hyphenation {
+            Hyphenation::Auto(language) => language.capacity(),
+            _ => 0,
+        };
+        let payload_bytes = label
+            .len()
+            .saturating_add(family_bytes)
+            .saturating_add(language_bytes)
+            .saturating_add(
+                style
+                    .font_features
+                    .capacity()
+                    .saturating_mul(std::mem::size_of::<crate::text_render::OpenTypeFeature>()),
+            )
+            .saturating_add(
+                style
+                    .font_variations
+                    .capacity()
+                    .saturating_mul(std::mem::size_of::<crate::text_render::FontVariation>()),
+            );
+        if self.layout_engine.is_none()
+            && !matches!(style.hyphenation, Hyphenation::Custom(_))
+            && payload_bytes <= PREPARED_TEXT_PAYLOAD_LIMIT
+        {
+            let input = PreparedText::new(label, style);
+            self.prepared_input = Some(input.clone());
+            RendererInput::Prepared(input)
+        } else {
+            RendererInput::Owned(label, style)
+        }
+    }
+
+    fn observe_renderer_text_scale(&mut self, renderer: &TextRenderer) {
+        let epoch = renderer.layout_epoch();
+        // The first measure already uses this renderer. Only a change from
+        // an observed renderer invalidates an existing layout; recording the
+        // initial epoch must not make a pure scroll remeasure the subtree.
+        if self
+            .renderer_epoch
+            .as_ref()
+            .is_some_and(|observed| !std::sync::Arc::ptr_eq(observed, epoch))
+        {
+            self.dirty = true;
+            self.layout_dirty = true;
+        }
+        self.renderer_epoch = Some(epoch.clone());
+        let scale = renderer.text_scale();
+        if self.observed_renderer_text_scale.to_bits() != scale.to_bits() {
+            self.observed_renderer_text_scale = scale;
+            self.dirty = true;
+            self.layout_dirty = true;
+            self.prepared_input = None;
+        }
     }
 
     /// The role this text was given.
@@ -488,6 +567,7 @@ impl Text {
             self.style = style;
             self.dirty = true;
             self.layout_dirty = true;
+            self.prepared_input = None;
         }
     }
 
@@ -771,6 +851,7 @@ impl Widget for Text {
             self.label = label;
             self.dirty = true;
             self.layout_dirty = true;
+            self.prepared_input = None;
         }
     }
 
@@ -781,7 +862,7 @@ impl Widget for Text {
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.observe_theme(theme);
-        let node = taffy.leaf_node(Style {
+        let style = Style {
             display: self.flow_display(),
             size: Size {
                 width: taffy::Dimension::auto(),
@@ -792,14 +873,18 @@ impl Widget for Text {
             flex_shrink: 1.0,
             flex_grow: 0.0,
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     /// A bound text that has nothing to say leaves its container's flow,
     /// so its container skips the gap it would have taken.
-    fn adjust_layout_style(&mut self, taffy: &mut TaffyTree<()>, node: NodeId) -> bool {
+    fn adjust_layout_style(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        node: NodeId,
+        _text: &mut crate::text_render::TextRenderer,
+    ) -> bool {
         let display = self.flow_display();
         match taffy.style(node) {
             Ok(style) if style.display != display => {
@@ -819,7 +904,8 @@ impl Widget for Text {
     ) -> taffy::Size<f32> {
         self.observe_i18n_revision();
         self.observe_engine_revision();
-        let label = self.resolved_label();
+        self.observe_renderer_text_scale(text_renderer);
+        let input = self.renderer_input();
 
         let max_w = if let Some(w) = known_dimensions.width {
             Some(w)
@@ -846,10 +932,15 @@ impl Widget for Text {
             max_width: max_w,
             max_height: max_h,
         };
-        let (w, h) = if let Some(engine) = self.layout_engine.as_deref_mut() {
-            engine.measure(text_renderer, &label, constraints, &self.style)
-        } else {
-            text_renderer.measure_style(&label, max_w, &self.style)
+        let (w, h) = match input {
+            RendererInput::Prepared(input) => text_renderer.measure_prepared(&input, max_w),
+            RendererInput::Owned(label, style) => {
+                if let Some(engine) = self.layout_engine.as_deref_mut() {
+                    engine.measure(text_renderer, &label, constraints, &style)
+                } else {
+                    text_renderer.measure_style(&label, max_w, &style)
+                }
+            }
         };
 
         // Tiny epsilon on width so rounding in Row/Column doesn't read the
@@ -861,13 +952,7 @@ impl Widget for Text {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = vello::kurbo::Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
-            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
-        );
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
         // Without this, scrolling a 1000-widget tree would invalidate every
         // cache every frame and the per-widget cache goes net-negative.
         // Exact equality is the point — this is change detection for the
@@ -889,11 +974,12 @@ impl Widget for Text {
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-        _presence: &crate::presence::PresenceCtx,
+        presence: &crate::presence::PresenceCtx,
     ) {
         self.observe_theme(theme);
         self.observe_i18n_revision();
         self.observe_engine_revision();
+        self.observe_renderer_text_scale(text_renderer);
         let color = self.color.unwrap_or({
             let colors = &theme.tokens.colors;
             if let Some(tone) = self.tone {
@@ -917,7 +1003,7 @@ impl Widget for Text {
         }
         if self.dirty || self.cache_rect == vello::kurbo::Rect::ZERO {
             self.cached.reset();
-            let label = self.resolved_label();
+            let input = self.renderer_input();
             #[allow(
                 clippy::cast_possible_truncation,
                 reason = "label width in logical pixels is far below f32::MAX for any realistic UI element"
@@ -932,25 +1018,36 @@ impl Widget for Text {
                 )]
                 max_height: Some(self.rect.height() as f32),
             };
-            if let Some(engine) = self.layout_engine.as_deref_mut() {
-                engine.draw(
-                    text_renderer,
+            match input {
+                RendererInput::Prepared(input) => text_renderer.draw_prepared(
                     &mut self.cached,
-                    &label,
-                    constraints,
-                    &self.style,
-                    color,
-                    origin,
-                );
-            } else {
-                text_renderer.draw_style(
-                    &mut self.cached,
-                    &label,
+                    &input,
                     color,
                     origin,
                     constraints.max_width,
-                    &self.style,
-                );
+                ),
+                RendererInput::Owned(label, style) => {
+                    if let Some(engine) = self.layout_engine.as_deref_mut() {
+                        engine.draw(
+                            text_renderer,
+                            &mut self.cached,
+                            &label,
+                            constraints,
+                            &style,
+                            color,
+                            origin,
+                        );
+                    } else {
+                        text_renderer.draw_style(
+                            &mut self.cached,
+                            &label,
+                            color,
+                            origin,
+                            constraints.max_width,
+                            &style,
+                        );
+                    }
+                }
             }
             self.cache_rect = self.rect;
         }
@@ -960,6 +1057,7 @@ impl Widget for Text {
             &self.cached,
             Some(transform.pre_translate(vello::kurbo::Vec2::new(dx, dy))),
         );
+        crate::widget::draw_gate_and_peer_focus(self, scene, transform, theme, presence);
     }
 
     fn name(&self) -> &'static str {
@@ -1029,52 +1127,11 @@ impl Widget for Text {
         }
         Some(node)
     }
-
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &crate::presence::PresenceCtx,
-        permissions: &crate::permissions::PermissionContext,
-    ) {
-        if presence.should_cull(self.get_rect()) {
-            return;
-        }
-        self.draw(scene, transform, text_renderer, theme, presence);
-
-        if let Some(scope) = crate::permissions::capability::permission_scope(self)
-            && !permissions.check(&scope)
-        {
-            let overlay = crate::tokens::colors::PERMISSION_DENIED_SCRIM;
-            scene.fill(
-                vello::peniko::Fill::NonZero,
-                transform,
-                overlay,
-                None,
-                &self.rect,
-            );
-        }
-
-        if let Some(key) = crate::presence::capability::presence_key(self)
-            && let Some(peers) = presence.here.get(&key)
-            && let Some(user) = peers.first()
-        {
-            presence.draw_peer_focus(scene, theme, user, self.rect);
-        }
-    }
 }
 
 impl crate::presence::capability::PublishesPresence for Text {
     fn presence_key(&self) -> Option<PresenceKey> {
-        if self.presence_path.is_empty() {
-            None
-        } else {
-            Some(PresenceKey::Widget {
-                path: self.presence_path.clone(),
-            })
-        }
+        PresenceKey::widget(&self.presence_path)
     }
 }
 
@@ -1815,7 +1872,7 @@ mod tests {
                 let root = Column::new()
                     .push(Box::new(Text::new("title")))
                     .push(Box::new(Button::new("localized-action", "action")));
-                let mut driver = crate::headless::Driver::new_with_controlled_inputs(
+                let mut driver = crate::headless::FrameHarness::new_with_controlled_inputs(
                     crate::State::new(),
                     Box::new(root),
                     (700, 300),
@@ -1853,3 +1910,7 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "text/main_compatibility_tests.rs"]
+mod main_compatibility_tests;

@@ -29,12 +29,13 @@ def polls(probe, timeout, **kwargs):
 
 
 def state(*tabs):
-    return {"workspace_tree": {"workspaces": [{"room": "room", "strips": [{
+    return {"workspace_tree": {"local_app_records": {str(tab): {"room": "room",
+            "app_id": app.BROWSER, "record_instance": tab + 10} for tab in tabs}, "workspaces": [{"room": "room", "strips": [{
         "window_groups": [{"tabs": [{"id": tab, "tile": {"Foreign": {
             "app_id": app.BROWSER, "surface_id": tab + 100}}} for tab in tabs]}]}]}]}}
 
 
-def row(record="old", operation="navigate"):
+def row(record="derived:default@tab:000000000000000b", operation="navigate"):
     return {"provider": "app-actions", "application": app.BROWSER,
             "room": "room", "record": record, "resource": "bound:" + record,
             "id": record + ":" + operation, "operation": operation,
@@ -105,7 +106,7 @@ class FreshBrowser(unittest.TestCase):
             def control_json(self, *args):
                 rows = [row()]
                 if self.stage and new_record:
-                    rows.append(row("new"))
+                    rows.append(row("derived:default@tab:000000000000000c"))
                 return {"query": app.BROWSER, "actions": rows}
         return VM()
 
@@ -113,7 +114,7 @@ class FreshBrowser(unittest.TestCase):
         vm = self.vm()
         with tempfile.TemporaryDirectory() as directory, patch.object(app, "wait_until", polls):
             door, tab = app.fresh_browser(vm, Path(directory))
-        self.assertEqual(door.bound[2], "new")
+        self.assertEqual(door.bound[2], "derived:default@tab:000000000000000c")
         self.assertEqual(tab, ("room", "2", "102"))
         self.assertEqual(vm.invoked, [("actions", "tab.open-beside", {"app": app.BROWSER})])
 
@@ -125,6 +126,39 @@ class FreshBrowser(unittest.TestCase):
                     app.fresh_browser(vm, Path(directory))
             self.assertEqual(len(vm.invoked), 1)
             self.assertEqual(vm.invoked[0][1], "tab.open-beside")
+
+    def test_unrelated_existing_records_cold_publish_without_ambiguity(self):
+        vm = self.vm()
+        original = vm.control_json
+        def catalogue(*args):
+            value = original(*args)
+            if vm.stage:
+                value["actions"].append(row("derived:default@tab:0000000000000099"))
+            return value
+        vm.control_json = catalogue
+        with tempfile.TemporaryDirectory() as directory, patch.object(app, "wait_until", polls):
+            door, tab = app.fresh_browser(vm, Path(directory))
+        self.assertEqual(door.bound[2], "derived:default@tab:000000000000000c")
+        self.assertEqual(tab[1], "2")
+        self.assertEqual(len(vm.invoked), 1)
+
+    def test_missing_foreign_or_invalid_public_association_never_guesses_tab_identity(self):
+        for association in (None, {"room": "other", "app_id": app.BROWSER, "record_instance": 12},
+                            {"room": "room", "app_id": app.BROWSER, "record_instance": True}):
+            vm = self.vm()
+            original = vm.state
+            def current():
+                value = original()
+                if association is None:
+                    value["workspace_tree"]["local_app_records"].pop("2", None)
+                else:
+                    value["workspace_tree"]["local_app_records"]["2"] = association
+                return value
+            vm.state = current
+            with tempfile.TemporaryDirectory() as directory, patch.object(app, "wait_until", polls):
+                with self.assertRaises(VmError):
+                    app.fresh_browser(vm, Path(directory))
+            self.assertEqual(len(vm.invoked), 1)
 
     def test_host_prefix_does_not_authorize_different_https_site(self):
         self.assertTrue(app.fixture_url(app.HTTPS_FIXTURE["url"]))
@@ -165,6 +199,26 @@ class HttpsReadback(unittest.TestCase):
                 app.browser_flow(door)
         door.results = iter([app.HTTPS_FIXTURE["url"], {"data": {"settled": True}}, self.page()])
         self.assertFalse(app.browser_flow(door)["latency_claim"])
+
+
+class ResidentPackage(unittest.TestCase):
+    def test_old_executable_fails_even_when_runtime_matches(self):
+        import json
+        from unittest.mock import Mock
+        vm = Mock()
+        data = {"method": "proc-map-files-fd", "reader_uid": 0, "uid": 1000,
+                "processes": [{"runtime": [{"path": "/run/tilo-runtime/sdk/lib/libruntime_dylib.so", "sha256": "verified-sdk"}],
+                               "executable": {"sha256": "old-app"}}]}
+        vm.root_exec.return_value = json.dumps(data)
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaises(VmError):
+                app.mapped(vm, "calculator", {"/run/tilo-runtime/sdk/lib/libruntime_dylib.so": "verified-sdk"}, 1000, Path(directory),
+                           executable="new-app")
+            data["processes"][0]["executable"]["sha256"] = "new-app"
+            vm.root_exec.return_value = json.dumps(data)
+            app.mapped(vm, "calculator", {"/run/tilo-runtime/sdk/lib/libruntime_dylib.so": "verified-sdk"}, 1000, Path(directory),
+                       executable="new-app")
+            self.assertTrue((Path(directory) / "calculator-mapped-sdk.json").exists())
 
 
 class Store(unittest.TestCase):

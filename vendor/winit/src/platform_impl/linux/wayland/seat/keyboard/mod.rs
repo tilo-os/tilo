@@ -49,11 +49,15 @@ impl Dispatch<WlKeyboard, KeyboardData, WinitState> for WinitState {
             WlKeyboardEvent::Keymap { format, fd, size } => match format {
                 WEnum::Value(format) => match format {
                     WlKeymapFormat::NoKeymap => {
-                        warn!("non-xkb compatible keymap")
+                        warn!("non-xkb compatible keymap");
+                        keyboard_state.xkb_context.clear_keymap();
+                        keyboard_state.publish_layout(&mut state.events_sink, data);
                     },
                     WlKeymapFormat::XkbV1 => {
                         let context = &mut keyboard_state.xkb_context;
                         context.set_keymap_from_fd(fd, size as usize);
+                        keyboard_state.masks = [0; 4];
+                        keyboard_state.publish_layout(&mut state.events_sink, data);
                     },
                     _ => unreachable!(),
                 },
@@ -87,6 +91,8 @@ impl Dispatch<WlKeyboard, KeyboardData, WinitState> for WinitState {
                 if was_unfocused {
                     state.events_sink.push_window_event(WindowEvent::Focused(true), window_id);
                 }
+
+                keyboard_state.publish_layout(&mut state.events_sink, data);
 
                 // HACK: this is just for GNOME not fixing their ordering issue of modifiers.
                 if std::mem::take(&mut seat_state.modifiers_pending) {
@@ -256,6 +262,9 @@ impl Dispatch<WlKeyboard, KeyboardData, WinitState> for WinitState {
                 xkb_state.update_modifiers(mods_depressed, mods_latched, mods_locked, 0, 0, group);
                 seat_state.modifiers = xkb_state.modifiers().into();
 
+                keyboard_state.masks = [mods_depressed, mods_latched, mods_locked, group];
+                keyboard_state.publish_layout(&mut state.events_sink, data);
+
                 // HACK: part of the workaround from `WlKeyboardEvent::Enter`.
                 let window_id = match *data.window_id.lock().unwrap() {
                     Some(window_id) => window_id,
@@ -309,9 +318,23 @@ pub struct KeyboardState {
 
     /// The current repeat raw key.
     pub current_repeat: Option<u32>,
+
+    /// Exact compositor-provided masks, preserved before queued event delivery.
+    masks: [u32; 4],
 }
 
 impl KeyboardState {
+    fn publish_layout(&self, sink: &mut EventSink, data: &KeyboardData) {
+        let Some(window_id) = *data.window_id.lock().unwrap() else {
+            return;
+        };
+        let layout = self
+            .xkb_context
+            .keyboard_layout(self.masks)
+            .map(std::sync::Arc::new);
+        sink.push_window_event(WindowEvent::KeyboardLayoutChanged(layout), window_id);
+    }
+
     pub fn new(keyboard: WlKeyboard, loop_handle: LoopHandle<'static, WinitState>) -> Self {
         Self {
             keyboard,
@@ -320,6 +343,7 @@ impl KeyboardState {
             repeat_info: RepeatInfo::default(),
             repeat_token: None,
             current_repeat: None,
+            masks: [0; 4],
         }
     }
 }

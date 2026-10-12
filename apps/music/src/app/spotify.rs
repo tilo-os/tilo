@@ -9,7 +9,6 @@ use crate::{
 pub(super) struct PendingJob {
     invocation: tilo_actions::InvocationId,
     started: ui::time::Instant,
-    retryable: bool,
     remote_play: bool,
     library_page: Option<u32>,
 }
@@ -45,7 +44,7 @@ impl MusicApp {
         };
         for (key, effect) in choices {
             self.push_menu(
-                ui::i18n::I18nManager::format(key, &[]),
+                crate::i18n::t_args(key, &[]),
                 super::Action::SpotifyEffect(effect),
             );
         }
@@ -55,7 +54,7 @@ impl MusicApp {
             && self.spotify_library_offset <= 1950
         {
             self.push_menu(
-                ui::i18n!("music-spotify-library-more"),
+                crate::i18n::t("music-spotify-library-more"),
                 super::Action::SpotifyEffect(MusicEffect::SpotifyLibraryMore),
             );
         }
@@ -136,7 +135,7 @@ impl MusicApp {
                     "music.spotify-remote-item",
                     format!(
                         "{}\n{}",
-                        ui::i18n!("music-spotify-remote-queue"),
+                        crate::i18n::t("music-spotify-remote-queue"),
                         remote_item_label(item)
                     ),
                 )
@@ -207,10 +206,8 @@ impl MusicApp {
             self.menu_actions.push(super::Action::Back);
         }
         for (playlist, (name, _)) in playlists {
-            let label = ui::i18n::I18nManager::format(
-                "music-spotify-playlist-choice",
-                &[("name", name.into())],
-            );
+            let label =
+                crate::i18n::t_args("music-spotify-playlist-choice", &[("name", name.into())]);
             self.push_menu(
                 label,
                 super::Action::SpotifyEffect(MusicEffect::SpotifyPlaylistAdd {
@@ -225,21 +222,21 @@ impl MusicApp {
         self.context = ui::widget::context_menu::ContextMenu::new();
         self.menu_actions.clear();
         self.push_menu(
-            ui::i18n!("music-spotify-create-playlist"),
+            crate::i18n::t("music-spotify-create-playlist"),
             super::Action::BeginNewSpotifyPlaylist,
         );
         self.push_menu(
-            ui::i18n!("music-spotify-rename-playlist"),
+            crate::i18n::t("music-spotify-rename-playlist"),
             super::Action::BeginRenamePlaylist(playlist.into()),
         );
         self.push_menu(
-            ui::i18n!("music-spotify-save-playlist"),
+            crate::i18n::t("music-spotify-save-playlist"),
             super::Action::SpotifyEffect(MusicEffect::SpotifySave {
                 uri: playlist.into(),
             }),
         );
         self.push_menu(
-            ui::i18n!("music-spotify-unsave-playlist"),
+            crate::i18n::t("music-spotify-unsave-playlist"),
             super::Action::SpotifyEffect(MusicEffect::SpotifyUnsave {
                 uri: playlist.into(),
             }),
@@ -280,7 +277,7 @@ impl MusicApp {
         self.home_requested = true;
         self.home = Some(HomeContent {
             sections: vec![HomeSection {
-                title: ui::i18n!("music-spotify-library"),
+                title: crate::i18n::t("music-spotify-library"),
                 items: [
                     (
                         "spotify:collection:liked",
@@ -340,7 +337,7 @@ impl MusicApp {
             self.rebuild_spotify_device_buttons();
         }
         if scenario == "spotify-error" {
-            self.source_error = Some(ui::i18n!("music-spotify-signin-expired"));
+            self.source_error = Some(crate::i18n::t("music-spotify-signin-expired"));
         }
         if scenario == "spotify-queue" {
             self.view = super::View::Queue;
@@ -404,7 +401,7 @@ impl MusicApp {
                     .values()
                     .any(|job| job.library_page.is_some())
             {
-                return Err(ui::i18n!("music-spotify-library-page-unavailable"));
+                return Err(crate::i18n::t("music-spotify-library-page-unavailable"));
             }
             SpotifyOperation::LibraryPage {
                 offset: self.spotify_library_offset,
@@ -421,12 +418,6 @@ impl MusicApp {
         } else {
             operation(effect).ok_or("Invalid Spotify operation")?
         };
-        let retryable = !matches!(
-            operation,
-            SpotifyOperation::PlaylistAdd { .. }
-                | SpotifyOperation::PlaylistRemove { .. }
-                | SpotifyOperation::CreatePlaylist { .. }
-        );
         let library_page = if let SpotifyOperation::LibraryPage { offset, .. } = operation {
             Some(offset)
         } else {
@@ -449,7 +440,6 @@ impl MusicApp {
             PendingJob {
                 invocation,
                 started: ui::time::now(),
-                retryable,
                 remote_play,
                 library_page,
             },
@@ -544,7 +534,7 @@ impl MusicApp {
                         code: "music.spotify_operation_failed".into(),
                         message,
                         details: None,
-                        retryable: job.retryable,
+                        retryable: false,
                     },
                 }
             }
@@ -561,20 +551,20 @@ impl MusicApp {
         if offset != self.spotify_library_offset
             || state["library_page"].as_u64() != Some(u64::from(offset))
         {
-            return Err(ui::i18n!("music-spotify-library-page-unavailable"));
+            return Err(crate::i18n::t("music-spotify-library-page-unavailable"));
         }
         let page: crate::backend::HomeContent = serde_json::from_value(state["home_page"].clone())
-            .map_err(|_| ui::i18n!("music-spotify-library-page-invalid"))?;
+            .map_err(|_| crate::i18n::t("music-spotify-library-page-invalid"))?;
         let more = state["has_more"]
             .as_bool()
-            .ok_or_else(|| ui::i18n!("music-spotify-library-page-invalid"))?;
+            .ok_or_else(|| crate::i18n::t("music-spotify-library-page-invalid"))?;
         if page.sections.len() > 4 || page.sections.iter().any(|section| section.items.len() > 50) {
-            return Err(ui::i18n!("music-spotify-library-page-invalid"));
+            return Err(crate::i18n::t("music-spotify-library-page-invalid"));
         }
         let mut home = self
             .home
             .clone()
-            .ok_or_else(|| ui::i18n!("music-spotify-library-page-unavailable"))?;
+            .ok_or_else(|| crate::i18n::t("music-spotify-library-page-unavailable"))?;
         for section in page.sections {
             if let Some(existing) = home
                 .sections
@@ -607,7 +597,7 @@ impl MusicApp {
             .collect();
         for id in expired {
             if let Some(job) = self.spotify_jobs.remove(&id) {
-                let message = ui::i18n!("music-spotify-request-timeout");
+                let message = crate::i18n::t("music-spotify-request-timeout");
                 self.source_error = Some(message.clone());
                 self.resource_stream_results
                     .push(tilo_actions::InvocationUpdate::Failed {
@@ -658,8 +648,7 @@ impl MusicApp {
                         MusicEffect::SpotifyRemotePlay { .. } => "music-spotify-play-device",
                         _ => "music-spotify-select-device",
                     };
-                    let label =
-                        ui::i18n::I18nManager::format(key, &[("device", (&device.name).into())]);
+                    let label = crate::i18n::t_args(key, &[("device", (&device.name).into())]);
                     let resource =
                         tilo_actions::Resource::new(&address, "music.spotify-device", &device.name)
                             .with_action(effect.bound());
@@ -668,7 +657,7 @@ impl MusicApp {
                     Some(
                         ui::widget::Button::new(&id, &label)
                             .with_enabled(!device.restricted)
-                            .tooltip(ui::i18n!("music-spotify-device-help"))
+                            .tooltip(crate::i18n::t("music-spotify-device-help"))
                             .on_action(binding),
                     )
                 })
@@ -753,11 +742,11 @@ impl MusicApp {
                     row = if kind == "music.artist" {
                         row.operation(crate::actions::bound(
                             &MusicEffect::SpotifySave { uri: id.clone() },
-                            &ui::i18n!("music-spotify-follow-artist"),
+                            &crate::i18n::t("music-spotify-follow-artist"),
                         ))
                         .operation(crate::actions::bound(
                             &MusicEffect::SpotifyUnsave { uri: id },
-                            &ui::i18n!("music-spotify-unfollow-artist"),
+                            &crate::i18n::t("music-spotify-unfollow-artist"),
                         ))
                     } else {
                         row.effect(&MusicEffect::SpotifySave { uri: id.clone() })
@@ -781,7 +770,11 @@ impl MusicApp {
                     format!("music.spotify-device:{}", device.id),
                     "music.spotify-device",
                     if device.active {
-                        format!("{} • {}", device.name, ui::i18n!("music-spotify-active"))
+                        format!(
+                            "{} • {}",
+                            device.name,
+                            crate::i18n::t("music-spotify-active")
+                        )
                     } else {
                         device.name.clone()
                     },
@@ -959,6 +952,7 @@ fn operation(effect: &MusicEffect) -> Option<SpotifyOperation> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ui::tilo_resource::Effect as _;
     use ui::widget::controls::ActionControls as _;
 
     #[test]
@@ -1042,14 +1036,13 @@ mod tests {
         app.artist_pages.insert(id.into(), page);
         let mut doc = automerge::AutoCommit::new();
         let before = doc.get_heads();
-        let refused = tilo_actions::Action::apply(
-            &crate::actions::MusicAction::SetFollowedArtist {
-                artist: id.into(),
-                followed: false,
-            },
-            &mut doc,
-        )
-        .unwrap_err();
+        let mut library = ui::tilo_resource::Replica::<crate::model::Library>::new();
+        let refused = library
+            .apply(
+                ui::tilo_resource::Invoke::edit(&crate::model::Library::follow_artist(id, true))
+                    .unwrap(),
+            )
+            .unwrap_err();
         assert!(refused.to_string().contains("provider-authorized"));
         app.on_toggle_follow(id, &mut ui::widget::Edits::lend(&mut doc));
         let invocation = app
@@ -1089,7 +1082,6 @@ mod tests {
             PendingJob {
                 invocation: tilo_actions::InvocationId::new(),
                 started: ui::time::now(),
-                retryable: true,
                 remote_play: false,
                 library_page: None,
             },
@@ -1101,7 +1093,6 @@ mod tests {
             PendingJob {
                 invocation: tilo_actions::InvocationId::new(),
                 started: ui::time::now(),
-                retryable: true,
                 remote_play: false,
                 library_page: None,
             },
@@ -1216,6 +1207,32 @@ mod tests {
     }
 
     #[test]
+    fn source_picker_labels_fit_a_narrow_window_at_double_text_size() {
+        let mut app = MusicApp::without_profile();
+        app.snap_spotify("spotify-home");
+        app.rect = vello::kurbo::Rect::new(0.0, 0.0, 360.0, 800.0);
+        let theme = ui::theme::Theme::high_contrast().with_text_scale(2.0);
+        let mut text = ui::text_render::TextRenderer::new();
+        app.open_sources_menu();
+        app.context.layout_within(&mut text, &theme);
+        let bounds = app.context.get_rect();
+        assert!(bounds.x0 >= 0.0 && bounds.x1 <= 360.0);
+        let style = theme.text(ui::tokens::TextRole::Body);
+        let available = (bounds.width() - 2.0 * f64::from(theme.tokens.spacing.s3)) as f32;
+        for item in app.context.items() {
+            if let Some(label) = item.label() {
+                assert_eq!(
+                    text.elide_to_width_style(label, available, &style),
+                    label,
+                    "the source choice must stay readable: {label}"
+                );
+            }
+        }
+        assert!(app.source_invocation.is_none());
+        assert!(app.spotify_jobs.is_empty());
+    }
+
+    #[test]
     fn spotify_creation_prompt_cancel_and_reopen_emit_one_host_intent() {
         use ui::tilo_resource::Effect as _;
         let mut app = MusicApp::without_profile();
@@ -1303,7 +1320,6 @@ mod tests {
             PendingJob {
                 invocation,
                 started: ui::time::now(),
-                retryable: true,
                 remote_play: false,
                 library_page: None,
             },
@@ -1323,7 +1339,23 @@ mod tests {
             row.actions.is_empty(),
             "remote rows do not offer local queue edits"
         );
+        let Some(tilo_actions::InvocationUpdate::Succeeded { output, .. }) =
+            app.take_effect_result(invocation)
+        else {
+            panic!("the real remote refresh must settle its pending job");
+        };
+        assert_eq!(
+            output.value.as_ref().unwrap()["remote_queue"]["queue"][0]["name"],
+            "Remote song"
+        );
+        MusicEffect::SpotifyQueue
+            .bound()
+            .contract
+            .result
+            .validate(&output)
+            .expect("provider snapshot completion must match its declared result");
         app.finish_spotify_operation(1, Err("late reply".into()));
+        assert!(app.take_effect_result(invocation).is_none());
         assert!(
             app.source_error.is_none(),
             "duplicate completion is ignored"
@@ -1425,7 +1457,6 @@ mod tests {
                 started: ui::time::now()
                     .checked_sub(ui::time::Duration::from_secs(121))
                     .expect("expired deadline fixture"),
-                retryable: false,
                 remote_play: false,
                 library_page: None,
             },

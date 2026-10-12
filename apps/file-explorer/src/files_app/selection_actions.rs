@@ -1,7 +1,8 @@
 //! Window-local selection through the same typed door as pointer and keyboard work.
 
-use super::{FileExplorerWidget, MAX_ANSWERED_ENTRIES, MAX_MOVE_ENTRIES};
+use super::{FileExplorerWidget, MAX_ANSWERED_ENTRIES};
 use crate::i18n::t;
+use crate::resource::MAX_MOVE_ENTRIES;
 use std::collections::HashMap;
 
 impl FileExplorerWidget {
@@ -30,6 +31,7 @@ impl FileExplorerWidget {
             .collect::<Result<_, _>>()?;
         let primary = indices.first().copied();
         self.selection.replace_indices(indices, primary);
+        self.retain_shown_selection();
         self.last_click = None;
         Ok(())
     }
@@ -55,7 +57,7 @@ impl FileExplorerWidget {
 mod tests {
     use super::*;
     use crate::effects::FilesEffect;
-    use ui::tilo_actions::{ActionAddress, PermissionRequirement, door};
+    use ui::tilo_actions::{ActionAddress, ActionKind, door};
     use ui::tilo_resource::{Effect as _, Resource as _};
 
     fn invoke(
@@ -171,16 +173,191 @@ mod tests {
                 .find(|spec| spec.id == id)
                 .unwrap()
                 .contract
-                .permission
+                .kind
         };
-        assert_eq!(permission("copy-selection"), PermissionRequirement::Read);
-        assert_eq!(permission("cut-selection"), PermissionRequirement::Write);
+        assert_eq!(permission("copy-selection"), ActionKind::Read);
+        assert_eq!(permission("cut-selection"), ActionKind::Outside);
         for id in ["select-entries", "select-all", "clear-selection"] {
-            assert_eq!(permission(id), PermissionRequirement::Read);
+            assert_eq!(permission(id), ActionKind::Read);
             assert_eq!(
                 specs.iter().find(|spec| spec.id == id).unwrap().kind,
                 ui::tilo_actions::OperationKind::View
             );
         }
+    }
+
+    #[test]
+    fn published_selection_retains_original_object_when_its_name_is_reused() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("selected.txt");
+        std::fs::write(&path, b"shown").unwrap();
+        let mut files = files(root.path());
+        invoke(&mut files, "select-all", &serde_json::json!({})).unwrap();
+        let retained = files.shown_selection.objects[&path].1.clone().unwrap();
+        let before = retained.observed();
+        std::fs::rename(&path, root.path().join("original.txt")).unwrap();
+        std::fs::write(&path, b"replacement").unwrap();
+        // Selecting the same published row again cannot silently reopen its
+        // pathname. The selection and retained descriptor still name "shown".
+        let id = FileExplorerWidget::entry_resource_id(&files.entries[0]);
+        invoke(
+            &mut files,
+            "select-entries",
+            &serde_json::json!({"entries": [id]}),
+        )
+        .unwrap();
+        let current = files.shown_selection.objects[&path].1.as_ref().unwrap();
+        assert!(std::sync::Arc::ptr_eq(&retained, current));
+        assert!(current.retains(before));
+        let replacement =
+            host_fs::ObservedObject::from_metadata(&std::fs::symlink_metadata(&path).unwrap())
+                .unwrap();
+        assert!(!current.retains(replacement));
+        invoke(&mut files, "clear-selection", &serde_json::json!({})).unwrap();
+        assert!(files.shown_selection.objects.is_empty());
+    }
+
+    #[test]
+    fn published_selection_remembers_a_replaced_row_refusal_until_deselected() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("selected.txt");
+        std::fs::write(&path, b"shown").unwrap();
+        let mut files = files(root.path());
+        std::fs::rename(&path, root.path().join("original.txt")).unwrap();
+        std::fs::write(&path, b"replacement").unwrap();
+        invoke(&mut files, "select-all", &serde_json::json!({})).unwrap();
+        assert!(files.shown_selection.objects[&path].1.is_none());
+        invoke(&mut files, "select-all", &serde_json::json!({})).unwrap();
+        assert!(files.shown_selection.objects[&path].1.is_none());
+        assert_eq!(std::fs::read(&path).unwrap(), b"replacement");
+    }
+
+    #[test]
+    fn background_listing_refresh_cannot_adopt_a_selected_replacement() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("selected.txt");
+        std::fs::write(&path, b"shown").unwrap();
+        let mut files = files(root.path());
+        invoke(&mut files, "select-all", &serde_json::json!({})).unwrap();
+        std::fs::rename(&path, root.path().join("original.txt")).unwrap();
+        std::fs::write(&path, b"replacement").unwrap();
+        assert!(files.refresh_metadata_preserving_view());
+        assert_eq!(files.selection.selected().len(), 1);
+        assert!(files.shown_selection.objects[&path].1.is_none());
+        // An explicit deselection and selection of the new listing may retain
+        // the replacement: this is a new user selection, not a passive update.
+        invoke(&mut files, "clear-selection", &serde_json::json!({})).unwrap();
+        let entry = files
+            .entries
+            .iter()
+            .find(|entry| entry.path == path)
+            .unwrap();
+        let id = FileExplorerWidget::entry_resource_id(entry);
+        invoke(
+            &mut files,
+            "select-entries",
+            &serde_json::json!({"entries": [id]}),
+        )
+        .unwrap();
+        let observed = files
+            .entries
+            .iter()
+            .find(|entry| entry.path == path)
+            .unwrap()
+            .observed
+            .unwrap();
+        assert!(
+            files.shown_selection.objects[&path]
+                .1
+                .as_ref()
+                .unwrap()
+                .retains(observed)
+        );
+    }
+
+    #[test]
+    fn selection_descriptor_budget_is_bounded_even_for_select_all() {
+        let root = tempfile::tempdir().unwrap();
+        for index in 0..=MAX_MOVE_ENTRIES {
+            std::fs::write(root.path().join(format!("{index}.txt")), b"shown").unwrap();
+        }
+        let mut files = files(root.path());
+        invoke(&mut files, "select-all", &serde_json::json!({})).unwrap();
+        assert_eq!(files.selection.selected().len(), MAX_MOVE_ENTRIES + 1);
+        assert!(files.shown_selection.objects.is_empty());
+        let ids = files
+            .entries
+            .iter()
+            .take(MAX_MOVE_ENTRIES)
+            .map(FileExplorerWidget::entry_resource_id)
+            .collect::<Vec<_>>();
+        invoke(
+            &mut files,
+            "select-entries",
+            &serde_json::json!({"entries": ids}),
+        )
+        .unwrap();
+        assert_eq!(files.shown_selection.objects.len(), MAX_MOVE_ENTRIES);
+        assert!(
+            files
+                .shown_selection
+                .objects
+                .values()
+                .all(|(_, retained)| retained.is_some())
+        );
+        invoke(&mut files, "clear-selection", &serde_json::json!({})).unwrap();
+        assert!(files.shown_selection.objects.is_empty());
+    }
+
+    #[test]
+    fn navigating_retains_the_shown_folder_and_virtual_views_have_no_destination() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("destination");
+        std::fs::create_dir(&path).unwrap();
+        let mut files = files(&path);
+        let retained = files.shown_folder.clone().unwrap();
+        std::fs::rename(&path, root.path().join("original")).unwrap();
+        std::fs::create_dir(&path).unwrap();
+        let replacement =
+            host_fs::ObservedObject::from_metadata(&std::fs::symlink_metadata(&path).unwrap())
+                .unwrap();
+        assert!(!retained.retains(replacement));
+        assert!(std::sync::Arc::ptr_eq(
+            &retained,
+            files.shown_folder.as_ref().unwrap()
+        ));
+        files.navigate(crate::recent::location());
+        assert!(files.shown_folder.is_none());
+    }
+
+    #[test]
+    fn pointer_selection_and_context_menu_keep_the_same_retained_multi_selection() {
+        let root = tempfile::tempdir().unwrap();
+        for name in ["a.txt", "b.txt", "c.txt"] {
+            std::fs::write(root.path().join(name), name).unwrap();
+        }
+        let mut files = files(root.path());
+        assert!(files.apply_command(crate::command::FileCommand::Click {
+            index: 0,
+            ctrl: false,
+            shift: false,
+        }));
+        assert!(files.apply_command(crate::command::FileCommand::Click {
+            index: 2,
+            ctrl: true,
+            shift: false,
+        }));
+        let path = root.path().join("a.txt");
+        let retained = files.shown_selection.objects[&path].1.clone().unwrap();
+        std::fs::rename(&path, root.path().join("original.txt")).unwrap();
+        std::fs::write(&path, b"replacement").unwrap();
+        assert!(files.apply_command(crate::command::FileCommand::ContextSelect(Some(0))));
+        assert_eq!(files.selection.selected(), vec![0, 2]);
+        assert!(std::sync::Arc::ptr_eq(
+            &retained,
+            files.shown_selection.objects[&path].1.as_ref().unwrap()
+        ));
+        assert!(files.apply_command(crate::command::FileCommand::ContextSelect(None)));
+        assert!(files.shown_selection.objects.is_empty());
     }
 }
