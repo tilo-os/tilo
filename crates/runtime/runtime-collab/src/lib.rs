@@ -333,26 +333,14 @@ pub struct TaskAction<'a> {
     pub argument: Option<&'a str>,
 }
 
-/// Outcome of [`ChannelHandle::invoke_task_step`].
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum TaskStepReply {
-    /// The host committed this step: the exact child observation and the
-    /// parent's committed next-step continuation.
-    Committed {
-        update_json: String,
-        continuation: Vec<u8>,
-    },
-    /// The step is bound but not settled yet, or its reply was lost. Re-send
-    /// the identical step; never start a new invocation for it.
-    Retry,
-}
-
-/// Whether a failed step call left its outcome uncertain but recoverable by
-/// re-sending the same step: the broker's explicit "pending" reply, or a
-/// connection lost after the request may have been bound.
-#[cfg(feature = "client")]
-fn task_step_retryable(error: &capnp::Error) -> bool {
-    error.kind == capnp::ErrorKind::Disconnected || error.extra.contains("retry the same step")
+/// How a native task's re-ask of its own child may be held by the broker:
+/// until the child moves past `seen` or settles, the run is cancelled, or
+/// `wait_ms` (capped by the broker) passes. A broker that predates it
+/// answers at once.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TaskChildWait {
+    pub wait_ms: u32,
+    pub seen: tilo_actions::remote::UpdateMark,
 }
 
 /// A subscribed-to channel. Holds a typed capability backed by the
@@ -400,6 +388,11 @@ pub enum PortableWifiSecurity {
 #[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "command", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum WifiContinuityCommand {
+    /// Local wake configuration, never shared as a credential or fleet state.
+    NetworkWake {
+        profile_uuid: String,
+        enabled: Option<bool>,
+    },
     Lookup {
         ssid: String,
         security: PortableWifiSecurity,
@@ -418,6 +411,14 @@ pub enum WifiContinuityCommand {
 impl std::fmt::Debug for WifiContinuityCommand {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::NetworkWake {
+                profile_uuid,
+                enabled,
+            } => formatter
+                .debug_struct("NetworkWake")
+                .field("profile_uuid", profile_uuid)
+                .field("enabled", enabled)
+                .finish(),
             Self::Lookup { ssid, security } => formatter
                 .debug_struct("Lookup")
                 .field("ssid", ssid)
@@ -440,6 +441,7 @@ impl std::fmt::Debug for WifiContinuityCommand {
 #[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "result", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum WifiContinuityReply {
+    NetworkWake { status: NetworkWakeStatus },
     Password { password: String },
     NotFound,
     Shared { ssid: String },
@@ -449,6 +451,10 @@ pub enum WifiContinuityReply {
 impl std::fmt::Debug for WifiContinuityReply {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::NetworkWake { status } => formatter
+                .debug_struct("NetworkWake")
+                .field("status", status)
+                .finish(),
             Self::Password { .. } => formatter
                 .debug_struct("Password")
                 .field("password", &"<redacted>")
@@ -476,7 +482,9 @@ impl WifiContinuityCommand {
                     && !password.is_empty()
                     && password.len() <= MAX_WIFI_PASSWORD_BYTES
             }
-            Self::ShareSavedProfile { profile_uuid } => valid_uuid(profile_uuid),
+            Self::NetworkWake { profile_uuid, .. } | Self::ShareSavedProfile { profile_uuid } => {
+                valid_uuid(profile_uuid)
+            }
         }
     }
 }
@@ -484,6 +492,7 @@ impl WifiContinuityCommand {
 impl WifiContinuityReply {
     pub fn valid(&self) -> bool {
         match self {
+            Self::NetworkWake { status } => status.valid(),
             Self::Password { password } => {
                 !password.is_empty() && password.len() <= MAX_WIFI_PASSWORD_BYTES
             }
@@ -491,6 +500,36 @@ impl WifiContinuityReply {
             Self::Shared { ssid } => !ssid.is_empty() && ssid.len() <= MAX_WIFI_SSID_BYTES,
             Self::Rejected { reason } => !reason.is_empty() && reason.len() <= 512,
         }
+    }
+}
+
+/// Bounded local observations; no field claims verified physical recovery.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NetworkWakeStatus {
+    pub profile: String,
+    pub interface: Option<String>,
+    pub configured: bool,
+    pub supported: Option<bool>,
+    pub applied: Option<bool>,
+    pub problem: Option<String>,
+}
+
+impl NetworkWakeStatus {
+    fn valid(&self) -> bool {
+        valid_uuid(&self.profile)
+            && self.interface.as_ref().is_none_or(|name| {
+                !name.is_empty()
+                    && name.len() <= 15
+                    && !name.starts_with('-')
+                    && name
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
+            })
+            && self
+                .problem
+                .as_ref()
+                .is_none_or(|problem| !problem.is_empty() && problem.len() <= 512)
     }
 }
 
@@ -1586,6 +1625,51 @@ impl ChannelHandle {
             params.set_confirmation_json(confirmation_json);
             params.set_invocation(invocation);
         }
+        Self::task_action_reply(request).await
+    }
+
+    /// Re-ask for a native task's child `invocation`, started earlier with
+    /// the same request, and let the broker hold the answer as `wait` says
+    /// ([`TaskChildWait`]). The answer is the child's state when it is
+    /// given, observed and authorized then, exactly as an immediate re-ask.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::invoke_task_action`].
+    pub async fn observe_task_child(
+        &self,
+        run_id: u64,
+        lease: &str,
+        target: TaskAction<'_>,
+        invocation: &str,
+        wait: TaskChildWait,
+    ) -> Result<(u64, String), NotAvailable> {
+        let seen = serde_json::to_string(&wait.seen)
+            .map_err(|error| capnp::Error::failed(format!("invalid update mark: {error}")))?;
+        let mut request = self.inner.invoke_task_action_request();
+        {
+            let mut params = request.get();
+            params.set_run_id(run_id);
+            params.set_lease(lease);
+            params.set_peer_id(target.peer_id);
+            params.set_resource(target.resource);
+            params.set_action(target.action);
+            params.set_argument(target.argument.unwrap_or(""));
+            params.set_has_argument(target.argument.is_some());
+            params.set_confirmation_json("");
+            params.set_invocation(invocation);
+            params.set_wait_ms(wait.wait_ms);
+            params.set_seen_json(&seen);
+        }
+        Self::task_action_reply(request).await
+    }
+
+    async fn task_action_reply(
+        request: capnp::capability::Request<
+            crate::collab_capnp::channel_handle::invoke_task_action_params::Owned,
+            crate::collab_capnp::channel_handle::invoke_task_action_results::Owned,
+        >,
+    ) -> Result<(u64, String), NotAvailable> {
         let reply = request.send().promise.await?;
         let result = reply.get()?;
         Ok((
@@ -1598,60 +1682,6 @@ impl ChannelHandle {
                 })?
                 .to_owned(),
         ))
-    }
-
-    /// Invoke one durable step of a leased enrolled task. The broker maps
-    /// `step` to exactly one child before execution; a retry of the same step
-    /// returns that child's committed result and the parent's committed
-    /// next-step continuation instead of a new invocation.
-    ///
-    /// A step the broker reports as pending, or whose reply was lost with the
-    /// connection, is [`TaskStepReply::Retry`]: re-send the identical step.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`NotAvailable`] if the broker refuses the step or its reply
-    /// is malformed, including a reply without a committed continuation.
-    pub async fn invoke_task_step(
-        &self,
-        run_id: u64,
-        lease: &str,
-        step: u32,
-        target: TaskAction<'_>,
-    ) -> Result<TaskStepReply, NotAvailable> {
-        let mut request = self.inner.invoke_task_action_request();
-        {
-            let mut params = request.get();
-            params.set_run_id(run_id);
-            params.set_lease(lease);
-            params.set_peer_id(target.peer_id);
-            params.set_resource(target.resource);
-            params.set_action(target.action);
-            params.set_argument(target.argument.unwrap_or(""));
-            params.set_has_argument(target.argument.is_some());
-            params.set_confirmation_json("");
-            params.set_step_index(step);
-            params.set_has_step(true);
-        }
-        let reply = match request.send().promise.await {
-            Ok(reply) => reply,
-            Err(error) if task_step_retryable(&error) => return Ok(TaskStepReply::Retry),
-            Err(error) => return Err(error.into()),
-        };
-        let result = reply.get()?;
-        let update_json = result
-            .get_update_json()?
-            .to_str()
-            .map_err(|error| capnp::Error::failed(format!("invalid task step update: {error}")))?
-            .to_owned();
-        let continuation = result.get_continuation()?.to_vec();
-        if continuation.is_empty() {
-            return Err(capnp::Error::failed("task step reply has no continuation".into()).into());
-        }
-        Ok(TaskStepReply::Committed {
-            update_json,
-            continuation,
-        })
     }
 
     /// Whether Task Center requested cooperative cancellation for this exact
@@ -2909,6 +2939,27 @@ pub struct ChannelContext {
     /// instance; the bytes are `ui::collaboration::handoff` JSON. Not a
     /// roster update either.
     pub handoff: Option<Vec<u8>>,
+    /// `Some` only on a session-local frame naming the room's verified
+    /// delegated agents (possibly none). Not a roster update either.
+    pub history_agents: Option<Vec<HistoryAgent>>,
+}
+
+/// One delegated agent the session verified for a room: its person's root
+/// signed the delegation for exactly this device. Presentation only.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HistoryAgent {
+    /// The agent's own device key.
+    pub device: [u8; 32],
+    /// The root key of the person it acts for.
+    pub person: [u8; 32],
+    /// That person's name as the room's governance records it.
+    pub person_name: String,
+    /// The delegation's stable agent id.
+    pub agent_id: String,
+    /// The agent's display name.
+    pub label: String,
+    /// Packed `0x00RRGGBB`, like [`Collaborator::color`].
+    pub color: u32,
 }
 
 /// Client-pulled channel-context stream.
@@ -2977,14 +3028,49 @@ impl ContextStream {
             .ok()
             .filter(|bytes| !bytes.is_empty())
             .map(<[u8]>::to_vec);
+        let history_agents = if ctx.get_history_agents_changed() {
+            Some(read_history_agents(ctx.get_history_agents()?)?)
+        } else {
+            None
+        };
         Ok(ChannelContext {
             collaborators,
             permissions,
             follow_changed,
             snapshot_requested: ctx.get_snapshot_requested(),
             handoff,
+            history_agents,
         })
     }
+}
+
+/// Decode a `historyAgents` list. A row whose keys are not 32 bytes, or
+/// whose text is not UTF-8, refuses the frame: the session never sends one.
+#[cfg(feature = "client")]
+fn read_history_agents(
+    rows: capnp::struct_list::Reader<'_, collab_capnp::history_agent::Owned>,
+) -> Result<Vec<HistoryAgent>, capnp::Error> {
+    let key = |bytes: &[u8], what: &str| {
+        <[u8; 32]>::try_from(bytes)
+            .map_err(|_| capnp::Error::failed(format!("history agent {what} is not 32 bytes")))
+    };
+    let text = |text: capnp::text::Reader<'_>, what: &str| {
+        text.to_str()
+            .map(str::to_owned)
+            .map_err(|e| capnp::Error::failed(format!("invalid utf8 history agent {what}: {e}")))
+    };
+    rows.iter()
+        .map(|row| {
+            Ok(HistoryAgent {
+                device: key(row.get_device()?, "device")?,
+                person: key(row.get_person()?, "person")?,
+                person_name: text(row.get_person_name()?, "person name")?,
+                agent_id: text(row.get_agent_id()?, "id")?,
+                label: text(row.get_label()?, "label")?,
+                color: row.get_color(),
+            })
+        })
+        .collect()
 }
 
 /// A page of previously-validated signed ops returned by
@@ -3017,297 +3103,6 @@ mod certified_join_tests;
 #[cfg(test)]
 #[cfg(feature = "client")]
 mod tests;
-
-#[cfg(test)]
-mod enrolled_tests;
-
-/// Private managed delivery, independently versioned from the legacy task transport.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct EnrolledTaskEnvelope {
-    pub version: u16,
-    pub message_id: String,
-    pub task_id: String,
-    pub run_id: String,
-    pub launch_id: String,
-    pub runtime_epoch: String,
-    pub recipient_agent: String,
-    pub channel_lease: String,
-    pub task: TaskRunEnvelope,
-    /// The recipient agent's own earlier tasks (requests, steps, outcomes,
-    /// replies) as compact JSON, composed by the host from its durable
-    /// records. Private to that agent, display input only, never authority.
-    /// Absent on older hosts; omitted from the wire when absent.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub history: Option<String>,
-}
-/// Most bytes of [`EnrolledTaskEnvelope::history`].
-pub const MAX_ENROLLED_HISTORY_BYTES: usize = 12 * 1024;
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct EnrolledTaskAcceptance {
-    pub version: u16,
-    pub message_id: String,
-    pub task_id: String,
-    pub run_id: String,
-    pub launch_id: String,
-    pub runtime_epoch: String,
-    pub recipient_agent: String,
-    pub channel_lease: String,
-    pub acceptance_sequence: u64,
-}
-impl EnrolledTaskEnvelope {
-    pub const MAX_JSON_BYTES: usize = 128 * 1024;
-    /// Check the envelope's version, labels and bounds.
-    ///
-    /// # Errors
-    ///
-    /// Returns a description of the first violated constraint.
-    pub fn validate(&self) -> Result<(), String> {
-        if self.version != 1
-            || self.task.version != 1
-            || self.task.run_id == 0
-            || self.task.task_id != self.task_id
-            || self.task.planning != TaskRunPlanning::Model
-            || self.task.title.is_empty()
-            || self.task.title.len() > 32 * 1024
-            || self.task.title.chars().count() > 8000
-            || self
-                .history
-                .as_ref()
-                .is_some_and(|history| history.len() > MAX_ENROLLED_HISTORY_BYTES)
-            || !enrolled_label(&self.task.lease)
-            || [
-                &self.message_id,
-                &self.task_id,
-                &self.run_id,
-                &self.launch_id,
-                &self.runtime_epoch,
-                &self.recipient_agent,
-                &self.channel_lease,
-            ]
-            .iter()
-            .any(|s| !enrolled_label(s))
-            || serde_json::to_vec(self).map_err(|e| e.to_string())?.len() > Self::MAX_JSON_BYTES
-        {
-            return Err("invalid enrolled task envelope".into());
-        }
-        if let Some(budget) = self.task.execution_budget {
-            budget.validate().map_err(str::to_owned)?;
-        }
-        Ok(())
-    }
-    fn acceptance(&self, sequence: u64) -> EnrolledTaskAcceptance {
-        EnrolledTaskAcceptance {
-            version: 1,
-            message_id: self.message_id.clone(),
-            task_id: self.task_id.clone(),
-            run_id: self.run_id.clone(),
-            launch_id: self.launch_id.clone(),
-            runtime_epoch: self.runtime_epoch.clone(),
-            recipient_agent: self.recipient_agent.clone(),
-            channel_lease: self.channel_lease.clone(),
-            acceptance_sequence: sequence,
-        }
-    }
-}
-fn enrolled_label(value: &str) -> bool {
-    !value.is_empty()
-        && value.len() <= 128
-        && value
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b"-_.:".contains(&b))
-}
-impl EnrolledTaskAcceptance {
-    pub fn matches(&self, envelope: &EnrolledTaskEnvelope) -> bool {
-        self.acceptance_sequence != 0 && *self == envelope.acceptance(self.acceptance_sequence)
-    }
-}
-/// Process-lifetime recipient deduplication. No eviction, persistence import or replay permission.
-/// The host must retain the matching live process/channel custody; after restart it cannot resend.
-pub struct EnrolledRecipientCustody {
-    recipient: [String; 4],
-    retained_bytes: usize,
-    retained: std::collections::HashMap<String, (EnrolledTaskEnvelope, EnrolledTaskAcceptance)>,
-}
-pub struct EnrolledAcceptanceDecision {
-    pub acceptance: EnrolledTaskAcceptance,
-    /// True once, before the caller waits for the host's actual acceptance RPC reply.
-    /// An ambiguous reply ends the task channel; it never rolls this reservation back.
-    pub execute: bool,
-}
-impl EnrolledRecipientCustody {
-    pub const CAPACITY: usize = 1024;
-    /// Custody for one exact enrolled recipient.
-    ///
-    /// # Errors
-    ///
-    /// Refuses a recipient with an invalid label.
-    pub fn new(agent: &str, launch: &str, epoch: &str, channel: &str) -> Result<Self, String> {
-        let recipient = [agent, launch, epoch, channel].map(str::to_owned);
-        if recipient.iter().any(|s| !enrolled_label(s)) {
-            return Err("invalid enrolled recipient".into());
-        }
-        Ok(Self {
-            recipient,
-            retained_bytes: 0,
-            retained: std::collections::HashMap::default(),
-        })
-    }
-    /// Accept an envelope once, replaying the retained acceptance for an exact retry.
-    ///
-    /// # Errors
-    ///
-    /// Refuses invalid, misaddressed, changed or reused envelopes and full retention.
-    pub fn accept(
-        &mut self,
-        envelope: &EnrolledTaskEnvelope,
-    ) -> Result<EnrolledAcceptanceDecision, String> {
-        envelope.validate()?;
-        if self.recipient
-            != [
-                envelope.recipient_agent.clone(),
-                envelope.launch_id.clone(),
-                envelope.runtime_epoch.clone(),
-                envelope.channel_lease.clone(),
-            ]
-        {
-            return Err("wrong enrolled recipient custody".into());
-        }
-        if let Some((prior, acceptance)) = self.retained.get(&envelope.message_id) {
-            if prior != envelope {
-                return Err("enrolled message changed after acceptance".into());
-            }
-            return Ok(EnrolledAcceptanceDecision {
-                acceptance: acceptance.clone(),
-                execute: false,
-            });
-        }
-        let bytes = serde_json::to_vec(envelope)
-            .map_err(|e| e.to_string())?
-            .len();
-        let retained_bytes = self
-            .retained_bytes
-            .checked_add(bytes)
-            .ok_or("enrolled retention overflow")?;
-        if self.retained.len() >= Self::CAPACITY || retained_bytes > 8 * 1024 * 1024 {
-            return Err("enrolled acceptance retention full".into());
-        }
-        if self.retained.values().any(|(prior, _)| {
-            prior.task_id == envelope.task_id
-                || prior.run_id == envelope.run_id
-                || prior.task.run_id == envelope.task.run_id
-        }) {
-            return Err("enrolled task/run reused for another message".into());
-        }
-        let sequence = u64::try_from(self.retained.len())
-            .map_err(|_| "acceptance sequence overflow")?
-            .checked_add(1)
-            .ok_or("acceptance sequence overflow")?;
-        let acceptance = envelope.acceptance(sequence);
-        self.retained_bytes = retained_bytes;
-        self.retained.insert(
-            envelope.message_id.clone(),
-            (envelope.clone(), acceptance.clone()),
-        );
-        Ok(EnrolledAcceptanceDecision {
-            acceptance,
-            execute: true,
-        })
-    }
-}
-
-#[cfg(feature = "client")]
-#[derive(Clone)]
-pub struct EnrolledTaskStream {
-    inner: Rc<collab_capnp::enrolled_task_stream::Client>,
-}
-#[cfg(feature = "client")]
-impl EnrolledTaskStream {
-    /// Read the next enrolled task.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`NotAvailable`] if the stream fails or delivers an oversized or invalid envelope.
-    pub async fn read(&self) -> Result<EnrolledTaskEnvelope, NotAvailable> {
-        let reply = self.inner.read_request().send().promise.await?;
-        let json = reply
-            .get()?
-            .get_task_json()?
-            .to_str()
-            .map_err(|e| capnp::Error::failed(e.to_string()))?;
-        if json.len() > EnrolledTaskEnvelope::MAX_JSON_BYTES {
-            return Err(capnp::Error::failed("enrolled task too large".into()).into());
-        }
-        let envelope: EnrolledTaskEnvelope =
-            serde_json::from_str(json).map_err(|e| capnp::Error::failed(e.to_string()))?;
-        envelope.validate().map_err(capnp::Error::failed)?;
-        Ok(envelope)
-    }
-}
-#[cfg(feature = "client")]
-impl ChannelHandle {
-    /// Subscribe to this channel's enrolled tasks.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`NotAvailable`] if the broker connection is unavailable or drops during the call.
-    pub async fn subscribe_enrolled_tasks(&self) -> Result<EnrolledTaskStream, NotAvailable> {
-        let reply = self
-            .inner
-            .subscribe_enrolled_tasks_request()
-            .send()
-            .promise
-            .await?;
-        Ok(EnrolledTaskStream {
-            inner: Rc::new(reply.get()?.get_stream()?),
-        })
-    }
-    /// Report an enrolled task's acceptance to the host.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`NotAvailable`] for an oversized acceptance or a failed broker call.
-    pub async fn accept_enrolled_task(
-        &self,
-        acceptance: &EnrolledTaskAcceptance,
-    ) -> Result<(), NotAvailable> {
-        let json =
-            serde_json::to_string(acceptance).map_err(|e| capnp::Error::failed(e.to_string()))?;
-        if json.len() > 4096 {
-            return Err(capnp::Error::failed("enrolled acceptance too large".into()).into());
-        }
-        let mut request = self.inner.accept_enrolled_task_request();
-        request.get().set_acceptance_json(&json);
-        request.send().promise.await?;
-        Ok(())
-    }
-    /// Report an accepted enrolled task's run update.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`NotAvailable`] for an invalid or oversized update or a failed broker call.
-    pub async fn report_enrolled_task(
-        &self,
-        acceptance: &EnrolledTaskAcceptance,
-        sequence: u64,
-        update: &TaskRunUpdate,
-    ) -> Result<(), NotAvailable> {
-        let acceptance =
-            serde_json::to_string(acceptance).map_err(|e| capnp::Error::failed(e.to_string()))?;
-        let update =
-            serde_json::to_string(update).map_err(|e| capnp::Error::failed(e.to_string()))?;
-        if acceptance.len() > 4096 || update.len() > 64 * 1024 || sequence == 0 {
-            return Err(capnp::Error::failed("invalid enrolled update".into()).into());
-        }
-        let mut request = self.inner.report_enrolled_task_request();
-        request.get().set_acceptance_json(&acceptance);
-        request.get().set_sequence(sequence);
-        request.get().set_update_json(&update);
-        request.send().promise.await?;
-        Ok(())
-    }
-}
 
 #[cfg(test)]
 #[cfg(feature = "client")]

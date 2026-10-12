@@ -19,6 +19,43 @@ pub fn sniff(bytes: &[u8]) -> ContentMeta {
     m
 }
 
+/// A picture format, named by its file extension and media type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ImageFormat {
+    pub extension: &'static str,
+    pub mime: &'static str,
+}
+
+/// The picture format `bytes` start with, from the signature alone: PNG, JPEG, GIF, WebP or SVG.
+/// Unlike [`sniff`] it needs no complete header, so it also answers for a truncated prefix.
+#[must_use]
+pub fn image_format(bytes: &[u8]) -> Option<ImageFormat> {
+    let (extension, mime) = if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        ("png", "image/png")
+    } else if bytes.starts_with(&[0xff, 0xd8, 0xff]) {
+        ("jpg", "image/jpeg")
+    } else if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
+        ("gif", "image/gif")
+    } else if bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WEBP") {
+        ("webp", "image/webp")
+    } else if is_svg(bytes) {
+        ("svg", "image/svg+xml")
+    } else {
+        return None;
+    };
+    Some(ImageFormat { extension, mime })
+}
+
+/// An SVG document, possibly behind leading whitespace and an XML declaration.
+fn is_svg(bytes: &[u8]) -> bool {
+    let text = bytes.trim_ascii_start();
+    text.starts_with(b"<svg")
+        || (text.starts_with(b"<?xml")
+            && text
+                .get(..text.len().min(1024))
+                .is_some_and(|head| head.windows(4).any(|window| window == b"<svg")))
+}
+
 /// Reads a big-endian `u32` at byte offset `at`, or `None` if `b` is too short.
 fn read_u32be(b: &[u8], at: usize) -> Option<u32> {
     let end = at.checked_add(4)?;

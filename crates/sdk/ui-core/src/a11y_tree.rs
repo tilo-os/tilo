@@ -422,7 +422,7 @@ impl SemanticTree {
 
         // A component handing over the tree its nodes were built from keeps
         // them; one handing over a tree that shares all but some subtrees
-        // with it updates the nodes of those (TIL-766); any other is built
+        // with it updates the nodes of those; any other is built
         // afresh.
         let mut previous = std::mem::take(&mut self.components)
             .into_iter()

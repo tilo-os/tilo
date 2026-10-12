@@ -266,6 +266,7 @@ impl Scope {
                     .lock()
                     .map_err(|_| "native publication cursor poisoned")?;
                 cursor.drive(
+                    outgoing.queued(),
                     outgoing.entries().map(|entry| {
                         (
                             entry.id(),

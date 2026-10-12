@@ -7,17 +7,17 @@
 //! `level` attr; `- [ ]`/`- [x]` → `checked` attr; `` `code` `` → `fontFamily`=mono;
 //! fences → `code`=true block (+ optional `lang`).
 
-use crate::format::{CodecError, Confidence, FormatProvider};
+use crate::format::{CodecError, FormatProvider};
 use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
 use std::collections::BTreeMap;
 use tilo_content::{ContentInputs, ContentSource};
 use tilo_doc::document::{MarkSpan, MarkValue};
-use tilo_doc::export::InlinePlan;
+use tilo_doc::export::{CellGrid, ExportBlock, InlinePlan};
 use tilo_doc::model::{DocMut, DocRef};
 use tilo_doc::schema::{
     MARK_NOTE_REF, PROP_AUTHOR, PROP_KEYWORDS, PROP_MODIFIED, PROP_SUBJECT, PROP_TITLE,
 };
-use tilo_doc::snapshot::{AttrVal, BlockView, NoteView};
+use tilo_doc::snapshot::{BlockView, NoteView};
 // `write!` into a `String` cannot fail; the discarded `Result` is the
 // `fmt::Write` contract, not a swallowed error.
 use std::fmt::Write as _;
@@ -25,14 +25,6 @@ use std::fmt::Write as _;
 pub struct MarkdownCodec;
 
 impl FormatProvider for MarkdownCodec {
-    fn schema_id(&self) -> &str {
-        tilo_doc::schema::SCHEMA_ID
-    }
-
-    fn detect(&self, _head: &[u8]) -> Confidence {
-        Confidence::Medium
-    }
-
     fn import(
         &self,
         bytes: &[u8],
@@ -688,26 +680,14 @@ fn export_md(
 
         match b.kind.as_str() {
             "cell" => {
-                let tid = cell_table(b);
-                let start = i;
-                while blocks
-                    .get(i)
-                    .is_some_and(|blk| blk.kind == "cell" && cell_table(blk) == tid)
-                {
-                    i = i.saturating_add(1);
-                }
-                if let Some(run) = blocks.get(start..i) {
-                    out.push_str(&render_table(run));
-                }
+                let grid = CellGrid::run(blocks, i);
+                i = i.saturating_add(grid.cells().len().max(1));
+                out.push_str(&render_table(&grid));
                 prev_kind = Some("cell");
                 continue;
             }
             "heading" => {
-                let level = match b.attrs.get("level") {
-                    Some(AttrVal::Int(n)) => (*n).clamp(1, 6),
-                    _ => 1,
-                };
-                out.push_str(&"#".repeat(usize::try_from(level).unwrap_or(1)));
+                out.push_str(&"#".repeat(usize::from(ExportBlock::new(b).heading_level())));
                 out.push(' ');
                 out.push_str(&render_inline_notes(
                     &b.text,
@@ -716,15 +696,11 @@ fn export_md(
                 ));
             }
             "list_item" => {
-                let level = match b.attrs.get("level") {
-                    Some(AttrVal::Int(n)) => usize::try_from((*n).max(0)).unwrap_or(0),
-                    _ => 0,
-                };
-                out.push_str(&"  ".repeat(level));
-                let ordered = matches!(b.attrs.get("ordered"), Some(AttrVal::Bool(true)));
-                out.push_str(if ordered { "1. " } else { "- " });
-                if let Some(AttrVal::Bool(checked)) = b.attrs.get("checked") {
-                    out.push_str(if *checked { "[x] " } else { "[ ] " });
+                let item = ExportBlock::new(b);
+                out.push_str(&"  ".repeat(usize::try_from(item.list_level()).unwrap_or(0)));
+                out.push_str(if item.ordered() { "1. " } else { "- " });
+                if let Some(checked) = b.bool_attr("checked") {
+                    out.push_str(if checked { "[x] " } else { "[ ] " });
                 }
                 out.push_str(&render_inline_notes(
                     &b.text,
@@ -733,12 +709,9 @@ fn export_md(
                 ));
             }
             _ => {
-                if matches!(b.attrs.get("code"), Some(AttrVal::Bool(true))) {
+                if b.flag("code") {
                     // Fenced code block: emit content verbatim (no inline escaping).
-                    let lang = match b.attrs.get("lang") {
-                        Some(AttrVal::Str(s)) => s.as_str(),
-                        _ => "",
-                    };
+                    let lang = b.str_attr("lang").unwrap_or("");
                     out.push_str("```");
                     out.push_str(lang);
                     out.push('\n');
@@ -776,48 +749,20 @@ fn export_md(
     out
 }
 
-/// The `table` id a `cell` block belongs to (empty if untagged).
-fn cell_table(b: &BlockView) -> String {
-    match b.attrs.get("table") {
-        Some(AttrVal::Str(s)) => s.clone(),
-        _ => String::new(),
-    }
-}
-
-fn cell_rc(b: &BlockView) -> (usize, usize) {
-    let g = |k: &str| match b.attrs.get(k) {
-        Some(AttrVal::Int(n)) => usize::try_from((*n).max(0)).unwrap_or(0),
-        _ => 0,
-    };
-    (g("row"), g("col"))
-}
-
 /// Escapes a cell so it survives one table row; re-import unescapes `\|` back to `|`.
 fn escape_cell(s: &str) -> String {
     s.replace('|', "\\|").replace('\n', " ")
 }
 
 /// Renders a run of `cell` blocks (one table) as a GitHub pipe table (row 0 = header, then a delimiter row).
-fn render_table(cells: &[BlockView]) -> String {
-    let nrows = cells
-        .iter()
-        .map(|c| cell_rc(c).0)
-        .max()
-        .unwrap_or(0)
-        .saturating_add(1);
-    let ncols = cells
-        .iter()
-        .map(|c| cell_rc(c).1)
-        .max()
-        .unwrap_or(0)
-        .saturating_add(1);
+fn render_table(grid: &CellGrid<'_>) -> String {
+    let (nrows, ncols) = (grid.rows(), grid.cols());
     let mut out = String::new();
     for r in 0..nrows {
         out.push('|');
         for c in 0..ncols {
-            let txt = cells
-                .iter()
-                .find(|cl| cell_rc(cl) == (r, c))
+            let txt = grid
+                .origin(r, c)
                 .map(|cl| escape_cell(&render_inline(&cl.text, &cl.marks)))
                 .unwrap_or_default();
             out.push(' ');
@@ -1051,7 +996,7 @@ fn render_inline_notes(
 mod tests {
     use super::*;
     use tilo_doc::Document;
-    use tilo_doc::snapshot::DocSnapshot;
+    use tilo_doc::snapshot::{AttrVal, DocSnapshot};
 
     #[test]
     #[allow(

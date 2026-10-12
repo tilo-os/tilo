@@ -776,6 +776,20 @@ pub enum VmCommand {
         /// The VM or device (default: the one this worktree uses).
         name: Option<String>,
     },
+    /// Inspect or persist magic-packet wake for a saved network profile; never suspends or reconnects.
+    #[command(
+        after_help = "Examples:\n  tilo-vm vm network-wake --profile <UUID>\n  tilo-vm vm network-wake --profile <UUID> --enabled true\n\nEnabling requires active driver support. Saved and applied settings are\nreported separately; physical wake remains unverified."
+    )]
+    NetworkWake {
+        /// The registered VM or device (default: the one this worktree uses).
+        name: Option<String>,
+        /// The saved `NetworkManager` connection UUID on that device.
+        #[arg(long)]
+        profile: String,
+        /// Enable magic-packet wake (requires active driver support), or disable it.
+        #[arg(long, action = clap::ArgAction::Set)]
+        enabled: Option<bool>,
+    },
     /// Keep the machine from suspending longer than the 30 minutes every tilo-vm request holds it, or let it suspend now.
     #[command(
         after_help = "Examples:\n  tilo-vm vm awake               # how long it stays awake\n  tilo-vm vm awake yoga --for 2h # a long build or test run without requests\n  tilo-vm vm awake yoga --off    # done: it may suspend once idle\n\nEvery tilo-vm command that talks to tilo-vmd holds a logind sleep lock\n(tilo-vm-awake.service, `systemd-inhibit --list` shows it) until 30 minutes\nafter it, so a device does not suspend under you, and one you stopped using\ncan again. The lock blocks suspend only: the screen still blanks and locks,\nand closing the lid still suspends. --off releases it; the next tilo-vm\ncommand takes it again."

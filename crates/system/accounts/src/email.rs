@@ -56,6 +56,10 @@ pub struct AccountConfig {
     /// (Gmail/Outlook) preset to [`AuthMethod::OAuth`].
     #[serde(default)]
     pub auth: AuthMethod,
+    /// Imported metadata must not reuse any existing secret or open a connection
+    /// until the person explicitly finishes this account's secure sign-in.
+    #[serde(default)]
+    pub import_pending: bool,
     /// Held only in memory: the secret lives in the [`crate::SecretVault`] and
     /// is injected at connect time, never written to the account store —
     /// hence `serde(skip)`.
@@ -76,12 +80,25 @@ impl Default for AccountConfig {
             smtp_tls: true,
             username: String::new(),
             auth: AuthMethod::Password,
+            import_pending: false,
             password: String::new(),
         }
     }
 }
 
 impl AccountConfig {
+    /// What the account is called: its display name, falling back to the
+    /// email, falling back to a generic placeholder.
+    pub fn label(&self) -> &str {
+        if !self.display_name.is_empty() {
+            &self.display_name
+        } else if !self.email.is_empty() {
+            &self.email
+        } else {
+            "New account"
+        }
+    }
+
     /// Heuristic autofill: given an email, guess the provider's
     /// IMAP/SMTP hosts. Mirrors what Thunderbird's autoconfig does for the
     /// big providers. Returns true if it recognised the domain.

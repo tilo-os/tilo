@@ -47,21 +47,15 @@ pub struct Shape {
 impl Shape {
     /// The shape `attrs`, a materialized block's attributes, give it.
     pub fn of_attrs(attrs: &std::collections::BTreeMap<String, tilo_doc::AttrVal>) -> Self {
-        let int = |key: &str| match attrs.get(key) {
-            Some(tilo_doc::AttrVal::Int(value)) => Some(*value),
-            _ => None,
-        };
+        let int = |key: &str| attrs.get(key).and_then(tilo_doc::AttrVal::as_int);
         Self {
             level: int("level"),
-            ordered: match attrs.get("ordered") {
-                Some(tilo_doc::AttrVal::Bool(flag)) => Some(*flag),
-                _ => None,
-            },
+            ordered: attrs.get("ordered").and_then(tilo_doc::AttrVal::as_bool),
             nesting: int("nesting"),
-            table: match attrs.get("table") {
-                Some(tilo_doc::AttrVal::Str(table)) => Some(table.clone()),
-                _ => None,
-            },
+            table: attrs
+                .get("table")
+                .and_then(tilo_doc::AttrVal::as_str)
+                .map(str::to_owned),
             row: int("row"),
             col: int("col"),
         }
