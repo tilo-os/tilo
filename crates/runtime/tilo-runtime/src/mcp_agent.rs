@@ -13,7 +13,11 @@
 //! back as markdown with block ids, invocations answer with their result
 //! (they wait for it), and nothing here needs a second call to learn
 //! whether the first one worked.
-use super::*;
+use super::{
+    ActionHost, Addressed, CatalogueLimits, CatalogueQuery, CatalogueRow, DEFAULT_WAIT_MS,
+    Deserialize, MAX_CALLS, McpServer, OneCall, RemoteActionTarget, Value, batch_invocation,
+    invocation_id, json, page, parse,
+};
 use std::collections::HashMap;
 use std::fmt::Write as _;
 use tilo_actions::{ActionDescriptor, OperationKind};
@@ -90,7 +94,7 @@ fn tools() -> Vec<Value> {
             "Search apps, resources and actions by words, best first: `{query: \"checklist add\"}`, optionally app: \"notes\". One line per hit, path#action(params) and its label, ready for tilo_do. Files are not searched.",
             json!({"query":string,"app":string,"limit":integer}),
             json!(["query"]),
-            read.clone(),
+            read,
         ),
         (
             "tilo_status",
@@ -531,10 +535,10 @@ fn cut_at_line(text: &mut String, chars: usize) -> Option<usize> {
 }
 
 fn first_sentence(text: &str) -> String {
+    let text = text.trim();
     let sentence = text
-        .trim()
         .split_once(". ")
-        .map_or(text.trim(), |(first, _)| first)
+        .map_or(text, |(first, _)| first)
         .trim_end_matches('.');
     if sentence.chars().count() <= DESCRIPTION_CHARS {
         sentence.to_owned()
@@ -560,7 +564,7 @@ fn params_line(action: &ActionDescriptor) -> String {
     let params = action
         .params
         .iter()
-        .map(|param| page::param(param))
+        .map(page::param)
         .collect::<Vec<_>>()
         .join(", ");
     format!("({params})")
@@ -1055,7 +1059,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                 .flat_map(|level| level.children.iter())
                 .filter(|node| {
                     within.is_none_or(|owner| {
-                        node.key.contains(owner.token()) || self.below(node, owner, levels)
+                        node.key.contains(owner.token()) || Self::below(node, owner, levels)
                     }) && node.answers_to(name).is_some()
                 })
                 .cloned()
@@ -1078,7 +1082,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
 
     /// Whether `node`'s parent chain, as far as this call has read it,
     /// reaches `owner`.
-    fn below(&self, node: &Node, owner: &Node, levels: &Levels) -> bool {
+    fn below(node: &Node, owner: &Node, levels: &Levels) -> bool {
         let mut parent = node.parent.clone();
         for _ in 0..8 {
             if parent.is_empty() {
@@ -1104,7 +1108,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         let (app_id, provider) = match self.app_ref(&parsed.app).await? {
             AppRef::Running { app_id, provider } => (app_id, provider),
             AppRef::Installed { .. } => {
-                return Ok(Err(self.not_running_note(&parsed.app).await));
+                return Ok(Err(Self::not_running_note(&parsed.app)));
             }
         };
         let app = parsed.app.to_lowercase();
@@ -1162,7 +1166,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         }))
     }
 
-    async fn not_running_note(&self, name: &str) -> String {
+    fn not_running_note(name: &str) -> String {
         format!(
             "{name} is installed but not running; start it with tilo_do {{path: \"{}#open\"}}",
             path_name(name)
@@ -1220,7 +1224,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                 Err(error) => Err(error),
             },
             "tilo_status" => match parse(args) {
-                Ok(args) => self.agent_status(args).await,
+                Ok(args) => self.agent_status(&args),
                 Err(error) => Err(error),
             },
             _ => Err("Unknown tool".to_owned()),
@@ -1382,10 +1386,10 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                 .iter()
                 .any(|param| param.name.as_ref() == name)
         };
-        if let Some(node) = resolved.node.as_ref().filter(|node| node.id != owner) {
-            if has("item") {
-                arguments.insert("item".into(), node.key.clone().into());
-            }
+        if let Some(node) = resolved.node.as_ref().filter(|node| node.id != owner)
+            && has("item")
+        {
+            arguments.insert("item".into(), node.key.clone().into());
         }
         if let Some(cursor) = args.cursor.filter(|cursor| !cursor.is_empty()) {
             if has("cursor") {
@@ -1599,7 +1603,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         wait_ms: Option<u64>,
     ) -> Result<Reply, String> {
         if !parsed.segments.is_empty() || action != tilo_actions::remote::APPLICATION_OPEN_ACTION {
-            return Err(self.not_running_note(&parsed.app).await);
+            return Err(Self::not_running_note(&parsed.app));
         }
         let value = Box::pin(self.invoke_one(OneCall {
             provider: Addressed {
@@ -1640,7 +1644,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         Ok(reply)
     }
 
-    async fn agent_status(&self, args: AgentStatusArgs) -> Result<Reply, String> {
+    fn agent_status(&self, args: &AgentStatusArgs) -> Result<Reply, String> {
         let invocation = invocation_id(&args.invocation_id)?;
         if args.cancel {
             self.host()

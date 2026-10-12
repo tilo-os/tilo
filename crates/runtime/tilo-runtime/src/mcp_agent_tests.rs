@@ -4,8 +4,8 @@
 use super::*;
 use std::sync::{Arc, Mutex};
 use tilo_actions::remote::{
-    ActionHostError, CatalogueProvider, CatalogueResource, InvocationReceipt, InvocationState,
-    Pending,
+    ActionHostError, Caller, CataloguePage, CatalogueProvider, CatalogueResource,
+    InvocationReceipt, InvocationState, InvokeArgument, InvokeRequest, Pending,
 };
 use tilo_actions::{ActionParam, InvocationUpdate, ParamType, ResourceSemanticIdentity};
 
@@ -18,7 +18,10 @@ const TODO_BODY: &str = "notes.notebook/page/3fa2c1d0-1111-4222-8333-44445555666
 const SHOP_BODY: &str = "notes.notebook/page/9b8e7d6c-1111-4222-8333-777788889999/body";
 
 fn hex(text: &str) -> String {
-    text.bytes().map(|byte| format!("{byte:02x}")).collect()
+    text.bytes().fold(String::new(), |mut hex, byte| {
+        let _ = write!(hex, "{byte:02x}");
+        hex
+    })
 }
 
 /// The id a broker mints for a bound resource: per publication, so it
@@ -130,6 +133,10 @@ impl Notes {
         }
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the fixture's whole catalogue, one provider per arm, reads as data"
+    )]
     fn rows(&self, provider: &str) -> Vec<CatalogueRow> {
         use tilo_actions::OperationKind::{Document, Effect, View};
         if provider == WORKSPACE {
