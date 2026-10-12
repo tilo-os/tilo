@@ -134,7 +134,8 @@ fn minted(cx: &mut ActionCx) -> Id {
     label = "Code Editor",
     search = Project::search_entries,
     children = Project::places,
-    load = Project::load_texts
+    load = Project::load_texts,
+    read_content_doc = Project::content
 )]
 impl Project {
     /// New file
@@ -549,6 +550,90 @@ impl Project {
             }
         }
         Ok(())
+    }
+
+    /// Read only the source inventory and one demanded text, never terminal
+    /// state or machine-local paths. Inventory pages contain 128 entries;
+    /// `inventory:N` selects a zero-based page at the requested frontier.
+    fn content(&self, doc: &Doc, item: Option<&str>) -> Result<serde_json::Value, String> {
+        const LIMIT: usize = 240 * 1024;
+        const PAGE: usize = 128;
+        let metadata = |id: &Id, entry: &Entry| -> Result<serde_json::Value, String> {
+            let path = self
+                .path_of(id)
+                .ok_or("the entry has no valid project path")?;
+            Ok(serde_json::json!({
+                "id": id.as_str(), "resource_id": crate::actions::file_resource_id(id.as_str()),
+                "path": path, "kind": entry.kind.as_str(), "language": entry.language,
+                "text_available": self.buffers.contains_key(id.as_str()),
+            }))
+        };
+        let page = item.and_then(|value| value.strip_prefix("inventory:"));
+        let value = if item.is_none() || page.is_some() {
+            let start = match page {
+                Some(page) => page
+                    .parse::<usize>()
+                    .map_err(|_| "invalid inventory page")?
+                    .checked_mul(PAGE)
+                    .ok_or("invalid inventory page")?,
+                None => 0,
+            };
+            if start > self.files.len() {
+                return Err("inventory page is outside the project".into());
+            }
+            let count = if page.is_some() {
+                PAGE
+            } else {
+                self.files.len()
+            };
+            let entries = self
+                .files
+                .iter()
+                .skip(start)
+                .take(count)
+                .map(|(id, entry)| metadata(id, entry))
+                .collect::<Result<Vec<_>, _>>()?;
+            let next = start + entries.len();
+            serde_json::json!({"scope": "recorded-project", "complete": true,
+                "total_entries": self.files.len(), "entries": entries,
+                "next": (next < self.files.len()).then(|| format!("inventory:{}", next / PAGE))})
+        } else {
+            let item = item.ok_or("no item")?;
+            let prefix = format!("{}/files/", <Self as tilo_resource::Resource>::KIND);
+            let id = Id::from(item.strip_prefix(&prefix).unwrap_or(item));
+            let entry = self
+                .files
+                .get(&id)
+                .ok_or("no such project entry at this version")?;
+            let mut value = metadata(&id, entry)?;
+            if entry.kind == EntryKind::File {
+                // Loading a clone preserves the live view's demand and caches.
+                let mut demanded = self.clone();
+                demanded
+                    .load_texts(doc, &Demand::none().with_keys([id.as_str()]))
+                    .map_err(|error| error.to_string())?;
+                let text = demanded
+                    .text(id.as_str())
+                    .map_or(serde_json::Value::Null, |text| {
+                        serde_json::Value::String(text.to_owned())
+                    });
+                value
+                    .as_object_mut()
+                    .ok_or("invalid entry metadata")?
+                    .insert("text".into(), text);
+            }
+            value
+        };
+        if serde_json::to_vec(&value)
+            .map_err(|error| error.to_string())?
+            .len()
+            > LIMIT
+        {
+            return Err(
+                "source read exceeds 240 KiB; use inventory:N pages or a smaller text item".into(),
+            );
+        }
+        Ok(value)
     }
 
     /// Every file and folder by its name and path, each opening it.

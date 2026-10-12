@@ -162,6 +162,45 @@ the architecture: Git records **`d8bc16deea` — “feat: one
 resource/action/view model”** as landed. Audit current code rather than treating
 that PR's disposition as the implementation inventory.
 
+## Code Editor source projects
+
+The production `CodeEditorShell` Project now answers typed native reads. A whole
+read inventories every recorded file/folder (stable id, nested resource address,
+relative path, kind, language and text availability); it does not dump the Model
+or include terminal state, command outboxes or machine-local disk paths. Item
+reads accept the stable id or published file address and demand only that file's
+text from the requested document. Rename changes the historical path, not the
+id. A deleted item remains readable at a retained earlier frontier.
+
+Responses are capped at 240 KiB including JSON escaping (below the framework's
+256 KiB historical envelope limit). `read({version, item: "inventory:0"})` reads
+128 entries and returns `next` for the next page. Pin every page to the same
+returned immutable `version`; unversioned pages can observe different commits.
+A too-large whole inventory or single text fails explicitly, never truncates.
+The inventory's `scope: "recorded-project"` and `complete` refer to the record,
+not the source tree on disk. The existing importer lists directories lazily,
+ignores configured build/VCS names and symlinks, and records text only after
+opening it. A checkpoint is therefore not a whole-source filesystem snapshot.
+Source text itself is disclosed as requested content; the adapter is not a
+secret detector for credentials deliberately stored inside source files.
+
+`apps/code-editor/tests/source_history.rs` exercises the actual ResourceApp:
+whole-record checkpoints, frozen reads across rename/delete, reviewed recovery
+of deleted metadata plus text under the same id, selective restoration retaining
+unrelated work, agent attribution/undo/redo, replica reconstruction, private-key
+and terminal-queue omission, bounded refusal and complete inventory paging.
+Replica reconstruction is not a new certification of cold-host routing or
+registered-action duplicate-delivery replay; the framework's existing replay
+proof remains the one described above.
+
+See [Code Editor qualification](../apps/code-editor/SOURCE_HISTORY.md) for the
+repeatable real-root action-door harness and explicit unsupported coverage.
+Binary contents, historical POSIX modes, symlink targets and whole-source
+coverage are not supported by Project. Native text history does not silently
+save or materialize a restored disk tree, and does not replace file-service
+history or custody. Full Git-free source qualification must fail, even when the
+opt-in focused text workload passes.
+
 Research leads only: Ink & Switch [local-first software](https://www.inkandswitch.com/local-first/)
 and [Patchwork](https://www.inkandswitch.com/patchwork/). They are pointers for
 further study, not evaluated findings or evidence of Tilo's coverage.

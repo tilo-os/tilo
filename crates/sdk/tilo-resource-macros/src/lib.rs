@@ -1297,6 +1297,9 @@ fn is_action_cx(ty: &Type) -> bool {
 /// `seed = path` (`fn(&mut Self, &mut ActionCx)`, the creator's first
 /// content), `available = path` (`fn(&Self, module::Verb) -> Availability`),
 /// `children = path` (`fn(&Self) -> Vec<Derived<Self>>`), `search = path`,
+/// `read_content_doc = path` selects a document-aware typed reader
+/// (`fn(&Self, &Doc, Option<&str>) -> Result<serde_json::Value, String>`),
+/// for lazy text models. It takes precedence over `read_content`.
 /// `scopes = path`, `read_content = path` (`fn(&Self, Option<&Id>) ->
 /// Result<serde_json::Value, String>`) and `views = path`.
 #[proc_macro_attribute]

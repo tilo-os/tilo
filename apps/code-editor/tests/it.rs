@@ -7,5 +7,7 @@
 pub mod history_and_agents;
 #[path = "language_server.rs"]
 pub mod language_server;
+#[path = "source_history.rs"]
+pub mod source_history;
 #[path = "windows_terminal.rs"]
 pub mod windows_terminal;
