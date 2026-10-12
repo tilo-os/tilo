@@ -80,6 +80,44 @@ pub fn probe_process_table() -> std::io::Result<()> {
     table::probe()
 }
 
+/// Raise this process's soft open-file limit to the 1024 descriptors a Linux
+/// app starts with, as far as the hard limit allows. macOS starts processes
+/// at 256, which one app retaining a descriptor per selected file exhausts.
+/// The limit is never lowered and the hard limit is left alone; it stops at
+/// 1024 so code bounded by `select`'s `FD_SETSIZE` keeps working.
+pub fn raise_open_file_limit() {
+    limits::raise_open_files();
+}
+
+#[cfg(unix)]
+mod limits {
+    const OPEN_FILES: libc::rlim_t = 1024;
+
+    pub fn raise_open_files() {
+        let mut limit = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        // SAFETY: getrlimit only writes the rlimit it is given.
+        if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &raw mut limit) } != 0 {
+            return;
+        }
+        let wanted = OPEN_FILES.min(limit.rlim_max);
+        if limit.rlim_cur >= wanted {
+            return;
+        }
+        limit.rlim_cur = wanted;
+        // SAFETY: setrlimit only reads the initialized rlimit it is given. A
+        // refusal leaves the previous limit, which is still usable.
+        let _ = unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &raw const limit) };
+    }
+}
+
+#[cfg(not(unix))]
+mod limits {
+    pub const fn raise_open_files() {}
+}
+
 #[cfg(target_os = "linux")]
 mod table {
     pub fn open_file_count(pid: u32) -> Option<usize> {
