@@ -1,0 +1,7 @@
+# Written by `tilo-app surface`; review changes like an API change.
+
+[[resources]]
+kind = "disk-usage"
+label = "Disk Usage Analyzer"
+version = 1
+

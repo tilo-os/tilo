@@ -43,7 +43,6 @@ rules = ["R1", "R2", "R3", "R4", "W1", "W2", "W3"]
 allowed = [
     "crates/platform/*",
     "crates/sdk/runner-native",
-    "crates/sdk/runner-web",
     # `tilo-app` selects exactly one runner per target.
     "crates/sdk/tilo-app/Cargo.toml",
     "crates/sdk/tilo-app/src/runner.rs",
@@ -175,7 +174,6 @@ crates = [
     "tilo-content",
     "settings-store",
     # Absorbed into platform crates; their shims count down.
-    "tilo-xdg-paths",
     "private-fs",
     "tilo-advisory-lock",
     "bounded-command",
@@ -195,7 +193,10 @@ severity = "warn"
 allowed-packages = ["tilo-app", "runtime-dylib"]
 # `vendor/*` holds forks of third-party crates (winit, vello, …), which stand
 # in for the upstream crate an app would otherwise depend on.
-allowed-paths = ["crates/platform/*", "apps/*-model", "vendor/*"]
+# `crates/runtime/engines/*` are engine libraries beside the runtime,
+# the optional backend of an app's `runtime-engine` feature like
+# `runtime-dylib` is of `thin`.
+allowed-paths = ["crates/platform/*", "apps/*-model", "vendor/*", "crates/runtime/engines/*"]
 
 [rules.F1]
 summary = "selects an SDK backend feature"

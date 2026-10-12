@@ -1064,13 +1064,3 @@ pub fn ui_width(width: WindowWidth) -> ui::widget::WindowWidth {
         WindowWidth::Fraction(p) => ui::widget::WindowWidth::Fraction(p),
     }
 }
-
-/// The persisted width for a toolkit width.
-pub fn model_width(width: ui::widget::WindowWidth) -> WindowWidth {
-    match width {
-        ui::widget::WindowWidth::Narrow => WindowWidth::Narrow,
-        ui::widget::WindowWidth::Normal => WindowWidth::Normal,
-        ui::widget::WindowWidth::Wide => WindowWidth::Wide,
-        ui::widget::WindowWidth::Fraction(p) => WindowWidth::Fraction(p),
-    }
-}

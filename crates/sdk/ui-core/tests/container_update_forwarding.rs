@@ -22,16 +22,13 @@
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::rc::Rc;
+use tilo_ui::widget::TaffyTreeExt;
 use tilo_ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ROOT};
 use taffy::{NodeId, Style, TaffyTree};
-use tilo_ui::presence::PresenceCtx;
-use tilo_ui::text_render::TextRenderer;
 use tilo_ui::theme::Theme;
 use tilo_ui::widget::{Column, Container, Row, Stack, Widget};
-use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
 
 /// Counts `update` calls and reports a change on every one, so a
 /// container that forwards must also surface the child's `true`.
@@ -51,29 +48,11 @@ impl Widget for Probe {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let node = taffy.new_leaf(Style::default()).unwrap();
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
-    }
-
-    fn apply_layout(&mut self, _taffy: &TaffyTree<()>, _node: NodeId, _origin: Point) {}
-
-    fn draw(
-        &mut self,
-        _scene: &mut Scene,
-        _transform: Affine,
-        _text_renderer: &mut TextRenderer,
-        _theme: &Theme,
-        _presence: &PresenceCtx,
-    ) {
+        taffy.widget_leaf(Style::default(), node_map, self)
     }
 
     fn name(&self) -> &'static str {
         "Probe"
-    }
-
-    fn get_rect(&self) -> Rect {
-        Rect::ZERO
     }
 }
 

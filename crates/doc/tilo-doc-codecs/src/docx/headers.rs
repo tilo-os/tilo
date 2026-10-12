@@ -6,7 +6,8 @@
 //! `PAGE` field, emitted as `w:fldSimple w:instr=" PAGE "` and parsed from both that
 //! simple form and the complex `w:instrText` form.
 
-use crate::xml_escape::push_text;
+use super::side_part;
+use super::styles::attr_val;
 use quick_xml::events::Event;
 use quick_xml::reader::Reader;
 use std::borrow::Cow;
@@ -82,10 +83,10 @@ fn sectpr_reference_ids(document_xml: &[u8]) -> (Option<String>, Option<String>)
             }
             Event::Empty(e) | Event::Start(e) if in_sectpr => match e.name().as_ref() {
                 b"w:headerReference" => {
-                    hdr.record(attr_r_id(&e), attr_w_val(&e, b"w:type").as_deref());
+                    hdr.record(attr_r_id(&e), attr_val(&e, b"w:type").as_deref());
                 }
                 b"w:footerReference" => {
-                    ftr.record(attr_r_id(&e), attr_w_val(&e, b"w:type").as_deref());
+                    ftr.record(attr_r_id(&e), attr_val(&e, b"w:type").as_deref());
                 }
                 _ => {}
             },
@@ -115,8 +116,8 @@ fn rel_targets(rels_xml: &[u8]) -> Vec<(String, String)> {
     while let Ok(ev) = reader.read_event() {
         match ev {
             Event::Empty(e) | Event::Start(e) if e.name().as_ref() == b"Relationship" => {
-                let id = attr_w_val(&e, b"Id");
-                let target = attr_w_val(&e, b"Target");
+                let id = attr_val(&e, b"Id");
+                let target = attr_val(&e, b"Target");
                 if let (Some(id), Some(target)) = (id, target) {
                     out.push((id, target));
                 }
@@ -139,7 +140,7 @@ pub(super) fn normalize_target(target: &str) -> String {
 }
 
 fn attr_r_id(e: &quick_xml::events::BytesStart) -> Option<String> {
-    attr_w_val(e, b"r:id")
+    attr_val(e, b"r:id")
 }
 
 /// Splice the page-number placeholder char at `cur`'s current position and record its start
@@ -220,7 +221,7 @@ impl ComplexField {
     /// Advance for one `w:fldChar` element; `true` when a PAGE field's placeholder should be
     /// spliced now.
     fn advance(&mut self, e: &quick_xml::events::BytesStart) -> bool {
-        match attr_w_val(e, b"w:fldCharType").as_deref() {
+        match attr_val(e, b"w:fldCharType").as_deref() {
             Some("begin") => {
                 self.in_progress = true;
                 self.pending = false;
@@ -299,7 +300,7 @@ pub(super) fn import_region(xml: &[u8], region: Region, doc: &mut DocMut) {
                 // Emit the field once at its start, then skip its cached result-run text until it closes.
                 b"w:fldSimple" => {
                     fldsimple_depth = fldsimple_depth.saturating_add(1);
-                    let instr = attr_w_val(&e, b"w:instr").unwrap_or_default();
+                    let instr = attr_val(&e, b"w:instr").unwrap_or_default();
                     let cur = cur.as_deref();
                     emit_page_field(&instr, region, doc, cur, &mut cur_len, &mut field_marks);
                 }
@@ -311,7 +312,7 @@ pub(super) fn import_region(xml: &[u8], region: Region, doc: &mut DocMut) {
                     splice_one_char(region, doc, cur.as_deref(), &mut cur_len, '\n');
                 }
                 b"w:fldSimple" => {
-                    let instr = attr_w_val(&e, b"w:instr").unwrap_or_default();
+                    let instr = attr_val(&e, b"w:instr").unwrap_or_default();
                     let cur = cur.as_deref();
                     emit_page_field(&instr, region, doc, cur, &mut cur_len, &mut field_marks);
                 }
@@ -365,13 +366,6 @@ fn is_page_instr(instr: &str) -> bool {
         .is_some_and(|w| w.eq_ignore_ascii_case("PAGE"))
 }
 
-fn attr_w_val(e: &quick_xml::events::BytesStart, key: &[u8]) -> Option<String> {
-    e.attributes()
-        .flatten()
-        .find(|a| a.key.as_ref() == key)
-        .and_then(|a| crate::unescape_attr(&a))
-}
-
 /// Whether character `i` of `b` is a page-number field placeholder.
 fn page_number_field_at(b: &BlockView, i: usize) -> bool {
     b.marks.iter().any(|m| {
@@ -382,46 +376,20 @@ fn page_number_field_at(b: &BlockView, i: usize) -> bool {
     })
 }
 
-/// Render a region block as `<w:p>`: `w:t` runs, `w:tab`/`w:br` for tabs/breaks, and a
-/// `w:fldSimple w:instr=" PAGE "` for a page-number field.
+/// Render a region block as `<w:p>`, emitting a `w:fldSimple w:instr=" PAGE "` for a
+/// page-number field.
 fn render_block(b: &BlockView) -> String {
     let chars: Vec<char> = b.text.chars().collect();
-    let mut out = String::from("<w:p>");
-    let mut buf = String::new();
-    let flush = |out: &mut String, buf: &mut String| {
-        if !buf.is_empty() {
-            out.push_str(r#"<w:r><w:t xml:space="preserve">"#);
-            for c in buf.chars() {
-                push_text(out, c);
-            }
-            out.push_str("</w:t></w:r>");
-            buf.clear();
-        }
-    };
-    for (i, &c) in chars.iter().enumerate() {
-        if c == FIELD_PLACEHOLDER {
-            flush(&mut out, &mut buf);
+    side_part::render_paragraph(b, |i| {
+        (chars.get(i) == Some(&FIELD_PLACEHOLDER)).then(|| {
             if page_number_field_at(b, i) {
                 // Self-closing so import sees no cached result-run text (recomputed by the renderer).
-                out.push_str(r#"<w:fldSimple w:instr=" PAGE "/>"#);
+                r#"<w:fldSimple w:instr=" PAGE "/>"#
+            } else {
+                ""
             }
-            continue;
-        }
-        match c {
-            '\t' => {
-                flush(&mut out, &mut buf);
-                out.push_str("<w:r><w:tab/></w:r>");
-            }
-            '\n' => {
-                flush(&mut out, &mut buf);
-                out.push_str("<w:r><w:br/></w:r>");
-            }
-            _ => buf.push(c),
-        }
-    }
-    flush(&mut out, &mut buf);
-    out.push_str("</w:p>");
-    out
+        })
+    })
 }
 
 /// The full header/footer part bytes for a region's blocks, or `None` when empty.

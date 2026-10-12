@@ -179,7 +179,7 @@ impl Container {
 
         // 5. Wayland Socket
         let host_runtime_dir =
-            xdg_paths::xdg::runtime_dir().unwrap_or_else(|| "/run/user/1000".into());
+            tilo_paths::xdg::runtime_dir().unwrap_or_else(|| "/run/user/1000".into());
         let host_socket_path = format!("{}/{wayland_socket}", host_runtime_dir.display());
 
         let sandbox_runtime_dir = "/tmp/runtime";

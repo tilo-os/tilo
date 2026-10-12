@@ -11,7 +11,6 @@ use ui::TextRole;
 use ui::icons::Icon;
 use ui::search::{SearchRequest, open_search_binding};
 use ui::theme::Theme;
-use ui::time::UNIX_EPOCH;
 use ui::widget::{
     Avatar, AvatarSize, Badge, Banner, Button, ButtonRole, Chip, ChipLead, ChipStyle, Column,
     Container, ControlSize, Dropdown, Element, EmptyState, Field, Form, FormSection, ListRow,
@@ -21,10 +20,11 @@ use ui::widget::{
 };
 
 use crate::action::{self, Action, ActionBus, Invocations, SettingFlag};
-use crate::actions::{TubeAction, TubeEffect};
+use crate::actions::TubeEffect;
 use crate::i18n::{arg, t, t_args};
 use crate::images::Imgs;
 use crate::model::{Category, Route, SearchType, SkipMode, TubeModel, Video};
+use crate::resource::Library;
 use crate::util::{clock, human_count, human_views};
 use crate::widgets::{PlayerHost, SharedPlayer};
 
@@ -600,9 +600,9 @@ pub fn channel(ui: Ui<'_>, id: &str) -> Scrollable {
 }
 
 fn subscribe_button(ui: Ui<'_>, channel_id: &str) -> Button {
-    let action = Action::Edit(TubeAction::SetSubscription {
-        channel_id: channel_id.to_string(),
-        subscribed: !ui.model.is_subscribed(channel_id),
+    let action = Action::Edit(match ui.model.subscription_key(channel_id) {
+        Some(key) => Library::subscribe(key, false),
+        None => Library::subscribe(channel_id, true),
     });
     if ui.model.is_subscribed(channel_id) {
         Button::new("subscribe_btn", &t("tube-subscribed"))
@@ -854,10 +854,7 @@ fn watch_actions(ui: Ui<'_>, v: &Video) -> Row {
         .with_icon(Icon::ThumbsUp)
         .with_accessible_name(&like_name)
         .toggled(liked)
-        .on_click(ui.push(Action::Edit(TubeAction::SetVideoLiked {
-            video_id: v.id.clone(),
-            liked: !liked,
-        })));
+        .on_click(ui.push(Action::Edit(Library::like(&v.id, !liked))));
     let queue = Button::new(
         "watch_queue",
         &t(if queued {
@@ -867,10 +864,7 @@ fn watch_actions(ui: Ui<'_>, v: &Video) -> Row {
         }),
     )
     .with_icon(Icon::ListVideo);
-    let queue = queue.on_click(ui.push(Action::Edit(TubeAction::SetQueueMembership {
-        video_id: v.id.clone(),
-        queued: !queued,
-    })));
+    let queue = queue.on_click(ui.push(Action::Edit(Library::enqueue(&v.id, !queued))));
     let copy_link = Button::new("watch_copy_link", &t("tube-copy-link"))
         .with_icon(Icon::Copy)
         .on_click(ui.push(Action::Share(v.id.clone())));
@@ -1426,7 +1420,7 @@ fn device_sync_settings(
                 TextInput::local()
                     .with_id("grayjay_pairing_invite")
                     .with_external_buffer(input)
-                    .with_placeholder(&t("tube-pair-placeholder"))
+                    .with_placeholder(t("tube-pair-placeholder"))
                     .with_accessible_name(t("tube-pair-name"))
                     .with_enter_submits(true),
             ))
@@ -1537,9 +1531,7 @@ fn sync_status(status: crate::sync::SyncStatus) -> Option<(String, Tone)> {
 }
 
 fn relative_sync_time(time: i64) -> String {
-    let current = ui::time::wall()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |duration| duration.as_secs() as i64);
+    let current = ui::time::unix_now_i64();
     t_args(
         "tube-last-synced",
         &[arg("when", ui::format::relative(current - time))],

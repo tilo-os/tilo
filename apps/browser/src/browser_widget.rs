@@ -21,6 +21,7 @@ use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 #[cfg(test)]
 use ui::widget::Edits;
+use ui::widget::TaffyTreeExt;
 use ui::widget::{AppModel, ModelPath};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -42,13 +43,15 @@ use ui::widget::{
     FloatingSurfaceProvider, IconDescriptor, MenuItem, Popover, ProgressBar, WebView, Widget,
 };
 
-use crate::actions::{BrowserAction, bookmark_resource_id, history_resource_id};
+use crate::actions::history_resource_id;
 use crate::address_overlay::AddressSuggestions;
 use crate::browsing_mode::BrowsingMode;
 use crate::downloads::{DownloadStatus, Downloads};
 use crate::history::History;
 use crate::library::Bookmarks;
+use crate::resource::{Browser, bookmark_resource_id, browser};
 use crate::settings::{Settings, SettingsActionBindings, SettingsPane, SettingsPresentation};
+use ui::tilo_resource::Invoke;
 use ui::tilo_resource::Resource as _;
 
 mod library;
@@ -324,12 +327,12 @@ pub struct BrowserWidget {
     rect: Rect,
     engine: SharedEngine,
     browsing_mode: BrowsingMode,
-    composed: Option<Box<dyn Widget>>,
+    composed: ui::widget::Composed,
     bootstrap_done: bool,
     /// `--shots` mode: no network, no filter loader, deterministic page.
     headless: bool,
-    /// The resource's dispatcher: bookmarks and preferences are
-    /// [`BrowserAction`]s submitted through it. `None` until a host attaches
+    /// The resource's dispatcher: bookmarks and preferences are verbs and
+    /// field edits submitted through it. `None` until a host attaches
     /// one; a bare widget changes no document.
     dispatch: Option<ui::framework::Dispatcher<crate::resource::Browser>>,
     /// The origins tracker protection is off for, as the document holds them.
@@ -516,16 +519,6 @@ impl BrowserWidget {
         w
     }
 
-    /// Widget for `--shots`: as [`Self::new_headless`], but the page is a
-    /// blank document rather than the test engine's placeholder colour.
-    pub fn new_capture(mode: BrowsingMode) -> Self {
-        let engine = crate::capture_page::CapturePage::engine();
-        engine.send(WebViewCommand::Navigate(SHOTS_URL.to_string()));
-        let mut w = Self::with_engine_mode(engine, true, mode);
-        w.initial_url = SHOTS_URL.into();
-        w
-    }
-
     /// Set the first URI loaded before the widget bootstraps. The binary uses
     /// this only after validating the URI against Browser's declared schemes.
     #[must_use]
@@ -656,7 +649,7 @@ impl BrowserWidget {
         let revision = record.revision();
         if self.history_revision != Some(revision) {
             self.history_revision = Some(revision);
-            self.history = (*record.get()).clone();
+            self.history = crate::history::History::of(&record.get());
             self.search_index.invalidate();
             self.structure_dirty = true;
         }
@@ -695,7 +688,7 @@ impl BrowserWidget {
             rect: Rect::ZERO,
             engine,
             browsing_mode,
-            composed: None,
+            composed: ui::widget::Composed::default(),
             bootstrap_done: false,
             headless,
             dispatch: None,
@@ -821,36 +814,36 @@ impl BrowserWidget {
     }
 
     /// Submit one bookmark or preference edit through the resource's door.
-    fn submit(&self, action: &BrowserAction) {
+    fn submit(&self, submit: impl ui::framework::Submit<Browser>) {
         if let Some(dispatch) = &self.dispatch {
-            dispatch.apply(action);
+            dispatch.submit(submit);
         }
     }
 
     /// Present the document's bookmarks and preferences: the chrome shows
     /// them, and the engine follows the preferences.
-    pub(crate) fn present_state(&mut self, state: &crate::resource::BrowserState) {
-        if state.bookmarks != self.bookmarks {
-            self.bookmarks = state.bookmarks.clone();
+    pub(crate) fn present_state(&mut self, state: &Browser) {
+        let bookmarks = Bookmarks::of(&state.bookmarks);
+        if bookmarks != self.bookmarks {
+            self.bookmarks = bookmarks;
             self.structure_dirty = true;
         }
         self.apply_preferences(state.preferences.clone());
-        self.site_exceptions.clone_from(&state.site_exceptions);
+        self.site_exceptions = state.exceptions();
         self.site
-            .present_exceptions(&self.engine, &state.site_exceptions, self.bootstrap_done);
+            .present_exceptions(&self.engine, &self.site_exceptions, self.bootstrap_done);
     }
 
     /// Add the current page, unless it is already bookmarked. Removal stays
     /// on the library row; the toolbar action is the add.
-    fn page_bookmark_action(&self) -> Option<BrowserAction> {
+    fn page_bookmark_action(&self) -> Option<Invoke<Browser>> {
         if self.current_uri.trim().is_empty() || self.bookmarks.contains(&self.current_uri) {
             return None;
         }
-        Some(BrowserAction::AddBookmark {
+        Some(Browser::ADD_BOOKMARK.with(browser::AddBookmark {
             url: self.current_uri.clone(),
-            title: self.title.clone(),
-            tag: format!("bookmark:{}", uuid::Uuid::new_v4().simple()),
-        })
+            title: Some(self.title.clone()),
+        }))
     }
 
     /// `button` submits `action` through the resource's door; without one
@@ -858,10 +851,12 @@ impl BrowserWidget {
     fn document_button(
         &self,
         button: ui::widget::Button,
-        action: Option<BrowserAction>,
+        action: Option<Invoke<Browser>>,
     ) -> ui::widget::Button {
         match (action, self.dispatch.clone()) {
-            (Some(action), Some(dispatch)) => button.on_effect(move || dispatch.apply(&action)),
+            (Some(action), Some(dispatch)) => {
+                button.on_effect(move || dispatch.submit(action.clone()))
+            }
             _ => button,
         }
     }
@@ -874,19 +869,31 @@ impl BrowserWidget {
         if self.page_bookmark_action().is_none() {
             return Vec::new();
         }
-        let (url, title) = (self.current_uri.clone(), self.title.clone());
-        vec![ui::tilo_resource::ActionDecl::new(
-            "bookmark-page",
-            "Bookmark this page",
-            vec![],
-            move |_, _| {
-                Ok(BrowserAction::AddBookmark {
-                    url: url.clone(),
-                    title: title.clone(),
-                    tag: format!("bookmark:{}", uuid::Uuid::new_v4().simple()),
-                })
-            },
-        )]
+        let params = browser::AddBookmark::paths();
+        Browser::ADD_BOOKMARK
+            .bind(params.url, self.current_uri.clone())
+            .and(params.title, Some(self.title.clone()))
+            .declaration("bookmark-page", "Bookmark this page")
+            .into_iter()
+            .collect()
+    }
+
+    /// Document edits bound to the row `row`: the page's row turns tracker
+    /// protection on or off for the site it shows.
+    pub(crate) fn row_declarations(
+        &self,
+        row: &str,
+    ) -> Vec<ui::tilo_resource::ActionDecl<Browser>> {
+        if row != "browser.page" {
+            return Vec::new();
+        }
+        let Some(origin) = crate::site_controls::origin(&self.current_uri) else {
+            return Vec::new();
+        };
+        let protected = !self.site_exceptions.contains(&origin);
+        Browser::site_switch(&origin, protected)
+            .into_iter()
+            .collect()
     }
 
     /// Stage the window for a screenshot scenario: the chrome state each one
@@ -923,11 +930,6 @@ impl BrowserWidget {
     pub fn debug_force_suggestions(&mut self, items: Vec<crate::history::HistoryEntry>) {
         self.suggestions.set_suggestions(items);
         self.force_suggestions = true;
-    }
-
-    /// Headless visual-review hook: type `text` into the address field.
-    pub fn debug_type_address(&mut self, text: &'static str) {
-        self.review_stage = Some(ReviewStage::Typing { text });
     }
 
     /// Headless visual-review hook: show the settled no-video guidance note.
@@ -1061,28 +1063,10 @@ impl BrowserWidget {
         self.structure_dirty = true;
     }
 
-    /// Headless visual-review hook: the site panel on its protection page, or
-    /// on its connection and data page.
-    pub fn debug_show_site_panel(&mut self, information: bool) {
-        self.review_stage = Some(ReviewStage::Site { information });
-    }
-
     /// Headless visual-review hook: the passwords panel, or the address
     /// autofill panel.
     pub fn debug_show_autofill(&mut self, addresses: bool) {
         self.review_stage = Some(ReviewStage::Autofill { addresses });
-    }
-
-    /// Where a capture presses to open the toolbar's overflow menu, once the
-    /// window has been laid out.
-    pub fn debug_overflow_center(&self) -> Option<(f64, f64)> {
-        let rect = self.find_rect(toolbar::OVERFLOW_ID)?;
-        Some((rect.center().x, rect.center().y))
-    }
-
-    /// Headless visual-review hook: find in page, open on a query.
-    pub fn debug_show_find(&mut self) {
-        self.review_stage = Some(ReviewStage::Find);
     }
 
     /// Headless visual-review hook: a site asking for the camera.
@@ -1093,26 +1077,6 @@ impl BrowserWidget {
             permissions: "camera and microphone".into(),
         });
         self.structure_dirty = true;
-    }
-
-    /// Headless visual-review hook: a page offering a file.
-    pub fn debug_request_download(&mut self) {
-        self.capabilities
-            .apply(WebViewEvent::NativeDownloadRequested {
-                id: 1,
-                url: "https://example.org/tilo-sdk.tar.zst".into(),
-                name: "tilo-sdk.tar.zst".into(),
-            });
-        self.structure_dirty = true;
-    }
-
-    /// Headless widget in a private window, for visual review.
-    pub fn new_headless_private() -> Self {
-        let engine: SharedEngine = TestEngine::new();
-        engine.send(WebViewCommand::Navigate(SHOTS_URL.to_string()));
-        let mut w = Self::with_engine_mode(engine, true, BrowsingMode::Private);
-        w.initial_url = SHOTS_URL.into();
-        w
     }
 
     pub fn debug_show_settings(&mut self) {
@@ -1566,7 +1530,8 @@ impl BrowserWidget {
     /// actions never report history as cleared when it will reappear.
     fn clear_history_durably(&mut self) -> Result<(), String> {
         if let Some(record) = &self.person_history
-            && let Err(error) = record.apply(&crate::history::HistoryAction::Clear)
+            && let Err(error) =
+                record.invoke(&crate::history::BrowsingHistory::CLEAR_HISTORY.with(()))
         {
             let message =
                 "Couldn’t clear history because Browser could not save the change. Previous history was kept."
@@ -2195,8 +2160,6 @@ impl BrowserWidget {
             self.current_uri.clone()
         };
         match stage {
-            ReviewStage::Typing { text } => self.address.set(text.to_owned()),
-            ReviewStage::Site { information } => self.site.stage_for_review(information, &url),
             ReviewStage::Autofill { addresses } => {
                 // The panels open from rows of the settings page, so that is
                 // the page behind them.
@@ -2204,7 +2167,6 @@ impl BrowserWidget {
                 self.show_library = false;
                 self.credentials.stage_for_review(addresses, &url);
             }
-            ReviewStage::Find => self.daily.stage_for_review(),
         }
         self.structure_dirty = true;
     }
@@ -2259,21 +2221,10 @@ impl BrowserWidget {
     }
 
     fn control_focused(&self, id: &str) -> bool {
-        fn walk(w: &dyn Widget, id: &str) -> Option<bool> {
-            if w.test_id() == Some(id) {
-                return Some(w.is_focused());
-            }
-            for c in w.children() {
-                if let Some(f) = walk(c, id) {
-                    return Some(f);
-                }
-            }
-            None
-        }
         self.composed
-            .as_ref()
-            .and_then(|c| walk(c.as_ref(), id))
-            .unwrap_or(false)
+            .element()
+            .and_then(|c| ui::widget::find_test_id(c, id))
+            .is_some_and(Widget::is_focused)
     }
 
     /// Fold engine events into this window's chrome state. Engine state is a
@@ -2503,12 +2454,14 @@ impl BrowserWidget {
                         && self.current_uri.starts_with("http")
                         && let Some(record) = &self.person_history
                     {
-                        let visit = crate::history::HistoryAction::Visit {
-                            url: self.current_uri.clone(),
-                            title: self.title.clone(),
-                            at: tilo_clock::unix_now(),
-                        };
-                        if let Err(error) = record.apply(&visit) {
+                        let visit = crate::history::BrowsingHistory::VISIT.with(
+                            crate::history::browsing_history::Visit {
+                                url: self.current_uri.clone(),
+                                title: self.title.clone(),
+                                at: tilo_clock::unix_now(),
+                            },
+                        );
+                        if let Err(error) = record.invoke(&visit) {
                             tracing::warn!(%error, "browser visit was not recorded");
                         }
                         self.follow_history();
@@ -3039,7 +2992,7 @@ impl BrowserWidget {
                 WKey::Character(c) if c == "0" => Some(Action::Zoom(0)),
                 WKey::Character(c) if c.eq_ignore_ascii_case("d") => {
                     if let Some(action) = self.page_bookmark_action() {
-                        self.submit(&action);
+                        self.submit(action);
                     }
                     return true;
                 }
@@ -3111,38 +3064,26 @@ impl BrowserWidget {
             }
         }
         fn focus(widget: &mut dyn Widget, id: &str) -> bool {
-            if widget.test_id() == Some(id) {
-                widget.set_focus(true);
-                if let Some((_, text)) = widget.text_review() {
-                    if text.is_empty() {
-                        ui::undo::set_state(widget, "0");
-                    } else {
-                        ui::undo::set_state(widget, &format!("{}:b:0", text.len()));
-                    }
-                }
-                return true;
-            }
-            for child in widget.children_mut() {
-                if focus(child, id) {
-                    return true;
+            let Some(widget) = ui::widget::find_test_id_mut(widget, id) else {
+                return false;
+            };
+            widget.set_focus(true);
+            if let Some((_, text)) = widget.text_review() {
+                if text.is_empty() {
+                    ui::undo::set_state(widget, "0");
+                } else {
+                    ui::undo::set_state(widget, &format!("{}:b:0", text.len()));
                 }
             }
-            false
+            true
         }
-        self.composed.as_mut().is_some_and(|composed| {
-            clear(composed.as_mut());
-            focus(composed.as_mut(), id)
+        self.composed.element_mut().is_some_and(|composed| {
+            clear(composed);
+            focus(composed, id)
         })
     }
 
     fn focus_control_preserving_selection(&mut self, id: &str) {
-        fn state(widget: &dyn Widget, id: &str) -> Option<String> {
-            if widget.test_id() == Some(id) {
-                return ui::undo::get_state(widget);
-            }
-            widget.children().iter().find_map(|child| state(*child, id))
-        }
-
         fn restore(widget: &mut dyn Widget, id: &str, value: &str) {
             if widget.test_id() == Some(id) {
                 ui::undo::set_state(widget, value);
@@ -3153,11 +3094,12 @@ impl BrowserWidget {
         }
         let saved = self
             .composed
-            .as_ref()
-            .and_then(|widget| state(widget.as_ref(), id));
+            .element()
+            .and_then(|widget| ui::widget::find_test_id(widget, id))
+            .and_then(ui::undo::get_state);
         self.focus_control(id);
-        if let (Some(value), Some(widget)) = (saved, self.composed.as_mut()) {
-            restore(widget.as_mut(), id, &value);
+        if let (Some(value), Some(widget)) = (saved, self.composed.element_mut()) {
+            restore(widget, id, &value);
         }
     }
 
@@ -3179,20 +3121,15 @@ impl BrowserWidget {
 
     /// Rect of the composed-tree widget with `test_id == id`, if present.
     fn find_rect(&self, id: &str) -> Option<Rect> {
-        fn walk(w: &dyn Widget, id: &str) -> Option<Rect> {
-            if w.test_id() == Some(id) {
-                return Some(w.get_rect());
-            }
-            w.children().iter().find_map(|c| walk(*c, id))
-        }
         self.composed
-            .as_ref()
-            .and_then(|c| walk(c.as_ref(), id))
+            .element()
+            .and_then(|c| ui::widget::find_test_id(c, id))
             .or_else(|| {
                 self.anchored_panel
                     .as_ref()
-                    .and_then(|panel| walk(panel.as_ref(), id))
+                    .and_then(|panel| ui::widget::find_test_id(panel.as_ref(), id))
             })
+            .map(Widget::get_rect)
     }
 
     /// Publish the `WebView` surface rect as window fractions for the
@@ -3534,10 +3471,7 @@ impl Widget for BrowserWidget {
     ) -> NodeId {
         self.pending_chrome_focus = None;
         let page_focused = self.control_focused("browser.surface");
-        let address_state = self
-            .composed
-            .as_ref()
-            .and_then(|widget| address_state(widget.as_ref()));
+        let address_state = self.composed.element().and_then(address_state);
         // The tiers and the labelled widths follow the text scale, which is
         // only known here; the one-frame capture seed set them at 1×.
         self.text_scale = theme.text_scale;
@@ -3555,14 +3489,14 @@ impl Widget for BrowserWidget {
             restore_address(composed.as_mut(), &id, &state);
         }
         composed.set_motion_reduced(self.motion_reduced);
-        self.composed = Some(composed);
+        self.composed.replace(composed);
         if let Some(id) = self.daily.focus_pending.take() {
             self.focus_control(id);
             if id == crate::daily_controls::FIND_INPUT
                 && let Some(cursor) = self.daily.take_buffered_cursor()
-                && let Some(composed) = self.composed.as_mut()
+                && let Some(composed) = self.composed.element_mut()
             {
-                restore_address(composed.as_mut(), id, &cursor.to_string());
+                restore_address(composed, id, &cursor.to_string());
             }
             self.pending_chrome_focus = node_map.iter().find_map(|(node, widget)| {
                 (unsafe { &**widget }.test_id() == Some(id)).then_some((*node, id))
@@ -3602,31 +3536,17 @@ impl Widget for BrowserWidget {
             children.push(panel_node);
             self.anchored_panel = Some(panel);
         }
-        #[allow(
-            clippy::unwrap_used,
-            reason = "all child nodes were just created in this tree"
-        )]
-        let node = taffy.new_with_children(style, &children).unwrap();
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        taffy.widget_node(style, &children, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let Ok(layout) = taffy.layout(node) else {
-            return;
-        };
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
-            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
-        );
+        self.rect = ui::widget::layout_rect(taffy, node, origin);
         let compact = is_compact_chrome(self.chrome_width(), self.compact_breakpoint);
         if compact != self.compact_chrome {
             self.compact_chrome = compact;
             self.structure_dirty = true;
         }
-        if let Some(c) = &mut self.composed
+        if let Some(c) = self.composed.element_mut()
             && let Ok(children) = taffy.children(node)
             && let Some(&child_node) = children.first()
         {
@@ -3660,7 +3580,7 @@ impl Widget for BrowserWidget {
         if scale.is_finite() && scale > 0.0 {
             self.window_scale = scale as f32;
         }
-        if let Some(c) = &mut self.composed {
+        if let Some(c) = self.composed.element_mut() {
             c.draw(scene, transform, text_renderer, theme, presence);
         }
         // One hairline under the toolbar row separates it from the page.
@@ -3680,7 +3600,7 @@ impl Widget for BrowserWidget {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        if let Some(c) = &mut self.composed {
+        if let Some(c) = self.composed.element_mut() {
             c.draw_overlay(scene, transform, text_renderer, theme, presence);
         }
         // The popover paints its own material, shadow and content.
@@ -3707,22 +3627,18 @@ impl Widget for BrowserWidget {
         self.navigation_hold.waiting()
             || self
                 .composed
-                .as_ref()
-                .is_some_and(|composed| composed.needs_animation_frame())
+                .element()
+                .is_some_and(Widget::needs_animation_frame)
     }
 
     fn take_structure_dirty(&mut self) -> bool {
         // Toggling the settings pane swaps the content widget → rebuild.
-        std::mem::take(&mut self.structure_dirty)
-            || self
-                .composed
-                .as_mut()
-                .is_some_and(|c| c.take_structure_dirty())
+        std::mem::take(&mut self.structure_dirty) || self.composed.take_structure_dirty()
     }
 
     fn set_motion_reduced(&mut self, reduced: bool) {
         self.motion_reduced = reduced;
-        if let Some(composed) = &mut self.composed {
+        if let Some(composed) = self.composed.element_mut() {
             composed.set_motion_reduced(reduced);
         }
     }
@@ -3964,7 +3880,7 @@ impl Widget for BrowserWidget {
             }
         }
 
-        if let Some(c) = &mut self.composed
+        if let Some(c) = self.composed.element_mut()
             && let Ok(children) = ctx.taffy.children(ctx.node_id)
             && let Some(&child_node) = children.first()
         {
@@ -4132,13 +4048,13 @@ impl Widget for BrowserWidget {
             .modal_capture()
             .or_else(|| self.back_menu.modal_capture())
             .or_else(|| self.suggestions.modal_capture())
-            .or_else(|| self.composed.as_ref().and_then(|c| c.modal_capture()))
+            .or_else(|| self.composed.element().and_then(Widget::modal_capture))
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
         self.composed
-            .as_ref()
-            .map(|c| c.as_ref() as &dyn Widget)
+            .element()
+            .map(|c| c as &dyn Widget)
             .into_iter()
             .chain(
                 self.anchored_panel
@@ -4150,8 +4066,8 @@ impl Widget for BrowserWidget {
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         self.composed
-            .as_mut()
-            .map(|c| c.as_mut() as &mut (dyn Widget + '_))
+            .element_mut()
+            .map(|c| c as &mut (dyn Widget + '_))
             .into_iter()
             .chain(
                 self.anchored_panel
@@ -4175,6 +4091,12 @@ impl Widget for BrowserWidget {
 }
 
 impl BrowserWidget {
+    /// The index of history pages and downloads, shared with the opener of
+    /// their search hits.
+    pub(crate) fn search_index(&self) -> crate::search_provider::BrowserSearchIndex {
+        self.search_index.clone()
+    }
+
     /// Every history page and download as a search entry.
     pub(crate) fn search_entries(&self) -> Vec<ui::tilo_resource::SearchEntry> {
         self.search_index.entries()
@@ -4365,10 +4287,16 @@ impl BrowserWidget {
 
         let mut bookmarks = Resource::new("browser.bookmarks", "browser.bookmarks", "Bookmarks");
         bookmarks.actions.push(E::ShowBookmarks.bound());
-        for entry in self.bookmarks.entries().iter().take(MATERIALIZED_LIMIT) {
-            bookmarks.children.push(
+        // Each bookmark is an item of the document; this window adds opening
+        // its page to it.
+        let bookmark_rows: Vec<Resource> = self
+            .bookmarks
+            .entries()
+            .iter()
+            .take(MATERIALIZED_LIMIT)
+            .map(|entry| {
                 Resource::new(
-                    bookmark_resource_id(&entry.url),
+                    bookmark_resource_id(&entry.id),
                     "browser.bookmark",
                     entry.title.clone(),
                 )
@@ -4377,9 +4305,9 @@ impl BrowserWidget {
                         url: entry.url.clone(),
                     }
                     .bound(),
-                ),
-            );
-        }
+                )
+            })
+            .collect();
 
         let mut downloads = Resource::new("browser.downloads", "browser.downloads", "Downloads");
         downloads.actions.push(E::ShowDownloads.bound());
@@ -4475,6 +4403,7 @@ impl BrowserWidget {
         browser.children = vec![
             page, session, history, bookmarks, downloads, extensions, library, settings,
         ];
+        browser.children.extend(bookmark_rows);
         browser
     }
 }
@@ -4653,7 +4582,9 @@ impl BrowserWidget {
         let site_was_open = self.site.open;
         self.structure_dirty |= self.site.sync(&self.engine);
         for (origin, enabled) in self.site.take_decisions() {
-            self.submit(&BrowserAction::SetSiteProtection { origin, enabled });
+            self.submit(
+                Browser::SET_SITE_PROTECTION.with(browser::SetSiteProtection { origin, enabled }),
+            );
         }
         if self.site.open && !site_was_open {
             self.deactivate_credentials();
@@ -4672,7 +4603,7 @@ impl BrowserWidget {
         self.structure_dirty |= self.capabilities.downloads_changed();
         self.sync_search_and_suggestions();
 
-        if let Some(c) = &mut self.composed {
+        if let Some(c) = self.composed.element_mut() {
             c.sync(state, path);
         }
         self.poll_active_pip_element();
@@ -4844,14 +4775,8 @@ mod architecture_tests {
                 .into_iter()
                 .find_map(|child| target(child, label))
         }
-        let menu = menu(
-            widget
-                .composed
-                .as_mut()
-                .expect("actual composition")
-                .as_mut(),
-        )
-        .expect("retained overflow menu");
+        let menu = menu(widget.composed.element_mut().expect("actual composition"))
+            .expect("retained overflow menu");
         menu.open(true);
         let target = target(menu.accessibility().expect("exported menu"), label)
             .expect("the command has its real semantic target");
@@ -4898,47 +4823,19 @@ mod architecture_tests {
     }
 
     fn dispatch_back_event(widget: &mut BrowserWidget, event: &WindowEvent) -> bool {
-        let mut tree = TaffyTree::new();
-        let node = tree.new_leaf(Style::default()).unwrap();
-        let mut doc = AutoCommit::new();
-        let mut handled = false;
-        widget.handle_event(
-            event,
-            &mut ui::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &winit::event::Modifiers::default(),
-                state: Edits::lend(&mut doc),
-                path: &automerge::ROOT,
-                handled: &mut handled,
-                focus_target: &mut None,
-                node_id: node,
-                taffy: &tree,
-            },
-        );
-        handled
+        ui::testing::dispatch(widget, event)
     }
 
     fn mouse(button: MouseButton, state: ElementState) -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
-            button,
-            state,
-        }
+        ui::synthetic_input::mouse_input(state, button)
     }
 
     fn key(named: WNamedKey) -> WindowEvent {
-        let mut event: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
-        event.logical_key = WKey::Named(named);
-        event.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-            winit::keyboard::NativeKeyCode::Unidentified,
-        );
-        event.location = winit::keyboard::KeyLocation::Standard;
-        event.state = ElementState::Pressed;
-        WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
-            event,
-            is_synthetic: false,
-        }
+        ui::synthetic_input::keyboard_input(ui::synthetic_input::key_event(
+            WKey::Named(named),
+            None,
+            ElementState::Pressed,
+        ))
     }
 
     /// Find-in-page focus handoff, DPI through find reflow and the daily shortcut capture set.
@@ -4971,21 +4868,9 @@ mod architecture_tests {
         {
             let engine = TestEngine::new();
             let mut widget = BrowserWidget::with_engine(engine.clone(), true);
-            let mut tree = TaffyTree::new();
-            let node = tree.new_leaf(Style::default()).unwrap();
-            widget.handle_event(
-                &WindowEvent::Focused(true),
-                &mut ui::widget::EventCtx {
-                    scale_factor: 2.0,
-                    modifiers: &winit::event::Modifiers::default(),
-                    state: Edits::lend(&mut AutoCommit::new()),
-                    path: &automerge::ROOT,
-                    handled: &mut false,
-                    focus_target: &mut None,
-                    node_id: node,
-                    taffy: &tree,
-                },
-            );
+            ui::testing::Dispatch::new()
+                .scale_factor(2.0)
+                .send(&mut widget, &WindowEvent::Focused(true));
             super::tests::layout_at(&mut widget, 800.0, 600.0);
             widget
                 .daily
@@ -5043,19 +4928,12 @@ mod architecture_tests {
                     event.logical_key = WKey::Character(letter.into());
                     event.text = Some(letter.into());
                 }
-                widget.handle_event(
-                    &event,
-                    &mut ui::widget::EventCtx {
-                        scale_factor: 1.0,
-                        modifiers: &winit::event::Modifiers::default(),
-                        state: Edits::lend(&mut doc),
-                        path: &automerge::ROOT,
-                        handled: &mut false,
-                        focus_target: &mut target,
-                        node_id: node,
-                        taffy: &tree,
-                    },
-                );
+                target = ui::testing::Dispatch::new()
+                    .doc(&mut doc)
+                    .layout(&tree, node)
+                    .focus_target(target)
+                    .send(&mut widget, &event)
+                    .focus_target;
                 widget.daily.sync(&widget.engine);
             }
             widget.daily.sync(&widget.engine);
@@ -5955,7 +5833,7 @@ mod architecture_tests {
             dispatch_back_event(
                 &mut widget,
                 &WindowEvent::CursorMoved {
-                    device_id: unsafe { std::mem::zeroed() },
+                    device_id: winit::event::DeviceId::dummy(),
                     position: winit::dpi::PhysicalPosition::new(850.0, 650.0),
                 },
             );
@@ -6243,8 +6121,8 @@ mod tests {
                     "{id} answers with page content: data, never instructions"
                 );
                 assert_eq!(
-                    action.contract.permission,
-                    ui::tilo_actions::PermissionRequirement::Write,
+                    action.contract.kind,
+                    ui::tilo_actions::ActionKind::Outside,
                     "reading a signed-in page takes the authority to operate it"
                 );
                 assert_eq!(
@@ -6621,7 +6499,9 @@ mod tests {
         point: Point,
     ) -> bool {
         let mut state = AutoCommit::new();
-        let root = automerge::ROOT;
+        let mut at = ui::testing::Dispatch::new()
+            .doc(&mut state)
+            .layout(tree, node);
         let mut release_handled = false;
         for event in [
             WindowEvent::CursorMoved {
@@ -6639,22 +6519,7 @@ mod tests {
                 button: MouseButton::Left,
             },
         ] {
-            let mut handled = false;
-            let mut focus = None;
-            widget.handle_event(
-                &event,
-                &mut ui::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &winit::event::Modifiers::default(),
-                    state: ui::widget::Edits::lend(&mut state),
-                    path: &root,
-                    handled: &mut handled,
-                    focus_target: &mut focus,
-                    node_id: node,
-                    taffy: tree,
-                },
-            );
-            release_handled = handled;
+            release_handled = at.send(widget, &event).handled;
         }
         release_handled
     }
@@ -6705,8 +6570,7 @@ mod tests {
         // Phase `dismissing_a_permission_question_declines_it`.
         {
             fn within(widget: &dyn Widget, id: &str) -> bool {
-                widget.test_id() == Some(id)
-                    || widget.children().iter().any(|child| within(*child, id))
+                ui::widget::find_test_id(widget, id).is_some()
             }
             let capture = TestEngine::new();
             let mut widget = BrowserWidget::with_engine(capture.clone(), true);
@@ -6868,6 +6732,22 @@ mod tests {
     }
 
     /// The person's browsing history, as a capture's profile keeps it.
+    /// A browser document bookmarking each `(url, title)`, as items
+    /// `b0`, `b1`, ….
+    fn bookmarked(pages: &[(&str, &str)]) -> crate::resource::Browser {
+        let mut browser = crate::resource::Browser::default();
+        for (at, (url, title)) in pages.iter().enumerate() {
+            browser.bookmarks.push(
+                ui::tilo_resource::Id::from_raw(format!("b{at}")),
+                crate::library::Bookmark {
+                    url: (*url).into(),
+                    title: (*title).into(),
+                },
+            );
+        }
+        browser
+    }
+
     fn person_history() -> (
         ui::framework::testing::TestApp<crate::BrowserShell>,
         ui::framework::PersonRecord<crate::history::BrowsingHistory>,
@@ -6892,9 +6772,9 @@ mod tests {
         assert!(
             record.with(|history| {
                 history
-                    .entries()
-                    .iter()
-                    .any(|entry| entry.url.starts_with("https://visited.test"))
+                    .visits
+                    .keys()
+                    .any(|url| url.starts_with("https://visited.test"))
             }),
             "a finished page is a visit in the person's history"
         );
@@ -6908,15 +6788,15 @@ mod tests {
         paused.history_paused = w.history_paused.clone();
         w.history_paused
             .store(true, std::sync::atomic::Ordering::Relaxed);
-        let before = record.with(crate::history::History::len);
+        let before = record.with(|history| history.visits.len());
         engine.send(WebViewCommand::Navigate("https://paused.test/".into()));
         paused.sync(&doc, &root);
-        assert_eq!(record.with(crate::history::History::len), before);
+        assert_eq!(record.with(|history| history.visits.len()), before);
 
         w.settings.clear_on_exit = true;
         drop(w);
         assert!(
-            !record.with(crate::history::History::is_empty),
+            !record.with(|history| history.visits.is_empty()),
             "closing one page keeps the history"
         );
         let mut last = BrowserWidget::with_engine(TestEngine::new(), true);
@@ -6924,7 +6804,7 @@ mod tests {
         last.settings.clear_on_exit = true;
         drop(crate::BrowserWindow::new(last, false));
         assert!(
-            record.with(crate::history::History::is_empty),
+            record.with(|history| history.visits.is_empty()),
             "leaving the workspace clears the history"
         );
     }
@@ -7186,26 +7066,22 @@ mod tests {
 
             let mut narrow = BrowserWidget::new_headless();
             narrow.debug_show_library("bookmarks");
-            narrow.present_state(&crate::resource::BrowserState {
-                bookmarks: Bookmarks::from_entries(vec![crate::library::Bookmark {
-                    url: "https://www.rust-lang.org/learn".into(),
-                    title: "Learn Rust".into(),
-                    tags: vec!["bookmark:rust".into()],
-                }]),
-                ..crate::resource::BrowserState::default()
-            });
+            narrow.present_state(&bookmarked(&[(
+                "https://www.rust-lang.org/learn",
+                "Learn Rust",
+            )]));
             narrow.debug_set_viewport_width(390);
             layout_at(&mut narrow, 390.0, 844.0);
             let open = narrow
                 .find_rect(&format!(
                     "{}.open",
-                    bookmark_resource_id("https://www.rust-lang.org/learn")
+                    bookmark_resource_id(&ui::tilo_resource::Id::from_raw("b0"))
                 ))
                 .unwrap();
             let remove = narrow
                 .find_rect(&format!(
                     "{}.remove",
-                    bookmark_resource_id("https://www.rust-lang.org/learn")
+                    bookmark_resource_id(&ui::tilo_resource::Id::from_raw("b0"))
                 ))
                 .unwrap();
             assert!(open.width() > 0.0 && remove.width() > 0.0);
@@ -8479,9 +8355,9 @@ mod tests {
             let mut w = BrowserWidget::new_headless();
             layout_at(&mut w, 900.0, 600.0);
             layout_at(&mut w, 900.0, 600.0);
-            let composed = w.composed.as_ref().expect("composed browser");
+            let composed = w.composed.element().expect("composed browser");
             assert_eq!(
-                surface_name(composed.as_ref()).as_deref(),
+                surface_name(composed).as_deref(),
                 Some(format!("{SHOTS_URL} — test page").as_str()),
                 "assistive technology reads the loaded page by its title"
             );
@@ -8937,18 +8813,7 @@ mod tests {
                 "https://developer.mozilla.org/",
                 "https://legacy.example/",
             ];
-            w.present_state(&crate::resource::BrowserState {
-                bookmarks: Bookmarks::from_entries(
-                    urls.iter()
-                        .map(|url| crate::library::Bookmark {
-                            url: (*url).into(),
-                            title: (*url).into(),
-                            tags: vec![format!("bookmark:{url}")],
-                        })
-                        .collect(),
-                ),
-                ..crate::resource::BrowserState::default()
-            });
+            w.present_state(&bookmarked(&urls.map(|url| (url, url))));
             let (mut doc, root) = synced(&mut w);
             let mut tree = TaffyTree::<()>::new();
             let mut node_map = std::collections::HashMap::new();
@@ -8958,8 +8823,9 @@ mod tests {
             test_ids(&w, &mut ids);
             let removes: Vec<&String> = ids.iter().filter(|id| id.ends_with(".remove")).collect();
             assert_eq!(removes.len(), urls.len());
-            for url in urls {
-                let control = format!("{}.remove", bookmark_resource_id(url));
+            for at in 0..urls.len() {
+                let id = ui::tilo_resource::Id::from_raw(format!("b{at}"));
+                let control = format!("{}.remove", bookmark_resource_id(&id));
                 assert!(
                     removes.iter().any(|id| **id == control),
                     "each row needs a durable, unique semantic key: {control}"
@@ -9250,7 +9116,8 @@ impl BrowserWidget {
     pub(crate) fn clear_history_on_workspace_exit(&self) {
         if self.settings.clear_on_exit
             && let Some(record) = &self.person_history
-            && let Err(error) = record.apply(&crate::history::HistoryAction::Clear)
+            && let Err(error) =
+                record.invoke(&crate::history::BrowsingHistory::CLEAR_HISTORY.with(()))
         {
             tracing::error!(%error, "Could not clear browser history on exit");
         }
@@ -9277,10 +9144,7 @@ impl ui::widget::search_field::Filterable for BrowserWidget {
 
 #[derive(Clone, Copy, Debug)]
 enum ReviewStage {
-    Typing { text: &'static str },
-    Site { information: bool },
     Autofill { addresses: bool },
-    Find,
 }
 
 fn is_compact_chrome(width: f64, breakpoint: f32) -> bool {
@@ -9296,7 +9160,7 @@ impl BrowserWidget {
         button: Button,
         _resource: &str,
         _action_id: &str,
-        action: Option<BrowserAction>,
+        action: Option<Invoke<Browser>>,
     ) -> Button {
         self.document_button(button, action)
     }

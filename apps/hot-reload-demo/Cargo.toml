@@ -20,6 +20,9 @@ thin = ["dep:runtime-dylib"]
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 
+[dev-dependencies]
+tilo-history = { path = "../../crates/sdk/tilo-history" }
+
 [lints]
 workspace = true
 

@@ -22,3 +22,12 @@ push_only = """
 (package(tilo-fs) and binary(collab_release_matrix)) or
 (package(tilo-rollback) and binary(mechanism))
 """
+
+# Quarantined: the idle-pair wakeup gate, which fails intermittently on CI
+# (tracked in #4035). Required shards
+# (pull requests and pushes to main) skip them; nightly still runs them, so
+# the stall stays visible. The fix removes its entry; the last removal also
+# drops this key and the check.yml clause, since nextest rejects "not ()".
+quarantine = """
+(package(shell) and test(=shell::network::idle_quiet_tests::a_converged_idle_pair_exchanges_no_messages_and_repaints_nothing_for_a_minute))
+"""

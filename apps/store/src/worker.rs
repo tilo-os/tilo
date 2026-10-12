@@ -816,10 +816,7 @@ fn handle(
             let registries = crate::config::repositories(state.host.as_ref()).unwrap_or_default();
             let outcome = moderation_registry(&registries, &registry_name)
                 .and_then(|registry| {
-                    let now = ui::time::wall()
-                        .duration_since(ui::time::UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_secs();
+                    let now = ui::time::unix_now();
                     let mut nonce = [0_u8; 16];
                     SysRng.try_fill_bytes(&mut nonce).map_err(|error| {
                         crate::moderation_client::ModerationClientError::Identity(
@@ -875,7 +872,7 @@ fn open_reference(
                 .map_err(|error| format!("Could not keep the reference: {error}"))?;
             let parsed = FlatpakRef::parse(&contents, PathBuf::new());
             match parsed {
-                Some(reference) if crate::doc_actions::valid_app_id(&reference.app_id) => {
+                Some(reference) if crate::reports::valid_app_id(&reference.app_id) => {
                     let path = directory.join(format!("{}.flatpakref", reference.app_id));
                     tilo_files::native::atomic::write(&path, contents.as_bytes())
                         .map_err(|error| format!("Could not keep the reference: {error}"))?;
@@ -1246,10 +1243,7 @@ fn submit_report(
     envelope: &ReportEnvelope,
 ) -> Result<registry_types::ModerationCase, crate::moderation_client::ModerationClientError> {
     let registry = moderation_registry(registries, registry_name)?;
-    let now = ui::time::wall()
-        .duration_since(ui::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
+    let now = ui::time::unix_now();
     let envelope_bytes = serde_json::to_vec(envelope)
         .map_err(|_| crate::moderation_client::ModerationClientError::InvalidResponse)?;
     let mut nonce = [0_u8; 16];

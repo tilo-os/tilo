@@ -1,6 +1,6 @@
 //! Localized XDG user directories.
 //!
-//! Resolves the user's real, localized home + standard folders (via `xdg-paths`,
+//! Resolves the user's real, localized home + standard folders (via `tilo-paths`,
 //! honouring `~/.config/user-dirs.dirs`) so a German desktop yields `~/Dokumente`,
 //! not hard-coded English names. Shared by every "Places" list so they don't each
 //! re-hardcode English strings. Key any persisted identity off [`UserDir`] *kind*,

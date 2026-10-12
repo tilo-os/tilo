@@ -7,7 +7,6 @@
 
 use std::{
     io,
-    os::unix::fs::{FileTypeExt as _, PermissionsExt as _},
     path::{Path, PathBuf},
     rc::Rc,
     sync::Arc,
@@ -15,9 +14,7 @@ use std::{
 };
 
 use capnp::capability::Promise;
-use capnp_rpc::{RpcSystem, rpc_twoparty_capnp, twoparty};
 use tokio::sync::oneshot;
-use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
 use crate::fs_capnp::{self, file_handle, workspace_fs};
 use crate::{DirEntry, EntryKind, MAX_READ_CHUNK, Metadata};
@@ -73,19 +70,7 @@ pub fn serve_workspace(
     backend: Arc<dyn WorkspaceBackend>,
     runtime: tokio::runtime::Handle,
 ) -> io::Result<WorkspaceServer> {
-    match std::fs::symlink_metadata(socket) {
-        Ok(metadata) if metadata.file_type().is_socket() => std::fs::remove_file(socket)?,
-        Ok(_) => {
-            return Err(io::Error::new(
-                io::ErrorKind::AlreadyExists,
-                format!("{} is not a socket", socket.display()),
-            ));
-        }
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-        Err(error) => return Err(error),
-    }
-    let listener = std::os::unix::net::UnixListener::bind(socket)?;
-    std::fs::set_permissions(socket, std::fs::Permissions::from_mode(0o600))?;
+    let listener = tilo_files::native::private::bind_socket(socket)?;
     listener.set_nonblocking(true)?;
     let (stop, stopped) = oneshot::channel();
     let thread = std::thread::Builder::new()
@@ -159,14 +144,7 @@ async fn accept(
 )]
 async fn serve_connection(stream: tokio::net::UnixStream, server: Rc<Server>) -> io::Result<()> {
     let client: workspace_fs::Client = capnp_rpc::new_client_from_rc(server);
-    let (read_half, write_half) = stream.into_split();
-    let network = twoparty::VatNetwork::new(
-        read_half.compat(),
-        write_half.compat_write(),
-        rpc_twoparty_capnp::Side::Server,
-        capnp::message::ReaderOptions::default(),
-    );
-    RpcSystem::new(Box::new(network), Some(client.client))
+    runtime_portal::serve_connected_io(stream, client.client)
         .await
         .map_err(|error| io::Error::other(error.to_string()))
 }

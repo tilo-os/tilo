@@ -1,0 +1,34 @@
+# Written by `tilo-app surface`; review changes like an API change.
+
+[[resources]]
+kind = "camera"
+label = "Camera"
+version = 1
+fields = [
+  { path = "scans", type = "Vec<ScanEntry>", readonly = true },
+  { path = "recent", type = "Option<SharedCapture>", readonly = true, stored = "record" },
+  { path = "recent.id", type = "String" },
+  { path = "recent.media_id", type = "String" },
+  { path = "recent.kind", type = "CaptureKind" },
+  { path = "recent.ts", type = "i64" },
+  { path = "recent.w", type = "u32" },
+  { path = "recent.h", type = "u32" },
+  { path = "recent.dur_ms", type = "i64" },
+  { path = "recent.label", type = "String", label = true },
+  { path = "recent.facing", type = "Facing" },
+]
+
+[[resources.verbs]]
+id = "register-capture"
+kind = "undoable"
+params = [
+  { name = "capture", required = true, schema = { type = "object", additionalProperties = false, properties = { dur_ms = { type = "integer" }, facing = { type = "string", enum = ["Back", "Front", "Wide"] }, h = { type = "integer", maximum = 4294967295, minimum = 0 }, id = { type = "string" }, kind = { type = "string", enum = ["Photo", "Video"] }, label = { type = "string" }, media_id = { type = "string" }, ts = { type = "integer" }, w = { type = "integer", maximum = 4294967295, minimum = 0 } }, required = ["id", "media_id", "kind", "ts", "w", "h", "dur_ms", "label", "facing"] } },
+]
+
+[[resources.verbs]]
+id = "record-scan"
+kind = "undoable"
+params = [
+  { name = "raw", required = true, schema = { type = "string" } },
+]
+

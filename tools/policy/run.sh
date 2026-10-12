@@ -22,6 +22,8 @@ run 'Workspace membership' ./scripts/check-workspace-complete.sh
 run 'Repository layout' python3 tools/policy/check_repository_layout.py
 run 'Integration tests are compiled by a test target' \
   python3 tools/policy/check_integration_test_modules.py
+run 'Checked-in capnp bindings match their schemas' \
+  python3 tools/policy/check_capnp_bindings.py
 run 'Workflow timeouts' python3 tools/policy/check_workflow_timeouts.py
 run 'Workflow dependency and supply-chain invariants' \
   bash os/tests/workflow_dependency_invariants.sh
@@ -51,6 +53,7 @@ run 'Application resource/action contract' \
 run 'AT-SPI endpoint contract' python3 tools/policy/check_atspi_endpoint_contract.py
 run 'OS component manifest' python3 tools/policy/check_component_manifest.py
 run 'Dev image stays out of production' python3 tools/policy/check_dev_image_contract.py
+run 'Sealed images share one UKI pipeline' python3 tools/policy/check_uki_pipeline.py
 run 'Image builders copy what they compile, and only that' \
   python3 tools/policy/check_image_builder_inputs.py
 run 'Dev kernel build follows the release build' python3 tools/policy/check_kernel_dev_build.py
@@ -58,6 +61,7 @@ run 'Dev-override features stay out of production images' \
   python3 tools/policy/check_dev_overrides_contract.py
 run 'UI host-inputs contract' python3 tools/policy/check_ui_host_inputs_contract.py
 run 'UI clock contract' python3 tools/policy/check_ui_clock_contract.py
+run 'Settings are written through typed keys' python3 tools/policy/check_settings_writes.py
 run 'Widgets never write the document' python3 tools/policy/check_widget_document_writes.py
 run 'App content store contract' python3 tools/policy/check_app_content_store.py
 run 'Apps and portable SDK crates hold no platform code' \
@@ -72,6 +76,8 @@ run 'Document content stays behind the document layer' \
   python3 tools/policy/check_document_engine_boundary.py
 run 'Desktop crates dependency boundary' \
   python3 tools/policy/check_desktop_model_dependencies.py
+run 'Shared app runtime carries no OS internals or dead weight' \
+  python3 tools/policy/check_runtime_dylib_surface.py
 run 'Browser wasm32 builds stay off the workspace-hack' \
   python3 tools/policy/check_wasm_workspace_hack.py
 run 'GStreamer is the only media stack' python3 tools/policy/check_media_stack.py

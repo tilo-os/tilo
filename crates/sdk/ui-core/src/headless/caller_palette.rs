@@ -276,7 +276,7 @@ fn semantic_owner(snapshot: &InspectionNode, name: &str, target: Option<&str>) -
 
 #[cfg(test)]
 mod tests {
-    use super::super::{MouseButton, NamedKey, State, Theme, key_event};
+    use super::super::{MouseButton, NamedKey, State, Theme, key_input};
     use super::*;
     fn frame() -> FrameHarness {
         let mut frame = FrameHarness::new_with_controlled_inputs(
@@ -326,7 +326,7 @@ mod tests {
         frame.send_host_event(&WindowEvent::ModifiersChanged(
             winit::event::Modifiers::from(winit::keyboard::ModifiersState::CONTROL),
         ));
-        frame.send_host_event(&key_event(
+        frame.send_host_event(&key_input(
             &Key::Character("k".into()),
             ElementState::Pressed,
         ));
@@ -335,7 +335,7 @@ mod tests {
         ));
     }
     fn enter(frame: &mut FrameHarness) {
-        frame.send_host_event(&key_event(
+        frame.send_host_event(&key_input(
             &Key::Named(NamedKey::Enter),
             ElementState::Pressed,
         ));

@@ -110,13 +110,15 @@ pub fn is_executable(_meta: &fs::Metadata) -> bool {
     false
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
+#[cfg(unix)]
 pub fn set_executable(path: &Path) -> std::io::Result<()> {
     use std::os::unix::fs::PermissionsExt as _;
     fs::set_permissions(path, fs::Permissions::from_mode(0o755))
 }
 
-#[cfg(all(test, not(unix)))]
+#[cfg(test)]
+#[cfg(not(unix))]
 pub fn set_executable(_path: &Path) -> std::io::Result<()> {
     Ok(())
 }

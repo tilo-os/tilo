@@ -169,8 +169,11 @@ impl Local {
     /// memory.
     pub(crate) async fn lock(&self, path: &VPath, mode: LockMode) -> Result<Held, FsError> {
         match self {
-            Self::Disk(root) => disk::lock(root, path, mode).map(Held::Disk),
-            Self::Memory(scope) => scope.lock(path, mode).await.map(Held::Memory),
+            Self::Disk(root) => disk::lock(root, path, mode).map(|lock| Held::Disk { _lock: lock }),
+            Self::Memory(scope) => scope
+                .lock(path, mode)
+                .await
+                .map(|lock| Held::Memory { _lock: lock }),
             #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
             Self::Mirror(_) => Err(no_blocking_locks()),
         }
@@ -185,18 +188,21 @@ impl Local {
         }
         #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
         match self {
-            Self::Disk(root) => disk::lock(root, path, mode).map(Held::Disk),
-            Self::Memory(scope) => scope.lock_blocking(path, mode).map(Held::Memory),
+            Self::Disk(root) => disk::lock(root, path, mode).map(|lock| Held::Disk { _lock: lock }),
+            Self::Memory(scope) => scope
+                .lock_blocking(path, mode)
+                .map(|lock| Held::Memory { _lock: lock }),
         }
     }
 
     /// Takes the lock only if nobody holds a conflicting one.
     pub(crate) fn try_lock(&self, path: &VPath, mode: LockMode) -> Result<Option<Held>, FsError> {
         match self {
-            Self::Disk(root) => disk::try_lock(root, path, mode).map(|held| held.map(Held::Disk)),
+            Self::Disk(root) => disk::try_lock(root, path, mode)
+                .map(|held| held.map(|lock| Held::Disk { _lock: lock })),
             Self::Memory(scope) => scope
                 .try_lock(path, mode)
-                .map(|held| held.map(Held::Memory)),
+                .map(|held| held.map(|lock| Held::Memory { _lock: lock })),
             #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
             Self::Mirror(_) => Err(no_blocking_locks()),
         }

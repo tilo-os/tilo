@@ -81,12 +81,6 @@ impl TitleRaster {
         Some(rgba)
     }
 
-    /// Whether the last raster attempt found no way to draw. Callers show
-    /// this rather than pretending the title rendered.
-    pub fn is_unavailable(&self) -> bool {
-        self.unavailable
-    }
-
     fn draw(&mut self, text: &TextSource, width: u32, height: u32) -> Option<Vec<u8>> {
         if self.renderer.is_none() || self.size != (width, height) {
             match ui::offscreen::OffscreenRenderer::try_new(width, height) {

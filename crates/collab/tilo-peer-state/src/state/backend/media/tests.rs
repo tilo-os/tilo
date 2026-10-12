@@ -19,7 +19,7 @@ fn original(peer: &StatePeer, policy: &RoomMediaV1, complete: bool) -> Result<()
                     policy,
                     &route.app,
                     &route.record,
-                    &document.doc,
+                    &*document.doc,
                 )
                 .map_err(err)?;
             }
@@ -66,7 +66,10 @@ fn actual_media_binding_loop_matches_literal_legacy_complete_and_partial_errors(
             3 => {
                 let doc = &mut candidate.core.documents.values_mut().next().unwrap().doc;
                 let channels = doc.get(ROOT, "channels").unwrap().unwrap().1;
-                let voice = doc.get(&channels, "voice").unwrap().unwrap().1;
+                let voice = {
+                    let entry = doc.get(&channels, "voice").unwrap().unwrap().1;
+                    doc.get(&entry, "v").unwrap().unwrap().1
+                };
                 doc.put(&voice, "workspace", "wrong").unwrap();
                 doc.commit();
             }

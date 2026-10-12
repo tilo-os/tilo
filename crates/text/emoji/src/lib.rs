@@ -28,17 +28,6 @@
 //! assert_eq!(cat.with_skin_tone("🍕", Some(SkinTone::Medium)), Some("🍕"));
 //! ```
 
-#![cfg_attr(
-    test,
-    allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
-        clippy::panic,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
-
 mod data;
 mod recents;
 mod search;

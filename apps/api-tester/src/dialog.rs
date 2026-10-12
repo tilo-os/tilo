@@ -1,9 +1,9 @@
-//! The sheets that collect a name or a confirmation for a durable action:
-//! create, save, rename and delete.
+//! The sheets that collect what a durable action needs: a name to create,
+//! save or rename with, a variable to add or remove. Deleting a request or
+//! an environment needs no sheet: the host asks the person to confirm.
 
 use ui::LocalState;
-use ui::tokens::TextRole;
-use ui::widget::{Column, Element, Field, ModalDialog, Text, TextInput, TextInputKind, Widget};
+use ui::widget::{Column, Element, Field, ModalDialog, TextInput, TextInputKind, Widget};
 
 use crate::commands::{Cmd, FormMode, Sink};
 
@@ -45,12 +45,8 @@ fn field(label: &str, state: &LocalState<String>, kind: TextInputKind, focused: 
     Box::new(Field::new(label, input))
 }
 
-fn sentence(text: &str) -> Element {
-    Box::new(Text::new(text).with_role(TextRole::Body))
-}
-
-/// The sheet for `mode`. `subject` names what a delete removes.
-pub(crate) fn build(mode: FormMode, subject: &str, fields: &Fields, sink: &Sink) -> Element {
+/// The sheet for `mode`.
+pub(crate) fn build(mode: FormMode, fields: &Fields, sink: &Sink) -> Element {
     let mut body = Column::new().with_no_padding();
     if mode.needs_name() {
         body = body.push(field("Name", &fields.name, TextInputKind::Name, true));
@@ -75,19 +71,6 @@ pub(crate) fn build(mode: FormMode, subject: &str, fields: &Fields, sink: &Sink)
                     ui::widget::Toggle::from_state(&fields.secret),
                 )));
         }
-    }
-    match mode {
-        FormMode::DeleteRequest => {
-            body = body.push(sentence(&format!(
-                "\u{201c}{subject}\u{201d} will be removed from its collection."
-            )));
-        }
-        FormMode::DeleteEnvironment => {
-            body = body.push(sentence(&format!(
-                "The \u{201c}{subject}\u{201d} environment and its variables will be removed."
-            )));
-        }
-        _ => {}
     }
     let confirm = sink.clone();
     let cancel = sink.clone();

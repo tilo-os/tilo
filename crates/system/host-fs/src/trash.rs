@@ -7,6 +7,81 @@
 
 use std::path::{Path, PathBuf};
 
+/// Move files to the host Trash, preparing private home Trash directories on
+/// freedesktop platforms before the legacy backend writes into them.
+///
+/// # Errors
+///
+/// Returns an error if home Trash is unsafe or unavailable on a freedesktop
+/// host, or if the host backend cannot move the files to Trash.
+pub fn delete(paths: &[PathBuf]) -> Result<(), String> {
+    if paths.is_empty() {
+        return Ok(());
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    ensure_trash_dir().map_err(|error| error.to_string())?;
+    trash::delete_all(paths).map_err(|error| error.to_string())
+}
+
+/// Prepare the home Trash without making its contents readable by other users.
+/// Existing nonprivate directories and symlinks are refused, never repaired by
+/// changing their permissions or following them into another directory.
+///
+/// # Errors
+///
+/// Returns an error when Trash is unavailable, a directory cannot be created,
+/// or an existing Trash directory is not private and owned by the current user.
+pub fn ensure_trash_dir() -> std::io::Result<PathBuf> {
+    let files = trash_dir().ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::NotFound, "home Trash is unavailable")
+    })?;
+    let trash = files.parent().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "Trash root is unavailable",
+        )
+    })?;
+    let data = trash.parent().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "data directory is unavailable",
+        )
+    })?;
+    std::fs::create_dir_all(data)?;
+    private_trash_directory(trash)?;
+    private_trash_directory(&files)?;
+    private_trash_directory(&trash.join("info"))?;
+    Ok(files)
+}
+
+fn private_trash_directory(path: &Path) -> std::io::Result<()> {
+    match crate::create_private_dir(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            let metadata = std::fs::symlink_metadata(path)?;
+            let private = metadata.is_dir();
+            #[cfg(unix)]
+            let private = {
+                use std::os::unix::fs::MetadataExt as _;
+                // SAFETY: geteuid only reads this process's effective user.
+                private
+                    && metadata.uid() == unsafe { libc::geteuid() }
+                    // The six group/other permission bits must all be clear.
+                    && metadata.mode().trailing_zeros() >= 6
+            };
+            if private {
+                Ok(())
+            } else {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "Trash directory is not a private directory owned by this user",
+                ))
+            }
+        }
+        Err(error) => Err(error),
+    }
+}
+
 /// The XDG "home trash" files directory (`~/.local/share/Trash/files`), where
 /// trashed files are kept. `None` when there is no data dir, or on Windows.
 #[must_use]
@@ -16,7 +91,7 @@ pub fn trash_dir() -> Option<PathBuf> {
         None
     }
     #[cfg(not(windows))]
-    xdg_paths::data_dir().map(|directory| directory.join("Trash/files"))
+    tilo_paths::data_dir().map(|directory| directory.join("Trash/files"))
 }
 
 /// The user's Trash accessible through an existing launcher grant. This is
@@ -35,7 +110,7 @@ pub fn user_trash_dir() -> Option<PathBuf> {
                 .map(PathBuf::from)
                 .filter(|path| path.is_absolute())
         } else {
-            xdg_paths::data_dir()
+            tilo_paths::data_dir()
         };
         data.map(|directory| directory.join("Trash/files"))
     }

@@ -35,7 +35,7 @@ fn through_the_chooser(
     (recorder.pick_requests(), answer)
 }
 
-const OPEN: SlidesEffect = SlidesEffect::Open { path: None };
+const OPEN: SlidesEffect = SlidesEffect::OpenPresentation { path: None };
 
 /// ODP and `PowerPoint` files open through the chooser as one undoable
 /// change; failures change nothing and are said.
@@ -68,8 +68,8 @@ fn presentation_files_open_and_save_through_the_chooser() {
         bench.read(|app| {
             assert_eq!(app.cur_slide, 0, "it opens on its first slide");
             assert!(matches!(
-                app.io_toast.as_ref(),
-                Some((message, ToastKind::Success)) if *message == tr("slides-toast-opened")
+                app.io_toast.get(),
+                Some((message, ToastKind::Success)) if message == tr("slides-toast-opened")
             ));
         });
         assert!(bench.undo(), "opening a file is one undo step");
@@ -108,7 +108,7 @@ fn presentation_files_open_and_save_through_the_chooser() {
         let before = bench.deck();
         let (_, answer) = through_the_chooser(&mut bench, PortalOutcome::Opened(path), &OPEN);
         assert!(answer.is_err(), "the caller hears the open failed");
-        assert!(bench.read(|app| matches!(app.io_toast.as_ref(), Some((_, ToastKind::Error)))));
+        assert!(bench.read(|app| matches!(app.io_toast.get(), Some((_, ToastKind::Error)))));
         assert_eq!(bench.deck(), before, "a failed open changes nothing");
     }
 
@@ -126,7 +126,7 @@ fn presentation_files_open_and_save_through_the_chooser() {
         let saved =
             crate::odp::read_odp(&std::fs::read(&out).unwrap(), &ContentStore::memory()).unwrap();
         assert_eq!(saved.title, bench.deck().title);
-        assert!(bench.read(|app| matches!(app.io_toast.as_ref(), Some((_, ToastKind::Success)))));
+        assert!(bench.read(|app| matches!(app.io_toast.get(), Some((_, ToastKind::Success)))));
     }
 
     // Case `ensure_odp_ext_appends_when_missing`.
@@ -159,7 +159,7 @@ fn open_save_as_and_read_reach_the_files_named() {
     let mut bench = Bench::one_slide(Slide::new(Layout::Blank));
     bench
         .app
-        .effect_confirmed(&SlidesEffect::Open {
+        .effect_confirmed(&SlidesEffect::OpenPresentation {
             path: Some(path.to_string_lossy().into_owned()),
         })
         .expect("open is answered");
@@ -180,7 +180,10 @@ fn open_save_as_and_read_reach_the_files_named() {
         "a .pptx path writes PowerPoint"
     );
 
-    let read = bench.app.effect(&SlidesEffect::Read).expect("read answers");
+    let read = bench
+        .app
+        .effect(&SlidesEffect::ReadDeck)
+        .expect("read answers");
     let outline = read
         .value
         .and_then(|value| value.as_str().map(str::to_owned));
@@ -193,7 +196,7 @@ fn open_save_as_and_read_reach_the_files_named() {
     assert!(
         bench
             .app
-            .effect(&SlidesEffect::Open {
+            .effect(&SlidesEffect::OpenPresentation {
                 path: Some(path.to_string_lossy().into_owned()),
             })
             .is_err(),
@@ -223,13 +226,10 @@ fn a_brokered_text_reveal_restores_the_slide_element_and_selection() {
     };
     bench
         .app
-        .effect_on(
-            &crate::actions::text_resource_id(&element_id),
-            &SlidesEffect::EditText {
-                slide: slide_id,
-                element: element_id.clone(),
-            },
-        )
+        .effect(&SlidesEffect::EditText {
+            slide: slide_id,
+            element: element_id.clone(),
+        })
         .expect("the text resource reveals");
     bench.frame();
     bench.read(|app| {
@@ -260,17 +260,12 @@ fn a_restore_rebinds_the_notes_being_edited() {
     s.notes = "Selected notes".into();
     let mut bench = Bench::one_slide(s);
     let selected = bench.app.read_document(|doc| doc.clone().get_heads());
+    let notes = crate::actions::slide_paths(&bench.deck().slides[0].id)
+        .notes
+        .splice(0, 0, "LIVE ");
     bench
         .app
-        .invoke_child::<ui::tilo_resource::PlainText>(
-            &crate::actions::notes_resource_id(&bench.deck().slides[0].id),
-            ui::tilo_resource::Invoke::apply(&ui::tilo_resource::TextEdit::Splice {
-                at: 0,
-                delete: 0,
-                insert: "LIVE ".into(),
-            })
-            .unwrap(),
-        )
+        .invoke(ui::tilo_resource::Invoke::edit(&notes).unwrap())
         .unwrap();
     bench.focus();
     bench.with(SlidesApp::begin_notes_edit);
@@ -282,8 +277,12 @@ fn a_restore_rebinds_the_notes_being_edited() {
     // History's restore rewrites the deck as it was.
     bench.app.merge_peer_edit(|doc| {
         let past = doc.fork_at(&selected).unwrap();
-        let deck = SlidesDoc::load(&past).unwrap();
-        tilo_actions::Action::apply(&actions::replace_deck_action(&deck), doc).unwrap();
+        let deck = <crate::deck::Deck as ui::tilo_resource::Resource>::read(&past).unwrap();
+        tilo_actions::Action::apply(
+            &actions::replace_deck_action(&crate::deck::mirror(&deck)),
+            doc,
+        )
+        .unwrap();
     });
     bench.frame();
     bench.read(|app| {
@@ -312,7 +311,7 @@ fn notes_of_a_deleted_slide_stop_being_edited() {
     bench.frame();
     assert!(bench.read(|app| app.editing_notes));
     bench.app.merge_peer_edit(|doc| {
-        tilo_actions::Action::apply(&actions::delete_slide_action(1, gone.clone()), doc).unwrap();
+        tilo_actions::Action::apply(&actions::delete_slide_action(&gone), doc).unwrap();
     });
     bench.frame();
     bench.read(|app| {
@@ -328,16 +327,8 @@ fn the_slide_shown_stays_shown_when_a_collaborator_inserts_before_it() {
     bench.with(|app| app.cur_slide = 2);
     let shown = bench.deck().slides[2].id.clone();
     bench.app.merge_peer_edit(|doc| {
-        let ranks = SlidesDoc::slide_ranks(doc);
         let slide = Slide::new(Layout::Blank);
-        tilo_actions::Action::apply(
-            &actions::insert_slide_with_order_action(
-                &slide,
-                crate::doc::rank_for_insert(&ranks, 0),
-            ),
-            doc,
-        )
-        .unwrap();
+        tilo_actions::Action::apply(&actions::insert_slide_action(0, &slide), doc).unwrap();
     });
     bench.frame();
     bench.read(|app| {

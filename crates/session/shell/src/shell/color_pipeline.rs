@@ -16,7 +16,11 @@ use crate::shell::hdr_tonemap::HdrTonemapConfig;
 
 /// WGSL source for the SDR → HDR output-encode compute shader, the GPU
 /// mirror of [`map_sdr_pixel_to_pq_bt2020`]. Validated through `naga` in tests.
-pub const OUTPUT_ENCODE_SHADER_SOURCE: &str = include_str!("hdr_output_encode.wgsl");
+pub const OUTPUT_ENCODE_SHADER_SOURCE: &str = concat!(
+    include_str!("output_orientation.wgsl"),
+    "\n",
+    include_str!("hdr_output_encode.wgsl")
+);
 
 /// BT.2408 "HDR reference white": the luminance SDR diffuse white (sRGB 1.0)
 /// maps to in a PQ/HLG signal. 203 cd/m² is the ITU-agreed diffuse-white

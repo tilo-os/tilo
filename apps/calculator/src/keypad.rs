@@ -308,11 +308,6 @@ impl CalcScreen {
         self.layout(area, model);
     }
 
-    /// Advance the panel's eased reveal one frame (draw path only).
-    pub fn tick_panel(&mut self, theme: &Theme) {
-        self.panel.tick(theme);
-    }
-
     /// Whether the history panel is mid-slide (drives the app's animation
     /// frame pump).
     pub fn drawer_animating(&self) -> bool {

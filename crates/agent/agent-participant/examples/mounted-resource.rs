@@ -16,6 +16,9 @@ fn main() -> std::process::ExitCode {
     if let Some(code) = tilo_automerge_isolate::dispatch_early() {
         return std::process::ExitCode::from(code);
     }
+    if let Some(code) = tilo_agent_participant::worker::dispatch_early() {
+        return std::process::ExitCode::from(code);
+    }
     let Ok(runtime) = tokio::runtime::Runtime::new() else {
         return std::process::ExitCode::FAILURE;
     };

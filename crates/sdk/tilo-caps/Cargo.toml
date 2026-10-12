@@ -14,6 +14,7 @@ description = "The Tilo app capability vocabulary and its availability on Linux,
 [dependencies]
 tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }
 tilo-paths = { version = "0.1.0", path = "../../platform/tilo-paths" }
+tilo-platform-caps = { version = "0.1.0", path = "../../platform/tilo-platform-caps" }
 tilo-process = { version = "0.1.0", path = "../../platform/tilo-process" }
 tilo-rt = { version = "0.1.0", path = "../../platform/tilo-rt" }
 

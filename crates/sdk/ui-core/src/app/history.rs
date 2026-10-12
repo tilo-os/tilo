@@ -179,13 +179,7 @@ impl App {
         }
         // Refresh may replace retained chrome. No raw map survives it.
         if self.history_focus.is_none() {
-            self.history_focus = unsafe {
-                crate::widget::layout::CompositionFocus::capture(
-                    self.focused_node,
-                    &self.layout.node_map,
-                    &self.bindings,
-                )
-            };
+            self.history_focus = self.capture_focus_identity();
         }
         self.layout.node_map.clear();
         self.bindings.clear();
@@ -230,27 +224,35 @@ impl App {
             }
         }
         self.invalidate_widget_resource_cache();
-        self.layout.structure_dirty = true;
+        self.layout.request_rebuild();
         self.layout.layout_dirty = true;
     }
-    pub(super) fn update_history_focus_order(&mut self) {
+    pub(super) fn update_history_focus_order(
+        &mut self,
+        restrictions: &crate::history_mode::embedded::FocusRestrictions,
+    ) {
         self.focusable_order.clear();
         let root = self
             .history
             .as_ref()
             .and_then(|history| history.review_layout_node())
             .or(self.layout.root_node);
+        // History's owned nodes, walked once for this recomputation: both the
+        // capture filter and the History-last sort ask it of every node.
+        let owned = self
+            .history
+            .as_ref()
+            .map(|history| history.owned_nodes(&self.layout.taffy))
+            .unwrap_or_default();
+        let captures = self
+            .history
+            .as_ref()
+            .is_some_and(|history| history.captures_input());
         let (order, app_trap) = root.map_or_else(
             || (Vec::new(), false),
             |root| {
                 crate::focus_navigation::mapped_order(root, &self.layout.taffy, |node| {
-                    let allowed = crate::history_mode::embedded::allows_focus(
-                        self.root_widget.as_ref(),
-                        node,
-                        &self.layout.taffy,
-                    ) && self.history.as_ref().is_none_or(|history| {
-                        !history.captures_input() || history.owns_node(node, &self.layout.taffy)
-                    });
+                    let allowed = restrictions.allows(node) && (!captures || owned.contains(&node));
                     self.inspect_node(node, |widget| {
                         (
                             allowed && widget.is_focusable() && widget.is_enabled(),
@@ -263,16 +265,8 @@ impl App {
             },
         );
         self.focusable_order = order;
-        if self
-            .history
-            .as_ref()
-            .is_none_or(|history| !history.captures_input())
-        {
-            self.focusable_order.sort_by_key(|id| {
-                self.history
-                    .as_ref()
-                    .is_some_and(|history| history.owns_node(*id, &self.layout.taffy))
-            });
+        if !captures {
+            self.focusable_order.sort_by_key(|id| owned.contains(id));
         }
         let trap_active = app_trap
             || self
@@ -504,7 +498,7 @@ impl App {
                 self.invalidate_widget_resource_cache();
                 self.publish_owned_documents();
             }
-            self.layout.structure_dirty = true;
+            self.layout.request_rebuild();
             return true;
         }
         let nested_focus = unsafe {
@@ -535,7 +529,9 @@ impl App {
             self.bindings.clear();
             self.focused_node = None;
             let changed = history.invalidate_owner();
-            self.layout.structure_dirty |= changed;
+            if changed {
+                self.layout.request_rebuild();
+            }
             return changed;
         }
         if history.has_review_request() {
@@ -565,7 +561,7 @@ impl App {
                     self.publish_owned_documents();
                 }
             }
-            self.layout.structure_dirty = true;
+            self.layout.request_rebuild();
             return true;
         }
         if history.returning_live() {

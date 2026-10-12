@@ -217,6 +217,73 @@ pub fn save_status(path: &Path, status: &FullReplicaStatus) -> Result<()> {
     Ok(())
 }
 
+/// The lock a running replica holds beside its status file for its whole
+/// life, so a consumer can tell the status of a live replica from one a
+/// replica left behind when it exited ([`replica_is_running`]). The kernel
+/// releases it however the process ends, crash included.
+///
+/// This replaces restamping the status every second to keep it recent
+/// (TIL-774): the replica now writes its status only when the status
+/// changes, and sleeps in between.
+#[derive(Debug)]
+pub struct ReplicaLiveness {
+    _lock: advisory_lock::FileLock,
+}
+
+impl ReplicaLiveness {
+    /// Take the liveness lock for the status file at `status`.
+    ///
+    /// # Errors
+    ///
+    /// The lock file cannot be created, or another running replica holds it.
+    pub fn hold(status: &Path) -> Result<Self> {
+        use std::os::unix::fs::OpenOptionsExt;
+        let path = liveness_path(status);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("create {}", parent.display()))?;
+        }
+        // Readable by the relay, which only ever takes a shared lock.
+        let lock = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .mode(0o644)
+            .open(&path)
+            .with_context(|| format!("open {}", path.display()))?;
+        match advisory_lock::FileLock::try_exclusive(lock) {
+            Ok(lock) => Ok(Self { _lock: lock }),
+            Err(advisory_lock::TryLockError::WouldBlock) => {
+                anyhow::bail!("another replica is running for {}", status.display())
+            }
+            Err(advisory_lock::TryLockError::Error(error)) => {
+                Err(error).with_context(|| format!("lock {}", path.display()))
+            }
+        }
+    }
+}
+
+/// Whether a running replica holds the liveness lock of the status file at
+/// `status` ([`ReplicaLiveness`]). `false` when no replica ever ran, when
+/// the one that did has exited, or when the lock cannot be inspected.
+#[must_use]
+pub fn replica_is_running(status: &Path) -> bool {
+    let Ok(lock) = std::fs::File::open(liveness_path(status)) else {
+        return false;
+    };
+    matches!(
+        advisory_lock::FileLock::try_shared(lock),
+        Err(advisory_lock::TryLockError::WouldBlock)
+    )
+}
+
+fn liveness_path(status: &Path) -> std::path::PathBuf {
+    let mut name = status.file_name().unwrap_or_default().to_os_string();
+    name.push(".lock");
+    status.with_file_name(name)
+}
+
 /// Read the last complete status record, if any.
 ///
 /// # Errors
@@ -471,6 +538,28 @@ mod tests {
 
     /// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
     const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
+
+    /// TIL-774. A replica is running exactly while it holds its liveness
+    /// lock, and two replicas cannot serve one status file.
+    #[test]
+    fn a_replica_is_running_while_it_holds_its_liveness_lock() {
+        let temp = tempfile::tempdir().unwrap();
+        let status = temp.path().join("full-replica").join("status.json");
+        assert!(!replica_is_running(&status), "no replica ever ran");
+        let alive = ReplicaLiveness::hold(&status).unwrap();
+        assert!(replica_is_running(&status));
+        assert!(
+            ReplicaLiveness::hold(&status).is_err(),
+            "a second replica must not take over a running one's status"
+        );
+        drop(alive);
+        assert!(!replica_is_running(&status), "the replica exited");
+        let _again = ReplicaLiveness::hold(&status).unwrap();
+        assert!(
+            replica_is_running(&status),
+            "a restarted replica is running"
+        );
+    }
     use crate::ContentStore;
     use crate::content::{ChunkRef, Manifest};
     use crate::namespace::ROOT_INO;
@@ -687,7 +776,7 @@ mod tests {
         governor: &ed25519_dalek::SigningKey,
         collaborator: crate::IdentityKey,
     ) {
-        use collab_types::{CapOverride, Effect, Scope, Subject, Verb};
+        use collab_types::{Access, CapOverride, Effect, Scope, Subject};
         authority
             .apply(
                 crate::workspace_authority::WorkspaceAuthorityEnvelope::sign(
@@ -697,7 +786,7 @@ mod tests {
                         Subject::User(collab_types::Ed25519PublicKey(collaborator)),
                         Scope::FsPath("/".into()),
                         Effect::Grant,
-                        Verb::Read,
+                        Access::Read,
                     )],
                     false,
                     governor,

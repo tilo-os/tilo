@@ -4,7 +4,7 @@
 //! Callers assemble a client only after the protocol-specific mutual proof.
 //! The only production carrier here remains the existing Iroh transport.
 
-use iroh::endpoint::{Connection, Endpoint};
+use iroh::endpoint::{Connection, ConnectionStats, Endpoint};
 use n0_future::boxed::BoxFuture;
 use tokio::sync::mpsc;
 
@@ -20,12 +20,17 @@ pub(crate) struct SessionChannels {
     pub action_inbound: mpsc::Receiver<EnvelopeV2>,
 }
 
-/// Lifetime operations only: no identity, business retry, or durability policy.
-/// Normal handle drop must let the pump drain queued unsubscribes and finish.
+/// Lifetime operations and transport counters only: no identity, business
+/// retry, or durability policy. Normal handle drop must let the pump drain
+/// queued unsubscribes and finish.
 pub(crate) trait SessionCarrier {
     fn abort(&self, reason: &'static [u8]);
     fn disconnect(&self) -> BoxFuture<()>;
     fn close_owned(&self) -> BoxFuture<()>;
+    /// The transport's own packet and frame counters, where it keeps them.
+    fn transport_stats(&self) -> Option<ConnectionStats> {
+        None
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -81,5 +86,9 @@ impl SessionCarrier for IrohCarrier {
             // the socket. Callers sharing an endpoint must use disconnect.
             endpoint.close().await;
         })
+    }
+
+    fn transport_stats(&self) -> Option<ConnectionStats> {
+        Some(self.connection.stats())
     }
 }
