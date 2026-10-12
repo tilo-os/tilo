@@ -320,6 +320,13 @@ class AppSdkAffectedTests(unittest.TestCase):
                         'include_str!("bound_component_tests.rs");\n')
         self.assertTrue(self.check(path))
 
+    def test_generated_sdk_template_source_reader_keeps_sdk(self):
+        path, _, _ = self.unit_module_fixture()
+        reader = self.root / 'crates/dev/tilo-app-cli/templates/starter/src/lib.rs'
+        reader.parent.mkdir(parents=True)
+        reader.write_text('include!("bound_component_tests.rs");\n')
+        self.assertTrue(self.check(path))
+
     def standalone_fixture(self, name='calculator'):
         pkg = next(p for p in self.metadata['packages'] if p['name'] == name)
         path = Path(pkg['manifest_path']).parent / 'tests/native_flow.rs'
