@@ -376,6 +376,7 @@ pub struct PaintedTargets {
     host_focused: bool,
     shift: bool,
     cursor: Point,
+    input_scale_factor: Option<f64>,
     activated: Vec<String>,
 }
 
@@ -600,6 +601,13 @@ impl PaintedTargets {
             self.focused.clone(),
             self.host_focused,
         );
+        if self
+            .input_scale_factor
+            .is_some_and(|scale| scale.to_bits() != scale_factor.to_bits())
+        {
+            self.cancel_pointer_press();
+        }
+        self.input_scale_factor = Some(scale_factor);
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 self.cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
