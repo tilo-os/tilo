@@ -154,7 +154,7 @@ elif args[0]=='build':
             else:
                 target = bundle / 'lib' / path.name
             target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(path, target)
+            shutil.copy(path, target)  # keeps the loader executable, as the bundle does
         return bundle
 
     def verify_closure(self, bundle):
