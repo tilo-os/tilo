@@ -6,11 +6,11 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard};
 
-use collab_types::{
-    Ed25519PublicKey, FileActor, FileInviteError, FileInviteSubject, FileInviteV1, FilePermission,
-    bearer_secret_hash, canonical_bytes,
+use collab_types::{Ed25519PublicKey, canonical_bytes};
+use fs_protocol::{
+    FileActor, FileInviteError, FileInviteSubject, FileInviteV1, FilePermission, bearer_secret_hash,
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -49,12 +49,40 @@ struct GrantState {
     redemption_actors: Vec<FileActor>,
 }
 
+impl AuthorityState {
+    /// The registered, unrevoked grant `id`, whose stored token hashes to
+    /// `hash`.
+    fn live_grant(&self, id: Uuid, hash: &[u8; 32]) -> Result<&GrantState, ShareAuthorityError> {
+        let grant = self
+            .grants
+            .get(&id)
+            .ok_or(ShareAuthorityError::UnknownGrant)?;
+        if grant.token_hash != *hash {
+            return Err(ShareAuthorityError::GrantIdCollision);
+        }
+        if grant.revoked {
+            return Err(ShareAuthorityError::Revoked);
+        }
+        Ok(grant)
+    }
+}
+
 pub struct ShareAuthority {
     path: PathBuf,
     state: Mutex<AuthorityState>,
+    /// Announces every published change of `state`, so a held change await
+    /// re-authorizes the moment a grant is revoked
+    /// ([`ShareAuthority::subscribe_changes`]).
+    changes: tokio::sync::watch::Sender<u64>,
 }
 
 impl ShareAuthority {
+    fn state(&self) -> Result<MutexGuard<'_, AuthorityState>, ShareAuthorityError> {
+        self.state
+            .lock()
+            .map_err(|_| ShareAuthorityError::StatePoisoned)
+    }
+
     /// Open and fully validate a durable share authority.
     ///
     /// # Errors
@@ -85,6 +113,7 @@ impl ShareAuthority {
         Ok(Self {
             path,
             state: Mutex::new(state),
+            changes: tokio::sync::watch::Sender::new(0),
         })
     }
 
@@ -109,10 +138,7 @@ impl ShareAuthority {
             return Err(ShareAuthorityError::UntrustedIssuer);
         }
         let hash = token_hash(token)?;
-        let mut current = self
-            .state
-            .lock()
-            .map_err(|_| ShareAuthorityError::StatePoisoned)?;
+        let mut current = self.state()?;
         if let Some(existing) = current.grants.get(&token.id) {
             if existing.token_hash != hash {
                 return Err(ShareAuthorityError::GrantIdCollision);
@@ -138,6 +164,7 @@ impl ShareAuthority {
                     .token = Some(token.clone());
                 persist(&self.path, &next)?;
                 *current = next;
+                self.announce_change();
             }
             return Ok(());
         }
@@ -171,6 +198,7 @@ impl ShareAuthority {
         );
         persist(&self.path, &next)?;
         *current = next;
+        self.announce_change();
         Ok(())
     }
 
@@ -184,10 +212,7 @@ impl ShareAuthority {
         reason = "the writer lock intentionally spans revocation checks, durable replacement, and in-memory publication"
     )]
     pub fn revoke(&self, id: Uuid) -> Result<bool, ShareAuthorityError> {
-        let mut current = self
-            .state
-            .lock()
-            .map_err(|_| ShareAuthorityError::StatePoisoned)?;
+        let mut current = self.state()?;
         let Some(grant) = current.grants.get(&id) else {
             return Ok(false);
         };
@@ -201,7 +226,35 @@ impl ShareAuthority {
             .revoked = true;
         persist(&self.path, &next)?;
         *current = next;
+        self.announce_change();
         Ok(true)
+    }
+
+    /// Wakes on every change this authority publishes: a grant registered,
+    /// redeemed or revoked. A watcher re-authorizes; the value says only
+    /// that something changed.
+    #[must_use]
+    pub fn subscribe_changes(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.changes.subscribe()
+    }
+
+    fn announce_change(&self) {
+        self.changes.send_modify(|generation| {
+            *generation = generation.wrapping_add(1);
+        });
+    }
+
+    /// Whether any grant is still unrevoked: someone holding its link or
+    /// invitation may dial this device (TIL-774, [`crate::reachability`]).
+    /// Expiry is not consulted; a grant that only lapsed still counts.
+    #[must_use]
+    pub fn has_unrevoked_grants(&self) -> bool {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .grants
+            .values()
+            .any(|grant| !grant.revoked)
     }
 
     /// Recheck a named human's live grant for every record request. Device
@@ -227,21 +280,7 @@ impl ShareAuthority {
             return Err(ShareAuthorityError::InsufficientPermission);
         }
         let hash = token_hash(token)?;
-        let current = self
-            .state
-            .lock()
-            .map_err(|_| ShareAuthorityError::StatePoisoned)?;
-        let grant = current
-            .grants
-            .get(&token.id)
-            .ok_or(ShareAuthorityError::UnknownGrant)?;
-        if grant.token_hash != hash {
-            return Err(ShareAuthorityError::GrantIdCollision);
-        }
-        if grant.revoked {
-            return Err(ShareAuthorityError::Revoked);
-        }
-        drop(current);
+        self.state()?.live_grant(token.id, &hash)?;
         Ok(())
     }
 
@@ -271,20 +310,8 @@ impl ShareAuthority {
             return Err(ShareAuthorityError::WrongSecret);
         }
         let hash = token_hash(token)?;
-        let mut current = self
-            .state
-            .lock()
-            .map_err(|_| ShareAuthorityError::StatePoisoned)?;
-        let grant = current
-            .grants
-            .get(&token.id)
-            .ok_or(ShareAuthorityError::UnknownGrant)?;
-        if grant.token_hash != hash {
-            return Err(ShareAuthorityError::GrantIdCollision);
-        }
-        if grant.revoked {
-            return Err(ShareAuthorityError::Revoked);
-        }
+        let mut current = self.state()?;
+        let grant = current.live_grant(token.id, &hash)?;
         if let Some(index) = grant
             .redemption_actors
             .iter()
@@ -319,6 +346,7 @@ impl ShareAuthority {
         };
         persist(&self.path, &next)?;
         *current = next;
+        self.announce_change();
         Ok(Redemption {
             grant_id: token.id,
             redemption_number: count,
@@ -348,20 +376,8 @@ impl ShareAuthority {
             return Err(ShareAuthorityError::InvalidRedemption);
         }
         let hash = token_hash(token)?;
-        let current = self
-            .state
-            .lock()
-            .map_err(|_| ShareAuthorityError::StatePoisoned)?;
-        let grant = current
-            .grants
-            .get(&token.id)
-            .ok_or(ShareAuthorityError::UnknownGrant)?;
-        if grant.token_hash != hash {
-            return Err(ShareAuthorityError::GrantIdCollision);
-        }
-        if grant.revoked {
-            return Err(ShareAuthorityError::Revoked);
-        }
+        let current = self.state()?;
+        let grant = current.live_grant(token.id, &hash)?;
         if redemption.redemption_number > grant.redemptions {
             return Err(ShareAuthorityError::InvalidRedemption);
         }
@@ -379,7 +395,7 @@ impl ShareAuthority {
     /// truth; bearer secrets and secret hashes are never projected.
     pub fn projection(
         &self,
-        record_id: collab_types::FileRecordId,
+        record_id: fs_protocol::FileRecordId,
         now_ms: u64,
     ) -> ShareProjectionV1 {
         let current = self
@@ -446,7 +462,7 @@ impl ShareAuthority {
 #[serde(deny_unknown_fields)]
 pub struct ShareProjectionV1 {
     pub schema_version: u16,
-    pub record_id: collab_types::FileRecordId,
+    pub record_id: fs_protocol::FileRecordId,
     pub observed_at_ms: u64,
     pub grants: Vec<ShareGrantProjectionV1>,
 }
@@ -680,7 +696,7 @@ pub enum ShareAuthorityError {
 mod tests {
     use std::sync::{Arc, Barrier};
 
-    use collab_types::{
+    use fs_protocol::{
         FileInviteSpec, FileInviteSubject, FilePermission, FileRecordId, mint_bearer_file_invite,
         mint_file_invite,
     };
@@ -700,7 +716,7 @@ mod tests {
     fn limited_invite() -> (
         tempfile::TempDir,
         Ed25519PublicKey,
-        collab_types::BearerFileInvite,
+        fs_protocol::BearerFileInvite,
     ) {
         let dir = tempfile::tempdir().unwrap();
         let mut rng = UnwrapErr(SysRng);
@@ -784,7 +800,7 @@ mod tests {
             let (issuer_sk, issuer) = collab_types::generate_keypair();
             let (_, person) = collab_types::generate_keypair();
             let (_, stranger) = collab_types::generate_keypair();
-            let token = collab_types::mint_file_invite(
+            let token = fs_protocol::mint_file_invite(
                 FileInviteSpec {
                     workspace_id: Uuid::new_v4(),
                     record_id: FileRecordId::new(),

@@ -71,37 +71,45 @@ pub fn stage_setup_handoff(
     Ok(Some(StagedHandoff { root }))
 }
 
-/// Stage Wi-Fi and an owner SSH key without enrolling an identity.
+/// Stage Wi-Fi, owner SSH keys and the chosen hostname without enrolling an
+/// identity.
 ///
-/// Either piece may be absent. Only enrollment needs this machine's
-/// identity, so a write that joins a network or carries the owner's key
-/// works on a setup machine that has none.
+/// Any piece may be absent. Only enrollment needs this machine's identity,
+/// so a write that joins a network, names the machine or carries the
+/// owner's keys works on a setup machine that has none. `name_target` is
+/// false for installer media, whose installed system takes its name from
+/// the embedded profile instead.
 ///
 /// # Errors
 ///
-/// Returns a string when the network or the key is unusable, or when the
-/// staged files cannot be written.
+/// Returns a string when the network, a key or the hostname is unusable, or
+/// when the staged files cannot be written.
 pub fn stage_access_handoff(
     profile: &InstallProfile,
     wifi_psk: &str,
-    ssh_public_key: &str,
+    ssh_public_keys: &str,
+    name_target: bool,
 ) -> Result<Option<StagedHandoff>, String> {
     let ssid = profile.wifi_ssid.trim();
     let needs_wifi = !ssid.is_empty();
-    let needs_key = !ssh_public_key.trim().is_empty();
-    if !needs_wifi && !needs_key {
+    let needs_key = !ssh_public_keys.trim().is_empty();
+    let hostname = chosen_hostname(profile).filter(|_| name_target);
+    if !needs_wifi && !needs_key && hostname.is_none() {
         return Ok(None);
     }
     if needs_wifi && wifi_psk.is_empty() {
         return Err("A Wi-Fi password is required when a network name is set.".into());
     }
-    validate_bringup_ssh_key(ssh_public_key)?;
+    validate_bringup_ssh_key(ssh_public_keys)?;
     let root = prepare_handoff_root()?;
     let staged = (|| {
         if needs_wifi {
             write_wifi_connection(&root, ssid, wifi_psk)?;
         }
-        install_bringup_ssh_key(&root, ssh_public_key)
+        if let Some(hostname) = hostname {
+            write_hostname(&root, hostname)?;
+        }
+        install_bringup_ssh_key(&root, ssh_public_keys)
     })();
     if let Err(error) = staged {
         let _ = fs::remove_dir_all(&root);
@@ -110,21 +118,86 @@ pub fn stage_access_handoff(
     Ok(Some(StagedHandoff { root }))
 }
 
-/// Path of the owner SSH key inside a handoff tree.
+/// Path of the owner SSH keys inside a handoff tree, one key per line.
 ///
 /// The installer applies this request only when it installs a development
-/// image, as key-only login for the account it creates. A production install
-/// refuses it instead of opening SSH.
+/// image, as key-only owner login for the account it creates. A production
+/// install refuses it instead of opening SSH. A disk that already carries
+/// its account gets the same login from the write
+/// ([`crate::installed_root`]).
 pub const BRINGUP_SSH_KEY: &str = "etc/tilo/bringup-ssh.pub";
 
-/// Add the owner SSH key to a staged tree. An empty key adds nothing.
+/// The hostname the operator chose, or `None` while the profile still has
+/// the default, so a written disk keeps the name its image gives it.
+pub(crate) fn chosen_hostname(profile: &InstallProfile) -> Option<&str> {
+    let hostname = profile.hostname.trim();
+    (!hostname.is_empty() && hostname != crate::model::DEFAULT_HOSTNAME).then_some(hostname)
+}
+
+/// Name the target. Tilo images announce their hostname over mDNS (Avahi),
+/// so this is also the `<hostname>.local` a headless machine is reached at.
+fn write_hostname(root: &Path, hostname: &str) -> Result<(), String> {
+    if !install_profile_model::valid_hostname(hostname) {
+        return Err(
+            "Hostname must be 1–63 letters, numbers or hyphens, without a hyphen at either end."
+                .into(),
+        );
+    }
+    let etc = root.join("etc");
+    fs::create_dir_all(&etc).map_err(|error| error.to_string())?;
+    let path = etc.join("hostname");
+    fs::write(&path, format!("{hostname}\n")).map_err(|error| error.to_string())?;
+    set_mode(&path, 0o644).map_err(|error| error.to_string())
+}
+
+/// Files for the home of the account a written disk already has, staged
+/// under this directory of the handoff tree by name.
+pub const ACCOUNT_HOME_FILES: &str = "account-home";
+
+/// A file name the account's home can take: one path component, not hidden,
+/// and nothing a shell or an `ls` would misread.
+pub(crate) fn home_file_name_is_safe(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 128
+        && !name.starts_with('.')
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'))
+}
+
+/// Stage `contents` to land as `name` in the home of the disk's account.
 ///
 /// # Errors
 ///
-/// Returns a string when the key is not one OpenSSH public key, or the file
+/// Returns a string when `name` is not one plain file name or the file
 /// cannot be written.
-pub fn install_bringup_ssh_key(root: &Path, ssh_public_key: &str) -> Result<(), String> {
-    let Some(line) = bringup_ssh_key_line(ssh_public_key)? else {
+pub fn stage_account_home_file(root: &Path, name: &str, contents: &[u8]) -> Result<(), String> {
+    if !home_file_name_is_safe(name) {
+        return Err(format!(
+            "{name:?} is not a plain file name for the account's home"
+        ));
+    }
+    let dir = root.join(ACCOUNT_HOME_FILES);
+    fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
+    let path = dir.join(name);
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+        .map_err(|error| format!("{name}: {error}"))?;
+    file.write_all(contents)
+        .map_err(|error| error.to_string())?;
+    set_mode(&path, 0o644).map_err(|error| error.to_string())
+}
+
+/// Add the owner SSH keys to a staged tree. No keys add nothing.
+///
+/// # Errors
+///
+/// Returns a string when a line is not one OpenSSH public key, or the file
+/// cannot be written.
+pub fn install_bringup_ssh_key(root: &Path, ssh_public_keys: &str) -> Result<(), String> {
+    let Some(line) = bringup_ssh_key_lines(ssh_public_keys)? else {
         return Ok(());
     };
     let path = root.join(BRINGUP_SSH_KEY);
@@ -135,27 +208,44 @@ pub fn install_bringup_ssh_key(root: &Path, ssh_public_key: &str) -> Result<(), 
     set_mode(&path, 0o644).map_err(|error| error.to_string())
 }
 
-/// Accept nothing, or exactly one OpenSSH public key of a type the
-/// installer admits, with no `authorized_keys` options.
+/// The most owner keys one request carries.
+const MAX_BRINGUP_SSH_KEYS: usize = 16;
+
+const REFUSED_SSH_KEY: &str =
+    "Each SSH key must be one public key per line: its type, the key, and an optional comment.";
+
+/// Accept nothing, or OpenSSH public keys of a type the installer admits,
+/// one per line, with no `authorized_keys` options.
 ///
 /// # Errors
 ///
-/// Returns a string describing why the text is not such a key.
-pub fn validate_bringup_ssh_key(ssh_public_key: &str) -> Result<(), String> {
-    bringup_ssh_key_line(ssh_public_key).map(|_| ())
+/// Returns a string describing why the text is not such keys.
+pub fn validate_bringup_ssh_key(ssh_public_keys: &str) -> Result<(), String> {
+    bringup_ssh_key_lines(ssh_public_keys).map(|_| ())
 }
 
-fn bringup_ssh_key_line(text: &str) -> Result<Option<String>, String> {
+fn bringup_ssh_key_lines(text: &str) -> Result<Option<String>, String> {
+    if text.contains("PRIVATE KEY") {
+        return Err(REFUSED_SSH_KEY.into());
+    }
+    let mut keys = String::new();
+    let mut count = 0;
+    for line in text.lines().filter(|line| !line.trim().is_empty()) {
+        count += 1;
+        if count > MAX_BRINGUP_SSH_KEYS {
+            return Err(format!(
+                "At most {MAX_BRINGUP_SSH_KEYS} SSH keys can be added."
+            ));
+        }
+        keys.push_str(&bringup_ssh_key_line(line)?);
+    }
+    Ok((count > 0).then_some(keys))
+}
+
+fn bringup_ssh_key_line(text: &str) -> Result<String, String> {
     use base64::Engine as _;
-    const REFUSED: &str =
-        "The SSH key must be one public key: its type, the key, and an optional comment.";
+    const REFUSED: &str = REFUSED_SSH_KEY;
     let text = text.trim();
-    if text.is_empty() {
-        return Ok(None);
-    }
-    if text.lines().count() != 1 || text.contains("PRIVATE KEY") {
-        return Err(REFUSED.into());
-    }
     let mut parts = text.split_whitespace();
     let kind = parts.next().unwrap_or_default();
     let blob = parts.next().unwrap_or_default();
@@ -181,7 +271,7 @@ fn bringup_ssh_key_line(text: &str) -> Result<Option<String>, String> {
     if named != Some(kind.as_bytes()) {
         return Err(REFUSED.into());
     }
-    Ok(Some(format!("{kind} {blob}\n")))
+    Ok(format!("{kind} {blob}\n"))
 }
 
 fn prepare_handoff_root() -> Result<PathBuf, String> {
@@ -244,7 +334,7 @@ pub fn apply_setup_handoff(
             },
             &profile.user.full_name,
             label,
-            now_ns(),
+            ui::time::unix_now_ns(),
         )
         .map_err(|error| error.to_string())?;
     }
@@ -281,6 +371,7 @@ pub fn install_staged_onto_mounted_root(mnt: &Path, staged: &Path) -> io::Result
             "mounted disk has no installed Tilo /var",
         )
     })?;
+    let placed = block_devices::root_customization::Placed::before_copy(staged, &etc, &var)?;
     let staged_etc = staged.join("etc");
     if staged_etc.is_dir() {
         copy_tree(&staged_etc, &etc)?;
@@ -290,7 +381,18 @@ pub fn install_staged_onto_mounted_root(mnt: &Path, staged: &Path) -> io::Result
         refuse_human_root_secret(&staged_var)?;
         copy_tree(&staged_var, &var)?;
     }
-    Ok(())
+    block_devices::root_customization::finish(
+        &etc,
+        &var,
+        staged,
+        placed,
+        block_devices::root_customization::Requests {
+            ssh_key: BRINGUP_SSH_KEY,
+            home_files: ACCOUNT_HOME_FILES,
+            validate_keys: |keys| validate_bringup_ssh_key(keys).map_err(io::Error::other),
+            valid_home_name: home_file_name_is_safe,
+        },
+    )
 }
 
 /// Write the staged tree into the slack between the image and the profile block.
@@ -407,14 +509,6 @@ fn nm_keyfile_value(value: &str) -> String {
         escaped.push(ch);
     }
     escaped
-}
-
-fn now_ns() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |duration| {
-            u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX)
-        })
 }
 
 fn write_wifi_connection(root: &Path, ssid: &str, psk: &str) -> Result<(), String> {
@@ -681,7 +775,9 @@ mod tests {
         assert!(!media.contains("correct-horse"));
         assert!(!media.contains("orange-pi"));
         let paths = tilo_user_identity::IdentityPaths::under(dir.path().join("var/lib/tilo"));
-        assert!(tilo_user_identity::joined_device_is_ready(&paths, now_ns()).unwrap());
+        assert!(
+            tilo_user_identity::joined_device_is_ready(&paths, ui::time::unix_now_ns()).unwrap()
+        );
         assert!(!paths.user_privkey.exists());
         let cert = tilo_user_identity::persist::read_device_cert(&paths.device_cert).unwrap();
         assert_ne!(
@@ -812,9 +908,10 @@ mod tests {
             wifi_ssid: "studio".into(),
             ..InstallProfile::default()
         };
-        let stage = stage_access_handoff(&profile, "correct-horse", &format!("  {TEST_KEY}\n"))
-            .unwrap()
-            .expect("Wi-Fi and a key stage a tree");
+        let stage =
+            stage_access_handoff(&profile, "correct-horse", &format!("  {TEST_KEY}\n"), true)
+                .unwrap()
+                .expect("Wi-Fi and a key stage a tree");
         let root = stage.path();
         assert!(
             root.join("etc/NetworkManager/system-connections/tilo-setup.nmconnection")
@@ -827,19 +924,31 @@ mod tests {
         assert!(!root.join("var").exists(), "no identity was asked for");
         fs::remove_dir_all(root).unwrap();
 
-        let none = stage_access_handoff(&InstallProfile::default(), "", "").unwrap();
+        let none = stage_access_handoff(&InstallProfile::default(), "", "", true).unwrap();
         assert!(none.is_none());
-        let err = stage_access_handoff(&profile, "", "").unwrap_err();
+        let err = stage_access_handoff(&profile, "", "", true).unwrap_err();
         assert!(err.contains("Wi-Fi password"));
     }
 
     #[test]
-    fn the_owner_key_is_exactly_one_public_key() {
+    fn owner_keys_are_public_keys_one_per_line() {
         validate_bringup_ssh_key("").unwrap();
         validate_bringup_ssh_key(TEST_KEY).unwrap();
+        let root = tempfile::tempdir().unwrap();
+        install_bringup_ssh_key(root.path(), &format!("{TEST_KEY}\n\n  {TEST_KEY} other\n"))
+            .unwrap();
+        assert_eq!(
+            fs::read_to_string(root.path().join(BRINGUP_SSH_KEY))
+                .unwrap()
+                .lines()
+                .count(),
+            2
+        );
+        let too_many = format!("{TEST_KEY}\n").repeat(MAX_BRINGUP_SSH_KEYS + 1);
+        assert!(validate_bringup_ssh_key(&too_many).is_err());
         for bad in [
             "-----BEGIN OPENSSH PRIVATE KEY-----\nabc\n-----END OPENSSH PRIVATE KEY-----", // placeholder
-            &format!("{TEST_KEY}\n{TEST_KEY}"),
+            &format!("{TEST_KEY}\nnot a key"),
             "no-pty ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
             "ssh-ed25519 not-base64!",
             // An RSA type name over an ed25519 encoding.
@@ -847,6 +956,67 @@ mod tests {
         ] {
             assert!(validate_bringup_ssh_key(bad).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn access_handoff_names_the_target_only_when_a_hostname_was_chosen() {
+        let unnamed = InstallProfile {
+            wifi_ssid: "studio".into(),
+            ..InstallProfile::default()
+        };
+        let staged = stage_access_handoff(&unnamed, "correct-horse", "", true)
+            .unwrap()
+            .unwrap();
+        assert!(!staged.path().join("etc/hostname").exists());
+        fs::remove_dir_all(staged.path()).unwrap();
+
+        let named = InstallProfile {
+            hostname: "tilo-board".into(),
+            ..InstallProfile::default()
+        };
+        let staged = stage_access_handoff(&named, "", "", true).unwrap().unwrap();
+        let hostname = staged.path().join("etc/hostname");
+        assert_eq!(fs::read_to_string(&hostname).unwrap(), "tilo-board\n");
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(&hostname).unwrap().permissions().mode() & 0o777,
+                0o644
+            );
+        }
+        assert!(
+            !staged
+                .path()
+                .join("etc/NetworkManager/system-connections")
+                .exists()
+        );
+        fs::remove_dir_all(staged.path()).unwrap();
+
+        assert!(
+            stage_access_handoff(&named, "", "", false)
+                .unwrap()
+                .is_none(),
+            "installer media name the machine from their profile"
+        );
+
+        let invalid = InstallProfile {
+            hostname: "bad host".into(),
+            ..InstallProfile::default()
+        };
+        let error = stage_access_handoff(&invalid, "", "", true).unwrap_err();
+        assert!(error.contains("Hostname"), "{error}");
+    }
+
+    #[test]
+    fn account_home_staging_refuses_non_plain_names() {
+        let staged = tempfile::tempdir().unwrap();
+        for bad in ["", ".bashrc", "../escape", "a/b", "sp ace"] {
+            assert!(
+                stage_account_home_file(staged.path(), bad, b"x").is_err(),
+                "{bad:?}"
+            );
+        }
+        assert!(!staged.path().join(ACCOUNT_HOME_FILES).exists());
     }
 
     #[cfg(unix)]

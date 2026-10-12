@@ -21,23 +21,11 @@ impl PointerAction {
     pub fn event(self, scale_factor: f64) -> WindowEvent {
         let device_id = DeviceId::dummy();
         match self {
-            Self::MoveTo(point) => WindowEvent::CursorMoved {
-                device_id,
-                position: winit::dpi::PhysicalPosition::new(
-                    point.x * scale_factor,
-                    point.y * scale_factor,
-                ),
-            },
-            Self::Press(button) => WindowEvent::MouseInput {
-                device_id,
-                state: ElementState::Pressed,
-                button,
-            },
-            Self::Release(button) => WindowEvent::MouseInput {
-                device_id,
-                state: ElementState::Released,
-                button,
-            },
+            Self::MoveTo(point) => {
+                super::cursor_moved(point.x * scale_factor, point.y * scale_factor)
+            }
+            Self::Press(button) => super::mouse_input(ElementState::Pressed, button),
+            Self::Release(button) => super::mouse_input(ElementState::Released, button),
             Self::Leave => WindowEvent::CursorLeft { device_id },
             Self::LoseFocus => WindowEvent::Focused(false),
         }

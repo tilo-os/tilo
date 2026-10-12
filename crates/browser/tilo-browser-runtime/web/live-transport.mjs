@@ -4,7 +4,7 @@
  * in the carrier's admission preface (web/moq-carrier.mjs), and `@moq/net` is
  * used through its public API only.
  *
- * Broadcasts (see tilo-relay delivery_v3/live_wire.rs):
+ * Broadcasts (see tilo-moq src/live.rs; frames in tilo-relay-protocol live.rs):
  *   `tilo-live/<room hex>/<publisher hex>`   this member's namespace, with
  *     `presence`             latest-value datagrams (single-frame groups when
  *                            datagrams are unavailable)

@@ -1,6 +1,6 @@
 //! Reports arrive as files lent by the existing host launch/content handoff.
 use crate::model::{MAX_REPORT_BYTES, StorageReport, report_id};
-use crate::resource::{ChipProject, import};
+use crate::resource::{Project as ChipProject, import};
 use crate::verification::VerificationRecord;
 use crate::view::ChipEffect;
 use ui::framework::LaunchInput;

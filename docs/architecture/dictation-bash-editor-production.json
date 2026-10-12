@@ -1,0 +1,55 @@
+{
+  "schema": 1,
+  "reviewed_on": "2026-10-08",
+  "status": "source candidate; isolated native qualification, not managed desktop acceptance",
+  "bash": "Fedora bash 5.3.9-3.fc44 x86_64, GNU 5.3.9(1)",
+  "headers": "Previously signature-verified privately extracted bash-devel/readline-devel; no installation or trust import",
+  "source_sha256": {
+    "crates/runtime/ush/native/bash_editor.c": "812323f58b369f4b662943c93bb948cb5a5a1b1577a84cc259740ba68d25303d",
+    "crates/runtime/ush/native/build.py": "c46062908ea0764276ed2a573ec12382070e3459d20393cbe87f268f69961b64",
+    "crates/runtime/runtime-portal/examples/bash_editor_journey.rs": "756ea9818872fe61b54bf603a26d422e1242fc79bd7b9b7205be9f6704f862c1"
+  },
+  "module_sha256": "a728ab2e2da3117950e6495daa987c3aa0f098d9ea2ff537b7158c6d58ed291e",
+  "module_scope": "private remote review build only; no shipping artifact claim",
+  "production_native_checks": [
+    "protected startup configuration",
+    "Unicode selection restoration, exact expiry and identical-request replay/query",
+    "literal Unicode insertion",
+    "native Undo/Redo/Undo and stale original lease",
+    "net-zero caret motion and cancellation revocation",
+    "protected prompt and repeated editor generations",
+    "bounded protocol and external-child descriptor closure"
+  ],
+  "elf_hardening": "Passed production verify-elf-hardening.sh: PIE, full RELRO, noexecstack, no OpenSSL, SHSTK-marked, stack protector in linked C",
+  "focused_tests": {
+    "sdk_deferred_native_history": 2,
+    "terminal_native_boundaries": 4,
+    "editor_codec": 2,
+    "terminal_secret_effect_contract": 1,
+    "terminal_existing_ime_accessibility": 1,
+    "terminal_legacy_service_handoff": 1,
+    "kernel_process_binding": 5,
+    "descriptor_transport": 4
+  },
+  "not_run": [
+    "Full OS image build or upgrade",
+    "Root-owned packaged module through production ush launch",
+    "Mounted standalone and embedded Terminal acceptance",
+    "In-place guest restart reconnection",
+    "Microphone or signed catalogue activation",
+    "ARM or older-device editor execution"
+  ],
+  "evidence_directory": "private dictation-vocabulary-dependent worktree; logs referenced by PR",
+  "rust_validation": {
+    "strict_clippy": "Passed --all-targets -D warnings for terminal, ush, runtime-portal, tilo-ui and tilo-relay; final platform extraction separately passed terminal and tilo-process all targets",
+    "shell_tests_check": "Final CI-repair candidate passed check --locked -p shell --tests (1m 29s). Earlier capacity refusal is superseded, not reported as a pass.",
+    "pre_commit": "Passed exact staged source checks; rerun after evidence update"
+  },
+  "ci_source_repairs": {
+    "platform_boundary": "Worker, native clocks, packet polling and PTY role validation moved to tilo-process::editor; Terminal has one API on all hosts, unsupported hosts expose no editor",
+    "private_receipts": "ui::text_input exposes only private completion receipts; no WebView capability requested",
+    "copy_contract": "Explicit intentional ush module payload recorded; exact digest and unique destination assertions retained",
+    "local_checks": "App portability, declared capabilities, generated web desktop, Containerfile copy invariants and sources passed; no baseline raised",
+    "image_blocker": "No signed RPM snapshot for set-4cee6ac4651b25573a4c65e1dba081d96f0ecc825daa76e7cfa53c0eed58a63c. build-rpms.yml signing and snapshot jobs require refs/heads/main. No merge or publication-gate change authorized."
+  }
+}

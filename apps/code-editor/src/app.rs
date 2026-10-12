@@ -38,6 +38,7 @@ mod continuity;
 
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
+use ui::widget::TaffyTreeExt;
 use ui::widget::{AppModel, ModelPath};
 
 mod chrome;
@@ -51,13 +52,11 @@ mod tests;
 use automerge::transaction::Transactable as _;
 use automerge::{AutoCommit, ChangeHash};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
-use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::tilo_resource::Effect as _;
 use ui::widget::{Button, EmptyState, FindBar, SidebarDrawer, SplitLayout, Text, Widget};
-use uuid::Uuid;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
@@ -199,9 +198,12 @@ impl Widget for BottomPanelToggle {
                     ..
                 }
             )
-            && self
-                .button
-                .perform_action(&ui::a11y::Action::Activate, &mut ctx.state, ctx.path)
+            && self.button.perform_action(
+                &ui::a11y::Action::Activate,
+                &[],
+                &mut ctx.state,
+                ctx.path,
+            )
         {
             *ctx.handled = true;
             return;
@@ -268,10 +270,11 @@ impl Widget for BottomPanelToggle {
     fn perform_action(
         &mut self,
         action: &ui::a11y::Action,
+        _key_path: &[u64],
         state: &mut ui::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
-        self.button.perform_action(action, state, path)
+        self.button.perform_action(action, &[], state, path)
     }
 
     fn set_interaction_environment(
@@ -328,8 +331,8 @@ pub(crate) fn effect_binding(
     effect: &crate::effects::CodeEditorEffect,
 ) -> tilo_actions::ActionBinding<()> {
     let resource = tilo_actions::Resource::new(
-        crate::resource::PROJECT_KIND,
-        crate::resource::PROJECT_KIND,
+        <crate::project::Project as ui::tilo_resource::Resource>::KIND,
+        <crate::project::Project as ui::tilo_resource::Resource>::KIND,
         "Code",
     )
     .with_action(effect.bound());
@@ -354,7 +357,7 @@ fn file_header(session: &Session) -> (Text, std::rc::Rc<std::cell::RefCell<Strin
     )
 }
 
-fn language_from_label(label: &str) -> Option<Language> {
+pub(crate) fn language_from_label(label: &str) -> Option<Language> {
     [
         Language::Rust,
         Language::Toml,
@@ -392,6 +395,22 @@ struct DiagnosticsCache {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+struct SymbolProjectionRevision {
+    heads: Vec<ChangeHash>,
+    /// Canonical resource identity and displayed path, sorted independently of
+    /// the local project tree's allocation and iteration order.
+    files: Vec<(String, String)>,
+}
+
+#[derive(Default)]
+struct ReopenPhases {
+    demand: u128,
+    symbols: u128,
+    search_entries: u128,
+    diagnostics: u128,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct SearchProjectionRevision {
     /// Collaborative text and durable file metadata are authoritative in the
     /// CRDT, so its heads cheaply cover every remote/local document edit.
@@ -412,6 +431,14 @@ struct SearchRefreshStats {
     skipped: usize,
     buffer_reads: usize,
     indexed_records: usize,
+}
+
+/// The files an opener may show, and the ones asked for since the last
+/// sync.
+#[derive(Default)]
+struct Opened {
+    known: HashSet<String>,
+    requests: Vec<String>,
 }
 
 #[allow(
@@ -445,11 +472,14 @@ pub struct CodeApp {
     /// checks, applies, records and replicates it. `None` until the
     /// framework mounts the editor; an editor that is not mounted edits
     /// nothing.
-    dispatch: Option<ui::framework::Dispatcher<crate::resource::CodeEditor>>,
+    dispatch: Option<ui::framework::Dispatcher<crate::project::Project>>,
     /// The project as it was last presented, and the live handle that asks
     /// for the text of the file the window shows.
-    presented: std::rc::Rc<crate::resource::ProjectState>,
-    live_state: Option<ui::framework::Live<crate::resource::CodeEditor>>,
+    presented: std::rc::Rc<crate::project::Project>,
+    /// Files a search hit or an agent's `open` asked to show, taken up in
+    /// the next sync, and the files it may name.
+    opened: std::rc::Rc<std::cell::RefCell<Opened>>,
+    live_state: Option<ui::framework::Live<crate::project::Project>>,
     /// The file ids whose text the window demanded last.
     demanded: Vec<String>,
     /// A command invoked through its published effect. An effect handler has
@@ -508,6 +538,9 @@ pub struct CodeApp {
     /// panel keeps embedding the widget from the app crate rather than shipping a
     /// second, weaker emulator.
     terminal: Option<ui::widget::Embedded<terminal::TerminalView>>,
+    /// The command lines asked of the terminal's session, handed from the
+    /// project's outbox to the terminal that types them.
+    terminal_runs: terminal::runs::RunQueue,
     /// True while the terminal owns keyboard input (the user clicked into it).
     /// Cleared when a press lands anywhere else.
     terminal_focused: bool,
@@ -531,6 +564,8 @@ pub struct CodeApp {
     /// notify on an actual change.
     lsp_sent_text: String,
     diagnostics_cache: Option<DiagnosticsCache>,
+    /// At most two inactive exact-input lint snapshots and 16,384 records.
+    inactive_diagnostics: Vec<DiagnosticsCache>,
     #[cfg(test)]
     diagnostics_buffer_reads: usize,
     /// What the server is currently busy with, if anything. Shown in the status
@@ -571,6 +606,10 @@ pub struct CodeApp {
     /// `sync` compares this tiny value and does no project/body traversal.
     search_projection_revision: Option<SearchProjectionRevision>,
     search_projection_local_generation: Option<u64>,
+    /// Last actual phase costs, exposed only by the explicit native observer.
+    reopen_phase_micros: ReopenPhases,
+    symbol_projection_revision: Option<SymbolProjectionRevision>,
+    projected_search_results: Vec<actions::SearchResultRef>,
     #[cfg(test)]
     search_refresh_stats: SearchRefreshStats,
 
@@ -835,6 +874,10 @@ impl CodeApp {
         app
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one constructor listing every field of the editor once"
+    )]
     fn from_session(session: Session, default: Option<TreeId>) -> Self {
         let explorer_events = ExplorerEvents::default();
         let mut sidebar = explorer::explorer(&session.project, &explorer_events);
@@ -860,6 +903,7 @@ impl CodeApp {
             test_hook: None,
             dispatch: None,
             presented: std::rc::Rc::default(),
+            opened: std::rc::Rc::default(),
             live_state: None,
             demanded: Vec::new(),
             pending_command: None,
@@ -892,6 +936,7 @@ impl CodeApp {
             bound_node: default,
             seeded: false,
             terminal: None,
+            terminal_runs: terminal::runs::RunQueue::default(),
             terminal_focused: false,
             lsp: None,
             lsp_language: None,
@@ -900,6 +945,7 @@ impl CodeApp {
             lsp_diagnostics: std::collections::HashMap::new(),
             lsp_sent_text: String::new(),
             diagnostics_cache: None,
+            inactive_diagnostics: Vec::new(),
             #[cfg(test)]
             diagnostics_buffer_reads: 0,
             lsp_status: LspStatus::None,
@@ -917,6 +963,9 @@ impl CodeApp {
             search_opener: ui::search::SearchOpener::new(),
             search_symbols: Vec::new(),
             search_entries: Vec::new(),
+            reopen_phase_micros: ReopenPhases::default(),
+            symbol_projection_revision: None,
+            projected_search_results: Vec::new(),
             search_projection_revision: None,
             search_projection_local_generation: Some(0),
             #[cfg(test)]
@@ -1055,7 +1104,7 @@ impl CodeApp {
     fn submit_now(
         &self,
         doc: &mut ui::widget::Edits<'_>,
-        action: &actions::CodeEditorAction,
+        action: &actions::Action,
     ) -> Result<(), tilo_actions::ActionError> {
         match &self.dispatch {
             Some(dispatch) => dispatch.apply_now(doc, action),
@@ -1067,7 +1116,7 @@ impl CodeApp {
 
     /// Submit `action` through the framework's door; it applies after the
     /// event.
-    fn submit(&self, action: &actions::CodeEditorAction) {
+    fn submit(&self, action: &actions::Action) {
         if let Some(dispatch) = &self.dispatch {
             dispatch.apply(action);
         }
@@ -1107,7 +1156,7 @@ impl CodeApp {
         // it stuck on.
         if let Some(node) = self.session.active_buffer().map(|b| b.node) {
             let key = self.buffer_key(node);
-            if let Some(current) = self.presented.buffers.get(&key)
+            if let Some(current) = self.presented.text(&key)
                 && let Some(buf) = self.session.buffer.as_mut()
             {
                 buf.dirty = buf.is_dirty(current);
@@ -1145,12 +1194,14 @@ impl CodeApp {
         if open == self.demanded {
             return;
         }
+        let started = std::time::Instant::now();
         self.demanded.clone_from(&open);
         if let Some(live) = &self.live_state
             && let Err(error) = live.demand(doc, ui::tilo_resource::Demand::none().with_keys(open))
         {
             tracing::warn!(%error, "open files not read");
         }
+        self.reopen_phase_micros.demand = started.elapsed().as_micros();
     }
 
     /// Read a disk-backed file into its buffer the first time this session
@@ -1171,10 +1222,14 @@ impl CodeApp {
         let name = buffer.name.clone();
         match self.session.project.file_seed(node) {
             Ok((text, stamp)) => {
-                self.submit(&actions::CodeEditorAction::EnsureBuffer {
-                    key: self.buffer_key(node),
-                    seed: text.clone(),
-                });
+                let key = self.buffer_key(node);
+                let already_opened = self
+                    .live_state
+                    .as_ref()
+                    .is_some_and(|live| live.with(|state| state.buffers.contains_key(&key)));
+                if !already_opened {
+                    self.submit(&actions::record_text_action(key, text.clone()));
+                }
                 let path = self.session.project.disk_path_of(node);
                 if let Some(buffer) = self.session.buffer_of_mut(node) {
                     buffer.path = path;
@@ -1201,15 +1256,14 @@ impl CodeApp {
         if fresh.is_empty() || self.dispatch.is_none() {
             return;
         }
-        let entries: Vec<actions::CodeEditorAction> = fresh
+        let entries: Vec<actions::Action> = fresh
             .into_iter()
             .filter_map(|id| {
                 let node = self.session.project.get(id)?;
                 if self
                     .presented
                     .files
-                    .iter()
-                    .any(|file| file.id == node.resource_id)
+                    .contains(&ui::tilo_resource::Id::from(node.resource_id.as_str()))
                 {
                     return None;
                 }
@@ -1220,19 +1274,19 @@ impl CodeApp {
                         .map(|parent| parent.resource_id.clone())
                 });
                 let (kind, language) = match &node.kind {
-                    NodeKind::File { language, .. } => {
-                        (actions::EntryKind::File, language.label().to_string())
-                    }
-                    NodeKind::Folder { .. } => (actions::EntryKind::Folder, String::new()),
+                    NodeKind::File { language, .. } => (
+                        crate::project::EntryKind::File,
+                        language.label().to_string(),
+                    ),
+                    NodeKind::Folder { .. } => (crate::project::EntryKind::Folder, String::new()),
                 };
-                Some(actions::CodeEditorAction::ImportEntry {
-                    id: node.resource_id.clone(),
+                Some(actions::record_entry_action(
+                    &node.resource_id,
                     kind,
-                    name: node.name.clone(),
-                    parent,
+                    node.name.clone(),
+                    parent.as_deref(),
                     language,
-                    order: i64::try_from(id).unwrap_or(i64::MAX),
-                })
+                ))
             })
             .collect();
         if let Some(dispatch) = &self.dispatch {
@@ -1253,28 +1307,62 @@ impl CodeApp {
         self.adopt_resource_state(&state);
     }
 
-    pub(crate) fn adopt_resource_state(
-        &mut self,
-        state: &std::rc::Rc<crate::resource::ProjectState>,
-    ) {
-        self.presented = std::rc::Rc::clone(state);
-        if state.files.is_empty() && !self.session.project.nodes.is_empty() {
+    pub(crate) fn adopt_resource_state(&mut self, state: &std::rc::Rc<crate::project::Project>) {
+        let previous = std::mem::replace(&mut self.presented, std::rc::Rc::clone(state));
+        let mut files = crate::doc::CollaborativeFile::all(state);
+        self.opened.borrow_mut().known = files.iter().map(|file| file.id.clone()).collect();
+        // A file a collaborator deleted leaves the tree too.
+        files.extend(
+            crate::doc::CollaborativeFile::all(&previous)
+                .into_iter()
+                .filter(|file| {
+                    !state
+                        .files
+                        .contains(&ui::tilo_resource::Id::from(file.id.as_str()))
+                })
+                .map(|file| crate::doc::CollaborativeFile {
+                    deleted: true,
+                    ..file
+                }),
+        );
+        if files.is_empty() {
             return;
         }
-        if !state.files.is_empty() {
-            let mut files = state.files.clone();
-            files.sort_by_key(|file| file.path.matches('/').count());
-            self.project_files(files);
+        files.sort_by_key(|file| file.path.matches('/').count());
+        self.project_files(files);
+    }
+
+    /// The queue the terminal takes the project's asked command lines from.
+    pub fn terminal_runs(&self) -> terminal::runs::RunQueue {
+        self.terminal_runs.clone()
+    }
+
+    /// What shows file `id` when a search hit or an agent's `open` names
+    /// it; a file the project does not hold is refused.
+    pub(crate) fn opener(
+        &self,
+    ) -> impl FnMut(&ui::tilo_resource::Id) -> Result<(), ui::tilo_resource::Refusal> + 'static
+    {
+        let opened = std::rc::Rc::clone(&self.opened);
+        move |id| {
+            let mut opened = opened.borrow_mut();
+            if !opened.known.contains(id.as_str()) {
+                return Err(ui::tilo_resource::Refusal::new(
+                    "the project has no such file",
+                ));
+            }
+            opened.requests.push(id.to_string());
+            Ok(())
         }
     }
 
     /// Attach the framework dispatcher when hosted as a [`ResourceSurface`].
     pub(crate) fn attach_framework(
         &mut self,
-        dispatcher: ui::framework::Dispatcher<crate::resource::CodeEditor>,
+        dispatcher: ui::framework::Dispatcher<crate::project::Project>,
         live: bool,
         settings: ui::framework::Setting<crate::settings::CodeSettings>,
-        state: ui::framework::Live<crate::resource::CodeEditor>,
+        state: ui::framework::Live<crate::project::Project>,
     ) {
         self.dispatch = Some(dispatcher);
         self.live_state = Some(state);
@@ -1283,6 +1371,10 @@ impl CodeApp {
             self.panel_toggle.suspend();
         }
         self.settings = Some(settings);
+    }
+
+    pub(crate) fn set_highlight_waker(&mut self, wake: ui::WakeHandle) {
+        self.editor.set_highlight_waker(wake);
     }
 
     fn project_files(&mut self, files: Vec<crate::doc::CollaborativeFile>) {
@@ -1392,22 +1484,68 @@ impl CodeApp {
         use automerge::transaction::Transactable;
         // Heads identify committed CRDT content, including remote/history changes.
         // Even zero pending operations may hide an open empty transaction.
-        // Obtain the witness on a clone: get_heads must never close the caller's
-        // transaction or change its patch/history cursors. Pending edits bypass
+        // Read the committed witness without cloning or closing the caller's
+        // transaction or changing its patch/history cursors. Pending edits bypass
         // caching; an equal pending-operation count is not a content version.
-        let heads = (doc.pending_ops() == 0).then(|| doc.clone().get_heads());
+        let heads = (doc.pending_ops() == 0).then(|| doc.committed_heads());
         self.refresh_diagnostics_at(doc, heads);
+    }
+
+    fn retain_diagnostics(&mut self, cache: DiagnosticsCache) {
+        const RECORD_BUDGET: usize = 16_384;
+        if cache.local.len() > RECORD_BUDGET {
+            return;
+        }
+        self.inactive_diagnostics
+            .retain(|old| old.revision != cache.revision);
+        self.inactive_diagnostics.push(cache);
+        while self.inactive_diagnostics.len() > 2
+            || self
+                .inactive_diagnostics
+                .iter()
+                .map(|cache| cache.local.len())
+                .sum::<usize>()
+                > RECORD_BUDGET
+        {
+            self.inactive_diagnostics.remove(0);
+        }
+    }
+
+    fn restore_diagnostics(&mut self, revision: Option<&DiagnosticsRevision>) {
+        let Some(revision) = revision else {
+            // Pending observations remain completely uncached.
+            self.inactive_diagnostics.clear();
+            self.diagnostics_cache = None;
+            return;
+        };
+        if self
+            .diagnostics_cache
+            .as_ref()
+            .is_some_and(|cache| &cache.revision == revision)
+        {
+            return;
+        }
+        if let Some(index) = self
+            .inactive_diagnostics
+            .iter()
+            .position(|cache| &cache.revision == revision)
+        {
+            let restored = self.inactive_diagnostics.remove(index);
+            if let Some(previous) = self.diagnostics_cache.replace(restored) {
+                self.retain_diagnostics(previous);
+            }
+        }
     }
 
     fn refresh_diagnostics_at(&mut self, doc: &AutoCommit, heads: Option<Vec<ChangeHash>>) {
         let lsp_for_buffer = self
             .lsp_uri
             .as_ref()
-            .and_then(|uri| self.lsp_diagnostics.get(uri));
+            .is_some_and(|uri| self.lsp_diagnostics.contains_key(uri));
         // An empty publish still counts as an answer: it is the server saying
         // "this file is clean", which is exactly when a stale bracket warning
         // would be most confusing.
-        let scope = if lsp_for_buffer.is_some() {
+        let scope = if lsp_for_buffer {
             lint::Scope::TextualOnly
         } else {
             lint::Scope::Full
@@ -1427,14 +1565,17 @@ impl CodeApp {
                     scope,
                 })
         });
+        self.restore_diagnostics(revision.as_ref());
         let cached = revision.as_ref().and_then(|revision| {
             self.diagnostics_cache
                 .as_ref()
                 .filter(|cache| &cache.revision == revision)
         });
         let mut diagnostics = if let Some(cache) = cached {
+            self.reopen_phase_micros.diagnostics = 0;
             cache.local.clone()
         } else {
+            let started = std::time::Instant::now();
             let local = match active {
                 Some((key, language)) => {
                     #[cfg(test)]
@@ -1447,13 +1588,21 @@ impl CodeApp {
                 }
                 None => Vec::new(),
             };
+            self.reopen_phase_micros.diagnostics = started.elapsed().as_micros();
+            if let Some(previous) = self.diagnostics_cache.take() {
+                self.retain_diagnostics(previous);
+            }
             self.diagnostics_cache = revision.map(|revision| DiagnosticsCache {
                 revision,
                 local: local.clone(),
             });
             local
         };
-        if let Some(lsp) = lsp_for_buffer {
+        if let Some(lsp) = self
+            .lsp_uri
+            .as_ref()
+            .and_then(|uri| self.lsp_diagnostics.get(uri))
+        {
             diagnostics.extend(lsp.iter().map(super::lsp::LspDiagnostic::to_panel));
         }
         diagnostics.sort_by_key(|a| (a.line, a.col));
@@ -1534,8 +1683,24 @@ impl CodeApp {
             .collect()
     }
 
-    fn refresh_search_symbols(&mut self, doc: &AutoCommit) {
-        let files = self.search_file_entries();
+    fn refresh_search_symbols(&mut self, doc: &AutoCommit) -> bool {
+        use automerge::transaction::Transactable;
+        let mut files = self.search_file_entries();
+        files.sort_by(|a, b| a.resource_id.cmp(&b.resource_id).then(a.path.cmp(&b.path)));
+        // Pending transaction counts do not identify their content. Rebuild
+        // for every pending projection, including equal-count unrelated forks.
+        let revision = (doc.pending_ops() == 0).then(|| SymbolProjectionRevision {
+            heads: doc.committed_heads(),
+            files: files
+                .iter()
+                .map(|file| (file.resource_id.clone(), file.path.clone()))
+                .collect(),
+        });
+        if revision.is_some() && revision == self.symbol_projection_revision {
+            self.reopen_phase_micros.symbols = 0;
+            return false;
+        }
+        let started = std::time::Instant::now();
         #[cfg(test)]
         {
             self.search_refresh_stats.buffer_reads = self
@@ -1552,6 +1717,9 @@ impl CodeApp {
                     })
             })
             .collect();
+        self.symbol_projection_revision = revision;
+        self.reopen_phase_micros.symbols = started.elapsed().as_micros();
+        true
     }
 
     fn invalidate_search_projection(&mut self) {
@@ -1566,14 +1734,15 @@ impl CodeApp {
     /// typing, and unchanged frames do no filesystem, document, or LSP work.
     fn refresh_search_entries(&mut self, doc: &AutoCommit) {
         let revision = SearchProjectionRevision {
-            document_heads: doc.base_heads(),
+            document_heads: doc.committed_heads(),
             pending_ops: doc.pending_ops(),
             local_generation: self.search_projection_local_generation,
         };
         // Once the local identity space is exhausted there can be no safe
         // equality shortcut: reusing the old projection would let an obsolete
         // action directory masquerade as the current project.
-        if revision.local_generation.is_some()
+        if revision.pending_ops == 0
+            && revision.local_generation.is_some()
             && self.search_projection_revision.as_ref() == Some(&revision)
         {
             #[cfg(test)]
@@ -1583,9 +1752,18 @@ impl CodeApp {
             }
             return;
         }
-        self.refresh_search_symbols(doc);
+        let changed = self.refresh_search_symbols(doc);
+        let started = std::time::Instant::now();
         let results = self.search_result_refs();
-        self.search_entries = crate::search_entries::code_entries(&self.search_symbols, &results);
+        if changed
+            || results != self.projected_search_results
+            || revision.local_generation.is_none()
+        {
+            self.search_entries =
+                crate::search_entries::code_entries(&self.search_symbols, &results);
+            self.projected_search_results = results;
+        }
+        self.reopen_phase_micros.search_entries = started.elapsed().as_micros();
         self.search_projection_revision = Some(revision);
         #[cfg(test)]
         {
@@ -1769,26 +1947,31 @@ impl CodeApp {
     }
 
     /// Run a command. `doc` is threaded in because the one doc-mutating
-    /// command (New file) dispatches a [`CodeEditorAction`] through the action
+    /// command (New file) submits the project's `new-file` verb through the action
     /// host; the rest are pure presentation.
     ///
-    /// [`CodeEditorAction`]: crate::actions::CodeEditorAction
     fn apply_command(&mut self, cmd: Command, doc: &mut ui::widget::Edits<'_>) {
         match cmd {
             Command::NewFile => {
                 // An untitled file at the project root, created through the
                 // project's own action and opened once it is there.
                 let name = format!("untitled-{}.txt", self.session.project.nodes.len());
-                let id = Uuid::new_v4().to_string();
-                let action = actions::create_file_action(
-                    id.clone(),
-                    name.clone(),
-                    None,
-                    i64::MAX / 2,
-                    String::new(),
-                );
+                let before = self.presented.files.ids().cloned().collect::<HashSet<_>>();
+                let action = actions::new_file_action(name.clone(), None, "");
                 match self.submit_now(doc, &action) {
-                    Ok(()) => self.pending_open = Some(id),
+                    Ok(()) => {
+                        let created =
+                            <crate::project::Project as ui::tilo_resource::Resource>::read(doc)
+                                .ok()
+                                .and_then(|project| {
+                                    project
+                                        .files
+                                        .ids()
+                                        .find(|id| !before.contains(*id))
+                                        .map(ToString::to_string)
+                                });
+                        self.pending_open = created;
+                    }
                     Err(error) => self.note(format!("Could not create {name}: {error}"), true),
                 }
             }
@@ -1927,15 +2110,15 @@ impl CodeApp {
                 // The session is the project's terminal child: what it shows
                 // is recorded through the project's own dispatcher.
                 if let Some(dispatch) = &self.dispatch {
-                    w.bind(dispatch.child(
-                        crate::resource::TERMINAL_RESOURCE_ID,
-                        actions::CodeEditorAction::Terminal,
-                    ));
+                    w.bind(
+                        dispatch.child(crate::resource::TERMINAL_RESOURCE_ID, actions::terminal),
+                    );
                 }
+                w.run_through(self.terminal_runs.clone());
                 if let Some(session) = self
                     .live_state
                     .as_ref()
-                    .and_then(|live| live.with(|state| state.terminal.clone()))
+                    .and_then(|live| live.with(|state| state.terminal_panel.clone()))
                 {
                     ui::framework::ResourceSurface::present(&mut w, &std::rc::Rc::new(session));
                 }
@@ -1954,7 +2137,7 @@ impl CodeApp {
     /// Show the embedded terminal's session as the project records it: a
     /// collaborator's, a past version's, or this one's own before its shell
     /// draws.
-    pub(crate) fn present_terminal(&mut self, session: Option<&terminal::resource::SessionState>) {
+    pub(crate) fn present_terminal(&mut self, session: Option<&terminal::resource::Terminal>) {
         if let (Some(terminal), Some(session)) = (self.terminal.as_mut(), session) {
             ui::framework::ResourceSurface::present(
                 terminal.widget_mut(),
@@ -2029,7 +2212,7 @@ impl CodeApp {
     /// go-to-line effect.
     pub(crate) fn ask_for_line() {
         ui::host_palette::action(tilo_actions::ActionAddress::new(
-            crate::resource::PROJECT_KIND,
+            <crate::project::Project as ui::tilo_resource::Resource>::KIND,
             ui::tilo_resource::Effect::id(&crate::effects::CodeEditorEffect::GoToLine {
                 value: None,
             }),
@@ -2139,16 +2322,6 @@ impl CodeApp {
             self.editor.move_caret_to(l, c1);
         }
         self.editor.show_completions(items);
-        self.refresh_status();
-    }
-
-    /// Stage the Problems dock over the diagnostics the completion demo
-    /// feeds, with no completion list in front of the code.
-    pub fn shots_problems(&mut self, doc: &AutoCommit) {
-        self.shots_completion_demo(doc);
-        self.editor.hide_completions();
-        self.panel_visible = true;
-        self.panel.set_tab(PanelTab::Problems);
         self.refresh_status();
     }
 
@@ -2640,7 +2813,7 @@ fn flat_index(text: &str, line: usize, col: usize) -> Option<usize> {
 /// Character-addressed replacement used to prepare a text action from editor
 /// UI state. It intentionally operates on an ordinary temporary `String`;
 /// the following action dispatch is the only CRDT mutation path.
-fn replace_chars(text: &mut String, start: usize, delete: usize, replacement: &str) {
+pub(crate) fn replace_chars(text: &mut String, start: usize, delete: usize, replacement: &str) {
     let total = text.chars().count();
     let start = start.min(total);
     let end = start.saturating_add(delete).min(total);
@@ -2686,6 +2859,10 @@ impl Widget for CodeApp {
         dyn ui::widget::Continuable
     );
 
+    fn semantic_readers(&self) -> &'static [ui::semantic_document_read::RegisteredSemanticReader] {
+        &crate::text_operations::SNAPSHOT_READERS
+    }
+
     fn native_input_snapshot(&self, doc: &AppModel, path: &ModelPath) -> Option<serde_json::Value> {
         fn rect(rect: Rect) -> [f64; 4] {
             [rect.x0, rect.y0, rect.x1, rect.y1]
@@ -2700,6 +2877,13 @@ impl Widget for CodeApp {
         let editor_rect = self.editor.get_rect();
         let (offset_x, offset_y) = self.editor.native_scroll_offsets();
         let (caret_line, caret_column) = self.editor.primary_caret();
+        let (highlighted_rows, cached_buffers, inactive_source_bytes) =
+            self.editor.native_projection_stats();
+        let (read_texts, read_text_bytes) = self
+            .live_state
+            .as_ref()
+            .map(|live| live.with(crate::project::Project::read_texts))
+            .unwrap_or_default();
         Some(serde_json::json!({
             "app": "so.tilo.code-editor",
             "editor_id": "editor_view",
@@ -2707,6 +2891,19 @@ impl Widget for CodeApp {
             "buffer_id": buffer_id,
             "body_hash": body.as_ref().map(|text| crate::native_fixture::hash(text.as_bytes())),
             "body_bytes": body.as_ref().map(String::len),
+            "highlighted_rows": highlighted_rows,
+            "cached_buffers": cached_buffers,
+            "read_texts": read_texts,
+            "read_text_bytes": read_text_bytes,
+            "cached_diagnostic_buffers": self.inactive_diagnostics.len(),
+            "inactive_diagnostic_records": self.inactive_diagnostics.iter().map(|cache| cache.local.len()).sum::<usize>(),
+            "reopen_phase_micros": {
+                "demand": self.reopen_phase_micros.demand,
+                "symbols": self.reopen_phase_micros.symbols,
+                "search_entries": self.reopen_phase_micros.search_entries,
+                "diagnostics": self.reopen_phase_micros.diagnostics,
+            },
+            "inactive_source_bytes": inactive_source_bytes,
             "editor_focused": self.editor.is_focused(),
             "caret_line": caret_line,
             "caret_column": caret_column,
@@ -2732,6 +2929,12 @@ impl Widget for CodeApp {
         let (state, path) = ui::doc::document_ref(state, path);
         if !self.seeded {
             self.seed_terminal();
+        }
+        let opened = std::mem::take(&mut self.opened.borrow_mut().requests);
+        for file in opened {
+            if let Some(node) = self.session.project.node_for_resource(&file) {
+                self.open_node(node);
+            }
         }
         // A file picker in flight is drained here, once a frame, off a channel
         // the worker thread fills — the UI never waits on D-Bus.
@@ -2871,41 +3074,21 @@ impl Widget for CodeApp {
         self.content_node = Some(content_node);
 
         // --- Outer column ---
-        #[allow(
-            clippy::unwrap_used,
-            reason = "Widget::build_layout is infallible by trait contract; inserting a node with a fixed Style and freshly-created children cannot fail short of an already-corrupted taffy arena, which nothing here could recover from"
-        )]
-        let root = taffy
-            .new_with_children(
-                Style {
-                    display: taffy::Display::Flex,
-                    flex_direction: taffy::FlexDirection::Column,
-                    size: Size {
-                        width: Dimension::percent(1.0),
-                        height: Dimension::percent(1.0),
-                    },
-                    ..Default::default()
-                },
-                &[content_node],
-            )
-            .unwrap();
-        node_map.insert(root, std::ptr::from_mut::<dyn Widget>(self));
-        root
+        let style = Style {
+            display: taffy::Display::Flex,
+            flex_direction: taffy::FlexDirection::Column,
+            size: Size {
+                width: Dimension::percent(1.0),
+                height: Dimension::percent(1.0),
+            },
+            ..Default::default()
+        };
+        taffy.widget_node(style, &[content_node], node_map, self)
     }
 
-    #[allow(
-        clippy::unwrap_used,
-        reason = "Widget::apply_layout is infallible by trait contract; every node looked up here was created by this widget's own build_layout in the same tree, so a lookup failure means the taffy tree is already corrupted and there is no meaningful layout to fall back to"
-    )]
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).unwrap();
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
-            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
-        );
-        let new_origin = Point::new(self.rect.x0, self.rect.y0);
+        self.rect = ui::widget::layout_rect(taffy, node, origin);
+        let new_origin = self.rect.origin();
 
         // Cache the real measured width so `sidebar_layout()` is consistent
         // across passes (it's read in `build_layout`, before this runs), and
@@ -2915,27 +3098,16 @@ impl Widget for CodeApp {
         self.drawer.resolve(self.rect);
 
         if let Some(content_node) = self.content_node {
-            let content_layout = taffy.layout(content_node).unwrap();
-            let content_origin = Point::new(
-                new_origin.x + f64::from(content_layout.location.x),
-                new_origin.y + f64::from(content_layout.location.y),
-            );
+            let content_origin = ui::widget::layout_rect(taffy, content_node, new_origin).origin();
             if let Some(n) = self.sidebar_node {
                 self.sidebar.apply_layout(taffy, n, content_origin);
             }
             // Editor column origin within the content row.
             if let Some(col) = self.editor_col_node {
-                let col_layout = taffy.layout(col).unwrap();
-                let col_origin = Point::new(
-                    content_origin.x + f64::from(col_layout.location.x),
-                    content_origin.y + f64::from(col_layout.location.y),
-                );
+                let col_origin = ui::widget::layout_rect(taffy, col, content_origin).origin();
                 if let Some(header_node) = self.editor_header_node {
-                    let header_layout = taffy.layout(header_node).unwrap();
-                    let header_origin = Point::new(
-                        col_origin.x + f64::from(header_layout.location.x),
-                        col_origin.y + f64::from(header_layout.location.y),
-                    );
+                    let header_origin =
+                        ui::widget::layout_rect(taffy, header_node, col_origin).origin();
                     if let Some(n) = self.header_node {
                         self.header.apply_layout(taffy, n, header_origin);
                     }
@@ -2956,13 +3128,7 @@ impl Widget for CodeApp {
                     self.panel.apply_layout(taffy, n, col_origin);
                 }
                 if let Some(n) = self.status_node {
-                    let status = taffy.layout(n).unwrap();
-                    self.status_rect = Rect::new(
-                        col_origin.x + f64::from(status.location.x),
-                        col_origin.y + f64::from(status.location.y),
-                        col_origin.x + f64::from(status.location.x) + f64::from(status.size.width),
-                        col_origin.y + f64::from(status.location.y) + f64::from(status.size.height),
-                    );
+                    self.status_rect = ui::widget::layout_rect(taffy, n, col_origin);
                 }
             }
         }
@@ -3011,19 +3177,6 @@ impl Widget for CodeApp {
                 t.draw(scene, transform, text_renderer, theme, presence);
             }
         }
-    }
-
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        _permissions: &PermissionContext,
-    ) {
-        // Root spans the whole window — always paint.
-        self.draw(scene, transform, text_renderer, theme, presence);
     }
 
     /// The top layer: the open question, over the whole window.
@@ -3292,6 +3445,7 @@ impl Widget for CodeApp {
     /// Advance the explorer and drain the retained terminal before settlement.
     fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
         let mut changed = self.sidebar.update(state, path);
+        changed |= self.editor.update(state, path);
         if let Some(terminal) = self.terminal.as_mut() {
             changed |= terminal.widget_mut().update(state, path);
         }

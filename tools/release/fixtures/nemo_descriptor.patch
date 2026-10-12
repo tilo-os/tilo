@@ -1,0 +1,198 @@
+--- a/src/runtime/ggml/loader.cpp
++++ b/src/runtime/ggml/loader.cpp
+@@ -5,6 +5,11 @@
+ // Copyright (c) 2025 Jason Ni
+ // Licensed under the MIT License. See THIRD_PARTY_NOTICES.md.
+ #include <algorithm>
++#if !defined(_WIN32)
++#include <fcntl.h>
++#include <sys/stat.h>
++#include <unistd.h>
++#endif
+ 
+ #include "runtime.h"
+ 
+@@ -141,6 +146,30 @@
+     FILE* fp;
+     size_t size;
+ 
++    // Borrowed descriptor must be immutable and used exclusively during loading.
++    // Duplication shares its file offset; no caller descriptor is retained.
++    explicit llama_file(int fd) : fp(nullptr), size(0) {
++        const int flags = fcntl(fd, F_GETFL);
++        struct stat metadata {};
++        if (flags < 0 || (flags & O_ACCMODE) != O_RDONLY ||
++            fstat(fd, &metadata) != 0 || !S_ISREG(metadata.st_mode) || metadata.st_size < 0) {
++            throw std::runtime_error("model descriptor must be a read-only regular file");
++        }
++        const int owned = fcntl(fd, F_DUPFD_CLOEXEC, 0);
++        if (owned < 0) throw std::runtime_error("failed to duplicate model descriptor");
++        fp = fdopen(owned, "rb");
++        if (!fp) {
++            close(owned);
++            throw std::runtime_error("failed to open model descriptor stream");
++        }
++        size = static_cast<size_t>(metadata.st_size);
++        if (fseek(fp, 0, SEEK_SET) != 0) {
++            fclose(fp);
++            fp = nullptr;
++            throw std::runtime_error("failed to rewind model descriptor");
++        }
++    }
++
+     llama_file(const char* fname, const char* mode) {
+         fp = ggml_fopen(fname, mode);
+         if (fp == NULL) {
+@@ -221,14 +250,26 @@
+ 
+ GGUFLoader::~GGUFLoader() = default;
+ 
+-GGUFLoader::GGUFLoader(const std::string& path) {
+-    m_path = path;
++GGUFLoader::GGUFLoader(const std::string& path, int descriptor) {
++    if (descriptor < -1) throw std::invalid_argument("invalid model descriptor");
++    m_descriptor = descriptor >= 0;
++    m_path = m_descriptor ? std::string() : path;
++    if (m_descriptor) {
++#if defined(_WIN32)
++        throw std::runtime_error("model descriptor loading requires POSIX");
++#else
++        m_descriptor_file = std::make_unique<llama_file>(descriptor);
++        m_file = std::make_unique<llama_file>(fileno(m_descriptor_file->fp));
++#endif
++    } else {
++        m_file = std::make_unique<llama_file>(path.c_str(), "rb");
++    }
+     struct ggml_context* ctx = NULL;
+     struct gguf_init_params params = {
+         true,
+         &ctx,
+     };
+-    m_context.reset(gguf_init_from_file(path.c_str(), params));
++    m_context.reset(gguf_init_from_file_ptr(m_file->fp, params));
+     if (!m_context) {
+         throw std::runtime_error("Failed to load GGML file: " + path);
+     }
+@@ -243,7 +284,6 @@
+         ggml_free(ctx);
+     }
+ 
+-    m_file = std::make_unique<llama_file>(path.c_str(), "rb");
+     GGMLF_LOG_INFO("GGUF file size: %ld\n", m_file->size);
+ 
+     auto n_tensors = gguf_get_n_tensors(m_context.get());
+@@ -278,10 +318,23 @@
+     std::vector<char>().swap(m_tensor_buffer);
+ }
+ 
++void
++GGUFLoader::release_input() {
++    release_file_resources();
++    m_descriptor_file.reset();
++}
++
+ const char*
+ GGUFLoader::get_tensor_file_data(const std::string& tensor_name, size_t size) {
+     if (!m_file) {
+-        m_file = std::make_unique<llama_file>(m_path.c_str(), "rb");
++        if (m_descriptor) {
++            if (!m_descriptor_file) {
++                throw std::runtime_error("model descriptor retired; tensor reload forbidden");
++            }
++            m_file = std::make_unique<llama_file>(fileno(m_descriptor_file->fp));
++        } else {
++            m_file = std::make_unique<llama_file>(m_path.c_str(), "rb");
++        }
+     }
+     auto it = m_tensor_infos.find(tensor_name);
+     if (it == m_tensor_infos.end()) {
+@@ -290,7 +343,7 @@
+     auto tensor_info = it->second;
+     auto tensor_offset = std::get<1>(tensor_info);
+ 
+-    if (tensor_offset + size > m_file->size) {
++    if (tensor_offset > m_file->size || size > m_file->size - tensor_offset) {
+         throw std::runtime_error("Tensor data out of range: " + tensor_name);
+     }
+     if (size > m_tensor_buffer.size()) {
+--- a/src/runtime/ggml/runtime.h
++++ b/src/runtime/ggml/runtime.h
+@@ -83,14 +83,18 @@
+ 
+ class GGUFLoader {
+    public:
+-    explicit GGUFLoader(const std::string& path);
++    // descriptor >= 0 overrides the path; caller establishes immutability.
++    // The descriptor is duplicated and never reopened by path.
++    explicit GGUFLoader(const std::string& path, int descriptor = -1);
+     // Out-of-line so the unique_ptr<llama_file> deleter sees the complete
+     // llama_file type (defined in loader.cpp).
+     ~GGUFLoader();
+ 
+     const char* get_tensor_file_data(const std::string& tensor_name, size_t size);
+-    // Releases file-backed resources while retaining metadata; tensor reads reopen on demand.
++    // Releases reader buffers; the immutable descriptor anchor survives lazy setup.
+     void release_file_resources();
++    // Irrevocably retire descriptor-backed input; later tensor reads fail.
++    void release_input();
+     ggml_type get_tensor_type(const std::string& tensor_name);
+     // Returns the on-disk rank (1-4), or 0 when the tensor is absent.
+     int get_tensor_n_dims(const std::string& tensor_name) const;
+@@ -111,9 +115,11 @@
+     bool has_key(const std::string& key) const;
+ 
+    private:
++    bool m_descriptor = false;
+     std::string m_path;
+     gguf_context_ptr m_context;
+     std::unique_ptr<llama_file> m_file;
++    std::unique_ptr<llama_file> m_descriptor_file;
+     std::map<std::string, std::tuple<ggml_type, uint64_t>> m_tensor_infos;
+     // Per-tensor on-disk dimensionality.
+     std::map<std::string, int> m_tensor_n_dims;
+--- a/src/asr/model.h
++++ b/src/asr/model.h
+@@ -36,6 +36,8 @@
+ 
+ struct ModelConfig {
+     std::string path;
++    // Internal borrowed immutable descriptor; never exposed as a CLI parameter.
++    int descriptor = -1;
+     std::string name;  // empty = derived from the model
+     void Register(common::ParameterParser& p) {
+         p.Register("path", &path, "Model GGUF path");
+@@ -55,7 +57,7 @@
+     // The BackendManager is borrowed for the model's lifetime.
+     static std::unique_ptr<AsrModel> load(
+         ggml_runtime::BackendManager& bm, const std::string& model_path,
+-        const BatchingConfig& batching = {});
++        const BatchingConfig& batching = {}, int descriptor = -1);
+ 
+     virtual HeadKind head_kind() const = 0;
+ 
+--- a/src/asr/model.cpp
++++ b/src/asr/model.cpp
+@@ -1342,9 +1342,9 @@
+ std::unique_ptr<AsrModel>
+ AsrModel::load(
+     ggml_runtime::BackendManager& bm, const std::string& model_path,
+-    const BatchingConfig& batching) {
++    const BatchingConfig& batching, int descriptor) {
+     Common c;
+-    c.loader = std::make_unique<ggml_runtime::GGUFLoader>(model_path);
++    c.loader = std::make_unique<ggml_runtime::GGUFLoader>(model_path, descriptor);
+     const ggml_runtime::GGUFLoader& loader = *c.loader;
+ 
+     // "asr" is the current namespace; legacy parakeet-ctc GGUFs remain
+--- a/src/asr/recognizer.cpp
++++ b/src/asr/recognizer.cpp
+@@ -102,7 +102,7 @@
+         cfg_.streaming.ctc_right_padding < 0.0f)
+         throw std::invalid_argument(
+             "invalid streaming geometry: chunk_size must be > 0 and paddings must be >= 0");
+-    model_ = AsrModel::load(*bm_, cfg_.model.path, cfg_.batching);
++    model_ = AsrModel::load(*bm_, cfg_.model.path, cfg_.batching, cfg_.model.descriptor);
+     model_name_ = cfg_.model.name.empty() ? model_->model_name() : cfg_.model.name;
+     // Self-punctuating models must bypass the separate PnC model.
+     postproc_ = std::make_unique<postproc::Postprocessor>(
+

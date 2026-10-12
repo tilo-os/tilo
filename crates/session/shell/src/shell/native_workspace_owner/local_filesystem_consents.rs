@@ -27,7 +27,7 @@ impl NativeStateRuntime {
             return false;
         };
         let eligible: Vec<_> = workspace
-            .capabilities
+            .sandbox
             .iter()
             .filter(|capability| {
                 ids.contains(&capability.id)
@@ -85,10 +85,10 @@ impl NativeStateRuntime {
                 std::time::SystemTime::now(),
             );
             if current.as_ref() != Some(&consent.identity)
-                || !workspace.capabilities.contains(&consent.capability)
+                || !workspace.sandbox.contains(&consent.capability)
                 || !admitted
                     .as_ref()
-                    .is_ok_and(|(_, _, person)| *person == consent.identity.principal_id)
+                    .is_ok_and(|authority| authority.person == consent.identity.principal_id)
             {
                 consent.retired = true;
                 continue;

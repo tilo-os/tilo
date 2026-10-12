@@ -1,0 +1,162 @@
+{
+  "exit": 0,
+  "guarded": null,
+  "memory_peak": {
+    "VmPeak": 870792,
+    "VmSize": 870792,
+    "VmHWM": 354664,
+    "VmRSS": 354664,
+    "Threads": 2
+  },
+  "cpu_seconds": 25.71,
+  "sampled_cpu_lower_bound_seconds": 19.58,
+  "wall_seconds": 18.30930570399505,
+  "scope_events_before": {
+    "low": 0,
+    "high": 0,
+    "max": 0,
+    "oom": 0,
+    "oom_kill": 0,
+    "oom_group_kill": 0,
+    "sock_throttled": 0
+  },
+  "scope_events_after": {
+    "low": 0,
+    "high": 0,
+    "max": 0,
+    "oom": 0,
+    "oom_kill": 0,
+    "oom_group_kill": 0,
+    "sock_throttled": 0
+  },
+  "scope_pressure_before": "some avg10=0.00 avg60=0.00 avg300=0.00 total=0\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n",
+  "scope_pressure_after": "some avg10=0.00 avg60=0.00 avg300=0.00 total=0\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n",
+  "host_pressure_before": "some avg10=4.66 avg60=7.11 avg300=4.98 total=5495735190\nfull avg10=3.91 avg60=6.36 avg300=4.50 total=5070748615\n",
+  "host_pressure_after": "some avg10=0.77 avg60=5.27 avg300=4.68 total=5495748103\nfull avg10=0.64 avg60=4.71 avg300=4.23 total=5070757126\n",
+  "memory_peak_bytes": 617578496,
+  "materialization_sha256": {
+    "worker": "45dbebef2b466619d5f52a8b9b78f7c70985c7d19460b30d7e54d3b2df00bc97",
+    "qualifier": "8ac7b90726f0f954dbb6d010b709961a1e81f1355c8c2e8749b494356cec63f9",
+    "probe.py": "abd7e65ea1dac4c899187a0ddb388dcc68c8944bbf8b7ddf2e9997dc34a393a3",
+    "probe_speech_memory.py": "f29511fe493ede490c3593089dba2c1b7c140c4e14e1d9497d25d5f48dba499f"
+  },
+  "timing_classification": "pressured-builder development; not physical latency qualification",
+  "io_isolation": false,
+  "production_worker": {
+    "case": "en_us-0",
+    "language": "en",
+    "public_sources": [
+      {
+        "id": "en_us-0",
+        "sha256": "b438b60eb4e9fddbcaa303e27070c2458c3daac42f0b08d5d8622c47335d24f7"
+      }
+    ],
+    "input_pcm_sha256": "0529d921fe2b0e39200728e68b214e57d76ebd08f39ae06e4caafe642c897388",
+    "original_pcm_sha256": "0529d921fe2b0e39200728e68b214e57d76ebd08f39ae06e4caafe642c897388",
+    "synthetic_noise": null,
+    "assembled_language_transition": false,
+    "public_vocabulary": [],
+    "model_sha256": "60ed5bc3dd14eea856493d334349b405782ddcaf0028d4b5df4088345fba2efe",
+    "cpu_affinity_count": 2,
+    "profile": "builder CPU-affinity constraint; not physical older hardware",
+    "audio_seconds": 10.56,
+    "cold_ms": 206.4454879728146,
+    "first_draft_seconds": 2,
+    "first_partial_from_source_start_ms": 3266.3620520033874,
+    "non_prefix_partial_revisions": 2,
+    "finalization_ms": 0.4263850278221071,
+    "cpu_user_seconds": 19.158534,
+    "cpu_system_seconds": 0.44084399999999996,
+    "wall_seconds": 12.224305013980484,
+    "worker_exit": 0,
+    "cpu_accounting": "serial worker RUSAGE_CHILDREN delta; witness still running",
+    "memory_limit_bytes": 1073741824,
+    "memory_peak": {
+      "VmPeak": 870792,
+      "VmSize": 870792,
+      "VmHWM": 354664,
+      "VmRSS": 354664,
+      "Threads": 2
+    },
+    "memory_unit": "KiB except Threads",
+    "memory_sample_interval_ms": 20,
+    "raw_wer": 0.05263157894736842
+  },
+  "evidence": "voice-sealed-worker-scoped-eof-fixed.log",
+  "evidence_sha256": "98023cb416b9940613cb4964327232befefa20f3d740dfdc8b343d1925f46717",
+  "production_model_admission_changed": false,
+  "model_installed": false,
+  "holdout_decoded": false,
+  "qualifier_custody": "ephemeral isolated test-only catalogue witness",
+  "native_loader": "sealed descriptor callback after Landlock+seccomp",
+  "prior_unqualified_attempts": [
+    {
+      "evidence": "voice-sealed-worker-scoped.log",
+      "sha256": "0e3243ed83690fd0c61d3db183badb1aedc6d90cef29dd8ea4424fb3c979d27c",
+      "qualified": false,
+      "reason": "worker readiness/observation failed; original retained"
+    },
+    {
+      "evidence": "voice-sealed-worker-scoped-fixed.log",
+      "sha256": "e8f06b52d33d2833d2ef7531d387b38d6843e413adeb3c555a2eff28032bbed7",
+      "qualified": false,
+      "reason": "worker readiness/observation failed; original retained"
+    },
+    {
+      "evidence": "voice-sealed-worker-scoped-final-tool.log",
+      "sha256": "eeb34f9aea5c47ca21ee7e673ade1be9e48d9501bcbd3ea1fdbddcb5648ae1c3",
+      "qualified": false,
+      "reason": "missing worker bind target; stopped before native parser"
+    }
+  ],
+  "finalized_tool_replay": {
+    "exit": 0,
+    "guarded": null,
+    "memory_peak": {
+      "VmPeak": 870456,
+      "VmSize": 870456,
+      "VmHWM": 354356,
+      "VmRSS": 354356,
+      "Threads": 2
+    },
+    "cpu_seconds": 25.74,
+    "sampled_cpu_lower_bound_seconds": 19.88,
+    "wall_seconds": 18.514619468012825,
+    "scope_events_before": {
+      "low": 0,
+      "high": 0,
+      "max": 0,
+      "oom": 0,
+      "oom_kill": 0,
+      "oom_group_kill": 0,
+      "sock_throttled": 0
+    },
+    "scope_events_after": {
+      "low": 0,
+      "high": 0,
+      "max": 0,
+      "oom": 0,
+      "oom_kill": 0,
+      "oom_group_kill": 0,
+      "sock_throttled": 0
+    },
+    "scope_pressure_before": "some avg10=0.00 avg60=0.00 avg300=0.00 total=0\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n",
+    "scope_pressure_after": "some avg10=0.00 avg60=0.00 avg300=0.00 total=0\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n",
+    "host_pressure_before": "some avg10=0.54 avg60=2.35 avg300=4.33 total=5521425522\nfull avg10=0.53 avg60=2.17 avg300=3.78 total=5093112119\n",
+    "host_pressure_after": "some avg10=8.21 avg60=3.85 avg300=4.55 total=5522930978\nfull avg10=7.74 avg60=3.63 avg300=4.01 total=5094572113\n",
+    "memory_peak_bytes": 639918080,
+    "materialization_sha256": {
+      "worker": "45dbebef2b466619d5f52a8b9b78f7c70985c7d19460b30d7e54d3b2df00bc97",
+      "qualifier": "8ac7b90726f0f954dbb6d010b709961a1e81f1355c8c2e8749b494356cec63f9",
+      "probe.py": "abd7e65ea1dac4c899187a0ddb388dcc68c8944bbf8b7ddf2e9997dc34a393a3",
+      "probe_speech_memory.py": "f29511fe493ede490c3593089dba2c1b7c140c4e14e1d9497d25d5f48dba499f",
+      "probe_asr_candidate.py": "0d8735e2233b950a99c4b718203c72a9a23cc67d668c6f3581215e35740ebc7c",
+      "summarize_speech_benchmark.py": "c5dd4a4ca3079978283af644b3726a70eb5e96c51b509f6253c4a797a62381a7",
+      "tilo-speech-worker": "45dbebef2b466619d5f52a8b9b78f7c70985c7d19460b30d7e54d3b2df00bc97"
+    },
+    "timing_classification": "pressured-builder development; not physical latency qualification",
+    "io_isolation": false,
+    "evidence": "voice-sealed-worker-scoped-final-materialized.log",
+    "evidence_sha256": "333e6c7f20fb5e73ecfc59d5244bc03f108ae085f4399fb88418eadca348fc33"
+  }
+}

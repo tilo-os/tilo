@@ -303,12 +303,12 @@ impl ContentStore {
         ) {
             return Self::in_page_files();
         }
-        let Some(data) = xdg_paths::data_dir() else {
+        let Some(data) = tilo_paths::data_dir() else {
             tracing::warn!("no data directory; binary content is kept in memory only");
             return Self::memory();
         };
         let mut backend = DirBackend::new(data.join("tilo").join("content"));
-        if let Some(cache) = xdg_paths::cache_dir() {
+        if let Some(cache) = tilo_paths::cache_dir() {
             backend = backend.reading_also(cache.join("tilo").join("blobs"));
         }
         Self::new(backend)
@@ -348,7 +348,8 @@ impl ContentStore {
             .map(|stored| stored.hash)
     }
 
-    /// Store everything `reader` yields without holding it in memory.
+    /// Store everything `reader` yields without holding it in memory: the device store sends it
+    /// to the daemon one `runtime_fs::blobs::MAX_PUT_CHUNK` at a time.
     ///
     /// # Errors
     /// See [`ContentBackend::put`].
@@ -559,10 +560,12 @@ impl<R: Read> Read for Verifying<R> {
     }
 }
 
-#[cfg(all(test, feature = "dir"))]
+#[cfg(test)]
+#[cfg(feature = "dir")]
 mod tests;
 
-#[cfg(all(test, not(all(unix, feature = "device"))))]
+#[cfg(test)]
+#[cfg(not(all(unix, feature = "device")))]
 mod device_api_tests {
     #[test]
     fn device_store_is_unavailable_without_device_transport() {

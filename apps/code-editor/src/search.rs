@@ -271,26 +271,15 @@ pub fn walk(root: &Path, query: &Query, cancel: &AtomicBool, emit: &mut dyn FnMu
             if cancel.load(Ordering::Relaxed) {
                 return;
             }
-            let Ok(md) = std::fs::metadata(&path) else {
-                continue;
-            };
-            if md.len() > disk::MAX_TEXT_BYTES {
-                continue;
-            }
             if files >= MAX_FILES_SCANNED {
                 truncated = true;
                 break 'walk;
             }
-            let Ok(bytes) = std::fs::read(&path) else {
+            // Reuse the editor's bounded read: a file may grow after stat.
+            let Ok(loaded) = disk::load(&path) else {
                 continue;
             };
-            let Ok(text) = String::from_utf8(bytes) else {
-                continue;
-            };
-            let sniff_len = text.len().min(8192);
-            if text.as_bytes().get(..sniff_len).unwrap_or(&[]).contains(&0) {
-                continue;
-            }
+            let text = loaded.text;
             files += 1;
             let rel = relative_display(root, &path);
             for (idx, line) in text.lines().enumerate() {

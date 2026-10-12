@@ -40,7 +40,7 @@ use ui::theme::Theme;
 use ui::widget::Widget;
 use vello::kurbo::{Point, Rect};
 use winit::dpi::PhysicalPosition;
-use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, MouseScrollDelta, WindowEvent};
+use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 
 const W: f32 = 1280.0;
@@ -247,25 +247,10 @@ impl Harness {
     }
 
     fn event(&mut self, event: &WindowEvent) -> bool {
-        let mut doc = automerge::AutoCommit::new();
-        let root = automerge::ROOT.clone();
-        let modifiers = winit::event::Modifiers::default();
-        let mut handled = false;
-        let mut focus: Option<NodeId> = None;
-        self.host.handle_event(
-            event,
-            &mut ui::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &modifiers,
-                state: ui::widget::Edits::lend(&mut doc),
-                path: &root,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: self.child,
-                taffy: &self.taffy,
-            },
-        );
-        handled
+        ui::testing::Dispatch::new()
+            .layout(&self.taffy, self.child)
+            .send(&mut self.host, event)
+            .handled
     }
 
     /// The per-frame reconcilers this file's subjects ride on, in the order
@@ -293,66 +278,43 @@ impl Harness {
 
     fn click(&mut self, p: Point) {
         self.event(&WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             position: PhysicalPosition::new(p.x, p.y),
         });
         self.event(&WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             state: ElementState::Pressed,
             button: MouseButton::Left,
         });
         self.event(&WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             state: ElementState::Released,
             button: MouseButton::Left,
         });
     }
 
     fn key(&mut self, logical: Key, mods: ModifiersState) {
-        // winit's `KeyEvent` carries a private platform field, so the struct is
-        // zero-initialised and every public field overwritten.
-        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = logical;
-        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-            winit::keyboard::NativeKeyCode::Unidentified,
-        );
-        ev.location = winit::keyboard::KeyLocation::Standard;
-        ev.state = ElementState::Pressed;
-        ev.repeat = false;
+        let ev = ui::synthetic_input::key_event(logical, None, ElementState::Pressed);
         let event = WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             event: ev,
             is_synthetic: false,
         };
-        let modifiers = Modifiers::from(mods);
-        let mut doc = automerge::AutoCommit::new();
-        let root = automerge::ROOT.clone();
-        let mut handled = false;
-        let mut focus: Option<NodeId> = None;
-        self.host.handle_event(
-            &event,
-            &mut ui::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &modifiers,
-                state: ui::widget::Edits::lend(&mut doc),
-                path: &root,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: self.child,
-                taffy: &self.taffy,
-            },
-        );
+        ui::testing::Dispatch::new()
+            .modifiers(mods)
+            .layout(&self.taffy, self.child)
+            .send(&mut self.host, &event);
     }
 
     /// A horizontally-dominant wheel event over the strip, the way a
     /// two-finger sideways swipe arrives.
     fn scroll_horizontally(&mut self, dx: f32) {
         self.event(&WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             position: PhysicalPosition::new(600.0, 500.0),
         });
         self.event(&WindowEvent::MouseWheel {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             delta: MouseScrollDelta::LineDelta(dx, 0.0),
             phase: winit::event::TouchPhase::Moved,
         });

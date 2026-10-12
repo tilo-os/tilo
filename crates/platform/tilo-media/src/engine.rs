@@ -246,15 +246,6 @@ impl MediaEngine {
         Self::with_config(EngineConfig::default())
     }
 
-    /// Build an engine that keeps pictures in whatever memory the decoder
-    /// produced them in — a dmabuf when the hardware can export one, planar
-    /// YUV otherwise. Read frames with [`Self::latest`] and import or upload
-    /// them yourself; [`Self::latest_frame`] stays empty for a non-RGBA
-    /// payload rather than converting behind your back.
-    pub fn new_gpu() -> Self {
-        Self::with_config(EngineConfig::gpu())
-    }
-
     /// Build an engine from an explicit configuration.
     pub fn with_config(config: EngineConfig) -> Self {
         #[cfg(web_page)]

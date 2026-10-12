@@ -55,6 +55,10 @@ pub fn names() -> &'static [&'static str] {
                 ACCOUNT_FORM,
                 ACCOUNTS_NARROW,
                 DEVICE_DISPLAYS,
+                "keyboard-single",
+                "keyboard-many",
+                "keyboard-touch",
+                "keyboard-osk",
             ])
             .chain(CODEC_SCENARIOS.iter().copied())
             .collect()
@@ -84,6 +88,9 @@ pub struct CaptureScene {
     pub account_form: Option<AccountKind>,
     /// Synthetic certified-peer observations; available only to capture fixtures.
     pub device_displays: Vec<settings_store::device_displays::DeviceDisplay>,
+    pub person_devices: Vec<settings_store::person_displays::PersonDevice>,
+    /// Synthetic attached keyboards; captures never discover the real host.
+    pub input_hardware: Option<settings_store::hardware::InputHardwareSnapshot>,
 }
 
 /// Prepare `fixture`'s capture: every capture shows the sample accounts.
@@ -97,6 +104,12 @@ pub fn prepare(fixture: &mut Fixture<Settings>) {
         codec_status: codec_status(fixture.scenario()),
         account_root,
         account_form,
+        input_hardware: keyboard_fixture(fixture.scenario()),
+        person_devices: if fixture.scenario() == Some(DEVICE_DISPLAYS) {
+            person_display_fixture()
+        } else {
+            Vec::new()
+        },
         device_displays: if fixture.scenario() == Some(DEVICE_DISPLAYS) {
             device_display_fixture()
         } else {
@@ -125,6 +138,35 @@ fn codec_status(scenario: Option<&str>) -> Option<crate::codec_pack::CodecPackSt
     Some(crate::codec_pack::CodecPackStatus::parse(json))
 }
 
+/// Rich synthetic observations for the explicit display capture only.
+fn person_display_fixture() -> Vec<settings_store::person_displays::PersonDevice> {
+    use settings_store::person_displays::{DeviceOutput, PersonDevice};
+    device_display_fixture()
+        .into_iter()
+        .map(|screen| PersonDevice {
+            device: screen.device,
+            label: screen.device_label,
+            local: screen.local,
+            online: screen.online,
+            outputs: vec![DeviceOutput {
+                id: screen.connector,
+                name: screen.label,
+                builtin: screen.local,
+                x: 0,
+                y: 0,
+                width: screen.width,
+                height: screen.height,
+                mode_width: screen.width * u32::from(screen.scale_milli) / 1000,
+                mode_height: screen.height * u32::from(screen.scale_milli) / 1000,
+                refresh_mhz: 60_000,
+                scale_milli: screen.scale_milli,
+                connected: true,
+                enabled: true,
+            }],
+        })
+        .collect()
+}
+
 /// Two fixture devices with device-qualified connector identities and logical sizes.
 fn device_display_fixture() -> Vec<settings_store::device_displays::DeviceDisplay> {
     use settings_store::device_displays::DeviceDisplay;
@@ -133,6 +175,7 @@ fn device_display_fixture() -> Vec<settings_store::device_displays::DeviceDispla
             device: "fixture-laptop".into(),
             device_label: "Laptop".into(),
             connector: "eDP-1".into(),
+            output_id: Some("eDP-1".into()),
             label: "Built-in display".into(),
             online: true,
             local: true,
@@ -147,6 +190,7 @@ fn device_display_fixture() -> Vec<settings_store::device_displays::DeviceDispla
             device: "fixture-desktop".into(),
             device_label: "Desktop".into(),
             connector: "DP-1".into(),
+            output_id: Some("DP-1".into()),
             label: "External display".into(),
             online: true,
             local: false,
@@ -176,6 +220,9 @@ pub fn staged(scenario: Option<&str>) -> Staged {
     match scenario {
         None => Staged::Pane(Category::Appearance),
         Some(DEVICE_DISPLAYS) => Staged::Pane(Category::Displays),
+        Some("keyboard-single" | "keyboard-many" | "keyboard-touch" | "keyboard-osk") => {
+            Staged::Pane(Category::MouseKeyboard)
+        }
         Some(NARROW) => Staged::Pane(Category::RegionFormats),
         Some(NARROW_LIST) => Staged::List(Category::RegionFormats),
         Some(SEARCH) => Staged::Search(Category::Appearance),
@@ -183,6 +230,41 @@ pub fn staged(scenario: Option<&str>) -> Staged {
         Some(slug) if CODEC_SCENARIOS.contains(&slug) => Staged::Pane(Category::Updates),
         Some(slug) => Staged::Pane(Category::from_slug(slug).unwrap_or(Category::Appearance)),
     }
+}
+
+/// Synthetic input observations use the same snapshot contract as the compositor.
+pub(crate) fn keyboard_fixture(
+    scenario: Option<&str>,
+) -> Option<settings_store::hardware::InputHardwareSnapshot> {
+    use settings_store::hardware::{InputDeviceKind, InputDeviceSnapshot, InputHardwareSnapshot};
+    let kinds: &[InputDeviceKind] = match scenario? {
+        "keyboard-single" => &[InputDeviceKind::Keyboard],
+        "keyboard-many" => &[
+            InputDeviceKind::Keyboard,
+            InputDeviceKind::Keyboard,
+            InputDeviceKind::Touchscreen,
+        ],
+        "keyboard-touch" => &[InputDeviceKind::Keyboard, InputDeviceKind::Touchscreen],
+        "keyboard-osk" => &[InputDeviceKind::Touchscreen],
+        _ => return None,
+    };
+    Some(InputHardwareSnapshot {
+        devices: kinds
+            .iter()
+            .enumerate()
+            .map(|(index, kind)| InputDeviceSnapshot {
+                key: format!("fixture-input-{index}"),
+                name: if *kind == InputDeviceKind::Keyboard {
+                    format!("Keyboard {}", index + 1)
+                } else {
+                    "Touchscreen".into()
+                },
+                kind: *kind,
+                ..Default::default()
+            })
+            .collect(),
+        ..Default::default()
+    })
 }
 
 #[cfg(test)]
@@ -278,7 +360,7 @@ mod tests {
     fn scenarios_name_their_pane_and_size() {
         assert_eq!(
             names().len(),
-            Category::ALL.len() + 6 + CODEC_SCENARIOS.len()
+            Category::ALL.len() + 10 + CODEC_SCENARIOS.len()
         );
         for scenario in CODEC_SCENARIOS {
             assert_eq!(staged(Some(scenario)), Staged::Pane(Category::Updates));

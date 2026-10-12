@@ -16,7 +16,9 @@
 //! trailing currency symbols, surrounding spaces, and a parenthesised
 //! negative (`(1,200)`) are all accepted.
 
-use crate::model::{CellFormat, Currency, DateStyle, TimeStyle, date_to_serial};
+use crate::model::{CellFormat, date_to_serial};
+use tilo_locale::{Currency, DateStyle};
+use ui::clock::TimeStyle;
 
 /// The outcome of inferring a freshly-typed literal.
 #[derive(Clone, Debug, PartialEq)]

@@ -174,7 +174,7 @@ impl FrameHarness {
         self.visit_publication_locus(
             self.root.as_ref(),
             &target,
-            &snapshot.resources,
+            snapshot.resources(),
             &mut result,
         );
         if result.len() == 1 {
@@ -344,20 +344,6 @@ impl FrameHarness {
                 }
             })
             .collect()
-    }
-
-    /// Where the control a projected `ui:` resource names is on the surface.
-    pub fn projected_control_bounds(&self, resource: &str) -> Option<Rect> {
-        let id = resource
-            .strip_prefix(CONTROL_RESOURCE_PREFIX)
-            .and_then(|encoded| {
-                percent_encoding::percent_decode_str(encoded)
-                    .decode_utf8()
-                    .ok()
-            })?;
-        self.semantic_tree()
-            .node(&SemanticId(id.into_owned()))?
-            .bounds
     }
 
     /// The control `id` names, if the current frame has it.
@@ -580,7 +566,7 @@ impl FrameHarness {
         let handled = self
             .dispatch_semantic_node(owner, verb, |widget, doc, root| {
                 if let Some(key_path) = &key_path {
-                    widget.perform_action_at(
+                    widget.perform_action(
                         verb,
                         key_path,
                         &mut crate::widget::Edits::lend(doc),
@@ -684,7 +670,8 @@ mod locus_tests {
             sequence: 1,
             actor: tilo_actions::InteractionActor {
                 id: "synthetic-test-only".into(),
-                kind: tilo_actions::InteractionActorKind::Person,
+                kind: tilo_actions::ActorKind::Person,
+                for_person: None,
             },
             phase: tilo_actions::InteractionPhase::Applying,
             action: tilo_actions::InteractionAction {
@@ -725,7 +712,7 @@ mod locus_tests {
                 .unwrap();
             assert_eq!(calls.get(), 1, "the actual semantic executor ran once");
             let mut event = interaction("first");
-            event.actor.kind = tilo_actions::InteractionActorKind::Agent;
+            event.actor.kind = tilo_actions::ActorKind::Agent;
             let now = crate::time::now();
             frame.update_presence(|presence| {
                 presence.apply_interaction_at(event.clone(), now).unwrap()
@@ -824,7 +811,7 @@ mod locus_tests {
                     .unwrap();
                 let mut event = interaction("first");
                 event.actor.id = "scribe".into();
-                event.actor.kind = tilo_actions::InteractionActorKind::Agent;
+                event.actor.kind = tilo_actions::ActorKind::Agent;
                 let at = crate::time::now()
                     .checked_sub(crate::time::Duration::from_secs(2))
                     .unwrap();

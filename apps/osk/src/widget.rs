@@ -80,6 +80,7 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::time::{Duration, Instant};
+use ui::widget::TaffyTreeExt;
 use ui::widget::{AppModel, ModelPath};
 
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -88,7 +89,7 @@ use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, Touch, TouchPhase, WindowEvent};
 
 use crate::actions::SetPreference;
-use crate::learned::{LearnedTyping, Lesson};
+use crate::learned::{Learned, Lesson};
 use ui::a11y::{AccessNode, AccessState, Action as AccessibilityAction, Role};
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
@@ -180,6 +181,7 @@ const MAX_KEY_LOG_ENTRIES: usize = 1_024;
 const MAX_TOOLBAR_LOG_ENTRIES: usize = 128;
 const MAX_GESTURE_POINTS: usize = 256;
 const MAX_TRACKED_WORD_SCALARS: usize = 128;
+type ContextHandler = Box<dyn FnMut(u32, u32) -> Result<(), String>>;
 
 /// The on-screen keyboard widget.
 #[allow(
@@ -217,6 +219,10 @@ pub struct OskWidget {
     shift: ShiftState,
     /// Toolbar descriptors (data-driven, replaceable).
     toolbar: Vec<OskToolbarItem>,
+    custom_toolbar: Option<Vec<OskToolbarItem>>,
+    context_generation: Option<u32>,
+    context_handler: Option<ContextHandler>,
+    context_error: Option<String>,
     /// Key row height, from the theme's metrics (re-read at `build_layout`).
     target_key_height: f32,
     /// Toolbar row height.
@@ -346,7 +352,7 @@ pub struct OskWidget {
     /// Whether what was learned is to be forgotten, saved copies included.
     forget_learned: bool,
     /// What the keyboard learned from this person, as last presented.
-    learned: std::rc::Rc<LearnedTyping>,
+    learned: std::rc::Rc<Learned>,
 
     /// Whether the keyboard is on screen. This is not the keyboard's own
     /// choice — visibility belongs to the compositor, which shows the keyboard
@@ -397,6 +403,10 @@ impl OskWidget {
             showing_symbols: false,
             shift: ShiftState::Off,
             toolbar: OskToolbarItem::default_set(),
+            custom_toolbar: None,
+            context_generation: None,
+            context_handler: None,
+            context_error: None,
             target_key_height: key_row_height(&ui::tokens::Metrics::BASE),
             toolbar_height: toolbar_row_height(&ui::tokens::Spacing::BASE),
             suggestion_height: suggestion_row_height(&ui::tokens::Metrics::BASE),
@@ -506,8 +516,91 @@ impl OskWidget {
     /// Replace the toolbar with a custom data-driven set.
     #[must_use]
     pub fn with_toolbar(mut self, items: Vec<OskToolbarItem>) -> Self {
+        self.custom_toolbar = Some(items.clone());
         self.toolbar = items;
         self
+    }
+
+    /// Connect opaque field slots to the session's authenticated action route.
+    pub(crate) fn set_context_handler(
+        &mut self,
+        handler: Box<dyn FnMut(u32, u32) -> Result<(), String>>,
+    ) {
+        self.context_handler = Some(handler);
+    }
+
+    /// Present at most six explicit field actions plus the keyboard dismissal.
+    /// Reject malformed or secret-field context instead of displaying inert tools.
+    pub(crate) fn set_context_toolbar(&mut self, generation: u32, items: Vec<OskToolbarItem>) {
+        self.clear_context_toolbar();
+        if !self.visible || self.is_secret_field() || items.is_empty() || items.len() > 6 {
+            return;
+        }
+        if items.iter().any(|item| !matches!(item.action,
+            OskToolbarAction::Contextual { generation: item_generation, .. } if item_generation == generation)) {
+            return;
+        }
+        self.cancel_contacts();
+        self.context_generation = Some(generation);
+        self.toolbar = items;
+        self.toolbar.push(OskToolbarItem::new(
+            "dismiss",
+            Some(ui::icons::Icon::ChevronDown),
+            &ui::i18n::I18nManager::lookup_plain("osk-toolbar-dismiss"),
+            OskToolbarAction::Dismiss,
+        ));
+        self.structure_dirty = true;
+    }
+
+    pub(crate) fn clear_context_toolbar(&mut self) {
+        if self.context_generation.take().is_none() {
+            return;
+        }
+        self.cancel_contacts();
+        self.context_error = None;
+        self.toolbar_log
+            .retain(|action| !matches!(action, OskToolbarAction::Contextual { .. }));
+        self.restore_toolbar();
+        self.structure_dirty = true;
+    }
+
+    pub(crate) fn context_result(
+        &mut self,
+        generation: u32,
+        slot: u32,
+        succeeded: bool,
+        message: String,
+    ) {
+        if self.context_generation != Some(generation)
+            || !self
+                .toolbar
+                .iter()
+                .any(|item| item.action == OskToolbarAction::Contextual { generation, slot })
+        {
+            return;
+        }
+        self.context_error = (!succeeded).then_some(message);
+        self.structure_dirty = true;
+    }
+
+    fn field_description(&self) -> String {
+        self.context_error.clone().unwrap_or_else(|| {
+            i18n::t(if self.suggestions_enabled {
+                "osk-description"
+            } else {
+                "osk-description-no-suggestions"
+            })
+        })
+    }
+
+    fn restore_toolbar(&mut self) {
+        self.toolbar = self.custom_toolbar.clone().unwrap_or_else(|| {
+            if self.purpose == InputPurpose::Terminal {
+                OskToolbarItem::terminal_set()
+            } else {
+                OskToolbarItem::default_set()
+            }
+        });
     }
 
     /// Replace the swipe decoder. The default is the geometric model; this is
@@ -687,6 +780,7 @@ impl OskWidget {
     /// the symbols layer, and raises `structure_dirty` so the host relays out
     /// (the row count differs between, say, the dialpad and QWERTY).
     pub fn set_purpose(&mut self, purpose: InputPurpose) {
+        self.clear_context_toolbar();
         self.cancel_contacts();
         self.close_emoji_panel();
         self.apply_purpose(purpose);
@@ -701,13 +795,11 @@ impl OskWidget {
     /// capitalization hints set the shift state.
     pub fn set_content_hints(&mut self, hints: u32) {
         self.hints = hints;
+        if self.is_secret_field() {
+            self.clear_context_toolbar();
+        }
         self.enforce_secrecy();
         self.apply_hint_case();
-    }
-
-    /// The focused field's content hints.
-    pub fn content_hints(&self) -> u32 {
-        self.hints
     }
 
     /// Whether the focused field holds a secret: nothing typed there is
@@ -771,6 +863,9 @@ impl OskWidget {
     /// the requested state (so it doesn't churn relayout on repeated
     /// activations).
     pub fn set_visible(&mut self, visible: bool) {
+        if !visible {
+            self.clear_context_toolbar();
+        }
         if self.visible != visible {
             self.visible = visible;
             self.structure_dirty = true;
@@ -850,10 +945,64 @@ impl OskWidget {
     /// Show the keyboard preferences `preferences`: the layout text fields
     /// open in, the suggestion bar, personalization and the recent emoji.
     pub fn present_preferences(&mut self, preferences: &crate::resource::OskPreferences) {
+        self.present_layout_order(preferences);
         self.select_text_layout_from_preference(&preferences.layout);
         self.set_suggestions_enabled(preferences.suggestions);
         self.set_personalization_enabled(preferences.personalization);
         self.set_emoji_recents(&preferences.emoji_recents);
+    }
+
+    /// Layout keys follow configured order; an old profile keeps the historic choices.
+    fn present_layout_order(&mut self, preferences: &crate::resource::OskPreferences) {
+        let mut order: Vec<String> = if preferences.layouts.is_empty() {
+            crate::actions::LAYOUT_NAMES
+                .iter()
+                .map(|name| (*name).to_owned())
+                .collect()
+        } else {
+            preferences
+                .layouts
+                .iter()
+                .filter(|name| crate::actions::LAYOUT_NAMES.contains(&name.as_str()))
+                .cloned()
+                .collect()
+        };
+        let mut seen = std::collections::HashSet::new();
+        order.retain(|name| seen.insert(name.clone()));
+        if crate::actions::LAYOUT_NAMES.contains(&preferences.layout.as_str())
+            && !order.contains(&preferences.layout)
+        {
+            order.push(preferences.layout.clone());
+        }
+        let mut changed = false;
+        for layout in self.layouts.values_mut() {
+            if !crate::actions::LAYOUT_NAMES.contains(&layout.name.as_str()) {
+                continue;
+            }
+            let next = order
+                .iter()
+                .position(|name| name == &layout.name)
+                .and_then(|index| index.checked_add(1))
+                .and_then(|index| order.get(index).or_else(|| order.first()))
+                .or_else(|| order.first());
+            let Some(next) = next else {
+                continue;
+            };
+            for key in layout.rows.iter_mut().flatten() {
+                if matches!(key.action, KeyAction::Layout(_)) {
+                    changed |= key.action != KeyAction::Layout(next.clone());
+                    key.action = KeyAction::Layout(next.clone());
+                    key.label = match next.as_str() {
+                        "qwerty" => "EN".into(),
+                        "azerty" => "FR".into(),
+                        _ => key.label.clone(),
+                    };
+                }
+            }
+        }
+        if changed {
+            self.cancel_contacts();
+        }
     }
 
     /// The preference changes the keyboard made itself since the last call
@@ -864,7 +1013,7 @@ impl OskWidget {
 
     /// Take `learned`, what the keyboard learned from this person on any of
     /// their devices, as what it knows about their typing.
-    pub fn present_learned(&mut self, learned: std::rc::Rc<LearnedTyping>) {
+    pub fn present_learned(&mut self, learned: std::rc::Rc<Learned>) {
         self.learned = learned;
         if self.personalization_enabled {
             self.adopt_learned();
@@ -894,9 +1043,9 @@ impl OskWidget {
         if let Some(transitions) = learned.transitions.get(self.language.code()) {
             self.predictor.adopt_learned(transitions);
         }
-        self.touch_model.adopt(&learned.touch);
+        self.touch_model.adopt(&learned.touch_offsets());
         if let Some(ac) = &mut self.autocorrect {
-            ac.adopt_kept(&learned.kept);
+            ac.adopt_kept(learned.kept.iter());
         }
     }
 
@@ -907,6 +1056,7 @@ impl OskWidget {
     /// focused. The compositor relays this to the keyboard alone.
     pub fn follow_input_method(&mut self, transition: ImTransition) {
         if transition.field_changed {
+            self.clear_context_toolbar();
             self.reset_composition();
         }
         // Purpose first, so the first mapped frame already has the right
@@ -984,7 +1134,9 @@ impl OskWidget {
             self.dropped_toolbar_actions = self.dropped_toolbar_actions.saturating_add(1);
         }
         self.toolbar_log.push_back(action.clone());
-        if let Some(cb) = &mut self.on_toolbar {
+        if matches!(action, OskToolbarAction::Contextual { .. }) {
+            self.activate_default_tool(&action);
+        } else if let Some(cb) = &mut self.on_toolbar {
             cb(action);
         } else {
             self.activate_default_tool(&action);
@@ -993,6 +1145,31 @@ impl OskWidget {
 
     fn activate_default_tool(&mut self, action: &OskToolbarAction) {
         match action {
+            OskToolbarAction::Contextual { generation, slot } => {
+                let admitted = self.visible
+                    && !self.is_secret_field()
+                    && self.context_generation == Some(*generation);
+                self.context_error = if admitted {
+                    self.context_handler.as_mut().map_or_else(
+                        || {
+                            Some(ui::i18n::I18nManager::lookup_plain(
+                                "osk-context-unavailable",
+                            ))
+                        },
+                        |handler| handler(*generation, *slot).err(),
+                    )
+                } else {
+                    Some(ui::i18n::I18nManager::lookup_plain("osk-context-stale"))
+                };
+            }
+            OskToolbarAction::Indent => {
+                self.finish_editing_word();
+                self.emit(OskOutput::Key(Symbol::Tab));
+            }
+            OskToolbarAction::Insert(text) => {
+                self.finish_editing_word();
+                self.emit(OskOutput::Commit(text.clone()));
+            }
             OskToolbarAction::Paste => {
                 if let Some(text) = ui::clipboard_paste() {
                     self.finish_editing_word();
@@ -1034,7 +1211,8 @@ impl OskWidget {
     /// [`set_purpose`](Self::set_purpose).
     fn apply_purpose(&mut self, purpose: InputPurpose) {
         self.purpose = purpose;
-        let name = if purpose == InputPurpose::Text {
+        self.restore_toolbar();
+        let name = if matches!(purpose, InputPurpose::Text | InputPurpose::Terminal) {
             self.preferred_text_layout.as_str()
         } else {
             KeyboardLayout::for_purpose(purpose)
@@ -1059,7 +1237,9 @@ impl OskWidget {
         }
         self.preferred_text_layout = name.to_string();
         self.active_letter = name.to_string();
-        self.purpose = InputPurpose::Text;
+        if self.purpose != InputPurpose::Terminal {
+            self.purpose = InputPurpose::Text;
+        }
         self.showing_symbols = false;
         self.shift = ShiftState::Off;
         self.structure_dirty = true;
@@ -1102,7 +1282,7 @@ impl OskWidget {
         }
         self.cancel_contacts();
         self.preferred_text_layout = name.to_string();
-        if self.purpose == InputPurpose::Text {
+        if matches!(self.purpose, InputPurpose::Text | InputPurpose::Terminal) {
             self.active_letter = name.to_string();
             self.showing_symbols = false;
             self.shift = ShiftState::Off;
@@ -1175,7 +1355,9 @@ impl OskWidget {
                 self.last_correction = correction;
             }
             KeyAction::Layout(name) => {
-                self.select_text_layout(name);
+                if name != &self.preferred_text_layout || name != self.active_layout_name() {
+                    self.select_text_layout(name);
+                }
             }
             KeyAction::Emoji => {
                 self.open_emoji_panel();
@@ -1343,7 +1525,7 @@ impl OskWidget {
         let learned = &self.learned;
         let ac = self.autocorrect.get_or_insert_with(|| {
             let mut ac = Autocorrector::new(dict, KeyAdjacency::default());
-            ac.adopt_kept(&learned.kept);
+            ac.adopt_kept(learned.kept.iter());
             ac
         });
         ac.set_adjacency(adjacency);
@@ -1495,7 +1677,10 @@ impl OskWidget {
 
     /// Refill the bar with next-word predictions for the previous word.
     fn refresh_next_word_suggestions(&mut self) {
-        if !self.suggestions_enabled || self.is_secret_field() {
+        if !self.suggestions_enabled
+            || self.is_secret_field()
+            || self.purpose == InputPurpose::Terminal
+        {
             self.suggestions.clear();
             return;
         }
@@ -1515,6 +1700,9 @@ impl OskWidget {
     ///
     /// Returns whether a chip was activated.
     pub fn activate_suggestion(&mut self, index: usize) -> bool {
+        if self.context_error.is_some() {
+            return false;
+        }
         let correction = self.last_correction.take();
         if index == 0
             && let Some(c) = correction
@@ -1675,7 +1863,9 @@ impl OskWidget {
                 self.structure_dirty = true;
             }
             KeyAction::Layout(name) => {
-                self.select_text_layout(&name);
+                if name != self.preferred_text_layout || name != self.active_layout_name() {
+                    self.select_text_layout(&name);
+                }
             }
             KeyAction::Emoji => {
                 self.emoji_panel.end_search();
@@ -2387,13 +2577,6 @@ impl OskWidget {
         self.cursor_drag.as_ref().is_some_and(|d| d.active)
     }
 
-    /// Show the effective tap targets over the keys (a debug aid).
-    #[must_use]
-    pub fn with_hit_overlay(mut self, on: bool) -> Self {
-        self.hit_overlay = on;
-        self
-    }
-
     /// Show or stop showing the effective tap targets over the keys.
     pub fn set_hit_overlay(&mut self, on: bool) {
         self.hit_overlay = on;
@@ -2557,51 +2740,44 @@ impl Widget for OskWidget {
         self.metrics = theme.tokens.metrics;
         self.target_key_height = key_row_height(&self.metrics);
         self.toolbar_height = toolbar_row_height(&self.spacing);
-        self.suggestion_height = suggestion_row_height(&self.metrics);
+        self.suggestion_height =
+            if self.purpose == InputPurpose::Terminal && self.context_error.is_none() {
+                0.0
+            } else {
+                suggestion_row_height(&self.metrics)
+            };
         let rows = self.current_layout().row_count();
-        // Toolbar + suggestion bar + key rows. The suggestion bar is always
-        // reserved (it shows next-word predictions even before any swipe), so
-        // the keyboard height is stable as suggestions come and go. When the
+        // Prose reserves its suggestion band so predictions never move the
+        // keys. Code has no word predictions and needs only its editing strip.
+        // When the
         // compositor has hidden the keyboard it requests no height and paints
         // nothing — the real overlay surface is mapped/unmapped by the
         // compositor, so a hidden keyboard occupies no surface either way.
         let total_h = if self.visible {
-            keyboard_height(rows, &self.spacing, &self.metrics)
+            self.toolbar_height + self.suggestion_height + rows as f32 * self.target_key_height
         } else {
             0.0
         };
-        let node = match taffy.new_leaf(Style {
-            flex_shrink: 0.0,
-            size: Size {
-                width: Dimension::percent(1.0),
-                height: if self.visible && self.fill_surface {
-                    Dimension::percent(1.0)
-                } else {
-                    Dimension::length(total_h)
+        taffy.widget_leaf(
+            Style {
+                flex_shrink: 0.0,
+                size: Size {
+                    width: Dimension::percent(1.0),
+                    height: if self.visible && self.fill_surface {
+                        Dimension::percent(1.0)
+                    } else {
+                        Dimension::length(total_h)
+                    },
                 },
+                ..Default::default()
             },
-            ..Default::default()
-        }) {
-            Ok(node) => node,
-            // `TaffyTree::new_leaf` only ever returns `Err` when the tree is
-            // at capacity; this arm exists so a future upstream change
-            // degrades the app instead of aborting the whole session.
-            Err(_) => NodeId::from(0u64),
-        };
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+            node_map,
+            self,
+        )
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let Ok(l) = taffy.layout(node) else {
-            return;
-        };
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
+        self.rect = ui::widget::layout_rect(taffy, node, origin);
         self.layout_bands();
         if let Some(pose) = self.pose.take() {
             self.take_pose(pose);
@@ -2661,6 +2837,7 @@ impl Widget for OskWidget {
             hovered_sugg: self.hovered_sugg,
             pressed_sugg: self.pressed_sugg,
             empty_hint: &empty_hint,
+            context_error: self.context_error.as_deref(),
             emoji_panel_open: self.emoji_panel.is_open(),
             preview,
             alternates: self.alternates.as_ref().map(|(_, popup)| popup),
@@ -2803,16 +2980,21 @@ impl Widget for OskWidget {
             let Some(item) = self.toolbar.get(*index) else {
                 continue;
             };
+            let target = item.semantic_target(*index);
             children.push(
                 AccessNode::new(Role::Button)
                     .with_name(item.label.clone())
                     .with_bounds(*rect)
                     .with_state(AccessState::new().focusable(true))
-                    .with_hashed_key(format!("tool:{}:{}", index, item.label))
-                    .with_action_target(format!("osk:tool:{}:{}", index, item.label)),
+                    .with_hashed_key(&target)
+                    .with_action_target(target),
             );
         }
-        for (index, rect) in &self.suggestion_geom {
+        for (index, rect) in self
+            .suggestion_geom
+            .iter()
+            .filter(|_| self.context_error.is_none())
+        {
             let Some(suggestion) = self.suggestions.get(*index) else {
                 continue;
             };
@@ -2870,7 +3052,7 @@ impl Widget for OskWidget {
                 AccessNode::new(Role::Button)
                     .with_name(name)
                     .with_bounds(*rect)
-                    .with_state(AccessState::new().focusable(true))
+                    .with_state(AccessState::new().focusable(true).disabled(matches!(&key.action, KeyAction::Layout(name) if name == &self.preferred_text_layout && name == self.active_layout_name())))
                     .with_hashed_key(format!("key:{}:{}:{}", layout.name, id.row, id.col))
                     .with_action_target(format!(
                         "osk:key:{}:{}:{}:{}",
@@ -2882,11 +3064,7 @@ impl Widget for OskWidget {
         Some(
             AccessNode::new(Role::Group)
                 .with_name(i18n::t("osk-name"))
-                .with_description(i18n::t(if self.suggestions_enabled {
-                    "osk-description"
-                } else {
-                    "osk-description-no-suggestions"
-                }))
+                .with_description(self.field_description())
                 .with_children(children),
         )
     }
@@ -2945,6 +3123,29 @@ impl Widget for OskWidget {
             }
             return self.activate_suggestion(index);
         }
+        if let Some(rest) = target.strip_prefix("osk:context:") {
+            let mut parts = rest.splitn(3, ':');
+            let (Some(generation), Some(slot), Some(label)) =
+                (parts.next(), parts.next(), parts.next())
+            else {
+                return false;
+            };
+            let (Ok(generation), Ok(slot)) = (generation.parse::<u32>(), slot.parse::<u32>())
+            else {
+                return false;
+            };
+            if self.context_generation != Some(generation) || self.is_secret_field() {
+                return false;
+            }
+            let Some(index) = self.toolbar.iter().position(|item| {
+                item.label == label
+                    && item.action == OskToolbarAction::Contextual { generation, slot }
+            }) else {
+                return false;
+            };
+            self.activate_tool(index);
+            return self.context_error.is_none();
+        }
         if let Some(rest) = target.strip_prefix("osk:tool:") {
             let Some((index, label)) = rest.split_once(':') else {
                 return false;
@@ -2952,11 +3153,9 @@ impl Widget for OskWidget {
             let Ok(index) = index.parse::<usize>() else {
                 return false;
             };
-            if self
-                .toolbar
-                .get(index)
-                .is_none_or(|item| item.label != label)
-            {
+            if self.toolbar.get(index).is_none_or(|item| {
+                item.label != label || matches!(item.action, OskToolbarAction::Contextual { .. })
+            }) {
                 return false;
             }
             self.activate_tool(index);
@@ -2978,6 +3177,7 @@ impl Widget for OskWidget {
 pub fn input_purpose_from_name(name: &str) -> Option<InputPurpose> {
     Some(match name {
         "text" => InputPurpose::Text,
+        "terminal" | "code" => InputPurpose::Terminal,
         "number" => InputPurpose::Number,
         "decimal" => InputPurpose::Decimal,
         "phone" | "telephone" => InputPurpose::Telephone,
@@ -2996,6 +3196,7 @@ pub fn input_purpose_from_name(name: &str) -> Option<InputPurpose> {
 pub fn input_purpose_name(purpose: InputPurpose) -> &'static str {
     match purpose {
         InputPurpose::Text => "text",
+        InputPurpose::Terminal => "terminal",
         InputPurpose::Number => "number",
         InputPurpose::Decimal => "decimal",
         InputPurpose::Telephone => "phone",
@@ -3015,6 +3216,58 @@ mod tests {
     use automerge::AutoCommit;
     use std::cell::RefCell;
     use std::rc::Rc;
+
+    #[test]
+    fn contextual_tools_retire_semantic_targets_and_cannot_use_custom_callbacks() {
+        let invoked = Rc::new(RefCell::new(Vec::new()));
+        let received = Rc::clone(&invoked);
+        let mut osk = OskWidget::new();
+        osk.set_context_handler(Box::new(move |generation, slot| {
+            received.borrow_mut().push((generation, slot));
+            Ok(())
+        }));
+        osk.on_toolbar = Some(Box::new(|_| {
+            panic!("context must use its authenticated route")
+        }));
+        let item = |generation| {
+            OskToolbarItem::new(
+                "bold",
+                None,
+                "Bold",
+                OskToolbarAction::Contextual {
+                    generation,
+                    slot: 7,
+                },
+            )
+        };
+        osk.set_context_toolbar(10, vec![item(10)]);
+        lay_out(&mut osk, 390.0, 312.0);
+        let target = "osk:context:10:7:Bold";
+        let activate = |osk: &mut OskWidget, target: &str| {
+            osk.perform_semantic_action(
+                target,
+                &AccessibilityAction::Activate,
+                &mut ui::widget::Edits::lend(&mut AutoCommit::new()),
+                &automerge::ROOT,
+            )
+        };
+        assert!(activate(&mut osk, target));
+        assert_eq!(*invoked.borrow(), vec![(10, 7)]);
+        assert!(!activate(&mut osk, "osk:tool:0:Bold"));
+        osk.set_context_toolbar(11, vec![item(11)]);
+        assert!(!activate(&mut osk, target));
+        osk.context_result(10, 7, false, "stale failure".into());
+        assert!(osk.context_error.is_none());
+        osk.context_result(11, 7, false, "Permission denied".into());
+        assert_eq!(osk.context_error.as_deref(), Some("Permission denied"));
+        assert!(!osk.activate_suggestion(0));
+        osk.set_purpose(InputPurpose::Password);
+        assert!(osk.context_generation.is_none());
+        osk.set_context_toolbar(12, vec![item(12)]);
+        assert!(osk.context_generation.is_none());
+        assert!(!activate(&mut osk, "osk:context:12:7:Bold"));
+        assert_eq!(*invoked.borrow(), vec![(10, 7)]);
+    }
 
     #[test]
     fn a_tall_phone_surface_keeps_normal_keyboard_rows_docked_and_touchable() {
@@ -3438,7 +3691,6 @@ mod tests {
     fn pointer_and_toolbar_taps_route_to_their_targets() {
         eprintln!("phase pointer_tap_routes_to_key_under_cursor");
         {
-            use winit::event::{DeviceId, Modifiers};
             let mut osk = OskWidget::new_with_swipe_model(Box::new(GeometricSwipeModel::english()));
             lay_out(&mut osk, 800.0, 360.0);
 
@@ -3452,26 +3704,9 @@ mod tests {
                 .expect("q key laid out");
             let c = rect.center();
 
-            let device: DeviceId = unsafe { std::mem::zeroed() };
-            let mods = Modifiers::default();
-            let mut doc = AutoCommit::new();
-            let root = automerge::ROOT;
-            let mut dispatch = |osk: &mut OskWidget, ev: WindowEvent| {
-                let mut handled = false;
-                let mut focus = None;
-                osk.handle_event(
-                    &ev,
-                    &mut ui::widget::EventCtx {
-                        scale_factor: 1.0,
-                        modifiers: &mods,
-                        state: ui::widget::Edits::lend(&mut doc),
-                        path: &root,
-                        handled: &mut handled,
-                        focus_target: &mut focus,
-                        node_id: NodeId::new(0),
-                        taffy: &TaffyTree::new(),
-                    },
-                );
+            let device = winit::event::DeviceId::dummy();
+            let dispatch = |osk: &mut OskWidget, ev: WindowEvent| {
+                ui::testing::dispatch(osk, &ev);
             };
 
             dispatch(
@@ -3548,33 +3783,18 @@ mod tests {
         {
             // A hidden keyboard must not consume taps meant for the app behind it:
             // `handle_event` returns early and `handled` stays false.
-            use winit::event::{DeviceId, Modifiers};
             let mut osk =
                 OskWidget::new_with_swipe_model(Box::new(GeometricSwipeModel::english())).hidden();
             lay_out(&mut osk, 800.0, 360.0);
 
-            let device: DeviceId = unsafe { std::mem::zeroed() };
-            let mods = Modifiers::default();
-            let mut doc = AutoCommit::new();
-            let root = automerge::ROOT;
-            let mut handled = false;
-            let mut focus = None;
+            let device = winit::event::DeviceId::dummy();
             // Aim where the 'q' key would be on a visible keyboard.
-            osk.handle_event(
+            let handled = ui::testing::dispatch(
+                &mut osk,
                 &WindowEvent::MouseInput {
                     device_id: device,
                     state: ElementState::Pressed,
                     button: MouseButton::Left,
-                },
-                &mut ui::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &mods,
-                    state: ui::widget::Edits::lend(&mut doc),
-                    path: &root,
-                    handled: &mut handled,
-                    focus_target: &mut focus,
-                    node_id: NodeId::new(0),
-                    taffy: &TaffyTree::new(),
                 },
             );
             assert!(!handled, "a hidden keyboard does not consume pointer input");
@@ -3583,6 +3803,49 @@ mod tests {
     }
 
     // --- input-type layouts via purpose --------------------------------
+
+    #[test]
+    fn configured_layout_order_controls_the_actual_language_key() {
+        let mut keyboard = OskWidget::new();
+        keyboard.present_preferences(&crate::resource::OskPreferences {
+            layout: "qwerty".into(),
+            layouts: vec!["qwerty".into()],
+            ..Default::default()
+        });
+        let action = keyboard
+            .current_layout()
+            .rows
+            .iter()
+            .flatten()
+            .find_map(|key| {
+                matches!(key.action, KeyAction::Layout(_)).then_some(key.action.clone())
+            })
+            .unwrap();
+        assert_eq!(action, KeyAction::Layout("qwerty".into()));
+        keyboard.apply_action(action);
+        assert_eq!(keyboard.preferred_text_layout(), "qwerty");
+        assert!(keyboard.take_preference_edits().is_empty());
+        keyboard.apply_action(KeyAction::SymbolsToggle);
+        assert_eq!(keyboard.active_layout_name(), "symbols");
+        keyboard.apply_action(KeyAction::Layout("qwerty".into()));
+        assert_eq!(keyboard.active_layout_name(), "qwerty");
+        keyboard.present_preferences(&crate::resource::OskPreferences {
+            layout: "qwerty".into(),
+            layouts: vec!["azerty".into(), "qwerty".into()],
+            ..Default::default()
+        });
+        let action = keyboard
+            .current_layout()
+            .rows
+            .iter()
+            .flatten()
+            .find_map(|key| {
+                matches!(key.action, KeyAction::Layout(_)).then_some(key.action.clone())
+            })
+            .unwrap();
+        keyboard.apply_action(action);
+        assert_eq!(keyboard.preferred_text_layout(), "azerty");
+    }
 
     #[test]
     fn purpose_changes_swap_layouts_and_clear_stale_state() {
@@ -3670,7 +3933,6 @@ mod tests {
             // A non-letter layout must lay out and draw without panicking even
             // though it has no Shift / symbols affordances.
             use ui::offscreen::OffscreenRenderer;
-            use ui::permissions::PermissionContext;
             use vello::peniko::Color;
 
             let mut osk = OskWidget::new_with_swipe_model(Box::new(GeometricSwipeModel::english()))
@@ -3680,17 +3942,9 @@ mod tests {
 
             let theme = Theme::dark();
             let presence = PresenceCtx::empty();
-            let permission = PermissionContext::permissive();
             let mut tr = TextRenderer::new();
             let mut scene = Scene::new();
-            osk.draw_with_presence(
-                &mut scene,
-                Affine::IDENTITY,
-                &mut tr,
-                &theme,
-                &presence,
-                &permission,
-            );
+            osk.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
 
             let dir = tempfile::tempdir().unwrap();
             let out = dir.path().join("osk_dialpad.png");
@@ -3705,7 +3959,6 @@ mod tests {
             // A full offscreen frame with a populated suggestion bar must produce
             // non-empty pixels (the bar + chips draw).
             use ui::offscreen::OffscreenRenderer;
-            use ui::permissions::PermissionContext;
             use vello::peniko::Color;
 
             let mut osk = OskWidget::new_with_swipe_model(Box::new(GeometricSwipeModel::english()));
@@ -3718,17 +3971,9 @@ mod tests {
 
             let theme = Theme::dark();
             let presence = PresenceCtx::empty();
-            let permission = PermissionContext::permissive();
             let mut tr = TextRenderer::new();
             let mut scene = Scene::new();
-            osk.draw_with_presence(
-                &mut scene,
-                Affine::IDENTITY,
-                &mut tr,
-                &theme,
-                &presence,
-                &permission,
-            );
+            osk.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
 
             let dir = tempfile::tempdir().unwrap();
             let out = dir.path().join("osk_suggestion_bar.png");
@@ -3888,7 +4133,6 @@ mod tests {
 
         eprintln!("phase short_tap_is_not_treated_as_a_swipe");
         {
-            use winit::event::{DeviceId, Modifiers};
             let mut osk = OskWidget::new_with_swipe_model(Box::new(GeometricSwipeModel::english()));
             lay_out(&mut osk, 720.0, 360.0);
 
@@ -3901,26 +4145,9 @@ mod tests {
                 .unwrap();
             let c = rect.center();
 
-            let device: DeviceId = unsafe { std::mem::zeroed() };
-            let mods = Modifiers::default();
-            let mut doc = AutoCommit::new();
-            let root = automerge::ROOT;
-            let mut dispatch = |osk: &mut OskWidget, ev: WindowEvent| {
-                let mut handled = false;
-                let mut focus = None;
-                osk.handle_event(
-                    &ev,
-                    &mut ui::widget::EventCtx {
-                        scale_factor: 1.0,
-                        modifiers: &mods,
-                        state: ui::widget::Edits::lend(&mut doc),
-                        path: &root,
-                        handled: &mut handled,
-                        focus_target: &mut focus,
-                        node_id: NodeId::new(0),
-                        taffy: &TaffyTree::new(),
-                    },
-                );
+            let device = winit::event::DeviceId::dummy();
+            let dispatch = |osk: &mut OskWidget, ev: WindowEvent| {
+                ui::testing::dispatch(osk, &ev);
             };
 
             // Press, a tiny jitter (1px), release — all on 'q'. This must type
@@ -3965,32 +4192,14 @@ mod tests {
 
         eprintln!("phase pointer_swipe_decodes_through_keys");
         {
-            use winit::event::{DeviceId, Modifiers};
             let mut osk = OskWidget::new_with_swipe_model(Box::new(GeometricSwipeModel::english()));
             lay_out(&mut osk, 720.0, 360.0);
             let path = path_through(&osk, "the");
             let start = *path.first().unwrap();
 
-            let device: DeviceId = unsafe { std::mem::zeroed() };
-            let mods = Modifiers::default();
-            let mut doc = AutoCommit::new();
-            let root = automerge::ROOT;
-            let mut dispatch = |osk: &mut OskWidget, ev: WindowEvent| {
-                let mut handled = false;
-                let mut focus = None;
-                osk.handle_event(
-                    &ev,
-                    &mut ui::widget::EventCtx {
-                        scale_factor: 1.0,
-                        modifiers: &mods,
-                        state: ui::widget::Edits::lend(&mut doc),
-                        path: &root,
-                        handled: &mut handled,
-                        focus_target: &mut focus,
-                        node_id: NodeId::new(0),
-                        taffy: &TaffyTree::new(),
-                    },
-                );
+            let device = winit::event::DeviceId::dummy();
+            let dispatch = |osk: &mut OskWidget, ev: WindowEvent| {
+                ui::testing::dispatch(osk, &ev);
             };
 
             // Hover the first key, press, drag along the whole path, release.
@@ -4813,6 +5022,59 @@ mod tests {
             let touch = Point::new(e.x1 - 1.0, e.center().y);
             assert_eq!(osk.resolve_letter_tap(e_id, Some(touch)), e_id);
         }
+    }
+
+    #[test]
+    fn terminal_tools_emit_real_indent_and_literal_commits_and_retire_on_field_change() {
+        let mut osk = OskWidget::new();
+        osk.set_purpose(crate::imclient::purpose_from_wire(
+            crate::imclient::content_purpose::TERMINAL,
+        ));
+        lay_out(&mut osk, 390.0, 360.0);
+        let tool = |osk: &mut OskWidget, id: &str| {
+            let index = osk.toolbar.iter().position(|item| item.id == id).unwrap();
+            let label = osk.toolbar[index].label.clone();
+            let target = osk
+                .accessibility()
+                .unwrap()
+                .children
+                .into_iter()
+                .find(|node| node.name.as_deref() == Some(label.as_str()))
+                .unwrap()
+                .action_target
+                .unwrap();
+            assert!(semantic(osk, &target, &AccessibilityAction::Activate));
+        };
+        tool(&mut osk, "indent");
+        assert_eq!(osk.take_output(), vec![OskOutput::Key(Symbol::Tab)]);
+        tool(&mut osk, "{");
+        assert_eq!(osk.take_output(), vec![OskOutput::Commit("{".into())]);
+        assert!(
+            osk.toolbar_geom
+                .iter()
+                .all(|(_, rect)| rect.width() >= 44.0)
+        );
+        let brace = osk.toolbar.iter().position(|item| item.id == "}").unwrap();
+        let target = osk
+            .toolbar_geom
+            .iter()
+            .find(|(index, _)| *index == brace)
+            .unwrap()
+            .1
+            .center();
+        finger(&mut osk, 17, TouchPhase::Started, target);
+        osk.set_purpose(InputPurpose::Password);
+        lay_out(&mut osk, 390.0, 360.0);
+        finger(&mut osk, 17, TouchPhase::Ended, target);
+        assert!(
+            osk.take_output().is_empty(),
+            "changing focused field cancels the old tool contact"
+        );
+        assert!(!osk.toolbar.iter().any(|item| matches!(
+            item.action,
+            OskToolbarAction::Indent | OskToolbarAction::Insert(_)
+        )));
+        assert_eq!(osk.purpose(), InputPurpose::Password);
     }
 
     #[test]

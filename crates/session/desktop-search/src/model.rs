@@ -5,8 +5,7 @@ use std::collections::HashMap;
 
 use tilo_actions::{ActionAddress, ActionSpec, ResourceId};
 
-use crate::kind::ResourceKind;
-use crate::rank::{self, KindGroup};
+use ui::search::system::{self, KindGroup, ResourceKind};
 
 /// What choosing a hit does. The host performs it exactly as its other
 /// controls do: a launch opens a window, a window hit focuses it, an action
@@ -74,9 +73,9 @@ pub struct Hit {
 /// A source of hits for one domain (applications, windows, actions, …).
 pub trait Source {
     fn id(&self) -> &str;
-    /// Top of this source's score scale; see [`rank::merged_strength`].
+    /// Top of this source's score scale; see [`system::merged_strength`].
     fn max_score(&self) -> i32 {
-        rank::MAX_PROVIDER_SCORE
+        system::MAX_PROVIDER_SCORE
     }
     /// Hits for `needle`. An empty needle asks for the source's browse set.
     fn query(&self, needle: &str) -> Vec<Hit>;
@@ -85,7 +84,7 @@ pub trait Source {
 /// Fan `needle` out to `sources`, merge their hits on the shared ranking
 /// and group them by kind under a shared `row_budget` (zero keeps all).
 pub fn search(needle: &str, sources: &[&dyn Source], row_budget: usize) -> Vec<KindGroup<Hit>> {
-    if !rank::query_input_is_bounded(needle) {
+    if !system::query_input_is_bounded(needle) {
         return Vec::new();
     }
     let mut merged: Vec<(Hit, f32)> = Vec::new();
@@ -93,7 +92,7 @@ pub fn search(needle: &str, sources: &[&dyn Source], row_budget: usize) -> Vec<K
     for source in sources {
         let top = source.max_score().max(1);
         for hit in source.query(needle) {
-            let strength = rank::merged_strength(
+            let strength = system::merged_strength(
                 needle,
                 &hit.kind,
                 &hit.title,
@@ -115,8 +114,8 @@ pub fn search(needle: &str, sources: &[&dyn Source], row_budget: usize) -> Vec<K
             }
         }
     }
-    rank::order_by_kind(&mut merged, |hit| &hit.kind);
-    rank::group_by_kind(
+    system::order_by_kind(&mut merged, |hit| &hit.kind);
+    system::group_by_kind(
         merged.into_iter().map(|(hit, _)| hit).collect(),
         |hit| &hit.kind,
         row_budget,

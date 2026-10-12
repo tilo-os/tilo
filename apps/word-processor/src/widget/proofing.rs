@@ -4,17 +4,12 @@
 use serde::{Deserialize, Serialize};
 use ui::storage::{Scope, SettingsSchema};
 
-/// The words this person added to the dictionary. They follow the person to
-/// each of their devices and are never seen by collaborators: a document
-/// shared with someone else does not change what is spelled right for them.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+/// The words this person added to the dictionary. They are never seen by
+/// collaborators: a document shared with someone else does not change what
+/// is spelled right for them.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PersonalDictionary {
-    #[serde(default)]
     pub dictionary_words: Vec<String>,
-}
-
-impl SettingsSchema for PersonalDictionary {
-    const SCOPE: Scope = Scope::Personal;
 }
 
 /// How this person likes the editor laid out: which panels are open. It

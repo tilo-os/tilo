@@ -3,7 +3,7 @@ use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::fs::PermissionsExt;
-use std::os::unix::net::{UnixListener, UnixStream};
+use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -498,14 +498,10 @@ where
         fs::create_dir_all(parent)?;
         fs::set_permissions(parent, fs::Permissions::from_mode(0o700))?;
     }
-    if path.exists() {
-        if UnixStream::connect(&path).is_ok() {
-            return Err(SessionError::AlreadyRunning);
-        }
-        fs::remove_file(&path)?;
+    if UnixStream::connect(&path).is_ok() {
+        return Err(SessionError::AlreadyRunning);
     }
-    let listener = UnixListener::bind(&path)?;
-    fs::set_permissions(&path, fs::Permissions::from_mode(0o600))?;
+    let listener = tilo_files::native::private::bind_socket(&path)?;
     let stop = Arc::new(AtomicBool::new(false));
     let thread_stop = Arc::clone(&stop);
     let workers = Arc::new(Mutex::new(Vec::new()));
@@ -1806,52 +1802,7 @@ mod tests {
         }
     }
 
-    fn thread_ids() -> std::collections::BTreeSet<String> {
-        std::fs::read_dir("/proc/self/task")
-            .expect("/proc/self/task")
-            .map(|entry| entry.expect("task").file_name().into_string().expect("tid"))
-            .collect()
-    }
-
-    fn context_switches(tid: &str) -> u64 {
-        std::fs::read_to_string(format!("/proc/self/task/{tid}/status"))
-            .expect("thread status")
-            .lines()
-            .filter(|line| line.contains("ctxt_switches"))
-            .filter_map(|line| line.split_whitespace().nth(1)?.parse::<u64>().ok())
-            .sum()
-    }
-
-    fn spawned_thread<T>(comm: &str, start: impl FnOnce() -> T) -> (T, String) {
-        let before = thread_ids();
-        let started = start();
-        let waiting = std::time::Instant::now();
-        loop {
-            let named = thread_ids()
-                .difference(&before)
-                .find(|tid| {
-                    std::fs::read_to_string(format!("/proc/self/task/{tid}/comm"))
-                        .is_ok_and(|name| name.trim() == comm)
-                })
-                .cloned();
-            if let Some(tid) = named {
-                return (started, tid);
-            }
-            assert!(
-                waiting.elapsed() < Duration::from_secs(5),
-                "no new thread named {comm}"
-            );
-            std::thread::sleep(Duration::from_millis(5));
-        }
-    }
-
-    fn assert_stays_asleep(tid: &str, what: &str) {
-        std::thread::sleep(Duration::from_millis(50));
-        let settled = context_switches(tid);
-        std::thread::sleep(Duration::from_millis(400));
-        let woke = context_switches(tid).saturating_sub(settled);
-        assert_eq!(woke, 0, "idle {what} woke {woke} times in 400 ms");
-    }
+    use tilo_test_env::idle::{assert_stays_asleep, spawned_thread};
 
     struct IdleResources;
 

@@ -4,13 +4,12 @@ use crate::headless::{FrameHarness, InspectionNode};
 #[test]
 fn published_property_controls_invoke_real_clipboard_and_custom_actions() {
     use crate::clipboard::{ClipboardBackend, ClipboardTarget, InProcessClipboard};
-    use crate::headless::Driver;
     let clipboard = std::sync::Arc::new(InProcessClipboard::default());
     let services = crate::host::HostServices::null().with_clipboard(clipboard.clone());
     crate::host::scoped(&services, || {
         let activated = Rc::new(Cell::new(0));
         let signal = activated.clone();
-        let mut driver = Driver::new(
+        let mut driver = FrameHarness::new(
             crate::State::new(),
             Box::new(
                 PropertyList::new(vec![
@@ -64,7 +63,7 @@ fn published_property_controls_invoke_real_clipboard_and_custom_actions() {
         );
         assert_eq!(activated.get(), 1);
 
-        let mut value = Driver::new(
+        let mut value = FrameHarness::new(
             crate::State::new(),
             Box::new(
                 PropertyValue::new("acct_123")
@@ -106,7 +105,7 @@ fn published_property_controls_invoke_real_clipboard_and_custom_actions() {
 fn editable_text_still_requires_an_action_binding() {
     struct UnboundEditable;
     impl Widget for UnboundEditable {
-        crate::testing::inert_widget_methods!(leaf_layout, apply_layout, draw, get_rect);
+        crate::testing::inert_widget_methods!(leaf_layout);
         fn name(&self) -> &'static str {
             "UnboundEditable"
         }
@@ -117,8 +116,7 @@ fn editable_text_still_requires_an_action_binding() {
             Some(AccessNode::new(Role::TextInput).with_name("Editable field"))
         }
     }
-    let driver =
-        crate::headless::Driver::new(crate::State::new(), Box::new(UnboundEditable), (320, 120));
+    let driver = FrameHarness::new(crate::State::new(), Box::new(UnboundEditable), (320, 120));
     let audit = driver.native_app_audit();
     assert!(
         audit

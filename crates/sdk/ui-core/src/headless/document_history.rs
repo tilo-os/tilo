@@ -9,7 +9,6 @@ use crate::standalone_history::{HistoryError, HistoryReadContext, HistoryTarget}
 use crate::standalone_history_host::HISTORY_OPERATION;
 use crate::widget::layout::CompositionFocus;
 
-#[allow(dead_code, reason = "standalone history methods are feature-gated")]
 impl FrameHarness {
     /// Enable the same standalone chrome used by a native App window. Widget
     /// and embedded-component harnesses retain their original content viewport.
@@ -876,7 +875,7 @@ impl FrameHarness {
                         path,
                     )
                 } else {
-                    widget.perform_action(action, &mut crate::widget::Edits::lend(doc), path)
+                    widget.perform_action(action, &[], &mut crate::widget::Edits::lend(doc), path)
                 }
             })
             .map_err(|error| format!("History action refused: {error:?}"))?;
@@ -1488,10 +1487,7 @@ mod tests {
                 .unwrap();
             driver.resize((640, 700)).unwrap();
             let close = session_address(&mut driver, "close");
-            driver.set_permission_ctx(PermissionContext::from_capabilities(
-                crate::permissions::Actor::agent("denied"),
-                vec![],
-            ));
+            driver.set_permission_ctx(PermissionContext::stranger("denied"));
             assert!(
                 driver.try_presentation_inspection().is_err(),
                 "immutable inspection rechecks current authority"

@@ -8,15 +8,15 @@ use super::*;
 use crate::shell::build_tilo_overlay_host_with_chrome;
 use crate::shell::state::FreshId as _;
 use crate::shell::state::{
-    AppKind, GroupId, SharedSurfaces, Strip, StripId, Tab, TileContent, WindowGroup as StateGroup,
+    AppKind, GroupId, Strip, StripId, Tab, TileContent, WindowGroup as StateGroup,
     WindowWidth as StateWidth, Workspace, WorkspaceId, WorkspaceTree,
 };
 use std::collections::HashMap as StdHashMap;
 use taffy::{NodeId, TaffyTree};
 use ui::a11y::{AccessNode, Role};
 use winit::dpi::PhysicalPosition;
-use winit::event::{DeviceId, ElementState, KeyEvent, Modifiers, MouseButton, WindowEvent};
-use winit::keyboard::{Key, KeyLocation, NamedKey, PhysicalKey};
+use winit::event::{DeviceId, ElementState, Modifiers, MouseButton, WindowEvent};
+use winit::keyboard::{Key, NamedKey};
 
 const TAB_A: u64 = 0xa1;
 const TAB_B: u64 = 0xa2;
@@ -56,23 +56,10 @@ fn tree_with_tabs(tabs: usize) -> (WorkspaceTree, StripId) {
         }],
     };
     let ws = Workspace {
-        owner: None,
-        pending_ownership_transfer: None,
-        ownership_transfer_audit: Vec::new(),
-        ownership_transfer_cancellations: Vec::new(),
-        permission_profiles: Vec::new(),
-        capabilities: Vec::new(),
-        default_apps: desktop_policy::WorkspaceDefaults::default(),
-        tasks: Vec::new(),
-        effect_receipts: Vec::new(),
-        shortcuts: Vec::new(),
-        schedule_claims: Vec::new(),
         id: ws_id,
-        room: crate::shell::state::RoomId::new(),
         name: "Home".into(),
         strips: vec![strip],
-        collaborators: vec![],
-        shared_surfaces: SharedSurfaces::default(),
+        ..Workspace::new(ws_id, String::new())
     };
     let mut active_strip = StdHashMap::new();
     active_strip.insert(ws_id, strip_id);
@@ -188,22 +175,12 @@ impl Harness {
     }
 
     fn send_with_modifiers(&mut self, event: &WindowEvent, modifiers: Modifiers) -> bool {
-        let mut handled = false;
-        let mut focus: Option<NodeId> = None;
-        self.host.handle_event(
-            event,
-            &mut ui::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &modifiers,
-                state: ui::widget::Edits::lend(&mut self.doc),
-                path: &automerge::ROOT,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: self.root,
-                taffy: &self.taffy,
-            },
-        );
-        handled
+        ui::testing::Dispatch::new()
+            .modifiers(modifiers)
+            .doc(&mut self.doc)
+            .layout(&self.taffy, self.root)
+            .send(&mut self.host, event)
+            .handled
     }
 
     fn move_to(&mut self, p: Point) {
@@ -237,14 +214,8 @@ impl Harness {
         modifiers: winit::keyboard::ModifiersState,
         repeat: bool,
     ) -> bool {
-        let mut event: KeyEvent = unsafe { std::mem::zeroed() };
-        event.logical_key = key;
-        event.physical_key =
-            PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
-        event.location = KeyLocation::Standard;
-        event.state = ElementState::Pressed;
+        let mut event = ui::synthetic_input::key_event(key, None, ElementState::Pressed);
         event.repeat = repeat;
-        event.text = None;
         self.send_with_modifiers(
             &WindowEvent::KeyboardInput {
                 device_id: DeviceId::dummy(),

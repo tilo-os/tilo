@@ -21,6 +21,12 @@ web-features = []
 
 [features]
 thin = ["dep:runtime-dylib"]
+# Play Spotify through its engine library in the runtime bundle
+# (libtilo_spotify_engine.so, crates/runtime/engines/spotify) instead of the
+# executable. The release collection enables it (dist/apps/app-collections.toml);
+# a `thin` build without it (`tilo-app dev`) links librespot statically,
+# because the engine library links only through tools/ci/rustc-thin-app-wrapper.sh.
+runtime-engine = ["thin", "spotify-native", "tilo-spotify-engine/thin"]
 # The default app includes live search, stream resolution, and audio output.
 # The bundled sample library and runtime offline switch keep shots and tests
 # hermetic. Live builds also support network lyrics.
@@ -32,7 +38,7 @@ audio = ["dep:gstreamer", "dep:tokio", "media/voice"]
 # YouTube Music search and stream resolution through the pure-Rust `rustypipe`
 # InnerTube client. Shots/tests select their hermetic backend at runtime; `reqwest`
 # supports `--probe` verification.
-live = ["dep:rustypipe", "dep:tokio", "dep:reqwest", "tilo-net/http", "tilo-net/blocking", "dep:tilo-spotify"]
+live = ["dep:rustypipe", "dep:tokio", "dep:reqwest", "dep:tilo-invidious", "tilo-net/http", "tilo-net/blocking", "dep:tilo-spotify"]
 # Enable network lyrics without the full live backend; live already enables them.
 lyrics = ["tilo-net/http", "tilo-net/blocking"]
 
@@ -41,6 +47,7 @@ tilo-spotify = { path = "../../crates/platform/tilo-spotify", optional = true }
 tilo-clock = { path = "../../crates/platform/tilo-clock" }
 tilo-paths = { path = "../../crates/platform/tilo-paths" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
+tilo-spotify-engine = { path = "../../crates/runtime/engines/spotify", optional = true }
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
 tilo-files = { path = "../../crates/platform/tilo-files" }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
@@ -80,6 +87,8 @@ tokio = { workspace = true, optional = true, features = ["rt", "macros", "time"]
 # resolution. Embeds `rquickjs` for signature deobfuscation — no external
 # interpreter, downloader, or JS runtime binary. Gated behind `live`.
 rustypipe = { workspace = true, optional = true, features = ["rustls-no-provider"] }
+# Fully-rangeable stream URLs through Invidious media proxies.
+tilo-invidious = { path = "../../crates/platform/tilo-invidious", optional = true }
 
 [dev-dependencies]
 test-http = { path = "../../crates/dev/test-http" }

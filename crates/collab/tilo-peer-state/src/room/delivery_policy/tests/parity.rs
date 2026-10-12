@@ -10,18 +10,18 @@ fn delivery_projection_preserves_winner_shapes_scopes_and_ignored_fields() {
     let base = peer.admitted_room().unwrap();
     for mode in 0..17 {
         let mut doc = base.clone();
-        let caps = doc.get(ROOT, "capabilities").unwrap().unwrap().1;
+        let caps = doc.get(ROOT, "grants").unwrap().unwrap().1;
         match mode {
             0 => {
-                doc.delete(ROOT, "capabilities").unwrap();
+                doc.delete(ROOT, "grants").unwrap();
             }
             1 => {
-                doc.put(ROOT, "capabilities", false).unwrap();
+                doc.put(ROOT, "grants", false).unwrap();
             }
             2..=4 => {
                 doc.put_object(
                     ROOT,
-                    "capabilities",
+                    "grants",
                     [ObjType::Table, ObjType::List, ObjType::Text][mode - 2],
                 )
                 .unwrap();
@@ -43,19 +43,18 @@ fn delivery_projection_preserves_winner_shapes_scopes_and_ignored_fields() {
                     .unwrap();
             }
             10..=14 => {
-                let scope = match mode {
-                    10 => Scope::Room(peer.room().into()),
-                    11 => Scope::Workspace,
-                    12 => Scope::Room("elsewhere".into()),
-                    13 => Scope::App("app".into()),
-                    _ => Scope::FsRecord("record".into()),
+                let node = match mode {
+                    10 => TreePath::room(peer.room()),
+                    11 => TreePath::root(),
+                    12 => TreePath::room("elsewhere"),
+                    13 => TreePath::room(peer.room()).app("app"),
+                    _ => TreePath::room(peer.room()).rest().field("comments"),
                 };
-                let cap = CapOverride::grant(
-                    Subject::Role(collab_types::Role::Editor),
-                    scope,
-                    Verb::Read,
-                );
-                doc.put(&caps, "extra", serde_json::to_vec(&cap).unwrap())
+                let grant = Grant {
+                    node,
+                    ..room_grant(peer.room(), Subject::Role(Role::Editor))
+                };
+                doc.put(&caps, "extra", serde_json::to_vec(&grant).unwrap())
                     .unwrap();
             }
             15 => {
@@ -72,8 +71,7 @@ fn delivery_projection_preserves_winner_shapes_scopes_and_ignored_fields() {
         doc.commit();
         let got = compare(&doc, &peer, peer.authority(), &device, false);
         let expected = match mode {
-            0 | 9 | 10 | 11 | 16 => Failure::CurrentDenied,
-            12..=14 => Failure::UnsupportedPolicy,
+            0 | 9..=14 | 16 => Failure::CurrentDenied,
             _ => Failure::Unavailable,
         };
         assert_eq!(got, Err(expected));
@@ -99,24 +97,18 @@ fn delivery_projection_preserves_winner_shapes_scopes_and_ignored_fields() {
     left.set_actor(automerge::ActorId::from(vec![3]));
     let mut right = base.clone();
     right.set_actor(automerge::ActorId::from(vec![4]));
-    let lc = left.put_object(ROOT, "capabilities", ObjType::Map).unwrap();
-    let rc = right
-        .put_object(ROOT, "capabilities", ObjType::Map)
-        .unwrap();
-    let cap = CapOverride::grant(
-        Subject::Role(collab_types::Role::Editor),
-        Scope::Workspace,
-        Verb::Read,
-    );
-    left.put(&lc, "left", serde_json::to_vec(&cap).unwrap())
+    let lc = left.put_object(ROOT, "grants", ObjType::Map).unwrap();
+    let rc = right.put_object(ROOT, "grants", ObjType::Map).unwrap();
+    let grant = room_grant(peer.room(), Subject::Role(Role::Editor));
+    left.put(&lc, "left", serde_json::to_vec(&grant).unwrap())
         .unwrap();
     right
-        .put(&rc, "right", serde_json::to_vec(&cap).unwrap())
+        .put(&rc, "right", serde_json::to_vec(&grant).unwrap())
         .unwrap();
     left.commit();
     right.commit();
     left.merge_incoming(&mut right).unwrap();
-    assert!(left.get_all(ROOT, "capabilities").unwrap().len() > 1);
+    assert!(left.get_all(ROOT, "grants").unwrap().len() > 1);
     assert!(compare(&left, &peer, peer.authority(), &device, true).is_ok());
 }
 #[test]
@@ -165,7 +157,7 @@ fn delivery_projection_preserves_exact_final_quota_and_quota_denial_order() {
         Err(Failure::Capacity)
     );
     let mut doc = peer.admitted_room().unwrap().clone();
-    let caps = doc.get(ROOT, "capabilities").unwrap().unwrap().1;
+    let caps = doc.get(ROOT, "grants").unwrap().unwrap().1;
     doc.put(&caps, "oversized", vec![b' '; POLICY_BYTES + 1])
         .unwrap();
     doc.commit();
@@ -178,17 +170,16 @@ fn delivery_projection_preserves_exact_final_quota_and_quota_denial_order() {
 fn delivery_projection_reads_nested_valid_json_and_refuses_small_limits() {
     let (peer, _, _, device, _) = crate::admission_tests::seeded();
     let mut doc = peer.admitted_room().unwrap().clone();
-    let caps = doc.get(ROOT, "capabilities").unwrap().unwrap().1;
+    let caps = doc.get(ROOT, "grants").unwrap().unwrap().1;
     for i in 0..16 {
-        let cap = CapOverride::grant(
+        let grant = room_grant(
+            peer.room(),
             Subject::person(format!("{i}:{}", "name".repeat(512))),
-            Scope::Workspace,
-            Verb::Read,
         );
         doc.put(
             &caps,
             format!("key-{i:02}:{}", "key".repeat(256)),
-            serde_json::to_vec(&cap).unwrap(),
+            serde_json::to_vec(&grant).unwrap(),
         )
         .unwrap();
     }

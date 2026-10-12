@@ -27,6 +27,12 @@
 
 const REMOTE_ACTIONS_VERSION = 1;
 const DEFAULT_TIMEOUT_MS = 30_000;
+// A reply timer that fires this long after it was due ran behind a stall of
+// the page itself (a long task, a frozen or throttled tab), not the host.
+const LATE_TIMER_MS = 100;
+// The least a stalled page is given to read an answer that reached it while it
+// could not run.
+const STALL_GRACE_MS = 1_000;
 const CATALOGUE_REFRESH_MS = 15_000;
 const HISTORY_LIMIT = 50;
 const PALETTE_ROWS = 50;
@@ -131,11 +137,13 @@ function score(needle, fields) {
  * @param options.device         this page's device key (hex), for the v1 binding
  * @param options.userPublicKey  the user root (hex), for the v1 binding
  * @param options.store          `{get(key), put(key, value)}` keeping recent invocations
+ * @param options.now            a monotonic clock (ms) that tells a late reply timer from a silent host
  */
 export function createActions({
   peer, room, hostDevice, device = '', userPublicKey = '', store,
   newId = () => globalThis.crypto.randomUUID(),
   wallNow = () => Date.now(),
+  now = () => globalThis.performance?.now() ?? Date.now(),
   timeoutMs = DEFAULT_TIMEOUT_MS,
   refreshMs = CATALOGUE_REFRESH_MS,
   setTimer = (callback, delay) => globalThis.setTimeout(callback, delay),
@@ -216,8 +224,24 @@ export function createActions({
     return new Promise((resolve, reject) => {
       if (disposed) { reject(new ActionsError('closed', 'the peer was disposed')); return; }
       const waiting = {resolve, reject};
-      waiting.timer = setTimer(() => settle(key, ({reject: fail}) => fail(
-        new ActionsError('timeout', 'the host did not answer')), waiting), timeoutMs);
+      // The host has `timeoutMs` to answer while this page can listen. A
+      // timer that fires late ran behind a stall of the page: the answer may
+      // have arrived meanwhile and still be queued behind that stall, so the
+      // page first gets back the time it lost, bounded by one more timeout.
+      let due = now() + timeoutMs;
+      let extended = 0;
+      const expire = () => {
+        const late = now() - due;
+        if (late > LATE_TIMER_MS && extended < timeoutMs) {
+          const grace = Math.min(timeoutMs - extended, Math.max(late, STALL_GRACE_MS));
+          extended += grace;
+          due = now() + grace;
+          waiting.timer = setTimer(expire, grace);
+          return;
+        }
+        settle(key, ({reject: fail}) => fail(new ActionsError('timeout', 'the host did not answer')), waiting);
+      };
+      waiting.timer = setTimer(expire, timeoutMs);
       pending.set(key, [...(pending.get(key) ?? []), waiting]);
       try {
         peer.sendRemoteAction(room, hostDevice, frame);

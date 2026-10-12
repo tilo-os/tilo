@@ -89,11 +89,13 @@ pub const WINDOW_LOST: &str = "the window stopped without being closed";
 pub const WINDOW_LOST_EXIT_CODE: i32 = 70;
 
 #[cfg(feature = "native")]
-mod surface;
-#[cfg(all(windows, feature = "native"))]
-pub(crate) use native_runner::prepare_native_renderer;
+mod input_publication;
 #[cfg(feature = "native")]
-pub use surface::AppSurface;
+mod surface;
+#[cfg(all(any(windows, target_os = "linux"), feature = "native"))]
+pub(crate) use native_runner::startup::prepare_native_renderer;
+#[cfg(feature = "native")]
+pub use surface::{AppSurface, SurfaceDamage};
 #[cfg(feature = "native")]
 mod embedded;
 #[cfg(feature = "native")]
@@ -496,15 +498,15 @@ pub use crate::action_locus::ActionUiRoute;
 )]
 #[cfg_attr(
     not(feature = "native"),
-    allow(
+    expect(
         dead_code,
-        reason = "some fields are read only by the native event-loop runner"
+        reason = "the theme-store watch and frame profiler are read only by the native event-loop runner, which shared app code feeds"
     )
 )]
 pub struct App {
     retirement: Option<crate::semantic_document_read::retirement::RootRetirementPrelude>,
-    #[cfg(all(windows, feature = "native"))]
-    startup_renderer: Option<native_runner::RendererPreparation>,
+    #[cfg(all(any(windows, target_os = "linux"), feature = "native"))]
+    startup_renderer: Option<native_runner::startup::RendererPreparation>,
     control_domain: crate::ControlDomain,
     wake_scope: Option<crate::wake::WakeScope>,
     state: State,
@@ -742,7 +744,7 @@ impl AppConstructionInputs {
             presence_ctx: ConstructionValue::Lazy(App::initial_presence_context),
             screen_reader: || {
                 if crate::host::environment().accessibility.screen_reader
-                    || App::persisted_accessibility_bool("screen_reader")
+                    || settings_store::accessibility::ScreenReaderSettings::load().enabled
                 {
                     Some(App::configured_screen_reader())
                 } else {
@@ -886,7 +888,7 @@ impl App {
         let component = assembly.component.insert(component);
         let _entry = scope.enter();
         let handle = scope.handle();
-        if let Err(error) = component.mount(move |_| handle.wake()) {
+        if let Err(error) = component.mount(move |event| forward_component_wake(&handle, &event)) {
             return Err(component.setup_error(error));
         }
         let binding = component.callback_binding();
@@ -1169,6 +1171,7 @@ impl App {
             .dispatch_node(focused, |widget, doc, root| {
                 widget.perform_action(
                     &crate::a11y::Action::Activate,
+                    &[],
                     &mut crate::widget::Edits::lend(doc),
                     root,
                 )
@@ -1326,7 +1329,7 @@ impl App {
             self.controlled_installed_history_definition = Some(controlled_definition);
         }
         self.init_layout();
-        self.validate_history_registration()
+        tilo_startup_metrics::span("history-validate", || self.validate_history_registration())
     }
 
     /// Construct an explicitly detached app for headless or test execution.
@@ -1403,18 +1406,6 @@ impl App {
         Ok(Self::from_scoped_parts_with_custody(
             scope, state, root, domain,
         ))
-    }
-
-    /// Construct with an explicit live producer capability before any factory callback.
-    pub fn from_factory_with_control_custody(
-        state: State,
-        factory: impl FnOnce(&crate::ControlDomain) -> Box<dyn Widget>,
-    ) -> Self {
-        let scope = crate::wake::WakeScope::new();
-        let _entry = scope.enter();
-        let domain = crate::control_custody::ControlDomain::outer();
-        let root = factory(&domain);
-        Self::from_scoped_parts_with_custody(scope, state, root, domain)
     }
 
     pub(crate) fn from_scoped_parts_with_custody(
@@ -1655,6 +1646,7 @@ impl App {
             &mut declared,
         );
         trace.finish(CacheResult::NotApplicable);
+        tilo_startup_metrics::startup_mark("actions-declared-done");
         *self.actions.resource_cache.borrow_mut() = Some(ResourceCache {
             key: key.clone(),
             declared,
@@ -1986,7 +1978,7 @@ impl App {
         self.accessibility.window = appearance;
         self.rebuild_theme();
         self.layout.layout_dirty = true;
-        self.layout.structure_dirty = true;
+        self.layout.request_rebuild();
         true
     }
 
@@ -2051,7 +2043,7 @@ impl App {
         if changed {
             self.rebuild_theme();
             self.layout.layout_dirty = true;
-            self.layout.structure_dirty = true;
+            self.layout.request_rebuild();
         }
         changed
     }
@@ -2070,7 +2062,7 @@ impl App {
             self.apply_configured_theme();
             self.rebuild_theme();
             self.layout.layout_dirty = true;
-            self.layout.structure_dirty = true;
+            self.layout.request_rebuild();
             return true;
         }
         self.reconcile_configured_theme_with(
@@ -2103,24 +2095,29 @@ impl App {
         apply(self);
         self.rebuild_theme();
         self.layout.layout_dirty = true;
-        self.layout.structure_dirty = true;
+        self.layout.request_rebuild();
         true
     }
 
     #[cfg(feature = "native")]
     fn apply_configured_theme(&mut self) {
-        self.accessibility.base_theme = Theme::configured();
+        self.accessibility.base_theme = self
+            .floating
+            .host_theme
+            .clone()
+            .unwrap_or_else(Theme::configured);
         self.theme_schedule =
             Theme::automatic_schedule_from(settings_store::settings_path().as_deref())
                 .map(|schedule| (schedule, schedule.is_night(crate::theme::local_moment())));
         // Screen reader is a device/personal setting, not a per-application
         // opt-in. Every Tilo app watches the same file and changes its real
         // narrator lifecycle when Personal Settings changes it.
-        let configured_reader = Self::persisted_accessibility_bool("screen_reader")
-            || crate::host::environment().accessibility.screen_reader;
-        self.set_screen_reader_enabled(configured_reader);
+        let settings = settings_store::accessibility::ScreenReaderSettings::load();
+        self.set_screen_reader_enabled(
+            settings.enabled || crate::host::environment().accessibility.screen_reader,
+        );
         if let Some(reader) = self.accessibility.screen_reader.as_mut() {
-            Self::configure_screen_reader(reader);
+            reader.configure(&settings);
         }
         self.accessibility.a11y.screen_reader = self.accessibility.screen_reader.is_some();
     }
@@ -2275,6 +2272,24 @@ impl App {
     }
 }
 
+/// Hand a component's wake on to the App that runs it, as it was raised: a
+/// model-dirty wake stays one, and an event-queue notification (a directory
+/// request, a reply) stays one, whose consumer decides whether the model
+/// changed. Forwarding every event as model-dirty made the App sync and
+/// invalidate its directory on each, so a directory continuation it had just
+/// issued was gone before it was asked for, and a hosted app's listing never
+/// settled.
+pub(crate) fn forward_component_wake(
+    handle: &crate::wake::WakeHandle,
+    event: &crate::wake::WakeEvent,
+) {
+    if event.requires_sync() {
+        handle.wake();
+    } else {
+        handle.notify_events();
+    }
+}
+
 impl App {
     #[doc(hidden)]
     pub fn state_mut_for_test(&mut self) -> &mut crate::state::State {
@@ -2384,14 +2399,22 @@ impl App {
     /// from the previous process; shell continuation still wins when both exist.
     pub(crate) fn init_layout_with_dev_view(&mut self, dev_view: Option<crate::view::View>) {
         let _entry = self.enter_wake_scope();
-        self.refresh_control_action_availability();
+        // Startup marks name each step, so a slow first layout says which one.
+        tilo_startup_metrics::span("init-layout-actions", || {
+            self.refresh_control_action_availability();
+        });
         self.component_close_reports.extend(
             crate::component_lifecycle::take_component_close_reports(self.root_widget.as_mut()),
         );
         self.bindings.clear();
         self.layout.node_map.clear();
-        self.build_history_presentation();
-        self.update_focusable_order();
+        // The map built now describes the tree as it is: a replacement the
+        // widgets reported before is part of it, not a change after it.
+        self.take_composition_dirty();
+        tilo_startup_metrics::span("init-layout-history", || self.build_history_presentation());
+        tilo_startup_metrics::span("init-layout-focus-order", || {
+            self.update_focusable_order();
+        });
         if let Some(view) = self.continuation.pending_view.take() {
             <Self as crate::view::FreezeThaw>::restore_view(self, &view);
         } else if let Some(view) = dev_view {
@@ -2424,12 +2447,27 @@ impl App {
     /// The root's structure flag, and framework History's: it is composed
     /// as a separate root, so its replaced controls are not the app's.
     pub(crate) fn take_composition_dirty(&mut self) -> bool {
-        let root = self.root_widget.take_structure_dirty();
+        let root = self.take_root_structure_dirty();
         let history = self
             .history
             .as_mut()
             .is_some_and(|history| history.take_structure_dirty());
+        if history {
+            self.layout.rebuild_described = false;
+        }
         root || history
+    }
+
+    /// Whether the root's widgets changed their structure since the last
+    /// call; a change they do not describe
+    /// ([`crate::widget::StructureChange::Rebuild`]) leaves the rebuild that
+    /// follows undescribed.
+    pub(crate) fn take_root_structure_dirty(&mut self) -> bool {
+        let change = self.root_widget.take_structure_change();
+        if change == crate::widget::StructureChange::Rebuild {
+            self.layout.rebuild_described = false;
+        }
+        change.rebuilds()
     }
 
     /// When [`Self::autofocus_on_structure_change`] is set, restores the
@@ -2442,7 +2480,14 @@ impl App {
     pub fn rebuild_structure(&mut self) {
         let _entry = self.enter_wake_scope();
         // A reported mutation can already have invalidated old widget pointers.
-        let topology_changed = self.layout.structure_dirty || self.take_composition_dirty();
+        // Always take the widgets' report, so it is not mistaken later for a
+        // change after the map this rebuild makes.
+        let reported = self.take_composition_dirty();
+        let topology_changed = self.layout.structure_dirty || reported;
+        // Whether this rebuild is one the widgets describe, for a frame that
+        // compares itself with the last; none is outstanding after it.
+        self.layout.frame_rebuilds_described &= self.layout.rebuild_described;
+        self.layout.rebuild_described = true;
         // Node ids below are about to be invalidated.
         let (prev_focus_idx, prev_focus_state, focus_reset) = if self.autofocus_on_structure_change
         {
@@ -2467,6 +2512,9 @@ impl App {
         // without dispatching through its potentially invalid pointer, so a
         // replacement control at the same id still receives set_focus(true).
         self.focused_node = None;
+        self.layout.rebuilds = self.layout.rebuilds.wrapping_add(1);
+        // Fresh controls have not seen where the pointer is.
+        self.input.pointer_replay.mark_unsettled();
         self.layout.taffy = TaffyTree::new();
         self.component_close_reports.extend(
             crate::component_lifecycle::take_component_close_reports(self.root_widget.as_mut()),
@@ -2508,9 +2556,13 @@ impl App {
         // ran against, so without this they draw blank until the next event.
         self.root_widget.sync(&self.state.doc, &self.state.root);
         self.needs_sync = false;
+        // This rebuild's frame presents a durability the sync just took up;
+        // it is not another structure change.
+        let _ =
+            crate::component_lifecycle::take_save_status_presentation(self.root_widget.as_mut());
         if self.root_widget.take_structure_dirty() {
             // Fresh sync can replace delegates. Rebuild before any map access.
-            self.layout.structure_dirty = true;
+            self.layout.request_rebuild();
             self.bindings.clear();
             self.layout.node_map.clear();
         } else if self.focused_node.is_none() {
@@ -2528,22 +2580,6 @@ impl App {
             };
         }
         self.invalidate_widget_resource_cache();
-    }
-
-    /// Inspect controlled launch composition without opening a native window.
-    /// Available only to downstream runner tests through `test-support`.
-    #[cfg(any(test, feature = "test-support"))]
-    #[must_use]
-    pub fn controlled_history_definitions_for_test(
-        &self,
-    ) -> (
-        Option<&'static crate::history_mode::HistoryDefinition>,
-        Option<&'static crate::history_mode::HistoryDefinition>,
-    ) {
-        (
-            self.controlled_installed_history_definition,
-            crate::history_mode::capability::document_history_definition(self.root_widget.as_ref()),
-        )
     }
 
     /// Takes effect when the window is created, so set before [`App::run`].
@@ -2565,17 +2601,6 @@ impl App {
     /// [`Self::with_window_app_id`].
     pub fn window_app_id(&self) -> Option<&str> {
         self.window.app_id.as_deref()
-    }
-
-    /// `None` clears the override and restores automatic resolution.
-    pub fn set_window_title(&mut self, title: Option<String>) {
-        self.window.title = title;
-    }
-
-    /// Precedence: explicit override → `TILO_APP_NAME` → package id → binary
-    /// name → generic default.
-    pub fn resolved_window_title(&self) -> String {
-        resolve_window_title(self.window.title.as_deref())
     }
 }
 
@@ -2641,7 +2666,7 @@ mod occlusion_probe_event_tests {
     #[test]
     fn occlusion_probe_only_explicit_exposure_or_interaction_bypasses_backoff() {
         let pointer = WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             position: winit::dpi::PhysicalPosition::new(10.0, 20.0),
         };
         assert!(render_probe_event(&pointer));
@@ -2702,7 +2727,6 @@ fn auxiliary_redraw_allowed(render: Option<&RenderThreadHandle>) -> bool {
 }
 
 #[cfg(test)]
-#[allow(dead_code, reason = "used by feature-gated render retry tests")]
 fn render_retry_deadline(outcome: FrameOutcome, now: Instant) -> Option<Instant> {
     matches!(outcome, FrameOutcome::Skipped | FrameOutcome::Reconfigured).then(|| {
         now.checked_add(Duration::from_nanos(16_666_667))
@@ -2789,6 +2813,7 @@ mod generic_floating_activity_tests {
 }
 
 /// See [`resolve_title_from`] for the precedence.
+#[cfg(feature = "native")]
 fn resolve_window_title(explicit: Option<&str>) -> String {
     let environment = crate::host::environment();
     let app_name = environment.identity.app_name.clone();
@@ -2835,6 +2860,7 @@ fn resolve_app_id(package_id: Option<&str>, binary: Option<&str>) -> String {
 
 /// Pure, so the precedence is unit-testable without touching the process
 /// environment. First non-blank candidate wins.
+#[cfg(feature = "native")]
 fn resolve_title_from(
     explicit: Option<&str>,
     app_name: Option<&str>,
@@ -2873,6 +2899,7 @@ fn resolve_title_from(
     "Tilo App".to_string()
 }
 
+#[cfg(feature = "native")]
 fn humanize_ident(ident: &str) -> String {
     ident
         .split(|c: char| c == '-' || c == '_' || c == '.' || c.is_whitespace())
@@ -2910,7 +2937,8 @@ mod document_routes;
 #[path = "app/focus_selection_tests.rs"]
 mod focus_selection_tests;
 
-#[cfg(all(test, feature = "local-daemons"))]
+#[cfg(test)]
+#[cfg(feature = "local-daemons")]
 #[path = "app/local_privacy_tests.rs"]
 mod local_privacy_tests;
 
@@ -2964,21 +2992,8 @@ mod legacy_owner_routing_tests {
             nodes.insert(node, std::ptr::from_mut::<dyn Widget>(self));
             node
         }
-        fn apply_layout(&mut self, _: &taffy::TaffyTree<()>, _: NodeId, _: Point) {}
-        fn draw(
-            &mut self,
-            _: &mut Scene,
-            _: Affine,
-            _: &mut TextRenderer,
-            _: &Theme,
-            _: &PresenceCtx,
-        ) {
-        }
         fn name(&self) -> &'static str {
             "LegacyOwnerProbe"
-        }
-        fn get_rect(&self) -> KurboRect {
-            KurboRect::ZERO
         }
         fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
             use crate::a11y::{AccessNode, AccessState, Role};
@@ -3014,7 +3029,7 @@ mod legacy_owner_routing_tests {
                 _ => false,
             }
         }
-        fn perform_action_at(
+        fn perform_action(
             &mut self,
             action: &crate::a11y::Action,
             keys: &[u64],
@@ -3636,22 +3651,21 @@ pub(crate) mod ordinary_confirmation_tests {
         (managed(Box::new(widget)), ledger, resources)
     }
     crate::testing::test_app_widget!(Fixture, "Confirmation fixture");
-    #[allow(
-        dead_code,
-        reason = "fixture guards retain actual owner stores for each test"
-    )]
     enum OwnerGuard {
-        Component(
-            crate::bound_dispatch::CallbackBinding,
-            crate::application_test_support::ProbeHost,
-        ),
-        Legacy(crate::history_mode::HistoryOwner, tempfile::TempDir),
+        Component {
+            binding: crate::bound_dispatch::CallbackBinding,
+            _host: crate::application_test_support::ProbeHost,
+        },
+        Legacy {
+            owner: crate::history_mode::HistoryOwner,
+            _directory: tempfile::TempDir,
+        },
     }
     impl OwnerGuard {
         fn close(&self) {
             match self {
-                Self::Component(binding, _) => binding.closing.set(true),
-                Self::Legacy(owner, _) => {
+                Self::Component { binding, .. } => binding.closing.set(true),
+                Self::Legacy { owner, .. } => {
                     let crate::history_mode::owner::OwnerKind::Legacy { lifetime, .. } = &owner.0
                     else {
                         unreachable!()
@@ -3666,10 +3680,10 @@ pub(crate) mod ordinary_confirmation_tests {
                 scopes: HISTORY.scopes,
             };
             let (definition, owner) = match self {
-                Self::Component(binding, _) => {
+                Self::Component { binding, .. } => {
                     (&COMPONENT_HISTORY, HistoryOwner::component(binding.clone()))
                 }
-                Self::Legacy(owner, _) => (&HISTORY, owner.clone()),
+                Self::Legacy { owner, .. } => (&HISTORY, owner.clone()),
             };
             ManagedRoot::new(
                 widget,
@@ -3684,12 +3698,9 @@ pub(crate) mod ordinary_confirmation_tests {
             )
         }
         fn revoke(&self) {
-            if let Self::Component(binding, _) = self {
+            if let Self::Component { binding, .. } = self {
                 *binding.permissions.borrow_mut() =
-                    crate::permissions::PermissionContext::from_capabilities(
-                        crate::permissions::Actor::person(None, "fixture"),
-                        vec![],
-                    );
+                    crate::permissions::PermissionContext::stranger("fixture");
             }
         }
     }
@@ -3712,7 +3723,10 @@ pub(crate) mod ordinary_confirmation_tests {
             let binding = instance.callback_binding();
             (
                 Box::new(crate::widget::BoundAppWidget::new(instance)),
-                OwnerGuard::Component(binding, host),
+                OwnerGuard::Component {
+                    binding,
+                    _host: host,
+                },
             )
         } else {
             let directory = tempfile::tempdir().unwrap();
@@ -3731,7 +3745,13 @@ pub(crate) mod ordinary_confirmation_tests {
                 crate::widget::TileHost::new(crate::widget::TileContent::App(Box::new(widget)));
             tile.bind_record(store, checkout);
             let owner = tile.history_owner().unwrap();
-            (Box::new(tile), OwnerGuard::Legacy(owner, directory))
+            (
+                Box::new(tile),
+                OwnerGuard::Legacy {
+                    owner,
+                    _directory: directory,
+                },
+            )
         }
     }
     pub(crate) fn layout(app: &mut App) {
@@ -3739,7 +3759,7 @@ pub(crate) mod ordinary_confirmation_tests {
         // rebuilding clears it; unchanged trees must use the normal fast path.
         app.layout.structure_dirty |= app.layout.root_node.is_none()
             || app.layout.node_map.is_empty()
-            || app.root_widget.take_structure_dirty();
+            || app.take_root_structure_dirty();
         let structure_rebuilt = app.layout.structure_dirty;
         if structure_rebuilt {
             app.rebuild_structure();
@@ -3759,7 +3779,7 @@ pub(crate) mod ordinary_confirmation_tests {
     }
     enum Host {
         Native(Box<App>),
-        Driver(Box<crate::headless::Driver>),
+        FrameHarness(Box<crate::headless::FrameHarness>),
     }
     impl Host {
         fn new(native: bool, root: ManagedRoot) -> Self {
@@ -3769,8 +3789,8 @@ pub(crate) mod ordinary_confirmation_tests {
                 layout(&mut app);
                 Self::Native(Box::new(app))
             } else {
-                Self::Driver(Box::new(
-                    crate::headless::Driver::from_managed_root_with_controlled_inputs(
+                Self::FrameHarness(Box::new(
+                    crate::headless::FrameHarness::from_managed_root_with_controlled_inputs(
                         State::new(),
                         root,
                         (900, 650),
@@ -3790,7 +3810,7 @@ pub(crate) mod ordinary_confirmation_tests {
                     app.controlled_local_idle_for_test();
                     layout(app);
                 }
-                Self::Driver(driver) => {
+                Self::FrameHarness(driver) => {
                     if label == "Emit request" {
                         driver
                             .perform_semantic_named("ordinary-emitter", None, &action)
@@ -3807,7 +3827,7 @@ pub(crate) mod ordinary_confirmation_tests {
                 }
             }
         }
-        fn published_target(driver: &crate::headless::Driver, label: &str) -> String {
+        fn published_target(driver: &crate::headless::FrameHarness, label: &str) -> String {
             fn access(node: &crate::a11y::AccessNode, label: &str) -> Option<String> {
                 if node.name.as_deref() == Some(label) {
                     return node.action_target.clone();
@@ -3838,11 +3858,11 @@ pub(crate) mod ordinary_confirmation_tests {
                     app.root_widget.sync(&app.state.doc, &app.state.root);
                     layout(app)
                 }
-                Self::Driver(driver) => driver.relayout(),
+                Self::FrameHarness(driver) => driver.relayout(),
             }
         }
         fn key(&mut self, key: &str) {
-            let event = crate::synthetic_input::key_event(
+            let event = crate::synthetic_input::key_input(
                 &Key::Character(key.into()),
                 ElementState::Pressed,
             );
@@ -3851,7 +3871,7 @@ pub(crate) mod ordinary_confirmation_tests {
                     assert!(app.action_palette_handle_key(&event));
                     layout(app)
                 }
-                Self::Driver(driver) => driver.send(&event),
+                Self::FrameHarness(driver) => driver.send(&event),
             }
         }
         fn focused_label(&mut self) -> Option<String> {
@@ -3863,7 +3883,7 @@ pub(crate) mod ordinary_confirmation_tests {
                         .find(|(id, _)| *id == tree.focus)
                         .and_then(|(_, node)| node.label().map(str::to_owned))
                 }
-                Self::Driver(driver) => driver
+                Self::FrameHarness(driver) => driver
                     .a11y_focus()
                     .and_then(|(_, node)| node.label().map(str::to_owned)),
             }
@@ -3871,7 +3891,7 @@ pub(crate) mod ordinary_confirmation_tests {
         fn submit_id(&mut self) -> accesskit::NodeId {
             match self {
                 Self::Native(app) => named(app, "Confirm"),
-                Self::Driver(driver) => driver.a11y_node_named("Confirm").unwrap(),
+                Self::FrameHarness(driver) => driver.a11y_node_named("Confirm").unwrap(),
             }
         }
         fn stale(&mut self, id: accesskit::NodeId) {
@@ -3880,7 +3900,7 @@ pub(crate) mod ordinary_confirmation_tests {
                     app.dispatch_a11y_action(id, &crate::a11y::Action::Activate);
                     layout(app);
                 }
-                Self::Driver(driver) => {
+                Self::FrameHarness(driver) => {
                     assert!(
                         driver
                             .perform_a11y_action(id, &crate::a11y::Action::Activate)
@@ -3890,13 +3910,10 @@ pub(crate) mod ordinary_confirmation_tests {
             }
         }
         fn revoke(&mut self) {
-            let denied = crate::permissions::PermissionContext::from_capabilities(
-                crate::permissions::Actor::person(None, "fixture"),
-                vec![],
-            );
+            let denied = crate::permissions::PermissionContext::stranger("fixture");
             match self {
                 Self::Native(app) => app.set_permission_ctx(denied),
-                Self::Driver(driver) => driver.set_permission_ctx(denied),
+                Self::FrameHarness(driver) => driver.set_permission_ctx(denied),
             }
         }
     }
@@ -3912,7 +3929,7 @@ pub(crate) mod ordinary_confirmation_tests {
                 );
                 app.root_widget.get_rect()
             }
-            Host::Driver(_) => unreachable!(),
+            Host::FrameHarness(_) => unreachable!(),
         };
         assert!(expected_rect.width() > 0.0 && expected_rect.height() > 0.0);
         host.activate("Emit request");
@@ -3962,7 +3979,7 @@ pub(crate) mod ordinary_confirmation_tests {
                 .find(|(_, node)| node.label() == Some("Confirmation"))
                 .and_then(|(_, node)| node.description().map(str::to_owned))
                 .expect("native published field describes how to confirm"),
-            Host::Driver(driver) => {
+            Host::FrameHarness(driver) => {
                 fn access(node: &crate::a11y::AccessNode) -> Option<String> {
                     if node.name.as_deref() == Some("Confirmation") {
                         return node.description.clone();
@@ -3976,7 +3993,7 @@ pub(crate) mod ordinary_confirmation_tests {
                         .or_else(|| node.children.iter().find_map(widget))
                 }
                 widget(&driver.inspection().root)
-                    .expect("Driver published field describes how to confirm")
+                    .expect("FrameHarness published field describes how to confirm")
             }
         }
     }
@@ -4323,7 +4340,7 @@ pub(crate) mod ordinary_confirmation_tests {
                         app.dispatch_a11y_action(stale, &crate::a11y::Action::Activate);
                         layout(app)
                     }
-                    Host::Driver(driver) => {
+                    Host::FrameHarness(driver) => {
                         let _ = driver.perform_a11y_action(stale, &crate::a11y::Action::Activate);
                     }
                 }
@@ -4381,7 +4398,7 @@ pub(crate) mod ordinary_confirmation_tests {
                     &crate::a11y::Action::SetValue("not-a-value-field".into()),
                 );
                 layout(&mut app);
-                app.action_palette_handle_key(&crate::synthetic_input::key_event(
+                app.action_palette_handle_key(&crate::synthetic_input::key_input(
                     &Key::Named(NamedKey::Enter),
                     ElementState::Pressed,
                 ));
@@ -4468,14 +4485,14 @@ pub(crate) mod ordinary_confirmation_tests {
                 Host::Native(app) => app
                     .action_registry_mut()
                     .register::<FixtureEdit>("fixture.edit"),
-                Host::Driver(driver) => driver
+                Host::FrameHarness(driver) => driver
                     .action_registry_mut()
                     .register::<FixtureEdit>("fixture.edit"),
             }
             fn state(host: &mut Host) -> &mut State {
                 match host {
                     Host::Native(app) => &mut app.state,
-                    Host::Driver(driver) => driver.state_mut(),
+                    Host::FrameHarness(driver) => driver.state_mut(),
                 }
             }
             use automerge::ReadDoc;
@@ -4486,7 +4503,7 @@ pub(crate) mod ordinary_confirmation_tests {
             host.activate("Confirm");
             let author = match &host {
                 Host::Native(app) => app.collaboration.local_author.clone(),
-                Host::Driver(_) => crate::permissions::UserId("fixture".into()),
+                Host::FrameHarness(_) => crate::permissions::UserId("fixture".into()),
             };
             let state = state(&mut host);
             assert_eq!(
@@ -4504,7 +4521,7 @@ pub(crate) mod ordinary_confirmation_tests {
             assert_ne!(entry.after, entry.before);
             assert_eq!(entry.author.as_ref(), Some(&author));
             let committed = state.doc.get_heads();
-            assert!(state.undo_for_author(&author, None, None).is_some());
+            assert!(state.undo_as(Some(&author), None, None, None).is_some());
             assert!(
                 state
                     .doc
@@ -4539,7 +4556,7 @@ pub(crate) mod ordinary_confirmation_tests {
                 let label = if cancel { "Cancel" } else { "Confirm" };
                 let nodes = match &mut host {
                     Host::Native(app) => app.build_a11y_tree_update(1.0).nodes,
-                    Host::Driver(driver) => driver.a11y_nodes(),
+                    Host::FrameHarness(driver) => driver.a11y_nodes(),
                 };
                 let bounds = nodes
                     .iter()
@@ -4562,7 +4579,7 @@ pub(crate) mod ordinary_confirmation_tests {
                         assert!(app.action_palette_handle_event(event, scale));
                         layout(app)
                     }
-                    Host::Driver(driver) => driver.send(event),
+                    Host::FrameHarness(driver) => driver.send(event),
                 };
                 send(&event);
                 for state in [ElementState::Pressed, ElementState::Released] {
@@ -4582,17 +4599,17 @@ pub(crate) mod ordinary_confirmation_tests {
             host.value("CONFIRM");
             for key in [NamedKey::Tab, NamedKey::Tab] {
                 let event =
-                    crate::synthetic_input::key_event(&Key::Named(key), ElementState::Pressed);
+                    crate::synthetic_input::key_input(&Key::Named(key), ElementState::Pressed);
                 match &mut host {
                     Host::Native(app) => {
                         assert!(app.action_palette_handle_event(&event, 1.0));
                         layout(app)
                     }
-                    Host::Driver(driver) => driver.send(&event),
+                    Host::FrameHarness(driver) => driver.send(&event),
                 }
             }
             assert_eq!(host.focused_label().as_deref(), Some("Cancel"));
-            let event = crate::synthetic_input::key_event(
+            let event = crate::synthetic_input::key_input(
                 &Key::Named(NamedKey::Enter),
                 ElementState::Pressed,
             );
@@ -4601,7 +4618,7 @@ pub(crate) mod ordinary_confirmation_tests {
                     assert!(app.action_palette_handle_event(&event, 1.0));
                     layout(app)
                 }
-                Host::Driver(driver) => driver.send(&event),
+                Host::FrameHarness(driver) => driver.send(&event),
             }
             assert!(ledger.borrow().is_empty());
         }
@@ -4744,7 +4761,7 @@ pub(crate) mod ordinary_confirmation_tests {
             "replacement-control",
             "Unrelated control",
         ));
-        app.layout.structure_dirty = true;
+        app.layout.request_rebuild();
         layout(app);
         host.activate("Cancel");
         let Host::Native(app) = &mut host else {
@@ -4872,7 +4889,7 @@ pub(crate) mod ordinary_confirmation_tests {
     #[test]
     fn ordinary_confirmation_driver_publishes_actual_prompt() {
         let (root, ledger, _) = fixture(tilo_actions::ConfirmationPolicy::Confirm);
-        let mut driver = crate::headless::Driver::from_managed_root_with_controlled_inputs(
+        let mut driver = crate::headless::FrameHarness::from_managed_root_with_controlled_inputs(
             State::new(),
             root,
             (900, 650),

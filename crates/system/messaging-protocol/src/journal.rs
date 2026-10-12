@@ -155,12 +155,14 @@ impl EncryptedJournal {
         {
             return Err(JournalError::Unavailable);
         }
-        private_fs::directory(root).map_err(|_| JournalError::Unavailable)?;
-        let lock = private_fs::lock_file(&root.join("owner.lock"))
+        tilo_files::native::private::directory(root).map_err(|_| JournalError::Unavailable)?;
+        let lock = tilo_files::native::private::lock_file(&root.join("owner.lock"))
             .map_err(|_| JournalError::Unavailable)?;
         let lock = FileLock::try_exclusive(lock).map_err(|_| JournalError::Unavailable)?;
         let path = root.join(secret_vault::VAULT_FILE);
-        let mut ledger = read_ledger(&path, &key)?.unwrap_or_else(|| Ledger {
+        let original = read_ledger(&path, &key)?;
+        let mut changed = original.is_none();
+        let mut ledger = original.unwrap_or_else(|| Ledger {
             version: 1,
             owner: owner.clone(),
             operations: BTreeMap::new(),
@@ -183,6 +185,7 @@ impl EncryptedJournal {
             }
             if entry.status == Status::Started {
                 entry.status = Status::Uncertain;
+                changed = true;
             }
         }
         let mut journal = Self {
@@ -192,7 +195,9 @@ impl EncryptedJournal {
             usable: true,
             _lock: lock,
         };
-        journal.persist()?;
+        if changed {
+            journal.persist()?;
+        }
         Ok(journal)
     }
 
@@ -320,7 +325,8 @@ impl EncryptedJournal {
         let sealed = FORMAT
             .seal(&self.key, &encoded)
             .ok_or(JournalError::Unavailable)?;
-        private_fs::write_atomic(&self.path, &sealed).map_err(|_| JournalError::Unavailable)
+        tilo_files::native::private::write_atomic(&self.path, &sealed)
+            .map_err(|_| JournalError::Unavailable)
     }
 }
 
@@ -385,7 +391,10 @@ impl SendJournal for EncryptedJournal {
 }
 
 fn read_ledger(path: &Path, key: &VaultKey) -> Result<Option<Ledger>, JournalError> {
-    let file = match private_fs::open_owned_for_read(path, (MAX_JOURNAL_BYTES + 1024) as u64) {
+    let file = match tilo_files::native::private::open_owned_for_read(
+        path,
+        (MAX_JOURNAL_BYTES + 1024) as u64,
+    ) {
         Ok((file, _)) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(_) => return Err(JournalError::Unavailable),

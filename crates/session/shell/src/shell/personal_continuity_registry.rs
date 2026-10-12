@@ -16,90 +16,126 @@ use crate::shell::personal_continuity::{
 use crate::shell::state::RoomId;
 use launcher::manifest::{ContinuityContract, ContinuityFacet, ContinuitySemanticSchema};
 
-#[derive(serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-struct BrowserResume {
-    url: String,
+/// Whether a payload may carry a schema the receiving app has not been seen
+/// to declare. A checkpoint from another device usually names an app this
+/// device has not installed yet ("apps are not installed"); its tagged schema
+/// is checked on its own, and the installed manifest decides at launch.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Uninstalled {
+    DeferToLaunch,
+    Refuse,
 }
 
-#[derive(serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-struct EbookResume {
-    book_id: String,
-    chapter: u64,
-    page: u64,
-}
-
-#[derive(serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-struct MusicResume {
-    track_id: String,
-    position_ms: u64,
-    paused: bool,
-}
-
-#[derive(serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ChatResume {
-    workspace_id: String,
-    channel_id: String,
-    media: ui::realtime_continuity::RealtimeMediaFacets,
-    controls: ui::realtime_continuity::RealtimeControlIntent,
-}
-
-fn portable_id(value: &str) -> bool {
-    !value.is_empty()
-        && value.len() <= 256
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_' | b':'))
-}
-
-fn portable_http_url(value: &str) -> bool {
-    let Some(rest) = value
-        .strip_prefix("https://")
-        .or_else(|| value.strip_prefix("http://"))
-    else {
-        return false;
-    };
-    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
-    !authority.is_empty()
-        && !authority.contains('@')
-        && !value
-            .bytes()
-            .any(|byte| byte.is_ascii_control() || byte == b'\\')
+/// Shape and invariants of `schema`, with the toolkit deciding CRDT anchors.
+fn schema_payload_valid(schema: ContinuitySemanticSchema, bytes: &[u8]) -> bool {
+    schema.validate(bytes, |bytes| {
+        serde_json::from_slice::<ui::text_position::TextPosition>(bytes)
+            .is_ok_and(|position| position.valid())
+    })
 }
 
 pub(crate) fn validate_app_metadata(app_id: &str, schema: u16, bytes: &[u8]) -> bool {
+    validate_app_metadata_for(app_id, schema, bytes, Uninstalled::DeferToLaunch)
+}
+
+fn validate_app_metadata_for(
+    app_id: &str,
+    schema: u16,
+    bytes: &[u8],
+    uninstalled: Uninstalled,
+) -> bool {
     if schema == ui::app::STRUCTURAL_CONTINUATION_SCHEMA {
         return ui::app::sanitize_structural_continuation_metadata(bytes, |schema, bytes| {
-            semantic_schema_for_app(app_id).is_some_and(|portable_schema| {
-                validate_portable_semantic_metadata(portable_schema, schema, bytes)
-            })
+            semantic_metadata_valid(app_id, schema, bytes, uninstalled)
         })
         .is_some();
     }
     if schema == ui::app::GENERIC_VIEW_CONTINUATION_SCHEMA {
         return ui::app::validate_generic_continuation_metadata(bytes);
     }
-    semantic_schema_for_app(app_id).is_some_and(|portable_schema| {
-        validate_portable_semantic_metadata(portable_schema, schema, bytes)
-    })
+    semantic_metadata_valid(app_id, schema, bytes, uninstalled)
 }
 
+/// A tagged payload says which schema it follows, so it needs no knowledge
+/// of the app beyond agreement with an installed manifest. An untagged one
+/// is read as the schema this device knows the app by.
+fn semantic_metadata_valid(
+    app_id: &str,
+    schema: u16,
+    bytes: &[u8],
+    uninstalled: Uninstalled,
+) -> bool {
+    if let Some(declared) = ContinuitySemanticSchema::from_wire_tag(schema) {
+        return schema_payload_valid(declared, bytes)
+            && installed_schema_agrees(app_id, declared, uninstalled);
+    }
+    schema == ContinuitySemanticSchema::LEGACY_UNTAGGED_TAG
+        && semantic_schema_for_app(app_id)
+            .is_some_and(|portable_schema| schema_payload_valid(portable_schema, bytes))
+}
+
+fn installed_schema_agrees(
+    app_id: &str,
+    declared: ContinuitySemanticSchema,
+    uninstalled: Uninstalled,
+) -> bool {
+    match crate::shell::launcher::installed_continuity_contract(app_id) {
+        crate::shell::launcher::InstalledContinuityRequirements::Required(contract) => {
+            contract.semantic_schema == Some(declared)
+        }
+        crate::shell::launcher::InstalledContinuityRequirements::NotInstalled => {
+            uninstalled == Uninstalled::DeferToLaunch
+        }
+        crate::shell::launcher::InstalledContinuityRequirements::Invalid => false,
+    }
+}
+
+/// The resume an installed app may receive at launch. A checkpoint accepted
+/// while the app was not installed here carried only the sending device's
+/// word for its semantic schema; now the signed manifest decides. A
+/// disagreeing semantic projection is dropped and the framework's
+/// presentation kept, so the tab still opens where it was — unless the
+/// manifest requires the semantic facet, in which case a presentation-only
+/// resume breaks its contract and the launch starts fresh instead.
+pub(crate) fn resume_for_installed_launch(
+    app_id: &str,
+    schema: u16,
+    bytes: Vec<u8>,
+) -> Option<(u16, Vec<u8>)> {
+    let contract = continuity_contract_for_app(app_id).ok()?;
+    let bytes = if schema == ui::app::STRUCTURAL_CONTINUATION_SCHEMA {
+        ui::app::sanitize_structural_continuation_metadata(&bytes, |inner, payload| {
+            semantic_metadata_valid(app_id, inner, payload, Uninstalled::Refuse)
+        })?
+    } else {
+        validate_app_metadata_for(app_id, schema, &bytes, Uninstalled::Refuse).then_some(bytes)?
+    };
+    let resume = ResumeMetadata::new(schema, ResumeSensitivity::Syncable, bytes).ok()?;
+    resume_has_required_facets(&resume, &contract.required)
+        .then(|| (schema, resume.bytes().to_vec()))
+}
+
+/// The schema this device knows `app_id` by: its signed manifest, or for an
+/// app not installed here, the transition table below.
 fn semantic_schema_for_app(app_id: &str) -> Option<ContinuitySemanticSchema> {
     match crate::shell::launcher::installed_continuity_contract(app_id) {
         crate::shell::launcher::InstalledContinuityRequirements::Required(contract) => {
             contract.semantic_schema
         }
         crate::shell::launcher::InstalledContinuityRequirements::NotInstalled => {
-            semantic_schema_for_builtin(app_id)
+            legacy_untagged_builtin_schema(app_id)
         }
         crate::shell::launcher::InstalledContinuityRequirements::Invalid => None,
     }
 }
 
-fn semantic_schema_for_builtin(app_id: &str) -> Option<ContinuitySemanticSchema> {
+/// TRANSITION ONLY (TIL-341): senders still write semantic payloads untagged
+/// (`ContinuitySemanticSchema::LEGACY_UNTAGGED_TAG`), and an untagged payload
+/// from an app this device has not installed can only be read by package id.
+/// Delete this table once senders stamp `ContinuitySemanticSchema::wire_tag`
+/// and every paired device runs a shell that accepts tags; tagged payloads
+/// never consult it.
+fn legacy_untagged_builtin_schema(app_id: &str) -> Option<ContinuitySemanticSchema> {
     match app_id {
         "so.tilo.browser" => Some(ContinuitySemanticSchema::WebLocationV1),
         "so.tilo.ebook" => Some(ContinuitySemanticSchema::PublicationPositionV1),
@@ -110,42 +146,18 @@ fn semantic_schema_for_builtin(app_id: &str) -> Option<ContinuitySemanticSchema>
     }
 }
 
-fn validate_portable_semantic_metadata(
-    portable_schema: ContinuitySemanticSchema,
+/// A local app's report against its own signed contract: untagged, or
+/// tagged with exactly the schema the contract declares.
+fn reported_semantic_valid(
+    contract_schema: Option<ContinuitySemanticSchema>,
     schema: u16,
     bytes: &[u8],
 ) -> bool {
-    if schema != 1 {
-        return false;
-    }
-    match portable_schema {
-        ContinuitySemanticSchema::WebLocationV1 => serde_json::from_slice::<BrowserResume>(bytes)
-            .is_ok_and(|resume| portable_http_url(&resume.url)),
-        ContinuitySemanticSchema::PublicationPositionV1 => {
-            serde_json::from_slice::<EbookResume>(bytes).is_ok_and(|resume| {
-                let _ = (resume.chapter, resume.page);
-                portable_id(&resume.book_id)
-            })
-        }
-        ContinuitySemanticSchema::MediaPositionV1 => serde_json::from_slice::<MusicResume>(bytes)
-            .is_ok_and(|resume| {
-                let _ = resume.position_ms;
-                resume.paused && portable_id(&resume.track_id)
-            }),
-        ContinuitySemanticSchema::TextPositionV1 => {
-            serde_json::from_slice::<ui::text_position::TextPosition>(bytes)
-                .is_ok_and(|position| position.valid())
-        }
-        ContinuitySemanticSchema::RealtimeSessionV1 => serde_json::from_slice::<ChatResume>(bytes)
-            .is_ok_and(|resume| {
-                let _ = resume.controls;
-                resume.media.valid()
-                    && resume.media.microphone
-                    && !resume.media.share_audio
-                    && portable_id(&resume.workspace_id)
-                    && portable_id(&resume.channel_id)
-            }),
-    }
+    contract_schema.is_some_and(|declared| {
+        (schema == ContinuitySemanticSchema::LEGACY_UNTAGGED_TAG
+            || ContinuitySemanticSchema::from_wire_tag(schema) == Some(declared))
+            && schema_payload_valid(declared, bytes)
+    })
 }
 
 fn continuity_contract_for_app(app_id: &str) -> Result<ContinuityContract, ContinuityError> {
@@ -363,7 +375,7 @@ impl ContinuationRegistry {
         bytes: Vec<u8>,
         required: &[ContinuityFacet],
     ) -> Result<bool, ContinuityError> {
-        let semantic_schema = semantic_schema_for_builtin(&app_id);
+        let semantic_schema = legacy_untagged_builtin_schema(&app_id);
         self.report_with_validator(
             room,
             app_id,
@@ -391,22 +403,14 @@ impl ContinuationRegistry {
         let resume = if schema_version == ui::app::STRUCTURAL_CONTINUATION_SCHEMA {
             let bytes =
                 ui::app::sanitize_structural_continuation_metadata(&bytes, |schema, bytes| {
-                    semantic_schema.is_some_and(|portable_schema| {
-                        validate_portable_semantic_metadata(portable_schema, schema, bytes)
-                    })
+                    reported_semantic_valid(semantic_schema, schema, bytes)
                 })
                 .ok_or(ContinuityError::InvalidResumePayload)?;
             ResumeMetadata::new(schema_version, ResumeSensitivity::Syncable, bytes)?
         } else {
             let resume = ResumeMetadata::new(schema_version, ResumeSensitivity::Syncable, bytes)?;
             if schema_version != ui::app::GENERIC_VIEW_CONTINUATION_SCHEMA
-                && !semantic_schema.is_some_and(|portable_schema| {
-                    validate_portable_semantic_metadata(
-                        portable_schema,
-                        schema_version,
-                        resume.bytes(),
-                    )
-                })
+                && !reported_semantic_valid(semantic_schema, schema_version, resume.bytes())
             {
                 return Err(ContinuityError::InvalidResumePayload);
             }
@@ -1223,5 +1227,198 @@ mod tests {
         clear_removes_only_the_certified_instance_projection();
         remote_refresh_does_not_replace_a_live_tab_record();
         removing_a_closed_remote_tab_drops_its_staged_checkpoint();
+    }
+
+    const READER: &str = "com.example.reader";
+    const PAGE_42: &[u8] = br#"{"book_id":"urn:isbn:978-0","chapter":3,"page":42}"#;
+
+    /// An app store holding at most the third-party reader, declaring
+    /// `schema` when given. Callers hold `process_env`.
+    fn reader_store(schema: Option<&str>) -> (tempfile::TempDir, tilo_test_env::ScopedEnv) {
+        reader_store_requiring(schema, r#"["presentation", "semantic"]"#)
+    }
+
+    fn reader_store_requiring(
+        schema: Option<&str>,
+        required: &str,
+    ) -> (tempfile::TempDir, tilo_test_env::ScopedEnv) {
+        let dir = tempfile::tempdir().unwrap();
+        if let Some(schema) = schema {
+            let payload = dir.path().join("payloads").join(READER);
+            std::fs::create_dir_all(payload.join("bin")).unwrap();
+            let manifest = payload.join("manifest.toml");
+            std::fs::write(
+                &manifest,
+                crate::shell::test_support::canonical_manifest(
+                    &format!("id = \"{READER}\"\nversion = \"1.0.0\"\nkind = \"app\""),
+                    &format!(
+                        "[entrypoint]\nbin = \"bin/app\"\ntype = \"gui\"\n\
+                         [continuity]\nrequired = {required}\n\
+                         semantic-schema = \"{schema}\"\n"
+                    ),
+                ),
+            )
+            .unwrap();
+            std::fs::write(
+                dir.path().join("registry.toml"),
+                format!(
+                    "[[entry]]\nid = '{READER}'\npayload_root = {:?}\nmanifest_path = {:?}\n",
+                    payload.display().to_string(),
+                    manifest.display().to_string()
+                ),
+            )
+            .unwrap();
+        }
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_APPS_DATA_DIR", dir.path());
+        (dir, env)
+    }
+
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn an_uninstalled_third_party_app_roams_a_tagged_semantic_payload() {
+        let (_store, _env) = reader_store(None);
+        assert!(validate_app_metadata(
+            READER,
+            ContinuitySemanticSchema::PublicationPositionV1.wire_tag(),
+            PAGE_42,
+        ));
+        // The tag is checked against the payload, not trusted.
+        assert!(!validate_app_metadata(
+            READER,
+            ContinuitySemanticSchema::WebLocationV1.wire_tag(),
+            PAGE_42,
+        ));
+        assert!(!validate_app_metadata(
+            READER,
+            ContinuitySemanticSchema::PublicationPositionV1.wire_tag(),
+            br#"{"book_id":"../x","chapter":3,"page":42}"#,
+        ));
+        // Untagged, nothing says what the payload means.
+        assert!(!validate_app_metadata(
+            READER,
+            ContinuitySemanticSchema::LEGACY_UNTAGGED_TAG,
+            PAGE_42,
+        ));
+    }
+
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn an_installed_app_that_declares_a_different_schema_is_refused() {
+        let (_store, _env) = reader_store(Some("web-location-v1"));
+        assert!(!validate_app_metadata(
+            READER,
+            ContinuitySemanticSchema::PublicationPositionV1.wire_tag(),
+            PAGE_42,
+        ));
+        assert!(validate_app_metadata(
+            READER,
+            ContinuitySemanticSchema::WebLocationV1.wire_tag(),
+            br#"{"url":"https://docs.example/guide"}"#,
+        ));
+    }
+
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn legacy_untagged_first_party_payload_still_accepted() {
+        let (_store, _env) = reader_store(None);
+        assert!(validate_app_metadata(
+            "so.tilo.ebook",
+            ContinuitySemanticSchema::LEGACY_UNTAGGED_TAG,
+            PAGE_42,
+        ));
+        assert!(validate_app_metadata(
+            "so.tilo.ebook",
+            ContinuitySemanticSchema::PublicationPositionV1.wire_tag(),
+            PAGE_42,
+        ));
+    }
+
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn launch_drops_resume_when_installed_schema_disagrees() {
+        use crate::shell::launcher;
+        let checkpoint = ui::app::compose_structural_continuation_metadata(
+            ui::view::View {
+                scroll: vec![24.0],
+                ..ui::view::View::default()
+            },
+            Some(ui::collaboration::ContinuationMetadata {
+                schema_version: ContinuitySemanticSchema::PublicationPositionV1.wire_tag(),
+                bytes: PAGE_42.to_vec(),
+            }),
+        )
+        .unwrap();
+        let launch_with = |schema: Option<&str>, required: &str| {
+            let (_store, _env) = reader_store_requiring(schema, required);
+            let room = RoomId::new();
+            launcher::clear_pending_placements();
+            launcher::set_pending_placement(
+                READER,
+                crate::shell::tab_binding::Placement::IntoTab(41),
+            );
+            launcher::stage_continuation_resume(
+                room,
+                41,
+                checkpoint.schema_version,
+                checkpoint.bytes.clone(),
+                4_100,
+            );
+            let staged = launcher::take_staged_resume_for_package(READER, room);
+            launcher::clear_pending_placements();
+            let (resume, record) = staged.expect("the tab keeps its launch");
+            assert_eq!(record, 4_100, "the source record still reopens");
+            resume.map(|(schema, bytes)| {
+                assert_eq!(schema, ui::app::STRUCTURAL_CONTINUATION_SCHEMA);
+                let facets = ui::app::structural_continuation_facets(&bytes).unwrap();
+                assert!(facets.presentation());
+                (facets.semantic(), bytes)
+            })
+        };
+        let both = r#"["presentation", "semantic"]"#;
+        let presentation = r#"["presentation"]"#;
+
+        let (semantic, bytes) = launch_with(Some("publication-position-v1"), both)
+            .expect("an agreeing manifest receives the checkpoint");
+        assert!(semantic, "an agreeing manifest receives the position");
+        assert_eq!(bytes, checkpoint.bytes);
+        let (semantic, _) = launch_with(Some("web-location-v1"), presentation)
+            .expect("the presentation checkpoint survives");
+        assert!(!semantic, "a disagreeing manifest never sees the payload");
+        assert_eq!(
+            launch_with(Some("web-location-v1"), both),
+            None,
+            "a manifest requiring the semantic facet never receives a presentation-only resume",
+        );
+        let (semantic, _) = launch_with(None, both).expect("the presentation checkpoint survives");
+        assert!(!semantic, "a launch with no signed manifest cannot agree");
+    }
+
+    #[test]
+    fn realtime_schema_facets_mirror_the_toolkit_contract() {
+        use launcher::manifest::continuity_schema as schema;
+        for bits in 0u8..16 {
+            let [microphone, camera, screen_share, share_audio] =
+                [0, 1, 2, 3].map(|bit| bits & (1 << bit) != 0);
+            let toolkit = ui::realtime_continuity::RealtimeMediaFacets {
+                microphone,
+                camera,
+                screen_share,
+                share_audio,
+            };
+            let json = serde_json::to_vec(&toolkit).unwrap();
+            let mirrored: schema::RealtimeMediaFacets = serde_json::from_slice(&json).unwrap();
+            assert_eq!(serde_json::to_vec(&mirrored).unwrap(), json);
+            assert_eq!(mirrored.valid(), toolkit.valid(), "{json:?}");
+            let controls = ui::realtime_continuity::RealtimeControlIntent {
+                microphone_muted: microphone,
+                camera_muted: camera,
+                screen_share_paused: screen_share,
+                share_audio_muted: share_audio,
+            };
+            let json = serde_json::to_vec(&controls).unwrap();
+            let mirrored: schema::RealtimeControlIntent = serde_json::from_slice(&json).unwrap();
+            assert_eq!(serde_json::to_vec(&mirrored).unwrap(), json);
+        }
     }
 }
