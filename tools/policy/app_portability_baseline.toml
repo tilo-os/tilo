@@ -53,7 +53,6 @@ D2 = 6
 [apps.file-explorer]
 D1 = 2
 D2 = 11
-R1 = 1
 R3 = 3
 
 [apps.firewall]
