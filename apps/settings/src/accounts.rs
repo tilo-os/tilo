@@ -496,49 +496,18 @@ impl AccountRoot {
 // Mail view-model.
 // ---------------------------------------------------------------------------
 
-/// A single configured mail account — Mail's `Account` shape.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// A single configured mail account.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MailAccount {
     pub id: String,
     pub config: AccountConfig,
-    #[serde(default)]
-    pub collapsed: bool,
-    #[serde(default)]
     pub tint: u8,
 }
 
-impl MailAccount {
-    pub fn new(config: AccountConfig) -> Self {
-        let id = if config.email.is_empty() {
-            format!("account-{}", uuid::Uuid::new_v4())
-        } else {
-            config.email.clone()
-        };
-        Self {
-            id,
-            config,
-            collapsed: false,
-            tint: 0,
-        }
-    }
-
-    /// Display label: display name → email → placeholder.
-    pub fn label(&self) -> &str {
-        if !self.config.display_name.is_empty() {
-            &self.config.display_name
-        } else if !self.config.email.is_empty() {
-            &self.config.email
-        } else {
-            "New account"
-        }
-    }
-}
-
-/// The mail account list — Mail's `AccountStore` shape.
+/// The mail account list.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct MailStore {
     pub accounts: Vec<MailAccount>,
-    pub active: usize,
 }
 
 // ---------------------------------------------------------------------------
@@ -819,7 +788,7 @@ impl AccountDirectory {
                 .map(|a| AccountView {
                     id: a.id.clone(),
                     kind,
-                    label: a.label().to_string(),
+                    label: a.config.label().to_string(),
                     summary: a.config.email.clone(),
                     enabled: true,
                     tint: a.tint,
@@ -935,23 +904,17 @@ fn mail_store_from_shared(shared: &accounts::AccountStore) -> MailStore {
         .into_iter()
         .chain(shared.list(&accounts::thunderbird::PENDING_TYPE.into()))
         .filter_map(|a| {
-            // The opaque config is Mail's own `AccountConfig`; unknown
-            // fields (the sidebar `collapsed`) are ignored.
+            // The opaque config is Mail's own `AccountConfig`.
             let mut config: AccountConfig = serde_json::from_value(a.config.clone()).ok()?;
             config.import_pending |= a.type_id.as_str() == accounts::thunderbird::PENDING_TYPE;
             Some(MailAccount {
                 id: a.id.to_string(),
                 config,
-                collapsed: false,
                 tint: a.tint,
             })
         })
         .collect();
-    let active = shared
-        .active_id(&ty)
-        .and_then(|id| accounts.iter().position(|m| m.id == id.as_str()))
-        .unwrap_or(0);
-    MailStore { accounts, active }
+    MailStore { accounts }
 }
 
 /// Project the shared store's `CalDAV` accounts into a [`DavStore`] (the shape
@@ -1025,33 +988,39 @@ fn nextcloud_store_from_shared(shared: &accounts::AccountStore) -> NextcloudStor
 /// A deterministic, populated directory for `--shots` and tests so the
 /// panel renders a realistic accounts list without touching disk.
 pub fn sample_directory() -> AccountDirectory {
-    let mut work = MailAccount::new(AccountConfig {
-        email: "ada@example.com".into(),
-        display_name: "Work email".into(),
-        imap_host: "imap.fastmail.com".into(),
-        imap_port: 993,
-        imap_tls: true,
-        smtp_host: "smtp.fastmail.com".into(),
-        smtp_port: 465,
-        smtp_tls: true,
-        username: "ada@example.com".into(),
-        ..Default::default()
-    });
-    work.tint = 2;
+    let work = MailAccount {
+        id: "ada@example.com".into(),
+        config: AccountConfig {
+            email: "ada@example.com".into(),
+            display_name: "Work email".into(),
+            imap_host: "imap.fastmail.com".into(),
+            imap_port: 993,
+            imap_tls: true,
+            smtp_host: "smtp.fastmail.com".into(),
+            smtp_port: 465,
+            smtp_tls: true,
+            username: "ada@example.com".into(),
+            ..Default::default()
+        },
+        tint: 2,
+    };
 
-    let mut personal = MailAccount::new(AccountConfig {
-        email: "ada.personal@gmail.com".into(),
-        display_name: "Personal email".into(),
-        imap_host: "imap.gmail.com".into(),
-        imap_port: 993,
-        imap_tls: true,
-        smtp_host: "smtp.gmail.com".into(),
-        smtp_port: 465,
-        smtp_tls: true,
-        username: "ada.personal@gmail.com".into(),
-        ..Default::default()
-    });
-    personal.tint = 5;
+    let personal = MailAccount {
+        id: "ada.personal@gmail.com".into(),
+        config: AccountConfig {
+            email: "ada.personal@gmail.com".into(),
+            display_name: "Personal email".into(),
+            imap_host: "imap.gmail.com".into(),
+            imap_port: 993,
+            imap_tls: true,
+            smtp_host: "smtp.gmail.com".into(),
+            smtp_port: 465,
+            smtp_tls: true,
+            username: "ada.personal@gmail.com".into(),
+            ..Default::default()
+        },
+        tint: 5,
+    };
 
     let mut cal = DavAccount::new(
         "Team calendar",
@@ -1067,7 +1036,6 @@ pub fn sample_directory() -> AccountDirectory {
     AccountDirectory {
         mail: MailStore {
             accounts: vec![work, personal],
-            active: 0,
         },
         calendar: DavStore {
             accounts: vec![cal],

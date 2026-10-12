@@ -6,7 +6,8 @@
 //! decorated: document children, live rows (one joining a child, one of its
 //! own), edits two surfaces bind to rows (one offered by both, where the
 //! first surface's stays), edits bound to the view and to the viewer, and
-//! the framework's own operations.
+//! the framework's own operations. The fixture also records the subsequently
+//! added reviewed-restore operations and their exact public contracts.
 #![cfg(all(test, not(target_arch = "wasm32")))]
 
 use std::cell::Cell;

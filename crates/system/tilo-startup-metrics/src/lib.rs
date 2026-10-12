@@ -88,7 +88,7 @@ pub const LAUNCH_LATENCY_TARGET: &str = "tilo::launch_latency";
 
 /// The compositor's log filter directives for a `RUST_LOG` of `rust_log`: that
 /// filter (errors only when unset, as `tracing_subscriber::fmt::init` has it),
-/// with the launch-latency lines always on. They are three lines per app open,
+/// with the launch-latency lines always on. They are a few lines per app open,
 /// and the only record of how long the compositor and the launcher took before
 /// the app's own clock starts; a filter that names the target keeps its choice.
 #[must_use]
@@ -108,18 +108,35 @@ fn launch_table() -> std::sync::MutexGuard<'static, Vec<PendingLaunch>> {
 }
 static NEXT_LAUNCH_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
+/// A diagnostic generation, fixed at this process's first launch observation.
+/// Together with the emitting process ID it distinguishes compositor restarts.
+/// This is correlation only, never evidence of identity or launch authority.
+#[must_use]
+pub fn launch_generation() -> u128 {
+    static GENERATION: OnceLock<u128> = OnceLock::new();
+    *GENERATION.get_or_init(|| u128::from(tilo_clock::unix_now_ns()))
+}
+
 /// Begin timing one user-requested launch. Same-app launches are FIFO.
 pub fn launch_requested(key: impl Into<String>) -> u64 {
     let id = NEXT_LAUNCH_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let key = key.into();
     launch_table().push(PendingLaunch {
         id,
-        key: key.into(),
+        key: key.clone(),
         requested_at: Instant::now(),
         spawned_at: None,
         surface_id: None,
         mapped_at: None,
         phases: Vec::new(),
     });
+    tracing::info!(
+        target: LAUNCH_LATENCY_TARGET,
+        launch_id = id,
+        launch_generation = launch_generation(),
+        package_id = %key,
+        "application launch requested"
+    );
     id
 }
 
@@ -178,6 +195,8 @@ pub fn launch_spawned(id: u64, pid: u32) {
     drop(launches);
     tracing::info!(
         target: LAUNCH_LATENCY_TARGET,
+        launch_id = id,
+        launch_generation = launch_generation(),
         package_id = %key,
         pid,
         request_to_spawn_us = now.duration_since(requested_at).as_micros(),
@@ -203,6 +222,8 @@ pub fn launch_mapped(id: u64, surface_id: u64) {
     drop(launches);
     tracing::info!(
         target: LAUNCH_LATENCY_TARGET,
+        launch_id = id,
+        launch_generation = launch_generation(),
         package_id = %key,
         surface_id,
         request_to_map_us = now.duration_since(requested_at).as_micros(),
@@ -231,6 +252,8 @@ pub fn launch_first_present(surface_id: u64, frame_seq: u64) {
     let now = Instant::now();
     tracing::info!(
         target: LAUNCH_LATENCY_TARGET,
+        launch_id = launch.id,
+        launch_generation = launch_generation(),
         package_id = %launch.key,
         surface_id,
         frame_seq,
@@ -250,9 +273,25 @@ pub fn launches_awaiting_first_present() -> Vec<u64> {
         .collect()
 }
 
-/// Retire every unclaimed/mapped metric for one failed launch identity.
+/// Retire one launch's timing, recording which startup phases it reached.
+/// Retirement can also be placement cleanup: it does not prove a process failed.
 pub fn launch_failed(id: u64) {
-    launch_table().retain(|launch| launch.id != id);
+    let mut launches = launch_table();
+    let Some(index) = launches.iter().position(|launch| launch.id == id) else {
+        return;
+    };
+    let launch = launches.remove(index);
+    drop(launches);
+    tracing::info!(
+        target: LAUNCH_LATENCY_TARGET,
+        launch_id = launch.id,
+        launch_generation = launch_generation(),
+        package_id = %launch.key,
+        spawned = launch.spawned_at.is_some(),
+        mapped = launch.mapped_at.is_some(),
+        request_to_retire_us = Instant::now().duration_since(launch.requested_at).as_micros(),
+        "application launch timing retired before first frame"
+    );
 }
 
 /// Test-facing snapshot of in-flight launch timing. Kept deliberately small
@@ -646,6 +685,91 @@ pub fn span<T>(name: &str, f: impl FnOnce() -> T) -> T {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeMap;
+    use std::sync::Arc;
+
+    #[derive(Clone, Default)]
+    struct CapturedEvents(Arc<Mutex<Vec<BTreeMap<String, String>>>>);
+
+    impl tracing::Subscriber for CapturedEvents {
+        fn enabled(&self, metadata: &tracing::Metadata<'_>) -> bool {
+            metadata.target() == LAUNCH_LATENCY_TARGET
+        }
+
+        fn new_span(&self, _attributes: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+            tracing::span::Id::from_u64(1)
+        }
+
+        fn record(&self, _span: &tracing::span::Id, _values: &tracing::span::Record<'_>) {}
+        fn record_follows_from(&self, _span: &tracing::span::Id, _follows: &tracing::span::Id) {}
+        fn enter(&self, _span: &tracing::span::Id) {}
+        fn exit(&self, _span: &tracing::span::Id) {}
+
+        fn event(&self, event: &tracing::Event<'_>) {
+            struct Fields(BTreeMap<String, String>);
+            impl tracing::field::Visit for Fields {
+                fn record_debug(
+                    &mut self,
+                    field: &tracing::field::Field,
+                    value: &dyn std::fmt::Debug,
+                ) {
+                    self.0.insert(field.name().into(), format!("{value:?}"));
+                }
+            }
+            let mut fields = Fields(BTreeMap::new());
+            event.record(&mut fields);
+            self.0.lock().unwrap().push(fields.0);
+        }
+    }
+
+    fn lifecycle_events_correlate_same_app_attempts_and_retire_once() {
+        launch_table().clear();
+        let captured = CapturedEvents::default();
+        let (first, second, third) = tracing::subscriber::with_default(captured.clone(), || {
+            let first = launch_requested("dev.tilo.same-app");
+            let second = launch_requested("dev.tilo.same-app");
+            let third = launch_requested("dev.tilo.same-app");
+            launch_spawned(first, 10);
+            launch_spawned(first, 99);
+            launch_spawned(second, 11);
+            launch_mapped(first, 100);
+            launch_mapped(first, 999);
+            launch_first_present(100, 0);
+            launch_first_present(100, 1);
+            launch_first_present(100, 2);
+            launch_failed(second);
+            launch_failed(second);
+            launch_failed(third);
+            launch_failed(u64::MAX);
+            (first, second, third)
+        });
+        let events = captured.0.lock().unwrap();
+        assert_eq!(events.len(), 9);
+        let generation = events[0].get("launch_generation").unwrap();
+        assert!(generation.parse::<u128>().unwrap() > 0);
+        for (id, expected) in [(first, 4), (second, 3), (third, 2)] {
+            let attempt: Vec<_> = events
+                .iter()
+                .filter(|fields| fields.get("launch_id") == Some(&id.to_string()))
+                .collect();
+            assert_eq!(attempt.len(), expected);
+            assert!(attempt.iter().all(|fields| {
+                fields.get("launch_generation") == Some(generation)
+                    && fields.get("package_id") == Some(&"dev.tilo.same-app".into())
+            }));
+            let last = attempt.last().unwrap();
+            if id == first {
+                assert_eq!(last.get("frame_seq"), Some(&"1".into()));
+                assert!(last["message"].contains("first frame presented"));
+            } else {
+                assert!(last["message"].contains("timing retired before first frame"));
+                assert_eq!(last.get("mapped"), Some(&"false".into()));
+                assert_eq!(last.get("spawned"), Some(&(id == second).to_string()));
+            }
+        }
+        drop(events);
+        assert!(launch_table().is_empty());
+    }
 
     #[test]
     fn startup_metrics_are_opt_in_transparent_and_bind_launches_once() {
@@ -693,6 +817,7 @@ mod tests {
             assert_eq!(launch_table().len(), 1);
             launch_failed(second);
         }
+        lifecycle_events_correlate_same_app_attempts_and_retire_once();
         // Phase `dispatch_phases_belong_to_the_unspawned_launch`.
         {
             launch_table().clear();

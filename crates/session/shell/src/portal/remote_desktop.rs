@@ -33,7 +33,6 @@ use std::collections::HashMap;
 use std::os::fd::OwnedFd as StdOwnedFd;
 #[cfg(target_os = "linux")]
 use std::os::unix::net::UnixStream;
-use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 #[cfg(target_os = "linux")]
@@ -54,14 +53,12 @@ use super::PortalCaller;
 use super::lifecycle::PortalLifecycle;
 #[cfg(target_os = "linux")]
 use super::lifecycle::{LifecycleEntry, LifecycleResource};
+use super::restore::{RestoreRecord, RestoreStore, restore_data, restore_key};
 #[cfg(target_os = "linux")]
 use super::{CapabilityKind, PortalContext, auth::authenticate_call, flow};
 
 #[cfg(target_os = "linux")]
 const MAX_LIVE_SESSIONS: usize = 64;
-const MAX_RESTORE_RECORDS: usize = 256;
-const RESTORE_VENDOR: &str = "tilo";
-const RESTORE_DATA_VERSION: u32 = 1;
 
 /// Device-type bitmask (`RemoteDesktop.AvailableDeviceTypes`).
 pub mod device_type {
@@ -228,91 +225,18 @@ struct RemoteRestoreData {
     issued_unix_seconds: u64,
 }
 
-#[derive(Default)]
-struct RemoteRestoreStore {
-    memory: HashMap<String, RemoteRestoreData>,
-    durable: HashMap<String, RemoteRestoreData>,
-    path: Option<PathBuf>,
-}
-
-impl RemoteRestoreStore {
-    fn load() -> Self {
-        let path = tilo_paths::state_dir()
-            .map(|root| root.join("tilo/portal/remote-desktop-restore.json"));
-        let durable = path
-            .as_ref()
-            .and_then(|path| std::fs::read(path).ok())
-            .and_then(|bytes| {
-                serde_json::from_slice::<HashMap<String, RemoteRestoreData>>(&bytes).ok()
-            })
-            .filter(|records| {
-                records.len() <= MAX_RESTORE_RECORDS
-                    && records.iter().all(|(key, record)| {
-                        uuid::Uuid::parse_str(key).is_ok()
-                            && !record.app_id.is_empty()
-                            && record.app_id.len() <= 256
-                            && record.devices != 0
-                            && record.devices & !device_type::ALL == 0
-                            && record.persist_mode == 2
-                    })
-            })
-            .unwrap_or_default();
-        Self {
-            memory: HashMap::new(),
-            durable,
-            path,
-        }
+impl RestoreRecord for RemoteRestoreData {
+    fn app_id(&self) -> &str {
+        &self.app_id
     }
-
-    fn get(&self, key: &str) -> Option<RemoteRestoreData> {
-        self.memory
-            .get(key)
-            .or_else(|| self.durable.get(key))
-            .cloned()
+    fn persist_mode(&self) -> u32 {
+        self.persist_mode
     }
-
-    fn insert(&mut self, key: String, record: RemoteRestoreData) -> Result<(), String> {
-        let target = if record.persist_mode == 2 {
-            &mut self.durable
-        } else {
-            &mut self.memory
-        };
-        target.insert(key, record);
-        while target.len() > MAX_RESTORE_RECORDS {
-            let Some(oldest) = target
-                .iter()
-                .min_by_key(|(_, record)| record.issued_unix_seconds)
-                .map(|(key, _)| key.clone())
-            else {
-                break;
-            };
-            target.remove(&oldest);
-        }
-        self.persist()
+    fn issued_unix_seconds(&self) -> u64 {
+        self.issued_unix_seconds
     }
-
-    fn persist(&self) -> Result<(), String> {
-        let Some(path) = &self.path else {
-            return if self.durable.is_empty() {
-                Ok(())
-            } else {
-                Err("private portal state directory is unavailable".into())
-            };
-        };
-        let bytes = serde_json::to_vec(&self.durable)
-            .map_err(|error| format!("serialize remote-desktop restores: {error}"))?;
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|error| format!("create remote-desktop restore directory: {error}"))?;
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))
-                    .map_err(|error| format!("secure remote-desktop restore directory: {error}"))?;
-            }
-        }
-        tilo_files::native::atomic::write_with_mode(path, &bytes, 0o600)
-            .map_err(|error| format!("write remote-desktop restores: {error}"))
+    fn grant_in_range(&self) -> bool {
+        self.devices != 0 && self.devices & !device_type::ALL == 0
     }
 }
 
@@ -322,7 +246,7 @@ pub struct RemoteDesktopBackend {
     injector: RemoteInputInjectorHandle,
     lifecycle: PortalLifecycle,
     sessions: Arc<Mutex<HashMap<String, RemoteDesktopSession>>>,
-    restore: Arc<Mutex<RemoteRestoreStore>>,
+    restore: Arc<Mutex<RestoreStore<RemoteRestoreData>>>,
 }
 
 /// Lifecycle hook retained by `serve` for Session.Close and frontend loss.
@@ -393,7 +317,9 @@ impl RemoteDesktopBackend {
             ctx,
             lifecycle,
             sessions: Arc::new(Mutex::new(HashMap::new())),
-            restore: Arc::new(Mutex::new(RemoteRestoreStore::load())),
+            restore: Arc::new(Mutex::new(RestoreStore::load(
+                "remote-desktop-restore.json",
+            ))),
         }
     }
 
@@ -440,24 +366,6 @@ impl RemoteDesktopBackend {
             self.route(sender.as_str(), session_handle, need, action);
         }
     }
-}
-
-/// Decode the standard v2 `(suv)` restore record. The third component is a
-/// backend-private variant; a malformed or foreign record is deliberately a
-/// normal non-restorable request, never an authority failure.
-fn restore_key(options: &HashMap<String, OwnedValue>) -> Option<String> {
-    let raw = options.get("restore_data")?.try_clone().ok()?;
-    let (vendor, version, payload): (String, u32, OwnedValue) = raw.try_into().ok()?;
-    if vendor != RESTORE_VENDOR || version != RESTORE_DATA_VERSION {
-        return None;
-    }
-    let key = Value::from(payload).downcast::<String>().ok()?;
-    uuid::Uuid::parse_str(&key).ok().map(|_| key)
-}
-
-fn restore_data(key: String) -> Option<OwnedValue> {
-    let payload = OwnedValue::from(zbus::zvariant::Str::from(key));
-    OwnedValue::try_from(Value::new((RESTORE_VENDOR, RESTORE_DATA_VERSION, payload))).ok()
 }
 
 #[cfg(target_os = "linux")]
@@ -1139,7 +1047,7 @@ mod tests {
             injector,
             lifecycle: PortalLifecycle::new(),
             sessions: Arc::new(Mutex::new(HashMap::new())),
-            restore: Arc::new(Mutex::new(RemoteRestoreStore::default())),
+            restore: Arc::new(Mutex::new(RestoreStore::default())),
         }
     }
 

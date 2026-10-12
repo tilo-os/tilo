@@ -150,8 +150,7 @@ jobs:
           else
             # A pull request compares the merge with the main it merged; a push
             # compares with its parent.
-            python3 tools/ci/app_sdk_affected.py ${MAIN:+--base "$MAIN"} --github-output "$GITHUB_OUTPUT"
-            python3 tools/ci/app_sdk_affected.py ${MAIN:+--base "$MAIN"} --lane linux --github-output "$GITHUB_OUTPUT"
+            python3 tools/ci/app_sdk_affected.py ${MAIN:+--base "$MAIN"} --lane both --github-output "$GITHUB_OUTPUT"
           fi
 
   # Linux: the CLI's own tests, the Linux artifact and .tapp of a

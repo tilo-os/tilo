@@ -26,7 +26,7 @@ use crate::shell::search::{
     SearchResult,
 };
 use tilo_desktop::notifications::{Notification, NotificationSeverity};
-use tilo_search::{Document, Matching, Page, SearchIndex};
+use tilo_search::{Document, Matching, SearchIndex};
 
 /// Chip label / group header for launchable apps; also the provider's `name()`.
 pub const APPLICATIONS_KIND: &str = "Applications";
@@ -1064,62 +1064,19 @@ impl SearchProvider for ApplicationsProvider {
         let Some(snapshot) = self.snapshot() else {
             return SearchPage::exhausted(revision, Vec::new());
         };
-        let offset = match cursor {
-            Some(cursor) if cursor.revision != revision => return SearchPage::stale(revision),
-            Some(cursor) => match cursor
-                .token
-                .strip_prefix("applications:")
-                .and_then(|token| {
-                    token
-                        .split_once('\u{1f}')
-                        .filter(|(_, query)| *query == ctx.needle)
-                        .and_then(|(offset, _)| offset.parse::<usize>().ok())
-                }) {
-                Some(offset) => offset,
-                None => return SearchPage::stale(revision),
-            },
-            None => 0,
-        };
-        let found = snapshot.index.search(
-            ctx.needle,
-            Page {
-                offset,
-                limit: budget.max_work.min(budget.max_results),
-            },
-        );
-        let mut considered = 0usize;
-        let mut bytes = 0usize;
-        let mut results = Vec::new();
-        for hit in &found.hits {
-            let Some(entry) = usize::try_from(hit.key)
-                .ok()
-                .and_then(|at| snapshot.entries.get(at))
-            else {
-                considered = considered.saturating_add(1);
-                continue;
-            };
-            let score = provider_score(hit.rank.unwrap_or(0));
-            let Some(row) = self.entry_row(&ctx, &snapshot, entry, score) else {
-                considered = considered.saturating_add(1);
-                continue;
-            };
-            let row_bytes = row
-                .title
-                .len()
-                .saturating_add(row.subtitle.as_ref().map_or(0, String::len));
-            if bytes.saturating_add(row_bytes) > budget.max_bytes {
-                break;
-            }
-            bytes = bytes.saturating_add(row_bytes);
-            considered = considered.saturating_add(1);
-            results.push(row);
-        }
-        let exhausted = !found.more && considered == found.hits.len();
-        let next = offset.saturating_add(considered);
-        SearchPage::continuing(
+        crate::shell::search::index_page(
             revision,
-            results,
-            (!exhausted).then(|| format!("applications:{next}\u{1f}{}", ctx.needle)),
+            cursor,
+            ctx.needle,
+            budget,
+            |page| snapshot.index.search(ctx.needle, page),
+            |hit| {
+                let entry = usize::try_from(hit.key)
+                    .ok()
+                    .and_then(|at| snapshot.entries.get(at))?;
+                let score = provider_score(hit.rank.unwrap_or(0));
+                self.entry_row(&ctx, &snapshot, entry, score)
+            },
         )
     }
 }

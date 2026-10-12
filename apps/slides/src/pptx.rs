@@ -826,15 +826,9 @@ fn emu(v: f64) -> i64 {
     (v * EMU).round() as i64
 }
 fn image_ext(b: &[u8]) -> Option<&'static str> {
-    if b.starts_with(b"\x89PNG\r\n\x1a\n") {
-        Some("png")
-    } else if b.starts_with(b"\xff\xd8\xff") {
-        Some("jpg")
-    } else if b.starts_with(b"GIF8") {
-        Some("gif")
-    } else {
-        None
-    }
+    tilo_content::image_format(b)
+        .map(|format| format.extension)
+        .filter(|ext| matches!(*ext, "png" | "jpg" | "gif"))
 }
 
 fn content_types(deck: &Deck, p: &[Picture], has_notes: bool) -> String {
