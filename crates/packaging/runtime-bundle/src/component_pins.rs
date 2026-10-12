@@ -38,6 +38,130 @@ pub fn load_with_components(operator_list: &Path) -> std::io::Result<Option<Vec<
     Ok(keys)
 }
 
+/// An exact runtime closure already admitted by the host updater. This record
+/// grants no other root or version from its publisher any additional trust.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RetainedBundleTrust {
+    pub version: String,
+    pub arch: String,
+    pub root_hash: String,
+    pub publisher_hex: String,
+}
+
+impl RetainedBundleTrust {
+    #[must_use]
+    pub fn from_verified(manifest: &crate::BundleManifest) -> Option<Self> {
+        Some(Self {
+            version: manifest.version.clone(),
+            arch: manifest.arch.clone(),
+            root_hash: manifest.root_hash.clone(),
+            publisher_hex: manifest.publisher_hex.clone()?,
+        })
+    }
+
+    #[must_use]
+    pub fn installed_path(&self) -> std::path::PathBuf {
+        let identity = format!(
+            "{}\0{}\0{}\0{}",
+            self.version, self.arch, self.root_hash, self.publisher_hex
+        );
+        Path::new("/usr/share/tilo/runtime-retained").join(format!(
+            "{}.json",
+            blake3::hash(identity.as_bytes()).to_hex()
+        ))
+    }
+
+    pub fn matches(&self, manifest: &crate::BundleManifest) -> bool {
+        self.version == manifest.version
+            && self.arch == manifest.arch
+            && self.root_hash == manifest.root_hash
+            && manifest.publisher_hex.as_deref() == Some(self.publisher_hex.as_str())
+    }
+}
+
+/// Publisher policy with exact retained exceptions. Check the final verified
+/// manifest, not an earlier read of a mutable bundle path.
+#[derive(Debug, Clone)]
+pub struct BundleTrust {
+    publishers: Option<Vec<String>>,
+    retained: Vec<RetainedBundleTrust>,
+}
+
+impl BundleTrust {
+    #[must_use]
+    pub fn is_configured(&self) -> bool {
+        self.publishers
+            .as_ref()
+            .is_some_and(|keys| !keys.is_empty())
+            || !self.retained.is_empty()
+    }
+
+    /// Apply policy to the manifest returned by the final signature/payload check.
+    ///
+    /// # Errors
+    /// The final manifest matches neither a trusted publisher nor an exact retained identity.
+    pub fn check(&self, manifest: &crate::BundleManifest) -> std::io::Result<()> {
+        if !self.is_configured()
+            || manifest.publisher_hex.as_ref().is_some_and(|publisher| {
+                self.publishers
+                    .as_ref()
+                    .is_some_and(|keys| keys.iter().any(|key| key.eq_ignore_ascii_case(publisher)))
+            })
+            || self.retained.iter().any(|record| record.matches(manifest))
+        {
+            Ok(())
+        } else {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "this device does not trust the runtime publisher or its exact retained identity",
+            ))
+        }
+    }
+}
+
+/// Existing pins plus retained identities scoped to this exact signed bundle.
+/// A mutable, mismatched or replaced retention record fails closed.
+///
+/// # Errors
+/// Policy or signed bundle metadata is invalid or inaccessible.
+pub fn load_for_bundle(operator_list: &Path, bundle: &Path) -> std::io::Result<BundleTrust> {
+    let mut trust = BundleTrust {
+        publishers: load_with_components(operator_list)?,
+        retained: Vec::new(),
+    };
+    let manifest = crate::verify_bundle_metadata_with(
+        bundle,
+        &crate::VerifyOptions {
+            ..Default::default()
+        },
+    )
+    .map_err(std::io::Error::other)?;
+    let Some(identity) = RetainedBundleTrust::from_verified(&manifest) else {
+        return Ok(trust);
+    };
+    if let Some(bytes) = read_immutable(&identity.installed_path(), 8192)? {
+        crate::verify_bundle_metadata_with(
+            bundle,
+            &crate::VerifyOptions {
+                require_signature: true,
+                ..Default::default()
+            },
+        )
+        .map_err(std::io::Error::other)?;
+        let retained: Vec<RetainedBundleTrust> =
+            serde_json::from_slice(&bytes).map_err(std::io::Error::other)?;
+        if retained.is_empty()
+            || retained.len() > 32
+            || retained.iter().any(|record| !record.matches(&manifest))
+        {
+            return Err(denied());
+        }
+        trust.retained = retained;
+    }
+    Ok(trust)
+}
+
 fn denied() -> std::io::Error {
     std::io::Error::new(
         std::io::ErrorKind::PermissionDenied,
@@ -46,7 +170,7 @@ fn denied() -> std::io::Error {
 }
 
 #[cfg(unix)]
-fn read_pin(path: &Path) -> std::io::Result<Option<String>> {
+fn read_immutable(path: &Path, bound: u64) -> std::io::Result<Option<Vec<u8>>> {
     use std::os::fd::AsRawFd as _;
     use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _};
     let metadata = match std::fs::symlink_metadata(path) {
@@ -90,17 +214,27 @@ fn read_pin(path: &Path) -> std::io::Result<Option<String>> {
         return Err(denied());
     }
     let mut bytes = Vec::new();
-    file.take(258).read_to_end(&mut bytes)?;
-    decode(&bytes, path == Path::new(PINS[1]))
+    file.take(bound.saturating_add(1)).read_to_end(&mut bytes)?;
+    if u64::try_from(bytes.len()).map_err(std::io::Error::other)? > bound {
+        return Err(denied());
+    }
+    Ok(Some(bytes))
 }
 
 #[cfg(not(unix))]
-fn read_pin(path: &Path) -> std::io::Result<Option<String>> {
+fn read_immutable(path: &Path, _bound: u64) -> std::io::Result<Option<Vec<u8>>> {
     if path.try_exists()? {
         Err(denied())
     } else {
         Ok(None)
     }
+}
+
+fn read_pin(path: &Path) -> std::io::Result<Option<String>> {
+    read_immutable(path, 258)?
+        .map(|bytes| decode(&bytes, path == Path::new(PINS[1])))
+        .transpose()
+        .map(Option::flatten)
 }
 
 fn decode(bytes: &[u8], optional_engine: bool) -> std::io::Result<Option<String>> {
@@ -163,6 +297,131 @@ mod tests {
         command.arg("--ro-bind").arg(executable).arg("/fixture");
         command.arg("--ro-bind").arg(operator).arg("/operator.txt");
         command
+    }
+
+    fn assert_retained_namespace_case(case: &str) {
+        let old = load_for_bundle(Path::new("/operator.txt"), Path::new("/old"));
+        match case {
+            "mutable" | "malformed" => assert!(old.is_err()),
+            "valid" => {
+                let old = old.unwrap();
+                let manifest = crate::verify_bundle(Path::new("/old")).unwrap();
+                old.check(&manifest).unwrap();
+                let other = crate::verify_bundle(Path::new("/other")).unwrap();
+                let other_keys =
+                    load_for_bundle(Path::new("/operator.txt"), Path::new("/other")).unwrap();
+                assert!(
+                    old.check(&other).is_err(),
+                    "a replaced final manifest must fail"
+                );
+                assert!(
+                    other_keys.check(&other).is_err(),
+                    "retention must not trust another root from the same old publisher"
+                );
+                let new = crate::verify_bundle(Path::new("/new")).unwrap();
+                let new_keys =
+                    load_for_bundle(Path::new("/operator.txt"), Path::new("/new")).unwrap();
+                new_keys.check(&new).unwrap();
+                for field in ["version", "arch", "root", "publisher"] {
+                    let mut replaced = manifest.clone();
+                    match field {
+                        "version" => replaced.version.push_str("-replaced"),
+                        "arch" => replaced.arch.push_str("-replaced"),
+                        "root" => replaced.root_hash = other.root_hash.clone(),
+                        _ => replaced.publisher_hex = Some("33".repeat(32)),
+                    }
+                    assert!(old.check(&replaced).is_err(), "{field}");
+                }
+            }
+            _ => panic!("unknown retained runtime test"),
+        }
+    }
+
+    #[test]
+    fn retained_runtime_trust_is_exact_and_does_not_trust_an_old_publisher_globally() {
+        const CASE: &str = "TILO_TEST_RETAINED_RUNTIME";
+        if let Ok(case) = std::env::var(CASE) {
+            assert_retained_namespace_case(&case);
+            return;
+        }
+        let temp = tempfile::tempdir().unwrap();
+        let host = temp.path().join("host");
+        std::fs::create_dir(&host).unwrap();
+        let library = temp.path().join("library.so");
+        let identity = temp.path().join("key.json");
+        std::fs::write(
+            &identity,
+            serde_json::json!({"secret_key_hex": "11".repeat(32)}).to_string(),
+        )
+        .unwrap();
+        let build = |name: &str, bytes: &[u8]| {
+            std::fs::write(&library, bytes).unwrap();
+            let path = temp.path().join(name);
+            crate::build_bundle_with(
+                &path,
+                if name == "new" { "new" } else { "old" },
+                &crate::BuildOptions {
+                    from: Some(&host),
+                    identity: Some(&identity),
+                    extra_libs: std::slice::from_ref(&library),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            path
+        };
+        let old = build("old", b"old payload");
+        let other = build("other", b"different payload from the same old publisher");
+        std::fs::write(
+            &identity,
+            serde_json::json!({"secret_key_hex": "22".repeat(32)}).to_string(),
+        )
+        .unwrap();
+        let new = build("new", b"new payload");
+        let proof =
+            RetainedBundleTrust::from_verified(&crate::verify_bundle(&old).unwrap()).unwrap();
+        let record = temp.path().join("retained.json");
+        std::fs::write(&record, serde_json::to_vec(&vec![proof.clone()]).unwrap()).unwrap();
+        let malformed = temp.path().join("malformed.json");
+        std::fs::write(&malformed, "not a record").unwrap();
+        let pin = temp.path().join("pin");
+        std::fs::write(
+            &pin,
+            crate::verify_bundle(&new).unwrap().publisher_hex.unwrap(),
+        )
+        .unwrap();
+        let operator = temp.path().join("operator");
+        std::fs::write(&operator, "").unwrap();
+        let executable = std::env::current_exe().unwrap();
+        for case in ["valid", "mutable", "malformed"] {
+            let mut command = namespace(&executable, &operator);
+            command.args(["--dir", "/usr/share/tilo/runtime-retained"]);
+            command.arg("--ro-bind").arg(&pin).arg(PINS[0]);
+            for (source, target) in [(&old, "/old"), (&other, "/other"), (&new, "/new")] {
+                command.arg("--ro-bind").arg(source).arg(target);
+            }
+            command
+                .arg(if case == "mutable" {
+                    "--bind"
+                } else {
+                    "--ro-bind"
+                })
+                .arg(if case == "malformed" {
+                    &malformed
+                } else {
+                    &record
+                })
+                .arg(proof.installed_path());
+            command.args(["--setenv", CASE, case, "--", "/fixture", "--exact",
+                "component_pins::tests::retained_runtime_trust_is_exact_and_does_not_trust_an_old_publisher_globally", "--nocapture"]);
+            let output = command.output().unwrap();
+            assert!(
+                output.status.success(),
+                "{case}: {} {}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
     }
 
     #[test]

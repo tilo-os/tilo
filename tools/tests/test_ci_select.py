@@ -1237,7 +1237,7 @@ class SelectorTests(unittest.TestCase):
             )
 
     def test_chunkah_release_rows_compile_no_workspace_rust(self):
-        """Only os/Containerfile.rechunk reads chunkah's tarballs (TIL-747)."""
+        """Only os/Containerfile.rechunk reads chunkah's tarballs."""
         subprocess.run(["git", "init", "-q", "-b", "base"], cwd=self.root, check=True)
         subprocess.run(["git", "config", "user.email", "ci@example.invalid"], cwd=self.root, check=True)
         subprocess.run(["git", "config", "user.name", "CI"], cwd=self.root, check=True)

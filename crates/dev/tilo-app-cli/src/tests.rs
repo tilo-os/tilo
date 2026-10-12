@@ -5187,7 +5187,10 @@ fn platform_specific_app(root: &Path) -> PathBuf {
         .replacen("[features]\n", "[features]\nmedia = [\"ui/mpris\"]\n", 1);
     std::fs::write(
         app.join("Cargo.toml"),
-        format!("{cargo}\n[dev-dependencies]\nnix = \"0.29\"\n"),
+        format!(
+            "{cargo}\n[dev-dependencies]\nnix = \"0.29\"\n\n\
+             [target.'cfg(target_os = \"linux\")'.dev-dependencies]\nlibc = \"0.2\"\n"
+        ),
     )
     .unwrap();
     let mut lib = std::fs::read_to_string(app.join("src/lib.rs")).unwrap();
@@ -5311,6 +5314,10 @@ fn portability_lint_reports_shipped_platform_code_with_remedies() {
             .count(),
         1,
         "dev-dependencies are exempt"
+    );
+    assert!(
+        !sites.contains(&("Cargo.toml".to_owned(), TargetCfg)),
+        "a target section of dev-dependencies is exempt"
     );
     let rendered = report.render();
     assert!(rendered.contains("error[portability/R2]: src/lib.rs:"));

@@ -4,6 +4,10 @@ set -euo pipefail
 root="$(git rev-parse --show-toplevel)"
 fail=0
 
+# Keep the real manifest pairing for lock validation: a combined merge lock
+# differs from both parents even when each manifest was taken from one parent.
+lock_staged_names=$(git diff --cached --name-only)
+
 # Merging main into a branch stages everything main changed since the branch
 # point, thousands of files that main's own checks already passed. The checks
 # below read the staged change through the index, so they run against a copy
@@ -23,6 +27,7 @@ if merge_head=$(git rev-parse -q --verify MERGE_HEAD); then
   export GIT_INDEX_FILE="$merge_index"
 fi
 python3 "$root/tools/policy/check_source_content.py" --staged || fail=1
+python3 "$root/tools/policy/check_public_references.py" --staged || fail=1
 note() { printf '  %s\n' "$*" >&2; }
 
 # Every crate on disk must be a workspace member.
@@ -115,7 +120,7 @@ fi
 # that cargo metadata --locked accepts and that moves nothing else
 # (tools/ci/check_lock_update.py).
 if grep -qx 'Cargo.lock' <<< "$staged_names" \
-   && ! grep -qE '(^|/)Cargo\.toml$' <<< "$staged_names"; then
+   && ! grep -qE '(^|/)Cargo\.toml$' <<< "$lock_staged_names"; then
   python3 "$root/tools/ci/check_lock_update.py" --root "$root" || fail=1
 fi
 # A vendored crate's own lock file is a build artifact, not ours.

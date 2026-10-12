@@ -1833,14 +1833,18 @@ impl ActorState {
                 let id = addr.id;
                 self.lookup.add_endpoint_info(addr.clone());
                 if addr.ip_addrs().next().is_some() {
+                    // The known-address dial joins the topics after handing
+                    // gossip its connection. Joining here as well races a
+                    // second dial and keeps redundant QUIC links alive.
                     self.connect_known_addresses(addr.clone());
-                }
-                self.peers.insert(id, addr);
-                for topic in self.topics.values() {
-                    if let Err(error) = topic.sender.join_peers(vec![id]).await {
-                        tracing::warn!(peer = %id, %error, "iroh gossip peer join failed");
+                } else {
+                    for topic in self.topics.values() {
+                        if let Err(error) = topic.sender.join_peers(vec![id]).await {
+                            tracing::warn!(peer = %id, %error, "iroh gossip peer join failed");
+                        }
                     }
                 }
+                self.peers.insert(id, addr);
             }
             Some(NetCmd::ConnectHost { addr, expectation }) => {
                 let id = addr.id;
@@ -5096,7 +5100,7 @@ mod tests {
     }
 
     /// A dial wakes the relays; what a lone desktop does on every local
-    /// change (join its own topic, publish to it) does not (TIL-740).
+    /// change (join its own topic, publish to it) does not.
     #[test]
     fn only_a_remote_party_needs_this_device_reachable() {
         let addr = EndpointAddr::new(iroh::SecretKey::generate().public());
@@ -5802,6 +5806,29 @@ mod tests {
                 _ => {}
             }
         }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn known_addresses_recover_a_peer_previously_named_only_by_id() {
+        let root = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
+        let (cmd_a, mut rx_a, _, task_a) = idle_test_actor(&root, "a", HEARTBEAT_INTERVAL).await;
+        let (cmd_b, mut rx_b, addr_b, task_b) =
+            idle_test_actor(&root, "b", HEARTBEAT_INTERVAL).await;
+        cmd_a
+            .send(NetCmd::Connect {
+                addr: EndpointAddr::new(addr_b.id),
+            })
+            .await
+            .unwrap();
+        // The actor processes commands in order: the tally reply proves
+        // the address-free join has been submitted before discovery arrives.
+        let _ = tally_of(&cmd_a).await;
+        cmd_a.send(NetCmd::Connect { addr: addr_b }).await.unwrap();
+        await_identity_and_codecs(&mut rx_a).await;
+        await_identity_and_codecs(&mut rx_b).await;
+        drop((rx_a, rx_b, cmd_a, cmd_b));
+        task_a.await.unwrap();
+        task_b.await.unwrap();
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

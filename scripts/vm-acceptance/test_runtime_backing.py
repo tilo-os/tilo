@@ -47,6 +47,31 @@ class Backing(unittest.TestCase):
             self.assertEqual(row["map_identity"][1], "00:116")
             self.assertEqual(value["processes"][0]["start_time_ticks"], "12345")
 
+    def test_selected_worker_refuses_reused_lifetime_or_missing_subject(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.fixture(root)
+            for selection in [(123, "12346"), (456, "12345")]:
+                with self.assertRaises(RuntimeError):
+                    probe.probe(SUBJECT_UID, "store", root, selection)
+            value = probe.probe(SUBJECT_UID, "store", root, (123, "12345"))
+            self.assertEqual([row["pid"] for row in value["processes"]], [123])
+
+    def test_old_unrelated_worker_does_not_replace_selected_fd_subject(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.fixture(root)
+            old = root / "456"
+            old.mkdir()
+            if os.getuid() == 0: os.chown(old, SUBJECT_UID, -1)
+            (old / "comm").write_text("store")
+            (old / "stat").write_text("456 (store) " + " ".join(["1"] * 19 + ["987"]))
+            value = probe.probe(SUBJECT_UID, "store", root, (123, "12345"))
+            self.assertEqual([row["pid"] for row in value["processes"]], [123])
+            self.assertEqual(value["unrelated_processes"], [{"pid": 456, "start_time_ticks": "987",
+                "status": "unrelated_not_verified_against_selected_offer"}])
+            self.assertTrue(old.exists())
+
     def test_calculator_uses_same_exact_backing_protocol(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

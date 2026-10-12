@@ -63,13 +63,14 @@ pub struct ContinuityPolicySnapshot {
 }
 
 /// The switches the section holds, besides `audit`.
-const SWITCHES: [&str; 10] = [
+const SWITCHES: [&str; 11] = [
     "enabled",
     "clipboard",
     "notifications",
     "wifi_settings",
     "media",
     "display_input",
+    "automatic_display_input",
     "file_transfer",
     "realtime_sessions",
     "typed_gamepad",

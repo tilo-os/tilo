@@ -692,7 +692,10 @@ inputs = [
   "os/dev/install-board-layer.sh", "os/usr/lib/systemd/system/tilo-board-headless-session@.service",
   "os/usr/libexec/tilo-seat-session",
 ]
-readers = ["crates/dev/tilo-vmd/tests/jobs.rs", "crates/dev/tilo-vmd/src/systemd.rs"]
+readers = [
+  "crates/dev/tilo-vmd/tests/jobs.rs", "crates/dev/tilo-vmd/src/systemd.rs",
+  "crates/dev/tilo-vmd/src/daemon/userspace.rs",
+]
 
 [[cargo]]
 package = "tilo-app-cli"

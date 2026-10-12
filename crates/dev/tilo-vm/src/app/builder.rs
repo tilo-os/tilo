@@ -182,7 +182,28 @@ impl App {
         component: &Component,
         builder: &[String],
     ) -> Result<String, CliError> {
-        self.build_layer_remote_cached(remote, vm, component, builder, true)
+        let worktree = self.worktree.clone().ok_or(CliError::NotInWorktree)?;
+        self.runner.cwd = Some(worktree.root.clone());
+        let metadata = self.cargo_metadata()?;
+        let extra = build::dev_features(&metadata, &component.packages);
+        let inputs = crate::source_inputs::Snapshot::create(&worktree, &component.name)?;
+        self.build_layer_remote_cached(remote, vm, component, builder, &inputs, &extra, true)
+            .map(|member| member.layer)
+    }
+
+    pub(super) fn build_layer_remote_inventory(
+        &mut self,
+        remote: &mut Remote,
+        vm: &Resolved,
+        component: &Component,
+        builder: &[String],
+        inputs: &crate::source_inputs::Snapshot,
+    ) -> Result<tilo_vm_protocol::UserspaceMember, CliError> {
+        let worktree = self.worktree.clone().ok_or(CliError::NotInWorktree)?;
+        self.runner.cwd = Some(worktree.root);
+        let metadata = self.cargo_metadata()?;
+        let extra = build::dev_features(&metadata, &component.packages);
+        self.build_layer_remote_cached(remote, vm, component, builder, inputs, &extra, true)
     }
 
     fn build_layer_remote_cached(
@@ -191,14 +212,14 @@ impl App {
         vm: &Resolved,
         component: &Component,
         builder: &[String],
+        inputs: &crate::source_inputs::Snapshot,
+        extra: &[String],
         reuse: bool,
-    ) -> Result<String, CliError> {
+    ) -> Result<tilo_vm_protocol::UserspaceMember, CliError> {
         let worktree = self.worktree.clone().ok_or(CliError::NotInWorktree)?;
-        self.runner.cwd = Some(worktree.root.clone());
-        let metadata = self.cargo_metadata()?;
-        let extra = build::dev_features(&metadata, &component.packages);
-        let mut provenance = build::source_provenance(&worktree, &component.name, "remote");
-        let inputs = crate::source_inputs::Snapshot::create(&worktree, &component.name)?;
+        let mut provenance = inputs.provenance.clone();
+        provenance.component.clone_from(&component.name);
+        inputs.unchanged(&worktree.root)?;
         let inventory = inputs
             .file
             .path()
@@ -210,7 +231,7 @@ impl App {
         } else {
             Vec::new()
         };
-        let mut line = builderlayer::remote_command(builder, component, &extra)
+        let mut line = builderlayer::remote_command(builder, component, extra)
             .arg("--source-inventory")
             .arg(inventory.display().to_string());
         for hash in &cached {
@@ -258,28 +279,30 @@ impl App {
         drop(stream);
         let delivered = delivered?;
         builder_succeeded(&mut child, &line)?;
+        inputs.unchanged(&worktree.root)?;
+        provenance.cargo_profile = Some(component.profile.clone());
+        provenance.features = component.build_features(extra);
+        provenance.target.clone_from(&packed.target);
+        provenance.toolchain.clone_from(&packed.toolchain);
         let upload = match delivered {
             Delivery::Reused(hash) => {
                 self.receipt.set("upload", "skipped");
                 self.receipt.set("layer_reused", &hash);
-                return Ok(hash);
+                return Ok(userspace_member(component, hash, provenance, inputs));
             }
             Delivery::Invalidated => {
                 self.receipt.set("remote_cache", "invalidated");
-                drop(inputs);
-                return self.build_layer_remote_cached(remote, vm, component, builder, false);
+                return self.build_layer_remote_cached(
+                    remote, vm, component, builder, inputs, extra, false,
+                );
             }
             Delivery::Uploaded(upload) => upload,
         };
         let expected_hash = packed.layer_hash.clone();
-        provenance.cargo_profile = Some(component.profile.clone());
-        provenance.features = component.build_features(&extra);
-        provenance.target = packed.target;
-        provenance.toolchain = packed.toolchain;
         let imported = self.receipt.phase("import", || {
             remote.call(LayerImport {
                 source: LayerSource::Upload(upload),
-                provenance: Box::new(provenance),
+                provenance: Box::new(provenance.clone()),
             })
         })?;
         if expected_hash
@@ -290,7 +313,12 @@ impl App {
                 "imported layer content differs from the remote assembler".into(),
             ));
         }
-        Ok(imported.hash)
+        Ok(userspace_member(
+            component,
+            imported.hash,
+            provenance,
+            inputs,
+        ))
     }
 
     /// Build a native app on the configured architecture's builder, then use
@@ -364,6 +392,20 @@ impl App {
                 "no remote builder for {arch} is configured; add `[remote_builders]` with `{arch} = [\"<a cargo drop-in whose run runs on an {arch} machine>\", ...]` (tilo-vm guide swapping)"
             ),
         }
+    }
+}
+
+fn userspace_member(
+    component: &Component,
+    layer: String,
+    build: tilo_vm_protocol::Provenance,
+    inputs: &crate::source_inputs::Snapshot,
+) -> tilo_vm_protocol::UserspaceMember {
+    tilo_vm_protocol::UserspaceMember {
+        component: component.name.clone(),
+        layer,
+        build,
+        source_inventory: inputs.digest.clone(),
     }
 }
 

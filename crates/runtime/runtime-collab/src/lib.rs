@@ -388,6 +388,11 @@ pub enum PortableWifiSecurity {
 #[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "command", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum WifiContinuityCommand {
+    /// Local wake configuration, never shared as a credential or fleet state.
+    NetworkWake {
+        profile_uuid: String,
+        enabled: Option<bool>,
+    },
     Lookup {
         ssid: String,
         security: PortableWifiSecurity,
@@ -406,6 +411,14 @@ pub enum WifiContinuityCommand {
 impl std::fmt::Debug for WifiContinuityCommand {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::NetworkWake {
+                profile_uuid,
+                enabled,
+            } => formatter
+                .debug_struct("NetworkWake")
+                .field("profile_uuid", profile_uuid)
+                .field("enabled", enabled)
+                .finish(),
             Self::Lookup { ssid, security } => formatter
                 .debug_struct("Lookup")
                 .field("ssid", ssid)
@@ -428,6 +441,7 @@ impl std::fmt::Debug for WifiContinuityCommand {
 #[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "result", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum WifiContinuityReply {
+    NetworkWake { status: NetworkWakeStatus },
     Password { password: String },
     NotFound,
     Shared { ssid: String },
@@ -437,6 +451,10 @@ pub enum WifiContinuityReply {
 impl std::fmt::Debug for WifiContinuityReply {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::NetworkWake { status } => formatter
+                .debug_struct("NetworkWake")
+                .field("status", status)
+                .finish(),
             Self::Password { .. } => formatter
                 .debug_struct("Password")
                 .field("password", &"<redacted>")
@@ -464,7 +482,9 @@ impl WifiContinuityCommand {
                     && !password.is_empty()
                     && password.len() <= MAX_WIFI_PASSWORD_BYTES
             }
-            Self::ShareSavedProfile { profile_uuid } => valid_uuid(profile_uuid),
+            Self::NetworkWake { profile_uuid, .. } | Self::ShareSavedProfile { profile_uuid } => {
+                valid_uuid(profile_uuid)
+            }
         }
     }
 }
@@ -472,6 +492,7 @@ impl WifiContinuityCommand {
 impl WifiContinuityReply {
     pub fn valid(&self) -> bool {
         match self {
+            Self::NetworkWake { status } => status.valid(),
             Self::Password { password } => {
                 !password.is_empty() && password.len() <= MAX_WIFI_PASSWORD_BYTES
             }
@@ -479,6 +500,36 @@ impl WifiContinuityReply {
             Self::Shared { ssid } => !ssid.is_empty() && ssid.len() <= MAX_WIFI_SSID_BYTES,
             Self::Rejected { reason } => !reason.is_empty() && reason.len() <= 512,
         }
+    }
+}
+
+/// Bounded local observations; no field claims verified physical recovery.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NetworkWakeStatus {
+    pub profile: String,
+    pub interface: Option<String>,
+    pub configured: bool,
+    pub supported: Option<bool>,
+    pub applied: Option<bool>,
+    pub problem: Option<String>,
+}
+
+impl NetworkWakeStatus {
+    fn valid(&self) -> bool {
+        valid_uuid(&self.profile)
+            && self.interface.as_ref().is_none_or(|name| {
+                !name.is_empty()
+                    && name.len() <= 15
+                    && !name.starts_with('-')
+                    && name
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
+            })
+            && self
+                .problem
+                .as_ref()
+                .is_none_or(|problem| !problem.is_empty() && problem.len() <= 512)
     }
 }
 
@@ -2888,6 +2939,27 @@ pub struct ChannelContext {
     /// instance; the bytes are `ui::collaboration::handoff` JSON. Not a
     /// roster update either.
     pub handoff: Option<Vec<u8>>,
+    /// `Some` only on a session-local frame naming the room's verified
+    /// delegated agents (possibly none). Not a roster update either.
+    pub history_agents: Option<Vec<HistoryAgent>>,
+}
+
+/// One delegated agent the session verified for a room: its person's root
+/// signed the delegation for exactly this device. Presentation only.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HistoryAgent {
+    /// The agent's own device key.
+    pub device: [u8; 32],
+    /// The root key of the person it acts for.
+    pub person: [u8; 32],
+    /// That person's name as the room's governance records it.
+    pub person_name: String,
+    /// The delegation's stable agent id.
+    pub agent_id: String,
+    /// The agent's display name.
+    pub label: String,
+    /// Packed `0x00RRGGBB`, like [`Collaborator::color`].
+    pub color: u32,
 }
 
 /// Client-pulled channel-context stream.
@@ -2956,14 +3028,49 @@ impl ContextStream {
             .ok()
             .filter(|bytes| !bytes.is_empty())
             .map(<[u8]>::to_vec);
+        let history_agents = if ctx.get_history_agents_changed() {
+            Some(read_history_agents(ctx.get_history_agents()?)?)
+        } else {
+            None
+        };
         Ok(ChannelContext {
             collaborators,
             permissions,
             follow_changed,
             snapshot_requested: ctx.get_snapshot_requested(),
             handoff,
+            history_agents,
         })
     }
+}
+
+/// Decode a `historyAgents` list. A row whose keys are not 32 bytes, or
+/// whose text is not UTF-8, refuses the frame: the session never sends one.
+#[cfg(feature = "client")]
+fn read_history_agents(
+    rows: capnp::struct_list::Reader<'_, collab_capnp::history_agent::Owned>,
+) -> Result<Vec<HistoryAgent>, capnp::Error> {
+    let key = |bytes: &[u8], what: &str| {
+        <[u8; 32]>::try_from(bytes)
+            .map_err(|_| capnp::Error::failed(format!("history agent {what} is not 32 bytes")))
+    };
+    let text = |text: capnp::text::Reader<'_>, what: &str| {
+        text.to_str()
+            .map(str::to_owned)
+            .map_err(|e| capnp::Error::failed(format!("invalid utf8 history agent {what}: {e}")))
+    };
+    rows.iter()
+        .map(|row| {
+            Ok(HistoryAgent {
+                device: key(row.get_device()?, "device")?,
+                person: key(row.get_person()?, "person")?,
+                person_name: text(row.get_person_name()?, "person name")?,
+                agent_id: text(row.get_agent_id()?, "id")?,
+                label: text(row.get_label()?, "label")?,
+                color: row.get_color(),
+            })
+        })
+        .collect()
 }
 
 /// A page of previously-validated signed ops returned by
