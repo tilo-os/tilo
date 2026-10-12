@@ -610,9 +610,8 @@ impl ContentStore {
             }
         };
         let hash = temporary.hash();
-        let size = match self.store().blobs().status(hash).await? {
-            BlobStatus::Complete { size } => size,
-            _ => anyhow::bail!("streamed blob {hash} is not complete after its import"),
+        let BlobStatus::Complete { size } = self.store().blobs().status(hash).await? else {
+            anyhow::bail!("streamed blob {hash} is not complete after its import");
         };
         let _mutation = self.mutation.lock().await;
         let _owned_tags = self.owned_tags.lock().await;
