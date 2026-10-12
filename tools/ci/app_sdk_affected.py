@@ -100,7 +100,7 @@ def audited_unit_module_only(root: Path, path: str, packages: dict, by_dir: dict
                 return False
             roots = [directory / "src", directory / "examples"]
             if package["name"] in SDK_PACKAGES:
-                roots.append(directory / "tests")
+                roots.extend([directory / "tests", directory / "templates"])
             sources = set()
             for source_root in roots:
                 if source_root.is_symlink() or any(
