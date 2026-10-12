@@ -136,6 +136,11 @@ struct Slot {
     values: BTreeMap<String, Vec<u8>>,
     /// MIME types exposed to Wayland clients when Tilo owns the selection.
     mime_types: Vec<String>,
+    /// The formats the client source actually offered and Tilo pulls, without
+    /// the text aliases added to `mime_types`. A take-over waits for each of
+    /// these to finish transferring; an alias resolving to already-arrived
+    /// text must not count as a finished transfer of its own.
+    pulled: Vec<String>,
     /// Bumped whenever the selection changes hands, so an old asynchronous
     /// client transfer cannot overwrite a newer selection.
     generation: u64,
@@ -779,6 +784,13 @@ pub fn begin_client_selection(
     let slot = store.slot_mut(target);
     wipe_if_secret(slot);
     slot.values.clear();
+    slot.pulled = mimes
+        .iter()
+        .flatten()
+        .filter(|mime| valid_mime(mime) && !is_x11_meta_target(mime))
+        .take(MAX_SELECTION_MIMES)
+        .cloned()
+        .collect();
     slot.mime_types = mimes.map_or_else(Vec::new, normalized_mimes);
     slot.generation = slot.generation.wrapping_add(1).max(1);
     bump_revision(slot, &watchers, clipboard);
@@ -866,22 +878,25 @@ pub fn adopt_complete_client_selection(store: &SharedSelection, now_ms: u64) -> 
     if slot.compositor_owned || slot.generation == 0 {
         return false;
     }
-    // Every offered format must have finished transferring (an entry exists,
-    // even an empty one), or the source is still the only holder of it. X11
-    // meta targets carry no content and are not waited for.
+    // Every pulled format must have finished transferring (an entry exists,
+    // even an empty one), or the source is still the only holder of it. A
+    // take-over while a pull is in flight would make Xwayland's bridge own the
+    // selection it is still reading from, which then answers itself with
+    // nothing.
+    let formats: Vec<String> = slot.pulled.clone();
+    if formats.is_empty()
+        || !formats
+            .iter()
+            .all(|mime| slot.values.contains_key(mime.as_str()))
+    {
+        return false;
+    }
     let formats: Vec<String> = slot
         .mime_types
         .iter()
         .filter(|mime| !is_x11_meta_target(mime))
         .cloned()
         .collect();
-    let finished = |mime: &String| {
-        slot.values.contains_key(mime.as_str())
-            || (is_text_mime(mime) && text_value(slot).is_some())
-    };
-    if formats.is_empty() || !formats.iter().all(finished) {
-        return false;
-    }
     // Keep the formats that returned bytes. Chromium and Electron also offer
     // internal formats (a source-frame token, an empty `text/html`) that read
     // back empty, and X11 sources offer meta targets; none of those may stop
@@ -1493,6 +1508,11 @@ impl State {
     /// Answer a `receive` on a compositor-owned selection out of the mirror.
     fn serve_selection(&self, target: Target, mime_type: &str, fd: OwnedFd) {
         let Some(bytes) = mirror_bytes(&self.selection.store, target, mime_type) else {
+            tracing::info!(
+                target: "shell::selection",
+                ?target, mime = mime_type,
+                "selection request answered with nothing: the mirror holds no bytes for that format"
+            );
             return;
         };
         write_to_pipe(fd, bytes, "selection");
@@ -1604,6 +1624,12 @@ impl SelectionHandler for State {
         _user_data: &(),
     ) {
         let target = Target::from(ty);
+        tracing::debug!(
+            target: "shell::selection",
+            ?target, mime = %mime_type,
+            compositor_owned = compositor_owns(&self.selection.store, target),
+            "a client asked for the selection's bytes"
+        );
         if !compositor_owns(&self.selection.store, target) {
             // Only routes here for compositor-owned selections; a mismatch means the
             // mirror and seat disagree — answer with nothing rather than stale content.
