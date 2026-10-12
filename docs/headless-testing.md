@@ -583,6 +583,29 @@ vm-acceptance R01 records the same report (`memory.shell_parts_mib.*`). The
 test then reads `/proc/<pid>/smaps` beside it for RSS, PSS and private dirty
 pages per mapping, which CI's kernel has.
 
+### Correlating app startup attempts
+
+The compositor's `tilo::launch_latency` events carry `launch_id` and
+`launch_generation`. The generation is a diagnostic timestamp fixed at that
+process's first launch observation; it changes on a compositor restart and is
+not a VM layer generation or an authority token. Group events by both fields,
+not by app name: several windows can launch the same app concurrently.
+
+With `tilo::launch_latency=info` enabled in the session's existing `RUST_LOG`
+filter, each attempt reports request, spawn, map, first presented frame, or
+retirement with its elapsed time and whether it spawned or mapped. Retirement
+can be placement cleanup and does not establish a process failure. The always
+recorded `app-spawn:` and `app-exit:` lines carry the same pair plus the launcher
+PID; `launch_id=None` explicitly means there was no staged window timing record.
+Existing `[app ... stderr] APP-STARTUP` and GPU lines retain their format.
+
+Use the launcher PID and generation to relate these events to kernel-attested
+process-binding diagnostics, then confirm the exit status and direct process
+output. Flight-recorder replay time and a saved timeout card do not establish
+the timestamp or cause of a fresh failed launch. This telemetry records no
+document, workspace, credential or grant contents and changes no startup or
+authentication deadlines.
+
 ## Where to look in source
 
 | What | Where |

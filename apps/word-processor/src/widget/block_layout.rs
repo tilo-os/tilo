@@ -72,14 +72,8 @@ pub(super) fn style_align(value: &str) -> TextAlign {
 }
 
 pub(super) fn style_key(block: &BlockView) -> String {
-    let level = match block.attrs.get("level") {
-        Some(AttrVal::Int(value)) => Some(*value),
-        _ => None,
-    };
-    let explicit = match block.attrs.get("style") {
-        Some(AttrVal::Str(value)) => Some(value.as_str()),
-        _ => None,
-    };
+    let level = block.int_attr("level");
+    let explicit = block.str_attr("style");
     crate::styles::style_key_for(&block.kind, level, explicit)
 }
 
@@ -103,10 +97,7 @@ pub(super) fn bullet_glyph(level: usize) -> &'static str {
 }
 
 pub(super) fn cell_table(block: &BlockView) -> Option<String> {
-    match block.attrs.get("table") {
-        Some(AttrVal::Str(value)) => Some(value.clone()),
-        _ => None,
-    }
+    block.str_attr("table").map(str::to_owned)
 }
 
 pub(super) fn cell_rc(block: &BlockView) -> (usize, usize) {

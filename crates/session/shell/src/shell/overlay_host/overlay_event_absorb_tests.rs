@@ -18,6 +18,8 @@ use winit::dpi::PhysicalPosition;
 use winit::event::{ElementState, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
+#[path = "notification_header_tests.rs"]
+mod notification_header_tests;
 #[path = "overlay_event_absorb_tests/picker_scroll_tests.rs"]
 mod picker_scroll_tests;
 

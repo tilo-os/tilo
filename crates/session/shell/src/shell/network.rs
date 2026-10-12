@@ -9088,16 +9088,20 @@ mod tests {
             "neither a direct path nor a relay"
         );
 
-        // A relay for another workspace, or one that is the target itself,
-        // offers no path to this target.
+        // A relay for another workspace, or one that is either end of the
+        // session, offers no path to this target.
         net.workspace_control_relays
             .lock()
             .expect("relay routes")
-            .extend([(DEFAULT_WS_TOPIC ^ 1, relay), (DEFAULT_WS_TOPIC, target)]);
+            .extend([
+                (DEFAULT_WS_TOPIC ^ 1, relay),
+                (DEFAULT_WS_TOPIC, target),
+                (DEFAULT_WS_TOPIC, net.local_peer_id),
+            ]);
         assert_eq!(
             open().as_deref(),
             Some("no authenticated direct workspace-control path is online"),
-            "only foreign-workspace and target relays"
+            "only foreign-workspace, target and client relays"
         );
 
         net.workspace_control_relays

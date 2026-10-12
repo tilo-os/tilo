@@ -1840,11 +1840,7 @@ fn apply_split_block(
 
 fn apply_generate_toc(dm: &mut DocMut, entries: &[TocTarget]) {
     let snapshot = tilo_doc::model::materialize(dm.doc, dm.c);
-    for block in snapshot
-        .blocks
-        .iter()
-        .filter(|block| matches!(block.attrs.get("toc"), Some(tilo_doc::AttrVal::Bool(true))))
-    {
+    for block in snapshot.blocks.iter().filter(|block| block.flag("toc")) {
         dm.tombstone_block_in(Region::Body, &block.id);
     }
     let mut previous = None;
