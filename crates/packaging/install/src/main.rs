@@ -1182,7 +1182,11 @@ fn install_runtime_package(
     let result = stage_runtime_bundle(candidate, &staging, payload).and_then(|tree| {
         let manifest = check_runtime_bundle(&tree, version)?;
         seal_runtime_bundle(&tree, &manifest);
-        if existing.is_some() && !already_installed && options.replacement == Replacement::Refuse {
+        if dest.exists()
+            && existing.is_some()
+            && !already_installed
+            && options.replacement == Replacement::Refuse
+        {
             return Err(Error::AlreadyInstalled(checked.id().to_string()));
         }
         // Publish the verified signed package through the same catalogue and
