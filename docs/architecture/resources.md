@@ -420,6 +420,17 @@ Each committed action records a structured entry on its change:
 Agents, scripts, logs and Shortcuts read entries as data. No finished sentence
 is stored.
 
+The entry travels in its change's message as `tilo.entry/3 ` followed by the
+entry in a compact form (`tilo_actions::compact`): one-byte tags instead of
+JSON punctuation, the keys and values every entry uses (`did`, `field-edit`,
+`path`, …) as two-byte words, a string repeated within the entry as a
+back-reference, UUIDs and gestures as 22 digits, numbers six bits a byte. It
+stays UTF-8, decodes to exactly the entry that was written, and writing that
+again gives the same bytes, so a device replaying the action writes the same
+change. A keystroke that continues its gesture writes only what differs
+(`tilo.cont/1 <gesture> <path> <payload>`); readers fold it into the
+gesture's first entry.
+
 ### 5.2 Sentences are rendered by the reader
 
 The history view renders each entry in the reader's language from the app's
@@ -451,9 +462,10 @@ actions that queued an outside consequence undo through their inverse action.
 
 - **The public surface is committed.** `tilo-app surface` writes the app's
   verbs, their parameters, its field schema and its kinds to `surface.toml` in
-  the app crate; `tilo-app check` and CI fail when code and file disagree. A
+  the app crate (ids, footprints, paths, layouts and types, one line per
+  field; labels and descriptions stay in the code); `tilo-app check` and CI fail when code and file disagree. A
   rename is allowed and shows up in review. The packaged surface is also what
-  the OS knows about a closed app.
+  a receiver without the app decides its changes against.
 - **Storage changes are migrations.** `#[resource(version = N, migrate = path)]`
   declares the current schema version; `migrate` converts a document from any
   older version, reading old shapes with the model helpers. It runs once, as a
