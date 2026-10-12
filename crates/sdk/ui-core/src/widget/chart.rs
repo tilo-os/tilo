@@ -522,14 +522,6 @@ impl Chart {
         self
     }
 
-    pub fn style(&self) -> &ChartStyle {
-        &self.style
-    }
-
-    pub fn style_mut(&mut self) -> &mut ChartStyle {
-        &mut self.style
-    }
-
     /// Immediate-mode draw: render a full chart into `scene` at `rect`,
     /// reading colours from `theme`. Lets a host that lays out its own
     /// dashboard cards paint a chart at a known rect without a widget.
@@ -865,14 +857,6 @@ impl Sparkline {
     pub fn with_style(mut self, style: TrendStyle) -> Self {
         self.style = style;
         self
-    }
-
-    pub fn style(&self) -> &TrendStyle {
-        &self.style
-    }
-
-    pub fn style_mut(&mut self) -> &mut TrendStyle {
-        &mut self.style
     }
 
     /// Immediate-mode draw of a sparkline into `scene` at `rect`.

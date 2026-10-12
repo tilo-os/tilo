@@ -451,6 +451,11 @@ pub enum CollabRequest {
         resource: String,
         action: String,
         arguments: serde_json::Map<String, serde_json::Value>,
+        /// On a re-ask of a native task's own child: let the broker hold
+        /// the answer until the child moves on (see
+        /// [`runtime_collab::TaskChildWait`]). The connection's other
+        /// requests do not wait behind it.
+        wait: Option<runtime_collab::TaskChildWait>,
     },
     /// Poll the native Task Center's cooperative cancellation bit for a
     /// lease. It cannot cancel a task and carries no task state itself.

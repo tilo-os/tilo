@@ -24,6 +24,8 @@
 //!   it acts on another record than every step still running
 //!   ([`Session::start_independent`]); everything else waits for them first,
 //!   so a step that reads what an earlier one wrote stays after it;
+//! * a native task's running steps are followed by re-asks their host holds
+//!   until a step moves on ([`Session::follow_native`]), not on a timer;
 //! * the catalogue survey is rebuilt only when the broker republishes it.
 //!
 //! Every bound is enforced here, not asked for: model turns, wall-clock time
@@ -594,6 +596,14 @@ impl Session {
         self.turn = Some(turn);
     }
 
+    /// Whether the model is still writing the turn in flight, so a wait
+    /// should keep it moving.
+    pub(super) fn turn_streaming(&self) -> bool {
+        self.turn
+            .as_ref()
+            .is_some_and(|turn| turn.finished.is_none())
+    }
+
     /// Wait up to `wait` for the turn's next event, then drain the rest.
     fn pump_turn_waiting(&mut self, wait: Duration) {
         let Some(mut turn) = self.turn.take() else {
@@ -883,7 +893,12 @@ impl Session {
                 .as_ref()
                 .is_some_and(|state| state.pending.is_some())
             {
+                // New directions take the next turn. Steps already running
+                // settle first, as a step in progress always has.
                 self.turn = None;
+                if let Some(message) = self.drain_in_flight(run, state, &mut failed)? {
+                    return Ok(Some(LoopEnd::Cancelled(message)));
+                }
                 return Ok(None);
             }
             self.poll_cancellation_every(run, THINKING_CANCELLATION_POLL)?;
@@ -1446,17 +1461,17 @@ impl Session {
     /// on its own) and followed with the others when the turn needs their
     /// results.
     ///
-    /// Only a plain legacy invocation qualifies, on a record no running step
-    /// acts on: an open, a view change (both change what is published next),
-    /// a step taking the previous step's result and native tasks all run in
-    /// order.
+    /// Only a plain invocation qualifies — a Task Center action or a native
+    /// task's child — on a record no running step acts on: an open, a view
+    /// change (both change what is published next) and a step taking the
+    /// previous step's result all run in order.
     fn start_independent(
         &mut self,
         run: &runtime_collab::TaskRunEnvelope,
         state: &mut LoopState,
         call: &StreamedCall,
     ) -> Result<Started> {
-        if self.native_task.is_some() || state.in_flight.len() >= MAX_IN_FLIGHT {
+        if state.in_flight.len() >= MAX_IN_FLIGHT {
             return Ok(Started::InOrder);
         }
         let prepared = match self.prepare_invoke(run, state, &call.input) {
@@ -2085,6 +2100,13 @@ mod tests {
         >,
         /// Invocations the agent asked the host to cancel.
         cancelled: Vec<tilo_actions::InvocationId>,
+        /// Re-asks of a started native child (observations), and how many
+        /// of them were answered with nothing new.
+        observations: usize,
+        idle_observations: usize,
+        /// The host answers a re-ask at once even when it asks to be held,
+        /// as a host from before held re-asks does.
+        answers_reasks_at_once: bool,
     }
 
     /// How the desktop's open of Writer behaves in the fixture world.
@@ -2380,8 +2402,37 @@ mod tests {
         events: Vec<CollabEvent>,
         /// Host answers not delivered yet, with when they are due.
         held: Vec<(ui::time::Instant, CollabEvent)>,
+        /// Re-asks the host holds: request id, child, what the agent had
+        /// seen, and when the hold ends.
+        holding: Vec<HeldReask>,
         /// A catalogue still on its way, and the polls until it arrives.
         late: Option<(usize, CollabEvent)>,
+    }
+
+    /// A native re-ask the fake host holds until its child moves on.
+    struct HeldReask {
+        request_id: u64,
+        invocation: tilo_actions::InvocationId,
+        seen: tilo_actions::remote::UpdateMark,
+        until: ui::time::Instant,
+    }
+
+    /// The host reading a native run as cancelled cancels every child of it
+    /// still running (`cancel_native_children`).
+    fn cancel_native_children(world: &mut World) {
+        let now = ui::time::now();
+        let mut stopped = Vec::new();
+        for (invocation, (due, terminal)) in &mut world.settling {
+            if *due > now {
+                *due = now;
+                *terminal = tilo_actions::InvocationUpdate::Cancelled {
+                    invocation: *invocation,
+                    message: Some("Cancelled from Task Center".into()),
+                };
+                stopped.push(*invocation);
+            }
+        }
+        world.cancelled.extend(stopped);
     }
 
     impl Broker {
@@ -2408,6 +2459,9 @@ mod tests {
                         .retain(|direction| direction.revision > revision);
                     control
                 });
+                if cancelled && world.native_control.is_some() {
+                    cancel_native_children(&mut world);
+                }
                 (cancelled, world.cancel_delay, control)
             };
             if let Some(control) = control {
@@ -2441,6 +2495,7 @@ mod tests {
                 .host_answers
                 .fetch_add(due.len(), std::sync::atomic::Ordering::SeqCst);
             self.events.extend(due.into_iter().map(|(_, event)| event));
+            self.answer_held_reasks(now);
             if let Some((polls, event)) = self.late.take() {
                 if polls == 0 {
                     self.events.push(event);
@@ -2451,6 +2506,10 @@ mod tests {
             std::mem::take(&mut self.events)
         }
         fn send(&mut self, request: CollabRequest) -> Result<(), String> {
+            if self.observe_child(&request) {
+                self.sent.borrow_mut().push(request);
+                return Ok(());
+            }
             match &request {
                 CollabRequest::InvokeTaskAction {
                     request_id,
@@ -2537,6 +2596,107 @@ mod tests {
     }
 
     impl Broker {
+        /// The state of a started child as the host holds it now.
+        fn child_state(
+            &self,
+            invocation: tilo_actions::InvocationId,
+        ) -> tilo_actions::InvocationUpdate {
+            let world = self.world.borrow();
+            match world.settling.get(&invocation) {
+                Some((due, terminal)) if *due <= ui::time::now() => terminal.clone(),
+                _ => tilo_actions::InvocationUpdate::Accepted { invocation },
+            }
+        }
+
+        /// Answer a native task's re-ask of a started child (by its stable
+        /// id) with the child's state, as `native_task_observation` does: at
+        /// once, or — when the re-ask asks to be held — once the child moves
+        /// past what the agent saw, the run is cancelled, or the hold ends.
+        /// `false` for any other request.
+        fn observe_child(&mut self, request: &CollabRequest) -> bool {
+            let &CollabRequest::InvokeTaskAction {
+                request_id,
+                invocation,
+                wait,
+                ..
+            } = request
+            else {
+                return false;
+            };
+            if !self.world.borrow().settling.contains_key(&invocation) {
+                return false;
+            }
+            let update = self.child_state(invocation);
+            let held = wait.filter(|wait| {
+                !self.world.borrow().answers_reasks_at_once
+                    && !update.is_terminal()
+                    && tilo_actions::remote::UpdateMark::of(&update) == wait.seen
+            });
+            match held {
+                Some(wait) => self.holding.push(HeldReask {
+                    request_id,
+                    invocation,
+                    seen: wait.seen,
+                    until: ui::time::now() + Duration::from_millis(u64::from(wait.wait_ms)),
+                }),
+                None => self.answer_reask(request_id, invocation, wait.map(|wait| wait.seen)),
+            }
+            true
+        }
+
+        /// Answer the re-ask `request_id` with the child's state now.
+        fn answer_reask(
+            &mut self,
+            request_id: u64,
+            invocation: tilo_actions::InvocationId,
+            seen: Option<tilo_actions::remote::UpdateMark>,
+        ) {
+            let update = self.child_state(invocation);
+            {
+                let mut world = self.world.borrow_mut();
+                world.observations += 1;
+                let news = update.is_terminal()
+                    || seen
+                        .is_some_and(|seen| tilo_actions::remote::UpdateMark::of(&update) != seen);
+                if !news {
+                    world.idle_observations += 1;
+                }
+            }
+            self.events.push(CollabEvent::TaskActionInvocationResult {
+                request_id,
+                result: Ok((0, update)),
+            });
+        }
+
+        /// Answer every held re-ask whose child moved on or whose hold
+        /// ended; first sample the run's cancellation, as the host does
+        /// while it holds re-asks.
+        fn answer_held_reasks(&mut self, now: ui::time::Instant) {
+            if self.holding.is_empty() {
+                return;
+            }
+            {
+                let mut world = self.world.borrow_mut();
+                if world
+                    .cancel_after_steps
+                    .is_some_and(|steps| world.steps.len() >= steps)
+                {
+                    cancel_native_children(&mut world);
+                }
+            }
+            for held in std::mem::take(&mut self.holding) {
+                let update = self.child_state(held.invocation);
+                if update.is_terminal()
+                    || tilo_actions::remote::UpdateMark::of(&update) != held.seen
+                    || now >= held.until
+                {
+                    self.answer_reask(held.request_id, held.invocation, Some(held.seen));
+                } else {
+                    self.holding.push(held);
+                }
+            }
+        }
+
         /// Answer an observation of, or a request to cancel, a legacy
         /// invocation, as the action host does.
         fn answer_remote(&mut self, message: &RemoteActionMessage) {
@@ -2629,6 +2789,10 @@ mod tests {
                 request_id,
                 result: Ok((0, tilo_actions::InvocationUpdate::Accepted { invocation })),
             });
+            if self.world.borrow().native_control.is_some() {
+                // A native child is observed by re-asking, never pushed.
+                return;
+            }
             self.answer(
                 due.saturating_duration_since(now),
                 CollabEvent::RemoteAction {
@@ -2696,6 +2860,7 @@ mod tests {
             events: Vec::new(),
             held: Vec::new(),
             late: None,
+            holding: Vec::new(),
         });
         let mut run = runtime_collab::TaskRunEnvelope {
             version: 1,
@@ -2785,6 +2950,8 @@ mod tests {
             serde_json::json!({"reply": reply, "done": done}),
         )
     }
+
+    mod native_pipeline;
 
     fn native_fixture(latest: u64) -> Fixture {
         let control = runtime_collab::TaskRunControl {
