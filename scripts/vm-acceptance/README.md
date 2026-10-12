@@ -81,9 +81,23 @@ fails unless every requested swap is the layer its slot runs; the report's heade
 the swaps. A base more than 20 commits behind `ref` gets a warning at the top of the
 summary: everything not swapped is the base's code.
 
-For a composed ref containing `tilo-vm swap-artifact`, integration can opt into
-`prebuilt_cohort=true` when dispatching an `apps+runtime` swap. The existing native
-CI identity builds full signed layers with the maintained packer, including
+A change to the shared app runtime (anything in the `apps+runtime` assembly: `ui-core`,
+`tilo-app`, the platform crates every app links) is tested from its branch with
+`prebuilt_cohort=true` and `swap=apps+runtime`; a standalone `app:<dir>` swap is refused
+because an app needs the exact runtime it was built with, and the host builder does not
+assemble the paired cohort:
+
+```sh
+fgj --hostname code.tilo.so actions workflow run vm-acceptance.yml -R tilo/tilo -r main \
+  -f ref=<branch> -f swap=apps+runtime -f prebuilt_cohort=true -f only=P01,A15
+```
+
+`-r` picks the workflow, the checks and the artifact consumer (main, or a branch that
+changes them); `ref` is the code under test. P01 then reads `+ launcher, install, shell,
+apps+runtime swapped from <branch>`, and each swap entry names the consumer that
+installed it. The ref's own `tilo-vm` packs the layers, so it needs `layer-pack`.
+
+The existing native CI identity builds full signed layers with the maintained packer, including
 matching launcher, install and shell prerequisites. Pinned same-run artifact
 actions transfer only layers, inventories and the v1 manifest. Its expected SHA256
 comes from the producer step output; the consumer checks source, immutable builder,
@@ -92,7 +106,7 @@ creation. The CLI verifies and imports through the normal signed cohort path.
 The acceptance user needs no remote builder credentials. Any artifact error fails
 without a build fallback; slot readback and P01 still describe installed layers.
 The default workflow and local host/remote swap behavior remain available when
-artifact mode is absent. Only integration dispatches the qualification run.
+artifact mode is absent.
 
 The VM is a libvirt session VM, the way `tilo-vm` runs on a laptop: the job installs
 libvirt's QEMU driver, passt, OVMF and Pillow (pixel checks), and runs `run.py` as an
