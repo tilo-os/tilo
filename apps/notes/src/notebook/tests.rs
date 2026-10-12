@@ -552,9 +552,29 @@ fn the_notebook_publishes_notes_as_items_and_reads_as_its_content() {
     let whole = Notebook::read_content(&state, notebook.doc(), None).unwrap();
     assert_eq!(whole["pages"][0]["title"], "Alpha");
     assert_eq!(whole["pages"][0]["item"], item);
+    // A note reads as Markdown, one line per block, each ending in the id
+    // its body's block actions take.
     let one = Notebook::read_content(&state, notebook.doc(), Some(&item)).unwrap();
-    assert_eq!(one["text"], "First line\nSecond line");
-    assert_eq!(one["blocks"][1]["text"], "Second line");
+    let lines: Vec<(&str, &str)> = one["markdown"]
+        .as_str()
+        .expect("the body as Markdown")
+        .lines()
+        .map(|line| line.rsplit_once(" ^").expect("a block id on every line"))
+        .collect();
+    let texts: Vec<&str> = lines.iter().map(|(text, _)| *text).collect();
+    assert_eq!(texts, ["First line", "Second line"], "{one}");
+    assert_eq!(one["blocks"], 2, "{one}");
+    let (second, second_id) = lines[1];
+    assert_eq!(second, "Second line");
+    assert!(!second_id.is_empty() && second_id != lines[0].1, "{one}");
+    // Its body is the rich-text resource published beneath the note, read as
+    // the same lines.
+    let body = crate::actions::body_resource_id(uuid(&a));
+    assert_eq!(one["body"], body.as_str());
+    let published_body = Notebook::child(&state, &body).expect("the body is published");
+    assert_eq!(published_body.kind, "tilo.rich-text");
+    let read_body = Notebook::read_content(&state, notebook.doc(), Some(&body)).unwrap();
+    assert_eq!(read_body["markdown"], one["markdown"]);
     assert!(
         Notebook::read_content(&state, notebook.doc(), Some("notes.notebook/pages/gone")).is_err()
     );

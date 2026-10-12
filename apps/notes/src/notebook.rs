@@ -65,8 +65,11 @@ pub struct Page {
     /// Body
     ///
     /// Read whole: a note is short, and search, links and copies read every
-    /// word of it.
+    /// word of it. Published as a rich-text resource of its own beneath the
+    /// note (`notes.notebook/pages/<page>/body`), whose block actions apply
+    /// as field edits of this field.
     #[model(whole)]
+    #[model(resource)]
     pub body: RichText,
     /// Tags
     pub tags: Set<Id>,
@@ -753,7 +756,8 @@ impl Notebook {
 
     /// One note, or the notebook, as a reader reads it: the notebook as its
     /// notes and tags; a note (by its id) as its title and blocks, each with
-    /// the id edits of its body name it by.
+    /// the id edits of its body name it by; a note's body resource as those
+    /// blocks.
     fn read_note(
         &self,
         doc: &tilo_resource::Doc,
@@ -775,6 +779,19 @@ impl Notebook {
                 })).collect::<Vec<_>>(),
             }));
         };
+        if let Some(page) = crate::actions::page_of_body_resource(item.as_str()) {
+            let body = body_object(doc, page).ok_or_else(|| {
+                format!("no note `{item}`; read the notebook for the notes it holds")
+            })?;
+            let mut read = tilo_document::block_actions::read_under(doc, &body, None)?;
+            if let Some(map) = read.as_object_mut() {
+                map.insert(
+                    "kind".into(),
+                    <RichText as tilo_resource::Resource>::KIND.into(),
+                );
+            }
+            return Ok(read);
+        }
         let id =
             crate::actions::page_of_resource(item.as_str()).map_or_else(|| item.clone(), page_id);
         let page = self
@@ -790,7 +807,7 @@ impl Notebook {
             "item": note(&id),
             "title": page.title,
             "parent": page.parent.as_ref().map(note),
-            "body": format!("{}/body", note(&id)),
+            "body": page_of(&id).map(crate::actions::body_resource_id),
             "markdown": read.get("markdown"),
             "blocks": read.get("blocks"),
         }))

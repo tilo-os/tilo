@@ -1265,15 +1265,16 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
         || quote!(::std::vec::Vec::new()),
         |path| quote!(#path(state)),
     );
+    // The record's own fields that hold resources (`#[model(resource)]`),
+    // then its derived places.
     let derived = options.children.as_ref().map_or_else(
-        || quote!(::std::vec::Vec::new()),
+        || quote!(#krate::child::record_nested_children::<Self>()),
         |path| {
-            quote! {
-                #path(state)
-                    .iter()
-                    .map(#krate::Derived::<Self>::publish)
-                    .collect::<::std::vec::Vec<_>>()
-            }
+            quote! {{
+                let mut children = #krate::child::record_nested_children::<Self>();
+                children.extend(#path(state).iter().map(#krate::Derived::<Self>::publish));
+                children
+            }}
         },
     );
     let derived_child = options.children.as_ref().map_or_else(
@@ -1288,6 +1289,16 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
             }
         },
     );
+    let derived_child = quote! {
+        if let ::core::option::Option::Some(found) =
+            #krate::child::record_nested_children::<Self>()
+                .into_iter()
+                .find(|child| child.id.as_str() == id)
+        {
+            return ::core::option::Option::Some(found);
+        }
+        #derived_child
+    };
     // Items are published when an item verb or effect is offered on them
     // or they carry a label; addressed one by one beyond the page.
     let item_child = quote! {

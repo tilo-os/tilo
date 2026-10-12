@@ -1,7 +1,8 @@
 //! What a many-note notebook publishes through the collaboration bridge: the
 //! whole surface is large (every note offers the same editing actions, and
-//! every body carries the rich-text catalogue), so it crosses as a delta of
-//! shared catalogue entries, and an edit republishes only what it touched.
+//! every body, a rich-text resource of its own, carries the rich-text
+//! catalogue), so it crosses as a delta of shared catalogue entries, and an
+//! edit republishes only what it touched.
 
 use ui::collaboration::{SurfaceDelta, SurfacePublication, SurfaceTable};
 
@@ -34,6 +35,46 @@ fn wire_bytes(delta: &SurfaceDelta) -> usize {
         .sum();
     let removed: usize = delta.removed.iter().map(String::len).sum();
     shapes + templates + resources + removed
+}
+
+/// The wire bytes of the catalogue the note bodies' template alone uses:
+/// its id and the shapes no other template holds.
+///
+/// # Panics
+/// When the bodies do not share exactly one template.
+fn rich_text_catalogue(delta: &SurfaceDelta) -> usize {
+    let mut bodies: Vec<_> = delta
+        .resources
+        .iter()
+        .filter(|r| r.fields.resource_kind == "tilo.rich-text")
+        .map(|r| r.template)
+        .collect();
+    assert!(bodies.len() >= 45, "every note's body is published");
+    bodies.dedup();
+    assert_eq!(bodies.len(), 1, "the bodies share one template");
+    let body = bodies.first().copied().unwrap();
+    let members = |id| {
+        delta
+            .templates
+            .iter()
+            .find(|(template, _)| *template == id)
+            .map(|(_, members)| members.clone())
+            .unwrap_or_default()
+    };
+    let others: Vec<_> = delta
+        .templates
+        .iter()
+        .filter(|(template, _)| *template != body)
+        .flat_map(|(_, members)| members.iter().copied())
+        .collect();
+    let own = members(body);
+    let shapes: usize = delta
+        .shapes
+        .iter()
+        .filter(|(id, _)| own.contains(id) && !others.contains(id))
+        .map(|(id, shape)| id.len() + serde_json::to_vec(shape).unwrap().len())
+        .sum();
+    body.len() * (1 + own.len()) + shapes
 }
 
 fn labelled(actions: Vec<ui::collaboration::ExportedAction>) -> Vec<(String, String, String)> {
@@ -73,9 +114,19 @@ fn a_many_note_notebook_publishes_a_small_surface_and_an_edit_only_its_note() {
         first.templates.len(),
         first.resources.len()
     );
+    // Every note's body is a rich-text resource of its own: the bodies share
+    // one template, and its catalogue entries cross once whatever the
+    // number of notes. Apart from that one catalogue, Notes publishes what it
+    // did before its bodies were resources.
+    let rich = rich_text_catalogue(&first);
+    eprintln!("surface-volume rich-text catalogue: {rich} bytes");
     assert!(
-        first_bytes < 100 * 1024,
-        "a 45-note notebook publishes {first_bytes} bytes"
+        rich < 56 * 1024,
+        "the rich-text catalogue takes {rich} bytes"
+    );
+    assert!(
+        first_bytes - rich < 100 * 1024,
+        "a 45-note notebook publishes {first_bytes} bytes, {rich} of them the rich-text catalogue"
     );
 
     app.merge_peer_edit(|doc| {
