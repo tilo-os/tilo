@@ -7172,6 +7172,10 @@ pub(crate) fn ush_request(
     Ok(request)
 }
 
+/// The supervisor's answer to `open-session`: `ServeResponse::Session` in
+/// `crates/runtime/ush/src/supervisor.rs`, field for field. Unknown fields are
+/// refused, so every field the supervisor sends must be named here; its unit
+/// test `a_session_reply_keeps_its_wire_form` pins the form this parses.
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct UshSessionReply {
@@ -7180,6 +7184,9 @@ struct UshSessionReply {
     environment: String,
     #[serde(default)]
     relay_session: Option<String>,
+    /// The session's shell marks its runs with the key the request named.
+    #[serde(default)]
+    runs: bool,
     #[serde(default)]
     editor_protocol: Option<u8>,
 }
@@ -7279,23 +7286,12 @@ pub(crate) fn ush_backend_on(
         master: Box::new(FdMaster { file: master }),
         shell_name: if target.is_host() { "host" } else { "ush" }.into(),
         relay_session: response.relay_session,
-        runs: marks_runs(&payload).then_some(key),
+        runs: response.runs.then_some(key),
         native_editor,
         service_lifetime: Some(runtime_portal::pending_connection::SessionLifetime::new(
             stream.try_clone().map_err(|e| failed(&e))?,
         )),
     })
-}
-
-/// Whether a supervisor's answer says the session's shell marks its runs
-/// with the key the request named.
-pub(crate) fn marks_runs(payload: &[u8]) -> bool {
-    #[derive(serde::Deserialize)]
-    struct Reply {
-        #[serde(default)]
-        runs: bool,
-    }
-    serde_json::from_slice::<Reply>(payload).is_ok_and(|reply| reply.runs)
 }
 
 /// Settle a run asked for as failed for good: it did not run, and will not.
