@@ -14,7 +14,7 @@
 use std::cell::Cell;
 use std::rc::Rc;
 
-use tilo_app::advanced::{Affine, NodeId, Scene, TaffyTree, WindowEvent};
+use tilo_app::advanced::{NodeId, TaffyTree, WindowEvent};
 use tilo_app::prelude::*;
 use tilo_app::tilo_resource::Stamped;
 
@@ -191,9 +191,6 @@ impl<R: Resource<Action = LevelAction>> Widget for LevelSlider<R> {
             Size::new(f64::from(layout.size.width), f64::from(layout.size.height)),
         );
         SLIDER.with(|slider| slider.set(self.rect));
-    }
-
-    fn draw(&mut self, _: &mut Scene, _: Affine, _: &mut TextRenderer, _: &Theme, _: &PresenceCtx) {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {

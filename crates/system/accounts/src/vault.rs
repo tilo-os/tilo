@@ -440,7 +440,7 @@ mod tests {
     fn read_key_bytes(path: &Path) -> std::io::Result<Zeroizing<Vec<u8>>> {
         use std::io::Read as _;
         let mut bytes = Zeroizing::new(Vec::new());
-        private_fs::read(path)?.read_to_end(&mut bytes)?;
+        tilo_files::native::private::read(path)?.read_to_end(&mut bytes)?;
         Ok(bytes)
     }
 
@@ -761,7 +761,7 @@ mod tests {
             store.put(&mut item).unwrap();
             let dir = crate::vault_dir_in(&root);
             assert!(!dir.join("vault.key").exists());
-            assert!(private_fs::read(&dir.join("vault.key.dpapi")).is_ok());
+            assert!(tilo_files::native::private::read(&dir.join("vault.key.dpapi")).is_ok());
             let reopened = crate::SecretStore::open_in(&root);
             assert!(reopened.recovery_error().is_none());
             assert_eq!(
@@ -807,9 +807,12 @@ mod tests {
             vault.try_save().unwrap();
             let encrypted = std::fs::read(dir.join("vault.enc")).unwrap();
             let stray_key = [7; KEY_LEN];
-            private_fs::create_atomic(&dir.join("vault.key"), &stray_key).unwrap();
-            private_fs::write_atomic(&dir.join("vault.key.dpapi"), b"corrupt protected key")
-                .unwrap();
+            tilo_files::native::private::create_atomic(&dir.join("vault.key"), &stray_key).unwrap();
+            tilo_files::native::private::write_atomic(
+                &dir.join("vault.key.dpapi"),
+                b"corrupt protected key",
+            )
+            .unwrap();
             let failed = SecretVault::open_in(&root);
             assert!(failed.recovery_error().is_some());
             assert!(failed.try_save().is_err());
@@ -845,7 +848,7 @@ mod tests {
             let persisted = load_or_create_key(&root, SecretCustody::WindowsDpapi).unwrap();
             assert!(keys.iter().all(|key| *key == persisted));
             assert!(!root.join("vault.key").exists());
-            assert!(private_fs::read(&root.join("vault.key.dpapi")).is_ok());
+            assert!(tilo_files::native::private::read(&root.join("vault.key.dpapi")).is_ok());
             std::fs::remove_dir_all(root).unwrap();
         }
     }

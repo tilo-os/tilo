@@ -9,7 +9,7 @@ use ui::history_source::{SchemaObjectId, schema_operations_since};
 
 // Notes' messages. Every host loads them before the app's view is built;
 // a widget built on its own loads them as it is made.
-ui::embedded_catalog!(pub static CATALOG, "notes-view-editor", ["en-US", "de"]);
+ui::embedded_catalog!(pub static CATALOG, ["en-US", "de"]);
 
 /// Load the toolkit's widget messages and [`CATALOG`] on this thread.
 pub fn register_messages() {

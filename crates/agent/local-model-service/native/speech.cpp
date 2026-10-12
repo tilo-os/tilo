@@ -1,5 +1,6 @@
 #include "whisper.h"
 #include <algorithm>
+#include <atomic>
 #include <array>
 #include <cstdint>
 #include <cstring>
@@ -9,6 +10,32 @@
 #include <limits>
 #include <new>
 #include <string>
+#include <signal.h>
+
+// Only this confined child receives the parent's Finish hint. The signal
+// handler performs one lock-free store; it never allocates, logs or touches
+// model/audio state. The flag stays set until the process retires; finals do
+// not install an abort callback and remain mandatory, complete decodes.
+static std::atomic<bool> finish_requested{false};
+static_assert(std::atomic<bool>::is_always_lock_free);
+static void request_finish(int) { finish_requested.store(true, std::memory_order_relaxed); }
+
+extern "C" bool tilo_speech_enable_draft_interrupt() noexcept {
+    struct sigaction action{};
+    action.sa_handler = request_finish;
+    action.sa_flags = SA_RESTART;
+    sigset_t signals;
+    if (::sigemptyset(&action.sa_mask) != 0 || ::sigemptyset(&signals) != 0
+        || ::sigaddset(&signals, SIGUSR1) != 0) return false;
+    finish_requested.store(false, std::memory_order_relaxed);
+    return ::sigaction(SIGUSR1, &action, nullptr) == 0
+        && ::sigprocmask(SIG_UNBLOCK, &signals, nullptr) == 0;
+}
+
+// Reviewed private entry point: only a pure abort poll can preserve the
+// already encoded full-context auto-language window with callbacks installed.
+extern "C" int tilo_whisper_full_interruptible(whisper_context *, whisper_state *,
+    whisper_full_params, const float *, int);
 
 // This ABI lives only in the owned speech worker. No model-controlled message
 // reaches diagnostics, and no closure or Rust userdata crosses a C callback.
@@ -72,6 +99,8 @@ struct SpeechContext {
     whisper_state * state;
     int threads;
     bool flash_attention;
+    bool pristine_state;
+    bool draft_mode = false;
     PrivateTokens vocabulary{};
 };
 
@@ -84,7 +113,7 @@ extern "C" void * tilo_speech_load(uint8_t * bytes, size_t length) noexcept try 
     // before decoder arenas are allocated, avoiding an unnecessary peak.
     auto * model = whisper_init_from_buffer_with_params_no_state(bytes, length, params);
     if (!model) return nullptr;
-    auto * context = new (std::nothrow) SpeechContext{model, nullptr, 2, params.flash_attn};
+    auto * context = new (std::nothrow) SpeechContext{model, nullptr, 2, params.flash_attn, false};
     if (!context) whisper_free(model);
     return context;
 } catch (...) {
@@ -133,7 +162,7 @@ extern "C" void * tilo_speech_load_fd(int fd, size_t length) noexcept try {
     params.flash_attn = bounded_cpu_flash_fd(fd);
     auto * model = whisper_init_with_params_no_state(&loader, params);
     if (!model) return nullptr;
-    auto * context = new (std::nothrow) SpeechContext{model, nullptr, 2, params.flash_attn};
+    auto * context = new (std::nothrow) SpeechContext{model, nullptr, 2, params.flash_attn, false};
     if (!context) whisper_free(model);
     return context;
 } catch (...) { return nullptr; }
@@ -148,6 +177,11 @@ extern "C" bool tilo_speech_threads(void * context, int threads) noexcept {
     if (!ctx || threads < 1 || threads > 2) return false;
     ctx->threads = threads;
     return true;
+}
+
+extern "C" void tilo_speech_draft_mode(void * context, bool enabled) noexcept {
+    auto * ctx = static_cast<SpeechContext *>(context);
+    if (ctx) ctx->draft_mode = enabled;
 }
 
 // Vocabulary is data on the existing private pipe, never a model prompt from
@@ -189,7 +223,10 @@ extern "C" bool tilo_speech_vocabulary(void * context, const char * text, size_t
 extern "C" bool tilo_speech_ready(void * context) noexcept try {
     auto * ctx = static_cast<SpeechContext *>(context);
     if (!ctx) return false;
-    if (!ctx->state) ctx->state = whisper_init_state(ctx->model);
+    if (!ctx->state) {
+        ctx->state = whisper_init_state(ctx->model);
+        ctx->pristine_state = ctx->state != nullptr;
+    }
     return ctx->state != nullptr;
 } catch (...) {
     // Native allocation/model exceptions must never unwind across the Rust ABI.
@@ -231,11 +268,18 @@ extern "C" int tilo_speech_transcribe(void * context, const float * samples,
     auto * handle = static_cast<SpeechContext *>(context);
     auto * ctx = handle->model;
     if (!tilo_speech_accepts(context, language)) return -2;
-    // Native fallback advances decoder RNG and caches. Fresh per-call state
-    // makes independent drafts/finals reproducible and carries no old words.
-    if (handle->state) whisper_free_state(handle->state);
-    handle->state = nullptr;
+    if (handle->draft_mode && finish_requested.load(std::memory_order_relaxed)) return -5;
+    // Readiness already allocated a pristine arena. Consume it once rather
+    // than immediately discarding it. Every later inference still allocates
+    // fresh state: fallback RNG, language detection and tokens never carry
+    // across drafts/finals. Consume the marker before preprocessing so even
+    // a failed inference cannot reuse partly mutated decoder state.
+    if (handle->state && !handle->pristine_state) {
+        whisper_free_state(handle->state);
+        handle->state = nullptr;
+    }
     if (!tilo_speech_ready(context)) return -3;
+    handle->pristine_state = false;
     auto params = whisper_full_default_params(WHISPER_SAMPLING_GREEDY);
     // Greedy fallback defaults to five candidates and a sevenfold KV arena.
     // Keep one decoder within the worker budget even on uncertain speech.
@@ -250,6 +294,11 @@ extern "C" int tilo_speech_transcribe(void * context, const float * samples,
     params.suppress_blank = true;
     params.suppress_nst = true;
     params.language = language;
+    if (handle->draft_mode) {
+        params.abort_callback = [](void *) {
+            return finish_requested.load(std::memory_order_relaxed);
+        };
+    }
     if (handle->vocabulary.count > 0) {
         params.prompt_tokens = handle->vocabulary.tokens.data();
         params.prompt_n_tokens = handle->vocabulary.count;
@@ -262,10 +311,14 @@ extern "C" int tilo_speech_transcribe(void * context, const float * samples,
     // pinned API consumes precomputed mel when no new samples are supplied.
     if (count > 0 && whisper_pcm_to_mel_with_state(ctx, handle->state, samples, count, 1) != 0)
         return -3;
-    const int result = whisper_full_with_state(ctx, handle->state, params, nullptr, 0);
+    if (handle->draft_mode && finish_requested.load(std::memory_order_relaxed)) return -5;
+    const int result = handle->draft_mode
+        ? tilo_whisper_full_interruptible(ctx, handle->state, params, nullptr, 0)
+        : whisper_full_with_state(ctx, handle->state, params, nullptr, 0);
     // Pinned 1.8.3 frees the state when KV allocation fails (-7). Never leave
     // an owning handle pointing at it for destruction or a later call.
     if (result == -7) handle->state = nullptr;
+    if (handle->draft_mode && finish_requested.load(std::memory_order_relaxed)) return -5;
     if (result != 0) return -3;
     std::string text;
     for (int index = 0; index < whisper_full_n_segments_from_state(handle->state); ++index) {

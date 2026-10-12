@@ -6,7 +6,7 @@
 
 use std::cell::RefCell;
 
-use tilo_app::advanced::{Affine, NodeId, Scene, TaffyTree};
+use tilo_app::advanced::{NodeId, TaffyTree};
 use tilo_app::framework::{EffectAnswer, Effected};
 use tilo_app::prelude::*;
 use tilo_resource::Place;
@@ -77,9 +77,6 @@ impl Widget for Page {
 
     fn apply_layout(&mut self, _: &TaffyTree<()>, _: NodeId, origin: Point) {
         self.rect = Rect::from_origin_size(origin, Size::ZERO);
-    }
-
-    fn draw(&mut self, _: &mut Scene, _: Affine, _: &mut TextRenderer, _: &Theme, _: &PresenceCtx) {
     }
 
     fn name(&self) -> &'static str {

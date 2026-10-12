@@ -15,13 +15,7 @@ struct HostedPumpProbe {
 impl Widget for HostedPumpProbe {
     crate::provides!(dyn crate::resources::PublishesResources);
 
-    crate::testing::inert_widget_methods!(
-        unregistered_leaf_layout,
-        apply_layout,
-        draw,
-        get_rect,
-        name = "hosted-pump-probe"
-    );
+    crate::testing::inert_widget_methods!(unregistered_leaf_layout, name = "hosted-pump-probe");
     fn sync(&mut self, _: &AppModel, _: &ModelPath) {
         self.syncs.set(self.syncs.get() + 1);
         if let Some(label) = self.pending_label.borrow_mut().take() {
@@ -842,9 +836,6 @@ mod input_publication {
 
         crate::testing::inert_widget_methods!(
             unregistered_leaf_layout,
-            apply_layout,
-            draw,
-            get_rect,
             name = "input-publication-probe"
         );
 

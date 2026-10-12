@@ -63,7 +63,7 @@ fn effective_uid() -> u32 {
 }
 
 fn load(path: &Path) -> Result<Definitions, String> {
-    let mut file = private_fs::read(path).map_err(|error| error.to_string())?;
+    let mut file = tilo_files::native::private::read(path).map_err(|error| error.to_string())?;
     if file.metadata().map_err(|error| error.to_string())?.len() > MAX_CONFIG_BYTES {
         return Err("approved-check startup configuration exceeds bound".into());
     }
@@ -281,13 +281,15 @@ impl ApprovedCheckServices for NativeChecks {
         let artifact_sha256 = hex::encode(Sha256::digest(&bytes));
         let path = registered.artifacts.join(format!("{artifact_sha256}.json"));
         // Full private streams/config/manager receipts never enter an action catalog.
-        let mut artifact = private_fs::create_new(&path).map_err(|error| error.to_string())?;
+        let mut artifact =
+            tilo_files::native::private::create_new(&path).map_err(|error| error.to_string())?;
         artifact
             .write_all(&bytes)
             .and_then(|()| artifact.sync_all())
             .map_err(|error| error.to_string())?;
         drop(artifact);
-        private_fs::sync_directory(&registered.artifacts).map_err(|error| error.to_string())?;
+        tilo_files::native::private::sync_directory(&registered.artifacts)
+            .map_err(|error| error.to_string())?;
         let receipt = Receipt {
             version: 1,
             invocation: context.invocation(),
@@ -429,7 +431,8 @@ mod tests {
         });
         let config = serde_json::json!({"version":1,"projects":[{"app_id":"so.tilo.git-client","resource_identity":{"kind":"git_client.repo","key":"repository"},"artifacts":root.join("artifacts"),"checks":[&check]}]});
         let path = root.join("checks.json");
-        let mut file = private_fs::create_new(&path).expect("fixture operation succeeds");
+        let mut file =
+            tilo_files::native::private::create_new(&path).expect("fixture operation succeeds");
         file.write_all(&serde_json::to_vec(&config).expect("serialize fixture"))
             .expect("fixture operation succeeds");
         drop(file);

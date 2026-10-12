@@ -47,6 +47,7 @@ blake3.workspace = true
 ed25519-dalek.workspace = true
 browser-continuity = { workspace = true, features = ["native"] }
 tilo-image-codec = { version = "0.1.0", path = "../../crates/platform/tilo-image-codec" }
+install-profile-model = { path = "../../crates/session/install-profile-model" }
 uuid.workspace = true
 base64.workspace = true
 crc32fast.workspace = true

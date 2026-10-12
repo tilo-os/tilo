@@ -283,6 +283,65 @@ fn a_broker_delivered_restore_runs_and_is_attributed_to_the_invoker() {
     assert_eq!(title(&app).as_deref(), Some("v2"));
 }
 
+/// What an agent changed for its person reads as the agent's, on behalf of
+/// that person, through `history.list` too: the door scripts, agents and
+/// assistive tech read history by returns who acted and for whom as data.
+#[test]
+fn history_list_returns_an_agents_change_as_the_agents_for_its_person() {
+    use tilo_actions::{ActionContext, ActionInvoker, ActorKind};
+    let mut app = document(&["v1", "v2"]);
+    present(&mut app);
+    let listing = invoke(&mut app, LIST, Some(json!({}))).unwrap();
+    let v1 = entries(&listing)[1].clone();
+    let argument = format!(
+        "{}{}",
+        tilo_actions::ARGUMENTS_JSON_PREFIX,
+        json!({"entry": v1, "reviewed_live_heads": listing["live_heads"]})
+    );
+    let local = std::mem::replace(
+        &mut app.collaboration.manager,
+        super::semantic_tree_app_tests::admitted_delivery_manager(),
+    );
+    // The broker stamps the authenticated agent and the person it acts for.
+    let context = ActionContext::for_resource(RESOURCE, RESOURCE, "History").with_invoker(
+        ActionInvoker::actor("agent:Scribe")
+            .with_kind(ActorKind::Agent)
+            .acting_for("ada"),
+    );
+    app.apply_collab_event_for_test(CollabEvent::Invocation {
+        invocation: tilo_actions::InvocationId(uuid::Uuid::from_u128(8)),
+        id: 8,
+        resource: RESOURCE.into(),
+        action: RESTORE.into(),
+        argument: Some(argument),
+        actor: "agent:Scribe".into(),
+        context: Some(Box::new(context)),
+    });
+    assert_eq!(title(&app).as_deref(), Some("v1"));
+
+    // The person reads the history back on their own device.
+    app.collaboration.manager = local;
+    let listing = invoke(&mut app, LIST, Some(json!({}))).unwrap();
+    let newest = &listing["entries"][0];
+    assert_eq!(newest["author"], "Scribe · Agent, for ada", "{listing}");
+    assert_eq!(
+        newest["attribution"],
+        json!({
+            "actor": "agent:Scribe",
+            "kind": "agent",
+            "actor_name": "Scribe",
+            "on_behalf_of": "ada",
+            "on_behalf_of_name": "ada",
+        }),
+        "{listing}"
+    );
+    assert_eq!(
+        listing["entries"][1]["attribution"],
+        Value::Null,
+        "a person's own change acted for nobody: {listing}"
+    );
+}
+
 #[test]
 fn the_in_app_palette_lists_one_history_launcher() {
     let mut app = document(&["v1"]);

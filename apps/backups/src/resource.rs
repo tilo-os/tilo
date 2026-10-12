@@ -72,6 +72,10 @@ impl ResourceApp for BackupsShell {
     const TITLE: &'static str = "Backups";
     const ICON: Option<&'static str> = Some("backups");
 
+    fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {
+        Some(&crate::i18n::CATALOG)
+    }
+
     fn view(cx: &mut ViewCx<Backups>) -> Element {
         // A search hit, or an agent's `open`, shows the snapshot it names.
         let dispatcher = cx.dispatcher();

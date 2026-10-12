@@ -747,7 +747,22 @@ def wait_source_namespace(pid, deadline):
             retain_unknown_namespace()
 
 
-def run(candidate, evidence, receiving):
+def run(candidate, evidence, receiving, *, service_qualification=False, service_candidate=None):
+    require(type(service_qualification) is bool, 'source service qualification mode must be boolean')
+    if service_qualification:
+        require(type(service_candidate) is dict
+                and set(service_candidate) == {'required_protocol', 'browser_package_hash',
+                    'cef_runtime_root_hash', 'sdk_runtime_root_hash',
+                    'receiving_route_qualification_sha256'}
+                and type(service_candidate['required_protocol']) is int
+                and service_candidate['required_protocol'] == 2
+                and all(type(value) is str and len(value) == 64
+                        and all(char in '0123456789abcdef' for char in value)
+                        for key, value in service_candidate.items() if key != 'required_protocol'),
+                'source qualification lacks exact authenticated candidate scope')
+        service_candidate = dict(service_candidate)
+    else:
+        require(service_candidate is None, 'ordinary source cannot accept qualification scope')
     require(os.geteuid() == 0 and callable(receiving), 'owned root source receiving callback required')
     candidate, evidence = Path(candidate), Path(evidence)
     require(candidate == Path('/owned/candidate') and evidence.is_dir(), 'fixed admitted candidate/evidence required')
@@ -823,7 +838,7 @@ def run(candidate, evidence, receiving):
                 before_ranges = len(dav.delivered_ranges)
             target_started = True
             try:
-                completed = receiving({'package_directory': package, 'password': PASSWORD,
+                context = {'package_directory': package, 'password': PASSWORD,
                 'source_operation': result['source_operation'], 'applications_stage': result['apps_stage'],
                 'source': source, 'baseline_etc_fd': baseline, 'tls_ca_certificate': held_bytes(dav.public_certificate, 65536),
                 'tls_server_name': TLS_SERVER_NAME,
@@ -832,7 +847,13 @@ def run(candidate, evidence, receiving):
                         'write_relative': 'Documents/written-document.txt', 'write_hex': b'actual receiving write\n'.hex()},
                 'source_observations': source_observations(result),
                 'selected_service_kinds': result['selected_service_kinds'],
-                'setup_binding': result['setup_binding']})
+                'setup_binding': result['setup_binding']}
+                if service_qualification:
+                    # Public artifact scope only, never published service proof
+                    # or authority for the native importer to skip admission.
+                    context['service_qualification'] = True
+                    context['service_candidate'] = dict(service_candidate)
+                completed = receiving(context)
             except BaseException:
                 # Receiver owns exact target descendants. Without its actual
                 # stop receipt we cannot disconnect their shared source disk.

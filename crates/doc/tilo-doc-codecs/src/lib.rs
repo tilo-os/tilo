@@ -52,6 +52,8 @@ pub mod ods;
 pub mod odt;
 #[cfg(any(feature = "docx", feature = "odt"))]
 mod office_meta;
+#[cfg(feature = "office")]
+mod office_props;
 #[cfg(any(feature = "docx", feature = "odt"))]
 mod para_styles;
 #[cfg(feature = "office")]

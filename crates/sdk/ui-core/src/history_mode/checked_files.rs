@@ -29,6 +29,10 @@ pub struct FileHistoryTarget {
     pub record: FileRecordId,
     pub label: String,
     pub transport: Arc<dyn FileHistoryTransport>,
+    /// Who the people and agents writing versions are, as the app knows
+    /// them: a version an agent's device signed reads as the agent's, on
+    /// behalf of its person. Presentation only; never authority.
+    pub authors: crate::history_source::AuthorDirectory,
 }
 /// A root retains its own handle; the runner validates this exact source witness.
 #[derive(Clone, Default)]

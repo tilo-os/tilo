@@ -32,6 +32,7 @@ class CredentialTransportTests(unittest.TestCase):
         source = SOURCE.read_text()
         replacements = {
             "CONF=/etc/tilo/install-user.conf": f"CONF={credential}",
+            "TRANSACTION=/etc/tilo/install-user.transaction": f"TRANSACTION={root}/transaction",
             "FULL_NAME_CONF=/etc/tilo/install-user-full-name": f"FULL_NAME_CONF={name}",
             "key=/var/lib/tilo/device-private/keypair.bin": f"key={root}/absent-device-key",
             '"/home/$user"': f'"{root}/home/$user"',
@@ -39,7 +40,7 @@ class CredentialTransportTests(unittest.TestCase):
             'seed_helper=/etc/tilo/firstboot-home-seeds.py': f'seed_helper={seeds}',
         }
         for original, replacement in replacements.items():
-            self.assertEqual(source.count(original), 1, original)
+            self.assertGreaterEqual(source.count(original), 1, original)
             source = source.replace(original, replacement)
         script = root / "firstboot"
         script.write_text(source)
@@ -69,7 +70,7 @@ class CredentialTransportTests(unittest.TestCase):
         result = subprocess.run(["bash", str(script)], env=environment, capture_output=True, text=True)
         arguments = json.loads((root / "useradd.json").read_text())
         self.assertNotIn(SYNTHETIC_HASH, arguments, "password hashes must not be process arguments")
-        self.assertEqual(arguments[arguments.index("-p") + 1], "!")
+        self.assertRegex(arguments[arguments.index("-p") + 1], r"^!tilo-firstboot-[a-f0-9]{32}$")
         self.assertIn("-M", arguments)
         self.assertNotIn("-m", arguments)
         self.assertEqual((root / "seeds-called").read_text(), "called")

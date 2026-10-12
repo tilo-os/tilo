@@ -61,6 +61,11 @@ impl ResourceApp for VpnShell {
     type Resource = Vpn;
     const ID: &'static str = "so.tilo.vpn";
     const TITLE: &'static str = "VPN";
+
+    fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {
+        Some(&crate::locales::CATALOG)
+    }
+
     const ICON: Option<&'static str> = Some("vpn");
 
     fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
@@ -68,7 +73,6 @@ impl ResourceApp for VpnShell {
     }
 
     fn view(cx: &mut ViewCx<Vpn>) -> Element {
-        crate::locales::install();
         cx.surface(VpnApp::new())
     }
 

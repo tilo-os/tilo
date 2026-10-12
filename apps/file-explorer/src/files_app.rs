@@ -3302,6 +3302,8 @@ impl FileExplorerWidget {
         }
         self.trusted_humans = next;
         self.structure_dirty = true;
+        // File history names its authors from this directory: rebind it.
+        self.framework_history_binding = None;
         true
     }
 
@@ -4222,10 +4224,22 @@ impl FileExplorerWidget {
                         .cloned()
                         .map(|version| (version, entry.path.clone()))
                 });
+                let authors = self.trusted_humans.history_authors();
                 let entry = selected.map(|(version, path)| {
                     let person = fs_protocol::Ed25519PublicKey::from_bytes(version.actor.person);
-                    let person_label = self.trusted_humans.display_name_or_fingerprint(&person);
                     let identity = short_fingerprint(&version.actor.person);
+                    // The device that signed the version names who wrote it,
+                    // as the file's History does: an agent's own device reads
+                    // as the agent, on behalf of its person.
+                    let author = authors
+                        .resolve_file_actor(&version.actor.person, &version.actor.device)
+                        .unwrap_or_else(|| {
+                            ui::widget::HistoryAuthor::new(
+                                self.trusted_humans.display_name_or_fingerprint(&person),
+                                ui::history_source::stable_hue(&identity),
+                                identity.clone(),
+                            )
+                        });
                     let action = t(version.provenance_key());
                     let resource_label = path
                         .file_name()
@@ -4244,11 +4258,7 @@ impl FileExplorerWidget {
                     ));
                     ui::widget::HistoryEntry {
                         id: ui::widget::HistoryEntryId(*version_id.0.as_bytes()),
-                        author: ui::widget::HistoryAuthor::new(
-                            person_label,
-                            ui::history_source::stable_hue(&identity),
-                            identity,
-                        ),
+                        author,
                         // This is a signed immutable checkpoint, not a shell
                         // CRDT operation the generic Revert affordance can undo.
                         entry_kind: ui::widget::EntryKind::Compaction,
@@ -5580,7 +5590,13 @@ impl FileExplorerWidget {
             return;
         }
         let target = selected.and_then(|(path, record, label)| {
-            crate::framework_history::target(&path, record, label).ok()
+            crate::framework_history::target(
+                &path,
+                record,
+                label,
+                self.trusted_humans.history_authors(),
+            )
+            .ok()
         });
         self.framework_history_binding = if target.is_some() { identity } else { None };
         self.framework_history.set_target(target);

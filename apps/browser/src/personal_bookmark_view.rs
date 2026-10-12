@@ -390,7 +390,6 @@ mod tests {
         static CATALOG: ui::i18n::EmbeddedCatalog = ui::i18n::EmbeddedCatalog::new(
             "en-US",
             &[("en-US", include_str!("../locales/en-US.ftl"))],
-            "browser-personal-bookmarks-back",
         );
         LocalizedLabels {
             back: CATALOG.t("browser-personal-bookmarks-back"),

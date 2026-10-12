@@ -9,7 +9,6 @@ use ui::widget::Element;
 const CATALOG: ui::i18n::EmbeddedCatalog = ui::i18n::EmbeddedCatalog::new(
     "en-US",
     &[("en-US", include_str!("../../locales/en-US.ftl"))],
-    "browser-personal-bookmarks-back",
 )
 .with_system_locale();
 fn source(value: &str) -> Result<[u8; 32], String> {

@@ -287,7 +287,7 @@ impl IdentityPaths {
     pub fn ensure_directories(&self) -> io::Result<()> {
         if let Some(parent) = self.user_pubkey.parent() {
             #[cfg(windows)]
-            private_fs::directory(parent)?;
+            tilo_files::native::private::directory(parent)?;
             #[cfg(not(windows))]
             fs::create_dir_all(parent)?;
         }
@@ -297,7 +297,7 @@ impl IdentityPaths {
             .filter(|_| self.device_key_custody == DeviceKeyCustody::File)
         {
             #[cfg(windows)]
-            private_fs::directory(parent)?;
+            tilo_files::native::private::directory(parent)?;
             #[cfg(not(windows))]
             fs::create_dir_all(parent)?;
         }
@@ -509,7 +509,7 @@ fn signing_key_from_file(
     // component. A leaf-only O_NOFOLLOW check still permits an exchanged
     // parent directory to redirect an otherwise trusted key path.
     #[cfg(windows)]
-    let file = private_fs::read(path)?;
+    let file = tilo_files::native::private::read(path)?;
     #[cfg(not(windows))]
     let file = open_regular_without_symlinks(path).map_err(|error| {
         PersistError::Io(io::Error::new(
@@ -646,7 +646,7 @@ pub fn write_signing_key(path: &Path, sk: &SigningKey) -> io::Result<()> {
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "path has no parent"))?;
     let seed = Zeroizing::new(sk.to_bytes());
     #[cfg(windows)]
-    return private_fs::write_atomic(path, seed.as_ref());
+    return tilo_files::native::private::write_atomic(path, seed.as_ref());
     #[cfg(not(windows))]
     tilo_files::native::atomic::write_with_mode(path, seed.as_ref(), 0o600)
 }
@@ -730,7 +730,7 @@ pub fn write_device_key(path: &Path, sk: &SigningKey) -> io::Result<()> {
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "path has no parent"))?;
     let seed = Zeroizing::new(sk.to_bytes());
     #[cfg(windows)]
-    return private_fs::write_atomic(path, seed.as_ref());
+    return tilo_files::native::private::write_atomic(path, seed.as_ref());
     #[cfg(not(windows))]
     tilo_files::native::atomic::write_with_mode(path, seed.as_ref(), DEVICE_KEY_MODE)
 }
@@ -950,7 +950,10 @@ fn publish_identity_bytes_no_clobber(
 fn publish_device_key_no_clobber(path: &Path, key: &SigningKey) -> Result<bool, PersistError> {
     protect_secret_process()?;
     let seed = Zeroizing::new(key.to_bytes());
-    Ok(private_fs::create_atomic(path, seed.as_ref())?)
+    Ok(tilo_files::native::private::create_atomic(
+        path,
+        seed.as_ref(),
+    )?)
 }
 
 /// Create a private, complete temporary candidate beside the final device-key

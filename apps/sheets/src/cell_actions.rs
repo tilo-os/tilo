@@ -329,16 +329,5 @@ fn touched_cells(changes: &[automerge::Patch]) -> Vec<(String, String, String)> 
     out
 }
 
-/// The schema of what `read-cells` answers.
-pub fn read_result_schema() -> serde_json::Value {
-    serde_json::json!({"type":"object","required":["sheet","range","rows","formulas","bold"],"additionalProperties":false,"properties":{
-        "sheet":{"type":"string"},
-        "range":{"type":"string"},
-        "rows":{"type":"array","items":{"type":"array"}},
-        "formulas":{"type":"object","additionalProperties":true},
-        "bold":{"type":"array","items":{"type":"string"}}
-    }})
-}
-
 #[cfg(test)]
 mod tests;

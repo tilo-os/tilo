@@ -12,6 +12,88 @@ qualifier = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(qualifier)
 
 
+class StagedSourceClosure(unittest.TestCase):
+    def test_actual_local_imports_and_control_client_are_staged(self):
+        import ast
+        files = set(qualifier.FIXTURE_FILES)
+        directories = ('os/scripts/installer-source-fixture',
+                       'os/scripts/installer-receive-fixture')
+        for relative in files:
+            if not relative.endswith('.py'):
+                continue
+            tree = ast.parse((qualifier.ROOT / relative).read_text())
+            for node in ast.walk(tree):
+                names = ([alias.name for alias in node.names] if isinstance(node, ast.Import)
+                         else [node.module] if isinstance(node, ast.ImportFrom) else [])
+                for name in names:
+                    if not name:
+                        continue
+                    for directory in directories:
+                        dependency = directory + '/' + name.split('.')[0] + '.py'
+                        if (qualifier.ROOT / dependency).is_file():
+                            self.assertIn(dependency, files, (relative, name))
+        self.assertIn('scripts/headless-examples/_control.py', files)
+        prerequisites = qualifier.fixed_module(qualifier.ROOT /
+            'os/scripts/installer-receive-fixture/prerequisite-image.py', 'test_prerequisites')
+        self.assertLessEqual(set(prerequisites.ASSETS), files)
+
+    def test_production_stage_copies_and_binds_whole_closure(self):
+        sources = {name: qualifier.facts(qualifier.ROOT / name)['sha256']
+                   for name in (*qualifier.FIXTURE_FILES, *qualifier.PACKAGE_FILES)}
+        with tempfile.TemporaryDirectory() as temporary:
+            stage = Path(temporary)
+            qualifier.stage_sources(stage, sources)
+            self.assertEqual(json.loads((stage / 'source-inputs.json').read_text()), sources)
+            for name, digest in sources.items():
+                self.assertEqual(qualifier.facts(stage / name)['sha256'], digest)
+                self.assertEqual((stage / name).stat().st_mode & 0o777, 0o644)
+        for name in ('os/scripts/installer-source-fixture/secret_owner.py',
+                     'scripts/headless-examples/_control.py'):
+            with tempfile.TemporaryDirectory() as temporary:
+                altered = dict(sources, **{name: '0' * 64})
+                with self.assertRaises(ValueError):
+                    qualifier.stage_sources(Path(temporary), altered)
+
+    def test_unpinned_official_manifest_and_runtime_overlays_refuse(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            manifest = Path(temporary) / 'assets.json'
+            manifest.write_text('{"schema":1,"assets":{}}')
+            with self.assertRaisesRegex(ValueError, 'official public asset manifest'):
+                qualifier.source_assets(manifest)
+        for path in ('/usr/bin', '/owned/candidate', '/run/assets', '/var/../etc'):
+            with self.assertRaisesRegex(ValueError, 'mount escapes'):
+                qualifier.asset_mounts({'assets': {'app': {'source_root': path}}, 'archives': {}})
+
+    def test_actual_source_accepts_receivers_keyword_mode_without_changing_default_context(self):
+        import ast
+        source_path = qualifier.ROOT / 'os/scripts/installer-source-fixture/source.py'
+        saved_path = list(sys.path)
+        try:
+            source = qualifier.fixed_module(source_path, 'actual_source_keyword_boundary')
+            with self.assertRaisesRegex(RuntimeError, 'mode must be boolean'):
+                source.run('/unused', '/unused', lambda context: context, service_qualification=1)
+            with self.assertRaisesRegex(RuntimeError, 'exact authenticated candidate scope'):
+                source.run('/unused', '/unused', lambda context: context, service_qualification=True)
+            with self.assertRaisesRegex(RuntimeError, 'ordinary source'):
+                source.run('/unused', '/unused', lambda context: context, service_candidate={})
+        finally:
+            sys.path[:] = saved_path
+        tree = ast.parse(source_path.read_text())
+        run = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == 'run')
+        self.assertEqual([argument.arg for argument in run.args.kwonlyargs],
+                         ['service_qualification', 'service_candidate'])
+        self.assertIs(run.args.kw_defaults[0].value, False)
+        branch = next(node for node in ast.walk(run) if isinstance(node, ast.If)
+                      and isinstance(node.test, ast.Name) and node.test.id == 'service_qualification'
+                      and "context['service_qualification']" in ast.unparse(node))
+        self.assertIn("context['service_qualification'] = True", ast.unparse(branch))
+
+    def test_asset_preparation_precedes_actual_source_producer(self):
+        runner = qualifier.CONTAINER_RUNNER
+        self.assertLess(runner.index('qualifier.prepare_source(candidate)'),
+                        runner.index("str(candidate/qualifier.TARGET_FIXTURE)"))
+
+
 class NativeQualificationBoundary(unittest.TestCase):
     def receiving_observation(self):
         return {'schema': 1, 'status': 'completed', 'shared_files_readwrite': True,

@@ -33,8 +33,7 @@ pub const LOCALES: &[(&str, &str)] = &[
     ("de-DE", include_str!("../locales/de-DE.ftl")),
 ];
 
-static CATALOG: EmbeddedCatalog =
-    EmbeddedCatalog::new("en-US", LOCALES, "terminal-record-target").with_system_locale();
+static CATALOG: EmbeddedCatalog = EmbeddedCatalog::new("en-US", LOCALES).with_system_locale();
 
 /// A terminal session, as its record holds it. Only the terminal running
 /// the session records these, as facts about the world outside the

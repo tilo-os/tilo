@@ -36,11 +36,36 @@ FIXTURE_FILES = (
     'os/scripts/installer-receive-fixture/apps.py',
     'os/scripts/installer-receive-fixture/cloud.py',
     'os/scripts/installer-receive-fixture/packages.py',
+    'os/scripts/installer-receive-fixture/service_sessions.py',
+    'os/scripts/installer-receive-fixture/service_processes.py',
+    'os/scripts/installer-receive-fixture/service_contract.py',
     'os/scripts/installer-source-fixture/source.py',
     'os/scripts/installer-source-fixture/owned_gpt.py',
     'os/scripts/installer-source-fixture/bounded_native.py',
     'os/scripts/installer-source-fixture/flatpak_material.py',
     'os/scripts/installer-source-fixture/source_sessions.py',
+    'os/scripts/installer-source-fixture/secret_owner.py',
+    'scripts/headless-examples/_control.py',
+    'apps/imager/packaging/service-source-assets.py',
+    'os/scripts/installer-receive-fixture/prerequisite-image.py',
+    'os/scripts/installer-receive-fixture/prerequisite-readiness.py',
+    'os/scripts/installer-source-fixture/flatpak-runtime/prepare-runtime.py',
+    'os/scripts/installer-source-fixture/flatpak-runtime/dependencies/assemble-app-runtime.py',
+    'os/scripts/installer-source-fixture/flatpak-runtime/dependencies/bounded_native.py',
+    'os/scripts/installer-source-fixture/flatpak-runtime/dependencies/common.py',
+    'apps/imager/src/setup/flatpak_transfer/portable/native_tests/runnable/fixture-app',
+    'os/usr/libexec/tilo-firstboot-user',
+    'os/usr/libexec/tilo-firstboot-home-seeds.py',
+    'os/usr/libexec/tilo-installer-prepared-setup-extract.py',
+    'os/usr/libexec/tilo-staging-handoff',
+    'os/usr/libexec/tilo-store-volume',
+    'os/usr/libexec/tilo-install-handoff-copy.py',
+    'os/scripts/verify-account-consumer-capability.py',
+    'os/scripts/service-consumer-capability.py',
+    'os/etc/pam.d/tilo-unlock',
+    'os/usr/lib/sysusers.d/tilo-identity.conf',
+    'os/usr/lib/tmpfiles.d/tilo.conf',
+    'os/registry-runtime-publisher.hex',
 )
 PACKAGE_FILES = (
     'apps/file-explorer/tilo-app.toml', 'apps/file-explorer/surface.toml',
@@ -317,6 +342,7 @@ stores_created=False
 try:
  values={}
  if case==qualifier.TARGET_CASE:
+  qualifier.prepare_source(candidate)
   initial=root/'initial-pidns';initial.touch(mode=0o400)
   checked(['mount','--bind','/qualification-initial-pidns',str(initial)],10)
   checked(['mount','-o','remount,bind,ro',str(initial)],10)
@@ -369,6 +395,61 @@ if code or unexpected:raise SystemExit(code or 1)
 '''
 
 
+def fixed_module(path, name):
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def source_assets(path):
+    assets = document(path)
+    helper = fixed_module(ROOT / 'apps/imager/packaging/service-source-assets.py', 'public_assets')
+    require(hashlib.sha256((json.dumps(assets, sort_keys=True, indent=2) + '\n').encode()).hexdigest()
+            == helper.ASSET_MANIFEST_SHA256, 'official public asset manifest differs')
+    return assets
+
+
+def asset_mounts(assets):
+    paths = {Path(row['source_root']) for row in assets['assets'].values()}
+    paths.update(Path(row['source_path']) for row in assets['archives'].values())
+    result = []
+    for path in sorted(paths):
+        # Never overlay the candidate, runtime, interpreter or protected image.
+        require(path.is_absolute() and '..' not in path.parts and ':' not in str(path)
+                and len(path.parts) > 2 and path.parts[1] in ('tmp', 'var', 'home')
+                and not path.is_symlink(), 'public asset mount escapes input namespace')
+        result.extend(['--volume', str(path) + ':' + str(path) + ':ro'])
+    return result
+
+
+def prepare_source(candidate):
+    """Measure protected installed prerequisites and public assets before producer work."""
+    inputs = document(candidate / 'source-inputs.json')
+    prerequisites = fixed_module(candidate / 'os/scripts/installer-receive-fixture/prerequisite-image.py',
+                                 'fixed_prerequisites')
+    for relative, (installed, mode) in prerequisites.ASSETS.items():
+        path = Path('/') / installed
+        info = path.lstat()
+        require(info.st_uid == 0 and stat.S_IMODE(info.st_mode) == mode,
+                'installed source prerequisite custody differs')
+        bound_file(path, inputs[relative])
+    helper = fixed_module(candidate / 'apps/imager/packaging/service-source-assets.py', 'fixed_public_assets')
+    helper.stage(document(candidate / 'source-assets.json'), candidate)
+
+
+def stage_sources(stage, sources):
+    """Copy the admitted transitive fixture closure, binding both sides."""
+    for relative in (*FIXTURE_FILES, *PACKAGE_FILES):
+        bound_file(ROOT / relative, sources[relative])
+        target = stage / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(ROOT / relative, target)
+        target.chmod(0o644)
+        bound_file(target, sources[relative])
+    (stage / 'source-inputs.json').write_text(json.dumps(sources, sort_keys=True))
+
+
 def run_native(args, cohort, output):
     engine = (['sudo', '-n'] if os.geteuid() != 0 else []) + ['podman']
     code, raw = execute(engine + ['image', 'inspect', args.image, '--format', '{{.ID}} {{.Architecture}}'],
@@ -398,15 +479,9 @@ def run_native(args, cohort, output):
         driver.parent.mkdir(parents=True)
         shutil.copyfile(__file__, driver)
         if not args.source_backend_only:
-            for relative in (*FIXTURE_FILES, *PACKAGE_FILES):
-                bound_file(ROOT / relative, cohort['source_inputs'][relative])
-                target = stage / relative
-                target.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copyfile(ROOT / relative, target)
-                target.chmod(0o644)
-                bound_file(target, cohort['source_inputs'][relative])
-            (stage / 'source-inputs.json').write_text(
-                json.dumps(cohort['source_inputs'], sort_keys=True))
+            stage_sources(stage, cohort['source_inputs'])
+            assets = source_assets(args.source_assets)
+            (stage / 'source-assets.json').write_text(json.dumps(assets, sort_keys=True))
         subjects = {role: {'sha256': row['sha256'], 'installed': BINDINGS.get(role)}
                     for role, row in cohort['roles'].items()}
         (stage / 'subjects.json').write_text(json.dumps(subjects, sort_keys=True))
@@ -432,6 +507,7 @@ def run_native(args, cohort, output):
                                 '--env', 'TILO_CAPTURE_EXACT_CASE=' + case]
             if case == TARGET_CASE:
                 command.extend(['--volume', '/proc/1/ns/pid:/qualification-initial-pidns:ro'])
+                command.extend(asset_mounts(assets))
             try:
                 if case in SOURCE_CASES:
                     listed, listing = execute(command + [args.image, '/qualified/imager-tests', '--list'],
@@ -490,8 +566,12 @@ def main():
     parser.add_argument('--image', default=os.environ.get('TILO_CAPTURE_QUALIFIER_IMAGE'))
     parser.add_argument('--output', type=Path)
     parser.add_argument('--source-backend-only', action='store_true')
+    parser.add_argument('--source-assets', type=Path,
+                        help='frozen official public distribution manifest; required for full migration')
     args = parser.parse_args()
     require(args.cohort is not None, 'actual current compiler/source qualification cohort required')
+    require(args.source_backend_only or args.source_assets is not None,
+            'full qualification requires measured official public source assets')
     require(type(args.image) is str and re.fullmatch('sha256:[0-9a-f]{64}', args.image),
             'actual immutable native qualifier image required')
     args.host, args.pins, args.sidecar = [p.absolute() for p in (args.host, args.pins, args.sidecar)]

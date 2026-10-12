@@ -21,7 +21,10 @@
 //! over the one before on a GPU target (copies, then damage), and the
 //! result compared with a full render of the same scene, in dark, light and
 //! high contrast. A step that is not a whole number of device pixels
-//! repaints the viewport instead, and still matches.
+//! repaints the viewport instead, and still matches. A collaborator's
+//! pointer resting over the list, painted over the widgets as a window
+//! paints it ([`tilo_app::app::SurfaceDamage::painting_peers`]), does not
+//! stop the copies: its mark repaints where it is and where a copy took it.
 
 use tilo_app::advanced::{Scene, WindowEvent};
 use tilo_app::app::{AppSurface, SurfaceDamage};
@@ -37,7 +40,6 @@ use tilo_app::winit::window::CursorIcon;
 static CATALOG: EmbeddedCatalog = EmbeddedCatalog::new(
     "en-US",
     &[("en-US", "copy-draft = Next task\ncopy-done = Completed\n")],
-    "copy-draft",
 );
 
 #[derive(Model, Default, Debug, Clone, PartialEq)]
@@ -145,10 +147,12 @@ fn task_row(row: &mut ViewCx<Checklist, Task>) -> Element {
 }
 
 /// The window's surface: 800×600 logical pixels at `scale`, presented by a
-/// host that copies what a scroll keeps on screen when `copying`.
+/// host that copies what a scroll keeps on screen when `copying`, with a
+/// collaborator's pointer resting at `peer` (logical pixels), if any.
 struct Surface {
     scale: f64,
     copying: bool,
+    peer: Option<(f64, f64)>,
 }
 
 impl Surface {
@@ -213,7 +217,15 @@ fn scroll(
         SurfaceDamage::copying()
     } else {
         SurfaceDamage::default()
-    };
+    }
+    .painting_peers();
+    if let Some((x, y)) = surface.peer {
+        app.presence_ctx_mut().upsert_remote_cursor(
+            "ada".into(),
+            [x as f32, y as f32],
+            Some("Ada Lovelace"),
+        );
+    }
     let mut scene = Scene::new();
     app.surface_input(
         surface,
@@ -293,6 +305,7 @@ fn scrolling_a_long_list_copies_what_stays_on_screen_and_matches_a_full_render()
             let surface = Surface {
                 scale: 1.0,
                 copying: true,
+                peer: None,
             };
             let down = scroll(app, &surface, &theme(), (40.0, 30));
             let up = scroll(app, &surface, &theme(), (-24.0, 15));
@@ -317,6 +330,60 @@ fn scrolling_a_long_list_copies_what_stays_on_screen_and_matches_a_full_render()
     }
 }
 
+/// The list scrolled down and back up with a collaborator's pointer
+/// resting over it, at `scale`, presented by a host that copies.
+fn scroll_beside_a_peer(theme: fn() -> Theme, scale: f64, peer: Option<(f64, f64)>) -> (Run, Run) {
+    drive_live_window::<Window, _>(|app| {
+        app.set_theme(theme());
+        app.init_layout();
+        let surface = Surface {
+            scale,
+            copying: true,
+            peer,
+        };
+        let down = scroll(app, &surface, &theme(), (40.0, 22));
+        let up = scroll(app, &surface, &theme(), (-24.0, 15));
+        (down, up)
+    })
+    .unwrap()
+}
+
+#[test]
+fn a_collaborators_pointer_over_the_list_still_copies_and_matches() {
+    for (name, theme) in THEMES {
+        for scale in [1.0, 2.0] {
+            let (down, up) = scroll_beside_a_peer(theme, scale, Some((260.0, 300.0)));
+            let (alone, _) = scroll_beside_a_peer(theme, scale, None);
+            eprintln!("{name} {scale}x with a peer: down {down:?}, up {up:?}; alone {alone:?}");
+            let window = 800.0 * 600.0 * scale * scale;
+            for (direction, run) in [("down", &down), ("up", &up)] {
+                assert_eq!(run.whole, 0, "{name} {scale}x {direction}: {run:?}");
+                assert!(
+                    run.copied_frames * 4 >= run.frames * 3,
+                    "{name} {scale}x: most frames scrolling {direction} beside a peer copy \
+                     ({run:?})"
+                );
+                let per_frame = run.repainted / run.copied_frames.max(1) as f64;
+                assert!(
+                    per_frame < window * 0.3,
+                    "{name} {scale}x: a frame scrolling {direction} beside a peer repaints the \
+                     exposed strip and the mark, not the list ({per_frame} px, {run:?})"
+                );
+            }
+            // The mark costs its own pixels, where it is and where a copy
+            // took it, not the list's.
+            let with_peer = down.repainted / down.copied_frames.max(1) as f64;
+            let without = alone.repainted / alone.copied_frames.max(1) as f64;
+            assert!(
+                with_peer < without + window * 0.05,
+                "{name} {scale}x: the peer's mark costs {} px a frame ({with_peer} with, \
+                 {without} without)",
+                with_peer - without
+            );
+        }
+    }
+}
+
 #[test]
 fn a_step_of_part_of_a_device_pixel_repaints_and_matches() {
     let theme = Theme::dark;
@@ -328,6 +395,7 @@ fn a_step_of_part_of_a_device_pixel_repaints_and_matches() {
             &Surface {
                 scale: 1.0,
                 copying: true,
+                peer: None,
             },
             &theme(),
             (40.5, 12),
@@ -347,6 +415,7 @@ fn a_step_of_part_of_a_device_pixel_repaints_and_matches() {
             &Surface {
                 scale: 2.0,
                 copying: true,
+                peer: None,
             },
             &theme(),
             (40.5, 12),
@@ -370,6 +439,7 @@ fn scrolling_past_the_end_stays_put_and_matches() {
             &Surface {
                 scale: 1.0,
                 copying: true,
+                peer: None,
             },
             &theme(),
             (90.0, 30),
@@ -388,6 +458,7 @@ fn a_host_that_does_not_copy_repaints_the_view_and_matches() {
         let surface = Surface {
             scale: 1.0,
             copying: false,
+            peer: None,
         };
         scroll(app, &surface, &theme(), (40.0, 30))
     })

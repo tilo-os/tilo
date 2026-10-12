@@ -59,16 +59,6 @@ impl Widget for RecordingContent {
         self.rect = ui::widget::layout_rect(taffy, node, origin);
     }
 
-    fn draw(
-        &mut self,
-        _scene: &mut Scene,
-        _transform: Affine,
-        _text_renderer: &mut TextRenderer,
-        _theme: &Theme,
-        _presence: &PresenceCtx,
-    ) {
-    }
-
     fn handle_event(&mut self, event: &WindowEvent, _ctx: &mut ui::widget::EventCtx<'_>) {
         let label = match event {
             WindowEvent::CursorMoved { .. } => "CursorMoved",
@@ -3439,5 +3429,268 @@ fn notification_banner_lost_release_does_not_capture_a_fresh_content_click() {
         );
         assert_eq!(h.chrome.borrow().notifications().len(), 1);
         assert!(h.chrome.borrow().notification_history().is_empty());
+    }
+}
+
+fn qs_details_focused(node: &ui::a11y::AccessNode, name: &str) -> bool {
+    (node.name.as_deref() == Some(name) && node.state.focused)
+        || node
+            .children
+            .iter()
+            .any(|child| qs_details_focused(child, name))
+}
+fn qs_details_tap(h: &mut AbsorbHarness, key: NamedKey) -> bool {
+    let handled = pump(h, &key_pressed(Key::Named(key)));
+    pump(h, &key_released(Key::Named(key)));
+    handled
+}
+
+fn open_radio_details_in_harness(
+    h: &mut AbsorbHarness,
+    input: &str,
+    name: &str,
+    target: &str,
+    action_id: &str,
+) {
+    match input {
+        "keyboard" => {
+            for _ in 0..32 {
+                assert!(qs_details_tap(h, NamedKey::Tab));
+                if qs_details_focused(&h.host.accessibility().unwrap(), name) {
+                    break;
+                }
+            }
+            assert!(qs_details_focused(&h.host.accessibility().unwrap(), name));
+            assert!(qs_details_tap(h, NamedKey::Enter));
+        }
+        "accessibility" => {
+            let index = h
+                .host
+                .qs_root
+                .accessibility_snapshot(&h.chrome.borrow().quick_settings)
+                .children
+                .iter()
+                .position(|node| node.name.as_deref() == Some(name))
+                .expect("details accessibility child");
+            assert!(focus_quick_settings_accessibility(&mut h.host, &[index]));
+            assert!(qs_details_tap(h, NamedKey::Enter));
+        }
+        "semantic" => {
+            let provider = crate::shell::search::providers::actions::ActionsProvider::new();
+            let document = AutoCommit::new();
+            let results = crate::shell::search::SearchProvider::query(
+                &provider,
+                crate::shell::search::SearchContext {
+                    query_scope: None,
+                    include_programmatic: false,
+                    needle: "",
+                    wanted: &[crate::shell::search::ResourceKind::Action],
+                    chrome: &h.chrome.borrow(),
+                    doc: &document,
+                    doc_root: &automerge::ROOT,
+                },
+            );
+            let result = results
+                .iter()
+                .find(|result| result.id == action_id)
+                .expect("published details action");
+            let mut document = AutoCommit::new();
+            (result.on_open)(
+                &mut ui::widget::Edits::lend(&mut document),
+                &automerge::ROOT,
+                &h.chrome,
+                &tilo_actions::ActionArgs::none(),
+            )
+            .unwrap();
+        }
+        _ => {
+            let rect = h
+                .host
+                .quick_settings_semantic_rects()
+                .into_iter()
+                .find_map(|(id, rect)| (id == target).then_some(rect))
+                .expect("painted details target");
+            pump(h, &cursor_moved_at(rect.center()));
+            assert!(pump(h, &left_button_pressed()));
+            assert!(pump(h, &left_button_released()));
+        }
+    }
+}
+
+#[test]
+fn radio_details_use_native_keyboard_pointer_and_action_routes() {
+    for (name, target, action_id, level) in [
+        (
+            "Wi-Fi networks",
+            "quick_settings_network_details",
+            "quick-settings.network",
+            crate::shell::quick_settings::QsLevel::Wifi,
+        ),
+        (
+            "Bluetooth devices",
+            "quick_settings_bluetooth_details",
+            "quick-settings.bluetooth",
+            crate::shell::quick_settings::QsLevel::Bluetooth,
+        ),
+    ] {
+        for input in ["keyboard", "pointer", "accessibility", "semantic"] {
+            let actions = super::qs_device_state_tests::Recorder::default();
+            let mut h = build_harness_sized(1000.0, 980.0);
+            h.host = h.host.with_qs_actions(Box::new(actions.clone()));
+            h.host.qs_root = crate::shell::quick_settings::root::QuickSettingsRoot::default();
+            {
+                let mut state = h.chrome.borrow_mut();
+                state.overlays.quick_settings = true;
+                state.quick_settings = crate::shell::chrome_state::QuickSettingsState::fixture();
+                state.quick_settings.radios.wifi_available = true;
+                state.quick_settings.bluetooth_available = true;
+            }
+            h.host.force_quick_settings_settled();
+            settle(&mut h, 1000.0, 980.0);
+            open_radio_details_in_harness(&mut h, input, name, target, action_id);
+            assert_eq!(
+                h.chrome.borrow().quick_settings.current_level(),
+                &level,
+                "{input}"
+            );
+            assert!(
+                actions.calls().is_empty(),
+                "details navigation must not write radio state"
+            );
+            assert!(qs_details_tap(&mut h, NamedKey::Escape));
+            assert_eq!(
+                h.chrome.borrow().quick_settings.current_level(),
+                &crate::shell::quick_settings::QsLevel::Root
+            );
+            assert!(h.chrome.borrow().overlays.quick_settings);
+            settle(&mut h, 780.0, 920.0);
+            if input == "keyboard" {
+                assert!(qs_details_tap(&mut h, NamedKey::Enter));
+                assert_eq!(h.chrome.borrow().quick_settings.current_level(), &level);
+                assert!(qs_details_tap(&mut h, NamedKey::Escape));
+            }
+            assert!(qs_details_tap(&mut h, NamedKey::Escape));
+            assert!(!h.chrome.borrow().overlays.quick_settings);
+            assert!(
+                actions.calls().is_empty(),
+                "cancel and resize never toggle a device"
+            );
+        }
+    }
+}
+
+#[test]
+fn radio_details_navigation_owns_its_release_after_escape() {
+    let actions = super::qs_device_state_tests::Recorder::default();
+    let mut h = build_harness_sized(1000.0, 980.0);
+    h.host = h.host.with_qs_actions(Box::new(actions.clone()));
+    {
+        let mut state = h.chrome.borrow_mut();
+        state.overlays.quick_settings = true;
+        state.quick_settings.radios.wifi_available = true;
+    }
+    h.host.force_quick_settings_settled();
+    settle(&mut h, 1000.0, 980.0);
+    let rect = h
+        .host
+        .quick_settings_semantic_rects()
+        .into_iter()
+        .find_map(|(id, rect)| (id == "quick_settings_network_details").then_some(rect))
+        .expect("Wi-Fi details");
+    pump(&mut h, &cursor_moved_at(rect.center()));
+    assert!(pump(&mut h, &left_button_pressed()));
+    assert!(pump(&mut h, &key_pressed(Key::Named(NamedKey::Escape))));
+    assert!(pump(&mut h, &key_pressed(Key::Named(NamedKey::Escape))));
+    assert!(!h.chrome.borrow().overlays.quick_settings);
+    pump(&mut h, &cursor_moved_at(Point::new(8.0, 900.0)));
+    let releases = || {
+        h.log
+            .borrow()
+            .iter()
+            .filter(|name| *name == "MouseInput::Released")
+            .count()
+    };
+    let before = releases();
+    assert!(pump(&mut h, &left_button_released()));
+    assert_eq!(
+        h.log
+            .borrow()
+            .iter()
+            .filter(|name| *name == "MouseInput::Released")
+            .count(),
+        before
+    );
+    assert!(actions.calls().is_empty());
+    // The next ordinary desktop click remains deliverable.
+    pump(&mut h, &left_button_pressed());
+    pump(&mut h, &left_button_released());
+    assert!(
+        h.log
+            .borrow()
+            .iter()
+            .filter(|name| *name == "MouseInput::Released")
+            .count()
+            > before
+    );
+}
+
+#[test]
+fn radio_details_lost_release_does_not_capture_a_fresh_content_click() {
+    for lost_focus in [true, false] {
+        for target in [
+            "quick_settings_network_details",
+            "quick_settings_bluetooth_details",
+        ] {
+            let actions = super::qs_device_state_tests::Recorder::default();
+            let mut h = build_harness_sized(1000.0, 980.0);
+            h.host = h.host.with_qs_actions(Box::new(actions.clone()));
+            {
+                let mut state = h.chrome.borrow_mut();
+                state.overlays.quick_settings = true;
+                state.quick_settings.radios.wifi_available = true;
+                state.quick_settings.bluetooth_available = true;
+            }
+            h.host.force_quick_settings_settled();
+            settle(&mut h, 1000.0, 980.0);
+            let rect = h
+                .host
+                .quick_settings_semantic_rects()
+                .into_iter()
+                .find_map(|(id, rect)| (id == target).then_some(rect))
+                .expect("radio details");
+            pump(&mut h, &cursor_moved_at(rect.center()));
+            assert!(pump(&mut h, &left_button_pressed()));
+            if lost_focus {
+                pump(&mut h, &WindowEvent::Focused(false));
+                pump(&mut h, &WindowEvent::Focused(true));
+            }
+            assert!(qs_details_tap(&mut h, NamedKey::Escape));
+            assert!(qs_details_tap(&mut h, NamedKey::Escape));
+            assert!(!h.chrome.borrow().overlays.quick_settings);
+            // The navigation release is deliberately absent. The next press
+            // begins an independent content gesture, with or without focus loss.
+            pump(&mut h, &cursor_moved_at(Point::new(8.0, 900.0)));
+            h.log.borrow_mut().clear();
+            pump(&mut h, &left_button_pressed());
+            assert!(
+                h.log
+                    .borrow()
+                    .iter()
+                    .any(|event| event == "MouseInput::Pressed"),
+                "the fresh content press is delivered: {target}, lost_focus={lost_focus}"
+            );
+            pump(&mut h, &left_button_released());
+            assert!(
+                h.log
+                    .borrow()
+                    .iter()
+                    .any(|event| event == "MouseInput::Released"),
+                "its matching release must also arrive: {target}, lost_focus={lost_focus}"
+            );
+            assert!(
+                actions.calls().is_empty(),
+                "navigation never writes a radio"
+            );
+        }
     }
 }

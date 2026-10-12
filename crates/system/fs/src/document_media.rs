@@ -36,13 +36,15 @@
 
 use std::path::Path;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::Result;
 use bytes::Bytes;
+use futures_util::{Stream, StreamExt as _};
 use iroh_blobs::api::blobs::BlobStatus;
 use iroh_blobs::{BlobFormat, Hash, HashAndFormat};
 use runtime_fs::blobs::{
-    BlobBackend, BlobError, BlobFuture, BlobRef, BlobScope, MAX_BLOB_BYTES, ReadOutcome,
+    BlobBackend, BlobChunks, BlobError, BlobFuture, BlobRef, BlobScope, MAX_BLOB_BYTES, ReadOutcome,
 };
 
 use crate::store::ContentStore;
@@ -96,15 +98,66 @@ impl DocumentMedia {
                 limit: MAX_BLOB_BYTES,
             });
         }
-        let hash = self
-            .store
-            .ingest(Bytes::from(bytes))
-            .await
-            .map_err(|error| BlobError::Refused(error.to_string()))?;
+        let whole: std::io::Result<Bytes> = Ok(Bytes::from(bytes));
+        let (hash, _) = self
+            .store_stream(scope, futures_util::stream::iter([whole]))
+            .await?;
+        Ok(hash)
+    }
+
+    /// Store content that arrives in pieces for `scope`, hashing and
+    /// importing each piece as it comes, so the daemon never holds the whole
+    /// content, and never caching it: media is read back by range. As for
+    /// [`Self::store`], all of it is hashed and imported before answering,
+    /// and the room's reference is recorded only once the content is
+    /// durable. Returns the content's hash and length.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BlobError::TooLarge`] as soon as the pieces pass
+    /// [`MAX_BLOB_BYTES`], and a refusal when a piece is an error (the
+    /// upload was abandoned) or the store fails. Nothing is stored then.
+    pub async fn store_stream<S>(
+        &self,
+        scope: &BlobScope,
+        pieces: S,
+    ) -> Result<(Hash, u64), BlobError>
+    where
+        S: Stream<Item = std::io::Result<Bytes>> + Send + Sync + 'static,
+    {
+        let seen = Arc::new(AtomicU64::new(0));
+        let counted = Arc::clone(&seen);
+        let limited = pieces.map(move |piece| {
+            let piece = piece?;
+            let len = counted
+                .fetch_add(piece.len() as u64, Ordering::Relaxed)
+                .saturating_add(piece.len() as u64);
+            if len > MAX_BLOB_BYTES {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "document media above the size limit",
+                ));
+            }
+            Ok(piece)
+        });
+        let (hash, len) = match self.store.ingest_stream(limited).await {
+            Ok(stored) => stored,
+            Err(error) => {
+                let len = seen.load(Ordering::Relaxed);
+                return Err(if len > MAX_BLOB_BYTES {
+                    BlobError::TooLarge {
+                        len,
+                        limit: MAX_BLOB_BYTES,
+                    }
+                } else {
+                    BlobError::Refused(error.to_string())
+                });
+            }
+        };
         record_reference(&self.store, scope, hash)
             .await
             .map_err(|error| BlobError::Refused(error.to_string()))?;
-        Ok(hash)
+        Ok((hash, len))
     }
 
     /// Read a range; content this scope does not reference here is
@@ -159,6 +212,27 @@ impl BlobBackend for DocumentMedia {
         Box::pin(async move {
             let len = bytes.len() as u64;
             let hash = self.store(&scope, bytes).await?;
+            Ok(BlobRef {
+                hash: hash.to_hex(),
+                len,
+                mime,
+            })
+        })
+    }
+
+    fn put_stream(
+        self: Arc<Self>,
+        scope: BlobScope,
+        mut chunks: BlobChunks,
+        mime: String,
+    ) -> BlobFuture<Result<BlobRef, BlobError>> {
+        Box::pin(async move {
+            let pieces = futures_util::stream::poll_fn(move |cx| {
+                chunks
+                    .poll_next(cx)
+                    .map(|piece| piece.map(|piece| piece.map(Bytes::from)))
+            });
+            let (hash, len) = self.store_stream(&scope, pieces).await?;
             Ok(BlobRef {
                 hash: hash.to_hex(),
                 len,

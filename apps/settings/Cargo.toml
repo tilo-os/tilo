@@ -28,6 +28,7 @@ bounded-command = { path = "../../crates/system/bounded-command" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 # One owner for ~/.config/tilo/settings.json.
 settings-store = { path = "../../crates/system/settings-store", features = ["model"] }
+tilo-accessibility-settings = { path = "../../crates/platform/tilo-accessibility-settings", features = ["model"] }
 desktop-policy = { path = "../../crates/system/desktop-policy" }
 package-store = { path = "../../crates/packaging/package-store" }
 # Installed manifests are read through the package format's one decoder,

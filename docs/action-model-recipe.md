@@ -216,11 +216,12 @@ comment. `tilo-app check` lists the missing ones.
 ## 7. The public surface
 
 `tilo-app surface` writes the app's verbs, their parameters and its stored
-fields to `surface.toml`; commit it. `tilo-app check` and CI fail when the
+fields to `surface.toml` (ids, kinds, footprints, paths and types; labels and
+descriptions stay in the code); commit it. `tilo-app check` and CI fail when the
 code and the file disagree, when a stored field is read differently without
 a new `#[resource(version = N, migrate = …)]`, or when a control is bound to
-something the resource does not publish. The packaged file is what the OS
-offers of the app while it is closed.
+something the resource does not publish. The packaged file is what a
+receiver without the app decides its changes against.
 
 A document that does not read as the model shows why in place of the view,
 and every action reports itself unavailable for that reason; the last state

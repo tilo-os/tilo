@@ -120,13 +120,7 @@ impl Widget for Probe {
         dyn crate::resources::PublishesResources
     );
 
-    crate::testing::inert_widget_methods!(
-        leaf_layout,
-        apply_layout,
-        draw,
-        get_rect,
-        name = "Controlled owner"
-    );
+    crate::testing::inert_widget_methods!(leaf_layout, name = "Controlled owner");
     fn for_each_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) {
         for child in self.children.borrow().iter() {
             visitor(child.as_ref());

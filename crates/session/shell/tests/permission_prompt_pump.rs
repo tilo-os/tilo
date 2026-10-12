@@ -86,16 +86,6 @@ impl ui::widget::Widget for StubContent {
         node_map.insert(n, std::ptr::from_mut::<dyn ui::widget::Widget>(self));
         n
     }
-    fn apply_layout(&mut self, _taffy: &TaffyTree<()>, _node: taffy::NodeId, _origin: Point) {}
-    fn draw(
-        &mut self,
-        _scene: &mut vello::Scene,
-        _transform: vello::kurbo::Affine,
-        _text_renderer: &mut ui::text_render::TextRenderer,
-        _theme: &ui::theme::Theme,
-        _presence: &ui::presence::PresenceCtx,
-    ) {
-    }
     fn name(&self) -> &'static str {
         "StubContent"
     }

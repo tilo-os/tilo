@@ -1,7 +1,61 @@
 //! Admission of protected account custody by the selected image and actual
 //! installed consumers. A staged importer never certifies its own target.
 use serde::{Deserialize, Serialize};
-use std::io;
+use sha2::{Digest, Sha256};
+use std::{collections::BTreeMap, io};
+
+// This fixed image closure matches RECEIVING_DEPENDENCIES in the producer.
+const RECEIVING_DEPENDENCIES: &[&str] = &[
+    "/usr/libexec/tilo-installer-receive-fixture/receive.py",
+    "/usr/libexec/tilo-installer-receive-fixture/semantic.py",
+    "/usr/libexec/tilo-installer-receive-fixture/firstuse.py",
+    "/usr/libexec/tilo-installer-receive-fixture/delivery.py",
+    "/usr/libexec/tilo-installer-receive-fixture/namespace.py",
+    "/usr/libexec/tilo-installer-receive-fixture/packages.py",
+    "/usr/libexec/tilo-installer-receive-fixture/apps.py",
+    "/usr/libexec/tilo-installer-receive-fixture/cloud.py",
+    "/usr/libexec/tilo-installer-receive-fixture/service_sessions.py",
+    "/usr/libexec/tilo-installer-receive-fixture/service_contract.py",
+    "/usr/libexec/tilo-installer-receive-fixture/service_processes.py",
+    "/usr/libexec/tilo-installer-source-fixture/source.py",
+    "/usr/libexec/tilo-installer-source-fixture/owned_gpt.py",
+    "/usr/libexec/tilo-installer-source-fixture/bounded_native.py",
+    "/usr/libexec/tilo-installer-source-fixture/flatpak_material.py",
+    "/usr/libexec/tilo-installer-source-fixture/source_sessions.py",
+];
+
+fn hex_digest(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
+fn receiving_dependencies<'de, D>(deserializer: D) -> Result<BTreeMap<String, String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    struct Unique;
+    impl<'de> serde::de::Visitor<'de> for Unique {
+        type Value = BTreeMap<String, String>;
+        fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str("unique measured dependency paths")
+        }
+        fn visit_map<M: serde::de::MapAccess<'de>>(
+            self,
+            mut map: M,
+        ) -> Result<Self::Value, M::Error> {
+            let mut result = BTreeMap::new();
+            while let Some((key, value)) = map.next_entry::<String, String>()? {
+                if result.insert(key, value).is_some() {
+                    return Err(serde::de::Error::custom("duplicate receiving dependency"));
+                }
+            }
+            Ok(result)
+        }
+    }
+    deserializer.deserialize_map(Unique)
+}
 
 /// Image-produced proof, carried inside the authenticated component manifest.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -35,11 +89,40 @@ pub struct ServiceConsumerCapability {
     pub qualification_script_sha256: String,
     pub receiving_shell_path: String,
     pub receiving_shell_sha256: String,
+    pub receiving_entry_sha256: String,
+    #[serde(deserialize_with = "receiving_dependencies")]
+    pub receiving_dependencies: BTreeMap<String, String>,
+    pub receiving_python_path: String,
+    pub receiving_python_sha256: String,
     pub receiving_route_qualification_sha256: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin_storage_qualification_sha256: Option<String>,
 }
 impl ServiceConsumerCapability {
+    // Python uses sort_keys=True and compact JSON. All admitted keys/values
+    // here are ASCII, and BTreeMap preserves the same lexical key ordering.
+    fn measured_closure_hash(&self) -> io::Result<String> {
+        #[derive(Serialize)]
+        struct Closure<'a> {
+            receiving_dependencies: &'a BTreeMap<String, String>,
+            receiving_entry_sha256: &'a str,
+            receiving_python_path: &'a str,
+            receiving_python_sha256: &'a str,
+            receiving_shell_sha256: &'a str,
+        }
+        let encoded = serde_json::to_vec(&Closure {
+            receiving_dependencies: &self.receiving_dependencies,
+            receiving_entry_sha256: &self.receiving_entry_sha256,
+            receiving_python_path: &self.receiving_python_path,
+            receiving_python_sha256: &self.receiving_python_sha256,
+            receiving_shell_sha256: &self.receiving_shell_sha256,
+        })?;
+        let mut hash = Sha256::new();
+        hash.update(b"tilo-installed-service-receiver-python-v1\0");
+        hash.update(encoded);
+        Ok(hex::encode(hash.finalize()))
+    }
+
     fn validate(&self, sdk_root: &str) -> io::Result<()> {
         let hashes = [
             &self.sdk_runtime_root_hash,
@@ -51,12 +134,32 @@ impl ServiceConsumerCapability {
             &self.cef_host_sha256,
             &self.qualification_script_sha256,
             &self.receiving_shell_sha256,
+            &self.receiving_entry_sha256,
+            &self.receiving_python_sha256,
             &self.receiving_route_qualification_sha256,
         ];
-        if self.schema != 1
+        if self.schema != 2
             || !matches!(self.protocol, 1 | 2)
             || self.sdk_runtime_root_hash != sdk_root
-            || self.receiving_shell_sha256 != self.receiving_route_qualification_sha256
+            || self.receiving_dependencies.len() != RECEIVING_DEPENDENCIES.len()
+            || RECEIVING_DEPENDENCIES.iter().any(|path| {
+                !self
+                    .receiving_dependencies
+                    .get(*path)
+                    .is_some_and(|hash| hex_digest(hash))
+            })
+            || self.receiving_dependencies.get(RECEIVING_DEPENDENCIES[0])
+                != Some(&self.receiving_entry_sha256)
+            || !self
+                .receiving_python_path
+                .strip_prefix("/usr/bin/python3")
+                .is_some_and(|suffix| {
+                    suffix.is_empty()
+                        || suffix.strip_prefix('.').is_some_and(|version| {
+                            !version.is_empty() && version.bytes().all(|b| b.is_ascii_digit())
+                        })
+                })
+            || self.receiving_route_qualification_sha256 != self.measured_closure_hash()?
             || !matches!(
                 self.receiving_shell_path.as_str(),
                 "/usr/bin/shell" | "/usr/bin/tilo-shell"
@@ -201,7 +304,10 @@ pub fn installed() -> io::Result<ConsumerCapability> {
     let (send, receive) = std::sync::mpsc::sync_channel(1);
     let _reader = std::thread::spawn(move || {
         let mut bytes = Vec::new();
-        let result = stdout.take(4097).read_to_end(&mut bytes).map(|_| bytes);
+        let result = stdout
+            .take(16 * 1024 + 1)
+            .read_to_end(&mut bytes)
+            .map(|_| bytes);
         let _ = send.send(result);
     });
     let deadline = std::time::Instant::now()
@@ -209,7 +315,7 @@ pub fn installed() -> io::Result<ConsumerCapability> {
         .ok_or_else(unavailable)?;
     let result = receive.recv_timeout(std::time::Duration::from_secs(150));
     let bytes = match result {
-        Ok(Ok(bytes)) if bytes.len() <= 4096 => bytes,
+        Ok(Ok(bytes)) if bytes.len() <= 16 * 1024 => bytes,
         _ => {
             let _ = child.kill();
             let _ = child.wait();
@@ -254,99 +360,207 @@ fn unavailable() -> io::Error {
 mod tests {
     use super::*;
 
+    // This is a serialization/measurement fixture, not native readiness evidence.
+    // Execute the real Python route producer with actual files; only the owned
+    // sandbox qualification callback is replaced by its explicit test response.
+    fn python_contract() -> Vec<u8> {
+        let scripts = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../os/scripts");
+        let script = r#"
+import importlib.util, json, pathlib, sys, tempfile
+scripts = pathlib.Path(sys.argv[1])
+def load(name):
+    spec = importlib.util.spec_from_file_location(name, scripts / (name + '.py'))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+service = load('service-consumer-capability')
+verifier = load('verify-account-consumer-capability')
+with tempfile.TemporaryDirectory() as temporary:
+    root = pathlib.Path(temporary).resolve()
+    for path in (*service.RECEIVING_DEPENDENCIES, '/usr/bin/shell', '/usr/bin/python3.13'):
+        target = root / path.removeprefix('/')
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(('fixture: ' + path).encode())
+        target.chmod(0o755)
+    (root / 'usr/bin/python3').symlink_to('python3.13')
+    sdk = dict(schema=1, protected_grant_protocol=1,
+        credential_helper_sha256='1'*64, runtime_root_hash='2'*64,
+        runtime_probe_sha256='3'*64, runtime_library_sha256='4'*64,
+        runtime_version='2026.10', runtime_library='lib/libruntime_dylib.so')
+    candidate = dict(schema=1, protocol=2, sdk_runtime_root_hash=sdk['runtime_root_hash'],
+        browser_package_hash='5'*64, browser_publisher='6'*64,
+        browser_binary_sha256='7'*64, cef_runtime_version='2026.10-chromium',
+        cef_runtime_root_hash='8'*64, cef_runtime_publisher='9'*64,
+        cef_host_sha256='a'*64, qualification_script_sha256='b'*64,
+        origin_storage_qualification_sha256='b'*64)
+    def fixture_qualifier(command, env, request):
+        facts = json.loads(request)
+        return json.dumps(dict(schema=2, service_session_protocol=2,
+            receiving_route_qualification_sha256=facts['receiving_route_qualification_sha256'],
+            private_list_verified=True, private_resolve_verified=True,
+            isolated_profile_verified=True, revocation_verified=True,
+            no_vault_mount_verified=True, origin_storage_persisted=True,
+            chat_destination_navigation_verified=True)).encode()
+    primitives = (verifier.digest, verifier.interpreter, verifier.regular)
+    # The default callback must never fabricate a successful receiving route.
+    try:
+        service.qualify_receiving_route(root, sdk, candidate, primitives, '/usr/bin/shell')
+    except ValueError:
+        pass
+    else:
+        raise AssertionError('default route qualification fabricated readiness')
+    sdk['service_sessions'] = service.qualify_receiving_route(
+        root, sdk, candidate, primitives, '/usr/bin/shell', fixture_qualifier)
+    receipt = root / 'receipt.json'
+    receipt.write_text(json.dumps(sdk, sort_keys=True, separators=(',', ':')))
+    # Exercise the installed verifier's strict saved-receipt reader too.
+    print(json.dumps(verifier.read_receipt(receipt, sdk), sort_keys=True, separators=(',', ':')))
+"#;
+        let output = std::process::Command::new("python3")
+            .arg("-I")
+            .arg("-c")
+            .arg(script)
+            .arg(scripts)
+            .output()
+            .expect("Python contract producer must be available");
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(output.stdout.len() <= 16 * 1024);
+        output.stdout
+    }
+
+    fn admitted(value: serde_json::Value) -> bool {
+        serde_json::from_value::<ConsumerCapability>(value)
+            .is_ok_and(|proof| proof.supports_service_session_protocol(2))
+    }
+
     #[test]
-    fn service_admission_requires_nested_receiving_artifacts_bound_to_selected_sdk() {
-        let legacy = serde_json::json!({
-            "schema":1,"protected_grant_protocol":1,
-            "credential_helper_sha256":"1".repeat(64),"runtime_root_hash":"2".repeat(64),
-            "runtime_probe_sha256":"3".repeat(64),"runtime_library_sha256":"4".repeat(64),
-            "runtime_version":"2026.10","runtime_library":"lib/libruntime_dylib.so"
-        });
-        let mut proof: ConsumerCapability = serde_json::from_value(legacy).unwrap();
+    fn real_python_measured_closure_is_admitted_and_mutations_fail_closed() {
+        let bytes = python_contract();
+        let proof: ConsumerCapability = serde_json::from_slice(&bytes).unwrap();
         proof.validate().unwrap();
-        assert!(!proof.supports_service_sessions());
-        proof.service_sessions = Some(ServiceConsumerCapability {
-            schema: 1,
-            protocol: 1,
-            sdk_runtime_root_hash: proof.runtime_root_hash.clone(),
-            browser_package_hash: "5".repeat(64),
-            browser_publisher: "6".repeat(64),
-            browser_binary_sha256: "7".repeat(64),
-            cef_runtime_version: "2026.10-chromium".into(),
-            cef_runtime_root_hash: "8".repeat(64),
-            cef_runtime_publisher: "9".repeat(64),
-            cef_host_sha256: "a".repeat(64),
-            qualification_script_sha256: "b".repeat(64),
-            receiving_shell_path: "/usr/bin/shell".into(),
-            receiving_shell_sha256: "c".repeat(64),
-            receiving_route_qualification_sha256: "c".repeat(64),
-            origin_storage_qualification_sha256: None,
-        });
-        assert!(proof.supports_service_sessions());
-        assert!(!proof.supports_service_session_protocol(2));
-        let valid = proof.clone();
-        proof.service_sessions.as_mut().unwrap().protocol = 2;
-        assert!(!proof.supports_service_session_protocol(2));
-        proof
-            .service_sessions
-            .as_mut()
-            .unwrap()
-            .origin_storage_qualification_sha256 = Some("b".repeat(64));
         assert!(proof.supports_service_session_protocol(2));
-        proof
-            .service_sessions
-            .as_mut()
-            .unwrap()
-            .origin_storage_qualification_sha256 = Some("e".repeat(64));
-        assert!(!proof.supports_service_session_protocol(2));
-        assert!(proof.validate().is_err());
-        proof
-            .service_sessions
-            .as_mut()
-            .unwrap()
-            .origin_storage_qualification_sha256 = Some("b".repeat(64));
-        assert!(proof.supports_service_session_protocol(1));
+        let valid: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+
+        for field in [
+            "sdk_runtime_root_hash",
+            "browser_package_hash",
+            "browser_publisher",
+            "browser_binary_sha256",
+            "cef_runtime_version",
+            "cef_runtime_root_hash",
+            "cef_runtime_publisher",
+            "cef_host_sha256",
+            "qualification_script_sha256",
+            "receiving_shell_sha256",
+            "receiving_entry_sha256",
+            "receiving_python_sha256",
+            "receiving_route_qualification_sha256",
+            "origin_storage_qualification_sha256",
+        ] {
+            let mut changed = valid.clone();
+            changed["service_sessions"][field] = "".into();
+            assert!(!admitted(changed), "{field}");
+        }
+        for (field, value) in [
+            ("schema", serde_json::json!(1)),
+            ("protocol", serde_json::json!(3)),
+            ("receiving_shell_path", serde_json::json!("/tmp/shell")),
+            (
+                "receiving_python_path",
+                serde_json::json!("/usr/bin/../bin/python3"),
+            ),
+            ("sdk_runtime_root_hash", serde_json::json!("e".repeat(64))),
+            ("receiving_entry_sha256", serde_json::json!("e".repeat(64))),
+            ("receiving_python_sha256", serde_json::json!("e".repeat(64))),
+            (
+                "origin_storage_qualification_sha256",
+                serde_json::json!("e".repeat(64)),
+            ),
+            (
+                "receiving_route_qualification_sha256",
+                serde_json::json!(
+                    proof
+                        .service_sessions
+                        .as_ref()
+                        .unwrap()
+                        .receiving_shell_sha256
+                ),
+            ),
+        ] {
+            let mut changed = valid.clone();
+            changed["service_sessions"][field] = value;
+            assert!(!admitted(changed), "{field}");
+        }
+        for path in RECEIVING_DEPENDENCIES {
+            for remove in [false, true] {
+                let mut changed = valid.clone();
+                let dependencies = changed["service_sessions"]["receiving_dependencies"]
+                    .as_object_mut()
+                    .unwrap();
+                if remove {
+                    dependencies.remove(*path);
+                } else {
+                    dependencies.insert((*path).into(), serde_json::json!("e".repeat(64)));
+                }
+                assert!(!admitted(changed), "{path}");
+            }
+        }
+        for field in [
+            "receiving_dependencies",
+            "receiving_python_path",
+            "receiving_entry_sha256",
+        ] {
+            let mut changed = valid.clone();
+            changed["service_sessions"]
+                .as_object_mut()
+                .unwrap()
+                .remove(field);
+            assert!(!admitted(changed), "{field}");
+        }
+        let mut changed = valid.clone();
+        changed["service_sessions"]["receiving_dependencies"]["/tmp/extra.py"] =
+            serde_json::json!("e".repeat(64));
+        assert!(!admitted(changed));
+        let mut changed = valid.clone();
+        changed["service_sessions"]["ready"] = true.into();
+        assert!(!admitted(changed));
+
+        let text = String::from_utf8(bytes).unwrap();
+        let key = format!("\"{}\":", RECEIVING_DEPENDENCIES[0]);
+        let duplicate = text.replacen(&key, &format!("{key}\"{}\",{key}", "e".repeat(64)), 1);
+        assert!(serde_json::from_str::<ConsumerCapability>(&duplicate).is_err());
+
+        // Recomputing the digest cannot admit an expanded/replaced dependency
+        // set, nor break the entrypoint's binding to its inventory member.
+        let mut changed = proof.clone();
+        let service = changed.service_sessions.as_mut().unwrap();
+        service
+            .receiving_dependencies
+            .insert("/tmp/extra.py".into(), "e".repeat(64));
+        service.receiving_route_qualification_sha256 = service.measured_closure_hash().unwrap();
+        assert!(changed.validate().is_err());
+        let mut changed = proof.clone();
+        let service = changed.service_sessions.as_mut().unwrap();
+        service.receiving_entry_sha256 = "e".repeat(64);
+        service.receiving_route_qualification_sha256 = service.measured_closure_hash().unwrap();
+        assert!(changed.validate().is_err());
+
+        let mut cookies = proof.clone();
+        let service = cookies.service_sessions.as_mut().unwrap();
+        service.protocol = 1;
+        service.origin_storage_qualification_sha256 = None;
+        assert!(cookies.supports_service_sessions());
+        assert!(!cookies.supports_service_session_protocol(2));
+
+        let mut legacy = valid;
+        legacy.as_object_mut().unwrap().remove("service_sessions");
+        let legacy: ConsumerCapability = serde_json::from_value(legacy).unwrap();
+        legacy.validate().unwrap();
+        assert!(!legacy.supports_service_sessions());
         assert!(!proof.supports_service_session_protocol(3));
-        proof = valid.clone();
-        proof
-            .service_sessions
-            .as_mut()
-            .unwrap()
-            .sdk_runtime_root_hash = "c".repeat(64);
-        assert!(!proof.supports_service_sessions());
-        proof = valid.clone();
-        proof
-            .service_sessions
-            .as_mut()
-            .unwrap()
-            .cef_host_sha256
-            .clear();
-        assert!(!proof.supports_service_sessions());
-        proof = valid.clone();
-        proof
-            .service_sessions
-            .as_mut()
-            .unwrap()
-            .receiving_shell_path = "/tmp/shell".into();
-        assert!(!proof.supports_service_sessions());
-        proof = valid.clone();
-        proof
-            .service_sessions
-            .as_mut()
-            .unwrap()
-            .receiving_route_qualification_sha256
-            .clear();
-        assert!(!proof.supports_service_sessions());
-        proof = valid.clone();
-        proof
-            .service_sessions
-            .as_mut()
-            .unwrap()
-            .receiving_route_qualification_sha256 = "d".repeat(64);
-        assert!(!proof.supports_service_sessions());
-        assert!(proof.validate().is_err());
-        proof = valid;
-        proof.service_sessions.as_mut().unwrap().protocol = 0;
-        assert!(!proof.supports_service_sessions());
     }
 }

@@ -28,5 +28,5 @@ bindings_sha256 = "ddc528a64c4288bbfd321b94cfa5dc0f67753e0bfb395e37ee047499175b6
 path = "crates/runtime/runtime-fs"
 src_prefix = "schema"
 schemas = ["schema/fs.capnp", "schema/blobs.capnp"]
-schema_sha256 = "9c1159c4a673a67a4f294989866065e39ec3cf6a134e6ce91934aee77c89d121"
-bindings_sha256 = "abb68d2d682b3dd3b90690355a2ccabba1147642db06c0c65bbe82a982a224b2"
+schema_sha256 = "5dcba86d25fcd86c3439a68e53bcddb8e211c3db2fbe403a2e2b44806078e16b"
+bindings_sha256 = "6e8ff53d143c33885c59680c0836f058828de267a76ed36525ae1388a0ab7aef"

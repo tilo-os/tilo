@@ -37,7 +37,6 @@ exclude = [
 # Default builds cover core crates. CI checks affected packages and runs
 # the full workspace nightly.
 default-members = [
-    "crates/browser/browser-continuity",
     "crates/doc/tilo-doc",
     "crates/doc/tilo-doc-codecs",
     "crates/system/fs",
@@ -48,6 +47,7 @@ default-members = [
     "crates/runtime/runtime",
 ]
 members = [
+    "crates/browser/browser-continuity",
     "crates/platform/tilo-messaging",
     "crates/dev/registry-review",
     "apps/canvas",
@@ -256,6 +256,7 @@ members = [
     "crates/platform/tilo-image-codec",
     "crates/platform/tilo-keyboard-map",
     "crates/platform/tilo-locale",
+    "crates/platform/tilo-accessibility-settings",
     "crates/platform/tilo-media",
     "crates/platform/tilo-spotify",
     "crates/platform/tilo-invidious",
@@ -305,6 +306,7 @@ members = [
     "crates/session/desktop-surface",
     "crates/session/greetd-client",
     "crates/session/greeter",
+    "crates/session/install-profile-model",
     "crates/session/installer",
     "crates/session/tilo-lockdown-policy",
     "crates/session/tilo-unlock-helper",
@@ -322,7 +324,6 @@ members = [
     "crates/system/cloud-source-dropbox",
     "crates/system/cloud-source-onedrive",
     "crates/system/cloud-source-icloud",
-    "crates/system/private-fs",
     "crates/system/desktop-entry",
     "crates/system/desktop-policy",
     "crates/system/content",

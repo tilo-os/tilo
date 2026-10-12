@@ -40,8 +40,7 @@ use crate::model::{
 /// The calendar's Fluent catalogs, source locale first.
 pub const LOCALES: &[(&str, &str)] = &[("en-US", include_str!("../locales/en-US.ftl"))];
 
-static CATALOG: EmbeddedCatalog =
-    EmbeddedCatalog::new("en-US", LOCALES, "calendar-new-event").with_system_locale();
+static CATALOG: EmbeddedCatalog = EmbeddedCatalog::new("en-US", LOCALES).with_system_locale();
 
 /// The message `key` of the calendar's catalog, in the person's language.
 pub(crate) fn t(key: &str) -> String {

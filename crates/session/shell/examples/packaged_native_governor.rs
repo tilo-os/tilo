@@ -106,7 +106,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         "room": room, "invitation": tilo_peer_state::join::encode_invitation_text(&signed),
         "empty_app_records": true,
     }))?;
-    if !private_fs::create_atomic(&output, &bytes)? {
+    if !tilo_files::native::private::create_atomic(&output, &bytes)? {
         return Err("fixture invitation output already exists".into());
     }
     tokio::time::sleep(Duration::from_secs(120)).await;

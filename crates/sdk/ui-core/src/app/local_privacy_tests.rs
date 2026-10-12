@@ -35,24 +35,8 @@ impl Widget for LocalEffectProbe {
         taffy.widget_leaf(taffy::Style::default(), nodes, self)
     }
 
-    fn apply_layout(&mut self, _: &TaffyTree<()>, _: NodeId, _: vello::kurbo::Point) {}
-
-    fn draw(
-        &mut self,
-        _: &mut vello::Scene,
-        _: vello::kurbo::Affine,
-        _: &mut TextRenderer,
-        _: &Theme,
-        _: &PresenceCtx,
-    ) {
-    }
-
     fn name(&self) -> &'static str {
         "local-effect-probe"
-    }
-
-    fn get_rect(&self) -> KurboRect {
-        KurboRect::ZERO
     }
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {

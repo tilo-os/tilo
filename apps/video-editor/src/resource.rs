@@ -629,8 +629,7 @@ pub fn reveal_effect(
 /// history renders.
 pub const LOCALES: &[(&str, &str)] = &[("en-US", include_str!("../locales/en-US.ftl"))];
 
-static CATALOG: EmbeddedCatalog =
-    EmbeddedCatalog::new("en-US", LOCALES, "video-editor-add-title").with_system_locale();
+static CATALOG: EmbeddedCatalog = EmbeddedCatalog::new("en-US", LOCALES).with_system_locale();
 
 /// The editor as a framework app: one surface, the whole window.
 pub struct VideoEditor;

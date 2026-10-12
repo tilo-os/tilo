@@ -129,7 +129,12 @@ Every peer checks every incoming change before merging it.
   in a sealed room the relay cannot read the record. Kinds, footprints and
   tree positions come from that package's `surface.toml`, fetched by hash;
   until it is available the change is held, never trusted. Builds that are not
-  packaged serve their committed surface by hash through the same path.
+  packaged serve their committed surface by hash through the same path. The
+  committed file is the shipped one, byte for byte, so its hash is the one a
+  change names; `tilo-app surface` writes it from the code and keeps only what
+  this check and the storage check need (kinds, verb ids, kinds, footprints,
+  tree fields and parameters; field paths, units, layouts and types). Labels,
+  descriptions and field titles stay in the code.
 - **The relay** checks, without app code and without reading content, that the
   action is granted to the author (and their delegation) and that the change
   writes only units that action may write. Storage units come from the model:

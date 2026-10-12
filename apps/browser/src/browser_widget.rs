@@ -237,6 +237,7 @@ pub(crate) enum BrowserOperation {
     },
     ReadContinuity,
     OpenServiceSession,
+    ForgetServiceSession,
     ReadServiceSession,
     RetryContinuity,
     RemovePersonalBookmark {
@@ -575,6 +576,40 @@ impl BrowserWidget {
         #[cfg(not(target_os = "linux"))]
         let _ = waker;
     }
+    #[cfg(target_os = "linux")]
+    pub(crate) fn forget_service_session(&mut self, id: &str) -> Result<serde_json::Value, String> {
+        self.service_view
+            .as_mut()
+            .ok_or_else(|| {
+                ui::i18n::EmbeddedCatalog::new("en-US", crate::resource::LOCALES)
+                    .t("browser-service-forget-open-first")
+            })?
+            .forget(id)
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn retry_forget_service_session(
+        &mut self,
+        id: &str,
+        person: [u8; 32],
+    ) -> Result<serde_json::Value, String> {
+        let catalog = ui::i18n::EmbeddedCatalog::new("en-US", crate::resource::LOCALES);
+        if self.service_selection(id).is_none() {
+            return Err(catalog.t("browser-service-forget-retry-failed"));
+        }
+        if let Some(view) = self.service_view.as_mut() {
+            if view.report()["session_id"] == id {
+                return view.retry_forget(id);
+            }
+        }
+        crate::service_profiles::Profile::retry_forget(person, id)
+            .map_err(|_| catalog.t("browser-service-forget-retry-failed"))?;
+        Ok(
+            serde_json::json!({"session_id":id, "status":"local-forgotten", "authenticated":false,
+            "custody_revoked":false, "custody_backend_needed":true, "local_only":true}),
+        )
+    }
+
     pub(crate) fn request_service_close(&mut self) -> bool {
         #[cfg(target_os = "linux")]
         {
@@ -1515,7 +1550,7 @@ impl BrowserWidget {
             self.structure_dirty |= self.daily.navigation_started(&self.engine);
         }
         match operation {
-            BrowserOperation::OpenServiceSession => {
+            BrowserOperation::OpenServiceSession | BrowserOperation::ForgetServiceSession => {
                 return Err("Open this account through its resource view action".into());
             }
             BrowserOperation::ReadServiceSession => {

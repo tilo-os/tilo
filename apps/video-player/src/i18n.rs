@@ -9,8 +9,7 @@ pub(crate) const LOCALES: &[(&str, &str)] = &[
 
 pub(crate) static CATALOG: EmbeddedCatalog = catalog();
 const fn catalog() -> EmbeddedCatalog {
-    let catalog =
-        EmbeddedCatalog::new("en-US", LOCALES, "video-formats-title").with_system_locale();
+    let catalog = EmbeddedCatalog::new("en-US", LOCALES).with_system_locale();
     #[cfg(test)]
     let catalog = catalog.with_pinned_locale("en-US");
     catalog

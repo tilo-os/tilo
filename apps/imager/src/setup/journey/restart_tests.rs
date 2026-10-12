@@ -93,7 +93,7 @@ fn reopening_guided_installer_recovers_exact_name_photo_and_signer_only_after_ex
     env.set("XDG_STATE_HOME", root.join("state"));
     env.set("XDG_CONFIG_HOME", root.join("config"));
     let picture = root.join("picture.png");
-    std::fs::write(&picture, include_bytes!("../fixtures/avatar.png")).unwrap();
+    std::fs::write(&picture, include!("../fixtures/avatar.rs")).unwrap();
     let mut original = App::launched(&["--installer"]).unwrap();
     let identity = prepare(&mut original, &picture);
     let metadata = identity.metadata().unwrap();
@@ -286,7 +286,7 @@ fn resumed_draft_without_account_checkpoint_requires_review_before_bulk_import()
     env.set("XDG_STATE_HOME", root.join("state"));
     env.set("XDG_CONFIG_HOME", &config);
     let picture = root.join("picture.png");
-    std::fs::write(&picture, include_bytes!("../fixtures/avatar.png")).unwrap();
+    std::fs::write(&picture, include!("../fixtures/avatar.rs")).unwrap();
     let mut original = App::launched(&["--installer"]).unwrap();
     let identity = prepare_with_migration(&mut original, &picture, true);
     assert_eq!(read(&mut original)["page"], "devices");
@@ -458,7 +458,7 @@ fn guided_reopen_authenticates_connections_before_advancing_and_empty_selection_
     std::fs::create_dir(root.join("config")).unwrap();
     env.set("HOME", &home);
     let picture = root.join("picture.png");
-    std::fs::write(&picture, include_bytes!("../fixtures/avatar.png")).unwrap();
+    std::fs::write(&picture, include!("../fixtures/avatar.rs")).unwrap();
     let mut original = App::launched(&["--installer"]).unwrap();
     let identity = prepare_with_migration(&mut original, &picture, true);
     let expected_key = identity.public_key();

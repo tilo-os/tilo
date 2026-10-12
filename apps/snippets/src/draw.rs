@@ -1,38 +1,15 @@
 //! Layout and paint helpers shared by the app's panes, the fill-in dialog's
 //! preview and the history preview.
 
-use std::collections::HashMap;
-
-use taffy::{NodeId, Style, TaffyTree};
 use ui::paint::PaintCtx;
 use ui::text_render::{TextRenderer, TextStyle};
 use ui::theme::Theme;
 use ui::tokens::TextRole;
-use ui::widget::{TaffyTreeExt, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 
 use crate::highlight::{self, Span};
 use crate::model::{Language, Snippet};
-
-/// A leaf node that fills what its parent gives it, registered for `widget`.
-pub(crate) fn fill_leaf<W: Widget + 'static>(
-    taffy: &mut TaffyTree<()>,
-    node_map: &mut HashMap<NodeId, *mut dyn Widget>,
-    widget: &mut W,
-) -> NodeId {
-    taffy.widget_leaf(
-        Style {
-            size: taffy::Size {
-                width: taffy::Dimension::percent(1.0),
-                height: taffy::Dimension::percent(1.0),
-            },
-            ..Default::default()
-        },
-        node_map,
-        widget,
-    )
-}
 
 /// One painted row of wrapped code: the source line it starts (counted from
 /// 1; `None` when it continues the line above) and its highlighted runs.

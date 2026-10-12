@@ -9,7 +9,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from acceptance.checks.window import judge_switch_lines  # noqa: E402
+from acceptance.checks.window import _judge, _judge_instant, judge_switch_lines  # noqa: E402
 from acceptance.core import (Unobservable, _parse_trace, frame_stats, parse_switch_lines,  # noqa: E402
                              transition_stats)
 
@@ -147,6 +147,107 @@ class SwitchLineTest(unittest.TestCase):
         jump = parse_switch_lines(SWITCH.format(q=4000, s=4000, f=2, d=0))
         self.assertIn("2 frames", judge_switch_lines(jump, 1, BUDGETS, hardware=False)[0])
         self.assertIn("1 WORKSPACE-SWITCH lines", judge_switch_lines(jump, 2, BUDGETS, hardware=False)[0])
+
+
+W16_BUDGETS = {"animation_min_frames": 8, "input_first_frame_ms": 33.4, "frame_late_ms_p95": 16.7,
+              "frame_cpu_ms_max": 33.4, "transition_ms_max": 600, "paint_period_ms_p95": 20,
+              "paint_gap_ms_max": 50}
+
+
+def run(frames, reasons="apps", late_us=1000, cpu_us=1000, input_us=2000, extra=None, gap_ms=16):
+    """A settled transition: an idle tick, then `frames` painted ticks `gap_ms` apart."""
+    specs = [(0, 300, "-", {})]
+    for i in range(frames):
+        row = {"deadline_late_us": late_us, "cpu_us": cpu_us, "paint_reasons": reasons}
+        if i == 0:
+            row["input_latency_us"] = input_us
+        row.update((extra or {}).get(i, {}))
+        specs.append((300 + gap_ms * i, gap_ms - 1, "p", row))
+    specs.append((300 + gap_ms * frames + 600, 0, "-", {}))
+    st = transition_stats(ticks(*specs))
+    st.update(settled=True, cpu_recorded=True)
+    return st
+
+
+class AnimationJudgeTest(unittest.TestCase):
+    """W16: the overview fade through its action, the keyboard toggle that arrives at once."""
+
+    def test_the_fade_through_the_action_passes_and_a_jump_fails(self):
+        fade = run(12, "animation+transition")
+        self.assertEqual(_judge("overview_open", fade, W16_BUDGETS, False, True, False), ([], []))
+        problems, _ = _judge("overview_open", run(2, "revision"), W16_BUDGETS, False, True, False)
+        self.assertIn("2 frames painted (a jump", problems[0])
+
+    def test_an_action_carries_no_input_to_time_but_a_key_does(self):
+        st = run(12, "animation+transition", input_us=None)
+        self.assertEqual(_judge("overview_open", st, W16_BUDGETS, False, True, False), ([], []))
+        _, unseen = _judge("workspace_switch", st, W16_BUDGETS, False, True, True)
+        self.assertIn("no painted frame carried the input's latency", unseen[0])
+
+    def test_the_keyboard_overview_must_arrive_without_the_fade(self):
+        # Other clients may paint inside the window; only a transition run is the overview's.
+        at_once = run(5, "apps", extra={0: {"paint_reasons": "revision"}})
+        self.assertEqual(_judge_instant("overview_key_close", at_once, W16_BUDGETS), ([], []))
+        faded = run(12, "animation+transition")
+        problems, _ = _judge_instant("overview_key_close", faded, W16_BUDGETS)
+        self.assertEqual(len(problems), 1, problems)
+        self.assertIn("12 frames painted for a transition's frame run", problems[0])
+
+    def test_the_keyboard_toggle_is_judged_on_its_first_frame(self):
+        slow = run(1, "revision", input_us=80_000)
+        problems, _ = _judge_instant("overview_key_open", slow, W16_BUDGETS)
+        self.assertIn("first frame 80.0 ms after the input", problems[0])
+
+    def test_a_trace_without_paint_reasons_cannot_judge_the_keyboard_toggle(self):
+        st = run(2, "revision")
+        st["reasons_recorded"] = False
+        problems, unseen = _judge_instant("overview_key_open", st, W16_BUDGETS)
+        self.assertEqual(problems, [])
+        self.assertIn("paint_reasons", unseen[0])
+
+    def test_hardware_judges_wall_clock_lateness(self):
+        st = run(12, "animation+transition", late_us=40_000, cpu_us=2_000, gap_ms=60)
+        problems, unseen = _judge("overview_open", st, W16_BUDGETS, False, False, False)
+        self.assertIn("frames submitted p95 40.0 ms after the compositor's own deadline", problems[0])
+        self.assertEqual(unseen, [])
+
+    def test_a_software_renderer_judges_the_lateness_spent_on_the_compositors_cpu(self):
+        # Waiting for a CPU behind the rasteriser: recorded, not blamed, and not a pass.
+        waiting = run(12, "animation+transition", late_us=40_000, cpu_us=2_000, gap_ms=60)
+        problems, unseen = _judge("overview_open", waiting, W16_BUDGETS, False, True, False)
+        self.assertEqual(problems, [])
+        self.assertIn("only 2.0 ms of it on the loop thread's CPU", unseen[0])
+        # The compositor's own work making the frames late still fails there.
+        working = run(12, "animation+transition", late_us=40_000, cpu_us=30_000, gap_ms=60)
+        problems, _ = _judge("overview_open", working, W16_BUDGETS, False, True, False)
+        self.assertIn("frames submitted p95 30.0 ms of the compositor's own CPU", problems[0])
+        # Within budget on the wall clock: nothing to say.
+        on_time = run(12, "animation+transition", late_us=3_000, cpu_us=2_000)
+        self.assertEqual(_judge("overview_open", on_time, W16_BUDGETS, False, True, False), ([], []))
+
+    def test_a_cpu_stall_names_the_phase_it_stalled_in(self):
+        st = run(12, "animation+transition",
+                 extra={2: {"cpu_us": 66_000, "pump_us": 100_000, "scene_us": 45_000}})
+        problems, _ = _judge("workspace_switch", st, W16_BUDGETS, False, True, True)
+        stall = [p for p in problems if "CPU stall" in p]
+        self.assertEqual(len(stall), 1, problems)
+        self.assertIn("a 66.0 ms CPU stall", stall[0])
+        self.assertIn("pump 100.0 ms, scene 45.0 ms", stall[0])
+        self.assertIn("painted for animation+transition", stall[0])
+
+
+class DemandLatenessTest(unittest.TestCase):
+    def test_a_park_with_nothing_to_paint_is_not_lateness(self):
+        # The compositor reports lateness from when the frame was wanted; a frame a widget
+        # deadline asked for after an idle park carries only its own tick's work.
+        rows = ticks((0, 300, "-", {}),
+                     (300, 1, "p", {"input_latency_us": 1500}),
+                     (301, 230, "b", {}),
+                     (532, 355, "-", {"wake": "widget"}),
+                     (888, 1, "p", {"deadline_late_us": 4_000}),
+                     (2000, 0, "-", {}))
+        st = transition_stats(rows)
+        self.assertEqual(st["late_ms_max"], 4.0)
 
 
 if __name__ == "__main__":

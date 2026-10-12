@@ -95,7 +95,9 @@ pub fn compose(cache: &FrameCache) -> Scene {
 /// while drawing it.
 pub(crate) struct Shown {
     backdrop: Option<Scene>,
-    chrome: Option<Scene>,
+    /// The chrome, and the [`FrameCache::generation`] of the drawing it is
+    /// of.
+    chrome: Option<(Scene, u64)>,
     wheel: Option<ShownWheel>,
     strips: Option<ShownStrips>,
     /// The frame whose composite the output target was last given; `None`
@@ -110,6 +112,8 @@ struct ShownWheel(Option<WheelSprite>);
 struct ShownStrips {
     workspace: Scene,
     drawn: Vec<Scene>,
+    /// The damage parts of `drawn`, in the same order.
+    parts: Vec<Option<ui::scene_parts::SectionParts>>,
     width: u32,
     strips: Vec<StripBlit>,
 }
@@ -119,6 +123,7 @@ impl ShownStrips {
         Self {
             workspace: cache.layers.workspace.clone(),
             drawn: cache.layers.strips.clone(),
+            parts: cache.layers.strip_parts.clone(),
             width: cache.width,
             strips: cache.strips.clone(),
         }
@@ -131,7 +136,7 @@ impl Shown {
     pub(crate) fn of(cache: &FrameCache, revision: u64) -> Self {
         Self {
             backdrop: Some(cache.layers.backdrop.clone()),
-            chrome: Some(cache.layers.chrome.clone()),
+            chrome: Some((cache.layers.chrome.clone(), cache.generation)),
             wheel: Some(ShownWheel(cache.layers.wheel.clone())),
             strips: Some(ShownStrips::of(cache)),
             revision: Some(revision),
@@ -157,6 +162,12 @@ impl Shown {
             && self.strips.is_some()
     }
 
+    /// Which drawing's chrome the chrome texture holds
+    /// ([`FrameCache::generation`]), when it holds a known one.
+    pub(crate) fn chrome_generation(&self) -> Option<u64> {
+        self.chrome.as_ref().map(|(_, generation)| *generation)
+    }
+
     /// `layer`'s texture is about to be drawn: until it is done it holds
     /// nothing known.
     pub(crate) fn forget(&mut self, layer: Layer) {
@@ -174,7 +185,7 @@ impl Shown {
             Layer::Backdrop => self.backdrop = Some(cache.layers.backdrop.clone()),
             Layer::Workspace => self.strips = Some(ShownStrips::of(cache)),
             Layer::Wheel => self.wheel = Some(ShownWheel(cache.layers.wheel.clone())),
-            Layer::Chrome => self.chrome = Some(cache.layers.chrome.clone()),
+            Layer::Chrome => self.chrome = Some((cache.layers.chrome.clone(), cache.generation)),
         }
     }
 }
@@ -211,6 +222,9 @@ pub(crate) enum WorkspaceWork {
 pub(crate) struct LayerWork {
     pub(crate) backdrop: bool,
     pub(crate) chrome: bool,
+    /// Where the chrome is rasterised again when it is: only these tiles
+    /// ([`chrome_damage`]), or the whole layer with `None`.
+    pub(crate) chrome_tiles: Option<Vec<FineDamageRect>>,
     pub(crate) workspace: WorkspaceWork,
     /// Rasterise the wheel's texture (of this many pixels) again.
     pub(crate) wheel: Option<u64>,
@@ -225,6 +239,7 @@ impl LayerWork {
         Self {
             backdrop: true,
             chrome: true,
+            chrome_tiles: None,
             workspace: WorkspaceWork::Whole,
             wheel: cache.layers.wheel.as_ref().map(wheel_area),
             composite: Some(full_rect(size)),
@@ -234,7 +249,12 @@ impl LayerWork {
     /// Pixels this frame rasterises with vello, of an output of `size`.
     pub(crate) fn raster_pixels(&self, size: (u32, u32)) -> u64 {
         let whole = area(full_rect(size));
-        let layers = u64::from(self.backdrop).saturating_add(u64::from(self.chrome));
+        let chrome = match (&self.chrome_tiles, self.chrome) {
+            (_, false) => 0,
+            (Some(tiles), true) => tiles.iter().copied().map(area).fold(0, u64::saturating_add),
+            (None, true) => whole,
+        };
+        let layers = u64::from(self.backdrop);
         let workspace = match &self.workspace {
             WorkspaceWork::Unchanged => 0,
             WorkspaceWork::Pan { uncovered, .. } => uncovered
@@ -246,6 +266,7 @@ impl LayerWork {
         };
         whole
             .saturating_mul(layers)
+            .saturating_add(chrome)
             .saturating_add(workspace)
             .saturating_add(self.wheel.unwrap_or(0))
     }
@@ -314,6 +335,37 @@ pub(crate) fn warm_bands(size: (u32, u32)) -> Option<Vec<FineDamageRect>> {
     Some(bands)
 }
 
+/// Where the chrome texture, holding `shown`'s chrome, must be rasterised
+/// again to hold `cache`'s, on an output of `size`: the rects
+/// [`FrameCache::chrome_damage`] names, when the texture holds the drawing
+/// they were measured from. `None` when that is not known: the whole layer.
+pub(crate) fn chrome_damage(
+    shown: &Shown,
+    cache: &FrameCache,
+    size: (u32, u32),
+) -> Option<Vec<FineDamageRect>> {
+    let damage = cache.chrome_damage.as_ref()?;
+    if shown.chrome_generation() != Some(damage.since) {
+        return None;
+    }
+    Some(
+        damage
+            .rects
+            .iter()
+            .filter_map(|rect| {
+                let x1 = rect.x.saturating_add(rect.width).min(size.0);
+                let y1 = rect.y.saturating_add(rect.height).min(size.1);
+                (x1 > rect.x && y1 > rect.y).then(|| FineDamageRect {
+                    x: rect.x,
+                    y: rect.y,
+                    width: x1.saturating_sub(rect.x),
+                    height: y1.saturating_sub(rect.y),
+                })
+            })
+            .collect(),
+    )
+}
+
 fn wheel_area(wheel: &WheelSprite) -> u64 {
     u64::from(wheel.width).saturating_mul(u64::from(wheel.height))
 }
@@ -378,7 +430,10 @@ pub(crate) fn plan(
     let differs =
         |layer: Option<&Scene>, scene: &Scene| layer.is_none_or(|layer| !layer.encoding_eq(scene));
     let backdrop = differs(shown.backdrop.as_ref(), &cache.layers.backdrop);
-    let chrome = differs(shown.chrome.as_ref(), &cache.layers.chrome);
+    let chrome = differs(
+        shown.chrome.as_ref().map(|(chrome, _)| chrome),
+        &cache.layers.chrome,
+    );
     let workspace = shown
         .strips
         .as_ref()
@@ -389,11 +444,18 @@ pub(crate) fn plan(
         Some(ShownWheel(old)) => wheel_work(old.as_ref(), cache.layers.wheel.as_ref(), size),
         None => (cache.layers.wheel.as_ref().map(wheel_area), Vec::new()),
     };
+    // A chrome texture holding the drawing the chrome changed from takes
+    // only the tiles that changed.
+    let chrome_tiles = chrome.then(|| chrome_damage(shown, cache, size)).flatten();
     // A texture that holds nothing known was never composited into the
     // output.
     let output_current = output_current && shown.complete();
     let mut composite = None;
-    if backdrop || chrome || workspace == WorkspaceWork::Whole || !output_current {
+    if backdrop
+        || (chrome && chrome_tiles.is_none())
+        || workspace == WorkspaceWork::Whole
+        || !output_current
+    {
         composite = Some(full_rect(size));
     } else {
         let moved = match &workspace {
@@ -409,13 +471,15 @@ pub(crate) fn plan(
                 .collect(),
             WorkspaceWork::Unchanged | WorkspaceWork::Whole => Vec::new(),
         };
-        for rect in moved.into_iter().chain(wheel_rects) {
+        let tiles = chrome_tiles.iter().flatten().copied();
+        for rect in moved.into_iter().chain(wheel_rects).chain(tiles) {
             composite = Some(union(composite, rect));
         }
     }
     LayerWork {
         backdrop,
         chrome,
+        chrome_tiles,
         workspace,
         wheel,
         composite,
@@ -452,13 +516,93 @@ fn wheel_work(
 }
 
 /// One strip as the planner sees it: where it is shown, how far it moved
-/// since the shown frame (positive: its content moved left), and whether its
+/// since the shown frame (positive: its content moved left), and how its
 /// drawing changed.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct Piece {
     band: (u32, u32, u32, u32),
     delta: i64,
-    changed: bool,
+    change: Change,
+}
+
+/// How a strip's drawing changed since the shown frame.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Change {
+    Unchanged,
+    /// Only inside these output rects, where the strip shows them now: the
+    /// old and new bounds of the window groups whose drawing changed, in
+    /// whole 16-pixel tiles, within the strip's band. Empty when what
+    /// changed is nowhere on screen.
+    Within(Vec<FineDamageRect>),
+    /// Anywhere: the change is not bounded by the strip's damage parts.
+    Anywhere,
+}
+
+/// Vello rasterises in tiles of this many device pixels a side
+/// (`TILE_WIDTH`/`TILE_HEIGHT` in `vello_encoding`'s config); a changed edge can
+/// round its tile's other pixels by a unit, so a change is repaired in whole
+/// tiles. A raster unit, not a spacing.
+const TILE_EDGE: u32 = 16;
+
+/// How `new_drawn` (with `new_parts`), shown through `blit` on an output of
+/// `size`, changed from `old_drawn` (with `old_parts`).
+fn strip_change(
+    (old_drawn, old_parts): (&Scene, Option<&ui::scene_parts::SectionParts>),
+    (new_drawn, new_parts): (&Scene, Option<&ui::scene_parts::SectionParts>),
+    blit: &StripBlit,
+    size: (u32, u32),
+) -> Change {
+    if old_drawn.encoding_eq(new_drawn) {
+        return Change::Unchanged;
+    }
+    let (Some(old_parts), Some(new_parts)) = (old_parts, new_parts) else {
+        return Change::Anywhere;
+    };
+    let Ok(rects) = ui::scene_parts::damage(old_drawn, old_parts, new_drawn, new_parts) else {
+        return Change::Anywhere;
+    };
+    let (bx0, by0, bx1, by1) = band(blit, size);
+    let scroll = f64::from(blit.scroll_x);
+    let mut within = Vec::new();
+    for rect in rects {
+        // The strip is drawn in canvas coordinates and shown `scroll_x`
+        // pixels to the left ([`append_panned`]), clipped to its band.
+        let edge = f64::from(TILE_EDGE);
+        let tile = |value: f64, round: fn(f64) -> f64| round(value / edge) * edge;
+        let clamp = |value: f64, low: u32, high: u32| -> u32 {
+            ui::num::u32_of_f64(value.clamp(f64::from(low), f64::from(high)))
+        };
+        let x0 = clamp(tile(rect.x0 - scroll, f64::floor), bx0, bx1);
+        let x1 = clamp(tile(rect.x1 - scroll, f64::ceil), bx0, bx1);
+        let y0 = clamp(tile(rect.y0, f64::floor), by0, by1);
+        let y1 = clamp(tile(rect.y1, f64::ceil), by0, by1);
+        if x1 > x0 && y1 > y0 {
+            within.push(FineDamageRect {
+                x: x0,
+                y: y0,
+                width: x1.saturating_sub(x0),
+                height: y1.saturating_sub(y0),
+            });
+        }
+    }
+    Change::Within(within)
+}
+
+/// `rect` cut to the run `x0..x1` of rows `y0..y1`, if any of it is there.
+fn clipped(
+    rect: &FineDamageRect,
+    (x0, y0, x1, y1): (u32, u32, u32, u32),
+) -> Option<FineDamageRect> {
+    let left = rect.x.max(x0);
+    let top = rect.y.max(y0);
+    let right = rect.x.saturating_add(rect.width).min(x1);
+    let bottom = rect.y.saturating_add(rect.height).min(y1);
+    (right > left && bottom > top).then(|| FineDamageRect {
+        x: left,
+        y: top,
+        width: right.saturating_sub(left),
+        height: bottom.saturating_sub(top),
+    })
 }
 
 fn workspace_work(shown: &ShownStrips, cache: &FrameCache, size: (u32, u32)) -> WorkspaceWork {
@@ -480,10 +624,19 @@ fn workspace_work(shown: &ShownStrips, cache: &FrameCache, size: (u32, u32)) -> 
         .iter()
         .zip(&cache.strips)
         .zip(shown.drawn.iter().zip(&cache.layers.strips))
-        .map(|((old, new), (old_drawn, new_drawn))| Piece {
+        .enumerate()
+        .map(|(index, ((old, new), (old_drawn, new_drawn)))| Piece {
             band: band(new, size),
             delta: i64::from(new.scroll_x).saturating_sub(i64::from(old.scroll_x)),
-            changed: !old_drawn.encoding_eq(new_drawn),
+            change: strip_change(
+                (old_drawn, shown.parts.get(index).and_then(Option::as_ref)),
+                (
+                    new_drawn,
+                    cache.layers.strip_parts.get(index).and_then(Option::as_ref),
+                ),
+                new,
+                size,
+            ),
         })
         .collect();
     // What no strip carries is drawn in place under the strips: where it
@@ -529,13 +682,26 @@ fn pan_work(pieces: &[Piece], in_place_drawn: bool) -> (Vec<BandCopy>, Vec<FineD
             };
             let delta = first.delta;
             let uniform = rest.iter().all(|piece| piece.delta == delta);
-            let changed = cover.iter().any(|piece| piece.changed);
-            if !changed && uniform && delta == 0 {
+            let anywhere = cover.iter().any(|piece| piece.change == Change::Anywhere);
+            // What changed within the run, where the strips show it now.
+            let within: Vec<FineDamageRect> = cover
+                .iter()
+                .filter_map(|piece| match &piece.change {
+                    Change::Within(rects) => Some(rects),
+                    Change::Unchanged | Change::Anywhere => None,
+                })
+                .flatten()
+                .filter_map(|rect| clipped(rect, (x0, y0, x1, y1)))
+                .collect();
+            let shift = u32::try_from(delta.unsigned_abs()).unwrap_or(u32::MAX);
+            if anywhere || !uniform || (delta != 0 && (in_place_drawn || shift >= width)) {
+                push_rect(&mut uncovered, x0, y0, width, height);
                 continue;
             }
-            let shift = u32::try_from(delta.unsigned_abs()).unwrap_or(u32::MAX);
-            if changed || !uniform || in_place_drawn || shift >= width {
-                push_rect(&mut uncovered, x0, y0, width, height);
+            for rect in &within {
+                push_rect(&mut uncovered, rect.x, rect.y, rect.width, rect.height);
+            }
+            if delta == 0 && uniform {
                 continue;
             }
             let kept = width.saturating_sub(shift);
@@ -565,8 +731,8 @@ fn pan_work(pieces: &[Piece], in_place_drawn: bool) -> (Vec<BandCopy>, Vec<FineD
 fn runs(pieces: &[Piece], y0: u32, y1: u32) -> Vec<(u32, u32, Vec<Piece>)> {
     let in_row: Vec<Piece> = pieces
         .iter()
-        .copied()
         .filter(|piece| piece.band.1 <= y0 && piece.band.3 >= y1 && piece.band.0 < piece.band.2)
+        .cloned()
         .collect();
     let mut xs: Vec<u32> = in_row
         .iter()
@@ -591,7 +757,7 @@ fn runs(pieces: &[Piece], y0: u32, y1: u32) -> Vec<(u32, u32, Vec<Piece>)> {
         .map(|(x0, x1, cover)| {
             let pieces = cover
                 .into_iter()
-                .filter_map(|index| in_row.get(index).copied())
+                .filter_map(|index| in_row.get(index).cloned())
                 .collect();
             (x0, x1, pieces)
         })
@@ -1056,14 +1222,18 @@ mod tests {
     }
 
     fn cache(drawn: Color, strips: Vec<StripBlit>) -> FrameCache {
-        let strips_drawn = strips.iter().map(|_| scene(drawn)).collect();
+        let strips_drawn: Vec<Scene> = strips.iter().map(|_| scene(drawn)).collect();
+        let strip_parts = strips_drawn.iter().map(|_| None).collect();
         FrameCache {
             width: 3000,
             strips,
+            generation: 1,
+            chrome_damage: None,
             layers: FrameLayers {
                 backdrop: scene(Color::BLACK),
                 workspace: Scene::new(),
                 strips: strips_drawn,
+                strip_parts,
                 wheel: None,
                 chrome: scene(Color::WHITE),
             },
@@ -1205,6 +1375,120 @@ mod tests {
         let geometry = plan(Some(&shown), &cache(Color::BLACK, vec![taller]), SIZE, true);
         assert_eq!(geometry.workspace, WorkspaceWork::Whole);
         assert_eq!(geometry.composite, Some(full_rect(SIZE)));
+    }
+
+    /// A strip drawn as two window groups, each a damage part: one near the
+    /// canvas's left edge, one far right of the screen.
+    fn grouped(near: Color, far: Color) -> (Scene, Option<ui::scene_parts::SectionParts>) {
+        let mut drawn = Scene::new();
+        let ((), parts) = ui::scene_parts::record(&mut drawn, |drawn| {
+            for (index, (x, color)) in [(130.0, near), (2400.0, far)].into_iter().enumerate() {
+                let bounds = Rect::new(x, 60.0, x + 300.0, 300.0);
+                let key = ui::scene_parts::PartKey::new("test.group", index);
+                ui::scene_parts::part(drawn, key, vec![bounds], |drawn| {
+                    drawn.fill(Fill::NonZero, Affine::IDENTITY, color, None, &bounds);
+                });
+            }
+        });
+        (drawn, parts)
+    }
+
+    fn grouped_cache(near: Color, far: Color, scroll_x: u32) -> FrameCache {
+        let (drawn, parts) = grouped(near, far);
+        let mut frame = cache(Color::BLACK, vec![strip(scroll_x)]);
+        frame.layers.strips = vec![drawn];
+        frame.layers.strip_parts = vec![parts];
+        frame
+    }
+
+    /// A window group off screen that changed while the strip rested (an app
+    /// presenting its first content unseen) rasterises nothing; one on
+    /// screen rasterises its own bounds, in whole tiles inside the strip's
+    /// band, and nothing else of the strip. Panning while it changes copies
+    /// the strip as any pan does and rasterises the uncovered columns and
+    /// the group. A strip drawn without parts still rasterises its band.
+    #[test]
+    fn a_changed_window_group_rasterises_only_where_it_is_on_screen() {
+        let shown = Shown::of(&grouped_cache(Color::WHITE, Color::WHITE, 40), 1);
+        let far = plan(
+            Some(&shown),
+            &grouped_cache(Color::WHITE, Color::BLACK, 40),
+            SIZE,
+            true,
+        );
+        assert_eq!(far.workspace, WorkspaceWork::Unchanged);
+        assert_eq!(far.composite, None);
+
+        let near = plan(
+            Some(&shown),
+            &grouped_cache(Color::BLACK, Color::WHITE, 40),
+            SIZE,
+            true,
+        );
+        // Canvas 130..430 shown 40 px left is 90..390, in tiles 80..400,
+        // inside the band 100..900; rows 60..300 in tiles 48..304, inside
+        // 50..450.
+        assert_eq!(
+            near.workspace,
+            WorkspaceWork::Pan {
+                copies: Vec::new(),
+                uncovered: vec![FineDamageRect {
+                    x: 100,
+                    y: 50,
+                    width: 300,
+                    height: 254,
+                }],
+            }
+        );
+
+        let panned = plan(
+            Some(&shown),
+            &grouped_cache(Color::BLACK, Color::WHITE, 52),
+            SIZE,
+            true,
+        );
+        let WorkspaceWork::Pan { copies, uncovered } = &panned.workspace else {
+            panic!("a pan with a changed group copies: {:?}", panned.workspace);
+        };
+        assert_eq!(
+            copies,
+            &vec![BandCopy {
+                src_x: 112,
+                dst_x: 100,
+                y: 50,
+                width: 788,
+                height: 400,
+            }]
+        );
+        assert!(uncovered.contains(&FineDamageRect {
+            x: 888,
+            y: 50,
+            width: 12,
+            height: 400,
+        }));
+        // Canvas 130..430 shown 52 px left is 78..378, in tiles 64..384.
+        assert!(
+            uncovered
+                .iter()
+                .any(|rect| rect.x == 100 && rect.width == 284),
+            "{uncovered:?}"
+        );
+
+        let mut unparted = grouped_cache(Color::BLACK, Color::WHITE, 40);
+        unparted.layers.strip_parts = vec![None];
+        let whole = plan(Some(&shown), &unparted, SIZE, true);
+        assert_eq!(
+            whole.workspace,
+            WorkspaceWork::Pan {
+                copies: Vec::new(),
+                uncovered: vec![FineDamageRect {
+                    x: 100,
+                    y: 50,
+                    width: 800,
+                    height: 400,
+                }],
+            }
+        );
     }
 
     /// Two strips whose destinations meet (each draws its shadows past its
@@ -1356,6 +1640,57 @@ mod tests {
         assert!(work.chrome && !work.backdrop);
         assert_eq!(work.composite, Some(full_rect(SIZE)));
         assert!(matches!(work.workspace, WorkspaceWork::Pan { .. }));
+    }
+
+    /// Chrome that changed only in the tiles its damage names, from the
+    /// drawing the chrome texture holds, rasterises and composites those
+    /// tiles; measured from another drawing, it rasterises the whole layer.
+    #[test]
+    fn changed_chrome_from_the_drawing_held_rasterises_only_its_tiles() {
+        let shown = Shown::of(&cache(Color::BLACK, vec![strip(40)]), 1);
+        let tiles = vec![
+            FineDamageRect {
+                x: 16,
+                y: 0,
+                width: 48,
+                height: 32,
+            },
+            FineDamageRect {
+                x: 900,
+                y: 16,
+                width: 64,
+                height: 16,
+            },
+        ];
+        let mut next = cache(Color::BLACK, vec![strip(40)]);
+        next.generation = 2;
+        next.layers.chrome = scene(Color::BLACK);
+        next.chrome_damage = Some(crate::shell::frame::ChromeDamage {
+            since: 1,
+            rects: tiles.clone(),
+        });
+        let work = plan(Some(&shown), &next, SIZE, true);
+        assert!(work.chrome && !work.backdrop);
+        assert_eq!(work.chrome_tiles, Some(tiles));
+        assert_eq!(work.workspace, WorkspaceWork::Unchanged);
+        assert_eq!(
+            work.composite,
+            Some(FineDamageRect {
+                x: 16,
+                y: 0,
+                width: 948,
+                height: 32,
+            })
+        );
+        assert_eq!(work.raster_pixels(SIZE), 48 * 32 + 64 * 16);
+
+        next.chrome_damage = Some(crate::shell::frame::ChromeDamage {
+            since: 7,
+            rects: vec![],
+        });
+        let other = plan(Some(&shown), &next, SIZE, true);
+        assert_eq!(other.chrome_tiles, None);
+        assert_eq!(other.composite, Some(full_rect(SIZE)));
     }
 
     /// A warm that stopped while drawing a layer leaves that texture holding

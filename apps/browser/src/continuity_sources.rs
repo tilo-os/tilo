@@ -303,7 +303,7 @@ fn snapshot(
 
 fn private_write(path: &std::path::Path, bytes: &[u8]) -> io::Result<()> {
     use std::io::Write;
-    let mut file = private_fs::create_new(path)?;
+    let mut file = tilo_files::native::private::create_new(path)?;
     file.write_all(bytes)
 }
 

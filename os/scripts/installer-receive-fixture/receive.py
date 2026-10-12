@@ -177,6 +177,7 @@ def receiving(candidate, evidence, delivery_context):
     if delivery_context.get('service_qualification') is True:
         context_fields.remove('service_qualification')
         context_fields.remove('service_subjects')
+        context_fields.remove('service_candidate')
     if context_fields != {'package_directory', 'password', 'source_operation',
                                  'applications_stage', 'source', 'baseline_etc_fd',
                                  'dav', 'source_observations', 'tls_ca_certificate', 'tls_server_name',
@@ -221,6 +222,9 @@ def receiving(candidate, evidence, delivery_context):
             attested = delivery.authenticated_staging_plan(
                 delivery_context['package_directory'], delivery_context['password'],
                 source, evidence, log)
+        if delivery_context.get('service_qualification') is True:
+            delivery.bind_service_candidate(attested, delivery_context['service_candidate'],
+                                            delivery_context['setup_binding'])
         delivery_context = dict(delivery_context, native_services=attested.native_services)
         if (attested.scope['source_operation'] != delivery_context['source_operation']
                 or attested.scope['staging_operation'] != delivery_context['applications_stage']):
@@ -480,7 +484,8 @@ def main():
     if service_admission is None:
         result = source.run(args.candidate, args.evidence, deliver)
     else:
-        result = source.run(args.candidate, args.evidence, deliver, service_qualification=True)
+        result = source.run(args.candidate, args.evidence, deliver, service_qualification=True,
+                            service_candidate=service_contract.candidate_scope(service_admission))
     if (result['cloud'].get('server_upload_observed') is not True
             or result.get('receiving_namespace_retired') is not True
             or result.get('receiving_services_retired') is not True

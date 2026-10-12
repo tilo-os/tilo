@@ -29,6 +29,20 @@ pub enum BrowserEffect {
         #[param("Selected account")]
         session_id: String,
     },
+    /// Forget account on this device
+    ///
+    /// Removes the selected open website profile, not canonical credentials.
+    #[effect(row, returns, destructive)]
+    ForgetServiceSession {
+        #[param("Selected account")]
+        session_id: String,
+    },
+    /// Retry local account deletion without opening it or resolving credentials
+    #[effect(row, returns, destructive)]
+    RetryForgetServiceSession {
+        #[param("Selected account")]
+        session_id: String,
+    },
     /// Read account connection
     #[effect(row, returns, kind = "read")]
     ReadServiceSession,
@@ -325,6 +339,9 @@ impl BrowserEffect {
         match self {
             Self::ReadContinuity => BrowserOperation::ReadContinuity,
             Self::OpenServiceSession { .. } => BrowserOperation::OpenServiceSession,
+            Self::ForgetServiceSession { .. } | Self::RetryForgetServiceSession { .. } => {
+                BrowserOperation::ForgetServiceSession
+            }
             Self::ReadServiceSession => BrowserOperation::ReadServiceSession,
             Self::RetryContinuity => BrowserOperation::RetryContinuity,
             Self::BookmarkPersonalPage { url, title } => {
