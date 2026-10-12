@@ -858,6 +858,13 @@ impl ActionFixture {
         Self::with_authority(shared, false)
     }
     fn with_authority(shared: bool, separate: bool) -> Self {
+        Self::with_owner_queue(shared, separate, None)
+    }
+    fn with_owner_queue(
+        shared: bool,
+        separate: bool,
+        queue: Option<&crate::owner_wake::OwnerWakeQueue>,
+    ) -> Self {
         let temp = tempfile::tempdir().unwrap();
         let mut owners = crate::record::RecordOwners::new(temp.path().into());
         let records = owners
@@ -927,9 +934,12 @@ impl ActionFixture {
                 &target,
             )
             .unwrap();
-            let component = definition
+            let mut component = definition
                 .instantiate(context, target, RestoreInput::None)
                 .unwrap();
+            if let Some(queue) = queue {
+                component.mount_with_owner_queue(queue, |_| {}).unwrap();
+            }
             bindings.push(component.callback_binding());
             column = column.push(Box::new(TileHost::from_component(component)));
         }
@@ -2598,6 +2608,141 @@ fn the_hosting_window_takes_the_components_behaviour() {
             capture_protected: true,
             window: crate::application::WindowRole::InputSurface,
         }
+    );
+}
+
+#[test]
+fn deferred_input_stamp_survives_an_idle_retained_owner_model_pass() {
+    let queue = crate::owner_wake::OwnerWakeQueue::default();
+    let mut fixture = ActionFixture::with_owner_queue(false, false, Some(&queue));
+    let owner = fixture.bindings[0].clone();
+    let node = *fixture
+        .app
+        .layout
+        .node_map
+        .keys()
+        .find(|node| {
+            fixture
+                .app
+                .bindings
+                .binding_for(**node)
+                .is_some_and(|binding| binding.same_component(&owner))
+        })
+        .unwrap();
+    let canonical = |fixture: &ActionFixture| {
+        fixture
+            .records
+            .read_history(&owner.checkout.id, |doc, history| {
+                (doc.base_heads(), doc.pending_ops(), history.revision())
+            })
+            .unwrap()
+    };
+    for _ in 0..2 {
+        let before = fixture
+            .app
+            .bindings
+            .document_edit_stamp(node, &fixture.app.state.doc)
+            .unwrap();
+        let document = canonical(&fixture);
+        let admission = fixture
+            .records
+            .action_generation(&owner.checkout.id)
+            .unwrap()
+            .unwrap();
+        owner.lifetime.notify_events();
+        let requests = queue.take_pending();
+        assert_eq!(requests.len(), 1);
+        crate::bound_dispatch::service_retained_owner_model(
+            fixture.app.root_widget.as_mut(),
+            &mut fixture.app.state.doc,
+            &requests[0],
+        )
+        .unwrap();
+        assert_eq!(
+            canonical(&fixture),
+            document,
+            "the actual idle update, settlement and sync must not edit the document or history"
+        );
+        assert!(
+            fixture
+                .records
+                .action_generation(&owner.checkout.id)
+                .unwrap()
+                .unwrap()
+                > admission,
+            "exclusive callback admission must continue advancing independently"
+        );
+        assert!(
+            fixture
+                .app
+                .bindings
+                .document_edit_stamp(node, &fixture.app.state.doc)
+                .unwrap()
+                == before,
+            "idle admission bookkeeping must not cancel a deferred native insertion"
+        );
+    }
+}
+
+#[test]
+fn deferred_input_stamp_checks_active_custody_and_exhausted_admission() {
+    let mut fixture = ActionFixture::new();
+    let owner = fixture.bindings[0].clone();
+    let node = *fixture
+        .app
+        .layout
+        .node_map
+        .keys()
+        .find(|node| {
+            fixture
+                .app
+                .bindings
+                .binding_for(**node)
+                .is_some_and(|binding| binding.same_component(&owner))
+        })
+        .unwrap();
+    owner
+        .with_settlement(&mut fixture.app.state.doc, |doc, _| {
+            assert!(
+                fixture.app.bindings.document_edit_stamp(node, doc).is_ok(),
+                "an active read needs the explicit canonical document witness"
+            );
+            assert!(
+                fixture
+                    .app
+                    .bindings
+                    .document_edit_stamp(node, &automerge::AutoCommit::new())
+                    .is_err(),
+                "a host or unrelated document cannot stand in for an active canonical loan"
+            );
+        })
+        .unwrap();
+    fixture
+        .records
+        .with_history(&owner.checkout.id, |_, _| {
+            assert!(
+                fixture
+                    .app
+                    .bindings
+                    .document_edit_stamp(node, &fixture.app.state.doc)
+                    .is_err(),
+                "a borrowed parked record cannot issue a stamp"
+            );
+        })
+        .unwrap();
+    fixture
+        .records
+        .with_action_state(&owner.checkout.id, |_, _, state| {
+            state.generation = Some(u64::MAX);
+        })
+        .unwrap();
+    assert!(
+        fixture
+            .app
+            .bindings
+            .document_edit_stamp(node, &fixture.app.state.doc)
+            .is_err(),
+        "an exhausted admission counter must fail closed even though its value is not hashed"
     );
 }
 

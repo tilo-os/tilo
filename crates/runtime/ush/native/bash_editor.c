@@ -51,6 +51,8 @@ static rl_hook_func_t *old_event;
 static rl_getc_func_t *old_getc;
 static rl_vintfunc_t *old_prep;
 static rl_voidfunc_t *old_deprep, *old_display;
+/* Only the next direct redraw belongs to an admitted native edit. */
+static int native_redraw;
 static void prep(int), deprep(void), display(void);
 static int getc_hook(FILE *);
 
@@ -212,8 +214,12 @@ static void deprep(void) {
     old_deprep();
 }
 static void display(void) {
-  phase = 0;
-  bump(&revision);
+  if (native_redraw)
+    native_redraw = 0;
+  else {
+    phase = 0;
+    bump(&revision);
+  }
   if (old_display)
     old_display();
 }
@@ -380,8 +386,13 @@ static void service(void) {
   }
   bump(&revision);
   checkpoint_revision = revision;
-  if (old_display)
-    old_display();
+  /* The edit arrives while Readline is waiting inside getc_hook, outside
+     its ordinary keystroke redraw. Rebuild stale visible-line bookkeeping
+     while preserving this edit's checkpoint. Reentrant redraws still retire it. */
+  rl_clear_visible_line();
+  native_redraw = 1;
+  rl_forced_update_display();
+  native_redraw = 0;
   remember(request, received, response);
   if (send_frame(response, HEADER))
     publish(0);
