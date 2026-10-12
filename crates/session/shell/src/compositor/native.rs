@@ -9598,6 +9598,22 @@ pub fn run() {
     // in the model with nothing presented.
     let mut transition_hold_sleep = Duration::ZERO;
     let mut credit_transition_hold;
+    // Every session transition reaches the backend, presenter, logind lifecycle,
+    // dimmer and output management alike.
+    macro_rules! apply_session_transitions {
+        ($transitions:expr) => {
+            for t in $transitions {
+                apply_session_transition(
+                    t,
+                    backend.as_mut(),
+                    present_pipe.as_ref(),
+                    local_session_lifecycle.as_ref(),
+                    &mut screen_dimmer,
+                    Some(&mut state.output_management),
+                );
+            }
+        };
+    }
     while !close_requested {
         dictation_vocabulary.refresh(&mut state);
         if termination.requested() {
@@ -9996,16 +10012,7 @@ pub fn run() {
                     // backend; the first painted frame after closes the input-to-present measurement.
                     metrics.note_input(Instant::now());
                     // Any input is activity — reset the idle timer and wake the display if it was blanked.
-                    for t in session.note_activity(Instant::now()) {
-                        apply_session_transition(
-                            t,
-                            backend.as_mut(),
-                            present_pipe.as_ref(),
-                            local_session_lifecycle.as_ref(),
-                            &mut screen_dimmer,
-                            Some(&mut state.output_management),
-                        );
-                    }
+                    apply_session_transitions!(session.note_activity(Instant::now()));
                     if let Some(steps) = key_steps.as_mut() {
                         steps.steps.mark("activity");
                     }
@@ -10119,16 +10126,7 @@ pub fn run() {
                                 power_bridge.request_suspend();
                             }
                             Some(tilo_power_mgmt::PowerAction::Lock) => {
-                                for t in session.request_lock(Instant::now()) {
-                                    apply_session_transition(
-                                        t,
-                                        backend.as_mut(),
-                                        present_pipe.as_ref(),
-                                        local_session_lifecycle.as_ref(),
-                                        &mut screen_dimmer,
-                                        Some(&mut state.output_management),
-                                    );
-                                }
+                                apply_session_transitions!(session.request_lock(Instant::now()));
                             }
                             Some(tilo_power_mgmt::PowerAction::Ignore) | None => {}
                         }
@@ -10172,16 +10170,7 @@ pub fn run() {
                         session_changed = true;
                     } else if route == PriorityRoute::LockSession {
                         // Super+L locks immediately.
-                        for t in session.request_lock(Instant::now()) {
-                            apply_session_transition(
-                                t,
-                                backend.as_mut(),
-                                present_pipe.as_ref(),
-                                local_session_lifecycle.as_ref(),
-                                &mut screen_dimmer,
-                                Some(&mut state.output_management),
-                            );
-                        }
+                        apply_session_transitions!(session.request_lock(Instant::now()));
                     } else if route == PriorityRoute::ToggleMouseKeys {
                         // The compositor applies the flipped preference on its
                         // next settings poll; the readout confirms it now.
@@ -10452,16 +10441,7 @@ pub fn run() {
                     // A 3/4-finger gesture, already resolved into its navigation meaning —
                     // never also delivered to a client, so no double-handling to guard against.
                     if !session.is_locked() && client_input_allowed(&frame_builder) {
-                        for t in session.note_activity(Instant::now()) {
-                            apply_session_transition(
-                                t,
-                                backend.as_mut(),
-                                present_pipe.as_ref(),
-                                local_session_lifecycle.as_ref(),
-                                &mut screen_dimmer,
-                                Some(&mut state.output_management),
-                            );
-                        }
+                        apply_session_transitions!(session.note_activity(Instant::now()));
                         apply_shell_gesture(&mut frame_builder, action);
                         session_changed = true;
                     }
@@ -10609,16 +10589,7 @@ pub fn run() {
             session.is_locked(),
         ) {
             session_changed = true;
-            for t in session.note_activity(Instant::now()) {
-                apply_session_transition(
-                    t,
-                    backend.as_mut(),
-                    present_pipe.as_ref(),
-                    local_session_lifecycle.as_ref(),
-                    &mut screen_dimmer,
-                    Some(&mut state.output_management),
-                );
-            }
+            apply_session_transitions!(session.note_activity(Instant::now()));
         }
         for wake in controller_nav.take_wakes() {
             use crate::compositor::controller_nav::ControllerWake;
@@ -10936,16 +10907,7 @@ pub fn run() {
             shell_lock_requested = chrome.take_session_lock_request();
         });
         if shell_lock_requested {
-            for t in session.request_lock(Instant::now()) {
-                apply_session_transition(
-                    t,
-                    backend.as_mut(),
-                    present_pipe.as_ref(),
-                    local_session_lifecycle.as_ref(),
-                    &mut screen_dimmer,
-                    Some(&mut state.output_management),
-                );
-            }
+            apply_session_transitions!(session.request_lock(Instant::now()));
             session_changed = true;
         }
 
@@ -10986,32 +10948,14 @@ pub fn run() {
             session_changed = true;
             match sig {
                 tilo_power_mgmt::PowerSignal::Lock => {
-                    for t in session.request_lock(Instant::now()) {
-                        apply_session_transition(
-                            t,
-                            backend.as_mut(),
-                            present_pipe.as_ref(),
-                            local_session_lifecycle.as_ref(),
-                            &mut screen_dimmer,
-                            Some(&mut state.output_management),
-                        );
-                    }
+                    apply_session_transitions!(session.request_lock(Instant::now()));
                 }
                 tilo_power_mgmt::PowerSignal::PreparingForSleep => {
                     // Preserve a lock that was already present at request
                     // time, and also observe a manual/lid lock that arrived
                     // while the async suspend request was in flight.
                     sleep_lock_was_locked |= session.is_locked();
-                    for t in session.prepare_for_sleep(Instant::now()) {
-                        apply_session_transition(
-                            t,
-                            backend.as_mut(),
-                            present_pipe.as_ref(),
-                            local_session_lifecycle.as_ref(),
-                            &mut screen_dimmer,
-                            Some(&mut state.output_management),
-                        );
-                    }
+                    apply_session_transitions!(session.prepare_for_sleep(Instant::now()));
                     sleep_lock_frame_pending = true;
                     sleep_lock_frame_serial = None;
                     sleep_lock_frame_failed = false;
@@ -11030,32 +10974,14 @@ pub fn run() {
                     // sleep actually installed; never unlock an unrelated
                     // user lock when CanSuspend is refused.
                     if should_unlock_after_suspend_failure(was_prepared, sleep_lock_was_locked) {
-                        for t in session.request_unlock(Instant::now()) {
-                            apply_session_transition(
-                                t,
-                                backend.as_mut(),
-                                present_pipe.as_ref(),
-                                local_session_lifecycle.as_ref(),
-                                &mut screen_dimmer,
-                                Some(&mut state.output_management),
-                            );
-                        }
+                        apply_session_transitions!(session.request_unlock(Instant::now()));
                     }
                     sleep_lock_was_locked = false;
                     tracing::warn!(target: "tilo::power", "suspend request failed; session remains awake");
                 }
                 tilo_power_mgmt::PowerSignal::ResumedFromSleep => {
                     // Reset the idle timer so a stale pre-sleep timestamp doesn't immediately re-blank/re-suspend on resume.
-                    for t in session.resume_from_sleep(Instant::now()) {
-                        apply_session_transition(
-                            t,
-                            backend.as_mut(),
-                            present_pipe.as_ref(),
-                            local_session_lifecycle.as_ref(),
-                            &mut screen_dimmer,
-                            Some(&mut state.output_management),
-                        );
-                    }
+                    apply_session_transitions!(session.resume_from_sleep(Instant::now()));
                     // Put the display back — a suspend doesn't pause the seat, so the DRM device
                     // returns with no mode/framebuffer/cursor plane; without this, lid close/open is an unrecoverable black screen.
                     backend.reset_display();
@@ -11119,16 +11045,7 @@ pub fn run() {
         // `SessionLocker` confirms after the overlay paints, below, so `locked` fires only once content is hidden.
         if state.session_lock.take_lock_requested() {
             session_changed = true;
-            for t in session.request_lock(Instant::now()) {
-                apply_session_transition(
-                    t,
-                    backend.as_mut(),
-                    present_pipe.as_ref(),
-                    local_session_lifecycle.as_ref(),
-                    &mut screen_dimmer,
-                    Some(&mut state.output_management),
-                );
-            }
+            apply_session_transitions!(session.request_lock(Instant::now()));
         }
         // Async unlock: pick up an in-flight credential verify's result from the
         // worker thread (started by lock-screen Enter). The loop never blocks —
@@ -11141,16 +11058,7 @@ pub fn run() {
                 // The next lock starts without the keyboard and its layer.
                 lock_keyboard = lock_screen::LockTouchKeyboard::default();
                 frame_builder.set_lock_keyboard_keys(Vec::new());
-                for t in session.request_unlock(Instant::now()) {
-                    apply_session_transition(
-                        t,
-                        backend.as_mut(),
-                        present_pipe.as_ref(),
-                        local_session_lifecycle.as_ref(),
-                        &mut screen_dimmer,
-                        Some(&mut state.output_management),
-                    );
-                }
+                apply_session_transitions!(session.request_unlock(Instant::now()));
             }
         }
 
@@ -13145,16 +13053,7 @@ pub fn run() {
             // An agent at work is the person's activity on a hosted machine:
             // without this it locks under its agents after the idle timeout.
             if injected && conn.agent {
-                for t in session.note_activity(Instant::now()) {
-                    apply_session_transition(
-                        t,
-                        backend.as_mut(),
-                        present_pipe.as_ref(),
-                        local_session_lifecycle.as_ref(),
-                        &mut screen_dimmer,
-                        Some(&mut state.output_management),
-                    );
-                }
+                apply_session_transitions!(session.note_activity(Instant::now()));
             }
         }
         if let Some(watching) = test_control_ctx.watch_request.take() {
