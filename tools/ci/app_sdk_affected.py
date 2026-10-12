@@ -68,7 +68,7 @@ AUDITED_UNIT_MODULES = {
     "crates/session/shell/src/shell/frame_retained_tests.rs": (
         "crates/session/shell/src/shell/frame.rs",
         "crates/session/shell/Cargo.toml",
-        "a1d18f5d3b1aa4d0d4af0a93c878280b113332da8707b64315fa1b27e5421062",
+        "b8927848596f1e71b64363e5f52f58958eff5377e99a5a73ac4a8c6b5ad4404b",
     ),
     "crates/sdk/ui-core/src/app/bound_component_tests.rs": (
         "crates/sdk/ui-core/src/app/host.rs",
