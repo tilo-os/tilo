@@ -45,6 +45,19 @@ fn unknown_content_still_reports_its_length() {
 }
 
 #[test]
+fn image_format_reads_the_signature_alone() {
+    let format = |bytes: &[u8]| image_format(bytes).map(|format| format.extension);
+    assert_eq!(format(b"\x89PNG\r\n\x1a\n"), Some("png"));
+    assert_eq!(format(&[0xff, 0xd8, 0xff, 0xe0]), Some("jpg"));
+    assert_eq!(format(b"GIF89a"), Some("gif"));
+    assert_eq!(format(b"RIFFxxxxWEBP"), Some("webp"));
+    assert_eq!(format(b"  <svg xmlns=\"\"/>"), Some("svg"));
+    assert_eq!(format(b"<?xml version=\"1.0\"?><svg/>"), Some("svg"));
+    assert_eq!(format(b"<?xml version=\"1.0\"?><html/>"), None);
+    assert_eq!(format(b"not an image"), None);
+}
+
+#[test]
 fn memory_and_directory_stores_round_trip_by_address() {
     let dir = tempfile::tempdir().unwrap();
     for store in [ContentStore::memory(), ContentStore::in_dir(dir.path())] {
