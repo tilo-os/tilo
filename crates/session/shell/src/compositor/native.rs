@@ -1208,6 +1208,12 @@ fn publish_native_agent_markers(
     markers: Vec<ui::app::PaintedActionMarker>,
 ) {
     let previous = state.native_agent_markers.remove(&connection);
+    // Apps acknowledge every presented frame, including frames with no marker.
+    // No previous source means there is no composer continuation to validate.
+    if markers.is_empty() && previous.is_none() {
+        frame.host_mut().retire_accessible_agent_markers(connection);
+        return;
+    }
     let source = (|| {
         let (surface, rect) = authenticated_app_owned_source(state, frame, app_id, launch).ok()?;
         let client = state.client_input.surface(surface)?.client()?.id();

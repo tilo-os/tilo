@@ -18081,10 +18081,12 @@ impl Widget for ShellOverlayHost {
         self.push_display_layout();
         let content_node = self.content.build_layout(taffy, theme, node_map);
         let palette_node = self.palette.build_layout(taffy, theme, node_map);
-        let agent_node = self
-            .agent_quick_composer
-            .build_layout(taffy, theme, node_map);
-        self.agent_quick_composer_node = Some(agent_node);
+        // Match children(): a closed composer has no live controls to measure
+        // or query. Visibility changes retire/rebuild the map below.
+        self.agent_quick_composer_node = self.agent_quick_composer.is_open().then(|| {
+            self.agent_quick_composer
+                .build_layout(taffy, theme, node_map)
+        });
         let capture_node = self.capture_studio.build_layout(taffy, theme, node_map);
         self.capture_node = Some(capture_node);
         self.screenshot_markup_node = self
@@ -18195,7 +18197,7 @@ impl Widget for ShellOverlayHost {
             Some(s) => vec![content_node, palette_node, s, capture_node],
             None => vec![content_node, palette_node, capture_node],
         };
-        children.push(agent_node);
+        children.extend(self.agent_quick_composer_node);
         children.extend(
             self.agent_markers
                 .build(taffy, theme, node_map, self.rect.origin()),
@@ -19868,6 +19870,7 @@ impl Widget for ShellOverlayHost {
             | workspace_layout
             | pairing
             | self.agent_markers.take_structure_dirty()
+            | (self.agent_quick_composer.is_open() != self.agent_quick_composer_node.is_some())
             | self.agent_quick_composer.take_structure_dirty()
     }
 
