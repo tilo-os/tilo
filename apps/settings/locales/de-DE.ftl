@@ -2140,43 +2140,43 @@ settings-appearance-prefs-forced-colors = { $new ->
     [true] Designfarben für Inhalte erzwungen
    *[false] Designfarben für Inhalte nicht mehr erzwungen
 }
-settings-accessibility-prefs-large-cursor = { $new ->
+settings-accessibility-settings-large-cursor = { $new ->
     [true] Großen Mauszeiger eingeschaltet
    *[false] Großen Mauszeiger ausgeschaltet
 }
-settings-accessibility-prefs-sticky-keys = { $new ->
+settings-accessibility-settings-sticky-keys = { $new ->
     [true] Einrastfunktion eingeschaltet
    *[false] Einrastfunktion ausgeschaltet
 }
-settings-accessibility-prefs-slow-keys = { $new ->
+settings-accessibility-settings-slow-keys = { $new ->
     [true] Anschlagverzögerung eingeschaltet
    *[false] Anschlagverzögerung ausgeschaltet
 }
-settings-accessibility-prefs-bounce-keys = { $new ->
+settings-accessibility-settings-bounce-keys = { $new ->
     [true] Tastenprellen-Filter eingeschaltet
    *[false] Tastenprellen-Filter ausgeschaltet
 }
-settings-accessibility-prefs-bounce-keys-alert = { $new ->
+settings-accessibility-settings-bounce-keys-alert = { $new ->
     [true] Hinweis beim Tastenprellen eingeschaltet
    *[false] Hinweis beim Tastenprellen ausgeschaltet
 }
-settings-accessibility-prefs-mouse-keys = { $new ->
+settings-accessibility-settings-mouse-keys = { $new ->
     [true] Maustasten eingeschaltet
    *[false] Maustasten ausgeschaltet
 }
-settings-accessibility-prefs-visual-alerts = { $new ->
+settings-accessibility-settings-visual-alerts = { $new ->
     [true] Visuelle Hinweise eingeschaltet
    *[false] Visuelle Hinweise ausgeschaltet
 }
-settings-accessibility-prefs-cursor-crosshair = { $new ->
+settings-accessibility-settings-cursor-crosshair = { $new ->
     [true] Fadenkreuz am Zeiger eingeschaltet
    *[false] Fadenkreuz am Zeiger ausgeschaltet
 }
-settings-accessibility-prefs-thick-text-caret = { $new ->
+settings-accessibility-settings-thick-text-caret = { $new ->
     [true] Breite Schreibmarke eingeschaltet
    *[false] Breite Schreibmarke ausgeschaltet
 }
-settings-accessibility-prefs-switch-control = { $new ->
+settings-accessibility-settings-switch-control = { $new ->
     [true] Schaltersteuerung eingeschaltet
    *[false] Schaltersteuerung ausgeschaltet
 }
@@ -2336,14 +2336,14 @@ settings-appearance-prefs-sunset = Nachtbeginn auf { $new } gestellt
 settings-appearance-prefs-wallpaper-scope = Geändert, für welche Arbeitsbereiche ein neues Hintergrundbild gilt
 settings-appearance-prefs-wallpaper-target = Geändert, wo ein neues Hintergrundbild erscheint
 settings-appearance-prefs-distinct-letters = Unterscheidung ähnlicher Buchstaben geändert
-settings-accessibility-prefs-cursor-size = Zeigergröße auf { $new } gestellt
-settings-accessibility-prefs-on-screen-keyboard = Geändert, wann die Bildschirmtastatur erscheint
-settings-accessibility-prefs-bounce-keys-delay-ms = Verzögerung des Tastenprellen-Filters geändert
-settings-accessibility-prefs-color-filter = Farbfilter geändert
-settings-accessibility-prefs-magnifier-zoom = Lupe auf { $new }× gestellt
-settings-accessibility-prefs-magnifier-view = Darstellung der Lupe geändert
-settings-accessibility-prefs-switch-key-pair = Tasten der Schaltersteuerung geändert
-settings-accessibility-prefs-switch-scan-ms = Abtastung der Schaltersteuerung geändert
+settings-accessibility-settings-cursor-size = Zeigergröße auf { $new } gestellt
+settings-accessibility-settings-on-screen-keyboard = Geändert, wann die Bildschirmtastatur erscheint
+settings-accessibility-settings-bounce-keys-delay-ms = Verzögerung des Tastenprellen-Filters geändert
+settings-accessibility-settings-color-filter = Farbfilter geändert
+settings-accessibility-settings-magnifier-zoom = Lupe auf { $new }× gestellt
+settings-accessibility-settings-magnifier-view = Darstellung der Lupe geändert
+settings-accessibility-settings-switch-key-pair = Tasten der Schaltersteuerung geändert
+settings-accessibility-settings-switch-scan-ms = Abtastung der Schaltersteuerung geändert
 settings-input-prefs-touchpad-natural-scroll = Scrollrichtung des Touchpads geändert
 settings-input-prefs-mouse-natural-scroll = Scrollrichtung der Maus geändert
 settings-input-prefs-pointer-speed = Zeigergeschwindigkeit geändert

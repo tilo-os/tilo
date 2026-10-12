@@ -10,7 +10,7 @@ use tilo_actions::{
     ResultSpec,
 };
 use ui::semantic_document_read::{
-    MAX_REQUEST_BYTES, ReadPage, RegisteredSemanticReader, SemanticReadError,
+    ReadPage, RegisteredSemanticReader, SemanticReadError, decode_request,
 };
 
 const OPERATION: &str = "chat.feedback.read";
@@ -30,11 +30,7 @@ pub(super) struct Request {
 }
 
 pub(super) fn validate(resource: &Resource, payload: &[u8]) -> Result<(), SemanticReadError> {
-    if payload.len() > MAX_REQUEST_BYTES {
-        return Err(SemanticReadError::Limit);
-    }
-    let request: Request =
-        serde_json::from_slice(payload).map_err(|_| SemanticReadError::InvalidRequest)?;
+    let request: Request = decode_request(payload)?;
     if request.id.len() != 32
         || !request.id.bytes().all(|c| c.is_ascii_hexdigit())
         || resource.kind != "chat.workspace.feedback"
@@ -139,8 +135,7 @@ pub(super) fn snapshot(
     heads: &[automerge::ChangeHash],
     payload: &[u8],
 ) -> Result<(ui::feedback::Receipt, Vec<super::TriageEntry>), SemanticReadError> {
-    let request: Request =
-        serde_json::from_slice(payload).map_err(|_| SemanticReadError::InvalidRequest)?;
+    let request: Request = decode_request(payload)?;
     let document = document
         .clone()
         .fork_at(heads)

@@ -213,6 +213,8 @@ fn covered(rects: &[KurboRect], size: (u32, u32)) -> f64 {
 fn scroll(theme: &Theme, host: Host, scale: f64, runs: &[(f64, usize)]) -> Vec<Run> {
     let mut tile = EmbeddedApp::new(list_app(theme), |_| {}).unwrap();
     tile.set_accepts_scroll_copies(true);
+    // The host's target has `scale` pixels per unit of its scene.
+    let _host = crate::scroll_copy::HostCopies::begin_scaled(true, scale);
     let mut text = TextRenderer::new();
     lay_out(&mut tile, theme);
     let size = (
@@ -359,10 +361,14 @@ fn a_step_of_part_of_a_device_pixel_repaints_and_matches() {
         runs[0].copied_frames, 0,
         "half a pixel cannot be copied ({runs:?})"
     );
-    // At 200 % the same half logical pixel is a whole device pixel, but the
-    // app plans its copies a logical pixel apart: still repainted.
-    let doubled = scroll(&Theme::dark(), Host::default(), 2.0, &[(40.5, 10)]);
-    assert_eq!(doubled[0].whole, 0, "{doubled:?}");
+    // At 200 % the same half logical pixel is a whole device pixel, and the
+    // app plans its copies in the host's device pixels: it copies.
+    for (name, theme) in THEMES {
+        let doubled = scroll(&theme(), Host::default(), 2.0, &[(40.5, 10), (-0.5, 6)]);
+        eprintln!("{name} at 2x, half-pixel steps: {doubled:?}");
+        assert_copies(&doubled[0], 2.0, &format!("{name} 2x, 40.5 px steps"));
+        assert_copies(&doubled[1], 2.0, &format!("{name} 2x, 0.5 px steps"));
+    }
 }
 
 #[test]

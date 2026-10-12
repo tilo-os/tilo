@@ -18,6 +18,9 @@ use tilo_peer_state::{
     workspace_task::{WorkspaceTaskAuthority, WorkspaceTaskCommand, WorkspaceTaskCommandId},
 };
 
+#[path = "changes_read_tests.rs"]
+mod changes_read;
+
 struct Enrolled {
     _directory: tempfile::TempDir,
     path: PathBuf,
@@ -1824,72 +1827,16 @@ fn assert_approval_replay(
     reopened
 }
 
-/// What the owner file held before byte fields became base64: the same
-/// record pretty-printed, every byte a JSON integer.
-fn legacy_owner_file(current: &[u8]) -> Vec<u8> {
-    use base64::{Engine as _, engine::general_purpose::STANDARD};
-    let mut value: serde_json::Value = serde_json::from_slice(current).unwrap();
-    let rooms = value["rooms"].as_object_mut().unwrap();
-    assert!(!rooms.is_empty());
-    for room in rooms.values_mut() {
-        for field in ["peer", "invitation", "enrollment_intent"] {
-            let text = room[field].as_str().expect("byte fields are base64 text");
-            room[field] = serde_json::to_value(STANDARD.decode(text).unwrap()).unwrap();
-        }
-    }
-    serde_json::to_vec_pretty(&value).unwrap()
-}
-
 #[test]
-fn legacy_int_array_owner_file_still_loads() {
+fn owner_file_holds_byte_fields_as_compact_base64() {
     let joined = enrolled();
     let current = std::fs::read(&joined.path).unwrap();
-    let legacy = legacy_owner_file(&current);
-    assert!(
-        current.len() * 3 < legacy.len(),
-        "base64 compact record {} bytes against legacy {} bytes",
-        current.len(),
-        legacy.len()
-    );
-    let legacy_path = joined.path.with_file_name("legacy-joined-rooms.json");
-    std::fs::write(&legacy_path, &legacy).unwrap();
-    let reopened = open_file(&legacy_path).unwrap();
-    assert_eq!(
-        serde_json::to_vec(&*reopened.0.authority.read()).unwrap(),
-        current,
-        "the legacy record loads to exactly the record the current file holds"
-    );
-    // A restored peer's durable() bytes order per-author watermarks by hash,
-    // so compare what the room holds rather than a re-encoding of it.
-    let state = |owner: &NativeWorkspaceOwner| {
-        owner
-            .with_current(joined.room, |view| {
-                Ok((
-                    view.peer().rows(),
-                    view.peer().document_heads(APP, ""),
-                    view.generation(),
-                    view.continuity(),
-                ))
-            })
-            .unwrap()
-    };
-    assert_eq!(state(&reopened), state(&joined.owner));
-    // The next publication rewrites the legacy file in the current format.
-    let request = edit(&reopened, joined.room, joined.now);
-    reopened.commit_document(request, joined.now).unwrap();
-    let rewritten = std::fs::read(&legacy_path).unwrap();
-    let value: serde_json::Value = serde_json::from_slice(&rewritten).unwrap();
-    assert!(value["rooms"][joined.room.to_string()]["peer"].is_string());
-    assert!(!rewritten.contains(&b'\n'), "the owner file is compact");
-    let after = state(&reopened);
-    assert_ne!(after, state(&joined.owner));
-    drop(reopened);
-    let reread = open_file(&legacy_path).unwrap();
-    assert_eq!(
-        serde_json::to_vec(&*reread.0.authority.read()).unwrap(),
-        rewritten
-    );
-    assert_eq!(state(&reread), after);
+    assert!(!current.contains(&b'\n'), "the owner file is compact");
+    let value: serde_json::Value = serde_json::from_slice(&current).unwrap();
+    let room = &value["rooms"][joined.room.to_string()];
+    for field in ["peer", "invitation", "enrollment_intent"] {
+        assert!(room[field].is_string(), "{field} is base64 text");
+    }
 }
 
 #[test]

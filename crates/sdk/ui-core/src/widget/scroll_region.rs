@@ -51,8 +51,8 @@ pub struct ScrollRegion {
 
 /// Where a frame shows the content: its offset, the clip it paints into,
 /// the transform it lands on screen with, what the region paints over it
-/// without moving it (the edge fades' bands) and its bars' tracks, which
-/// lie beside the content.
+/// without moving it (the edge fades' bands), its bars' tracks, which
+/// lie beside the content, and the thumbs the bars painted in them.
 #[derive(Clone, Debug, PartialEq)]
 struct RegionShown {
     offset: Vec2,
@@ -60,6 +60,7 @@ struct RegionShown {
     transform: Affine,
     overlays: Vec<Rect>,
     tracks: Vec<Rect>,
+    thumbs: Vec<(Rect, vello::peniko::Color)>,
 }
 
 impl ScrollRegion {
@@ -329,7 +330,27 @@ impl ScrollRegion {
             transform: crate::scroll_copy::on_screen(transform),
             overlays,
             tracks,
+            thumbs: Vec::new(),
         });
+    }
+
+    /// From the host's `collect_damage`, on a frame whose content and
+    /// offset are as on screen: add the bars' tracks to `regions` when what
+    /// the bars paint changed since the frame on screen (a thumb fading out
+    /// or lighting up under the pointer). Without both frames noted, every
+    /// track either knows is added.
+    pub fn damage_changed_bars(&self, regions: &mut Vec<Rect>) {
+        let drawing = self.shown_drawing.borrow();
+        match (drawing.as_ref(), self.shown_presented.as_ref()) {
+            (Some(drawing), Some(presented))
+                if drawing.thumbs == presented.thumbs && drawing.tracks == presented.tracks => {}
+            (drawing, presented) => regions.extend(
+                drawing
+                    .into_iter()
+                    .chain(presented)
+                    .flat_map(|shown| shown.tracks.iter().copied()),
+            ),
+        }
     }
 
     /// From the host's `collect_damage`, when nothing it paints in the
@@ -445,6 +466,9 @@ impl ScrollRegion {
                     None,
                     &RoundedRect::from_rect(thumb, radius),
                 );
+                if let Some(shown) = self.shown_drawing.borrow_mut().as_mut() {
+                    shown.thumbs.push((thumb, colour));
+                }
             }
         }
     }

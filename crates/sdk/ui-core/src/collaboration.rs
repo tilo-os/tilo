@@ -99,6 +99,12 @@ mod portable_committed {
         pub(crate) fn applied(&self) {
             match self.never {}
         }
+        pub(crate) fn applies_to(&self, _document: &impl automerge::ReadDoc) -> bool {
+            match self.never {}
+        }
+        pub(crate) fn refuse(&self) {
+            match self.never {}
+        }
     }
 }
 pub use history::{DocumentHistory, HISTORY_PAGE_SIZE, HISTORY_PREFETCH_MARGIN};
@@ -1963,9 +1969,9 @@ pub mod channel_key {
 ///
 /// 1. `TILO_PACKAGE_ID` / `TILO_WORKSPACE_ID` — launcher-set for every
 ///    compositor-started app.
-/// 2. `QUICK_APP_ID` / `QUICK_CLUSTER_ID` — standalone-dev override,
-///    ranked below `TILO_PACKAGE_ID` so a dev identity never fragments
-///    routing under a real session.
+/// 2. `QUICK_APP_ID` — standalone-dev app id, ranked below
+///    `TILO_PACKAGE_ID` so a dev identity never fragments routing under a
+///    real session.
 /// 3. A fresh random app id + the nil cluster — fails closed: nothing
 ///    else announces the same id, so nothing is ever delivered here.
 ///
@@ -2079,23 +2085,7 @@ fn auto_hello_env_uncached() -> (String, Uuid) {
     let cluster_id = identity
         .workspace_id
         .clone()
-        .and_then(|s| {
-            if let Ok(id) = Uuid::parse_str(&s) {
-                Some(id)
-            } else {
-                tracing::debug!(
-                    "TILO_WORKSPACE_ID={s:?} is not a uuid; \
-                 falling back to QUICK_CLUSTER_ID for collaboration routing"
-                );
-                None
-            }
-        })
-        .or_else(|| {
-            identity
-                .cluster_id
-                .as_deref()
-                .and_then(|s| Uuid::parse_str(s).ok())
-        })
+        .and_then(|s| Uuid::parse_str(&s).ok())
         .unwrap_or_else(Uuid::nil);
 
     (app_id, cluster_id)

@@ -5,8 +5,7 @@ copy, and performance-harness controls. It covers the retained UI, vendored
 Vello, DRM bridge, and presentation loop, not unrelated application settings or
 every graphics-driver environment variable. Defaults below mean **unset**.
 
-The toolkit's knobs are `TILO_UI_*` (read through `ui::env`). Their former
-`QUICK_UI_*` names still work and print a one-time deprecation warning.
+The toolkit's knobs are `TILO_UI_*` (read through `ui::env`).
 
 Use release binaries, record the exact commit, binary hash, adapter/driver,
 dimensions, environment, and workload, and change one variable at a time.

@@ -1,119 +1,34 @@
-# The app's public surface, written by `tilo-app surface`: its resources' verbs
-# and stored fields. Review changes to it like an API change; `tilo-app check`
-# fails when the code and this file disagree.
+# Written by `tilo-app surface`; review changes like an API change.
 
 [[resources]]
 kind = "speed-test.results"
 label = "Internet speed test"
 version = 1
-
-[[resources.fields]]
-owner = "speed-test"
-path = "results"
-readonly = true
-stored = "collection"
-title = "Measurements"
-type = "Collection<Measurement>"
-
-[[resources.fields]]
-owner = "measurement"
-path = "results.*.at_ms"
-stored = "value"
-title = "When it was recorded, in milliseconds since the Unix epoch"
-type = "i64"
-
-[[resources.fields]]
-owner = "measurement"
-path = "results.*.ping"
-stored = "value"
-title = "Round trip to the server, in milliseconds"
-type = "f64"
-
-[[resources.fields]]
-owner = "measurement"
-path = "results.*.jitter"
-stored = "value"
-title = "Variation of the round trip, in milliseconds"
-type = "f64"
-
-[[resources.fields]]
-owner = "measurement"
-path = "results.*.download"
-stored = "value"
-title = "Download speed, in megabits per second"
-type = "f64"
-
-[[resources.fields]]
-owner = "measurement"
-path = "results.*.upload"
-stored = "value"
-title = "Upload speed, in megabits per second"
-type = "f64"
-
-[[resources.fields]]
-owner = "measurement"
-path = "results.*.server"
-stored = "value"
-title = "The server that answered"
-type = "String"
-
-[[resources.fields]]
-owner = "measurement"
-path = "results.*.device"
-stored = "value"
-title = "The device that ran it, as its host names it"
-type = "String"
+fields = [
+  { path = "results", type = "Collection<Measurement>", readonly = true, stored = "collection" },
+  { path = "results.*.at_ms", type = "i64" },
+  { path = "results.*.ping", type = "f64" },
+  { path = "results.*.jitter", type = "f64" },
+  { path = "results.*.download", type = "f64" },
+  { path = "results.*.upload", type = "f64" },
+  { path = "results.*.server", type = "String" },
+  { path = "results.*.device", type = "String" },
+]
 
 [[resources.verbs]]
 id = "record"
 kind = "undoable"
-label = "Record a finished measurement"
-
-[[resources.verbs.params]]
-name = "ping"
-required = true
-
-[resources.verbs.params.schema]
-type = "number"
-
-[[resources.verbs.params]]
-name = "jitter"
-required = true
-
-[resources.verbs.params.schema]
-type = "number"
-
-[[resources.verbs.params]]
-name = "download"
-required = true
-
-[resources.verbs.params.schema]
-type = "number"
-
-[[resources.verbs.params]]
-name = "upload"
-required = true
-
-[resources.verbs.params.schema]
-type = "number"
-
-[[resources.verbs.params]]
-name = "server"
-required = true
-
-[resources.verbs.params.schema]
-type = "string"
-
-[[resources.verbs.params]]
-name = "device"
-required = true
-
-[resources.verbs.params.schema]
-type = "string"
+params = [
+  { name = "ping", required = true, schema = { type = "number" } },
+  { name = "jitter", required = true, schema = { type = "number" } },
+  { name = "download", required = true, schema = { type = "number" } },
+  { name = "upload", required = true, schema = { type = "number" } },
+  { name = "server", required = true, schema = { type = "string" } },
+  { name = "device", required = true, schema = { type = "string" } },
+]
 
 [[resources.verbs]]
-destructive = true
 id = "clear"
+destructive = true
 kind = "undoable"
-label = "Forget every measurement"
-params = []
+

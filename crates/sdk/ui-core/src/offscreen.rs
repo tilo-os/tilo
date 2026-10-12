@@ -656,6 +656,49 @@ pub struct OffscreenRenderer {
 }
 
 impl OffscreenRenderer {
+    /// This renderer's device and queue, cloned out of the shared context so
+    /// its lock (host-side bookkeeping only) is not held while rendering.
+    #[allow(
+        clippy::expect_used,
+        reason = "a poisoned shared context or a missing device entry is an environment failure the headless harness has no fallback for"
+    )]
+    fn device_queue(&self) -> (wgpu::Device, wgpu::Queue) {
+        let ctx = self.context.lock().expect("shared RenderContext poisoned");
+        let handle = ctx
+            .devices
+            .get(self.dev_id)
+            .expect("this renderer's device entry is missing from the shared RenderContext");
+        (handle.device.clone(), handle.queue.clone())
+    }
+
+    /// Render all of `scene` over `bg` into the target texture.
+    #[allow(
+        clippy::expect_used,
+        reason = "the harness cannot produce a meaningful frame after vello fails to render"
+    )]
+    fn render_full(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        scene: &Scene,
+        bg: Color,
+    ) {
+        self.renderer
+            .render_to_texture(
+                device,
+                queue,
+                scene,
+                &self.view,
+                &RenderParams {
+                    base_color: bg,
+                    width: self.width,
+                    height: self.height,
+                    antialiasing_method: AaConfig::Area,
+                },
+            )
+            .expect("render_to_texture");
+    }
+
     /// The Vello renderer underneath, for its feature and diagnostic
     /// queries.
     #[doc(hidden)]
@@ -1124,7 +1167,6 @@ impl OffscreenRenderer {
 
     #[allow(
         clippy::expect_used,
-        clippy::significant_drop_tightening,
         reason = "pixel-test readback cannot recover from a failed GPU mapping"
     )]
     fn read_target(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) -> Vec<u8> {
@@ -1204,26 +1246,13 @@ impl OffscreenRenderer {
         clippy::expect_used,
         reason = "render() is the harness's core primitive, called only from tests/shots; every expect() here guards an environment failure (poisoned lock, missing device, GPU/readback error) with no recoverable fallback — matching render_png's existing panic-on-failure contract below"
     )]
-    #[allow(
-        clippy::significant_drop_tightening,
-        reason = "already as tight as the borrow allows: `handle` below borrows from \
-                  `ctx`, so `ctx` can't drop until the clones are taken, and the block \
-                  already ends (dropping it) right after that"
-    )]
     fn render_with_overflow(&mut self, scene: &Scene, bg: Color) -> (Vec<u8>, bool) {
         // The lock only guards host-side DeviceHandle bookkeeping, not
         // rendering — vello's kernels run GPU-side. Clone the cheap,
         // Arc-backed `Device`/`Queue` handles out and drop the guard
         // immediately, rather than holding the shared context locked for
         // every other `OffscreenRenderer` through the whole render + readback.
-        let (device, queue) = {
-            let ctx = self.context.lock().expect("shared RenderContext poisoned");
-            let handle = ctx
-                .devices
-                .get(self.dev_id)
-                .expect("this renderer's device entry is missing from the shared RenderContext");
-            (handle.device.clone(), handle.queue.clone())
-        };
+        let (device, queue) = self.device_queue();
 
         if let Some(backdrop) = self.backdrop.as_deref().filter(|frame| !frame.is_empty()) {
             self.backdrop_blur
@@ -1237,20 +1266,7 @@ impl OffscreenRenderer {
                     bg,
                 );
         }
-        self.renderer
-            .render_to_texture(
-                &device,
-                &queue,
-                scene,
-                &self.view,
-                &RenderParams {
-                    base_color: bg,
-                    width: self.width,
-                    height: self.height,
-                    antialiasing_method: AaConfig::Area,
-                },
-            )
-            .expect("render_to_texture");
+        self.render_full(&device, &queue, scene, bg);
         if let Some(blur) = self.backdrop_blur.as_mut() {
             blur.release(&mut self.renderer);
         }
@@ -1283,18 +1299,10 @@ impl OffscreenRenderer {
     /// Panics if the shared GPU context or target readback fails.
     #[allow(
         clippy::expect_used,
-        clippy::significant_drop_tightening,
         reason = "pixel-test readback cannot recover from unavailable shared GPU state"
     )]
     pub fn readback_current(&mut self) -> Vec<u8> {
-        let (device, queue) = {
-            let ctx = self.context.lock().expect("shared RenderContext poisoned");
-            let handle = ctx
-                .devices
-                .get(self.dev_id)
-                .expect("this renderer's device entry is missing from the shared RenderContext");
-            (handle.device.clone(), handle.queue.clone())
-        };
+        let (device, queue) = self.device_queue();
         self.read_target(&device, &queue)
     }
 
@@ -1309,7 +1317,6 @@ impl OffscreenRenderer {
     /// If shared GPU state is poisoned/missing or Vello rejects the render.
     #[allow(
         clippy::expect_used,
-        clippy::significant_drop_tightening,
         reason = "the benchmark renderer cannot produce a meaningful sample after a GPU submission failure"
     )]
     pub fn render_gpu_wait(&mut self, scene: &Scene, bg: Color) {
@@ -1368,7 +1375,6 @@ impl OffscreenRenderer {
     /// every full-target pass issued while Vello grows a bump allocation.
     #[allow(
         clippy::expect_used,
-        clippy::significant_drop_tightening,
         reason = "the benchmark renderer cannot produce a meaningful sample after a GPU submission failure"
     )]
     fn render_gpu_wait_count(
@@ -1377,14 +1383,7 @@ impl OffscreenRenderer {
         bg: Color,
         timing: &mut Option<OffscreenRenderTiming>,
     ) -> u64 {
-        let (device, queue) = {
-            let ctx = self.context.lock().expect("shared RenderContext poisoned");
-            let handle = ctx
-                .devices
-                .get(self.dev_id)
-                .expect("this renderer's device entry is missing from the shared RenderContext");
-            (handle.device.clone(), handle.queue.clone())
-        };
+        let (device, queue) = self.device_queue();
 
         let mut overflowed;
         let mut attempts = 0u64;
@@ -1392,46 +1391,16 @@ impl OffscreenRenderer {
         loop {
             attempts = attempts.saturating_add(1);
             let reserved = self.renderer.memory_stats().bump_budget_bytes;
-            if timing.is_some() {
-                let start = crate::time::now();
-                self.renderer
-                    .render_to_texture(
-                        &device,
-                        &queue,
-                        scene,
-                        &self.view,
-                        &RenderParams {
-                            base_color: bg,
-                            width: self.width,
-                            height: self.height,
-                            antialiasing_method: AaConfig::Area,
-                        },
-                    )
-                    .expect("render_to_texture");
-                if let Some(profile) = timing.as_mut() {
-                    profile.vello_submit_us = profile
-                        .vello_submit_us
-                        .saturating_add(start.elapsed().as_micros());
-                    profile.full_attempts = profile.full_attempts.saturating_add(1);
-                    profile.coarse_prefix_pixels = profile.coarse_prefix_pixels.saturating_add(
-                        u64::from(self.width).saturating_mul(u64::from(self.height)),
-                    );
-                }
-            } else {
-                self.renderer
-                    .render_to_texture(
-                        &device,
-                        &queue,
-                        scene,
-                        &self.view,
-                        &RenderParams {
-                            base_color: bg,
-                            width: self.width,
-                            height: self.height,
-                            antialiasing_method: AaConfig::Area,
-                        },
-                    )
-                    .expect("render_to_texture");
+            let start = timing.is_some().then(crate::time::now);
+            self.render_full(&device, &queue, scene, bg);
+            if let (Some(start), Some(profile)) = (start, timing.as_mut()) {
+                profile.vello_submit_us = profile
+                    .vello_submit_us
+                    .saturating_add(start.elapsed().as_micros());
+                profile.full_attempts = profile.full_attempts.saturating_add(1);
+                profile.coarse_prefix_pixels = profile
+                    .coarse_prefix_pixels
+                    .saturating_add(u64::from(self.width).saturating_mul(u64::from(self.height)));
             }
             self.record_canonical_segment_order_full_selection(timing);
             self.record_area_ppt8_full_selection(timing);
@@ -1493,7 +1462,6 @@ impl OffscreenRenderer {
     /// timing sample after either failure.
     #[allow(
         clippy::expect_used,
-        clippy::significant_drop_tightening,
         reason = "the benchmark renderer cannot produce a meaningful sample after a GPU submission failure"
     )]
     pub fn render_damage_gpu_wait(&mut self, scene: &Scene, bg: Color, damage: Rect) -> u64 {
@@ -1515,7 +1483,6 @@ impl OffscreenRenderer {
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
         clippy::expect_used,
-        clippy::significant_drop_tightening,
         clippy::too_many_lines,
         reason = "damage bounds are clamped to non-negative u32 target dimensions before narrowing; the benchmark renderer cannot produce a meaningful sample after a GPU submission failure"
     )]
@@ -1539,7 +1506,6 @@ impl OffscreenRenderer {
     /// Panics under the same conditions as [`Self::render_damage_gpu_wait`].
     #[allow(
         clippy::expect_used,
-        clippy::significant_drop_tightening,
         reason = "the benchmark renderer cannot produce a meaningful sample after a GPU submission failure"
     )]
     pub fn render_copies_and_damage_gpu_wait(
@@ -1550,13 +1516,7 @@ impl OffscreenRenderer {
         damage: &[Rect],
     ) -> u64 {
         if !copies.is_empty() {
-            let (device, queue) = {
-                let ctx = self.context.lock().expect("shared RenderContext poisoned");
-                let handle = ctx.devices.get(self.dev_id).expect(
-                    "this renderer's device entry is missing from the shared RenderContext",
-                );
-                (handle.device.clone(), handle.queue.clone())
-            };
+            let (device, queue) = self.device_queue();
             let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("offscreen scroll copies"),
             });
@@ -1598,7 +1558,6 @@ impl OffscreenRenderer {
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
         clippy::expect_used,
-        clippy::significant_drop_tightening,
         clippy::too_many_lines,
         reason = "damage bounds are clamped to non-negative u32 target dimensions before narrowing; the benchmark renderer cannot produce a meaningful sample after a GPU submission failure"
     )]
@@ -1631,14 +1590,7 @@ impl OffscreenRenderer {
             return self.render_gpu_wait_count(scene, bg, timing);
         }
 
-        let (device, queue) = {
-            let ctx = self.context.lock().expect("shared RenderContext poisoned");
-            let handle = ctx
-                .devices
-                .get(self.dev_id)
-                .expect("this renderer's device entry is missing from the shared RenderContext");
-            (handle.device.clone(), handle.queue.clone())
-        };
+        let (device, queue) = self.device_queue();
         let setup_start = timing.is_some().then(crate::time::now);
         let texture_limit = device.limits().max_texture_dimension_2d;
         let regions = coalesce_regions(
