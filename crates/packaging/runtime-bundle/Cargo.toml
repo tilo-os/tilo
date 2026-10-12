@@ -24,13 +24,16 @@ path = "src/lib.rs"
 
 [dependencies]
 tilo-clock = { path = "../../platform/tilo-clock" }
+# Installs share the bundle root's collection lock; a collection holds it alone.
+tilo-advisory-lock = { path = "../../system/advisory-lock" }
 clap.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 toml.workspace = true
 thiserror.workspace = true
 blake3.workspace = true
-tilo-xdg-paths = { path = "../../system/xdg-paths" }
+sha2.workspace = true
+tilo-paths.workspace = true
 hex.workspace = true
 getrandom.workspace = true
 ed25519-dalek = { workspace = true, features = ["rand_core"] }

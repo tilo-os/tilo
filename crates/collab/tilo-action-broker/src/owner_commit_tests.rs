@@ -67,7 +67,7 @@ mod owner_commit_tests {
                 document_artifact_id(&route.app_id, &route.cluster_id, &route.record_id),
                 Ed25519PublicKey::from_bytes(device.verifying_key().to_bytes()),
                 document_attestation_id(&route.app_id, &route.cluster_id, &route.record_id),
-                collab_types::OpClass::Splice, SystemTime::now(), 1);
+                collab_types::OpKind::Change, SystemTime::now(), 1);
             sign_op(&mut op, &device).unwrap();
             let mut request = client.send_request();
             request.get().set_op(&postcard::to_stdvec(&op).unwrap());
@@ -328,7 +328,7 @@ mod owner_commit_tests {
             .find_map(|request| match request {
                 CollabRequest::PublishActions { actions, .. } => actions
                     .iter()
-                    .find(|a| a.action == "insert-table")
+                    .find(|a| a.action == "append-paragraph")
                     .map(|a| a.resource.clone()),
                 _ => None,
             })
@@ -342,8 +342,8 @@ mod owner_commit_tests {
             id: 1,
             invocation,
             resource,
-            action: "insert-table".into(),
-            argument: None,
+            action: "append-paragraph".into(),
+            argument: Some("Added through the broker".into()),
             actor: "worker".into(),
             context: None,
         });
@@ -391,7 +391,7 @@ mod owner_commit_tests {
             crate::test_support::WorkspaceId(72),
             "Actual owner barrier",
         );
-        workspace.room = uuid::Uuid::parse_str(owner.peer().room()).unwrap().into();
+        workspace.set_room(uuid::Uuid::parse_str(owner.peer().room()).unwrap().into());
         workspace.set_owner(principal_id_for_root(
             owner.peer().authority().user_public_key,
         ));
@@ -417,6 +417,53 @@ mod owner_commit_tests {
         route: CrdtRoute,
         _fanout: Arc<FanoutState>,
     }
+    #[tokio::test(flavor = "current_thread")]
+    async fn owner_commit_failure_retains_answered_reason_and_cancelled_uncertainty() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                for cancelled in [false, true] {
+                    let root = canonical_tempdir();
+                    let mut fixture = owner_fixture_with_receipt_fault(root.path(), 1);
+                    let request = tilo_peer_state::owner_commit::OwnerCommitRequest {
+                        room: fixture.route.cluster_id.clone(),
+                        operation: tilo_peer_state::owner_commit::CommitOperation::Document {
+                            app: fixture.route.app_id.clone(),
+                            record: fixture.route.record_id.clone(),
+                            envelope: Box::new(owner_snapshot(&fixture)),
+                        },
+                    };
+                    let state = fixture.state.clone();
+                    let response = tokio::task::spawn_local(async move {
+                        state.commit_owner_request(request, None).await
+                    });
+                    let pending = tilo_test_env::within(
+                        "owner did not receive the actual commit",
+                        fixture.mailbox.recv(),
+                    )
+                    .await
+                    .unwrap();
+                    if cancelled {
+                        response.abort();
+                        assert!(response.await.unwrap_err().is_cancelled());
+                        assert_eq!(
+                            fixture.state.owner_health().unwrap_err(),
+                            "owner commit interrupted; outcome unknown"
+                        );
+                        drop(pending);
+                    } else {
+                        pending.apply(&mut fixture.owner).unwrap();
+                        let error = response.await.unwrap().unwrap_err();
+                        assert_eq!(
+                            fixture.state.owner_health().unwrap_err(),
+                            format!("owner commit failed: {}", error.extra)
+                        );
+                        assert!(!error.extra.contains("interrupted"));
+                    }
+                }
+            })
+            .await;
+    }
+
     fn owner_fixture(root: &std::path::Path) -> OwnerFixture {
         owner_fixture_with_receipt_fault(root, 0)
     }
@@ -550,7 +597,7 @@ mod owner_commit_tests {
             document_artifact_id(&f.route.app_id, &f.route.cluster_id, &f.route.record_id),
             Ed25519PublicKey::from_bytes(key.verifying_key().to_bytes()),
             document_attestation_id(&f.route.app_id, &f.route.cluster_id, &f.route.record_id),
-            collab_types::OpClass::Splice,
+            collab_types::OpKind::Change,
             SystemTime::now(),
             1000,
         );
@@ -671,12 +718,8 @@ mod owner_commit_tests {
             },
         };
         let actor = principal_id_for_root(f.owner.peer().authority().user_public_key);
-        let context = tilo_actions::ActionContext::for_resource(
-            "Publish",
-            "record:bounded",
-            "document",
-            "Receipt test",
-        );
+        let context =
+            tilo_actions::ActionContext::for_resource("record:bounded", "document", "Receipt test");
         f.state
             .journal
             .lock()
@@ -897,25 +940,30 @@ mod owner_commit_tests {
             }
         }
         impl crate::services::WorkspaceAuthority for CurrentOwner {
-            fn snapshot(&self) -> Result<tilo_desktop_model::DesktopTree, String> {
+            fn with_tree(
+                &self,
+                read: &mut dyn FnMut(&tilo_desktop_model::DesktopTree),
+            ) -> Result<(), String> {
                 let guard = self.0.lock().map_err(|_| "owner authority unavailable")?;
                 let peer = guard.as_ref().ok_or("owner authority unavailable")?;
                 let doc = peer
                     .admitted_room()
                     .ok_or("admitted owner governance unavailable")?;
-                let (name, owner, caps) = tilo_peer_state::room::extract_governed_fields(doc);
+                let (name, policy) = tilo_peer_state::room::extract_governed_fields(doc);
                 let mut workspace = tilo_desktop_model::Workspace::new(
                     tilo_desktop_model::WorkspaceId(72),
                     name.unwrap_or_else(|| "Owner room".into()),
                 );
-                workspace.room = uuid::Uuid::parse_str(peer.room())
-                    .map_err(|e| e.to_string())?
-                    .into();
-                workspace.owner = owner;
-                workspace.capabilities = caps;
+                workspace.set_room(
+                    uuid::Uuid::parse_str(peer.room())
+                        .map_err(|e| e.to_string())?
+                        .into(),
+                );
+                workspace.policy = policy;
                 let mut tree = tilo_desktop_model::DesktopTree::default();
                 tree.workspaces.push(workspace);
-                Ok(tree)
+                read(&tree);
+                Ok(())
             }
         }
         struct Published(Arc<AtomicUsize>);
@@ -1101,7 +1149,7 @@ mod owner_commit_tests {
                         surface
                             .actions
                             .iter()
-                            .find(|action| action.action == "insert-table")
+                            .find(|action| action.action == "append-paragraph")
                             .cloned()
                             .map(|action| (surface, action))
                     })
@@ -1155,7 +1203,7 @@ mod owner_commit_tests {
                 surface.peer_id,
                 &action.resource,
                 &action.action,
-                None,
+                Some("Added through the broker"),
                 &principal,
             )
             .unwrap();
@@ -1172,10 +1220,14 @@ mod owner_commit_tests {
             );
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
-        assert!(matches!(
-            actions.status(job.id),
-            Some(tilo_actions::InvocationUpdate::Succeeded { .. })
-        ));
+        assert!(
+            matches!(
+                actions.status(job.id),
+                Some(tilo_actions::InvocationUpdate::Succeeded { .. })
+            ),
+            "{:?}",
+            actions.status(job.id)
+        );
         assert_eq!(
             published.load(Ordering::SeqCst),
             0,
@@ -1383,7 +1435,7 @@ mod owner_commit_tests {
                     assert_eq!(query.unwrap().rows.len(), 1);
                     assert!(matches!(
                         resolve.unwrap(),
-                        runtime_collab::ActionDirectoryResolution::Found(_)
+                        runtime_collab::ActionDirectoryResolution::Found { .. }
                     ));
                 }
                 *authority.certificate.lock().unwrap() = Some(cert.clone());
@@ -1764,7 +1816,6 @@ mod owner_commit_tests {
                     operation_kind: tilo_actions::OperationKind::Effect,
                     cluster_id: f.route.cluster_id.clone(),
                     context: tilo_actions::ActionContext::for_resource(
-                        "Publish",
                         "record:bounded",
                         "document",
                         "Native receipt test",
@@ -1989,16 +2040,18 @@ mod owner_commit_tests {
         let context = tilo_actions::ActionContext::default();
         let contract = tilo_actions::ActionContract::default();
         let intent = serde_json::json!({"operation_kind":tilo_actions::OperationKind::Effect,"context":context,
-            "actor":actor,"contract":contract,"app_id":f.route.app_id,"action":"open"});
+            "actor":actor,"contract":contract,"app_id":f.route.app_id,
+            "resource":format!("app.{}", f.route.app_id),"resource_kind":"app","action":"open"});
         let update = tilo_actions::InvocationUpdate::Succeeded {
             invocation: key.invocation,
             output: tilo_actions::ActionOutput::default(),
         };
-        let mut effect = crate::policy::redacted_effect_receipt(
+        let mut effect = tilo_desktop_model::WorkspaceEffectReceipt::redacted(
             key.invocation,
             &actor,
             context,
             tilo_actions::EffectReceiptStatus::Succeeded,
+            tilo_clock::unix_now_i64(),
         );
         effect.completed_at = 100;
         let request = tilo_peer_state::owner_commit::OwnerCommitRequest {

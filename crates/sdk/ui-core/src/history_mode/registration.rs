@@ -150,7 +150,8 @@ impl HistoryRegistration {
     /// A registration over an app-global state document, for tests of
     /// History's presentation. A persistence path identifies storage; it is
     /// not a user-file write target.
-    #[cfg(all(test, feature = "native"))]
+    #[cfg(test)]
+    #[cfg(feature = "native")]
     pub(crate) fn installed_app_state(
         definition: &'static HistoryDefinition,
         autosave: Option<&crate::persist::DocWriter>,

@@ -1,20 +1,63 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test assertions")]
 
 use ui::framework::testing::TestApp;
-use ui::tilo_resource::{ActionRef, Invoke};
+use ui::tilo_resource::{ActionRef, Doc, Invoke, Replica, Resource as _};
 
-use crate::{ChipDesignShell, ChipProject, ProjectAction};
+use crate::{ChipDesignShell, Project as ChipProject, ProjectState};
 
 const REPORT: &str = include_str!("../fixtures/storage-report.json");
-const IMPORT: ActionRef<ChipProject, String> = ActionRef::new("import-report", &["json"]);
-const REMOVE: ActionRef<ChipProject, String> = ActionRef::new("remove-report", &["report"]);
+
+/// What a test app's project holds, parsed as the views read it.
+pub(crate) trait Parsed {
+    fn parsed(&self) -> ProjectState;
+}
+
+impl Parsed for TestApp<ChipDesignShell> {
+    fn parsed(&self) -> ProjectState {
+        ProjectState::of(&self.state())
+    }
+}
+
+/// Invoke the operator graph's `action` with `args` as an agent does: the
+/// project's verb, or the field edit of a matrix node's output width.
+pub(crate) fn graph(
+    app: &mut TestApp<ChipDesignShell>,
+    action: &str,
+    args: serde_json::Value,
+) -> Result<Option<serde_json::Value>, ui::tilo_actions::DoorError> {
+    if action == "set-output-width" {
+        let node = args["node"].as_str().unwrap_or_default();
+        let width = args["width"]
+            .as_u64()
+            .and_then(|width| u32::try_from(width).ok());
+        let edit = ChipProject::paths()
+            .nodes
+            .item(&ui::tilo_resource::Id::from_raw(node))
+            .output_width
+            .set(width);
+        return app.call("field-edit", serde_json::json!({ "edit": edit }));
+    }
+    app.call(action, args)
+}
+
+/// Apply `invoke` to a peer's copy of the project, as that peer would.
+pub(crate) fn on_peer(peer: &mut Doc, invoke: Invoke<ChipProject>) -> ProjectState {
+    let mut replica = Replica::<ChipProject>::from_doc(peer.clone());
+    replica.apply(invoke).unwrap();
+    *peer = replica.doc().clone();
+    ProjectState::of(&replica.state().unwrap())
+}
+const IMPORT: ActionRef<ChipProject, crate::resource::project::ImportReport> =
+    ChipProject::IMPORT_REPORT;
+const REMOVE: ActionRef<ChipProject, crate::resource::project::RemoveReport> =
+    ChipProject::REMOVE_REPORT;
 
 #[test]
 fn semantic_import_preserves_provenance_and_exact_storage_and_is_undoable() {
     let mut app = TestApp::<ChipDesignShell>::new().unwrap();
-    assert!(app.state().reports.is_empty(), "live projects start empty");
+    assert!(app.parsed().reports.is_empty(), "live projects start empty");
     app.invoke(IMPORT.with(REPORT.to_owned())).unwrap();
-    let state = app.state();
+    let state = app.parsed();
     let id = crate::model::report_id(REPORT);
     let report = state
         .reports
@@ -30,7 +73,7 @@ fn semantic_import_preserves_provenance_and_exact_storage_and_is_undoable() {
             .any(|item| item == "coding_quality")
     );
     assert!(app.undo());
-    assert!(app.state().reports.is_empty());
+    assert!(app.parsed().reports.is_empty());
 }
 
 #[test]
@@ -38,10 +81,10 @@ fn repeated_import_is_idempotent_and_remove_uses_the_published_action() {
     let mut app = TestApp::<ChipDesignShell>::new().unwrap();
     app.invoke(IMPORT.with(REPORT.to_owned())).unwrap();
     app.invoke(IMPORT.with(REPORT.to_owned())).unwrap();
-    assert_eq!(app.state().reports.len(), 1);
+    assert_eq!(app.parsed().reports.len(), 1);
     app.invoke(REMOVE.with(crate::model::report_id(REPORT)))
         .unwrap();
-    assert!(app.state().reports.is_empty());
+    assert!(app.parsed().reports.is_empty());
 }
 
 #[test]
@@ -55,12 +98,9 @@ fn forged_storage_and_moving_revision_are_refused_on_the_production_door() {
         report.as_object_mut().unwrap().insert(field.into(), value);
         // Exercise the typed apply door too: a caller cannot bypass validation
         // by encoding an action instead of using the named declaration.
-        let invoke = Invoke::apply(&ProjectAction::ImportReport {
-            json: report.to_string(),
-        })
-        .unwrap();
+        let invoke = ChipProject::IMPORT_REPORT.with(report.to_string());
         assert!(app.invoke(invoke).is_err());
-        assert!(app.state().reports.is_empty());
+        assert!(app.parsed().reports.is_empty());
     }
 }
 
@@ -72,7 +112,7 @@ fn unsupported_cache_stays_unknown_and_is_never_displayed_as_zero() {
     let mut app = TestApp::<ChipDesignShell>::new().unwrap();
     app.invoke(IMPORT.with(report.to_string())).unwrap();
     assert!(matches!(
-        app.state()
+        app.parsed()
             .reports
             .values()
             .next()
@@ -93,11 +133,11 @@ fn captures_use_the_production_surface_and_never_seed_live_records() {
     ] {
         let mut app = TestApp::<ChipDesignShell>::capture(Some(scenario)).unwrap();
         assert_eq!(
-            app.state().reports.len(),
+            app.parsed().reports.len(),
             usize::from(scenario == "storage-report")
         );
         assert_eq!(
-            app.state().verifications.len(),
+            app.parsed().verifications.len(),
             usize::from(matches!(
                 scenario,
                 "checkpoint-verification" | "research-mapping" | "q4k-superblock"
@@ -106,7 +146,7 @@ fn captures_use_the_production_surface_and_never_seed_live_records() {
         let audit = app.harness().native_app_audit();
         assert!(audit.is_certified(), "{scenario}: {audit:#?}");
     }
-    let live = TestApp::<ChipDesignShell>::new().unwrap().state();
+    let live = TestApp::<ChipDesignShell>::new().unwrap().parsed();
     assert!(live.reports.is_empty());
     assert!(live.verifications.is_empty());
 }
@@ -122,14 +162,14 @@ fn consented_file_import_and_cancellation_use_the_framework_job_path() {
     recorder.respond_to_pick(ui::portal::PortalOutcome::Opened(path));
     app.effect(&crate::view::ChipEffect::ImportFile).unwrap();
     app.settle();
-    assert_eq!(app.state().reports.len(), 1);
+    assert_eq!(app.parsed().reports.len(), 1);
     assert_eq!(recorder.pick_requests().len(), 1);
 
     recorder.respond_to_pick(ui::portal::PortalOutcome::Cancelled);
     assert!(app.effect(&crate::view::ChipEffect::ImportFile).is_err());
     app.settle();
     assert_eq!(
-        app.state().reports.len(),
+        app.parsed().reports.len(),
         1,
         "cancelled jobs fabricate no evidence"
     );
@@ -143,19 +183,14 @@ fn oversized_annotations_are_refused_before_building_report_widgets() {
         serde_json::json!(vec!["annotation"; 100]),
     );
     let mut app = TestApp::<ChipDesignShell>::new().unwrap();
-    let invoke = Invoke::apply(&ProjectAction::ImportReport {
-        json: report.to_string(),
-    })
-    .unwrap();
+    let invoke = ChipProject::IMPORT_REPORT.with(report.to_string());
     assert!(app.invoke(invoke).is_err());
-    assert!(app.state().reports.is_empty());
+    assert!(app.parsed().reports.is_empty());
 }
 
 #[test]
 fn concurrent_first_imports_share_the_initialized_collection_and_both_survive_merge() {
     use ui::automerge::{ROOT, ReadDoc};
-    use ui::tilo_actions::{EncodedAction, LocalTransport};
-    use ui::tilo_resource::Resource;
 
     let mut app = TestApp::<ChipDesignShell>::new().unwrap();
     let mut peer = app.peer_document();
@@ -172,16 +207,14 @@ fn concurrent_first_imports_share_the_initialized_collection_and_both_survive_me
     let first_id = crate::model::report_id(REPORT);
     let second_id = crate::model::report_id(&second);
     app.invoke(IMPORT.with(REPORT.to_owned())).unwrap();
-    let action = ProjectAction::ImportReport { json: second };
-    let encoded = EncodedAction::encode(ChipProject::ACTION_TYPE, &action).unwrap();
-    ui::tilo_actions::dispatch(&mut peer, &action, encoded, &mut LocalTransport::new()).unwrap();
+    on_peer(&mut peer, ChipProject::IMPORT_REPORT.with(second));
     app.merge_peer(&mut peer).unwrap();
-    let state = app.state();
+    let state = app.parsed();
     assert_eq!(state.reports.len(), 2);
     assert!(state.reports.contains_key(&first_id));
     assert!(state.reports.contains_key(&second_id));
     assert_eq!(
-        ChipProject::read(&peer).unwrap(),
+        ProjectState::of(&ChipProject::read(&peer).unwrap()),
         state,
         "both replicas converge"
     );
@@ -219,7 +252,7 @@ fn report_children_publish_inspection_removal_and_typed_reads_on_the_production_
     assert_eq!(content["packed_weight_bytes"], 512_u64);
     app.call_on(&child, "remove-report", serde_json::json!({}))
         .unwrap();
-    assert!(app.state().reports.is_empty());
+    assert!(app.parsed().reports.is_empty());
     assert!(
         app.call_on(&child, "inspect", serde_json::json!({}))
             .is_err(),
@@ -227,8 +260,8 @@ fn report_children_publish_inspection_removal_and_typed_reads_on_the_production_
     );
 }
 
-const IMPORT_VERIFICATION: ActionRef<ChipProject, String> =
-    ActionRef::new("import-verification", &["json"]);
+const IMPORT_VERIFICATION: ActionRef<ChipProject, crate::resource::project::ImportVerification> =
+    ChipProject::IMPORT_VERIFICATION;
 
 fn receipt(evidence: &str, passed: bool) -> serde_json::Value {
     let digest = "a".repeat(64);
@@ -324,14 +357,10 @@ fn hardware_receipts_publish_typed_checks_identities_and_sanitized_shared_reads(
             );
             assert_eq!(content["receipt"]["evidence"], evidence);
             assert!(!content.to_string().contains("/private/device"));
-            app.read_document(|doc| {
-                use ui::automerge::ReadDoc;
-                let (value, _) = doc
-                    .get(ui::automerge::ROOT, format!("verification:{id}"))
-                    .unwrap()
-                    .unwrap();
-                assert!(!value.as_str().unwrap().contains("/private/device"));
-            });
+            assert!(
+                !app.state().verifications[&id].0.contains("/private/device"),
+                "the stored receipt holds no device path"
+            );
             if passed {
                 assert_eq!(content["receipt"]["checks"]["generic_synthesis"], "passed");
                 assert_eq!(
@@ -346,18 +375,18 @@ fn hardware_receipts_publish_typed_checks_identities_and_sanitized_shared_reads(
             );
         }
     }
-    assert_eq!(app.state().verifications.len(), 4);
-    let id = app.state().verifications.keys().next().unwrap().clone();
+    assert_eq!(app.parsed().verifications.len(), 4);
+    let id = app.parsed().verifications.keys().next().unwrap().clone();
     let child = crate::resource::verification_resource_id(&id);
     app.call_on(&child, "remove-verification", serde_json::json!({}))
         .unwrap();
-    assert_eq!(app.state().verifications.len(), 3);
+    assert_eq!(app.parsed().verifications.len(), 3);
     assert!(
         app.call_on(&child, "inspect", serde_json::json!({}))
             .is_err()
     );
     assert!(app.undo());
-    assert_eq!(app.state().verifications.len(), 4);
+    assert_eq!(app.parsed().verifications.len(), 4);
 }
 
 #[test]
@@ -403,31 +432,30 @@ fn receipt_validation_refuses_false_success_malformed_identities_and_dropped_exc
     ));
     invalid.push(" ".repeat(crate::model::MAX_REPORT_BYTES + 1));
     for raw in invalid {
-        let action = Invoke::apply(&ProjectAction::ImportVerification { json: raw }).unwrap();
+        let action = ChipProject::IMPORT_VERIFICATION.with(raw);
         assert!(
             app.invoke(action).is_err(),
             "typed apply must validate receipts too"
         );
-        assert!(app.state().verifications.is_empty());
+        assert!(app.parsed().verifications.is_empty());
     }
 }
 
 #[test]
 fn receipt_first_imports_merge_idempotently_and_keep_original_byte_identity() {
-    use ui::tilo_actions::{EncodedAction, LocalTransport};
-    use ui::tilo_resource::Resource;
     let mut app = TestApp::<ChipDesignShell>::new().unwrap();
     let mut peer = app.peer_document();
     let first = receipt("checkpoint_tile_integer_contract", true).to_string();
     let second = receipt("checkpoint_tile_integer_contract", false).to_string();
     app.invoke(IMPORT_VERIFICATION.with(first.clone())).unwrap();
     app.invoke(IMPORT_VERIFICATION.with(first)).unwrap();
-    let action = ProjectAction::ImportVerification { json: second };
-    let encoded = EncodedAction::encode(ChipProject::ACTION_TYPE, &action).unwrap();
-    ui::tilo_actions::dispatch(&mut peer, &action, encoded, &mut LocalTransport::new()).unwrap();
+    on_peer(&mut peer, ChipProject::IMPORT_VERIFICATION.with(second));
     app.merge_peer(&mut peer).unwrap();
-    assert_eq!(app.state().verifications.len(), 2);
-    assert_eq!(ChipProject::read(&peer).unwrap(), app.state());
+    assert_eq!(app.parsed().verifications.len(), 2);
+    assert_eq!(
+        ProjectState::of(&ChipProject::read(&peer).unwrap()),
+        app.parsed()
+    );
 }
 
 #[test]
@@ -445,8 +473,8 @@ fn consented_receipt_file_import_uses_the_existing_bounded_job() {
     recorder.respond_to_pick(ui::portal::PortalOutcome::Opened(path));
     app.effect(&crate::view::ChipEffect::ImportFile).unwrap();
     app.settle();
-    assert_eq!(app.state().verifications.len(), 1);
-    assert!(app.state().reports.is_empty());
+    assert_eq!(app.parsed().verifications.len(), 1);
+    assert!(app.parsed().reports.is_empty());
     assert_eq!(
         recorder.pick_requests()[0].contents_byte_limit(),
         Some(crate::model::MAX_REPORT_BYTES)
@@ -461,7 +489,7 @@ fn cancelled_checkpoint_receipt_retains_terminal_status_and_no_unrun_checks() {
     let mut app = TestApp::<ChipDesignShell>::new().unwrap();
     app.invoke(IMPORT_VERIFICATION.with(raw.to_string()))
         .unwrap();
-    let state = app.state();
+    let state = app.parsed();
     let record = state.verifications.values().next().unwrap();
     assert_eq!(record.receipt.status, crate::ReceiptStatus::Cancelled);
     assert!(record.receipt.checks.is_empty());
@@ -470,26 +498,20 @@ fn cancelled_checkpoint_receipt_retains_terminal_status_and_no_unrun_checks() {
 }
 
 #[test]
-fn existing_storage_only_documents_import_receipts_without_schema_migration() {
-    use ui::automerge::{AutoCommit, ObjType, ROOT, transaction::Transactable};
-    use ui::tilo_actions::{EncodedAction, LocalTransport};
-    use ui::tilo_resource::Resource;
-    let mut doc = AutoCommit::new();
-    let reports = doc.put_object(ROOT, "reports", ObjType::Map).unwrap();
-    doc.put(reports, crate::model::report_id(REPORT), REPORT)
+fn a_project_holding_only_reports_imports_receipts() {
+    let mut project = Replica::<ChipProject>::new();
+    project
+        .apply(ChipProject::IMPORT_REPORT.with(REPORT))
         .unwrap();
-    doc.commit();
-    let old_state = ChipProject::read(&doc).unwrap();
-    assert_eq!(old_state.reports.len(), 1);
-    assert!(old_state.verifications.is_empty());
     for passed in [true, false] {
-        let action = ProjectAction::ImportVerification {
-            json: receipt("checkpoint_tile_integer_contract", passed).to_string(),
-        };
-        let encoded = EncodedAction::encode(ChipProject::ACTION_TYPE, &action).unwrap();
-        ui::tilo_actions::dispatch(&mut doc, &action, encoded, &mut LocalTransport::new()).unwrap();
+        project
+            .apply(
+                ChipProject::IMPORT_VERIFICATION
+                    .with(receipt("checkpoint_tile_integer_contract", passed).to_string()),
+            )
+            .unwrap();
     }
-    let state = ChipProject::read(&doc).unwrap();
+    let state = ProjectState::of(&project.state().unwrap());
     assert_eq!(state.reports.len(), 1);
     assert_eq!(state.verifications.len(), 2);
 }
@@ -521,7 +543,7 @@ fn synthetic_mapping_contract_is_visible_through_the_semantic_resource() {
         "research mapping semantic surface: {audit:#?}"
     );
     assert!(app.undo());
-    assert!(app.state().verifications.is_empty());
+    assert!(app.parsed().verifications.is_empty());
 }
 
 #[test]
@@ -556,12 +578,9 @@ fn mapping_claims_refuse_manufacturing_false_area_and_missing_observations() {
     cases.push(changed);
     for raw in cases {
         let mut app = TestApp::<ChipDesignShell>::new().unwrap();
-        let action = Invoke::apply(&ProjectAction::ImportVerification {
-            json: raw.to_string(),
-        })
-        .unwrap();
+        let action = ChipProject::IMPORT_VERIFICATION.with(raw.to_string());
         assert!(app.invoke(action).is_err());
-        assert!(app.state().verifications.is_empty());
+        assert!(app.parsed().verifications.is_empty());
     }
 }
 
@@ -576,7 +595,7 @@ fn mapping_library_and_delay_are_declared_inputs_with_strict_bounds() {
     let mut app = TestApp::<ChipDesignShell>::new().unwrap();
     app.invoke(IMPORT_VERIFICATION.with(raw.to_string()))
         .unwrap();
-    let record = app.state().verifications.values().next().unwrap().clone();
+    let record = app.parsed().verifications.values().next().unwrap().clone();
     assert_eq!(record.receipt.abc_delay_target_ps, Some(2500));
     assert!(
         record
@@ -601,7 +620,7 @@ fn mapping_library_and_delay_are_declared_inputs_with_strict_bounds() {
                 .invoke(IMPORT_VERIFICATION.with(invalid.to_string()))
                 .is_err()
         );
-        assert!(rejected.state().verifications.is_empty());
+        assert!(rejected.parsed().verifications.is_empty());
     }
 }
 
@@ -632,7 +651,7 @@ fn rms_dimensions_are_declared_and_all_observation_counts_must_match() {
                     .invoke(IMPORT_VERIFICATION.with(invalid.to_string()))
                     .is_err()
             );
-            assert!(rejected.state().verifications.is_empty());
+            assert!(rejected.parsed().verifications.is_empty());
         }
     }
 }
@@ -761,15 +780,12 @@ fn mapping_partial_claims_require_prior_checks_and_observation_identities() {
     }
     let mut app = TestApp::<ChipDesignShell>::new().unwrap();
     for raw in cases {
-        let action = Invoke::apply(&ProjectAction::ImportVerification {
-            json: raw.to_string(),
-        })
-        .unwrap();
+        let action = ChipProject::IMPORT_VERIFICATION.with(raw.to_string());
         assert!(
             app.invoke(action).is_err(),
             "unsupported partial claim: {raw}"
         );
-        assert!(app.state().verifications.is_empty());
+        assert!(app.parsed().verifications.is_empty());
     }
 }
 
@@ -799,14 +815,10 @@ fn mapping_known_device_paths_are_removed_from_collaborative_resource_reads() {
             .unwrap()
             .contains("<run directory>/mapped-compile.log")
     );
-    app.read_document(|doc| {
-        use ui::automerge::ReadDoc;
-        let (stored, _) = doc
-            .get(ui::automerge::ROOT, format!("verification:{id}"))
-            .unwrap()
-            .unwrap();
-        assert!(!stored.as_str().unwrap().contains("/private/device"));
-    });
+    assert!(
+        !app.state().verifications[&id].0.contains("/private/device"),
+        "the stored receipt holds no device path"
+    );
 }
 
 #[test]
@@ -815,7 +827,7 @@ fn synthetic_superblock_contract_is_shared_without_losing_scalar_scope() {
     let json = include_str!("../fixtures/q4k-superblock.json");
     app.call("import-verification", serde_json::json!({"json":json}))
         .unwrap();
-    let id = app.state().verifications.keys().next().unwrap().clone();
+    let id = app.parsed().verifications.keys().next().unwrap().clone();
     let child = crate::resource::verification_resource_id(&id);
     app.call_on(&child, "inspect", serde_json::json!({}))
         .unwrap();
@@ -907,7 +919,7 @@ fn superblock_receipts_refuse_incomplete_or_contradictory_success() {
             )
             .is_err()
         );
-        assert!(app.state().verifications.is_empty());
+        assert!(app.parsed().verifications.is_empty());
     }
     let duplicate = include_str!("../fixtures/q4k-superblock.json").replace(
         r#""$_ANDNOT_": 2367"#,
@@ -936,7 +948,7 @@ fn cpu_operator_receipts_use_the_public_import_read_open_and_reopen_door() {
         "1daac51863ed5455eb407260ef6c3d7961effb44aaef66c940987609ead9702e",
     ];
     let mut app = TestApp::<ChipDesignShell>::new().unwrap();
-    assert!(app.state().verifications.is_empty());
+    assert!(app.parsed().verifications.is_empty());
     for (json, expected_hash) in CPU_RECEIPTS.into_iter().zip(expected_hashes) {
         app.call("import-verification", serde_json::json!({"json":json}))
             .unwrap();
@@ -975,10 +987,10 @@ fn cpu_operator_receipts_use_the_public_import_read_open_and_reopen_door() {
         app.call("import-verification", serde_json::json!({"json":json}))
             .unwrap();
     }
-    assert_eq!(app.state().verifications.len(), 4);
-    let expected = app.state().verifications;
+    assert_eq!(app.parsed().verifications.len(), 4);
+    let expected = app.parsed().verifications;
     let reopened = app.reopen().unwrap();
-    assert_eq!(reopened.state().verifications, expected);
+    assert_eq!(reopened.parsed().verifications, expected);
 }
 
 #[test]
@@ -1071,7 +1083,7 @@ fn cpu_operator_receipts_reject_malformed_or_contradictory_public_claims() {
             app.call("import-verification", serde_json::json!({"json":json}))
                 .is_err()
         );
-        assert!(app.state().verifications.is_empty());
+        assert!(app.parsed().verifications.is_empty());
     }
 }
 
@@ -1081,7 +1093,7 @@ fn generic_gated_delta_dimensions_and_candidate_artifacts_are_consistent() {
     let mut app = TestApp::<ChipDesignShell>::new().unwrap();
     app.invoke(IMPORT_VERIFICATION.with(RAW.to_owned()))
         .unwrap();
-    let state = app.state();
+    let state = app.parsed();
     let record = state.verifications.values().next().unwrap();
     let summary = record.receipt.operator_summary.as_ref().unwrap();
     assert_eq!(
@@ -1094,7 +1106,7 @@ fn generic_gated_delta_dimensions_and_candidate_artifacts_are_consistent() {
     assert_eq!(cases.len(), 4);
     assert_eq!(cases[3].attention_words, 128);
     assert_eq!(cases[3].state_words, 2048);
-    let id = app.state().verifications.keys().next().unwrap().clone();
+    let id = app.parsed().verifications.keys().next().unwrap().clone();
     let item = crate::resource::verification_resource_id(&id);
     let read = app
         .call("read", serde_json::json!({"item":item}))
@@ -1120,6 +1132,64 @@ fn generic_gated_delta_dimensions_and_candidate_artifacts_are_consistent() {
                 .invoke(IMPORT_VERIFICATION.with(raw.to_string()))
                 .is_err()
         );
-        assert!(rejected.state().verifications.is_empty());
+        assert!(rejected.parsed().verifications.is_empty());
     }
+}
+
+/// What an agent does in the project, one call each, reads as the app's
+/// sentences.
+#[test]
+fn an_agent_designs_operators_one_call_each_and_history_reads_it() {
+    use ui::tilo_actions::{ActionInvoker, ActorKind};
+
+    let mut app = TestApp::<ChipDesignShell>::new().unwrap();
+    let agent = ActionInvoker::actor("agent:claude")
+        .with_kind(ActorKind::Agent)
+        .acting_for("ada");
+    let kind = <ChipProject as ui::tilo_resource::Resource>::KIND;
+    let mut call = |action: &str, args: serde_json::Value| {
+        app.call_by(agent.clone(), kind, action, args).unwrap();
+    };
+    call("import-report", serde_json::json!({ "json": REPORT }));
+    for (node, kind) in [("x", "rms_norm"), ("y", "silu")] {
+        call(
+            "add-node",
+            serde_json::json!({"node":node,"kind":kind,"shape":[4,8],"x":0,"y":0}),
+        );
+    }
+    call(
+        "connect",
+        serde_json::json!({"from_node":"x","from_port":"result","to_node":"y","to_port":"value"}),
+    );
+    call(
+        "field-edit",
+        serde_json::json!({
+            "edit": ChipProject::paths().nodes.item(&ui::tilo_resource::Id::from_raw("y")).x.set(280)
+        }),
+    );
+    call("disconnect", serde_json::json!({"node":"y","port":"value"}));
+    call("remove-node", serde_json::json!({"node":"x"}));
+    let state = app.parsed();
+    assert_eq!(state.reports.len(), 1);
+    assert_eq!(state.operator_graph.nodes["y"].x, 280);
+    assert!(!state.operator_graph.nodes.contains_key("x"));
+
+    let sentences = app.sentences(app.history().iter().filter(|entry| {
+        entry
+            .invoker
+            .as_ref()
+            .is_some_and(|invoker| invoker.actor == "agent:claude")
+    }));
+    assert_eq!(
+        sentences,
+        [
+            "Imported an analytical storage report",
+            "Added the operator x",
+            "Added the operator y",
+            "Connected x to y",
+            "Moved an operator",
+            "Disconnected the value input of y",
+            "Removed the operator x",
+        ]
+    );
 }

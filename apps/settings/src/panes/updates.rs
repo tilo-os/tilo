@@ -15,7 +15,7 @@ use std::time::Duration;
 use tracing::warn;
 use ui::framework::{EffectReply, Effected};
 use ui::tilo_resource::{self, Effect};
-use ui::widget::{Button, Column, Dropdown, ProgressBar, Row, Spacer, Text, Toggle, Widget};
+use ui::widget::{Button, Column, ProgressBar, Row, Spacer, Text, Widget};
 use ui::{LocalState, WakeHandle};
 
 use crate::codec_pack::{CodecAction, CodecPackStatus, MesaState, PackState};
@@ -23,9 +23,7 @@ use crate::effects::effect;
 use crate::host::PaneCx;
 use crate::i18n::{t, t_args};
 use crate::prefs::UpdatePrefs;
-use crate::widgets::{
-    El, caption, card, choice_row, error_caption, error_row, rows, setting_row, value_row,
-};
+use crate::widgets::{El, caption, card, error_caption, error_row, rows, value_row};
 
 const UPDATE_SCHEDULES: &[&str] = &["System schedule", "Daily", "Weekly"];
 const STATUS_TIMEOUT: Duration = Duration::from_secs(10);
@@ -45,16 +43,6 @@ fn run_bounded(
 /// The rollback target when one was read.
 fn target_of(target: &Result<Option<String>, String>) -> Option<&str> {
     target.as_ref().ok().and_then(Option::as_deref)
-}
-
-fn helper_diagnostic(bytes: &[u8]) -> String {
-    String::from_utf8_lossy(bytes)
-        .chars()
-        .filter(|character| !character.is_control() || matches!(character, ' ' | '\n' | '\t'))
-        .take(512)
-        .collect::<String>()
-        .trim()
-        .to_string()
 }
 
 fn schedule_shown(id: &str) -> String {
@@ -78,7 +66,7 @@ fn schedule_from_label(label: &str) -> String {
 }
 
 /// The system-derived part of the update state: the current image and any
-/// image staged for the next boot. Preferences (channel, auto, last-checked)
+/// image staged for the next boot. Preferences (auto, last-checked)
 /// live in [`UpdatePrefs`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct UpdateStatus {
@@ -226,7 +214,7 @@ fn parse_pretty_name(contents: &str) -> Option<String> {
 fn read_bootc_status() -> Result<String, String> {
     let out = run_bounded("bootc", &["status", "--format", "json"], STATUS_TIMEOUT)?;
     if !out.status.success() {
-        let diagnostic = helper_diagnostic(&out.stderr);
+        let diagnostic = out.stderr_diagnostic();
         return Err(if diagnostic.is_empty() {
             format!("bootc status exited with {}", out.status)
         } else {
@@ -411,7 +399,7 @@ fn start_update_policy(action: &str) -> Result<(), String> {
     if output.status.success() {
         Ok(())
     } else {
-        let error = helper_diagnostic(&output.stderr);
+        let error = output.stderr_diagnostic();
         Err(if error.is_empty() {
             format!("{unit} failed")
         } else {
@@ -476,7 +464,7 @@ impl UpdateControl for RealUpdateControl {
         if out.status.success() {
             return Ok(());
         }
-        let err = helper_diagnostic(&out.stderr);
+        let err = out.stderr_diagnostic();
         Err(if err.is_empty() {
             format!("systemctl {verb} {UPDATE_TIMER} failed")
         } else {
@@ -497,7 +485,7 @@ impl UpdateControl for RealUpdateControl {
         if out.status.success() {
             return Ok(());
         }
-        let err = helper_diagnostic(&out.stderr);
+        let err = out.stderr_diagnostic();
         Err(if err.is_empty() {
             format!("{ROLLBACK_UNIT} failed; see journalctl -u {ROLLBACK_UNIT}")
         } else {
@@ -550,7 +538,7 @@ impl UpdateControl for RealUpdateControl {
         if output.status.success() {
             Ok(())
         } else {
-            let error = helper_diagnostic(&output.stderr);
+            let error = output.stderr_diagnostic();
             Err(if error.is_empty() {
                 "update service failed; see its system journal".into()
             } else {
@@ -622,7 +610,7 @@ impl Rebooter for RealRebooter {
         if out.status.success() {
             Ok(())
         } else {
-            Err(helper_diagnostic(&out.stderr))
+            Err(out.stderr_diagnostic())
         }
     }
 }
@@ -667,9 +655,12 @@ type FirmwareRefreshEvent = Result<
 
 /// A real wall-clock "last checked" stamp, e.g. `Monday, 4 July 2026 14:05`.
 fn now_stamp() -> String {
-    let date = os_actions::now_date().unwrap_or_default();
-    let time = os_actions::now_clock(true).unwrap_or_default();
-    format!("{date} {time}").trim().to_string()
+    let now = ui::clock::local_now();
+    format!(
+        "{} {}",
+        now.format("%A, %-d %B %Y"),
+        ui::clock::time_of_day(&now)
+    )
 }
 
 #[allow(
@@ -1408,15 +1399,9 @@ impl UpdatesModel {
                 value_row(&t("upd-last-checked"), &self.prefs.last_checked),
                 value_row(&t("upd-release-channel"), &t("upd-release-channel-value")),
                 match self.timer_enabled {
-                    Some(_) => setting_row(
-                        &automatic,
-                        Box::new(
-                            self.cx.bind(
-                                Toggle::from_state(&LocalState::new(self.prefs.auto))
-                                    .with_id("updates.auto"),
-                                effect(UpdatesEffect::SET_AUTOMATIC_UPDATES),
-                            ),
-                        ),
+                    Some(_) => self.cx.row(automatic).id("updates.auto").toggle_effect(
+                        &LocalState::new(self.prefs.auto),
+                        effect(UpdatesEffect::SET_AUTOMATIC_UPDATES),
                     ),
                     // Not a switch stuck in one position: a switch that cannot
                     // reach the timer would report "off" for a machine that is
@@ -1424,38 +1409,23 @@ impl UpdatesModel {
                     None => value_row(&automatic, &unavailable),
                 },
                 match &schedule_placeholder {
-                    Some(schedule) => choice_row(
-                        &schedule_label,
-                        Box::new(
-                            self.cx.bind(
-                                Dropdown::from_state(
-                                    UPDATE_SCHEDULES
-                                        .iter()
-                                        .map(|id| schedule_shown(id))
-                                        .collect(),
-                                    &LocalState::new(schedule.clone()),
-                                )
-                                .with_placeholder(schedule),
-                                effect(UpdatesEffect::SET_UPDATE_SCHEDULE)
-                                    .map(|shown: String| schedule_from_label(&shown)),
-                            ),
-                        ),
+                    Some(schedule) => self.cx.row(schedule_label).choice_effect(
+                        UPDATE_SCHEDULES.iter().map(|id| schedule_shown(id)),
+                        &LocalState::new(schedule.clone()),
+                        effect(UpdatesEffect::SET_UPDATE_SCHEDULE)
+                            .map(|shown: String| schedule_from_label(&shown)),
                     ),
                     None => value_row(&schedule_label, &unavailable),
                 },
                 match self.allow_metered {
-                    Some(_) => setting_row(
-                        &t("upd-metered"),
-                        Box::new(
-                            self.cx.bind(
-                                Toggle::from_state(&LocalState::new(
-                                    self.allow_metered.unwrap_or(false),
-                                ))
-                                .with_id("updates.metered"),
-                                effect(UpdatesEffect::SET_METERED_UPDATES),
-                            ),
+                    Some(_) => self
+                        .cx
+                        .row(t("upd-metered"))
+                        .id("updates.metered")
+                        .toggle_effect(
+                            &LocalState::new(self.allow_metered.unwrap_or(false)),
+                            effect(UpdatesEffect::SET_METERED_UPDATES),
                         ),
-                    ),
                     None => value_row(&t("upd-metered-short"), &t("upd-metered-unavailable")),
                 },
                 Box::new(

@@ -1,0 +1,22 @@
+{
+  "src/runtime/ggml/loader.cpp": {
+    "original": "b637cdc587eac7d626d74b0c9763885c89ea7bd4ff137fae2ad504058be22c0a",
+    "patched": "0aa5fe056b8d8098a572b53c4c8d8a472a3783127fb1ec9c3671edfc0b9ac81a"
+  },
+  "src/runtime/ggml/runtime.h": {
+    "original": "8b16754a48bc69a9d0f9d2bc29913e9cf4a7e9b5321bd118780093010c5c0f25",
+    "patched": "3c8c2743dfd866fad12ca64f8573e0e7abd17eb0c3588e924220cb999b47a81e"
+  },
+  "src/asr/model.h": {
+    "original": "08ee01e62c124bbbea64758657728cd68148555e7d0489a281fae8806283aa8b",
+    "patched": "f20c6d6681ad2125ecbc4d1205ebf310f58c796c651e686b974e05c90552ff9c"
+  },
+  "src/asr/model.cpp": {
+    "original": "83e8f1afe5e8c75cf6c43f688648246c18ef9692ccfc1b07064548afcab1a04d",
+    "patched": "c6f1d3d7530c29d27df125ce3f63dc97fdff5247ac67bcff32f3cc736a62b0d4"
+  },
+  "src/asr/recognizer.cpp": {
+    "original": "470b9d9ffcfa9b8f7e23ed257e3e491bd0401b3ca7fb2bbc6eeffaf450fa47f9",
+    "patched": "e8dc8440385adce4089b2f4952c3ebb76e242c3cae38a5f69d22a6354bd9ca85"
+  }
+}

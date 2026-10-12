@@ -6,7 +6,6 @@
 const ALLOWED: &[(&str, &str)] = &[
     // Default app, workspace and tab names are written to the replicated
     // desktop tree, then shown as the user's own.
-    ("main.rs", "Files"),
     ("shell/state.rs", "Available on another device"),
     ("shell/state.rs", "Document"),
     ("shell/state.rs", "Files"),
@@ -41,7 +40,7 @@ const ALLOWED: &[(&str, &str)] = &[
     ("shell/tool_intents.rs", "tool request is too large"),
     ("shell/tool_intents.rs", "unsupported tool protocol"),
     // Secret Service / Keychain item label, not shell UI copy.
-    ("shell/collab_mls_authority.rs", "Tilo MLS key"),
+    ("shell/mls_vault.rs", "Tilo MLS key"),
 ];
 
 #[test]

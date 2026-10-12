@@ -73,7 +73,7 @@ impl Dispatch<ZwpTextInputV3, TextInputData, WinitState> for TextInputState {
 
                 if window.ime_allowed() {
                     text_input.enable();
-                    text_input.set_content_type_by_purpose(window.ime_purpose());
+                    text_input.set_content_type_by_purpose(window.ime_purpose(), window.ime_multiline());
                     text_input.commit();
                     state.events_sink.push_window_event(WindowEvent::Ime(Ime::Enabled), window_id);
                 }
@@ -158,13 +158,16 @@ impl Dispatch<ZwpTextInputV3, TextInputData, WinitState> for TextInputState {
 }
 
 pub trait ZwpTextInputV3Ext {
-    fn set_content_type_by_purpose(&self, purpose: ImePurpose);
+    fn set_content_type_by_purpose(&self, purpose: ImePurpose, multiline: bool);
 }
 
 impl ZwpTextInputV3Ext for ZwpTextInputV3 {
-    fn set_content_type_by_purpose(&self, purpose: ImePurpose) {
+    fn set_content_type_by_purpose(&self, purpose: ImePurpose, multiline: bool) {
         let (hint, purpose) = match purpose {
-            ImePurpose::Normal => (ContentHint::None, ContentPurpose::Normal),
+            ImePurpose::Normal => (
+                if multiline { ContentHint::Multiline } else { ContentHint::None },
+                ContentPurpose::Normal,
+            ),
             ImePurpose::Password => (ContentHint::SensitiveData, ContentPurpose::Password),
             ImePurpose::Terminal => (ContentHint::None, ContentPurpose::Terminal),
         };

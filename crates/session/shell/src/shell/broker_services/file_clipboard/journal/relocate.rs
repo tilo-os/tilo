@@ -30,7 +30,7 @@ impl Mover<'_> {
             .map_err(|_| "clipboard journal unavailable".into())
     }
     fn check(&self) -> Result<Receipt, String> {
-        self.context.authorize(Permission::Write)?;
+        self.context.authorize(Permission::Undoable)?;
         let receipt = self.snapshot()?;
         receipt.destination.open(self.tree, self.context)?;
         if receipt.cut {
@@ -66,7 +66,7 @@ impl Mover<'_> {
             }
             return Ok(directory);
         }
-        let trash = xdg_paths::data_dir()
+        let trash = tilo_paths::data_dir()
             .ok_or("home Trash unavailable")?
             .join("Trash/files");
         if path == trash {

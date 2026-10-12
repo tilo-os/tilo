@@ -48,6 +48,7 @@ pipewire = ["dep:pipewire"]
 test-support = ["dep:tilo-test-env"]
 
 [dependencies]
+tilo-platform-caps = { version = "0.1.0", path = "../tilo-platform-caps" }
 tilo-files = { version = "0.1.0", path = "../tilo-files" }
 blake3.workspace = true
 serde.workspace = true

@@ -298,7 +298,7 @@ impl HistoryOpener {
         })
     }
 
-    /// Whether `key_path` (from `Widget::perform_action_at`) addresses the
+    /// Whether `key_path` (from `Widget::perform_action`) addresses the
     /// node [`Self::accessibility`] published.
     #[must_use]
     pub fn is_target(key_path: &[u64]) -> bool {

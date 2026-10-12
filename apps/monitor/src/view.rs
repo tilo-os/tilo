@@ -29,7 +29,7 @@ use ui::widget::toolbar::Orientation;
 use ui::widget::{
     AppModel, Button, ButtonRole, Column, Element, EmptyState, FilterCount, ModelPath, Property,
     PropertyList, Row, Scrollable, SearchField, Section, StatGroup, StatTile, TaffyTreeExt,
-    Toolbar, Widget,
+    Toolbar, Widget, layout_rect,
 };
 
 use crate::app::{SortKey, Tab};
@@ -141,6 +141,8 @@ pub(crate) enum Request {
     Sort(SortKey),
     Filter(String),
     Select(u32),
+    /// Show the process row with this id (a search hit, an agent's `open`).
+    Open(String),
     /// Enter or a double click on a row.
     Activate(u32),
     SetExpanded(u32, bool),
@@ -426,15 +428,9 @@ fn view_toolbar(options: ListOptions, shared: &Shared) -> Toolbar {
         Toolbar::new(Orientation::Horizontal).push_toggle("Tree view", options.tree, move || {
             tree.borrow_mut().push(Request::TreeMode(!options.tree));
         });
-    let tree_mode = !options.tree;
     let binding = shared.borrow().actions.as_ref().and_then(|actions| {
-        actions.binding(
-            ui::tilo_resource::ActionRef::<crate::resource::Monitor, bool>::new(
-                "set-tree-mode",
-                &["tree"],
-            )
-            .map(move |()| tree_mode),
-        )
+        let flat = crate::resource::Monitor::paths().flat.set(options.tree);
+        actions.invocation(ui::tilo_resource::Invoke::edit(&flat).ok()?)
     });
     toolbar = match binding {
         Some(binding) => toolbar.with_action(binding),
@@ -477,38 +473,6 @@ fn empty_state(kind: Placeholder) -> EmptyState {
             EmptyState::new("No processes match the filter").with_action("Clear filter")
         }
     }
-}
-
-/// `node` grown or shrunk along a band's main axis.
-fn flexed(taffy: &mut TaffyTree<()>, node: NodeId, grow: f32) {
-    if let Ok(mut style) = taffy.style(node).cloned() {
-        style.flex_grow = grow;
-        style.flex_shrink = 1.0;
-        style.flex_basis = length(0.0_f32);
-        style.size.width = Dimension::auto();
-        let _ = taffy.set_style(node, style);
-    }
-}
-
-fn origin_of(taffy: &TaffyTree<()>, node: NodeId, parent: Point) -> Point {
-    taffy.layout(node).map_or(parent, |layout| {
-        Point::new(
-            parent.x + f64::from(layout.location.x),
-            parent.y + f64::from(layout.location.y),
-        )
-    })
-}
-
-fn rect_of(taffy: &TaffyTree<()>, node: NodeId, origin: Point) -> Rect {
-    taffy.layout(node).map_or(Rect::ZERO, |layout| {
-        Rect::from_origin_size(
-            (
-                origin.x + f64::from(layout.location.x),
-                origin.y + f64::from(layout.location.y),
-            ),
-            (f64::from(layout.size.width), f64::from(layout.size.height)),
-        )
-    })
 }
 
 /// Child node ids of the last layout.
@@ -792,7 +756,7 @@ impl ProcessesPane {
         let (direction, align) = if compact {
             (taffy::FlexDirection::Column, taffy::AlignItems::Stretch)
         } else {
-            flexed(taffy, field, 1.0);
+            ui::widget::share_row(taffy, field, 1.0);
             (taffy::FlexDirection::Row, taffy::AlignItems::Center)
         };
         let band = taffy.parent_node(
@@ -936,22 +900,15 @@ impl Widget for ProcessesPane {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).copied().unwrap_or_default();
-        let x0 = origin.x + f64::from(l.location.x);
-        let y0 = origin.y + f64::from(l.location.y);
-        let width_changed = (f64::from(l.size.width) - self.rect.width()).abs() > 0.5;
-        self.rect = Rect::new(
-            x0,
-            y0,
-            x0 + f64::from(l.size.width),
-            y0 + f64::from(l.size.height),
-        );
-        let inner = Point::new(x0, y0);
+        let rect = layout_rect(taffy, node, origin);
+        let width_changed = (rect.width() - self.rect.width()).abs() > 0.5;
+        self.rect = rect;
+        let inner = rect.origin();
         if let (Some(summary), Some(node)) = (&mut self.summary, self.nodes.summary) {
             summary.apply_layout(taffy, node, inner);
         }
         if let Some(band) = self.nodes.band {
-            let band_origin = origin_of(taffy, band, inner);
+            let band_origin = layout_rect(taffy, band, inner).origin();
             if let Some(field) = self.nodes.field {
                 self.field.apply_layout(taffy, field, band_origin);
             }
@@ -960,8 +917,9 @@ impl Widget for ProcessesPane {
             }
         }
         if let (Some(body), Some(child)) = (self.nodes.body, self.nodes.body_child) {
-            let body_origin = origin_of(taffy, body, inner);
-            let available = rect_of(taffy, body, inner).height();
+            let body_rect = layout_rect(taffy, body, inner);
+            let body_origin = body_rect.origin();
+            let available = body_rect.height();
             self.body_mut().apply_layout(taffy, child, body_origin);
             if self.placeholder.is_none() {
                 // The table is as tall as its header plus the viewport it
@@ -1416,20 +1374,6 @@ fn dashboard(
     )))
 }
 
-/// Find the rect of the descendant whose test id is `id`.
-fn find_rect(widget: &dyn Widget, id: &str) -> Option<Rect> {
-    if widget.test_id() == Some(id) {
-        return Some(widget.get_rect());
-    }
-    let mut found = None;
-    widget.for_each_child(&mut |child| {
-        if found.is_none() {
-            found = find_rect(child, id);
-        }
-    });
-    found
-}
-
 /// The Resources tab: the system dashboard, scrolling as one page.
 pub(crate) struct ResourcesPane {
     shared: Shared,
@@ -1505,7 +1449,9 @@ impl ResourcesPane {
         let Some(page) = &self.page else {
             return;
         };
-        let Some(section) = find_rect(page, &stat.section_id()) else {
+        let Some(section) =
+            ui::widget::find_test_id(page, &stat.section_id()).map(Widget::get_rect)
+        else {
             return;
         };
         self.reveal = None;
@@ -1562,7 +1508,7 @@ impl Widget for ResourcesPane {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = rect_of(taffy, node, origin);
+        self.rect = layout_rect(taffy, node, origin);
         let inner = self.rect.origin();
         if let (Some(page), Some(child)) = (&mut self.page, self.node) {
             page.apply_layout(taffy, child, inner);

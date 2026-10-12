@@ -134,6 +134,8 @@ mod tests {
             &self,
             _app: &str,
             _workspace: &tilo_desktop_model::Workspace,
+            _record: Option<&str>,
+            _place: &crate::services::LaunchPlace,
         ) -> Result<(), String> {
             Err("not a launching fixture".into())
         }

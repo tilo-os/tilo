@@ -13,7 +13,7 @@ fn incremental(
     ));
     let heads = doc.get_heads();
     doc.put(ROOT, name, name).unwrap();
-    doc.commit();
+    doc.commit_edit("fixture", "fixture");
     author
         .publish_incremental("test.app", "tab:1", doc.save_after(&heads), key, now)
         .unwrap()

@@ -213,10 +213,16 @@ def provenance(architecture, source):
     cef = lock['platforms'][platform]
     require(re.fullmatch('[0-9a-f]{64}', cef['sha256']) and type(cef['size']) is int and cef['size'] > 0,
             'invalid pinned CEF input')
-    return {'schema': 1, 'source': source, 'architecture': architecture,
+    proof = {'schema': 1, 'source': source, 'architecture': architecture,
             'runtime': 'tilo-runtime/' + runtime_version(),
             'cef_version': lock['cef_version'], 'chromium_version': lock['chromium_version'],
             'cef_sha256': cef['sha256'], 'cef_size': cef['size']}
+    if 'source_patch_sha256' in cef:
+        patch = cef['source_patch_sha256']
+        require(isinstance(patch, str) and re.fullmatch('[0-9a-f]{64}', patch),
+                'invalid rebuilt CEF source patch')
+        proof['cef_source_patch_sha256'] = patch
+    return proof
 
 
 def cargo_tools():

@@ -148,7 +148,7 @@ class DesktopCatalogReleaseTests(unittest.TestCase):
             self.assertIn("--source ", block)
             self.assertLess(block.index("desktop-catalog-release.py consume"), block.index("package-host."))
         desktop = (ROOT / ".forgejo/workflows/release-desktop.yml").read_text().split("\n  release:\n", 1)[1]
-        self.assertIn("needs: [validate, package, host-session-e2e]", desktop)
+        self.assertIn("needs: [validate, package, sign-rpm, host-session-e2e]", desktop)
         session = (ROOT / ".forgejo/workflows/host-session-e2e.yml").read_text()
         self.assertIn('"artifacts": artifacts', session)
         self.assertIn('"sha256": digest.hexdigest()', session)

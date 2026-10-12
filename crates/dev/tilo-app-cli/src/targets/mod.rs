@@ -590,6 +590,7 @@ pub fn package(start: &Path, request: &TargetPackageRequest) -> Result<PathBuf> 
             let outcome = crate::package_app(
                 start,
                 &crate::PackageRequest {
+                    sdk: None,
                     output: request.output.clone(),
                     identity: request.identity.clone(),
                     profile: None,

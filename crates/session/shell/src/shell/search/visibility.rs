@@ -1,66 +1,66 @@
-//! The capability gate for the headless action API.
+//! The authority gate for the headless action API.
 //!
 //! [`ActionCatalog`](super::action_api::ActionCatalog) applies an
 //! [`ActionVisibility`] at build time, so a hidden resource is absent from
 //! enumeration *and* selection.
 //!
-//! The rule, from [`crate::shell::actions`] and not re-decided here: showing a
+//! The rule: showing a
 //! resource needs no permission, taking an action on one does. So notes,
 //! records, files and folders are **never** hidden — what disappears for a
-//! caller who cannot act is the *affordance*, not the content. Opening an
+//! caller who may not act is the *affordance*, not the content. Opening an
 //! overlay is showing; spawning a terminal, launching an app, or minting an
-//! invite are acts, and are gated. Anything unclassifiable is treated as an act
-//! requiring [`Verb::Write`] rather than waved through.
+//! invite are acts, and are decided by the room's policy at the action's node.
+//! Anything unclassifiable is treated as an undoable act rather than waved
+//! through.
 
-use crate::shell::state::WorkspaceAuthority as _;
-use crate::shell::state::{Actor, ResourceRef as CapResource, Verb, Workspace};
+use tilo_action_policy::{ActionKind, Answer, Authority, Subject, TreePath, roles};
+
+use crate::shell::state::{Actor, Principal, Workspace};
 
 use super::ResourceKind;
 use super::action_api::{ActionVisibility, ResourceRef};
 
 /// The app id chrome-level actions are attributed to — not exported by any
-/// packaged app, so they need a stable name to be addressed by.
+/// packaged app, so they need a stable name to be addressed by. The chrome
+/// is also the one resource those actions are on.
 pub const SHELL_APP_ID: &str = "shell";
 
-/// What invoking `resource` requires, or `None` when it only shows
-/// something. Split out from the [`ActionVisibility`] impl so the policy
-/// can be read, tested and argued about without a live workspace in hand.
-pub fn required_capability(
+/// The node of the chrome action `id`, below the room.
+fn chrome_node(id: &str) -> TreePath {
+    TreePath::root().app(SHELL_APP_ID).action(id)
+}
+
+/// The room governance action a chrome action performs, if it governs.
+fn chrome_governance(id: &str) -> Option<&'static str> {
+    Some(match id {
+        "member.role.set" => roles::governance::SET_ROLE,
+        "member.remove" => roles::governance::REMOVE_MEMBER,
+        "agent.invite" => roles::governance::GRANT,
+        "peer.invite" | "peer.invite.named" | "peer.connect" => roles::governance::INVITE,
+        id if id.starts_with("invitation.") => roles::governance::INVITE,
+        _ => return None,
+    })
+}
+
+/// What invoking `resource` is, as the node below the room its action sits
+/// at and the kind of action it is, or `None` when it only shows something.
+/// Split out from the [`ActionVisibility`] impl so the policy can be read,
+/// tested and argued about without a live workspace in hand.
+pub fn required_action(
     resource: &ResourceRef,
     kind: &ResourceKind,
-) -> Option<(CapResource, Verb)> {
+) -> Option<(TreePath, ActionKind)> {
     if resource.provider == super::providers::permission_prompts::PROVIDER_ID
         || resource.provider == super::providers::terminal_device_shell::PROVIDER_ID
+        || resource.provider == "onboarding"
     {
-        return Some((
-            CapResource::Action {
-                app: SHELL_APP_ID.to_string(),
-                action: resource.id.clone(),
-            },
-            Verb::Admin,
-        ));
+        return Some((chrome_node(&resource.id), ActionKind::Outside));
     }
     if resource.provider == super::providers::live_app_actions::PROVIDER_ID
-        && let Some((app, permission, action)) =
-            super::providers::live_app_actions::LiveAppActionsProvider::capability_target(
-                &resource.id,
-            )
+        && let Some((node, kind)) =
+            super::providers::live_app_actions::LiveAppActionsProvider::action_target(&resource.id)
     {
-        let verb = match permission {
-            tilo_actions::PermissionRequirement::None => return None,
-            tilo_actions::PermissionRequirement::Read => Verb::Read,
-            tilo_actions::PermissionRequirement::Comment => Verb::Comment,
-            tilo_actions::PermissionRequirement::Write => Verb::Write,
-            tilo_actions::PermissionRequirement::Invite => Verb::Invite,
-            tilo_actions::PermissionRequirement::Admin => Verb::Admin,
-        };
-        return Some((
-            CapResource::Action {
-                app: app.to_string(),
-                action: action.to_string(),
-            },
-            verb,
-        ));
+        return (kind != ActionKind::Read).then_some((node, kind));
     }
     match kind {
         // Showing is free — the larger half of the surface.
@@ -72,169 +72,227 @@ pub fn required_capability(
         | ResourceKind::Video
         | ResourceKind::Playlist => None,
 
-        // Launching puts a tab in the workspace — `Write` on that app.
-        ResourceKind::Application | ResourceKind::HostApplication => {
-            Some((CapResource::App(resource.id.clone()), Verb::Write))
-        }
+        // Launching puts a tab in the workspace: an undoable change of that
+        // app.
+        ResourceKind::Application | ResourceKind::HostApplication => Some((
+            TreePath::root().app(resource.id.clone()),
+            ActionKind::Undoable,
+        )),
 
-        ResourceKind::Action => chrome_action_verb(&resource.id).map(|verb| {
-            (
-                CapResource::Action {
-                    app: SHELL_APP_ID.to_string(),
-                    action: resource.id.clone(),
-                },
-                verb,
-            )
-        }),
+        ResourceKind::Action => {
+            if let Some(action) = chrome_governance(&resource.id) {
+                return Some((
+                    TreePath::root().kind(roles::ROOM_KIND).action(action),
+                    roles::GOVERNANCE_KIND,
+                ));
+            }
+            chrome_action_kind(&resource.id).map(|kind| (chrome_node(&resource.id), kind))
+        }
 
         // Window actions and unclassified results: treat as an act, fail
         // closed.
-        ResourceKind::Tab | ResourceKind::WindowGroup | ResourceKind::Custom(_) => Some((
-            CapResource::Action {
-                app: SHELL_APP_ID.to_string(),
-                action: resource.id.clone(),
-            },
-            Verb::Write,
-        )),
-    }
-}
-
-/// The verb a chrome action requires, derived from the same canonical
-/// contract exported to discovery. Dynamic ownership actions retain the
-/// contract attached to their workspace resource and always require Admin.
-fn chrome_action_verb(id: &str) -> Option<Verb> {
-    let permission = if id.contains("#ownership.") {
-        tilo_actions::PermissionRequirement::Admin
-    } else {
-        super::providers::actions::shell_action_contract(id).permission
-    };
-    match permission {
-        tilo_actions::PermissionRequirement::None | tilo_actions::PermissionRequirement::Read => {
-            None
+        ResourceKind::Tab | ResourceKind::WindowGroup | ResourceKind::Custom(_) => {
+            Some((chrome_node(&resource.id), ActionKind::Undoable))
         }
-        tilo_actions::PermissionRequirement::Comment => Some(Verb::Comment),
-        tilo_actions::PermissionRequirement::Write => Some(Verb::Write),
-        tilo_actions::PermissionRequirement::Invite => Some(Verb::Invite),
-        tilo_actions::PermissionRequirement::Admin => Some(Verb::Admin),
     }
 }
 
-/// An [`ActionVisibility`] backed by a real workspace's capability model.
-/// Fail-closed by construction: [`Workspace::allows`] is
-/// `collab_types::decide_capability`, denying unless something permits.
-pub struct CapabilityVisibility<'a> {
+/// The kind of a chrome action, from the same canonical contract exported to
+/// discovery, or `None` when it only reads. Dynamic ownership actions retain
+/// the contract attached to their workspace resource and reach outside.
+fn chrome_action_kind(id: &str) -> Option<ActionKind> {
+    let kind = if id.contains("#ownership.") {
+        ActionKind::Outside
+    } else {
+        super::providers::actions::shell_action_contract(id).kind
+    };
+    (kind != ActionKind::Read).then_some(kind)
+}
+
+/// The authority `actor` holds in `workspace`: a person's own, a delegation
+/// (an app, an agent, a token) bounded by the person it acts for, or the
+/// delegation's alone when it acts for nobody. `None` for an actor naming no
+/// one.
+fn authority_of<'w>(workspace: &'w Workspace, actor: &Actor) -> Option<Authority<'w>> {
+    let person = actor
+        .principals
+        .iter()
+        .find_map(|principal| match principal {
+            Principal::Person(person) => Some(person.as_str()),
+            _ => None,
+        });
+    let delegate = actor
+        .principals
+        .iter()
+        .find_map(|principal| match principal {
+            Principal::App(app) => Some(Subject::App(app.clone())),
+            Principal::Agent(agent) => Some(Subject::Agent(agent.clone())),
+            Principal::Token(token) => Some(Subject::Task(token.clone())),
+            Principal::Person(_) | Principal::Room(_) => None,
+        });
+    match (person, delegate) {
+        (Some(person), None) => Some(workspace.person_authority(person)),
+        (Some(person), Some(delegate)) => {
+            Some(workspace.delegated_authority(person, delegate, &[]))
+        }
+        (None, Some(delegate)) => Some(workspace.subject_authority(delegate)),
+        (None, None) => None,
+    }
+}
+
+/// What `actor` gets for an action of `kind` at `node` (below the room) in
+/// `workspace`, now.
+#[must_use]
+pub fn answer_for(
+    workspace: &Workspace,
+    actor: &Actor,
+    node: &TreePath,
+    kind: ActionKind,
+) -> Answer {
+    authority_of(workspace, actor).map_or(Answer::Deny, |authority| {
+        authority
+            .decide(
+                &workspace.node().join(node),
+                kind,
+                &tilo_desktop_model::context_at(tilo_clock::unix_now()),
+            )
+            .answer
+    })
+}
+
+/// Whether `actor` may invoke an action of `kind` at `node` now: allowed, or
+/// asking first of a person acting as themselves, whose own gesture is the
+/// answer.
+#[must_use]
+pub fn permits(workspace: &Workspace, actor: &Actor, node: &TreePath, kind: ActionKind) -> bool {
+    match answer_for(workspace, actor, node, kind) {
+        Answer::Allow => true,
+        Answer::Ask => is_person_alone(actor),
+        Answer::Deny => false,
+    }
+}
+
+/// Whether `actor` is a person acting as themselves: the only actor whose
+/// own gesture answers a grant that asks first, and the only one who decides
+/// personal consent or a device shell.
+fn is_person_alone(actor: &Actor) -> bool {
+    !actor.principals.is_empty()
+        && actor
+            .principals
+            .iter()
+            .all(|principal| matches!(principal, Principal::Person(_) | Principal::Room(_)))
+        && actor.principals.iter().any(Principal::is_person)
+}
+
+/// An [`ActionVisibility`] backed by a real workspace's policy. Fail-closed
+/// by construction: no grant is Deny, and an actor naming nobody holds
+/// nothing. An action that asks first is listed; it asks when invoked.
+pub struct PolicyVisibility<'a> {
     workspace: &'a Workspace,
     actor: Actor,
 }
 
-impl<'a> CapabilityVisibility<'a> {
+impl<'a> PolicyVisibility<'a> {
     pub fn new(workspace: &'a Workspace, actor: Actor) -> Self {
         Self { workspace, actor }
     }
 }
 
-impl ActionVisibility for CapabilityVisibility<'_> {
+impl ActionVisibility for PolicyVisibility<'_> {
     fn can_see(&self, resource: &ResourceRef, kind: &ResourceKind) -> bool {
-        // Personal portal consent is a human administrator decision, not an
-        // app/agent capability, even when that principal has an Admin override.
+        // First-use identity belongs to the local owner alone: never a person
+        // the owner admitted, an app or an agent, whatever they were granted.
+        if resource.provider == "onboarding" {
+            return is_person_alone(&self.actor)
+                && self.workspace.owner().is_some_and(|owner| {
+                    self.actor.principals.iter().any(
+                        |principal| matches!(principal, Principal::Person(user) if user == owner),
+                    )
+                });
+        }
+        // Personal portal consent and a device shell are decided only by a
+        // person allowed them outright, never by an app or an agent, whatever
+        // they were granted.
         if resource.provider == super::providers::permission_prompts::PROVIDER_ID
-            && !self
-                .actor
-                .principals
-                .iter()
-                .any(|principal| match principal {
-                    crate::shell::state::Principal::Person(user) => {
-                        self.workspace.may_administer(user)
-                    }
-                    _ => false,
-                })
+            || resource.provider == super::providers::terminal_device_shell::PROVIDER_ID
         {
-            return false;
+            return is_person_alone(&self.actor)
+                && required_action(resource, kind).is_some_and(|(node, kind)| {
+                    answer_for(self.workspace, &self.actor, &node, kind) == Answer::Allow
+                });
         }
-        if resource.provider == super::providers::terminal_device_shell::PROVIDER_ID
-            && (self.actor.principals.iter().any(|principal| {
-                matches!(
-                    principal,
-                    crate::shell::state::Principal::App(_)
-                        | crate::shell::state::Principal::Agent(_)
-                        | crate::shell::state::Principal::Token(_)
-                )
-            }) || !self
-                .actor
-                .principals
-                .iter()
-                .any(|principal| match principal {
-                    crate::shell::state::Principal::Person(user) => {
-                        self.workspace.may_administer(user)
-                    }
-                    _ => false,
-                }))
-        {
-            return false;
-        }
-        match required_capability(resource, kind) {
+        match required_action(resource, kind) {
             None => true,
-            Some((cap_resource, verb)) => self.workspace.allows(&self.actor, &cap_resource, verb),
+            Some((node, kind)) => {
+                answer_for(self.workspace, &self.actor, &node, kind) != Answer::Deny
+            }
         }
     }
 }
-
-#[allow(
-    unused_imports,
-    reason = "The native WorkspaceExt methods are selected by host-specific workspace code and test configurations."
-)]
-use crate::shell::state::WorkspaceExt as _;
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::shell::state::FreshId as _;
-    use crate::shell::state::{CapOverride, Principal, Scope, Subject, UserId, WorkspaceId};
+    use crate::shell::state::{UserId, WorkspaceAuthority as _, WorkspaceId};
+    use tilo_action_policy::{Change, Grant, KindSet, Role};
 
     fn resource(provider: &str, id: &str) -> ResourceRef {
         ResourceRef::new(provider, id)
     }
 
+    fn owned(name: &str, owner: &UserId) -> Workspace {
+        let mut ws = Workspace::new(WorkspaceId::new(), name);
+        ws.set_owner(owner.clone());
+        ws
+    }
+
+    /// `subject` granted `kinds` everywhere in `ws`'s room.
+    fn grant_room(ws: &mut Workspace, subject: Subject, kinds: KindSet) {
+        let owner = ws.owner().cloned().expect("owned");
+        let grant = Grant::new(
+            format!("test:{subject:?}"),
+            subject,
+            ws.node(),
+            kinds,
+            Answer::Allow,
+            Subject::person(owner.clone()),
+        );
+        ws.govern_as_at(&owner, Change::Grant(grant), tilo_clock::unix_now())
+            .expect("the owner grants");
+    }
+
     #[test]
-    fn permission_decisions_require_a_person_administrator_even_with_agent_grants() {
+    fn permission_decisions_require_a_person_allowed_outright_even_with_agent_grants() {
         let owner = "owner".to_string();
         let writer = "writer".to_string();
-        let mut ws = Workspace::new(WorkspaceId::new(), "permission-gate");
-        ws.owner = Some(owner.clone());
+        let mut ws = owned("permission-gate", &owner);
         let decision = resource(
             super::super::providers::permission_prompts::PROVIDER_ID,
             "allow-always@00000000-0000-0000-0000-000000000000",
         );
         assert_eq!(
-            required_capability(&decision, &ResourceKind::Action)
+            required_action(&decision, &ResourceKind::Action)
                 .expect("gated")
                 .1,
-            Verb::Admin
+            ActionKind::Outside
         );
         assert!(
-            CapabilityVisibility::new(&ws, ws.actor_for_person(&owner))
+            PolicyVisibility::new(&ws, ws.actor_for_person(&owner))
                 .can_see(&decision, &ResourceKind::Action)
         );
-        let _ = ws.grant_capability(CapOverride::grant(
-            Subject::Principal(Principal::Person(writer.clone())),
-            Scope::Workspace,
-            Verb::Write,
-        ));
+        ws.admit(writer.clone(), Role::Editor);
         assert!(
-            !CapabilityVisibility::new(&ws, ws.actor_for_person(&writer))
-                .can_see(&decision, &ResourceKind::Action)
+            !PolicyVisibility::new(&ws, ws.actor_for_person(&writer))
+                .can_see(&decision, &ResourceKind::Action),
+            "an editor is asked about outside effects, so does not decide consent"
         );
-        let agent = Principal::Agent("helper".into());
-        let _ = ws.grant_capability(CapOverride::grant(
-            Subject::Principal(agent.clone()),
-            Scope::Workspace,
-            Verb::Admin,
-        ));
+        grant_room(&mut ws, Subject::agent("helper"), KindSet::ALL);
         assert!(
-            !CapabilityVisibility::new(
+            !PolicyVisibility::new(
                 &ws,
                 Actor {
-                    principals: vec![agent],
+                    principals: vec![Principal::Agent("helper".into())],
                     ..Actor::default()
                 }
             )
@@ -243,29 +301,23 @@ mod tests {
     }
 
     #[test]
-    fn device_shell_selection_is_never_an_agent_admin_override() {
+    fn device_shell_selection_is_never_an_agents() {
         let owner = "owner".to_string();
-        let mut workspace = Workspace::new(WorkspaceId::new(), "host-gate");
-        workspace.owner = Some(owner.clone());
+        let mut workspace = owned("host-gate", &owner);
         let resource = resource(
             super::super::providers::terminal_device_shell::PROVIDER_ID,
             "request@9",
         );
         assert!(
-            CapabilityVisibility::new(&workspace, workspace.actor_for_person(&owner))
+            PolicyVisibility::new(&workspace, workspace.actor_for_person(&owner))
                 .can_see(&resource, &ResourceKind::Action)
         );
-        let agent = Principal::Agent("helper".into());
-        let _ = workspace.grant_capability(CapOverride::grant(
-            Subject::Principal(agent.clone()),
-            Scope::Workspace,
-            Verb::Admin,
-        ));
+        grant_room(&mut workspace, Subject::agent("helper"), KindSet::ALL);
         assert!(
-            !CapabilityVisibility::new(
+            !PolicyVisibility::new(
                 &workspace,
                 Actor {
-                    principals: vec![agent],
+                    principals: vec![Principal::Agent("helper".into())],
                     ..Actor::default()
                 }
             )
@@ -276,8 +328,7 @@ mod tests {
     #[test]
     fn an_agent_cannot_attach_the_owner_principal_to_a_device_shell_request() {
         let owner = "owner".to_string();
-        let mut workspace = Workspace::new(WorkspaceId::new(), "host-gate");
-        workspace.owner = Some(owner.clone());
+        let workspace = owned("host-gate", &owner);
         let resource = resource(
             super::super::providers::terminal_device_shell::PROVIDER_ID,
             "request@9",
@@ -285,13 +336,55 @@ mod tests {
         let mut actor = workspace.actor_for_person(&owner);
         actor.principals.push(Principal::Agent("helper".into()));
         assert!(
-            !CapabilityVisibility::new(&workspace, actor).can_see(&resource, &ResourceKind::Action)
+            !PolicyVisibility::new(&workspace, actor).can_see(&resource, &ResourceKind::Action)
         );
     }
 
     #[test]
-    fn showing_needs_no_capability_but_launching_is_gated_on_the_app() {
-        // Phase `showing_a_document_requires_no_capability`.
+    fn onboarding_identity_actions_are_the_owners_alone() {
+        let owner = "owner".to_string();
+        let mut ws = owned("identity setup", &owner);
+        let selected = resource("onboarding", "onboarding.create");
+        assert!(
+            PolicyVisibility::new(&ws, ws.actor_for_person(&owner))
+                .can_see(&selected, &ResourceKind::Action)
+        );
+        for principal in [
+            Principal::Agent("helper".into()),
+            Principal::App("so.tilo.store".into()),
+        ] {
+            let subject = match &principal {
+                Principal::Agent(agent) => Subject::agent(agent.clone()),
+                _ => Subject::app("so.tilo.store"),
+            };
+            grant_room(&mut ws, subject, KindSet::ALL);
+            let mut mixed = ws.actor_for_person(&owner);
+            mixed.principals.push(principal.clone());
+            assert!(!PolicyVisibility::new(&ws, mixed).can_see(&selected, &ResourceKind::Action));
+            assert!(
+                !PolicyVisibility::new(
+                    &ws,
+                    Actor {
+                        principals: vec![principal],
+                        ..Actor::default()
+                    }
+                )
+                .can_see(&selected, &ResourceKind::Action)
+            );
+        }
+        let admin = "admin".to_string();
+        ws.admit(admin.clone(), Role::Editor);
+        grant_room(&mut ws, Subject::person(admin.clone()), KindSet::ALL);
+        assert!(
+            !PolicyVisibility::new(&ws, ws.actor_for_person(&admin))
+                .can_see(&selected, &ResourceKind::Action),
+            "a person the owner granted everything does not set up the owner's identity"
+        );
+    }
+
+    #[test]
+    fn showing_needs_no_authority_but_launching_is_decided_on_the_app() {
+        // Phase `showing_a_document_requires_no_authority`.
         // A document-shaped resource is never gated.
         {
             for kind in [
@@ -301,9 +394,9 @@ mod tests {
                 ResourceKind::Folder,
             ] {
                 assert_eq!(
-                    required_capability(&resource("notes", "abc"), &kind),
+                    required_action(&resource("notes", "abc"), &kind),
                     None,
-                    "{kind:?} must not require a capability to be shown"
+                    "{kind:?} must not require authority to be shown"
                 );
             }
         }
@@ -323,24 +416,24 @@ mod tests {
                 "room.activity.open",
             ] {
                 assert_eq!(
-                    required_capability(&resource("actions", id), &ResourceKind::Action),
+                    required_action(&resource("actions", id), &ResourceKind::Action),
                     None,
                     "{id} opens a view and must not be gated"
                 );
             }
         }
 
-        // Phase `launching_an_app_is_gated_on_that_app`.
-        // Launching an app is gated on the app being launched, so a grant
+        // Phase `launching_an_app_is_decided_on_that_app`.
+        // Launching an app is decided at the app being launched, so a grant
         // can name one app without opening the whole catalogue.
         {
-            let (cap, verb) = required_capability(
+            let (node, kind) = required_action(
                 &resource("applications", "so.tilo.terminal"),
                 &ResourceKind::Application,
             )
             .expect("launching must be gated");
-            assert_eq!(verb, Verb::Write);
-            assert_eq!(cap, CapResource::App("so.tilo.terminal".to_string()));
+            assert_eq!(kind, ActionKind::Undoable);
+            assert_eq!(node, TreePath::root().app("so.tilo.terminal"));
         }
     }
 
@@ -349,49 +442,54 @@ mod tests {
         clippy::too_many_lines,
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
-    fn acting_needs_the_matching_capability_and_unclassified_acts_fail_closed() {
-        // Phase `acting_on_the_room_requires_the_matching_verb`.
-        // Acts on the room's contents need `Write`; membership needs `Invite`.
+    fn acting_needs_the_matching_answer_and_unclassified_acts_fail_closed() {
+        // Phase `acting_on_the_room_is_an_undoable_act_and_membership_governs`.
         {
-            let write = [
+            for id in [
                 "tab.new.terminal.here",
                 "window.new.terminal",
                 "tab.duplicate",
                 "notifications.dnd.toggle",
-            ];
-            for id in write {
-                let (_, verb) =
-                    required_capability(&resource("actions", id), &ResourceKind::Action)
-                        .unwrap_or_else(|| panic!("{id} must be gated"));
-                assert_eq!(verb, Verb::Write, "{id}");
+            ] {
+                let (_, kind) = required_action(&resource("actions", id), &ResourceKind::Action)
+                    .unwrap_or_else(|| panic!("{id} must be gated"));
+                assert_eq!(kind, ActionKind::Undoable, "{id}");
             }
 
-            for id in [
-                "peer.invite",
-                "peer.invite.named",
-                "peer.connect",
-                "agent.invite",
+            // Inviting, managing who is a member, and minting or revoking the
+            // credentials that admit someone, govern the room.
+            for (id, action) in [
+                ("peer.invite", roles::governance::INVITE),
+                ("peer.invite.named", roles::governance::INVITE),
+                ("peer.connect", roles::governance::INVITE),
+                ("agent.invite", roles::governance::GRANT),
+                ("member.role.set", roles::governance::SET_ROLE),
+                ("member.remove", roles::governance::REMOVE_MEMBER),
+                ("invitation.issue", roles::governance::INVITE),
+                ("invitation.list", roles::governance::INVITE),
+                ("invitation.resend", roles::governance::INVITE),
+                ("invitation.cancel", roles::governance::INVITE),
             ] {
-                let (_, verb) =
-                    required_capability(&resource("actions", id), &ResourceKind::Action)
-                        .unwrap_or_else(|| panic!("{id} must be gated"));
-                assert_eq!(verb, Verb::Invite, "{id}");
+                let (node, kind) = required_action(&resource("actions", id), &ResourceKind::Action)
+                    .unwrap_or_else(|| panic!("{id} must be gated"));
+                assert_eq!(kind, roles::GOVERNANCE_KIND, "{id}");
+                assert_eq!(
+                    node,
+                    TreePath::root().kind(roles::ROOM_KIND).action(action),
+                    "{id}"
+                );
             }
         }
 
-        // Phase `writing_into_a_document_requires_write`.
-        // Editing a document is an act, gated on `Write` like spawning a tab.
+        // Phase `writing_into_a_document_is_an_undoable_act`.
         {
-            let (cap, verb) =
-                required_capability(&resource("actions", "record.bring"), &ResourceKind::Action)
+            let (node, kind) =
+                required_action(&resource("actions", "record.bring"), &ResourceKind::Action)
                     .expect("writing into a document must be gated");
-            assert_eq!(verb, Verb::Write);
+            assert_eq!(kind, ActionKind::Undoable);
             assert_eq!(
-                cap,
-                CapResource::Action {
-                    app: SHELL_APP_ID.to_string(),
-                    action: "record.bring".to_string(),
-                }
+                node,
+                TreePath::root().app(SHELL_APP_ID).action("record.bring")
             );
         }
 
@@ -401,63 +499,61 @@ mod tests {
         {
             let owner: UserId = "owner".to_string();
             let stranger: UserId = "stranger".to_string();
-            let mut ws = Workspace::new(WorkspaceId::new(), "edit-gate");
-            ws.owner = Some(owner.clone());
+            let mut ws = owned("edit-gate", &owner);
 
             let edit = resource("actions", "record.bring");
             let note = resource("notes", "15");
 
-            let stranger_view = CapabilityVisibility::new(&ws, ws.actor_for_person(&stranger));
+            let stranger_view = PolicyVisibility::new(&ws, ws.actor_for_person(&stranger));
             assert!(
                 !stranger_view.can_see(&edit, &ResourceKind::Action),
-                "someone holding no capability must not be offered the edit"
+                "someone holding nothing must not be offered the edit"
             );
             assert!(
                 stranger_view.can_see(&note, &ResourceKind::Note),
                 "…but the document itself stays visible: showing is free"
             );
 
-            let owner_view = CapabilityVisibility::new(&ws, ws.actor_for_person(&owner));
+            let owner_view = PolicyVisibility::new(&ws, ws.actor_for_person(&owner));
             assert!(
                 owner_view.can_see(&edit, &ResourceKind::Action),
                 "the room's owner may edit its documents"
             );
 
             // A grant makes exactly that act appear.
-            let _ = ws.grant_capability(CapOverride::grant(
-                Subject::Principal(Principal::Person(stranger.clone())),
-                Scope::Workspace,
-                Verb::Write,
-            ));
-            let granted = CapabilityVisibility::new(&ws, ws.actor_for_person(&stranger));
+            grant_room(
+                &mut ws,
+                Subject::person(stranger.clone()),
+                KindSet::READ_UNDOABLE,
+            );
+            let granted = PolicyVisibility::new(&ws, ws.actor_for_person(&stranger));
             assert!(
                 granted.can_see(&edit, &ResourceKind::Action),
-                "granting Write must make the edit reachable"
+                "granting undoable changes must make the edit reachable"
             );
         }
 
         // Phase `an_unclassified_action_fails_closed`.
         // A new provider landing without a mapping should go dark, not open.
         {
-            let (_, verb) = required_capability(
+            let (_, kind) = required_action(
                 &resource("actions", "some.provider.landed.without.a.mapping"),
                 &ResourceKind::Action,
             )
             .expect("an unmapped action must be gated, not waved through");
-            assert_eq!(verb, Verb::Write);
+            assert_eq!(kind, ActionKind::Undoable);
         }
 
-        // Phase `the_gate_hides_acts_from_a_member_without_capabilities`.
-        // End-to-end: an owner sees gated actions, a member holding nothing
+        // Phase `the_gate_hides_acts_from_someone_holding_nothing`.
+        // End-to-end: an owner sees gated actions, someone holding nothing
         // does not, both still see the ungated ones.
         {
             let owner: UserId = "owner".to_string();
             let stranger: UserId = "stranger".to_string();
-            let mut ws = Workspace::new(WorkspaceId::new(), "gate-test");
-            ws.owner = Some(owner.clone());
+            let mut ws = owned("gate-test", &owner);
 
-            let owner_view = CapabilityVisibility::new(&ws, ws.actor_for_person(&owner));
-            let stranger_view = CapabilityVisibility::new(&ws, ws.actor_for_person(&stranger));
+            let owner_view = PolicyVisibility::new(&ws, ws.actor_for_person(&owner));
+            let stranger_view = PolicyVisibility::new(&ws, ws.actor_for_person(&stranger));
 
             let gated = resource("actions", "window.new.terminal");
             let ungated = resource("actions", "settings.open");
@@ -469,7 +565,7 @@ mod tests {
             );
             assert!(
                 !stranger_view.can_see(&gated, &ResourceKind::Action),
-                "someone holding no capability must not see the act"
+                "someone holding nothing must not see the act"
             );
 
             // …but showing is never gated, for either of them.
@@ -480,19 +576,19 @@ mod tests {
 
             // A grant makes exactly that act appear, without opening
             // anything else.
-            let _ = ws.grant_capability(CapOverride::grant(
-                Subject::Principal(Principal::Person(stranger.clone())),
-                Scope::Workspace,
-                Verb::Write,
-            ));
-            let granted_view = CapabilityVisibility::new(&ws, ws.actor_for_person(&stranger));
+            grant_room(
+                &mut ws,
+                Subject::person(stranger.clone()),
+                KindSet::READ_UNDOABLE,
+            );
+            let granted_view = PolicyVisibility::new(&ws, ws.actor_for_person(&stranger));
             assert!(
                 granted_view.can_see(&gated, &ResourceKind::Action),
-                "granting Write must make the act visible"
+                "granting undoable changes must make the act visible"
             );
             assert!(
                 !granted_view.can_see(&resource("actions", "peer.invite"), &ResourceKind::Action),
-                "Write must not confer Invite"
+                "undoable changes must not confer inviting"
             );
         }
     }

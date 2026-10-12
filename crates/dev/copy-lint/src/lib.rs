@@ -27,6 +27,8 @@
               they always fall on character boundaries; a failed scan panics the calling test"
 )]
 
+pub mod catalog;
+
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 

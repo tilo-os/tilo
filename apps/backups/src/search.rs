@@ -5,14 +5,14 @@
 //! when it is older than that page, so every loaded local snapshot is an
 //! entry, and the framework's search source bounds the query work.
 
-use ui::tilo_actions::ActionAddress;
 use ui::tilo_resource::SearchEntry;
 
 use crate::model::{Catalog, Snapshot};
 
 pub const SNAPSHOT_KIND: &str = "Backup recovery points";
 
-/// Every recovery point in the loaded catalogue, each opening its live row:
+/// Every recovery point in the loaded catalogue, each anchored at its live
+/// row, which the window's opener shows:
 /// found by its id, time, source, destination, kind, retention or status.
 pub fn snapshot_entries(backups: &Catalog) -> Vec<SearchEntry> {
     backups
@@ -32,7 +32,7 @@ pub fn snapshot_entries(backups: &Catalog) -> Vec<SearchEntry> {
                     snapshot.status_label()
                 ),
             )
-            .invoking(ActionAddress::new(snapshot_resource_id(snapshot), "open"))
+            .anchored(snapshot_resource_id(snapshot))
             .grouped(SNAPSHOT_KIND)
             .subtitled(format!(
                 "{} backup, retained {} ({}).",
@@ -112,17 +112,20 @@ mod tests {
         let catalog = loaded.expect("the corpus was loaded");
         let page = provider.search_page(&ui::search::SearchQuery::new(LATE_HIT_NEEDLE), None, 8, 4);
         assert_eq!(page.results.len(), 1, "the one recovery point that matches");
-        let address = hit.action_address().expect("canonical address");
-        assert_eq!(address.resource, "backups.snapshot:snapshot-002999");
-        let resource = crate::actions::live_row(&catalog, None, &address.resource)
-            .expect("late search address resolves its live row")
+        let anchor = hit.anchor();
+        assert_eq!(anchor, "backups.snapshot:snapshot-002999");
+        let resource = crate::actions::live_row(&catalog, None, &anchor)
+            .expect("late search anchor resolves its live row")
             .into_resource();
         assert!(
-            resource
-                .actions
-                .iter()
-                .any(|action| action.id == address.action),
-            "the exact search address action is exported by its resolved resource"
+            resource.actions.iter().any(|action| action.id == "open"),
+            "the hit's row opens it"
+        );
+        assert_eq!(
+            crate::resource::opened(&anchor).expect("the opener shows it"),
+            crate::actions::BackupsEffect::ShowSnapshot {
+                snapshot_id: "snapshot-002999".into(),
+            }
         );
         assert!(resource.actions.iter().any(|action| action.id == "verify"));
         assert!(resource.actions.iter().any(|action| action.id == "restore"));

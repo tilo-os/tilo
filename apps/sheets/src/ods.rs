@@ -13,8 +13,9 @@ use std::path::Path;
 use tilo_doc_codecs::OdsCodec;
 use tilo_doc_codecs::ods::common_styles_part;
 
-use crate::model::{CellFormat, Currency, addr_to_a1};
+use crate::model::{CellFormat, addr_to_a1};
 use crate::xlsx::SheetTable;
+use tilo_locale::Currency;
 
 /// Read every sheet of an `.ods` document into tables.
 ///

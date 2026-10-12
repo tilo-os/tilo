@@ -26,7 +26,6 @@ src/
                        (`SigningRound1`, `SigningRound2Partial`)
   shares.rs          — `SecretShare` newtype + `RecoveryShare`
                        paper-share encoding (BIP39 + metadata)
-  transcript.rs      — pairing-transcript hash for QR-pair ceremony
   errors.rs          — `ThresholdError` (single error type)
 tests/
   single_device.rs                — 1-of-1 bootstrap, sign, verify

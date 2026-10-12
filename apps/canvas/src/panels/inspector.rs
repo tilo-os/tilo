@@ -12,7 +12,6 @@ use ui::widget::{ColorSwatch, ColorSwatchPicker, Toggle};
 use super::{caption, heading, icon_button, percent};
 use crate::brushes::Preset;
 use crate::model::{Artwork, BLENDS, Mark, Shadow, Shape};
-use crate::resource::ArtworkResource;
 use crate::tools::{Erasing, Sampling, Tool, Tools};
 
 /// Inks for plain layers: document colours, the same in every theme.
@@ -66,7 +65,7 @@ pub(crate) fn swatches(colours: &[u32], names: Vec<String>, columns: usize) -> C
 /// Reuse document paint through the shared picker; changing counts while
 /// painting leaves this subtree in place.
 fn artwork_palette(
-    cx: &ViewCx<ArtworkResource>,
+    cx: &ViewCx<Artwork>,
     id: String,
     current: impl Fn() -> String + 'static,
     choose: impl Fn(String) + Clone + 'static,
@@ -117,7 +116,7 @@ fn words(name: &str) -> String {
 }
 
 /// The inspector.
-pub fn panel(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
+pub fn panel(cx: &ViewCx<Artwork>, tools: &Tools) -> Element {
     let tools = tools.clone();
     cx.switch(&tools.tool.clone(), move |cx, tool| {
         if matches!(tool, Tool::Marquee | Tool::Oval | Tool::Lasso | Tool::Wand) {
@@ -206,7 +205,7 @@ pub(super) fn grow(control: Element) -> Element {
     )
 }
 
-fn brush_and_artwork(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
+fn brush_and_artwork(cx: &ViewCx<Artwork>, tools: &Tools) -> Element {
     let brush = {
         let tools = tools.clone();
         cx.switch(&tools.tool.clone(), move |cx, tool| {
@@ -250,7 +249,7 @@ fn brush_and_artwork(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
 }
 
 /// The chosen layer's colour and tone, folded away until asked for.
-fn layer_adjust(cx: &ViewCx<ArtworkResource>, tools: &Tools, layer: &str) -> Element {
+fn layer_adjust(cx: &ViewCx<Artwork>, tools: &Tools, layer: &str) -> Element {
     let chosen = layer.to_owned();
     let state = cx.value(move |art: &Artwork| {
         let layer = art
@@ -279,7 +278,7 @@ fn layer_adjust(cx: &ViewCx<ArtworkResource>, tools: &Tools, layer: &str) -> Ele
                 .with_gap(ui::tokens::Spacing::BASE.s2)
                 .no_wrap()
                 .with_align_items(ui::taffy::AlignItems::Center)
-                .push(heading("canvas-layer-adjust"))
+                .push(heading("canvas-label-layer-adjust"))
                 .push(Box::new(Spacer::new()))
                 .push(Box::new(
                     Button::icon_only("canvas-layer-adjust-fold", icon, &name)
@@ -303,7 +302,7 @@ fn layer_adjust(cx: &ViewCx<ArtworkResource>, tools: &Tools, layer: &str) -> Ele
 ///
 /// For the other tools that lay paint, only what they use of it: the
 /// colour, and for lines and open paths the width.
-fn brush(cx: &ViewCx<ArtworkResource>, tools: &Tools, layer: &str, tool: Tool) -> Element {
+fn brush(cx: &ViewCx<Artwork>, tools: &Tools, layer: &str, tool: Tool) -> Element {
     let brushing = tool == Tool::Brush;
     let (medium, pigments, load) = cx.read(|art| {
         let Some(art) = art else {
@@ -529,7 +528,7 @@ fn sampling(choice: &LocalState<Sampling>, heading_id: &str) -> Element {
 
 /// A selecting tool: how it adds to and takes from the selection, and for
 /// the magic wand how alike the colours it takes in are.
-fn area_tool(cx: &ViewCx<ArtworkResource>, tools: &Tools, tool: Tool) -> Element {
+fn area_tool(cx: &ViewCx<Artwork>, tools: &Tools, tool: Tool) -> Element {
     let lookup = ui::i18n::I18nManager::lookup_plain;
     let mut parts: Vec<Element> = vec![heading(tool.label())];
     // The photo's subject in one click, found on this device: off the
@@ -538,10 +537,12 @@ fn area_tool(cx: &ViewCx<ArtworkResource>, tools: &Tools, tool: Tool) -> Element
     let button = Button::new("canvas-select-subject", &lookup("canvas-select-subject"))
         .with_icon(Icon::Sparkles)
         .tooltip(lookup("canvas-select-subject-hint"));
-    let effect = crate::resource::ViewOp::FindArea(crate::resource::FindArea {
-        subject: Some(true),
-        ..Default::default()
-    });
+    let effect = crate::resource::ViewOp::FindArea {
+        area: crate::resource::FindArea {
+            subject: Some(true),
+            ..Default::default()
+        },
+    };
     parts.push(Box::new(
         cx.actions().bind_effect_invocation(button, &effect),
     ));
@@ -570,7 +571,7 @@ fn tolerance(tools: &Tools) -> Element {
 
 /// The eraser: whether it takes paint or whole strokes, its size, and for
 /// paint how much it takes and how crisp its edge is.
-fn eraser(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
+fn eraser(cx: &ViewCx<Artwork>, tools: &Tools) -> Element {
     let choices = vec![
         (
             Erasing::Paint,
@@ -707,9 +708,9 @@ fn nearest(
 }
 
 /// The artwork's title, size and ground.
-fn artwork(cx: &ViewCx<ArtworkResource>) -> Element {
+fn artwork(cx: &ViewCx<Artwork>) -> Element {
     let side = |read: fn(&Artwork) -> f64, action, name: &str| {
-        cx.control(
+        cx.control_with(
             |state| {
                 NumberInput::from_state(state)
                     .with_range(16.0, crate::model::MAX_SIDE)
@@ -723,13 +724,13 @@ fn artwork(cx: &ViewCx<ArtworkResource>) -> Element {
     };
     let width = side(
         |art| art.width,
-        ArtworkResource::SET_WIDTH,
-        "canvas-artwork-width",
+        Artwork::SET_WIDTH,
+        "canvas-label-artwork-width",
     );
     let height = side(
         |art| art.height,
-        ArtworkResource::SET_HEIGHT,
-        "canvas-artwork-height",
+        Artwork::SET_HEIGHT,
+        "canvas-label-artwork-height",
     );
     let textures: Vec<(String, String)> = tilo_wet_media::Texture::ALL
         .iter()
@@ -739,7 +740,7 @@ fn artwork(cx: &ViewCx<ArtworkResource>) -> Element {
             (name, label)
         })
         .collect();
-    let texture = cx.control(
+    let texture = cx.control_with(
         |state| {
             let mut dropdown = Dropdown::from_state(Vec::new(), state)
                 .with_id("canvas-ground-texture")
@@ -748,7 +749,7 @@ fn artwork(cx: &ViewCx<ArtworkResource>) -> Element {
             dropdown
         },
         |art: &Artwork| art.ground.texture.clone(),
-        ArtworkResource::SET_TEXTURE,
+        Artwork::SET_TEXTURE,
     );
     let dispatch = cx.dispatcher();
     let ground_now = cx.read(|art| art.and_then(|art| packed(&art.ground.colour)));
@@ -757,17 +758,17 @@ fn artwork(cx: &ViewCx<ArtworkResource>) -> Element {
         .selecting(GROUNDS.iter().position(|rgb| Some(*rgb) == ground_now))
         .on_change(move |index| {
             if let Some(rgb) = GROUNDS.get(index) {
-                dispatch.invoke(ArtworkResource::SET_GROUND.with(hex(*rgb)));
+                dispatch.submit(Artwork::SET_GROUND.with(hex(*rgb)));
             }
         });
     section(vec![
         heading("canvas-artwork"),
         field(
-            &ui::i18n::I18nManager::lookup_plain("canvas-artwork-width"),
+            &ui::i18n::I18nManager::lookup_plain("canvas-label-artwork-width"),
             Box::new(width),
         ),
         field(
-            &ui::i18n::I18nManager::lookup_plain("canvas-artwork-height"),
+            &ui::i18n::I18nManager::lookup_plain("canvas-label-artwork-height"),
             Box::new(height),
         ),
         field(
@@ -784,7 +785,7 @@ fn artwork(cx: &ViewCx<ArtworkResource>) -> Element {
 /// is built again whenever a selected mark changes; a picture's controls
 /// follow the artwork in place, built again only when the selection is, so
 /// a drag begun as another slider's edit lands is not lost.
-fn selection(cx: &ViewCx<ArtworkResource>, ids: Vec<String>, tools: &Tools) -> Element {
+fn selection(cx: &ViewCx<Artwork>, ids: Vec<String>, tools: &Tools) -> Element {
     let summary = {
         let ids = ids.clone();
         cx.value(move |art: &Artwork| {
@@ -868,7 +869,7 @@ fn selection_heading(summary: &str) -> Element {
     )
 }
 
-fn marks_inspector(cx: &ViewCx<ArtworkResource>, marks: &[Mark], tools: &Tools) -> Element {
+fn marks_inspector(cx: &ViewCx<Artwork>, marks: &[Mark], tools: &Tools) -> Element {
     let stop = &tools.stop;
     let Some(first) = marks.first() else {
         return Box::new(Spacer::token(ui::tokens::SpacingStep::S0));
@@ -988,16 +989,16 @@ impl Paint {
     }
 
     /// `value` painted by the marks `ids`, as one invocation.
-    fn invoke(&self, ids: &[String], value: String) -> Invoke<ArtworkResource> {
+    fn invoke(&self, ids: &[String], value: String) -> Invoke<Artwork> {
         match self {
-            Self::Fill => ArtworkResource::SET_FILL.with((ids.to_vec(), value)),
-            Self::Stroke => ArtworkResource::SET_STROKE.with((ids.to_vec(), value)),
+            Self::Fill => Artwork::SET_FILL.with((ids.to_vec(), value)),
+            Self::Stroke => Artwork::SET_STROKE.with((ids.to_vec(), value)),
             Self::Stop(gradient, index) => {
                 let mut gradient = gradient.clone();
                 if let Some(stop) = gradient.stops.get_mut(*index) {
                     stop.1 = value;
                 }
-                ArtworkResource::SET_GRADIENT.with((ids.to_vec(), gradient))
+                Artwork::SET_GRADIENT.with((ids.to_vec(), gradient))
             }
         }
     }
@@ -1005,7 +1006,7 @@ impl Paint {
 
 /// Swatches of the layer's paints (or inks) and the colour as text.
 fn paints(
-    cx: &ViewCx<ArtworkResource>,
+    cx: &ViewCx<Artwork>,
     ids: &[String],
     current: Option<&str>,
     palette: &[tilo_wet_media::Pigment],
@@ -1042,7 +1043,7 @@ fn paints(
         .selecting(selected)
         .on_change(move |index| {
             if let Some(value) = chosen.get(index) {
-                dispatch.invoke(picked.invoke(&targets, value.clone()));
+                dispatch.submit(picked.invoke(&targets, value.clone()));
             }
         });
     let text = LocalState::new(current.unwrap_or("none").to_owned());
@@ -1052,21 +1053,21 @@ fn paints(
     let field: Element = match paint {
         Paint::Fill => Box::new(cx.actions().bind(
             input,
-            ArtworkResource::SET_FILL.map({
+            Artwork::SET_FILL.map({
                 let ids = ids.to_vec();
                 move |value: String| (ids.clone(), value)
             }),
         )),
         Paint::Stroke => Box::new(cx.actions().bind(
             input,
-            ArtworkResource::SET_STROKE.map({
+            Artwork::SET_STROKE.map({
                 let ids = ids.to_vec();
                 move |value: String| (ids.clone(), value)
             }),
         )),
         Paint::Stop(gradient, index) => Box::new(cx.actions().bind(
             input,
-            ArtworkResource::SET_GRADIENT.map({
+            Artwork::SET_GRADIENT.map({
                 let ids = ids.to_vec();
                 let gradient = gradient.clone();
                 let index = *index;
@@ -1091,7 +1092,7 @@ fn paints(
             format!("{}-artwork-colours", paint.id()),
             move || current.clone(),
             move |value| {
-                dispatch.invoke(paint.invoke(&ids, value));
+                dispatch.submit(paint.invoke(&ids, value));
             },
         ));
     } else {
@@ -1103,7 +1104,7 @@ fn paints(
 
 /// Brush strokes' preset, width and dynamics, and their paths: smoothed,
 /// simplified, joined.
-fn stroke_brush(cx: &ViewCx<ArtworkResource>, ids: &[String], mark: &Mark, plain: bool) -> Element {
+fn stroke_brush(cx: &ViewCx<Artwork>, ids: &[String], mark: &Mark, plain: bool) -> Element {
     let Shape::Stroke { size, .. } = &mark.shape else {
         return Box::new(Spacer::token(ui::tokens::SpacingStep::S0));
     };
@@ -1118,9 +1119,8 @@ fn stroke_brush(cx: &ViewCx<ArtworkResource>, ids: &[String], mark: &Mark, plain
             preset,
             move || ink.clone(),
             move |preset| {
-                dispatch.invoke(
-                    ArtworkResource::SET_BRUSH.with((targets.clone(), preset.name().to_owned())),
-                );
+                dispatch
+                    .submit(Artwork::SET_BRUSH.with((targets.clone(), preset.name().to_owned())));
             },
         )));
     }
@@ -1132,7 +1132,7 @@ fn stroke_brush(cx: &ViewCx<ArtworkResource>, ids: &[String], mark: &Mark, plain
             .with_precision(1)
             .with_id("canvas-stroke-size")
             .with_accessible_name(ui::i18n::I18nManager::lookup_plain("canvas-brush-size")),
-        ArtworkResource::SET_SIZE.map({
+        Artwork::SET_SIZE.map({
             let ids = ids.to_vec();
             move |value: f64| (ids.clone(), value)
         }),
@@ -1160,12 +1160,7 @@ fn stroke_brush(cx: &ViewCx<ArtworkResource>, ids: &[String], mark: &Mark, plain
 }
 
 /// A slider over one of strokes' dynamics, applied when let go.
-fn dynamic(
-    cx: &ViewCx<ArtworkResource>,
-    ids: &[String],
-    name: &'static str,
-    value: f64,
-) -> Element {
+fn dynamic(cx: &ViewCx<Artwork>, ids: &[String], name: &'static str, value: f64) -> Element {
     let state = LocalState::new(value);
     let label = format!("canvas-brush-{name}");
     let shown = {
@@ -1177,7 +1172,7 @@ fn dynamic(
             .with_id(&format!("canvas-stroke-{name}"))
             .with_accessible_name(&ui::i18n::I18nManager::lookup_plain(&label))
             .commits_on_release(),
-        ArtworkResource::SET_PARAMS.map({
+        Artwork::SET_PARAMS.map({
             let ids = ids.to_vec();
             move |value: f64| {
                 (
@@ -1200,30 +1195,30 @@ fn dynamic(
 }
 
 /// Smooth or simplify strokes' paths, or join them into one.
-fn path_tools(cx: &ViewCx<ArtworkResource>, ids: &[String], size: f64) -> Element {
+fn path_tools(cx: &ViewCx<Artwork>, ids: &[String], size: f64) -> Element {
     let lookup = |id: &str| ui::i18n::I18nManager::lookup_plain(id);
     let mut row = Row::new()
         .with_gap(ui::tokens::Spacing::BASE.s2)
         .no_wrap()
         .push(Box::new(cx.button(
-            &lookup("canvas-stroke-smooth"),
-            ArtworkResource::SMOOTH.with((ids.to_vec(), 0.5)),
+            lookup("canvas-stroke-smooth"),
+            Artwork::SMOOTH.with((ids.to_vec(), 0.5)),
         )))
         .push(Box::new(cx.button(
-            &lookup("canvas-stroke-simplify"),
-            ArtworkResource::SIMPLIFY.with((ids.to_vec(), (size * 0.15).clamp(0.5, 6.0))),
+            lookup("canvas-stroke-simplify"),
+            Artwork::SIMPLIFY.with((ids.to_vec(), (size * 0.15).clamp(0.5, 6.0))),
         )));
     if ids.len() > 1 {
         row = row.push(Box::new(cx.button(
-            &lookup("canvas-stroke-join"),
-            ArtworkResource::MERGE.with((ids.to_vec(), true)),
+            lookup("canvas-stroke-join"),
+            Artwork::MERGE.with((ids.to_vec(), true)),
         )));
     }
     section(vec![heading("canvas-stroke-path"), Box::new(row)])
 }
 
 /// The outline's width, dashes, ends and corners.
-fn stroke_style(cx: &ViewCx<ArtworkResource>, ids: &[String], mark: &Mark) -> Element {
+fn stroke_style(cx: &ViewCx<Artwork>, ids: &[String], mark: &Mark) -> Element {
     let style = &mark.style;
     let width = LocalState::new(style.stroke_width);
     let width = cx.actions().bind(
@@ -1233,7 +1228,7 @@ fn stroke_style(cx: &ViewCx<ArtworkResource>, ids: &[String], mark: &Mark) -> El
             .with_precision(1)
             .with_id("canvas-stroke-width")
             .with_accessible_name(ui::i18n::I18nManager::lookup_plain("canvas-stroke-width")),
-        ArtworkResource::SET_STROKE_WIDTH.map({
+        Artwork::SET_STROKE_WIDTH.map({
             let ids = ids.to_vec();
             move |value: f64| (ids.clone(), value)
         }),
@@ -1248,7 +1243,7 @@ fn stroke_style(cx: &ViewCx<ArtworkResource>, ids: &[String], mark: &Mark) -> El
         "canvas-dash",
         &["solid", "dashed", "dotted"],
         dash_now,
-        ArtworkResource::SET_DASH.map({
+        Artwork::SET_DASH.map({
             let ids = ids.to_vec();
             move |value: String| {
                 let pattern = match value.as_str() {
@@ -1265,7 +1260,7 @@ fn stroke_style(cx: &ViewCx<ArtworkResource>, ids: &[String], mark: &Mark) -> El
         "canvas-cap",
         &["round", "butt", "square"],
         style.cap.as_deref().unwrap_or("round"),
-        ArtworkResource::SET_CAP.map({
+        Artwork::SET_CAP.map({
             let ids = ids.to_vec();
             move |value: String| (ids.clone(), value)
         }),
@@ -1275,7 +1270,7 @@ fn stroke_style(cx: &ViewCx<ArtworkResource>, ids: &[String], mark: &Mark) -> El
         "canvas-join",
         &["round", "miter", "bevel"],
         style.join.as_deref().unwrap_or("round"),
-        ArtworkResource::SET_JOIN.map({
+        Artwork::SET_JOIN.map({
             let ids = ids.to_vec();
             move |value: String| (ids.clone(), value)
         }),
@@ -1302,11 +1297,11 @@ fn stroke_style(cx: &ViewCx<ArtworkResource>, ids: &[String], mark: &Mark) -> El
 
 /// A dropdown of `values` (named by `canvas-<value>`) bound to `action`.
 fn choice(
-    cx: &ViewCx<ArtworkResource>,
+    cx: &ViewCx<Artwork>,
     id: &str,
     values: &[&str],
     current: &str,
-    action: impl ui::tilo_resource::Binds<ArtworkResource, String>,
+    action: impl ui::tilo_resource::Binds<Artwork, String>,
 ) -> Element {
     let state = LocalState::new(current.to_owned());
     let mut dropdown = Dropdown::from_state(Vec::new(), &state)
@@ -1327,7 +1322,7 @@ fn choice(
 }
 
 /// Opacity, blend and shadow.
-fn appearance(cx: &ViewCx<ArtworkResource>, ids: &[String], mark: &Mark) -> Element {
+fn appearance(cx: &ViewCx<Artwork>, ids: &[String], mark: &Mark) -> Element {
     let style = &mark.style;
     let opacity = LocalState::new(style.opacity());
     let label = {
@@ -1339,7 +1334,7 @@ fn appearance(cx: &ViewCx<ArtworkResource>, ids: &[String], mark: &Mark) -> Elem
             .with_id("canvas-opacity")
             .with_accessible_name(&ui::i18n::I18nManager::lookup_plain("canvas-opacity"))
             .commits_on_release(),
-        ArtworkResource::SET_OPACITY.map({
+        Artwork::SET_OPACITY.map({
             let ids = ids.to_vec();
             move |value: f64| (ids.clone(), (value * 100.0).round() / 100.0)
         }),
@@ -1349,7 +1344,7 @@ fn appearance(cx: &ViewCx<ArtworkResource>, ids: &[String], mark: &Mark) -> Elem
         "canvas-blend",
         &BLENDS,
         style.blend.as_deref().unwrap_or("normal"),
-        ArtworkResource::SET_BLEND.map({
+        Artwork::SET_BLEND.map({
             let ids = ids.to_vec();
             move |value: String| (ids.clone(), value)
         }),
@@ -1364,7 +1359,7 @@ fn appearance(cx: &ViewCx<ArtworkResource>, ids: &[String], mark: &Mark) -> Elem
         Toggle::from_state(&shadowed)
             .with_id("canvas-shadow")
             .with_accessible_name(&ui::i18n::I18nManager::lookup_plain("canvas-shadow")),
-        ArtworkResource::SET_SHADOW.map({
+        Artwork::SET_SHADOW.map({
             let ids = ids.to_vec();
             move |on: bool| {
                 let shadow = if on {
@@ -1404,7 +1399,7 @@ fn appearance(cx: &ViewCx<ArtworkResource>, ids: &[String], mark: &Mark) -> Elem
 }
 
 /// A text mark's family, size, weight and slant.
-fn text_style(cx: &ViewCx<ArtworkResource>, mark: &Mark) -> Element {
+fn text_style(cx: &ViewCx<Artwork>, mark: &Mark) -> Element {
     let Shape::Text {
         size,
         font,
@@ -1419,7 +1414,7 @@ fn text_style(cx: &ViewCx<ArtworkResource>, mark: &Mark) -> Element {
     let restyled = |change: fn(&mut Shape, &str)| {
         let shape = mark.shape.clone();
         let ids = ids.clone();
-        ArtworkResource::SET_SHAPE.map(move |value: String| {
+        Artwork::SET_SHAPE.map(move |value: String| {
             let mut shape = shape.clone();
             change(&mut shape, &value);
             (ids.clone(), shape)
@@ -1447,7 +1442,7 @@ fn text_style(cx: &ViewCx<ArtworkResource>, mark: &Mark) -> Element {
                 .with_precision(0)
                 .with_id("canvas-text-size")
                 .with_accessible_name(ui::i18n::I18nManager::lookup_plain("canvas-text-size")),
-            ArtworkResource::SET_SHAPE.map(move |value: f64| {
+            Artwork::SET_SHAPE.map(move |value: f64| {
                 let mut shape = shape.clone();
                 if let Shape::Text { size, .. } = &mut shape {
                     *size = value;
@@ -1464,7 +1459,7 @@ fn text_style(cx: &ViewCx<ArtworkResource>, mark: &Mark) -> Element {
             Toggle::from_state(&state)
                 .with_id(id)
                 .with_accessible_name(&ui::i18n::I18nManager::lookup_plain(id)),
-            ArtworkResource::SET_SHAPE.map(move |value: bool| {
+            Artwork::SET_SHAPE.map(move |value: bool| {
                 let mut shape = shape.clone();
                 change(&mut shape, value);
                 (ids.clone(), shape)
@@ -1507,13 +1502,13 @@ fn text_style(cx: &ViewCx<ArtworkResource>, mark: &Mark) -> Element {
 }
 
 /// Bring to the front or send to the back, and remove.
-fn arrange(cx: &ViewCx<ArtworkResource>, ids: &[String]) -> Element {
+fn arrange(cx: &ViewCx<Artwork>, ids: &[String]) -> Element {
     let to = |icon, name: &str, to: &str| {
         Box::new(icon_button(
             cx,
             icon,
             &ui::i18n::I18nManager::lookup_plain(name),
-            ArtworkResource::ARRANGE.with((ids.to_vec(), to.to_owned())),
+            Artwork::ARRANGE_TO.with((ids.to_vec(), to.to_owned())),
         )) as Element
     };
     Box::new(
@@ -1528,8 +1523,8 @@ fn arrange(cx: &ViewCx<ArtworkResource>, ids: &[String]) -> Element {
             .push(Box::new(icon_button(
                 cx,
                 Icon::Trash2,
-                &ui::i18n::I18nManager::lookup_plain("canvas-remove-marks"),
-                ArtworkResource::REMOVE_MARKS.with(ids.to_vec()),
+                &ui::i18n::I18nManager::lookup_plain("canvas-command-remove-marks"),
+                Artwork::REMOVE_MARKS_BY_ID.with(ids.to_vec()),
             ))),
     )
 }

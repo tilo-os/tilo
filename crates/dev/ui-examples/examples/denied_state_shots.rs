@@ -3,7 +3,7 @@
 //!
 //! Each row draws the same control twice — once through a permissive
 //! [`PermissionContext`] and once through one that grants nothing — via the
-//! real `draw_with_presence` path, which is where the scrim is applied. What
+//! real `draw` path, which is where the scrim is applied. What
 //! the PNG shows is therefore the production denied state, not a mock of it.
 //!
 //! Both a neutral control (primary text on the card) and an accent-filled one
@@ -24,7 +24,7 @@ use vello::kurbo::{Affine, Point};
 
 use tilo_ui::TextRole;
 use tilo_ui::offscreen::OffscreenRenderer;
-use tilo_ui::permissions::{PermissionContext, PermissionScope, Verb};
+use tilo_ui::permissions::{ActionKind, PermissionContext, PermissionScope};
 use tilo_ui::presence::PresenceCtx;
 use tilo_ui::text_render::TextRenderer;
 use tilo_ui::theme::Theme;
@@ -39,15 +39,12 @@ const COL_DENIED: f64 = 420.0;
 /// A scope nothing in `denying()` grants, so every control carrying it draws
 /// its denied state.
 fn locked() -> PermissionScope {
-    PermissionScope::app("locked.example", Verb::Write)
+    PermissionScope::app("locked.example", ActionKind::Undoable)
 }
 
 /// A context that grants nothing at all.
 fn denying() -> PermissionContext {
-    PermissionContext::from_capabilities(
-        tilo_ui::permissions::Actor::person(None, "nobody"),
-        vec![],
-    )
+    PermissionContext::stranger("nobody")
 }
 
 fn stamp(
@@ -78,14 +75,10 @@ fn stamp(
         )
         .map_err(|error| format!("layout failed: {error}"))?;
     widget.apply_layout(&taffy, node, origin);
-    widget.draw_with_presence(
-        scene,
-        Affine::IDENTITY,
-        tr,
-        theme,
-        &PresenceCtx::default(),
-        permissions,
-    );
+    let presence = PresenceCtx::default();
+    presence.with_permissions(permissions.clone(), || {
+        widget.draw(scene, Affine::IDENTITY, tr, theme, &presence);
+    });
     Ok(())
 }
 
