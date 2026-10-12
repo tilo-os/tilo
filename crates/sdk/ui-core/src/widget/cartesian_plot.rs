@@ -1092,13 +1092,6 @@ impl CartesianPlot {
     pub fn zoom_to_selection(&mut self, selection: CartesianBrushSelection) -> bool {
         self.set_viewport(Some(selection.x), selection.y)
     }
-    pub fn style_mut(&mut self) -> &mut CartesianStyle {
-        self.invalidate_domains();
-        &mut self.style
-    }
-    pub fn style(&self) -> &CartesianStyle {
-        &self.style
-    }
     pub fn take_activated(&mut self) -> Option<(String, String)> {
         self.activated.take()
     }

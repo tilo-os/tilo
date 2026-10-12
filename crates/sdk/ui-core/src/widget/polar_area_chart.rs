@@ -109,12 +109,6 @@ impl PolarAreaChart {
         self.style = style;
         self
     }
-    pub fn style(&self) -> &PolarAreaStyle {
-        &self.style
-    }
-    pub fn style_mut(&mut self) -> &mut PolarAreaStyle {
-        &mut self.style
-    }
     #[must_use]
     pub fn titled(mut self, title: impl Into<String>) -> Self {
         self.title = title.into();

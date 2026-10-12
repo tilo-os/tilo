@@ -102,12 +102,6 @@ impl FunnelChart {
         self.style = style;
         self
     }
-    pub fn style(&self) -> &FunnelStyle {
-        &self.style
-    }
-    pub fn style_mut(&mut self) -> &mut FunnelStyle {
-        &mut self.style
-    }
     #[must_use]
     pub fn direction(mut self, direction: FunnelDirection) -> Self {
         self.style.direction = direction;
