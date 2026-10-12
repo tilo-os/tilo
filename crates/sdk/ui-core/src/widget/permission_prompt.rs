@@ -100,6 +100,7 @@ pub struct PermissionPrompt {
     focused_choice: Option<PromptChoice>,
     has_keyboard_focus: bool,
     local_input: Option<LocalInputPrompt>,
+    icon: Option<crate::icons::Icon>,
 }
 
 /// Local input consent and controls preserve the editable field's keyboard owner.
@@ -127,6 +128,7 @@ impl PermissionPrompt {
             focused_choice: None,
             has_keyboard_focus: false,
             local_input: None,
+            icon: None,
         }
     }
 
@@ -144,6 +146,13 @@ impl PermissionPrompt {
         let mut prompt = Self::new(app_label, capability_label, false);
         prompt.local_input = Some(LocalInputPrompt { labels, modal });
         prompt
+    }
+
+    /// Use a shared system symbol for a trusted local surface.
+    #[must_use]
+    pub fn with_icon(mut self, icon: crate::icons::Icon) -> Self {
+        self.icon = Some(icon);
+        self
     }
 
     fn visible_choices(&self) -> &[PromptChoice] {
@@ -180,9 +189,47 @@ impl PermissionPrompt {
         self.apply_layout_helper();
     }
 
+    /// Measure the complete local-input explanation, including enlarged text.
+    /// Absolute overlay hosts apply this height before painting and hit testing.
+    pub fn preferred_height(&self, text_renderer: &mut TextRenderer, theme: &Theme) -> f64 {
+        if self.local_input.is_none() {
+            return PROMPT_HEIGHT;
+        }
+        let width = self.label_width(theme);
+        text_renderer.security_surface(|text_renderer| {
+            let title_style = theme.text(TextRole::Caption);
+            let title = text_renderer.elide_to_width_style(&self.app_id, width, &title_style);
+            let (_, title) = text_renderer.measure_style(&title, None, &title_style);
+            let (_, explanation) = text_renderer.measure_style(
+                &self.capability_label,
+                Some(width),
+                &theme.text(TextRole::Body),
+            );
+            (f64::from(title + explanation)
+                + f64::from(theme.tokens.spacing.s1 + theme.tokens.spacing.s4 * 2.0))
+            .max(PROMPT_HEIGHT)
+        })
+    }
+
+    fn label_width(&self, theme: &Theme) -> f32 {
+        let left = self.rect.x0 + PADDING_X + ICON_SIZE + f64::from(theme.tokens.spacing.s2);
+        let right = if self.allow_rect == Rect::ZERO {
+            self.deny_rect.x0
+        } else {
+            self.allow_rect.x0
+        };
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "bounded screen-space width; f32 precision is sufficient for text layout"
+        )]
+        {
+            (right - f64::from(theme.tokens.spacing.s3) - left).max(1.0) as f32
+        }
+    }
+
     /// Exposed so tests can drive layout without a full taffy pass.
     pub fn apply_layout_helper(&mut self) {
-        let by = self.rect.y0 + (PROMPT_HEIGHT - BUTTON_HEIGHT) / 2.0;
+        let by = self.rect.y0 + (self.rect.height() - BUTTON_HEIGHT) / 2.0;
         let by1 = by + BUTTON_HEIGHT;
         // Computed from the right edge inward (Deny, Always, Session, Allow)
         // so a narrower bar keeps the buttons inside; on-screen this reads
@@ -403,7 +450,7 @@ impl Widget for PermissionPrompt {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let node = taffy.leaf_node(Style {
+        let style = Style {
             size: Size {
                 width: Dimension::percent(1.0),
                 #[allow(
@@ -415,19 +462,12 @@ impl Widget for PermissionPrompt {
             flex_grow: 0.0,
             flex_shrink: 0.0,
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
         self.apply_layout_helper();
     }
 
@@ -466,17 +506,26 @@ impl Widget for PermissionPrompt {
             // Placeholder pulled from the accent ramp until the portal layer
             // surfaces real icons via the app's desktop-file metadata.
             let icon_x = self.rect.x0 + PADDING_X;
-            let icon_y = self.rect.y0 + (PROMPT_HEIGHT - ICON_SIZE) / 2.0;
+            let icon_y = self.rect.y0 + (self.rect.height() - ICON_SIZE) / 2.0;
             let icon_rect = Rect::new(icon_x, icon_y, icon_x + ICON_SIZE, icon_y + ICON_SIZE);
             let icon_shape =
                 RoundedRect::from_rect(icon_rect, f64::from(theme.tokens.radii.detail));
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                theme.tokens.colors.intent.inverted,
-                None,
-                &icon_shape,
-            );
+            if let Some(icon) = self.icon {
+                icon.draw(
+                    scene,
+                    transform,
+                    icon_rect,
+                    theme.tokens.colors.text_primary,
+                );
+            } else {
+                scene.fill(
+                    Fill::NonZero,
+                    transform,
+                    theme.tokens.colors.intent.inverted,
+                    None,
+                    &icon_shape,
+                );
+            }
 
             // Button geometry first: the label block ends `spacing.s3` before the
             // leftmost button and is elided to that width, so the two never
@@ -484,31 +533,24 @@ impl Widget for PermissionPrompt {
             // draw without a preceding `apply_layout` hit-testing correctly.
             self.apply_layout_helper();
             let label_x = icon_x + ICON_SIZE + f64::from(theme.tokens.spacing.s2);
-            let label_max_w = (if self.allow_rect == Rect::ZERO {
-                self.deny_rect.x0
-            } else {
-                self.allow_rect.x0
-            } - f64::from(theme.tokens.spacing.s3)
-                - label_x)
-                .max(0.0);
+            let label_max_w = self.label_width(theme);
             let app_id_style = theme.text(TextRole::Caption);
             let cap_style = theme.text(TextRole::Body);
-            #[allow(
-                clippy::cast_possible_truncation,
-                reason = "bounded screen-space width; f32 precision is sufficient for text layout"
-            )]
-            let label_max_w = label_max_w as f32;
             let app_id =
                 text_renderer.elide_to_width_style(&self.app_id, label_max_w, &app_id_style);
-            let capability =
-                text_renderer.elide_to_width_style(&self.capability_label, label_max_w, &cap_style);
+            let wrap_width = self.local_input.as_ref().map(|_| label_max_w);
+            let capability = if wrap_width.is_some() {
+                self.capability_label.clone()
+            } else {
+                text_renderer.elide_to_width_style(&self.capability_label, label_max_w, &cap_style)
+            };
             // Centre the two-line block on its measured line boxes, not on the
             // font sizes, so both lines sit where the band says they are.
             let (_, app_id_h) = text_renderer.measure_style(&app_id, None, &app_id_style);
-            let (_, cap_h) = text_renderer.measure_style(&capability, None, &cap_style);
+            let (_, cap_h) = text_renderer.measure_style(&capability, wrap_width, &cap_style);
             let label_y = centered_text_top(
                 self.rect.y0,
-                PROMPT_HEIGHT,
+                self.rect.height(),
                 f64::from(app_id_h) + 4.0 + f64::from(cap_h),
             );
             text_renderer.draw_style(
@@ -524,7 +566,7 @@ impl Widget for PermissionPrompt {
                 &capability,
                 theme.tokens.colors.text_primary,
                 transform.pre_translate(Vec2::new(label_x, label_y + f64::from(app_id_h) + 4.0)),
-                None,
+                wrap_width,
                 &cap_style,
             );
 
@@ -713,20 +755,6 @@ impl Widget for PermissionPrompt {
     /// Keep that route identical to the raw-key handler and the synthetic AT
     /// child, rather than falling back to a coordinate click in the middle of
     /// the dialog.
-    fn perform_action(
-        &mut self,
-        action: &crate::a11y::Action,
-        _state: &mut crate::widget::Edits<'_>,
-        _path: &ModelPath,
-    ) -> bool {
-        if matches!(action, crate::a11y::Action::Activate)
-            && let Some(choice) = self.focused_choice
-        {
-            self.choose(choice)
-        } else {
-            false
-        }
-    }
 
     fn traps_focus(&self) -> bool {
         self.local_input.as_ref().is_none_or(|local| local.modal)
@@ -759,13 +787,20 @@ impl Widget for PermissionPrompt {
         true
     }
 
-    fn perform_action_at(
+    fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
         key_path: &[u64],
         _state: &mut crate::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
+        if key_path.is_empty() {
+            return matches!(action, crate::a11y::Action::Activate)
+                && self
+                    .focused_choice
+                    .is_some_and(|choice| self.choose(choice));
+        }
+
         let [key] = key_path else {
             return false;
         };
@@ -793,13 +828,35 @@ mod tests {
     //! `self.rect` so tests don't depend on a GPU/text-renderer.
     use super::*;
     use automerge::AutoCommit;
-    use winit::event::{DeviceId, ElementState, MouseButton};
 
-    fn synth_device() -> DeviceId {
-        // SAFETY: `DeviceId` is opaque; tests construct one via
-        // `mem::zeroed`. Same pattern as `quick-tilo_ui::widget::slider`'s
-        // own test helpers.
-        unsafe { std::mem::zeroed() }
+    #[test]
+    fn local_input_explanation_grows_with_enlarged_text_and_keeps_choices_addressable() {
+        let explanation = "Mikrofon aus · Der Text ist zu lang für einen Einfügeschritt. Für 10 Minuten privat aufbewahrt. Kopieren überträgt den gesamten Text in die Zwischenablage; Verwerfen entfernt ihn.";
+        let mut prompt = PermissionPrompt::for_local_input(
+            "Diktat".into(),
+            explanation.into(),
+            ["dictation-copy-transcript", "dictation-discard-transcript"],
+            true,
+        );
+        prompt.set_rect(Rect::new(16.0, 16.0, 784.0, 96.0));
+        let mut text = TextRenderer::new();
+        let theme = Theme::default().with_text_scale(1.6);
+        let height = prompt.preferred_height(&mut text, &theme);
+        assert!(height > PROMPT_HEIGHT, "the complete explanation must wrap");
+        prompt.set_rect(Rect::new(16.0, 16.0, 784.0, 16.0 + height));
+        prompt.draw(
+            &mut Scene::new(),
+            Affine::IDENTITY,
+            &mut text,
+            &theme,
+            &PresenceCtx::default(),
+        );
+        assert!(prompt.get_rect().contains(prompt.allow_rect().center()));
+        assert!(prompt.get_rect().contains(prompt.deny_rect().center()));
+        let node = prompt.accessibility().unwrap();
+        assert!(node.name.unwrap().contains(explanation));
+        assert_eq!(node.children.len(), 2);
+        assert_eq!(prompt.pending_choice, None);
     }
 
     #[test]
@@ -821,7 +878,7 @@ mod tests {
         assert_eq!(prompt.always_rect(), Rect::ZERO);
         let mut doc = AutoCommit::new();
         for key in [SESSION_KEY, ALWAYS_KEY] {
-            assert!(!prompt.perform_action_at(
+            assert!(!prompt.perform_action(
                 &crate::a11y::Action::Activate,
                 &[key],
                 &mut crate::widget::Edits::lend(&mut doc),
@@ -832,22 +889,15 @@ mod tests {
         let mut tree = TaffyTree::<()>::new();
         let field = tree.leaf_node(Style::default());
         let overlay = tree.leaf_node(Style::default());
-        let mut focus = Some(field);
-        let mut handled = false;
-        for event in [cursor_at(prompt.allow_rect().center()), left_press()] {
-            prompt.handle_event(
-                &event,
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &winit::event::Modifiers::default(),
-                    state: crate::widget::Edits::lend(&mut doc),
-                    path: &automerge::ROOT,
-                    handled: &mut handled,
-                    focus_target: &mut focus,
-                    node_id: overlay,
-                    taffy: &tree,
-                },
-            );
+        let (mut handled, mut focus) = (false, Some(field));
+        for event in [cursor_at(prompt.allow_rect().center()), mouse_press()] {
+            let sent = crate::testing::Dispatch::new()
+                .doc(&mut doc)
+                .handled(handled)
+                .focus_target(focus)
+                .layout(&tree, overlay)
+                .send(&mut prompt, &event);
+            (handled, focus) = (sent.handled, sent.focus_target);
         }
         assert_eq!(prompt.pending_choice, Some(PromptChoice::Allow));
         assert_eq!(
@@ -910,13 +960,14 @@ mod tests {
             assert!(Widget::perform_action(
                 &mut p,
                 &crate::a11y::Action::Activate,
+                &[],
                 &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
             assert_eq!(p.pending_choice, Some(PromptChoice::Deny));
 
             p.pending_choice = None;
-            assert!(Widget::perform_action_at(
+            assert!(Widget::perform_action(
                 &mut p,
                 &crate::a11y::Action::Activate,
                 &[SESSION_KEY],
@@ -927,7 +978,7 @@ mod tests {
 
             p.pending_choice = None;
             assert!(
-                !Widget::perform_action_at(
+                !Widget::perform_action(
                     &mut p,
                     &crate::a11y::Action::Activate,
                     &[ALWAYS_KEY],
@@ -962,40 +1013,13 @@ mod tests {
 
     fn cursor_at(p: Point) -> WindowEvent {
         WindowEvent::CursorMoved {
-            device_id: synth_device(),
+            device_id: winit::event::DeviceId::dummy(),
             position: winit::dpi::PhysicalPosition::new(p.x, p.y),
         }
     }
 
-    fn left_press() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: synth_device(),
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        }
-    }
-
-    fn dispatch(p: &mut PermissionPrompt, event: &WindowEvent) {
-        let mut tree = TaffyTree::<()>::new();
-        let node = tree.leaf_node(Style::default());
-        let mut handled = false;
-        let mut focus_target = None;
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        p.handle_event(
-            event,
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &winit::event::Modifiers::default(),
-                state: crate::widget::Edits::lend(&mut doc),
-                path: &root,
-                handled: &mut handled,
-                focus_target: &mut focus_target,
-                node_id: node,
-                taffy: &tree,
-            },
-        );
-    }
+    use crate::synthetic_input::mouse_press;
+    use crate::testing::dispatch;
 
     /// 600x80 with computed button rects; `is_owner` is the only
     /// knob, every other field is fixed.
@@ -1014,7 +1038,7 @@ mod tests {
             let mut p = prompt_at(false);
             let center = p.allow_rect().center();
             dispatch(&mut p, &cursor_at(center));
-            dispatch(&mut p, &left_press());
+            dispatch(&mut p, &mouse_press());
             assert_eq!(p.pending_choice, Some(PromptChoice::Allow));
         }
 
@@ -1023,7 +1047,7 @@ mod tests {
             let mut p = prompt_at(false);
             let center = p.session_rect().center();
             dispatch(&mut p, &cursor_at(center));
-            dispatch(&mut p, &left_press());
+            dispatch(&mut p, &mouse_press());
             assert_eq!(p.pending_choice, Some(PromptChoice::Session));
         }
 
@@ -1032,7 +1056,7 @@ mod tests {
             let mut p = prompt_at(false);
             let center = p.always_rect().center();
             dispatch(&mut p, &cursor_at(center));
-            dispatch(&mut p, &left_press());
+            dispatch(&mut p, &mouse_press());
             assert_eq!(p.pending_choice, None);
         }
 
@@ -1041,7 +1065,7 @@ mod tests {
             let mut p = prompt_at(true);
             let center = p.always_rect().center();
             dispatch(&mut p, &cursor_at(center));
-            dispatch(&mut p, &left_press());
+            dispatch(&mut p, &mouse_press());
             assert_eq!(p.pending_choice, Some(PromptChoice::Always));
         }
 
@@ -1050,7 +1074,7 @@ mod tests {
             let mut p = prompt_at(false);
             let center = p.deny_rect().center();
             dispatch(&mut p, &cursor_at(center));
-            dispatch(&mut p, &left_press());
+            dispatch(&mut p, &mouse_press());
             assert_eq!(p.pending_choice, Some(PromptChoice::Deny));
         }
 
@@ -1060,7 +1084,7 @@ mod tests {
             // button rect.
             let mut p = prompt_at(true);
             dispatch(&mut p, &cursor_at(Point::new(20.0, 40.0)));
-            dispatch(&mut p, &left_press());
+            dispatch(&mut p, &mouse_press());
             assert_eq!(p.pending_choice, None);
         }
     }

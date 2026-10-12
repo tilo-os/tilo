@@ -1,0 +1,373 @@
+{
+  "schema": 1,
+  "reviewed_on": "2026-10-08",
+  "status": "pinned upstream CLI development comparison only; no production or C API qualification",
+  "model_revision": "b358ddadd89b7a713b5aa131f23032d3cca1b251",
+  "runtime_revision": "2ae11323dc000f5e70c49f7403efa6af12ba9e67",
+  "license": "Apache-2.0; exact model and runtime notices retained in the private review closure",
+  "tool": "tools/release/qualify_whistle_cli_scope.py",
+  "tool_source_sha256": "a4a7959554eecb749cfc72f88440d2245018264342ddcc93b9bd0c2d9eee5d0a",
+  "observer_source_sha256": "92dcd63490515b5f28903fa32a72ba468165850cbf7906bf471bff1d6f75fa01",
+  "host": {
+    "kind": "shared remote builder; no physical older-device claim",
+    "cpu_model": "AMD EPYC 9R45",
+    "hypervisor_flag": true,
+    "mem_total_kib": 259037700,
+    "affinity_cpus": [
+      0,
+      1
+    ],
+    "topology": [
+      {
+        "cpu": 0,
+        "core_id": "0",
+        "siblings": "0"
+      },
+      {
+        "cpu": 1,
+        "core_id": "1",
+        "siblings": "1"
+      }
+    ],
+    "collected_after_measurement": true
+  },
+  "limits": {
+    "affinity_cpus": 2,
+    "worker_address_space_bytes": 1073741824,
+    "worker_guard_mib": 960,
+    "scope_memory_max_bytes": 1342177280,
+    "scope_memory_high_bytes": 1207959552,
+    "swap_max_bytes": 0,
+    "cpu_quota_percent": 200,
+    "cpu_weight": 20,
+    "tasks_max": 64,
+    "runtime_seconds": 240,
+    "first_draft_seconds": null,
+    "subsequent_interval_seconds": null,
+    "allocator": "default",
+    "microphone": false,
+    "installation": false,
+    "network": false,
+    "user_home": false,
+    "offline_cli_chunk_seconds": 2
+  },
+  "records": [
+    {
+      "case": "en_us-0",
+      "language": "en",
+      "fixture_sha256": "b438b60eb4e9fddbcaa303e27070c2458c3daac42f0b08d5d8622c47335d24f7",
+      "input_pcm_sha256": "0529d921fe2b0e39200728e68b214e57d76ebd08f39ae06e4caafe642c897388",
+      "audio_seconds": 10.56,
+      "memory_peak": {
+        "VmPeak": 167952,
+        "VmSize": 129404,
+        "VmHWM": 43968,
+        "VmRSS": 43968,
+        "Threads": 2
+      },
+      "scope_peak_bytes": 56250368,
+      "scope_events_before": {
+        "low": 0,
+        "high": 0,
+        "max": 0,
+        "oom": 0,
+        "oom_kill": 0,
+        "oom_group_kill": 0,
+        "sock_throttled": 0
+      },
+      "scope_events_after": {
+        "low": 0,
+        "high": 0,
+        "max": 0,
+        "oom": 0,
+        "oom_kill": 0,
+        "oom_group_kill": 0,
+        "sock_throttled": 0
+      },
+      "cpu_seconds": 7.92,
+      "wall_seconds": 3.9965219929981686,
+      "transport": "offline CLI chunks; not source-paced microphone latency",
+      "materialization": {
+        "needle": "f38dc4b0345d66b4e385734ad0f12af43ac6e2cfa1752d0795af5c137200c8e4",
+        "whistle.cact": "b6e02f048568ac5d01a2042556c658061e699acbc0aa2a1439f52f3d461dffeb",
+        "model-LICENSE": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+        "runtime-LICENSE": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+      },
+      "scope_script_sha256": "a4a7959554eecb749cfc72f88440d2245018264342ddcc93b9bd0c2d9eee5d0a",
+      "ledger_sha256": "5841797fa0843241308f76028746578e7ae9ebf058c2bb408565e72e46414011",
+      "exit": 0,
+      "guarded": null,
+      "final_raw_word_errors": 4,
+      "reference_words": 19,
+      "final_text_sha256": "96c6dc7c51f14dcb64326297eb6f7fc2a385e0f94c353fc561b51d8e766764bb",
+      "first_emitted_audio_seconds": 4.0,
+      "emitted_passes": [
+        {
+          "received": 4.0,
+          "pass_ms": 75.6
+        },
+        {
+          "received": 6.0,
+          "pass_ms": 684.0
+        },
+        {
+          "received": 8.0,
+          "pass_ms": 886.7
+        },
+        {
+          "received": 10.0,
+          "pass_ms": 1110.7
+        },
+        {
+          "received": 10.56,
+          "pass_ms": 1179.3
+        },
+        {
+          "received": 10.56,
+          "pass_ms": 0.0
+        }
+      ],
+      "private_log_sha256": "cda537a008b9b69797b82a9bc0d720e48f0f4252964c496c1149a757ec5296d9"
+    },
+    {
+      "case": "de_de-0",
+      "language": "de",
+      "fixture_sha256": "cc46d12f9faf44a694e709c8bcf04028e686e6b4c1deefe3ac6dbd821a970630",
+      "input_pcm_sha256": "fe4d2a3b4113fb327094d0628ff7ed07e40726c1ab20564d01d3a745cba349b0",
+      "audio_seconds": 17.94,
+      "memory_peak": {
+        "VmPeak": 168912,
+        "VmSize": 140672,
+        "VmHWM": 54220,
+        "VmRSS": 54220,
+        "Threads": 2
+      },
+      "scope_peak_bytes": 68337664,
+      "scope_events_before": {
+        "low": 0,
+        "high": 0,
+        "max": 0,
+        "oom": 0,
+        "oom_kill": 0,
+        "oom_group_kill": 0,
+        "sock_throttled": 0
+      },
+      "scope_events_after": {
+        "low": 0,
+        "high": 0,
+        "max": 0,
+        "oom": 0,
+        "oom_kill": 0,
+        "oom_group_kill": 0,
+        "sock_throttled": 0
+      },
+      "cpu_seconds": 18.919999999999998,
+      "wall_seconds": 9.527346447997843,
+      "transport": "offline CLI chunks; not source-paced microphone latency",
+      "materialization": {
+        "needle": "f38dc4b0345d66b4e385734ad0f12af43ac6e2cfa1752d0795af5c137200c8e4",
+        "whistle.cact": "b6e02f048568ac5d01a2042556c658061e699acbc0aa2a1439f52f3d461dffeb",
+        "model-LICENSE": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+        "runtime-LICENSE": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+      },
+      "scope_script_sha256": "a4a7959554eecb749cfc72f88440d2245018264342ddcc93b9bd0c2d9eee5d0a",
+      "ledger_sha256": "5841797fa0843241308f76028746578e7ae9ebf058c2bb408565e72e46414011",
+      "exit": 0,
+      "guarded": null,
+      "final_raw_word_errors": 7,
+      "reference_words": 18,
+      "final_text_sha256": "930a8005b29e66c5c62a017fd7cf6d4773a97f3e876567ed42e53db271da007e",
+      "first_emitted_audio_seconds": 4.0,
+      "emitted_passes": [
+        {
+          "received": 4.0,
+          "pass_ms": 62.8
+        },
+        {
+          "received": 8.0,
+          "pass_ms": 889.8
+        },
+        {
+          "received": 10.0,
+          "pass_ms": 1127.6
+        },
+        {
+          "received": 12.0,
+          "pass_ms": 1343.8
+        },
+        {
+          "received": 14.0,
+          "pass_ms": 1580.9
+        },
+        {
+          "received": 16.0,
+          "pass_ms": 1803.6
+        },
+        {
+          "received": 17.94,
+          "pass_ms": 0.0
+        }
+      ],
+      "private_log_sha256": "cda537a008b9b69797b82a9bc0d720e48f0f4252964c496c1149a757ec5296d9"
+    },
+    {
+      "case": "fr_fr-0",
+      "language": "fr",
+      "fixture_sha256": "f76c0a92ca39d2533aa105ac5794b08f004e15a3ff5ba32f4ba4995f45cd22fd",
+      "input_pcm_sha256": "b51c375f229dcadd9cc3bd85551afa0ee1b26a26d2831af4f718da248820454e",
+      "audio_seconds": 10.2,
+      "memory_peak": {
+        "VmPeak": 167928,
+        "VmSize": 129336,
+        "VmHWM": 45020,
+        "VmRSS": 45020,
+        "Threads": 2
+      },
+      "scope_peak_bytes": 56258560,
+      "scope_events_before": {
+        "low": 0,
+        "high": 0,
+        "max": 0,
+        "oom": 0,
+        "oom_kill": 0,
+        "oom_group_kill": 0,
+        "sock_throttled": 0
+      },
+      "scope_events_after": {
+        "low": 0,
+        "high": 0,
+        "max": 0,
+        "oom": 0,
+        "oom_kill": 0,
+        "oom_group_kill": 0,
+        "sock_throttled": 0
+      },
+      "cpu_seconds": 8.2,
+      "wall_seconds": 4.155490821998683,
+      "transport": "offline CLI chunks; not source-paced microphone latency",
+      "materialization": {
+        "needle": "f38dc4b0345d66b4e385734ad0f12af43ac6e2cfa1752d0795af5c137200c8e4",
+        "whistle.cact": "b6e02f048568ac5d01a2042556c658061e699acbc0aa2a1439f52f3d461dffeb",
+        "model-LICENSE": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+        "runtime-LICENSE": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+      },
+      "scope_script_sha256": "a4a7959554eecb749cfc72f88440d2245018264342ddcc93b9bd0c2d9eee5d0a",
+      "ledger_sha256": "5841797fa0843241308f76028746578e7ae9ebf058c2bb408565e72e46414011",
+      "exit": 0,
+      "guarded": null,
+      "final_raw_word_errors": 0,
+      "reference_words": 20,
+      "final_text_sha256": "3b4ddd12aee5f7bb616de5c32884e724141f02c49292bf9fa1afe6144751439e",
+      "first_emitted_audio_seconds": 6.0,
+      "emitted_passes": [
+        {
+          "received": 6.0,
+          "pass_ms": 708.3
+        },
+        {
+          "received": 8.0,
+          "pass_ms": 938.1
+        },
+        {
+          "received": 10.2,
+          "pass_ms": 1177.7
+        },
+        {
+          "received": 10.2,
+          "pass_ms": 0.0
+        }
+      ],
+      "private_log_sha256": "cda537a008b9b69797b82a9bc0d720e48f0f4252964c496c1149a757ec5296d9"
+    },
+    {
+      "case": "es_419-0",
+      "language": "es",
+      "fixture_sha256": "95df54f13e862069293afca618669316d194c1b4c6601eb808b501c86292b527",
+      "input_pcm_sha256": "e2b9e95c2670346bb4ef3e8161cd427576fc450c355109b9fb161380efdecbc7",
+      "audio_seconds": 12.84,
+      "memory_peak": {
+        "VmPeak": 168092,
+        "VmSize": 132748,
+        "VmHWM": 48960,
+        "VmRSS": 48960,
+        "Threads": 2
+      },
+      "scope_peak_bytes": 60891136,
+      "scope_events_before": {
+        "low": 0,
+        "high": 0,
+        "max": 0,
+        "oom": 0,
+        "oom_kill": 0,
+        "oom_group_kill": 0,
+        "sock_throttled": 0
+      },
+      "scope_events_after": {
+        "low": 0,
+        "high": 0,
+        "max": 0,
+        "oom": 0,
+        "oom_kill": 0,
+        "oom_group_kill": 0,
+        "sock_throttled": 0
+      },
+      "cpu_seconds": 11.93,
+      "wall_seconds": 6.017377465999743,
+      "transport": "offline CLI chunks; not source-paced microphone latency",
+      "materialization": {
+        "needle": "f38dc4b0345d66b4e385734ad0f12af43ac6e2cfa1752d0795af5c137200c8e4",
+        "whistle.cact": "b6e02f048568ac5d01a2042556c658061e699acbc0aa2a1439f52f3d461dffeb",
+        "model-LICENSE": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+        "runtime-LICENSE": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+      },
+      "scope_script_sha256": "a4a7959554eecb749cfc72f88440d2245018264342ddcc93b9bd0c2d9eee5d0a",
+      "ledger_sha256": "5841797fa0843241308f76028746578e7ae9ebf058c2bb408565e72e46414011",
+      "exit": 0,
+      "guarded": null,
+      "final_raw_word_errors": 2,
+      "reference_words": 29,
+      "final_text_sha256": "da05c7e811c06d83eecc081911bc8a066be6a8db6b8d328520e330f3b005ca76",
+      "first_emitted_audio_seconds": 6.0,
+      "emitted_passes": [
+        {
+          "received": 6.0,
+          "pass_ms": 734.0
+        },
+        {
+          "received": 8.0,
+          "pass_ms": 943.2
+        },
+        {
+          "received": 10.0,
+          "pass_ms": 1197.5
+        },
+        {
+          "received": 12.0,
+          "pass_ms": 1448.4
+        },
+        {
+          "received": 12.84,
+          "pass_ms": 1534.0
+        },
+        {
+          "received": 12.84,
+          "pass_ms": 0.0
+        }
+      ],
+      "private_log_sha256": "cda537a008b9b69797b82a9bc0d720e48f0f4252964c496c1149a757ec5296d9"
+    }
+  ],
+  "failed_setup": [
+    "Direct static-library C API adapter failed to link: the published archive uses libc++; this builder has no matching headers/runtime. No package was installed.",
+    "Initial generic observer matched mutable thread names and could not observe the actual CLI. That run failed qualification. The reviewed resolver now pins the executable inode within only the owned descendant tree."
+  ],
+  "interpretation": [
+    "Final raw word errors are en 4/19, de 7/18, fr 0/20 and es 2/29. Mixed results do not establish superiority or justify changing the default.",
+    "The CLI suppresses early uncommitted drafts; first emitted replies refer to 4 or 6 seconds of already available audio. Wall/pass timings here are offline computation, never measured source-paced or microphone latency.",
+    "The same exact French PCM and unchanged CPU/memory envelope were used. Cadence and CLI commitment policy differ from the shipping worker, so no direct first-word speedup or percentage gain is claimed.",
+    "All four native processes were observed, exited normally and stayed within the guards with zero high/max/OOM events. No upstream Python wrapper, downloader, account, telemetry transport, microphone, user home, catalogue, installation or server was used.",
+    "This exposed four-case review does not qualify silence, noise, cancellation, resident repeated C API sessions, personal dictionary, physical devices, Arm or browser/terminal insertion.",
+    "Native engine source/build provenance remains unestablished. Reviewed Apache notices and pinned binary digests alone do not establish production trust.",
+    "Whistle supports seven declared languages, with neither Arabic nor Chinese. Keep multilingual fallback and refuse unsupported explicit selections."
+  ]
+}

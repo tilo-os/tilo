@@ -33,10 +33,6 @@
 )]
 
 #[path = "../tests/support/https.rs"]
-#[allow(
-    dead_code,
-    reason = "the probe uses the tests' pinned HTTPS client alone"
-)]
 mod https;
 
 use std::sync::Arc;
@@ -359,6 +355,7 @@ async fn main() {
             context: None,
             confirmation: None,
             revision: None,
+            wait_ms: None,
         }),
         |message| match message {
             RemoteActionMessage::Receipt(receipt) if receipt.invocation == invocation => {

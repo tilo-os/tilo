@@ -1,45 +1,47 @@
-# Measured resource budget and checkpoint
+# Measured remote resource budget
 
-The **163.951 GiB (~164 GiB) free-disk admission threshold is a conservative scheduling budget, not a measured minimum size of the remaining CEF build**. It is the following sum on the existing 1,999.023 GiB filesystem:
+Compilation and testing use the existing remote Cargo/SSH builder. Eight compiler jobs and all their subprocesses share an eight-CPU hard cgroup quota. The memory cap is 100 GiB, swap is prohibited, and fresh admission requires at least 164 GiB available RAM: the workload cap plus a 64 GiB host reserve. Twenty-minute windows continue only after verified cleanup, fresh admission and checks for compiler failures or memory-limit events.
+
+On the existing 1,999.023 GiB filesystem, compile admission requires 176,041,230,336 bytes (163.951 GiB) free:
 
 | Component | GiB | Basis |
 | --- | ---: | --- |
-| Free space below which the operator's 95% critical watermark is crossed | 99.951 | Actual filesystem size and existing operator policy |
-| Task recovery margin | 16 | Chosen reserve; not a measured build requirement |
-| Reaction margin above the recovery floor | 16 | Chosen reserve for monitoring/termination while shared jobs continue writing |
-| Additional owned output and link scratch allowance | 32 | Conservative per-tranche estimate/cap; remaining production peak not yet measured |
-| Admission total | **163.951** | 176,041,230,336 bytes |
+| Existing 95% critical watermark | 99.951 | Actual filesystem size and operator policy |
+| Recovery margin | 16 | Task reserve |
+| Monitoring and termination margin | 16 | Task reserve while shared jobs write |
+| Additional owned output | 32 | Conservative estimate/cap per window |
 
-The running stop threshold is **131.951 GiB** (141,681,491,968 bytes): the first three rows. Neither threshold reserves space against other jobs. The 32 GiB allowance is free space in addition to the existing output; it does not double-count the retained 4.955 GiB. The production A/B runs are sequential; B retires only the verified task-owned output after A's package is protected, so this budget does not require two full output trees simultaneously. Packaging has a separate 8 GiB owned-growth cap and the same global disk/recovery guard.
+This is a scheduling allowance, not a measured minimum build size or an exclusive reservation. Runtime disk and memory monitoring can stop a window safely. The running compile stop threshold is 141,681,491,968 bytes free. No shared GC or cache purge is authorized.
 
-Actual owned-output measurements are much smaller so far:
+## Actual measurements
 
-| Remote stage | Owned output at finish | Growth during stage | Aggregate process RSS peak |
-| --- | ---: | ---: | ---: |
-| Serial production calibration (PGO2 + ThinLTO, three patched C++ files and dependencies) | 4.107 GiB | Previous 12.717 GiB qualification output retired; not a comparable growth sample | 5.762 GiB |
-| Production A, first tranche (five jobs) | 4.671 GiB | 0.565 GiB | 3.841 GiB |
-| Production A, resumed tranche (five jobs) | 4.955 GiB | 0.284 GiB | 3.398 GiB |
+`resource-evidence.json` binds tokens, complete receipt hashes, execution scopes and exact memory/cleanup counters for these collected measurements:
 
-The first production tranche completed approximately 9,270 of 53,476 actions; the resumed tranche completed another 2,898, leaving approximately 41,308. Action count is not proportional to future disk or memory requirements. The principal `libcef.so` ThinLTO link and its cache/scratch, the remaining large translation units, and completed-package peak have **not** been measured. Thus 32 GiB cannot be described as an observed need, and 4.955 GiB cannot be extrapolated into a demonstrated final peak.
+| Stage | Cgroup memory peak, bytes | Scope |
+| --- | ---: | --- |
+| Largest previous-source compile window among eleven collected windows | 19,962,945,536 | Eight CPUs; 100 GiB cap |
+| Previous-source principal ThinLTO link | 16,482,787,328 | Separate eight-CPU link admission |
+| Previous-source complete runtime resources | 2,091,081,728 | Eight CPUs |
+| Previous-source SDK packaging | 940,933,120 | Separate packaging cap |
+| Current prior-source 165-controller-test build, first window | 10,046,586,880 | Eight CPUs; 100 GiB cap |
+| Previous-source actual CEF fixture | 412,610,560 | Two CPUs; 8 GiB cap |
 
-During the first production tranche shared free disk fell 130.983 GiB while owned output grew 0.565 GiB; during the second it fell 35.489 GiB while owned output grew 0.284 GiB. Both stops were the global shared-disk guard, not the owned 32 GiB cap or a compiler failure. Both private containers were removed with no live session/namespace processes remaining. All completed objects and proof receipts remain retained.
+Every listed receipt has zero high/max/OOM events and no surviving owned processes. The first current controller build window completed 20,393 of 42,278 actions and produced 5,618,712,576 bytes of owned output. Action count is not proportional to future memory or disk requirements.
 
-## Memory and concurrency
+The previous source completed SDK A and its package, but failed two of sixteen unchanged real CEF assertions. Its artifact and the stopped 9,302,310,912-byte partial B output are preserved as evidence, not qualified dependencies. These measurements do not certify the revised renderer or its future SDK.
 
-The serial **5.762 GiB measured aggregate process RSS** was obtained with the real PGO2/ThinLTO profile; it is not a measurement of every remaining compilation or of the principal link. The preflight uses:
+## Link, package and native qualification admission
 
-```
-required currently available RAM = 64 GiB host reserve
-                                + 30 GiB separate link allowance
-                                + jobs × 2 × 5.762 GiB measured serial RSS
-```
+The principal production ThinLTO link remains excluded from compile windows. Its separate trial uses one Ninja job, eight LLD threads under the aggregate eight-CPU quota, a 128 GiB hard memory cap, a 64 GiB host reserve, and fresh admission of at least 192 GiB available RAM. Its 64 GiB owned-growth allowance is conservative; the previous-source measured link peak does not establish the revised link's requirement.
 
-This requires **151.621 GiB for five jobs**, **140.097 GiB for four**, or **105.524 GiB for one**. The multiplier of two and 64 GiB are task reserves. The 30 GiB is a conservative allowance based on pinned Chromium's Linux ThinLTO link-pool heuristic, not an observed CEF link peak (the upstream argument is expressed as `--mem_per_link_gb=30`; this supervisor conservatively budgets 30 GiB). The five-job runs' lower actual peaks do not establish the memory requirement of later jobs. A fresh available-RAM measurement must select/refuse concurrency; the earlier five-job admission is not perpetual authorization for five jobs.
+Packaging uses the pinned public CEF `make_distrib.py`, an 8 GiB memory cap and separate disk-growth monitoring. It rejects partial distributions and preserves all public headers, resources, locales, wrapper sources and licenses.
 
-The task leaves eight CPUs unallocated in its instantaneous utilization calculation. Ninja and the linker's configured eight threads share the admitted aggregate hard cgroup CPU quota; the two production tranches had a 13-CPU quota and five Ninja jobs. Containers also enforce the freshly calculated memory limit, prohibit swap and continuously measure free disk and available RAM. No laptop compilation or parallel A/B build is permitted.
+Real CEF tests use the owner's documented `bwrap --unshare-all --proc /proc` fixture directly on the existing builder, with no hardware or external network. A token-bound existing systemd user service supplies a two-CPU quota, an 8 GiB memory cap, no swap, a runtime deadline and cgroup-wide cleanup. This avoids nested Podman's proc-mount restriction while retaining Chromium's sandbox. Combined admission reserves the running 100 GiB CEF workload, the 8 GiB native fixture and the 64 GiB host reserve; no host sandbox policy, capability or signing authority is changed.
 
-## What would justify a different capacity requirement
+The supervisor holds the existing task/admission locks, maintains monitored activity, and verifies empty owned process scopes and removed ephemeral containers/services before advancing. The rejected earlier shared-GC operation remains unperformed. Fresh capacity must be measured for every next stage; existing receipts never grant perpetual admission.
 
-A read-only audit can establish whether ordinary shared jobs finishing will restore capacity, and which already-supported inputs/outputs contribute actual space. A smaller compile-only tranche could have a smaller admitted owned-growth estimate **if** its target closure cannot enter the unmeasured principal link and its output/generator/tool-link peaks are bounded. The principal link and packaging would still require their own measured or conservatively justified admission. Merely reducing the 164 GiB number to fit current free space is not evidence.
+## Completed revised SDK measurements
 
-This document does not request cleanup, change operator policy, authorize a larger builder or revise the current guards. The rejected shared-GC action remains unperformed. `resource-evidence.json` records exact bytes, measurement tokens, original receipt hashes and verified cleanup. Complete original receipts/logs and the continuation state are retained at `/tmp/tilo-cef-renderer-repair` locally and in the existing task-owned remote scratch root.
+The cold B compile completed in eight original bounded windows; its largest charged compile peak was 17,348,923,392 bytes. B principal link completed in 396.076 seconds at 16,709,951,488 bytes under the unchanged eight-CPU/128 GiB cap and 64 GiB reserve. Full B resources took 50.077 seconds at 2,221,326,336 bytes. Packaging with the public entry point took 40.550 seconds at 961,818,624 bytes under two CPUs/8 GiB. One package admission refused 63.53 busy CPUs before any producer; a separate five-second measurement showed 37.199 busy CPUs, and the unchanged original gate subsequently admitted packaging. No limits or reserves were weakened.
+
+A/B archives and all 960 inventory entries matched exactly. Actual mounted replay passed 48 scenarios at 873,357,312 bytes; the actual normal offline reader passed at 838,516,736 bytes. All completed scopes have zero memory-limit/OOM events and verified cleanup. These are measured peaks, not permission to waive fresh admission. Publication and production signed Browser proof remain pending live publisher namespace verification and the held normal integration path.

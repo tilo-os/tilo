@@ -256,22 +256,6 @@ impl ModerationService {
             .collect()
     }
 
-    /// Restore submissions that arrived while a durable promotion was active.
-    /// Calling this repeatedly is safe, including after a crash between the
-    /// pending write and deferred-file removal.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if deferred state cannot be read or moved atomically.
-    pub fn activate_deferred_in_transaction(
-        &self,
-        _transaction: &SnapshotLock<'_>,
-        reviewed_submissions: &[PendingSubmission],
-    ) -> Result<(), ModerationError> {
-        let _thread_guard = thread_lock(&self.transition_lock)?;
-        self.activate_deferred_locked(reviewed_submissions)
-    }
-
     fn activate_deferred_locked(
         &self,
         reviewed_submissions: &[PendingSubmission],
@@ -966,8 +950,7 @@ fn validate_bound_version(
                     "aarch64" | "aarch64-v8.2" | "aarch64-v8.4" | "aarch64-v9"
                 )
         ),
-        registry_types::WEB_PLATFORM
-        | registry_types::LINUX_PLATFORM
+        registry_types::LINUX_PLATFORM
         | registry_types::WINDOWS_PLATFORM
         | registry_types::MACOS_PLATFORM
         | registry_types::ANDROID_PLATFORM => target.validate().is_ok(),
@@ -1371,38 +1354,6 @@ mod tests {
             assert_eq!(retry, first);
             assert_eq!(service.pending_submissions().unwrap(), vec![first]);
         }
-    }
-
-    #[test]
-    fn web_versions_are_a_separate_target_history() {
-        let key = SigningKey::generate(&mut UnwrapErr(SysRng));
-        let current = entry(&key, 42);
-        let official = ArtifactHosts::default();
-        let mut with_web = current.clone();
-        let mut web = with_web.versions[0].clone();
-        web.version = "0.0.1".into();
-        web.target = registry_types::RegistryTarget {
-            platform: registry_types::WEB_PLATFORM.into(),
-            architecture: registry_types::WASM32_ARCHITECTURE.into(),
-            isa: "wasm32-mvp+bulk-memory+sign-ext".into(),
-            runtime: Some("tilo-runtime/2026.07+wasm.00112233445566778899aabbccddeeff".into()),
-            interfaces: Vec::new(),
-        };
-        with_web.versions.push(web);
-        assert!(validate_version_history(&with_web, Some(&current), &official).is_ok());
-
-        let mut unordered = with_web.clone();
-        unordered.versions[1].target.isa = "wasm32-mvp+sign-ext+bulk-memory".into();
-        assert!(matches!(
-            validate_version_history(&unordered, Some(&current), &official),
-            Err(ModerationError::UnsupportedPackageTarget { .. })
-        ));
-        let mut no_abi = with_web;
-        no_abi.versions[1].target.runtime = Some("tilo-runtime/2026.07".into());
-        assert!(matches!(
-            validate_version_history(&no_abi, Some(&current), &official),
-            Err(ModerationError::UnsupportedPackageTarget { .. })
-        ));
     }
 
     #[test]

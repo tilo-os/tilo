@@ -1,60 +1,124 @@
-//! Durable collaborative playlists and timestamp annotations.
+//! The shared library: playlists, timestamp annotations and where playback
+//! stands for everyone watching a video together.
 //!
-//! Media capabilities stay device-private: shared rows contain only an opaque
-//! media reference and human metadata. Each entity occupies an independent
-//! root key so concurrent first writes never contend on a parent object.
+//! Media capabilities stay device-private: shared rows hold only an opaque
+//! media reference and human metadata, never a path. Renaming a playlist,
+//! editing or moving an annotation and reordering or removing a playlist
+//! item are field edits at their paths; the methods below are the
+//! operations that are more than setting a field.
 
-use automerge::transaction::Transactable;
-use automerge::{ObjId, ObjType, ROOT, ReadDoc, Value};
-use serde::{Deserialize, Serialize};
-use tilo_actions::{Action, ActionError, ActionRegistry, ChangeKind, Doc, ExecutionLocus};
+use std::collections::BTreeMap;
 
-pub const ACTION_TYPE: &str = "video-player.shared-action";
-const PLAYLIST_PREFIX: &str = "video-player.shared.playlist:";
-const PLAYLIST_TOMBSTONE_PREFIX: &str = "video-player.shared.playlist-tombstone:";
-const ITEM_PREFIX: &str = "video-player.shared.playlist-item:";
-const ITEM_TOMBSTONE_PREFIX: &str = "video-player.shared.playlist-item-tombstone:";
-const ANNOTATION_PREFIX: &str = "video-player.shared.annotation:";
-const ANNOTATION_TOMBSTONE_PREFIX: &str = "video-player.shared.annotation-tombstone:";
-const TRANSPORT_PREFIX: &str = "video-player.shared.transport:";
+use ui::tilo_resource::{self, ActionCx, Collection, Id, Model, Refusal, resource};
+
 /// How many videos' playback the library remembers; the one left longest
 /// ago makes room.
 pub const MAX_TRANSPORTS: usize = 32;
-pub const MAX_SHARED_ROWS: usize = 10_000;
+/// How much text a name, a title or a note may hold.
 const MAX_TEXT_BYTES: usize = 8 * 1024;
+/// The id of the shared Watch later playlist, the same on every replica so
+/// two people adding to it at once add to one playlist.
+pub const WATCH_LATER: &str = "watch-later";
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// One video in a playlist.
+#[derive(Model, Clone, Debug, PartialEq, Eq)]
+#[model(check = PlaylistItem::valid)]
+pub struct PlaylistItem {
+    /// Playlist
+    #[model(readonly)]
+    pub playlist: Id,
+    /// Video
+    ///
+    /// The opaque, shareable identity of the video; never a device path.
+    #[model(readonly)]
+    pub media_ref: String,
+    /// Title
+    #[model(label)]
+    pub title: String,
+}
+
+impl PlaylistItem {
+    fn valid(&self) -> Result<(), Refusal> {
+        if !valid_ref(&self.media_ref) {
+            return Err(Refusal::new("a playlist item names its video"));
+        }
+        if self.title.trim().is_empty() || self.title.len() > MAX_TEXT_BYTES {
+            return Err(Refusal::new("a playlist item has a title"));
+        }
+        Ok(())
+    }
+}
+
+/// A playlist everyone in the room sees. Its videos are the library's
+/// playlist items that name it, in their order.
+#[derive(Model, Clone, Debug, Default, PartialEq, Eq)]
+#[model(check = Playlist::valid)]
 pub struct Playlist {
-    pub id: String,
+    /// Name
+    #[model(label)]
     pub name: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct PlaylistItem {
-    pub id: String,
-    pub playlist_id: String,
-    pub media_ref: String,
-    pub title: String,
-    pub position: i64,
+impl Playlist {
+    fn valid(&self) -> Result<(), Refusal> {
+        if self.name.trim().is_empty() || self.name.len() > MAX_TEXT_BYTES {
+            return Err(Refusal::new("a playlist has a name"));
+        }
+        Ok(())
+    }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// A review note, or a bookmark when it says nothing, at a time in a video.
+#[derive(Model, Clone, Debug, Default, PartialEq, Eq)]
+#[model(check = TimestampAnnotation::valid)]
 pub struct TimestampAnnotation {
-    pub id: String,
+    /// Video
+    ///
+    /// The opaque, shareable identity of the video; never a device path.
+    #[model(readonly)]
     pub media_ref: String,
+    /// Time
+    ///
+    /// Milliseconds from the start of the video.
     pub time_ms: u64,
+    /// Note
+    #[model(label)]
     pub text: String,
+}
+
+impl TimestampAnnotation {
+    fn valid(&self) -> Result<(), Refusal> {
+        if !valid_ref(&self.media_ref) || self.text.len() > MAX_TEXT_BYTES {
+            return Err(Refusal::new(
+                "an annotation names its video and its note is bounded",
+            ));
+        }
+        Ok(())
+    }
+
+    /// What its row says: the note, or "Bookmark".
+    pub fn title(&self) -> &str {
+        if self.text.is_empty() {
+            "Bookmark"
+        } else {
+            &self.text
+        }
+    }
 }
 
 /// Where playback of one video stands for everyone watching it together:
 /// the play state and the playhead at a wall-clock moment, which every
 /// participant projects to its own now.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Model, Clone, Debug, Default, PartialEq)]
 pub struct SharedTransport {
-    pub media_ref: String,
+    /// Playing
     pub playing: bool,
+    /// Position
     pub position_ms: u64,
+    /// Speed
     pub rate: f64,
+    /// Said at
+    ///
     /// Unix milliseconds at which `position_ms` held.
     pub epoch_ms: u64,
 }
@@ -71,619 +135,229 @@ impl SharedTransport {
     }
 }
 
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct SharedLibrary {
-    pub playlists: Vec<Playlist>,
-    pub items: Vec<PlaylistItem>,
-    pub annotations: Vec<TimestampAnnotation>,
-    /// Playback watched together, one per video.
-    pub transports: Vec<SharedTransport>,
+/// The library everyone in the room shares.
+#[derive(Model, Clone, Debug, Default, PartialEq)]
+pub struct Library {
+    /// Playlists
+    pub playlists: Collection<Playlist>,
+    /// Playlist items
+    ///
+    /// Every playlist's videos, in order. Kept beside the playlists rather
+    /// than inside them, so two people adding to one playlist they both
+    /// just made (Watch later) keep both videos.
+    pub items: Collection<PlaylistItem>,
+    /// Annotations
+    pub annotations: Collection<TimestampAnnotation>,
+    /// Playback watched together, by video.
+    #[model(readonly)]
+    pub transports: BTreeMap<String, SharedTransport>,
 }
 
-impl SharedLibrary {
-    /// Where playback of the video `media_ref` stands, if anyone played it.
-    pub fn transport_for(&self, media_ref: &str) -> Option<&SharedTransport> {
-        self.transports
-            .iter()
-            .find(|transport| transport.media_ref == media_ref)
+fn valid_ref(media_ref: &str) -> bool {
+    !media_ref.trim().is_empty()
+        && media_ref.len() <= 256
+        && !media_ref.chars().any(char::is_control)
+}
+
+#[resource(kind = "video-player.library", label = "Video Player")]
+impl Library {
+    /// Create shared playlist.
+    ///
+    /// A playlist everyone in the room sees.
+    #[action]
+    pub fn create_playlist(
+        &mut self,
+        cx: &mut ActionCx,
+        #[param("Playlist name")] name: String,
+    ) -> Result<(), Refusal> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(Refusal::new("a playlist has a name"));
+        }
+        self.playlists.push(
+            cx.id(),
+            Playlist {
+                name: name.to_owned(),
+            },
+        );
+        Ok(())
     }
-}
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub enum SharedAction {
-    CreatePlaylist {
-        id: String,
-        name: String,
-    },
-    RenamePlaylist {
-        id: String,
-        before: String,
-        after: String,
-    },
-    DeletePlaylist {
-        id: String,
-        observed_item_ids: Vec<String>,
-    },
-    AddPlaylistItem {
-        id: String,
-        playlist_id: String,
-        media_ref: String,
-        title: String,
-        position: i64,
-    },
-    MovePlaylistItem {
-        id: String,
-        before: i64,
-        after: i64,
-    },
-    RemovePlaylistItem {
-        id: String,
-    },
-    CreateAnnotation {
-        id: String,
-        media_ref: String,
-        time_ms: u64,
-        text: String,
-    },
-    EditAnnotation {
-        id: String,
-        before: String,
-        after: String,
-    },
-    MoveAnnotation {
-        id: String,
-        before_ms: u64,
-        after_ms: u64,
-    },
-    DeleteAnnotation {
-        id: String,
-    },
-    /// Where playback of one video stands now: everyone watching it follows.
-    /// Not an undo step: playing, pausing and seeking are not edits.
-    SetTransport {
-        media_ref: String,
-        playing: bool,
-        position_ms: u64,
-        rate: f64,
-        epoch_ms: u64,
-    },
-}
-
-fn key(prefix: &str, id: &str) -> String {
-    format!("{prefix}{id}")
-}
-
-fn valid_id(id: &str) -> bool {
-    !id.trim().is_empty() && id.len() <= 256 && !id.chars().any(char::is_control)
-}
-
-fn text_ok(value: &str) -> bool {
-    !value.trim().is_empty() && value.len() <= MAX_TEXT_BYTES
-}
-
-fn tombstoned(doc: &Doc, prefix: &str, id: &str) -> bool {
-    doc.get(&ROOT, key(prefix, id)).ok().flatten().is_some()
-}
-
-fn object(doc: &Doc, prefix: &str, id: &str) -> Option<ObjId> {
-    doc.get(&ROOT, key(prefix, id))
-        .ok()
-        .flatten()
-        .and_then(|(value, object)| matches!(value, Value::Object(ObjType::Map)).then_some(object))
-}
-
-fn string(doc: &Doc, parent: &ObjId, field: &str) -> Option<String> {
-    doc.get(parent, field)
-        .ok()
-        .flatten()
-        .and_then(|(value, _)| value.into_scalar().ok())
-        .and_then(|value| value.as_str().map(str::to_string))
-}
-
-fn integer(doc: &Doc, parent: &ObjId, field: &str) -> Option<i64> {
-    doc.get(parent, field)
-        .ok()
-        .flatten()
-        .and_then(|(value, _)| value.into_scalar().ok())
-        .and_then(|value| value.as_i64())
-}
-
-fn create_object(
-    doc: &mut Doc,
-    prefix: &str,
-    tombstones: &str,
-    id: &str,
-) -> Result<ObjId, ActionError> {
-    if !valid_id(id) {
-        return Err(ActionError::Refused(
-            "a stable non-empty id is required".into(),
-        ));
+    /// Delete playlist.
+    ///
+    /// Its videos go with it.
+    #[action(destructive, item = playlists)]
+    pub fn delete_playlist(&mut self, playlist: &Id) -> Result<(), Refusal> {
+        self.playlists
+            .remove(playlist)
+            .ok_or_else(|| Refusal::new("no such playlist"))?;
+        self.items.retain(|_, item| &item.playlist != playlist);
+        Ok(())
     }
-    if tombstoned(doc, tombstones, id) {
-        return Err(ActionError::Refused(
-            "a tombstoned id cannot be reused".into(),
-        ));
-    }
-    if object(doc, prefix, id).is_some() {
-        return Err(ActionError::Refused("that stable id already exists".into()));
-    }
-    Ok(doc.put_object(&ROOT, key(prefix, id), ObjType::Map)?)
-}
 
-fn live_object(doc: &Doc, prefix: &str, tombstones: &str, id: &str) -> Result<ObjId, ActionError> {
-    if tombstoned(doc, tombstones, id) {
-        return Err(ActionError::Refused("that entity was deleted".into()));
-    }
-    object(doc, prefix, id)
-        .ok_or_else(|| ActionError::Refused("that entity no longer exists".into()))
-}
-
-fn write_tombstone(doc: &mut Doc, prefix: &str, id: &str) -> Result<(), ActionError> {
-    if !valid_id(id) {
-        return Err(ActionError::Refused(
-            "a stable non-empty id is required".into(),
-        ));
-    }
-    doc.put(&ROOT, key(prefix, id), true)?;
-    Ok(())
-}
-
-impl Action for SharedAction {
-    fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
-        match self {
-            Self::CreatePlaylist { .. }
-            | Self::RenamePlaylist { .. }
-            | Self::DeletePlaylist { .. }
-            | Self::AddPlaylistItem { .. }
-            | Self::MovePlaylistItem { .. }
-            | Self::RemovePlaylistItem { .. } => self.apply_playlist(doc)?,
-            Self::CreateAnnotation { .. }
-            | Self::EditAnnotation { .. }
-            | Self::MoveAnnotation { .. }
-            | Self::DeleteAnnotation { .. } => self.apply_annotation(doc)?,
-            Self::SetTransport {
+    /// Add media to playlist.
+    #[action(item = playlists)]
+    pub fn add_to_playlist(
+        &mut self,
+        cx: &mut ActionCx,
+        playlist: &Id,
+        #[param("Opaque shareable media identity; never a device path")] media_ref: String,
+        #[param("Media title")] title: String,
+    ) -> Result<(), Refusal> {
+        if !self.playlists.contains(playlist) {
+            return Err(Refusal::new("no such playlist"));
+        }
+        self.items.push(
+            cx.id(),
+            PlaylistItem {
+                playlist: playlist.clone(),
                 media_ref,
+                title: title.trim().to_owned(),
+            },
+        );
+        Ok(())
+    }
+
+    /// Add to Watch later.
+    ///
+    /// Adds a video to the shared Watch later playlist, making the playlist
+    /// when there is none; a video already on it stays where it is.
+    #[action]
+    pub fn add_to_watch_later(
+        &mut self,
+        cx: &mut ActionCx,
+        #[param("Opaque shareable media identity; never a device path")] media_ref: String,
+        #[param("Media title")] title: String,
+    ) {
+        let id = Id::from_raw(WATCH_LATER);
+        if !self.playlists.contains(&id) {
+            self.playlists.push(
+                id.clone(),
+                Playlist {
+                    name: "Watch later".into(),
+                },
+            );
+        }
+        if !self.on_watch_later(&media_ref) {
+            self.items.push(
+                cx.id(),
+                PlaylistItem {
+                    playlist: id,
+                    media_ref,
+                    title: title.trim().to_owned(),
+                },
+            );
+        }
+    }
+
+    /// Add timestamp annotation.
+    ///
+    /// A review note at a time in a shared video; without a note it is a
+    /// bookmark.
+    #[action]
+    pub fn add_annotation(
+        &mut self,
+        cx: &mut ActionCx,
+        #[param("Opaque shareable media identity; never a device path")] media_ref: String,
+        #[param("Absolute timestamp in milliseconds")] time_ms: u64,
+        #[param("Annotation text; omit for a bookmark")] text: Option<String>,
+    ) {
+        self.annotations.push(
+            cx.id(),
+            TimestampAnnotation {
+                media_ref,
+                time_ms,
+                text: text.unwrap_or_default(),
+            },
+        );
+    }
+
+    /// Delete annotation.
+    #[action(destructive, item = annotations)]
+    pub fn delete_annotation(&mut self, annotation: &Id) -> Result<(), Refusal> {
+        self.annotations
+            .remove(annotation)
+            .map(drop)
+            .ok_or_else(|| Refusal::new("no such annotation"))
+    }
+
+    /// Say where playback stands.
+    ///
+    /// Everyone watching the video follows. Not an undo step: playing,
+    /// pausing and seeking are not edits. The library remembers the
+    /// playback of the last few videos.
+    #[action(housekeeping)]
+    pub fn set_transport(
+        &mut self,
+        #[param("Opaque shareable media identity; never a device path")] media_ref: String,
+        #[param("Whether it plays")] playing: bool,
+        #[param("The playhead in milliseconds")] position_ms: u64,
+        #[param("Playback speed from 0.25 to 4")] rate: f64,
+        #[param("Unix milliseconds at which the playhead held")] epoch_ms: u64,
+    ) -> Result<(), Refusal> {
+        if !valid_ref(&media_ref) || !(0.25..=4.0).contains(&rate) {
+            return Err(Refusal::new(
+                "a valid media identity and a playback rate from 0.25 to 4 are required",
+            ));
+        }
+        self.transports.insert(
+            media_ref,
+            SharedTransport {
                 playing,
                 position_ms,
                 rate,
                 epoch_ms,
-            } => apply_transport(doc, media_ref, *playing, *position_ms, *rate, *epoch_ms)?,
-        }
-        Ok(())
-    }
-
-    fn locus(&self) -> ExecutionLocus {
-        ExecutionLocus::ClientLocal
-    }
-
-    fn change_kind(&self) -> ChangeKind {
-        match self {
-            Self::SetTransport { .. } => ChangeKind::Housekeeping,
-            _ => ChangeKind::Content,
-        }
-    }
-}
-
-/// Store where playback of `media_ref` stands, making room by forgetting the
-/// video left longest ago once the library remembers too many.
-fn apply_transport(
-    doc: &mut Doc,
-    media_ref: &str,
-    playing: bool,
-    position_ms: u64,
-    rate: f64,
-    epoch_ms: u64,
-) -> Result<(), ActionError> {
-    if !valid_id(media_ref) || !(0.25..=4.0).contains(&rate) {
-        return Err(ActionError::Refused(
-            "a valid media identity and a playback rate from 0.25 to 4 are required".into(),
-        ));
-    }
-    let integer = |value: u64| {
-        i64::try_from(value)
-            .map_err(|_| ActionError::Refused("transport value is too large".into()))
-    };
-    let row = match object(doc, TRANSPORT_PREFIX, media_ref) {
-        Some(row) => row,
-        None => doc.put_object(&ROOT, key(TRANSPORT_PREFIX, media_ref), ObjType::Map)?,
-    };
-    doc.put(&row, "playing", playing)?;
-    doc.put(&row, "position_ms", integer(position_ms)?)?;
-    doc.put(&row, "rate", rate)?;
-    doc.put(&row, "epoch_ms", integer(epoch_ms)?)?;
-    let mut transports = read_transports(doc);
-    while transports.len() > MAX_TRANSPORTS {
-        transports.sort_by_key(|transport| transport.epoch_ms);
-        let oldest = transports.remove(0);
-        doc.delete(&ROOT, key(TRANSPORT_PREFIX, &oldest.media_ref))?;
-    }
-    Ok(())
-}
-
-fn read_transports(doc: &Doc) -> Vec<SharedTransport> {
-    let number = |row: &ObjId, field: &str| {
-        doc.get(row, field)
-            .ok()
-            .flatten()
-            .and_then(|(value, _)| value.into_scalar().ok())
-            .and_then(|value| value.as_f64())
-    };
-    doc.keys(&ROOT)
-        .filter_map(|property| {
-            let media_ref = property.strip_prefix(TRANSPORT_PREFIX)?;
-            let row = object(doc, TRANSPORT_PREFIX, media_ref)?;
-            let playing = doc
-                .get(&row, "playing")
-                .ok()
-                .flatten()
-                .and_then(|(value, _)| value.into_scalar().ok())
-                .and_then(|value| value.as_bool())?;
-            Some(SharedTransport {
-                media_ref: media_ref.to_owned(),
-                playing,
-                position_ms: u64::try_from(integer(doc, &row, "position_ms")?).ok()?,
-                rate: number(&row, "rate")?,
-                epoch_ms: u64::try_from(integer(doc, &row, "epoch_ms")?).ok()?,
-            })
-        })
-        .collect()
-}
-
-impl SharedAction {
-    fn apply_playlist(&self, doc: &mut Doc) -> Result<(), ActionError> {
-        match self {
-            Self::CreatePlaylist { id, name } => {
-                if !text_ok(name) {
-                    return Err(ActionError::Refused("playlist name is required".into()));
-                }
-                let row = create_object(doc, PLAYLIST_PREFIX, PLAYLIST_TOMBSTONE_PREFIX, id)?;
-                doc.put(&row, "name", name.trim())?;
-            }
-            Self::RenamePlaylist { id, before, after } => {
-                if !text_ok(after) {
-                    return Err(ActionError::Refused("playlist name is required".into()));
-                }
-                let row = live_object(doc, PLAYLIST_PREFIX, PLAYLIST_TOMBSTONE_PREFIX, id)?;
-                if string(doc, &row, "name").as_deref() != Some(before.as_str()) {
-                    return Err(ActionError::Refused(
-                        "playlist name changed; refresh before renaming".into(),
-                    ));
-                }
-                doc.put(&row, "name", after.trim())?;
-            }
-            Self::DeletePlaylist {
-                id,
-                observed_item_ids,
-            } => {
-                write_tombstone(doc, PLAYLIST_TOMBSTONE_PREFIX, id)?;
-                for item_id in observed_item_ids {
-                    write_tombstone(doc, ITEM_TOMBSTONE_PREFIX, item_id)?;
-                }
-            }
-            Self::AddPlaylistItem {
-                id,
-                playlist_id,
-                media_ref,
-                title,
-                position,
-            } => {
-                let _ = live_object(doc, PLAYLIST_PREFIX, PLAYLIST_TOMBSTONE_PREFIX, playlist_id)?;
-                if !valid_id(media_ref) || !text_ok(title) {
-                    return Err(ActionError::Refused(
-                        "valid media identity and title are required".into(),
-                    ));
-                }
-                let row = create_object(doc, ITEM_PREFIX, ITEM_TOMBSTONE_PREFIX, id)?;
-                doc.put(&row, "playlist_id", playlist_id)?;
-                doc.put(&row, "media_ref", media_ref)?;
-                doc.put(&row, "title", title.trim())?;
-                doc.put(&row, "position", *position)?;
-            }
-            Self::MovePlaylistItem { id, before, after } => {
-                let row = live_object(doc, ITEM_PREFIX, ITEM_TOMBSTONE_PREFIX, id)?;
-                if integer(doc, &row, "position") != Some(*before) {
-                    return Err(ActionError::Refused(
-                        "playlist order changed; refresh before moving".into(),
-                    ));
-                }
-                doc.put(&row, "position", *after)?;
-            }
-            Self::RemovePlaylistItem { id } => write_tombstone(doc, ITEM_TOMBSTONE_PREFIX, id)?,
-            _ => return Err(ActionError::Refused("invalid playlist action route".into())),
-        }
-        Ok(())
-    }
-
-    fn apply_annotation(&self, doc: &mut Doc) -> Result<(), ActionError> {
-        match self {
-            Self::CreateAnnotation {
-                id,
-                media_ref,
-                time_ms,
-                text,
-            } => {
-                if !valid_id(media_ref) || text.len() > MAX_TEXT_BYTES {
-                    return Err(ActionError::Refused(
-                        "valid media identity and bounded annotation text are required".into(),
-                    ));
-                }
-                let row = create_object(doc, ANNOTATION_PREFIX, ANNOTATION_TOMBSTONE_PREFIX, id)?;
-                doc.put(&row, "media_ref", media_ref)?;
-                let time = i64::try_from(*time_ms)
-                    .map_err(|_| ActionError::Refused("timestamp is too large".into()))?;
-                doc.put(&row, "time_ms", time)?;
-                doc.put(&row, "text", text)?;
-            }
-            Self::EditAnnotation { id, before, after } => {
-                if after.len() > MAX_TEXT_BYTES {
-                    return Err(ActionError::Refused("annotation text is too long".into()));
-                }
-                let row = live_object(doc, ANNOTATION_PREFIX, ANNOTATION_TOMBSTONE_PREFIX, id)?;
-                if string(doc, &row, "text").as_deref() != Some(before.as_str()) {
-                    return Err(ActionError::Refused(
-                        "annotation changed; refresh before editing".into(),
-                    ));
-                }
-                doc.put(&row, "text", after)?;
-            }
-            Self::MoveAnnotation {
-                id,
-                before_ms,
-                after_ms,
-            } => {
-                let row = live_object(doc, ANNOTATION_PREFIX, ANNOTATION_TOMBSTONE_PREFIX, id)?;
-                let before = i64::try_from(*before_ms)
-                    .map_err(|_| ActionError::Refused("timestamp is too large".into()))?;
-                let after = i64::try_from(*after_ms)
-                    .map_err(|_| ActionError::Refused("timestamp is too large".into()))?;
-                if integer(doc, &row, "time_ms") != Some(before) {
-                    return Err(ActionError::Refused(
-                        "annotation timestamp changed; refresh before moving".into(),
-                    ));
-                }
-                doc.put(&row, "time_ms", after)?;
-            }
-            Self::DeleteAnnotation { id } => write_tombstone(doc, ANNOTATION_TOMBSTONE_PREFIX, id)?,
-            _ => {
-                return Err(ActionError::Refused(
-                    "invalid annotation action route".into(),
-                ));
-            }
+            },
+        );
+        while self.transports.len() > MAX_TRANSPORTS {
+            let Some(oldest) = self
+                .transports
+                .iter()
+                .min_by_key(|(_, transport)| transport.epoch_ms)
+                .map(|(media_ref, _)| media_ref.clone())
+            else {
+                break;
+            };
+            self.transports.remove(&oldest);
         }
         Ok(())
     }
 }
 
-pub fn read(doc: &Doc) -> SharedLibrary {
-    let mut state = SharedLibrary::default();
-    for property in doc.keys(&ROOT).take(MAX_SHARED_ROWS.saturating_mul(3)) {
-        if let Some(id) = property.strip_prefix(PLAYLIST_PREFIX) {
-            if tombstoned(doc, PLAYLIST_TOMBSTONE_PREFIX, id) {
-                continue;
-            }
-            if let Some(row) = object(doc, PLAYLIST_PREFIX, id)
-                && let Some(name) = string(doc, &row, "name")
-            {
-                state.playlists.push(Playlist {
-                    id: id.into(),
-                    name,
-                });
-            }
-        } else if let Some(id) = property.strip_prefix(ITEM_PREFIX) {
-            if tombstoned(doc, ITEM_TOMBSTONE_PREFIX, id) {
-                continue;
-            }
-            if let Some(row) = object(doc, ITEM_PREFIX, id)
-                && let (Some(playlist_id), Some(media_ref), Some(title), Some(position)) = (
-                    string(doc, &row, "playlist_id"),
-                    string(doc, &row, "media_ref"),
-                    string(doc, &row, "title"),
-                    integer(doc, &row, "position"),
-                )
-            {
-                state.items.push(PlaylistItem {
-                    id: id.into(),
-                    playlist_id,
-                    media_ref,
-                    title,
-                    position,
-                });
-            }
-        } else if let Some(id) = property.strip_prefix(ANNOTATION_PREFIX) {
-            if tombstoned(doc, ANNOTATION_TOMBSTONE_PREFIX, id) {
-                continue;
-            }
-            if let Some(row) = object(doc, ANNOTATION_PREFIX, id)
-                && let (Some(media_ref), Some(time_ms), Some(text)) = (
-                    string(doc, &row, "media_ref"),
-                    integer(doc, &row, "time_ms"),
-                    string(doc, &row, "text"),
-                )
-                && let Ok(time_ms) = u64::try_from(time_ms)
-            {
-                state.annotations.push(TimestampAnnotation {
-                    id: id.into(),
-                    media_ref,
-                    time_ms,
-                    text,
-                });
-            }
-        }
+impl Library {
+    /// Where playback of the video `media_ref` stands, if anyone played it.
+    pub fn transport_for(&self, media_ref: &str) -> Option<&SharedTransport> {
+        self.transports.get(media_ref)
     }
-    state
-        .playlists
-        .sort_by(|a, b| a.name.cmp(&b.name).then_with(|| a.id.cmp(&b.id)));
-    state.items.sort_by(|a, b| {
-        a.playlist_id
-            .cmp(&b.playlist_id)
-            .then_with(|| a.position.cmp(&b.position))
-            .then_with(|| a.id.cmp(&b.id))
-    });
-    state.items.retain(|item| {
-        state
-            .playlists
+
+    /// The annotations by video, then by time.
+    pub fn annotations_in_order(&self) -> Vec<(&Id, &TimestampAnnotation)> {
+        let mut annotations: Vec<_> = self.annotations.iter().collect();
+        annotations.sort_by(|(a_id, a), (b_id, b)| {
+            a.media_ref
+                .cmp(&b.media_ref)
+                .then(a.time_ms.cmp(&b.time_ms))
+                .then_with(|| a_id.as_str().cmp(b_id.as_str()))
+        });
+        annotations
+    }
+
+    /// The videos of the playlist `playlist`, in order.
+    pub fn items_of<'a>(
+        &'a self,
+        playlist: &'a Id,
+    ) -> impl Iterator<Item = (&'a Id, &'a PlaylistItem)> + 'a {
+        self.items
             .iter()
-            .any(|playlist| playlist.id == item.playlist_id)
-    });
-    state.transports = read_transports(doc);
-    state
-        .transports
-        .sort_by(|a, b| a.media_ref.cmp(&b.media_ref));
-    state.annotations.sort_by(|a, b| {
-        a.media_ref
-            .cmp(&b.media_ref)
-            .then_with(|| a.time_ms.cmp(&b.time_ms))
-            .then_with(|| a.id.cmp(&b.id))
-    });
-    state
-}
+            .filter(move |(_, item)| &item.playlist == playlist)
+    }
 
-pub fn register(registry: &mut ActionRegistry) {
-    registry.register::<SharedAction>(ACTION_TYPE);
+    /// Whether the video `media_ref` is on the Watch later playlist.
+    pub fn on_watch_later(&self, media_ref: &str) -> bool {
+        self.items_of(&Id::from_raw(WATCH_LATER))
+            .any(|(_, item)| item.media_ref == media_ref)
+    }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use tilo_automerge::ApplyIncoming;
-
-    fn seed() -> Doc {
-        let mut doc = Doc::new();
-        doc.put(&ROOT, "seed", true).unwrap();
-        doc.commit();
-        doc
-    }
-
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "merged scenario: each former test is a labelled case block with its own fixture"
-    )]
-    fn shared_playlists_and_annotations_converge_with_absolute_edits() {
-        // Case `divergent_replicas_converge_and_tombstones_prevent_resurrection`.
-        {
-            let mut base = seed();
-            let mut left = Doc::load(&base.save()).unwrap();
-            let mut right = Doc::load(&base.save()).unwrap();
-            SharedAction::CreatePlaylist {
-                id: "p-left".into(),
-                name: "Left".into(),
-            }
-            .apply(&mut left)
-            .unwrap();
-            SharedAction::CreateAnnotation {
-                id: "a-deleted".into(),
-                media_ref: "media-1".into(),
-                time_ms: 42,
-                text: "note".into(),
-            }
-            .apply(&mut left)
-            .unwrap();
-            left.commit();
-            SharedAction::CreatePlaylist {
-                id: "p-right".into(),
-                name: "Right".into(),
-            }
-            .apply(&mut right)
-            .unwrap();
-            SharedAction::DeleteAnnotation {
-                id: "a-deleted".into(),
-            }
-            .apply(&mut right)
-            .unwrap();
-            right.commit();
-            let mut lr = Doc::load(&left.save()).unwrap();
-            let mut rl = Doc::load(&right.save()).unwrap();
-            lr.merge_incoming(&mut right).unwrap();
-            rl.merge_incoming(&mut left).unwrap();
-            assert_eq!(read(&lr), read(&rl));
-            assert_eq!(read(&lr).playlists.len(), 2);
-            assert!(
-                read(&lr).annotations.is_empty(),
-                "delete tombstone wins over an offline create"
-            );
-            assert!(
-                SharedAction::CreateAnnotation {
-                    id: "a-deleted".into(),
-                    media_ref: "media-1".into(),
-                    time_ms: 7,
-                    text: String::new()
-                }
-                .apply(&mut lr)
-                .is_err()
-            );
-        }
-        // Case `playlist_membership_order_and_annotation_edits_are_absolute`.
-        {
-            let mut doc = seed();
-            SharedAction::CreatePlaylist {
-                id: "p".into(),
-                name: "Watch later".into(),
-            }
-            .apply(&mut doc)
-            .unwrap();
-            SharedAction::AddPlaylistItem {
-                id: "i".into(),
-                playlist_id: "p".into(),
-                media_ref: "media".into(),
-                title: "Clip".into(),
-                position: 10,
-            }
-            .apply(&mut doc)
-            .unwrap();
-            SharedAction::MovePlaylistItem {
-                id: "i".into(),
-                before: 10,
-                after: 20,
-            }
-            .apply(&mut doc)
-            .unwrap();
-            SharedAction::CreateAnnotation {
-                id: "a".into(),
-                media_ref: "media".into(),
-                time_ms: 1000,
-                text: "Old".into(),
-            }
-            .apply(&mut doc)
-            .unwrap();
-            SharedAction::EditAnnotation {
-                id: "a".into(),
-                before: "Old".into(),
-                after: "New".into(),
-            }
-            .apply(&mut doc)
-            .unwrap();
-            SharedAction::MoveAnnotation {
-                id: "a".into(),
-                before_ms: 1000,
-                after_ms: 1250,
-            }
-            .apply(&mut doc)
-            .unwrap();
-            let state = read(&doc);
-            assert_eq!(state.items[0].position, 20);
-            assert_eq!(state.annotations[0].text, "New");
-            assert_eq!(state.annotations[0].time_ms, 1250);
-            SharedAction::DeletePlaylist {
-                id: "p".into(),
-                observed_item_ids: vec!["i".into()],
-            }
-            .apply(&mut doc)
-            .unwrap();
-            let deleted = read(&doc);
-            assert!(deleted.playlists.is_empty());
-            assert!(deleted.items.is_empty());
-            assert!(
-                SharedAction::AddPlaylistItem {
-                    id: "i".into(),
-                    playlist_id: "p".into(),
-                    media_ref: "media".into(),
-                    title: "Resurrected".into(),
-                    position: 30,
-                }
-                .apply(&mut doc)
-                .is_err()
-            );
-        }
-    }
-}
+mod tests;

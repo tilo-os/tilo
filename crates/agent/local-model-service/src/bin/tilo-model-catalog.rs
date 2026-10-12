@@ -11,15 +11,6 @@
     clippy::missing_errors_doc,
     reason = "the release tool reports one contextual string error contract"
 )]
-#![cfg_attr(
-    test,
-    allow(
-        clippy::indexing_slicing,
-        clippy::panic,
-        clippy::unwrap_used,
-        reason = "tests use direct access and unwraps as assertions"
-    )
-)]
 
 use std::collections::{BTreeMap, BTreeSet};
 #[cfg(target_os = "linux")]

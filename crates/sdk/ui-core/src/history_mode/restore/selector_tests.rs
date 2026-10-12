@@ -1820,9 +1820,8 @@ fn deep_owned_state_restore_stamps_once_undoes_and_refuses_without_action_inner(
         )
         .unwrap();
     assert!(receipt.changed);
-    assert_eq!(receipt.before, current);
     assert_eq!(receipt.after, state.doc.base_heads());
-    assert_eq!(receipt.history_revision, revision + 1);
+    assert_eq!(state.history_revision(), revision + 1);
     assert_eq!(state.doc.get_changes(&[]).len(), change_count + 1);
     let entry = state.peek_last_undo().unwrap();
     assert_eq!(entry.before, current);
@@ -1835,8 +1834,12 @@ fn deep_owned_state_restore_stamps_once_undoes_and_refuses_without_action_inner(
     assert_eq!(
         change
             .message()
-            .and_then(|message| tilo_actions::ActionContext::from_change_message(message)),
-        Some(crate::state::owned_restore_tests::context())
+            .and_then(|message| tilo_actions::ActionContext::from_change_message(message))
+            .map(crate::state::owned_restore_tests::unstamped),
+        Some(
+            crate::state::owned_restore_tests::context()
+                .with_invoker(tilo_actions::ActionInvoker::actor("ada"))
+        )
     );
     assert_eq!(state.doc.get_actor(), &actor);
     let mut retained = profile.clone();
@@ -1850,7 +1853,7 @@ fn deep_owned_state_restore_stamps_once_undoes_and_refuses_without_action_inner(
         Some("target")
     );
     state
-        .undo_as(Some(&UserId("ada".into())), None, None)
+        .undo_as(Some(&UserId("ada".into())), None, None, None)
         .unwrap();
     assert_eq!(
         string_at(&state.doc, &deepest, "leaf").as_deref(),

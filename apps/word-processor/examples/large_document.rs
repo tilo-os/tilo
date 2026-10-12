@@ -72,7 +72,7 @@ trait Editor {
 }
 
 fn measure(doc: &automerge::AutoCommit) -> (usize, usize) {
-    let Ok(c) = tilo_doc::model::open(doc, &automerge::ROOT) else {
+    let Ok(c) = word_processor::model::open(doc) else {
         return (0, 0);
     };
     let ids = tilo_doc::model::blocks_in_order(doc, &c);
@@ -158,7 +158,7 @@ fn open_hosted(path: &std::path::Path) -> std::io::Result<Box<dyn Editor>> {
     for chunk in clips.chunks(10_000) {
         let (block, at) = app
             .read_document(|doc| {
-                let c = tilo_doc::model::open(doc, &automerge::ROOT).ok()?;
+                let c = word_processor::model::open(doc).ok()?;
                 let last = tilo_doc::model::blocks_in_order(doc, &c).pop()?;
                 let len =
                     tilo_doc::model::block_text(doc, &c, &last).map_or(0, |t| t.chars().count());
@@ -174,8 +174,8 @@ fn open_hosted(path: &std::path::Path) -> std::io::Result<Box<dyn Editor>> {
             blocks: chunk.to_vec(),
             adopt_first_style: false,
         };
-        let invoke =
-            Invoke::<Document>::apply(&paste).map_err(|error| failed(error.to_string()))?;
+        let invoke = Invoke::<Document>::edit(&word_processor::model::edit(&paste))
+            .map_err(|error| failed(error.to_string()))?;
         app.invoke_confirmed(invoke)
             .map_err(|error| failed(error.to_string()))?;
     }

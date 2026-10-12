@@ -194,7 +194,7 @@ pub fn registry_path() -> PathBuf {
     if let Some(path) = std::env::var_os("TILO_VM_CONFIG") {
         return PathBuf::from(path);
     }
-    xdg_paths::config_dir()
+    tilo_paths::config_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join("tilo-vm")
         .join("vms.toml")

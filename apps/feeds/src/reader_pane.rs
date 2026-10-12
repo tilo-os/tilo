@@ -46,19 +46,6 @@ pub(crate) fn fill_leaf<W: Widget + 'static>(
     node
 }
 
-/// The rect taffy placed `node` at, in window coordinates.
-pub(crate) fn leaf_rect(taffy: &TaffyTree<()>, node: NodeId, origin: Point) -> Rect {
-    let layout = taffy.layout(node).copied().unwrap_or_default();
-    let x = origin.x + f64::from(layout.location.x);
-    let y = origin.y + f64::from(layout.location.y);
-    Rect::new(
-        x,
-        y,
-        x + f64::from(layout.size.width),
-        y + f64::from(layout.size.height),
-    )
-}
-
 /// What the reader painted last frame, for hit-testing and scrolling.
 pub(crate) struct ReaderState {
     pub(crate) rect: Rect,
@@ -162,7 +149,7 @@ impl Core {
         }
         self.reader.scroller.set_viewport(area, theme);
         if self.reader.shown != self.selected {
-            self.reader.shown = self.selected;
+            self.reader.shown.clone_from(&self.selected);
             self.reader.scroll_to_top();
         }
         let palette = ReaderPalette::resolve(self.settings.theme, theme);
@@ -171,7 +158,7 @@ impl Core {
         }
         let page_theme = palette.page_theme(theme);
         self.reader.theme = page_theme.clone();
-        let Some(article) = self.open_article().cloned() else {
+        let Some(article) = self.open_article().map(|article| article.item().clone()) else {
             self.reader.scroller.set_content_size(area.width(), 0.0);
             // An empty library has one empty state, in the list.
             if !self.store.feeds.is_empty() {
@@ -266,7 +253,7 @@ impl Core {
         ui::surface::separator(scene, t, x, x + width, y, 0.0, palette.ground);
         y += f64::from(spacing.s6) * scale;
 
-        for (index, block) in article.blocks.iter().enumerate() {
+        for (index, block) in article.blocks.0.iter().enumerate() {
             y = self.paint_block(
                 PaintCtx::new(scene, t, text, theme),
                 &BlockFrame {
@@ -537,7 +524,7 @@ impl Core {
                     .with_action_target(format!("feeds.reader-tag:{key}")),
             )
         }));
-        children.extend(article.blocks.iter().enumerate().map(|(index, block)| {
+        children.extend(article.blocks.0.iter().enumerate().map(|(index, block)| {
             let role = match block.kind {
                 BlockKind::Heading1 => Role::Heading { level: 2 },
                 BlockKind::Heading2 => Role::Heading { level: 3 },
@@ -602,7 +589,7 @@ impl Widget for ReaderPane {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = leaf_rect(taffy, node, origin);
+        self.rect = ui::widget::layout_rect(taffy, node, origin);
     }
 
     fn draw(

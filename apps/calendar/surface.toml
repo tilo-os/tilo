@@ -1,0 +1,273 @@
+# Written by `tilo-app surface`; review changes like an API change.
+
+[[resources]]
+kind = "calendar.calendar"
+label = "Calendar"
+version = 1
+fields = [
+  { path = "projects", type = "Keyed<Project>", stored = "keyed" },
+  { path = "projects.*.id", type = "Id", readonly = true },
+  { path = "projects.*.name", type = "String", label = true },
+  { path = "projects.*.color", type = "Palette" },
+  { path = "projects.*.order", type = "u32" },
+  { path = "events", type = "Keyed<Event>", stored = "keyed" },
+  { path = "events.*.id", type = "Id", readonly = true },
+  { path = "events.*.title", type = "String", label = true },
+  { path = "events.*.start", type = "NaiveDateTime" },
+  { path = "events.*.end", type = "NaiveDateTime" },
+  { path = "events.*.all_day", type = "bool" },
+  { path = "events.*.location", type = "String" },
+  { path = "events.*.color", type = "Palette" },
+  { path = "events.*.recurrence", type = "Recurrence" },
+  { path = "events.*.recurrence_interval", type = "u32" },
+  { path = "events.*.recurrence_until", type = "Option<NaiveDate>" },
+  { path = "events.*.recurrence_count", type = "Option<u32>" },
+  { path = "events.*.recurrence_exdates", type = "Set<NaiveDate>" },
+  { path = "events.*.occurrence_overrides", type = "Keyed<OccurrenceOverride>", stored = "keyed" },
+  { path = "events.*.occurrence_overrides.*.original_date", type = "NaiveDate", readonly = true },
+  { path = "events.*.occurrence_overrides.*.original_time", type = "Option<NaiveTime>", readonly = true },
+  { path = "events.*.occurrence_overrides.*.cancelled", type = "bool" },
+  { path = "events.*.occurrence_overrides.*.start", type = "Option<NaiveDateTime>" },
+  { path = "events.*.occurrence_overrides.*.end", type = "Option<NaiveDateTime>" },
+  { path = "events.*.occurrence_overrides.*.title", type = "Option<String>" },
+  { path = "events.*.occurrence_overrides.*.location", type = "Option<String>" },
+  { path = "events.*.timezone", type = "String" },
+  { path = "events.*.organizer", type = "Option<Id>" },
+  { path = "events.*.attendees", type = "Keyed<Attendee>", stored = "keyed" },
+  { path = "events.*.attendees.*.id", type = "Id", readonly = true },
+  { path = "events.*.attendees.*.name", type = "String" },
+  { path = "events.*.attendees.*.email", type = "String", label = true },
+  { path = "events.*.attendees.*.status", type = "InviteStatus" },
+  { path = "events.*.reminder_min", type = "Option<i64>" },
+  { path = "events.*.project", type = "Option<Id>" },
+  { path = "events.*.calendar_id", type = "Option<String>" },
+  { path = "tasks", type = "Keyed<Task>", stored = "keyed" },
+  { path = "tasks.*.id", type = "Id", readonly = true },
+  { path = "tasks.*.title", type = "String", label = true },
+  { path = "tasks.*.done", type = "bool" },
+  { path = "tasks.*.due", type = "Option<NaiveDate>" },
+  { path = "tasks.*.priority", type = "Priority" },
+  { path = "tasks.*.project", type = "Option<Id>" },
+  { path = "tasks.*.parent", type = "Option<Id>", readonly = true },
+  { path = "notes", type = "BTreeMap<String, RichText>" },
+  { path = "remote", type = "BTreeMap<String, RemoteCopy>", readonly = true },
+  { path = "sync_tokens", type = "BTreeMap<String, String>", readonly = true },
+  { path = "uploads", type = "Outbox<Upload>" },
+  { path = "deletes", type = "Outbox<Removal>" },
+]
+
+[[resources.verbs]]
+id = "new-event"
+kind = "outside"
+params = [
+  { name = "event", required = true, schema = { type = "object", additionalProperties = false, properties = { all_day = { type = "boolean" }, attendees = { type = "array", items = { type = "object", additionalProperties = false, properties = { name = { type = "string" }, email = { type = "string" }, id = { type = "string" }, status = { type = "string" } }, required = ["id", "name", "email", "status"] } }, calendar_id = { type = "string" }, color = { type = "integer", minimum = 0 }, end = { type = "string" }, id = { type = "string" }, location = { type = "string" }, occurrence_overrides = { type = "array", items = { type = "object", additionalProperties = false, properties = { cancelled = { type = "boolean" }, end = { type = "string" }, location = { type = "string" }, original_date = { type = "string" }, original_time = { type = "string" }, start = { type = "string" }, title = { type = "string" } }, required = ["original_date", "cancelled", "start", "end", "title", "location"] } }, organizer = { type = "string" }, project = { type = "string" }, recurrence_count = { type = "integer", maximum = 4294967295, minimum = 0 }, recurrence_exdates = { type = "array", items = { type = "string" } }, recurrence_interval = { type = "integer", maximum = 4294967295, minimum = 0 }, recurrence_until = { type = "string" }, reminder = { type = "integer" }, rrule = { type = "string" }, start = { type = "string" }, timezone = { type = "string" }, title = { type = "string" } } } },
+]
+
+[[resources.verbs]]
+id = "new-task"
+kind = "outside"
+params = [
+  { name = "task", required = true, schema = { type = "object", additionalProperties = false, properties = { done = { type = "boolean" }, due = { type = "string" }, id = { type = "string" }, parent = { type = "string" }, priority = { type = "integer", maximum = 255, minimum = 0 }, project = { type = "string" }, title = { type = "string" } } } },
+]
+
+[[resources.verbs]]
+id = "new-project"
+kind = "outside"
+params = [
+  { name = "name", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "delete-event"
+kind = "outside"
+params = [
+  { name = "event", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "reschedule"
+kind = "outside"
+params = [
+  { name = "event", required = true, schema = { type = "string" } },
+  { name = "start", required = true, schema = { type = "string", pattern = "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?$" } },
+  { name = "end", required = true, schema = { type = "string", pattern = "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?$" } },
+]
+
+[[resources.verbs]]
+id = "move-to-calendar"
+kind = "outside"
+params = [
+  { name = "event", required = true, schema = { type = "string" } },
+  { name = "calendar", required = false, schema = { type = ["string", "null"] } },
+  { name = "color", required = true, schema = { type = "string", enum = ["indigo", "emerald", "amber", "red", "blue", "violet", "slate"] } },
+]
+
+[[resources.verbs]]
+id = "invite"
+kind = "outside"
+params = [
+  { name = "event", required = true, schema = { type = "string" } },
+  { name = "email", required = true, schema = { type = "string" } },
+  { name = "name", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "delete-task"
+kind = "outside"
+params = [
+  { name = "task", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "delete-project"
+destructive = true
+kind = "outside"
+params = [
+  { name = "project", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "import-items"
+kind = "outside"
+params = [
+  { name = "events", required = true, schema = { type = "array", items = { type = "object", additionalProperties = false, properties = { all_day = { type = "boolean" }, attendees = { type = "array", items = { type = "object", additionalProperties = false, properties = { name = { type = "string" }, email = { type = "string" }, id = { type = "string" }, status = { type = "string" } }, required = ["id", "name", "email", "status"] } }, calendar_id = { type = "string" }, color = { type = "integer", minimum = 0 }, end = { type = "string" }, id = { type = "string" }, location = { type = "string" }, occurrence_overrides = { type = "array", items = { type = "object", additionalProperties = false, properties = { cancelled = { type = "boolean" }, end = { type = "string" }, location = { type = "string" }, original_date = { type = "string" }, original_time = { type = "string" }, start = { type = "string" }, title = { type = "string" } }, required = ["original_date", "cancelled", "start", "end", "title", "location"] } }, organizer = { type = "string" }, project = { type = "string" }, recurrence_count = { type = "integer", maximum = 4294967295, minimum = 0 }, recurrence_exdates = { type = "array", items = { type = "string" } }, recurrence_interval = { type = "integer", maximum = 4294967295, minimum = 0 }, recurrence_until = { type = "string" }, reminder = { type = "integer" }, rrule = { type = "string" }, start = { type = "string" }, timezone = { type = "string" }, title = { type = "string" } } } } },
+  { name = "tasks", required = true, schema = { type = "array", items = { type = "object", additionalProperties = false, properties = { done = { type = "boolean" }, due = { type = "string" }, id = { type = "string" }, parent = { type = "string" }, priority = { type = "integer", maximum = 255, minimum = 0 }, project = { type = "string" }, title = { type = "string" } } } } },
+]
+
+[[resources.verbs]]
+id = "adopt-remote-event"
+kind = "outside"
+params = [
+  { name = "event", required = true, schema = { type = "object", additionalProperties = false, properties = { all_day = { type = "boolean" }, attendees = { type = "array", items = { type = "object", additionalProperties = false, properties = { name = { type = "string" }, email = { type = "string" }, id = { type = "string" }, status = { type = "string" } }, required = ["id", "name", "email", "status"] } }, calendar_id = { type = "string" }, color = { type = "integer", minimum = 0 }, end = { type = "string" }, id = { type = "string" }, location = { type = "string" }, occurrence_overrides = { type = "array", items = { type = "object", additionalProperties = false, properties = { cancelled = { type = "boolean" }, end = { type = "string" }, location = { type = "string" }, original_date = { type = "string" }, original_time = { type = "string" }, start = { type = "string" }, title = { type = "string" } }, required = ["original_date", "cancelled", "start", "end", "title", "location"] } }, organizer = { type = "string" }, project = { type = "string" }, recurrence_count = { type = "integer", maximum = 4294967295, minimum = 0 }, recurrence_exdates = { type = "array", items = { type = "string" } }, recurrence_interval = { type = "integer", maximum = 4294967295, minimum = 0 }, recurrence_until = { type = "string" }, reminder = { type = "integer" }, rrule = { type = "string" }, start = { type = "string" }, timezone = { type = "string" }, title = { type = "string" } } } },
+  { name = "at", required = true, schema = { type = "object", additionalProperties = false, properties = { calendar = { type = "string" }, etag = { type = ["string", "null"] }, href = { type = "string" } }, required = ["calendar", "href"] } },
+]
+
+[[resources.verbs]]
+id = "adopt-remote-task"
+kind = "outside"
+params = [
+  { name = "task", required = true, schema = { type = "object", additionalProperties = false, properties = { done = { type = "boolean" }, due = { type = "string" }, id = { type = "string" }, parent = { type = "string" }, priority = { type = "integer", maximum = 255, minimum = 0 }, project = { type = "string" }, title = { type = "string" } } } },
+  { name = "at", required = true, schema = { type = "object", additionalProperties = false, properties = { calendar = { type = "string" }, etag = { type = ["string", "null"] }, href = { type = "string" } }, required = ["calendar", "href"] } },
+]
+
+[[resources.verbs]]
+id = "drop-remote-item"
+kind = "outside"
+params = [
+  { name = "item", required = true, schema = { type = "string", format = "uuid" } },
+]
+
+[[resources.verbs]]
+id = "server-applied"
+kind = "outside"
+params = [
+  { name = "event", required = true, schema = { type = "string", format = "uuid" } },
+  { name = "at", required = true, schema = { type = "object", additionalProperties = false, properties = { calendar = { type = "string" }, etag = { type = ["string", "null"] }, href = { type = "string" } }, required = ["calendar", "href"] } },
+  { name = "holds", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "server-removed"
+kind = "outside"
+params = [
+  { name = "item", required = true, schema = { type = "string", format = "uuid" } },
+]
+
+[[resources.verbs]]
+id = "pulled"
+kind = "outside"
+params = [
+  { name = "calendar", required = true, schema = { type = "string" } },
+  { name = "token", required = true, schema = { type = "string" } },
+]
+
+[[resources]]
+kind = "tilo.accounts"
+label = "Accounts"
+version = 1
+person = true
+fields = [
+  { path = "accounts", type = "Collection<PersonAccount>", stored = "collection" },
+  { path = "accounts.*.type_id", type = "String" },
+  { path = "accounts.*.display_name", type = "String" },
+  { path = "accounts.*.config", type = "Json<serde_json::Value>" },
+  { path = "accounts.*.enabled", type = "bool" },
+  { path = "accounts.*.tint", type = "u8" },
+  { path = "active", type = "BTreeMap<String, String>" },
+]
+
+[[resources.verbs]]
+id = "publish-browser-identity"
+kind = "undoable"
+params = [
+  { name = "root", required = true, schema = { type = "string" } },
+  { name = "origin", required = true, schema = { type = "string" } },
+  { name = "display_name", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "save-account"
+kind = "undoable"
+params = [
+  { name = "id", required = true, schema = { type = "string" } },
+  { name = "type_id", required = true, schema = { type = "string" } },
+  { name = "display_name", required = true, schema = { type = "string" } },
+  { name = "config", required = true, schema = {} },
+  { name = "enabled", required = true, schema = { type = "boolean" } },
+  { name = "tint", required = true, schema = { type = "integer", maximum = 255, minimum = 0 } },
+]
+
+[[resources.verbs]]
+id = "publish-signal-account"
+kind = "undoable"
+params = [
+  { name = "id", required = true, schema = { type = "string" } },
+  { name = "display_name", required = true, schema = { type = "string" } },
+  { name = "aci", required = true, schema = { type = "string" } },
+  { name = "generation", required = true, schema = { type = "integer", minimum = 0 } },
+]
+
+[[resources.verbs]]
+id = "publish-sms-account"
+kind = "undoable"
+params = [
+  { name = "id", required = true, schema = { type = "string" } },
+  { name = "display_name", required = true, schema = { type = "string" } },
+  { name = "scope", required = true, schema = { type = "string" } },
+  { name = "generation", required = true, schema = { type = "integer", minimum = 0 } },
+]
+
+[[resources.verbs]]
+id = "publish-whatsapp-account"
+kind = "undoable"
+params = [
+  { name = "id", required = true, schema = { type = "string" } },
+  { name = "display_name", required = true, schema = { type = "string" } },
+  { name = "jid", required = true, schema = { type = "string" } },
+  { name = "generation", required = true, schema = { type = "integer", minimum = 0 } },
+]
+
+[[resources.verbs]]
+id = "publish-tilo-account"
+kind = "undoable"
+params = [
+  { name = "id", required = true, schema = { type = "string" } },
+  { name = "display_name", required = true, schema = { type = "string" } },
+  { name = "scope", required = true, schema = { type = "string" } },
+  { name = "generation", required = true, schema = { type = "integer", minimum = 0 } },
+]
+
+[[resources.verbs]]
+id = "remove-account"
+kind = "undoable"
+params = [
+  { name = "account", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "set-active-account"
+kind = "undoable"
+params = [
+  { name = "account", required = true, schema = { type = "string" } },
+]
+

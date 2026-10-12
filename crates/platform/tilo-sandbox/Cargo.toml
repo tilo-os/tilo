@@ -13,6 +13,7 @@ name = "tilo_sandbox"
 path = "src/lib.rs"
 
 [dependencies]
+tilo-platform-caps = { version = "0.1.0", path = "../tilo-platform-caps" }
 thiserror.workspace = true
 
 [target.'cfg(unix)'.dependencies]

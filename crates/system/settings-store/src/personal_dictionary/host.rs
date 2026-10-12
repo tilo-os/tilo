@@ -5,8 +5,7 @@ use super::{Edit, Service, Snapshot, Vocabulary};
 use crate::{ChangeSignal, Listener, SettingsSource};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
-use std::collections::HashSet;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 pub const VIEW_KEY: &str = "__personal_dictionary";
 pub const EDIT_KEY: &str = "__personal_dictionary_edit";
@@ -32,8 +31,6 @@ pub struct Host {
     owner: Arc<dyn Fn() -> Option<[u8; 32]> + Send + Sync>,
     changes: Arc<ChangeSignal>,
     _listener: Arc<Listener>,
-    migrated_writer: Mutex<HashSet<[u8; 32]>>,
-    legacy_owner: Option<[u8; 32]>,
     #[cfg(feature = "watch")]
     _dictionary_watch: Option<crate::watch::SettingsWatch>,
 }
@@ -57,8 +54,6 @@ impl Host {
             owner,
             changes,
             _listener: listener,
-            migrated_writer: Mutex::new(HashSet::new()),
-            legacy_owner: None,
             #[cfg(feature = "watch")]
             _dictionary_watch: dictionary_watch,
         };
@@ -67,88 +62,49 @@ impl Host {
     }
 }
 
-impl Host {
-    /// Attach the verified original profile root, never the active account
-    /// supplied by an app. Missing provenance leaves old words unexported.
-    #[must_use]
-    pub fn with_legacy_owner(mut self, owner: Option<[u8; 32]>) -> Self {
-        self.legacy_owner = owner;
-        self.dictionary_service();
-        self
-    }
-
-    fn migrate_writer(&self) {
-        let Some(owner) = self
-            .service
-            .owner()
-            .filter(|owner| self.legacy_owner == Some(*owner))
-        else {
-            return;
-        };
-        if self
-            .migrated_writer
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .contains(&owner)
-        {
-            return;
-        }
-        let document = self.source.load();
-        let Some(writer) = document
-            .get(crate::continuity::APP_PERSONAL_SECTION)
-            .and_then(|section| section.get("so.tilo.word-processor"))
-            .and_then(Value::as_object)
-        else {
-            return;
-        };
-        let Some(words) = writer
-            .get("dictionary_words")
-            .cloned()
-            .and_then(|words| serde_json::from_value::<Vec<String>>(words).ok())
-        else {
-            return;
-        };
-        let Some(reader) = self.service.reader_for(owner) else {
-            return;
-        };
-        let Ok(snapshot) = reader.snapshot() else {
-            return;
-        };
-        if self
-            .service
-            .edit(&reader, snapshot.revision, Edit::ImportWriter { words })
-            .is_ok()
-        {
-            self.migrated_writer
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .insert(owner);
-            let mut cleared = writer.clone();
-            cleared.remove("dictionary_words");
-            // Publish only after the private dictionary committed. A failed
-            // cleanup retains recoverable legacy data but it is never projected.
-            let _ = self.source.update_section(
-                crate::continuity::APP_PERSONAL_SECTION,
-                Map::from_iter([("so.tilo.word-processor".to_owned(), Value::Object(cleared))]),
-            );
-        }
-    }
-}
-
 impl SettingsSource for Host {
     fn load(&self) -> Map<String, Value> {
-        let mut document = self.source.load();
-        if let Some(writer) = document
-            .get_mut(crate::continuity::APP_PERSONAL_SECTION)
-            .and_then(|section| section.get_mut("so.tilo.word-processor"))
-            .and_then(Value::as_object_mut)
-        {
-            writer.remove("dictionary_words");
-        }
-        document
+        self.source.load()
     }
     fn update_section(&self, name: &str, values: Map<String, Value>) -> std::io::Result<()> {
         self.source.update_section(name, values)
+    }
+    fn update_section_by(
+        &self,
+        name: &str,
+        values: Map<String, Value>,
+        origin: &crate::ChangeOrigin,
+    ) -> std::io::Result<()> {
+        self.source.update_section_by(name, values, origin)
+    }
+    fn update_section_with(
+        &self,
+        name: &str,
+        origin: &crate::ChangeOrigin,
+        change: &mut crate::SectionChange<'_>,
+    ) -> std::io::Result<()> {
+        self.source.update_section_with(name, origin, change)
+    }
+    fn update_section_report(
+        &self,
+        name: &str,
+        values: Map<String, Value>,
+    ) -> std::io::Result<crate::ConditionalUpdate> {
+        self.source.update_section_report(name, values)
+    }
+    fn compare_update_section(
+        &self,
+        name: &str,
+        expected: &Map<String, Value>,
+        values: Map<String, Value>,
+    ) -> std::io::Result<crate::ConditionalUpdate> {
+        self.source.compare_update_section(name, expected, values)
+    }
+    fn compare_display_update(
+        &self,
+        update: crate::DisplayUpdate,
+    ) -> std::io::Result<crate::ConditionalUpdate> {
+        self.source.compare_display_update(update)
     }
     fn revision(&self) -> u64 {
         self.source.revision()
@@ -156,16 +112,10 @@ impl SettingsSource for Host {
     fn changes(&self) -> &ChangeSignal {
         &self.changes
     }
-    fn dictionary_legacy_owner(&self) -> Option<[u8; 32]> {
-        self.legacy_owner
-    }
     fn dictionary_service(&self) -> Option<Arc<Service>> {
         let owner = (self.owner)();
         if self.service.owner() != owner {
             self.service.bind(owner);
-        }
-        if owner.is_some() {
-            self.migrate_writer();
         }
         Some(Arc::clone(&self.service))
     }
@@ -247,13 +197,6 @@ pub fn command(
     {
         return Err(denied());
     }
-    if matches!(command.edit, Edit::ImportWriter { .. })
-        && (app != "so.tilo.word-processor"
-            || source.dictionary_legacy_owner() != owner
-            || owner.is_none())
-    {
-        return Err(denied());
-    }
     let service = source.dictionary_service().ok_or_else(denied)?;
     if owner != Some(command.owner) || service.owner() != owner {
         return Err(denied());
@@ -274,139 +217,6 @@ fn denied() -> std::io::Error {
 mod tests {
     use super::*;
     use std::sync::Mutex;
-
-    #[test]
-    fn alternate_account_cannot_adopt_unscoped_primary_profile_words() {
-        let directory = tempfile::tempdir().unwrap();
-        let service = Arc::new(Service::new(directory.path().to_owned()).unwrap());
-        let document = Arc::new(crate::HostDocument::new(
-            serde_json::from_value(serde_json::json!({
-                "app_personal": {"so.tilo.word-processor": {"dictionary_words": ["PrivateAlice"]}}
-            }))
-            .unwrap(),
-            |_| Ok(()),
-        ));
-        let active = Arc::new(Mutex::new(Some([2; 32])));
-        let account = Arc::clone(&active);
-        let host = Host::new(
-            document.clone(),
-            service.clone(),
-            Arc::new(move || *account.lock().unwrap()),
-        )
-        .with_legacy_owner(Some([1; 32]));
-        assert!(
-            service
-                .reader()
-                .unwrap()
-                .snapshot()
-                .unwrap()
-                .words
-                .is_empty()
-        );
-        assert!(
-            host.load()["app_personal"]["so.tilo.word-processor"]
-                .get("dictionary_words")
-                .is_none()
-        );
-        let values = Map::from_iter([(
-            "so.tilo.word-processor".into(),
-            serde_json::json!({EDIT_KEY: Command {owner: [2; 32], revision: 0, edit: Edit::ImportWriter {words: vec!["PrivateAlice".into()]}}}),
-        )]);
-        assert!(
-            command(
-                &host,
-                "so.tilo.word-processor",
-                Some([2; 32]),
-                crate::continuity::APP_DEVICE_LOCAL_SECTION,
-                &values
-            )
-            .is_err()
-        );
-        assert_eq!(
-            document.load()["app_personal"]["so.tilo.word-processor"]["dictionary_words"],
-            serde_json::json!(["PrivateAlice"])
-        );
-        *active.lock().unwrap() = Some([1; 32]);
-        host.dictionary_service();
-        assert_eq!(
-            service
-                .reader()
-                .unwrap()
-                .snapshot()
-                .unwrap()
-                .hints("en")
-                .collect::<Vec<_>>(),
-            ["PrivateAlice"]
-        );
-        assert!(
-            document.load()["app_personal"]["so.tilo.word-processor"]
-                .get("dictionary_words")
-                .is_none()
-        );
-    }
-
-    #[test]
-    fn host_imports_and_removes_legacy_writer_words_without_exporting_them() {
-        let directory = tempfile::tempdir().unwrap();
-        let service = Arc::new(Service::new(directory.path().to_owned()).unwrap());
-        let document = Arc::new(crate::HostDocument::new(serde_json::from_value(serde_json::json!({
-            "app_personal": {"so.tilo.word-processor": {"dictionary_words": ["Tilo", "Élodie"], "show_ruler": true}}
-        })).unwrap(), |_| Ok(())));
-        let host = Host::new(
-            document.clone(),
-            service.clone(),
-            Arc::new(|| Some([1; 32])),
-        )
-        .with_legacy_owner(Some([1; 32]));
-        assert_eq!(
-            service
-                .reader()
-                .unwrap()
-                .snapshot()
-                .unwrap()
-                .hints("en")
-                .collect::<Vec<_>>(),
-            ["Tilo", "Élodie"]
-        );
-        assert!(
-            document.load()["app_personal"]["so.tilo.word-processor"]
-                .get("dictionary_words")
-                .is_none()
-        );
-        assert_eq!(
-            document.load()["app_personal"]["so.tilo.word-processor"]["show_ruler"],
-            true
-        );
-        document
-            .update_section(
-                "app_personal",
-                Map::from_iter([(
-                    "so.tilo.word-processor".to_owned(),
-                    serde_json::json!({"dictionary_words": ["Tilo"], "show_ruler": true}),
-                )]),
-            )
-            .unwrap();
-        assert!(
-            host.load()["app_personal"]["so.tilo.word-processor"]
-                .get("dictionary_words")
-                .is_none()
-        );
-        let bob = Host::new(document, service.clone(), Arc::new(|| Some([2; 32])));
-        assert!(
-            service
-                .reader()
-                .unwrap()
-                .snapshot()
-                .unwrap()
-                .words
-                .is_empty()
-        );
-        assert!(
-            bob.load()["app_personal"]["so.tilo.word-processor"]
-                .get("dictionary_words")
-                .is_none()
-        );
-    }
 
     #[test]
     fn authenticated_projection_and_edits_are_local_revocable_and_never_persisted() {
@@ -508,67 +318,8 @@ mod tests {
         project(&host, "so.tilo.osk", Some([2; 32]), &mut view);
         assert!(view.is_empty());
     }
-
-    #[test]
-    fn writer_migration_claims_the_unscoped_store_once_and_reset_cannot_resurrect_it() {
-        let directory = tempfile::tempdir().unwrap();
-        let service = Service::new(directory.path().to_owned()).unwrap();
-        let alice = service.bind(Some([1; 32])).unwrap();
-        let migrated = service
-            .edit(
-                &alice,
-                0,
-                Edit::ImportWriter {
-                    words: vec!["Tilo".into(), "Élodie".into(), "東京".into(), "Tilo".into()],
-                },
-            )
-            .unwrap();
-        assert_eq!(migrated.words.len(), 3);
-        let reset = service
-            .edit(&alice, migrated.revision, Edit::Reset)
-            .unwrap();
-        assert!(
-            service
-                .edit(
-                    &alice,
-                    reset.revision,
-                    Edit::ImportWriter {
-                        words: vec!["Tilo".into()]
-                    }
-                )
-                .unwrap()
-                .words
-                .is_empty()
-        );
-        let bob = service.bind(Some([2; 32])).unwrap();
-        assert!(
-            service
-                .edit(
-                    &bob,
-                    0,
-                    Edit::ImportWriter {
-                        words: vec!["Tilo".into()]
-                    }
-                )
-                .unwrap()
-                .words
-                .is_empty()
-        );
-        let restarted = Service::new(directory.path().to_owned()).unwrap();
-        let alice = restarted.bind(Some([1; 32])).unwrap();
-        let snapshot = alice.snapshot().unwrap();
-        assert!(
-            restarted
-                .edit(
-                    &alice,
-                    snapshot.revision,
-                    Edit::ImportWriter {
-                        words: vec!["Tilo".into()]
-                    }
-                )
-                .unwrap()
-                .words
-                .is_empty()
-        );
-    }
 }
+
+#[cfg(test)]
+#[path = "host_storage_tests.rs"]
+mod storage_tests;

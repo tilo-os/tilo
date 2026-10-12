@@ -46,7 +46,7 @@ impl SessionRecovery {
         }
         let path = directory.join("lock-state");
         // Missing (including an older wrapper) and malformed records fail closed.
-        let locked = match private_fs::read(&path) {
+        let locked = match tilo_files::native::private::read(&path) {
             Ok(file) => {
                 if file.metadata()?.nlink() != 1 {
                     return Err(io::Error::new(
@@ -62,12 +62,15 @@ impl SessionRecovery {
             Err(error) => return Err(error),
         };
         // Mandatory before admission or presentation: failed arming stops startup.
-        private_fs::write_atomic(&path, LOCKED)?;
+        tilo_files::native::private::write_atomic(&path, LOCKED)?;
         Ok((Self { path }, locked))
     }
 
     pub(super) fn finish(self, locked: bool) -> io::Result<()> {
-        private_fs::write_atomic(&self.path, if locked { LOCKED } else { UNLOCKED })
+        tilo_files::native::private::write_atomic(
+            &self.path,
+            if locked { LOCKED } else { UNLOCKED },
+        )
     }
 }
 
@@ -80,7 +83,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700)).unwrap();
         let path = directory.path().join("lock-state");
-        private_fs::write_atomic(&path, UNLOCKED).unwrap();
+        tilo_files::native::private::write_atomic(&path, UNLOCKED).unwrap();
         let request = directory.path().join("logout-request");
         let (first, locked) = SessionRecovery::begin(&request).unwrap();
         assert!(!locked, "authenticated fresh login starts unlocked");
@@ -101,7 +104,7 @@ mod tests {
         fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700)).unwrap();
         let request = directory.path().join("logout-request");
         let path = directory.path().join("lock-state");
-        private_fs::write_atomic(&path, UNLOCKED).unwrap();
+        tilo_files::native::private::write_atomic(&path, UNLOCKED).unwrap();
         let (running, _) = SessionRecovery::begin(&request).unwrap();
         drop(running); // no successful ordered teardown, as after SIGKILL
         let (_, locked) = SessionRecovery::begin(&request).unwrap();
@@ -109,7 +112,7 @@ mod tests {
         fs::remove_file(&path).unwrap();
         let (_, locked) = SessionRecovery::begin(&request).unwrap();
         assert!(locked);
-        private_fs::write_atomic(&path, b"partial").unwrap();
+        tilo_files::native::private::write_atomic(&path, b"partial").unwrap();
         let (_, locked) = SessionRecovery::begin(&request).unwrap();
         assert!(locked);
     }

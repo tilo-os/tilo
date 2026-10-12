@@ -7,6 +7,37 @@
 //! boundary here makes the same profile safe to render in Settings, sync as
 //! non-secret device intent, or hand to a sandboxed agent.
 
+/// `Serialize`/`Deserialize` of a type deriving them with
+/// `#[serde(remote = "Self")]`: writing runs the derived code, reading goes
+/// through one `serde_json::Value` and one function compiled here, rather
+/// than a derived decoder per deserializer in every crate reading the type.
+macro_rules! read_through_json_value {
+    ($ty:ty) => {
+        impl serde::Serialize for $ty {
+            fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+                Self::serialize(self, serializer)
+            }
+        }
+        read_through_json_value!($ty, deserialize);
+    };
+    ($ty:ty, deserialize) => {
+        impl<'de> serde::Deserialize<'de> for $ty {
+            fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+                let value = <serde_json::Value as serde::Deserialize>::deserialize(deserializer)?;
+                Self::from_json_value(value).map_err(serde::de::Error::custom)
+            }
+        }
+
+        impl $ty {
+            #[inline(never)]
+            fn from_json_value(value: serde_json::Value) -> Result<Self, serde_json::Error> {
+                Self::deserialize(value)
+            }
+        }
+    };
+}
+pub(crate) use read_through_json_value;
+
 use std::collections::BTreeSet;
 use std::path::Path;
 
@@ -26,7 +57,7 @@ const HOSTED_KEY: &str = "hosted";
 
 /// The request dialect spoken by a provider endpoint.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[serde(remote = "Self", rename_all = "snake_case")]
 pub enum ProviderProtocol {
     /// `/v1/chat/completions` and related OpenAI-compatible endpoints.
     #[default]
@@ -34,6 +65,8 @@ pub enum ProviderProtocol {
     /// Anthropic's `/v1/messages` API.
     Anthropic,
 }
+
+crate::read_through_json_value!(ProviderProtocol);
 
 impl ProviderProtocol {
     pub const ALL: &'static [Self] = &[Self::OpenAiCompatible, Self::Anthropic];
@@ -50,7 +83,7 @@ impl ProviderProtocol {
 /// vLLM server must remain distinct from a hosted API even though it shares the
 /// `OpenAI` wire protocol.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[serde(remote = "Self", rename_all = "snake_case")]
 pub enum EndpointLocation {
     /// A provider-operated internet endpoint.
     #[default]
@@ -60,6 +93,8 @@ pub enum EndpointLocation {
     /// An endpoint on a LAN, VPN, or a user-managed server.
     PrivateNetwork,
 }
+
+crate::read_through_json_value!(EndpointLocation);
 
 impl EndpointLocation {
     pub const ALL: &'static [Self] = &[Self::Hosted, Self::ThisDevice, Self::PrivateNetwork];
@@ -84,12 +119,15 @@ impl EndpointLocation {
 /// variable name: the desktop broker can apply per-agent access policy before
 /// handing the secret to an outbound request.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(remote = "Self")]
 pub struct SecretReference {
     /// The broker/vault namespace, usually `tilo.secret-service`.
     pub vault: String,
     /// Opaque item locator within `vault`; never the secret value.
     pub locator: String,
 }
+
+crate::read_through_json_value!(SecretReference);
 
 impl SecretReference {
     pub fn provider_api_key(profile_id: &str) -> Self {
@@ -111,7 +149,7 @@ impl SecretReference {
 /// capability grant: individual agent tasks still require their own action
 /// permissions.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(remote = "Self", default)]
 pub struct ModelDescriptor {
     /// Provider-native model id sent over the wire.
     pub id: String,
@@ -140,6 +178,8 @@ pub struct ModelDescriptor {
     pub tool_calling: bool,
 }
 
+crate::read_through_json_value!(ModelDescriptor);
+
 impl Default for ModelDescriptor {
     fn default() -> Self {
         Self {
@@ -158,7 +198,7 @@ impl Default for ModelDescriptor {
 /// Explicit request limits for one selected model; not a capability or runtime
 /// attestation. None on a descriptor preserves legacy request shaping.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(remote = "Self", deny_unknown_fields)]
 pub struct ModelRequestLimits {
     pub max_output_tokens: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -167,6 +207,8 @@ pub struct ModelRequestLimits {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plan_timeout_ms: Option<u32>,
 }
+
+crate::read_through_json_value!(ModelRequestLimits);
 
 impl ModelRequestLimits {
     /// Validate bounded settings without estimating the token count of a prompt.
@@ -216,7 +258,7 @@ impl ModelDescriptor {
 
 /// A configured model-provider endpoint.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(remote = "Self", default)]
 pub struct ProviderProfile {
     pub id: String,
     pub label: String,
@@ -251,17 +293,22 @@ pub struct ProviderProfile {
     pub omit_params: Vec<String>,
 }
 
+crate::read_through_json_value!(ProviderProfile);
+
 /// Request fields a profile may not strip: without them there is no request.
 pub const REQUIRED_PARAMS: &[&str] = &["model", "messages", "tools", "tool_choice"];
 
 /// The output-token-limit field of an OpenAI-compatible provider.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(remote = "Self")]
 pub enum TokenLimitParam {
     #[serde(rename = "max_tokens")]
     MaxTokens,
     #[serde(rename = "max_completion_tokens")]
     MaxCompletionTokens,
 }
+
+crate::read_through_json_value!(TokenLimitParam);
 
 impl TokenLimitParam {
     pub fn key(self) -> &'static str {
@@ -274,6 +321,7 @@ impl TokenLimitParam {
 
 /// Where a provider takes its reasoning effort.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(remote = "Self")]
 pub enum ReasoningParam {
     /// `OpenAI` Chat Completions: top-level `"reasoning_effort": "<effort>"`.
     #[serde(rename = "reasoning_effort")]
@@ -286,8 +334,11 @@ pub enum ReasoningParam {
     Omit,
 }
 
+crate::read_through_json_value!(ReasoningParam);
+
 /// A profile's reasoning setting, applied by the gateway.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(remote = "Self")]
 pub struct ReasoningSetting {
     pub param: ReasoningParam,
     /// One of [`REASONING_EFFORTS`]; unused when `param` is `none`. Not every
@@ -297,8 +348,13 @@ pub struct ReasoningSetting {
     pub effort: String,
 }
 
+crate::read_through_json_value!(ReasoningSetting);
+
 /// The reasoning efforts a profile may name.
 pub const REASONING_EFFORTS: &[&str] = &["none", "minimal", "low", "medium", "high", "xhigh"];
+
+#[cfg(feature = "model")]
+tilo_resource::json_model!(ProviderProfile);
 
 impl Default for ProviderProfile {
     fn default() -> Self {
@@ -390,21 +446,26 @@ impl ProviderProfile {
 /// each names an endpoint on the internet and a reference to its key, never
 /// the key, which each device keeps in its own vault.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(remote = "Self", default)]
 pub struct HostedProfiles {
     pub profiles: Vec<ProviderProfile>,
 }
 
+crate::read_through_json_value!(HostedProfiles);
+
 /// A portable profile list and the user's deliberate default. Kept separate
 /// from a task: tasks capture a chosen model at start so changing this default
 /// does not change work already in progress.
+#[cfg_attr(feature = "model", derive(tilo_resource::Model))]
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(remote = "Self", default)]
 pub struct ProviderConfig {
     pub profiles: Vec<ProviderProfile>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub default_profile: Option<String>,
 }
+
+crate::read_through_json_value!(ProviderConfig);
 
 impl ProviderConfig {
     pub fn load() -> Self {

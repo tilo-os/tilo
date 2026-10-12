@@ -202,26 +202,6 @@ impl Outbox {
         self.persist(self.snapshot.clone())
     }
 
-    /// Dismiss a confirmed submission from the local outbox. Pending reports
-    /// cannot be evicted to make room; the destination keeps its report/history.
-    ///
-    /// # Errors
-    /// Refuses unknown, unconfirmed or not-durable reports, or a storage failure.
-    pub fn forget_sent(&mut self, id: &str) -> Result<(), Error> {
-        self.require_durable()?;
-        let entry = self
-            .snapshot
-            .entries
-            .get(id)
-            .ok_or(Error::Invalid("unknown submission"))?;
-        if entry.receipt.is_none() {
-            return Err(Error::ReceiptMismatch);
-        }
-        let mut next = self.snapshot.clone();
-        next.entries.remove(id);
-        self.persist(next)
-    }
-
     fn require_durable(&self) -> Result<(), Error> {
         if self.rejected_write
             || self.revision.is_some_and(|revision| {

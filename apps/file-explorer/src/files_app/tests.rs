@@ -791,7 +791,7 @@ mod command_path_tests {
         collaborative_search_activation_resolves_the_latest_path_by_record_id();
     }
 
-    /// The 750ms metadata poll is real work, but an unchanged directory
+    /// A metadata poll is real work, but an unchanged directory
     /// must not look like a frame request. The native runner used to turn
     /// any due `next_wake_deadline` into a Wayland commit (~2 paints/s).
     #[cfg(unix)]
@@ -842,9 +842,9 @@ mod command_path_tests {
         ui::widget::Widget::mark_drawn(&mut widget);
         let _ = widget.take_structure_dirty();
 
-        widget.next_metadata_refresh = ui::time::now();
+        widget.next_metadata_refresh = Some(ui::time::now());
         let _ = widget.refresh_metadata_if_due(ui::time::now());
-        widget.next_metadata_refresh = ui::time::now();
+        widget.next_metadata_refresh = Some(ui::time::now());
         assert!(
             !widget.refresh_metadata_if_due(ui::time::now()),
             "an idle Files poll must not keep requesting frames"
@@ -897,6 +897,86 @@ mod command_path_tests {
         );
     }
 
+    /// Point the identity projection and the workspace roots at fixtures,
+    /// so the only refresh sources are the ones the test controls.
+    #[cfg(unix)]
+    fn quiet_refresh_sources(env: &mut tilo_test_env::ScopedEnv) -> tempfile::TempDir {
+        let identities = tempfile::tempdir().unwrap();
+        env.set(
+            crate::identity_directory::TRUSTED_IDENTITIES_ENV,
+            identities.path().join("trusted-identities.json"),
+        );
+        env.set("TILO_WORKSPACE_ROOTS", "");
+        identities
+    }
+
+    /// An idle window over an unchanged local directory has no metadata
+    /// deadline at all: its watch wakes it on change, so nothing is re-read
+    /// on a timer. Where the watch cannot vouch for every change, the poll
+    /// stays, never faster than the fallback interval.
+    #[cfg(unix)]
+    #[test]
+    fn idle_files_has_no_periodic_deadline_with_a_subscription() {
+        let mut env = tilo_test_env::ScopedEnv::new();
+        let _identities = quiet_refresh_sources(&mut env);
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), b"ok").unwrap();
+        let mut widget = FileExplorerWidget::new();
+        widget.load(dir.path().to_path_buf());
+        let now = ui::time::now();
+        let _ = widget.refresh_metadata_if_due(now);
+        assert!(!widget.directory_changed, "nothing changed");
+        assert_ne!(
+            widget.directory_watch.coverage(),
+            crate::directory_watch::Coverage::None,
+            "the open directory is watched"
+        );
+        #[cfg(target_os = "linux")]
+        assert_eq!(
+            widget.next_metadata_refresh, None,
+            "a fully watched directory is never polled"
+        );
+        if let Some(due) = widget.next_metadata_refresh {
+            assert!(
+                due >= now + metadata_refresh::LIVE_INTERVAL,
+                "only a partially watched directory keeps its poll"
+            );
+        }
+    }
+
+    /// A file another program creates in the open directory shows, read
+    /// because the watch reported it, before any poll is due.
+    #[cfg(unix)]
+    #[test]
+    fn a_file_created_in_the_open_directory_appears_without_a_poll() {
+        let mut env = tilo_test_env::ScopedEnv::new();
+        let _identities = quiet_refresh_sources(&mut env);
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), b"ok").unwrap();
+        let mut widget = FileExplorerWidget::new();
+        widget.load(dir.path().to_path_buf());
+        let _ = widget.refresh_metadata_if_due(ui::time::now());
+        let created = ui::time::now();
+        std::fs::write(dir.path().join("b.txt"), b"new").unwrap();
+        let shown =
+            |widget: &FileExplorerWidget| widget.entries.iter().any(|entry| entry.name == "b.txt");
+        while !shown(&widget) && created.elapsed() < std::time::Duration::from_secs(10) {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            // The earliest moment a reported change may be read, which is
+            // before any poll is due: only the watch can make this read.
+            let readable = widget.last_directory_read
+                + metadata_refresh::change_read_gap(widget.entries.len());
+            if let Some(due) = widget.next_metadata_refresh {
+                assert!(readable < due, "the change is read before the poll");
+            }
+            let _ = widget.refresh_metadata_if_due(readable);
+        }
+        // How soon is `change_read_gap`'s (under a second); wall time here
+        // would only measure the test machine's load.
+        assert!(shown(&widget), "the new file is listed");
+        assert!(!widget.directory_changed, "the reported change was read");
+    }
+
     fn opaque_hold_deadline_reaches_files_root_before_metadata_refresh() {
         let mut scroll = ui::widget::Scrollable::new_vertical();
         scroll.set_viewport_size(200.0, 300.0);
@@ -907,20 +987,21 @@ mod command_path_tests {
             .expect("opaque hold schedules fade start");
         let mut widget = FileExplorerWidget::new();
         widget.nav.set_content(Box::new(scroll));
-        widget.next_metadata_refresh = deadline + std::time::Duration::from_secs(60);
+        widget.next_metadata_refresh = Some(deadline + std::time::Duration::from_secs(60));
         assert!(
             widget
                 .next_wake_deadline()
                 .is_some_and(|wake| wake <= deadline),
             "the root must not schedule later than its scroll fade"
         );
-        widget.next_metadata_refresh = deadline
+        let refresh = deadline
             .checked_sub(std::time::Duration::from_millis(1))
             .expect("deadline lies in the future");
+        widget.next_metadata_refresh = Some(refresh);
         assert!(
             widget
                 .next_wake_deadline()
-                .is_some_and(|wake| wake <= widget.next_metadata_refresh),
+                .is_some_and(|wake| wake <= refresh),
             "the root must not schedule later than its metadata refresh"
         );
     }
@@ -978,15 +1059,14 @@ mod command_path_tests {
     }
 
     fn command_l_opens_the_editable_location_bar_without_a_pointer() {
-        use winit::keyboard::{Key, KeyLocation, ModifiersState, NativeKeyCode, PhysicalKey};
+        use winit::keyboard::{Key, ModifiersState};
 
         let mut widget = FileExplorerWidget::new();
-        let mut event: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
-        event.logical_key = Key::Character(winit::keyboard::SmolStr::new("l"));
-        event.physical_key = PhysicalKey::Unidentified(NativeKeyCode::Unidentified);
-        event.location = KeyLocation::Standard;
-        event.state = winit::event::ElementState::Pressed;
-        event.repeat = false;
+        let event = ui::synthetic_input::key_event(
+            Key::Character(winit::keyboard::SmolStr::new("l")),
+            None,
+            winit::event::ElementState::Pressed,
+        );
 
         assert!(widget.handle_app_key(
             &event,
@@ -999,15 +1079,14 @@ mod command_path_tests {
     }
 
     fn shortcut_reference_is_a_keyboard_and_command_reachable_view() {
-        use winit::keyboard::{Key, KeyLocation, NamedKey, NativeKeyCode, PhysicalKey};
+        use winit::keyboard::{Key, NamedKey};
         let mut widget = FileExplorerWidget::new();
 
-        let mut event: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
-        event.logical_key = Key::Named(NamedKey::F1);
-        event.physical_key = PhysicalKey::Unidentified(NativeKeyCode::Unidentified);
-        event.location = KeyLocation::Standard;
-        event.state = winit::event::ElementState::Pressed;
-        event.repeat = false;
+        let event = ui::synthetic_input::key_event(
+            Key::Named(NamedKey::F1),
+            None,
+            winit::event::ElementState::Pressed,
+        );
         assert!(widget.handle_app_key(&event, winit::event::Modifiers::default()));
         let panel = widget
             .collab_panel
@@ -1163,7 +1242,7 @@ mod command_path_tests {
             .expect("verified local undo is exported through the folder resource");
         assert_eq!(undo.kind, OperationKind::Effect);
         assert_eq!(undo.operation_type.as_deref(), Some("files.effects"));
-        assert_eq!(undo.contract.permission, PermissionRequirement::Write);
+        assert_eq!(undo.contract.kind, ActionKind::Outside);
         assert_eq!(
             undo.contract.retry,
             ui::tilo_actions::RetryPolicy::AtMostOnce
@@ -1324,22 +1403,22 @@ mod command_path_tests {
         std::fs::write(&path, b"x").unwrap();
         let mut entry = ent("shared.txt", false, "text/plain");
         entry.path = path;
-        entry.availability = Some(crate::model::AvailabilityProjection {
+        entry.availability = Some(fs_protocol::AvailabilityProjectionV1 {
             schema_version: 1,
-            record_id: "record".into(),
-            current_version: Some("v1".into()),
-            residency: crate::model::Residency::Partial { resident_bytes: 1 },
-            transfer: crate::model::ProjectedTransfer {
-                phase: crate::model::TransferPhase::Idle,
+            record_id: fs_protocol::FileRecordId(uuid::Uuid::from_u128(1)),
+            current_version: Some(fs_protocol::FileVersionId(uuid::Uuid::from_u128(2))),
+            residency: fs_protocol::Residency::Partial { resident_bytes: 1 },
+            transfer: fs_protocol::ProjectedTransfer {
+                phase: fs_protocol::TransferPhase::Idle,
                 progress: None,
                 last_error: None,
                 last_error_at_ms: None,
                 error_truncated: false,
             },
-            policy: crate::model::AvailabilityPolicy::Automatic,
+            policy: fs_protocol::AvailabilityPolicy::Automatic,
             policy_inherited: false,
-            replicas: crate::model::ReplicaEvidence::Unknown,
-            freshness: crate::model::AvailabilityFreshness::default(),
+            replicas: fs_protocol::ProjectedReplicaEvidence::Unknown,
+            freshness: fs_protocol::ProjectedFreshness::default(),
         });
         let mut w = FileExplorerWidget::new();
         w.current_path = d.path().to_path_buf();
@@ -1742,8 +1821,9 @@ mod command_path_tests {
         let mut files = FileExplorerWidget::with_persistence(None, Some(root.path().into()));
         files.navigate(root.path().to_path_buf());
         let resources = crate::files_app::published::tree(&files, &automerge::AutoCommit::new());
-        let mut registry = ui::tilo_actions::ActionRegistry::new();
-        <crate::resource::FileExplorer as ui::tilo_resource::Resource>::register(&mut registry);
+        let registry = ui::tilo_actions::ActionRegistry::with(
+            <crate::resource::FileExplorer as ui::tilo_resource::Resource>::register,
+        );
         // The surface host answers the effect vocabulary beside the window's
         // own operations.
         let mut handlers = Widget::resource_operation_handlers(&files);
@@ -1879,7 +1959,7 @@ mod command_path_tests {
             }
         };
 
-        let opened = show("open", &downloads).unwrap();
+        let opened = show("open-folder", &downloads).unwrap();
         assert_eq!(
             opened["resource"],
             <crate::resource::FileExplorer as ui::tilo_resource::Resource>::KIND
@@ -2414,7 +2494,7 @@ mod command_path_tests {
                 .iter()
                 .find(|action| action.id == "status")
                 .expect("a read-only status action exists in every phase");
-            assert_eq!(status.contract.permission, PermissionRequirement::Read);
+            assert_eq!(status.contract.kind, ActionKind::Read);
             assert_eq!(status.contract.confirmation, ConfirmationPolicy::None);
             let ActionInput::Immediate(encoded) = &status.input else {
                 panic!("status uses the app's opaque row payload")
@@ -2966,7 +3046,7 @@ mod command_path_tests {
                 "replicas_observed_at_ms": null}
         }))
         .unwrap();
-        xattr::set(&file, crate::model::AVAILABILITY_XATTR, &availability).unwrap();
+        xattr::set(&file, fs_protocol::AVAILABILITY_XATTR, &availability).unwrap();
 
         let mut w = FileExplorerWidget::new();
         w.current_path = dir.path().to_path_buf();
@@ -2981,7 +3061,7 @@ mod command_path_tests {
         }));
         assert!(w.apply_command(FileCommand::KeepOffline));
         assert_eq!(
-            xattr::get(&file, crate::model::PIN_XATTR)
+            xattr::get(&file, fs_protocol::PIN_XATTR)
                 .unwrap()
                 .as_deref(),
             Some(b"pinned".as_slice())
@@ -3013,13 +3093,13 @@ mod command_path_tests {
         };
         xattr::set(
             &local,
-            crate::model::AVAILABILITY_XATTR,
+            fs_protocol::AVAILABILITY_XATTR,
             &availability(serde_json::json!({"state": "resident", "bytes": 5})),
         )
         .unwrap();
         xattr::set(
             &remote,
-            crate::model::AVAILABILITY_XATTR,
+            fs_protocol::AVAILABILITY_XATTR,
             &availability(serde_json::json!({"state": "not_resident"})),
         )
         .unwrap();
@@ -3047,13 +3127,13 @@ mod command_path_tests {
         );
         assert!(widget.apply_command(FileCommand::FreeLocalSpace));
         assert_eq!(
-            xattr::get(&local, crate::model::AVAILABILITY_CONTROL_XATTR)
+            xattr::get(&local, fs_protocol::AVAILABILITY_CONTROL_XATTR)
                 .unwrap()
                 .as_deref(),
             Some(b"evict".as_slice())
         );
         assert_eq!(
-            xattr::get(&remote, crate::model::AVAILABILITY_CONTROL_XATTR).unwrap(),
+            xattr::get(&remote, fs_protocol::AVAILABILITY_CONTROL_XATTR).unwrap(),
             None
         );
     }
@@ -3070,22 +3150,25 @@ mod command_path_tests {
         let after = dir.path().join("after.txt");
         std::fs::write(&before, b"shared").unwrap();
         let record = uuid::Uuid::from_u128(0x5151);
-        xattr::set(&before, crate::model::RECORD_ID_XATTR, record.as_bytes()).unwrap();
-        xattr::set(&before, crate::model::SYNC_XATTR, b"projected").unwrap();
+        xattr::set(&before, fs_protocol::RECORD_ID_XATTR, record.as_bytes()).unwrap();
+        xattr::set(&before, fs_protocol::SYNC_XATTR, b"projected").unwrap();
 
         let mut widget = FileExplorerWidget::new();
         widget.load(dir.path().to_path_buf());
+        // A workspace mount is FUSE: its watch reports local edits only, and
+        // remote ones (renames, sync state) are found by the poll.
+        widget.directory_watch.assume_partial_coverage();
         widget.selection.select_only(0);
         widget.scroll_offset.set((0.0, 137.0));
         std::fs::rename(&before, &after).unwrap();
-        xattr::set(&after, crate::model::SYNC_XATTR, b"local").unwrap();
-        widget.next_metadata_refresh = ui::time::now();
+        xattr::set(&after, fs_protocol::SYNC_XATTR, b"local").unwrap();
+        widget.next_metadata_refresh = Some(ui::time::now());
 
         assert!(widget.refresh_metadata_if_due(ui::time::now()));
         assert_eq!(widget.entries[0].path, after);
         assert_eq!(
             widget.entries[0].sync_state,
-            Some(crate::model::SyncState::Local)
+            Some(fs_protocol::SyncState::Local)
         );
         assert_eq!(widget.selection.selected(), vec![0]);
         assert_eq!(widget.selection.primary(), Some(0));
@@ -3119,13 +3202,13 @@ mod command_path_tests {
         };
         xattr::set(
             &automatic,
-            crate::model::AVAILABILITY_XATTR,
+            fs_protocol::AVAILABILITY_XATTR,
             &availability("automatic", false),
         )
         .unwrap();
         xattr::set(
             &pinned,
-            crate::model::AVAILABILITY_XATTR,
+            fs_protocol::AVAILABILITY_XATTR,
             &availability("pinned", false),
         )
         .unwrap();
@@ -3157,16 +3240,13 @@ mod command_path_tests {
 
         w.apply_command(FileCommand::KeepOffline);
         assert_eq!(
-            xattr::get(&automatic, crate::model::PIN_XATTR)
+            xattr::get(&automatic, fs_protocol::PIN_XATTR)
                 .unwrap()
                 .as_deref(),
             Some(b"pinned".as_slice())
         );
-        assert_eq!(xattr::get(&pinned, crate::model::PIN_XATTR).unwrap(), None);
-        assert_eq!(
-            xattr::get(&ordinary, crate::model::PIN_XATTR).unwrap(),
-            None
-        );
+        assert_eq!(xattr::get(&pinned, fs_protocol::PIN_XATTR).unwrap(), None);
+        assert_eq!(xattr::get(&ordinary, fs_protocol::PIN_XATTR).unwrap(), None);
 
         // `refresh` deliberately treats this temp directory as an ordinary
         // non-workspace path. Restore the directly-read projections so the
@@ -3177,22 +3257,19 @@ mod command_path_tests {
         w.selection.select_all(w.entries.len());
         w.apply_command(FileCommand::RemoveOfflinePin);
         assert_eq!(
-            xattr::get(&pinned, crate::model::PIN_XATTR)
+            xattr::get(&pinned, fs_protocol::PIN_XATTR)
                 .unwrap()
                 .as_deref(),
             Some(b"automatic".as_slice())
         );
         assert_eq!(
-            xattr::get(&automatic, crate::model::PIN_XATTR)
+            xattr::get(&automatic, fs_protocol::PIN_XATTR)
                 .unwrap()
                 .as_deref(),
             Some(b"pinned".as_slice()),
             "the opposite policy action must not rewrite an automatic record"
         );
-        assert_eq!(
-            xattr::get(&ordinary, crate::model::PIN_XATTR).unwrap(),
-            None
-        );
+        assert_eq!(xattr::get(&ordinary, fs_protocol::PIN_XATTR).unwrap(), None);
     }
 
     #[cfg(unix)]
@@ -3214,7 +3291,7 @@ mod command_path_tests {
                 "replicas_observed_at_ms": null}
         }))
         .unwrap();
-        xattr::set(&file, crate::model::AVAILABILITY_XATTR, &availability).unwrap();
+        xattr::set(&file, fs_protocol::AVAILABILITY_XATTR, &availability).unwrap();
 
         let mut w = FileExplorerWidget::new();
         w.current_path = dir.path().to_path_buf();
@@ -3236,16 +3313,16 @@ mod command_path_tests {
                 .any(|(_, command)| { *command == Some(FileCommand::RemoveOfflinePin) })
         );
         w.apply_command(FileCommand::RemoveOfflinePin);
-        assert_eq!(xattr::get(&file, crate::model::PIN_XATTR).unwrap(), None);
+        assert_eq!(xattr::get(&file, fs_protocol::PIN_XATTR).unwrap(), None);
     }
 
     fn failed_projected_file_offers_retry_and_availability_details() {
         let mut entry = ent("offline.txt", false, "text/plain");
-        entry.availability = crate::model::AvailabilityProjection::parse(
+        entry.availability = fs_protocol::AvailabilityProjectionV1::parse_xattr(
             &serde_json::to_vec(&serde_json::json!({
                 "schema_version": 1,
                 "record_id": "b0d4e23f-c7cb-4ded-a427-b32cf9da9341",
-                "current_version": null,
+                "current_version": "a0d4e23f-c7cb-4ded-a427-b32cf9da9342",
                 "residency": {"state": "not_resident"},
                 "transfer": {"phase": "idle", "progress": null,
                     "last_error": "No available replica could provide this file",
@@ -3256,7 +3333,8 @@ mod command_path_tests {
                     "local_verified_at_ms": null, "replicas_observed_at_ms": 11}
             }))
             .unwrap(),
-        );
+        )
+        .ok();
         let mut w = FileExplorerWidget::new();
         w.entries = vec![entry];
         w.selection.select_only(0);
@@ -3302,7 +3380,7 @@ mod command_path_tests {
         let mut entry = ent("shared.txt", false, "text/plain");
         entry.record_id =
             Some(*uuid::Uuid::from_u128(0xb0d4_e23f_c7cb_4ded_a427_b32c_f9da_9341).as_bytes());
-        entry.rich_metadata = crate::model::MetadataProjection::parse(
+        entry.rich_metadata = fs_protocol::MetadataProjectionV1::parse_xattr(
             &serde_json::to_vec(&serde_json::json!({
                 "schema_version": 1,
                 "record_id": "b0d4e23f-c7cb-4ded-a427-b32cf9da9341",
@@ -3311,8 +3389,9 @@ mod command_path_tests {
                     "page_count": 4, "codec": "h264", "container": "mp4"}
             }))
             .unwrap(),
-        );
-        entry.share = crate::model::ShareProjection::parse(
+        )
+        .ok();
+        entry.share = fs_protocol::ShareProjectionV1::parse_xattr(
             &serde_json::to_vec(&serde_json::json!({
                 "schema_version": 1,
                 "record_id": "b0d4e23f-c7cb-4ded-a427-b32cf9da9341",
@@ -3332,8 +3411,9 @@ mod command_path_tests {
                 }]
             }))
             .unwrap(),
-        );
-        entry.history = crate::model::HistoryProjection::parse(
+        )
+        .ok();
+        entry.history = fs_protocol::HistoryProjectionV1::parse_xattr(
             &serde_json::to_vec(&serde_json::json!({
                 "schema_version": 1,
                 "record_id": "b0d4e23f-c7cb-4ded-a427-b32cf9da9341",
@@ -3354,7 +3434,8 @@ mod command_path_tests {
                 "conflicts": []
             }))
             .unwrap(),
-        );
+        )
+        .ok();
         let mut w = FileExplorerWidget::new();
         w.entries = vec![entry];
         w.selection.select_only(0);
@@ -3397,12 +3478,89 @@ mod command_path_tests {
         assert!(w.collab_panel.is_none());
     }
 
+    /// A version an agent's own device signed reaches Workspace Activity as
+    /// the agent's, on behalf of its person, as the file's History names it.
+    #[test]
+    fn history_activity_names_an_agents_version_as_the_agent_for_its_person() {
+        let root = ed25519_dalek::SigningKey::from_bytes(&[51; 32]);
+        let person = root.verifying_key().to_bytes();
+        let agent_key = ed25519_dalek::SigningKey::from_bytes(&[52; 32]);
+        let mut certificate = tilo_user_identity::DeviceCert {
+            user_public_key: person,
+            device_public_key: agent_key.verifying_key().to_bytes(),
+            device_label: "Agent: Scribe".into(),
+            capabilities: tilo_user_identity::CertificationPolicy::agent().ceiling,
+            issued_at_ns: 1,
+            expires_at_ns: None,
+            signature: [0; 64],
+        };
+        tilo_user_identity::sign_device_cert(&mut certificate, &root).unwrap();
+        let device = certificate.device_public_key;
+        let version = "c0d4e23f-c7cb-4ded-a427-b32cf9da9342";
+        let record = "c0d4e23f-c7cb-4ded-a427-b32cf9da9341";
+        let mut entry = ent("report.txt", false, "text/plain");
+        entry.history = fs_protocol::HistoryProjectionV1::parse_xattr(
+            &serde_json::to_vec(&serde_json::json!({
+                "schema_version": 1, "record_id": record, "total_versions": 1,
+                "versions_truncated": false, "heads": [version],
+                "versions": [
+                    {"id": version, "record_id": record, "parents": [],
+                     "actor": {"person": person.to_vec(), "device": device.to_vec()},
+                     "timestamp_ms": 9, "content_hash": vec![3; 32], "metadata_hash": vec![4; 32], "provenance": "Edit"}
+                ], "conflicts_truncated": false, "conflicts": []
+            }))
+            .unwrap(),
+        ).ok();
+        let mut w = FileExplorerWidget::new();
+        w.trusted_humans = crate::identity_directory::TrustedHumanDirectory::from_projection_v2(
+            tilo_user_identity::TrustedIdentityProjectionV2 {
+                schema_version: tilo_user_identity::TRUSTED_IDENTITY_PROJECTION_VERSION,
+                humans: vec![tilo_user_identity::GovernedHumanIdentityV2 {
+                    root_public_key: person,
+                    display_name: "Ada Lovelace".to_string(),
+                    devices: vec![tilo_user_identity::GovernedDeviceIdentityV2 {
+                        certificate,
+                        agent: Some(tilo_user_identity::GovernedAgentIdentityV2 {
+                            agent_id: "scribe".into(),
+                            label: "Scribe".into(),
+                            color: [10, 20, 30],
+                        }),
+                    }],
+                }],
+            },
+        )
+        .unwrap();
+        w.entries = vec![entry];
+        w.selection.select_only(0);
+        let selected = fs_protocol::FileVersionId(uuid::Uuid::parse_str(version).unwrap());
+        w.apply_command(FileCommand::ShowInWorkspaceActivity {
+            record_id: record.into(),
+            version_id: selected,
+        });
+        let Some(ui::widget::AppHostIntent::ShowWorkspaceActivity {
+            entry: Some(entry), ..
+        }) = w.take_host_intent()
+        else {
+            panic!("Files hands the selected version to Workspace Activity");
+        };
+        assert_eq!(entry.author.name, "Scribe · Agent, for Ada Lovelace");
+        assert_eq!(entry.author.relation, ui::widget::AuthorRelation::Software);
+        let attribution = entry.author.attribution.expect("who acted for whom");
+        assert_eq!(attribution.actor, "agent:scribe");
+        assert_eq!(attribution.actor_name, "Scribe");
+        assert_eq!(attribution.on_behalf_of, Some(hex::encode(person)));
+        assert_eq!(
+            attribution.on_behalf_of_name.as_deref(),
+            Some("Ada Lovelace")
+        );
+    }
+
     fn history_activity_intent_preserves_selected_version_and_signed_identity() {
         let older = "a0d4e23f-c7cb-4ded-a427-b32cf9da9342";
         let current = "a0d4e23f-c7cb-4ded-a427-b32cf9da9344";
         let record = "b0d4e23f-c7cb-4ded-a427-b32cf9da9341";
         let mut entry = ent("report.txt", false, "text/plain");
-        entry.history = crate::model::HistoryProjection::parse(
+        entry.history = fs_protocol::HistoryProjectionV1::parse_xattr(
             &serde_json::to_vec(&serde_json::json!({
                 "schema_version": 1, "record_id": record, "total_versions": 2,
                 "versions_truncated": false, "heads": [current],
@@ -3416,12 +3574,12 @@ mod command_path_tests {
                 ], "conflicts_truncated": false, "conflicts": []
             }))
             .unwrap(),
-        );
+        ).ok();
         let mut w = FileExplorerWidget::new();
         w.entries = vec![entry];
         w.selection.select_only(0);
         w.apply_command(FileCommand::ShowHistory);
-        let selected = collab_types::FileVersionId(uuid::Uuid::parse_str(older).unwrap());
+        let selected = fs_protocol::FileVersionId(uuid::Uuid::parse_str(older).unwrap());
         w.apply_command(FileCommand::ShowInWorkspaceActivity {
             record_id: record.into(),
             version_id: selected,
@@ -3455,16 +3613,16 @@ mod command_path_tests {
         std::fs::write(&file, b"report").unwrap();
         xattr::set(
             dir.path(),
-            crate::model::SHARE_CONTROL_XATTR,
+            fs_protocol::SHARE_CONTROL_XATTR,
             b"/run/tilo/app/tilo-fs-share.sock",
         )
         .unwrap();
         let root_key = ed25519_dalek::SigningKey::from_bytes(&[81; 32]);
         let person_bytes = root_key.verifying_key().to_bytes();
-        let person = collab_types::Ed25519PublicKey::from_bytes(person_bytes);
+        let person = fs_protocol::Ed25519PublicKey::from_bytes(person_bytes);
         let device_key = ed25519_dalek::SigningKey::from_bytes(&[82; 32]);
         let device =
-            collab_types::Ed25519PublicKey::from_bytes(device_key.verifying_key().to_bytes());
+            fs_protocol::Ed25519PublicKey::from_bytes(device_key.verifying_key().to_bytes());
         let mut certificate = tilo_user_identity::DeviceCert {
             user_public_key: person_bytes,
             device_public_key: device_key.verifying_key().to_bytes(),
@@ -3483,7 +3641,10 @@ mod command_path_tests {
                 humans: vec![tilo_user_identity::GovernedHumanIdentityV2 {
                     root_public_key: person_bytes,
                     display_name: "Ada Lovelace".to_string(),
-                    devices: vec![tilo_user_identity::GovernedDeviceIdentityV2 { certificate }],
+                    devices: vec![tilo_user_identity::GovernedDeviceIdentityV2 {
+                        certificate,
+                        agent: None,
+                    }],
                 }],
             },
         )
@@ -3507,7 +3668,7 @@ mod command_path_tests {
                     == Some(FileCommand::CreateShare(
                         crate::sharing::ShareComposerRequest {
                             subject: crate::sharing::ShareSubjectChoice::Named(person),
-                            permission: collab_types::FilePermission::Edit,
+                            permission: fs_protocol::FilePermission::Edit,
                             expiry: crate::sharing::ShareExpiryChoice::Never,
                             link_uses: None,
                             recipient_devices: vec![device],
@@ -3523,7 +3684,7 @@ mod command_path_tests {
                     == Some(FileCommand::CreateShare(
                         crate::sharing::ShareComposerRequest {
                             subject: crate::sharing::ShareSubjectChoice::Link,
-                            permission: collab_types::FilePermission::Edit,
+                            permission: fs_protocol::FilePermission::Edit,
                             expiry: crate::sharing::ShareExpiryChoice::Month,
                             link_uses: Some(crate::sharing::LinkUseChoice::Bounded(10)),
                             recipient_devices: Vec::new(),
@@ -3531,22 +3692,20 @@ mod command_path_tests {
                     ))
         }));
 
-        w.entries[0].share = Some(crate::model::ShareProjection {
+        w.entries[0].share = Some(fs_protocol::ShareProjectionV1 {
             schema_version: 1,
-            record_id: uuid::Uuid::from_u128(82).to_string(),
+            record_id: fs_protocol::FileRecordId(uuid::Uuid::from_u128(82)),
             observed_at_ms: 1,
-            grants: vec![crate::model::ShareGrantProjection {
-                grant_id: uuid::Uuid::from_u128(83).to_string(),
-                subject: crate::model::ShareSubject::Person {
-                    person: *person.as_bytes(),
-                },
-                permission: crate::model::FilePermission::Edit,
+            grants: vec![fs_protocol::ShareGrantProjectionV1 {
+                grant_id: uuid::Uuid::from_u128(83),
+                subject: fs_protocol::ShareSubjectProjection::Person { person },
+                permission: fs_protocol::FilePermission::Edit,
                 expires_at_ms: None,
                 revoked: false,
                 expired: false,
                 used: false,
                 exhausted: false,
-                status: crate::model::ShareGrantStatus::Active,
+                status: fs_protocol::ShareGrantStatus::Active,
                 redemptions: 0,
                 max_redemptions: None,
             }],
@@ -3581,7 +3740,10 @@ mod command_path_tests {
                         signature: [0; 64],
                     };
                     tilo_user_identity::sign_device_cert(&mut certificate, root).unwrap();
-                    tilo_user_identity::GovernedDeviceIdentityV2 { certificate }
+                    tilo_user_identity::GovernedDeviceIdentityV2 {
+                        certificate,
+                        agent: None,
+                    }
                 })
                 .collect();
             tilo_user_identity::TrustedIdentityProjectionV2 {
@@ -3597,7 +3759,7 @@ mod command_path_tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("trusted-identities.json");
         let root = ed25519_dalek::SigningKey::from_bytes(&[93; 32]);
-        let person = collab_types::Ed25519PublicKey::from_bytes(root.verifying_key().to_bytes());
+        let person = fs_protocol::Ed25519PublicKey::from_bytes(root.verifying_key().to_bytes());
         let mut widget = FileExplorerWidget::new();
 
         std::fs::write(
@@ -3660,7 +3822,7 @@ mod command_path_tests {
         let file = nested.join("renamed.txt");
         std::fs::create_dir(&nested).unwrap();
         std::fs::write(&file, b"hello").unwrap();
-        xattr::set(&file, crate::model::RECORD_ID_XATTR, record_id.as_bytes()).unwrap();
+        xattr::set(&file, fs_protocol::RECORD_ID_XATTR, record_id.as_bytes()).unwrap();
         let projection = serde_json::json!({
             "schema_version": 1,
             "truncated": false,
@@ -3672,7 +3834,7 @@ mod command_path_tests {
         });
         xattr::set(
             dir.path(),
-            crate::model::RECORD_INDEX_XATTR,
+            fs_protocol::projection::RECORD_INDEX_XATTR,
             &serde_json::to_vec(&projection).unwrap(),
         )
         .unwrap();
@@ -3690,41 +3852,26 @@ mod command_path_tests {
         let source = ui::framework::testing::search_source::<crate::resource::FileExplorer>(
             widget.search_entries_shown(),
         );
-        // Find the collaborative hit by its stable record action rather than
+        // Find the collaborative hit by its stable record anchor rather than
         // by position or a developer's local account settings.
         let hit = ui::search::SearchProvider::search(&source, "renamed")
             .into_iter()
             .find(|result| {
-                result.action_address()
-                    == Some(crate::search_provider::record_reveal_address(record_id))
+                result.action_id == crate::search_provider::record_resource_id(record_id)
             })
             .expect("collaborative record is searchable");
-        let mut doc = automerge::AutoCommit::new();
-        let address = hit.action_address().expect("canonical reveal action");
-        let mut resources = crate::files_app::published::tree(&widget, &doc);
-        resources.push(
-            widget
-                .published_row(&address.resource)
-                .expect("late record materializes exactly for this address"),
+        let row = widget
+            .published_row(&hit.anchor())
+            .expect("late record materializes exactly for this anchor");
+        assert!(
+            row.actions
+                .iter()
+                .any(|spec| spec.id == crate::search_provider::REVEAL_ACTION),
+            "the anchored row reveals the record"
         );
-        let spec = ui::tilo_actions::door::resolve(&resources, &address)
-            .expect("search reveal action is exported");
-        let kind = spec.kind;
-        let encoded =
-            ui::tilo_actions::door::encode_json(&resources, &address, &serde_json::Map::new())
-                .expect("reveal action encodes");
-        assert!(matches!(
-            crate::files_app::published::start(
-                &mut widget,
-                kind,
-                &encoded.type_id,
-                &encoded.payload,
-                &mut doc,
-                &automerge::ROOT
-            )
-            .unwrap(),
-            Some(ui::framework::Effected::Done(_))
-        ));
+        widget
+            .open_anchor(&hit.anchor())
+            .expect("opening the anchor reveals the record");
         assert_eq!(widget.current_path, nested);
         assert_eq!(widget.selection.primary(), Some(0));
         assert_eq!(widget.entries[0].path, file);
@@ -3741,7 +3888,7 @@ mod command_path_tests {
         std::fs::write(&file, b"report").unwrap();
         xattr::set(
             dir.path(),
-            crate::model::SHARE_CONTROL_XATTR,
+            fs_protocol::SHARE_CONTROL_XATTR,
             socket.as_os_str().as_encoded_bytes(),
         )
         .unwrap();
@@ -3756,13 +3903,13 @@ mod command_path_tests {
             stream.read_exact(&mut request).unwrap();
             seen_tx.send(()).unwrap();
             release_rx.recv().unwrap();
-            let response = collab_types::ShareControlResponseV1 {
-                protocol_version: collab_types::SHARE_CONTROL_VERSION,
-                result: collab_types::ShareControlResultV1::BearerCreatedV2 {
+            let response = fs_protocol::ShareControlResponseV1 {
+                protocol_version: fs_protocol::SHARE_CONTROL_VERSION,
+                result: fs_protocol::ShareControlResultV1::BearerCreatedV2 {
                     uri: "tilo-file://bounded".into(),
                 },
             };
-            let response = collab_types::canonical_bytes(&response).unwrap();
+            let response = fs_protocol::canonical::canonical_bytes(&response).unwrap();
             stream
                 .write_all(&(response.len() as u32).to_be_bytes())
                 .unwrap();
@@ -3789,7 +3936,7 @@ mod command_path_tests {
         assert!(widget.apply_command(FileCommand::CreateShare(
             crate::sharing::ShareComposerRequest {
                 subject: crate::sharing::ShareSubjectChoice::Link,
-                permission: collab_types::FilePermission::Edit,
+                permission: fs_protocol::FilePermission::Edit,
                 expiry: crate::sharing::ShareExpiryChoice::Month,
                 link_uses: Some(crate::sharing::LinkUseChoice::Bounded(10)),
                 recipient_devices: Vec::new(),
@@ -3813,11 +3960,11 @@ mod command_path_tests {
 
     fn named_share_status_distinguishes_pending_from_delivered() {
         let pending = t_args(
-            named_delivery_status_key(collab_types::NamedShareDeliveryStateV1::Pending),
+            named_delivery_status_key(fs_protocol::NamedShareDeliveryStateV1::Pending),
             &[arg("person", "Ada")],
         );
         let delivered = t_args(
-            named_delivery_status_key(collab_types::NamedShareDeliveryStateV1::Delivered),
+            named_delivery_status_key(fs_protocol::NamedShareDeliveryStateV1::Delivered),
             &[arg("person", "Ada")],
         );
         assert!(pending.contains("pending"));
@@ -3829,7 +3976,7 @@ mod command_path_tests {
         let previous = "a0d4e23f-c7cb-4ded-a427-b32cf9da9342";
         let current = "a0d4e23f-c7cb-4ded-a427-b32cf9da9344";
         let mut entry = ent("history.txt", false, "text/plain");
-        entry.history = crate::model::HistoryProjection::parse(
+        entry.history = fs_protocol::HistoryProjectionV1::parse_xattr(
             &serde_json::to_vec(&serde_json::json!({
                 "schema_version": 1,
                 "record_id": "b0d4e23f-c7cb-4ded-a427-b32cf9da9341",
@@ -3859,11 +4006,12 @@ mod command_path_tests {
                 "conflicts": []
             }))
             .unwrap(),
-        );
+        )
+        .ok();
         let mut widget = FileExplorerWidget::new();
         widget.entries = vec![entry];
         widget.selection.select_only(0);
-        let expected = collab_types::FileVersionId(uuid::Uuid::parse_str(previous).unwrap());
+        let expected = fs_protocol::FileVersionId(uuid::Uuid::parse_str(previous).unwrap());
         assert!(
             widget
                 .context_menu_spec(&[])
@@ -3891,7 +4039,7 @@ mod command_path_tests {
         let conflict = uuid::Uuid::parse_str("c0d4e23f-c7cb-4ded-a427-b32cf9da9343").unwrap();
         let mut entry = ent("conflicted.qdoc", false, "application/x-qdoc");
         entry.content_hash = Some([5; 32]);
-        entry.history = crate::model::HistoryProjection::parse(
+        entry.history = fs_protocol::HistoryProjectionV1::parse_xattr(
             &serde_json::to_vec(&serde_json::json!({
                 "schema_version": 1,
                 "record_id": "b0d4e23f-c7cb-4ded-a427-b32cf9da9341",
@@ -3927,18 +4075,19 @@ mod command_path_tests {
                 }]
             }))
             .unwrap(),
-        );
+        )
+        .ok();
         let mut widget = FileExplorerWidget::new();
         widget.entries = vec![entry];
         widget.selection.select_only(0);
         let menu = widget.context_menu_spec(&[]);
-        let current_id = collab_types::FileVersionId(uuid::Uuid::parse_str(current).unwrap());
-        let other_id = collab_types::FileVersionId(uuid::Uuid::parse_str(other).unwrap());
+        let current_id = fs_protocol::FileVersionId(uuid::Uuid::parse_str(current).unwrap());
+        let other_id = fs_protocol::FileVersionId(uuid::Uuid::parse_str(other).unwrap());
         assert!(menu.iter().any(|(_, command)| {
             *command
                 == Some(FileCommand::ResolveConflict {
                     conflict_id: conflict,
-                    strategy: collab_types::ConflictStrategy::KeepCurrent,
+                    strategy: fs_protocol::ConflictStrategy::KeepCurrent,
                     version_id: current_id,
                 })
         }));
@@ -3946,7 +4095,7 @@ mod command_path_tests {
             *command
                 == Some(FileCommand::ResolveConflict {
                     conflict_id: conflict,
-                    strategy: collab_types::ConflictStrategy::UseOther,
+                    strategy: fs_protocol::ConflictStrategy::UseOther,
                     version_id: other_id,
                 })
         }));
@@ -3954,7 +4103,7 @@ mod command_path_tests {
             *command
                 == Some(FileCommand::ResolveConflict {
                     conflict_id: conflict,
-                    strategy: collab_types::ConflictStrategy::KeepBoth,
+                    strategy: fs_protocol::ConflictStrategy::KeepBoth,
                     version_id: other_id,
                 })
         }));
@@ -3970,7 +4119,7 @@ mod command_path_tests {
 
     fn merge_review_only_enables_apply_after_a_safe_daemon_preflight() {
         let conflict_id = uuid::Uuid::from_u128(42);
-        let version_id = collab_types::FileVersionId(uuid::Uuid::from_u128(43));
+        let version_id = fs_protocol::FileVersionId(uuid::Uuid::from_u128(43));
         let mut widget = FileExplorerWidget::new();
         widget.show_collab_panel(CollabPanel {
             history: None,
@@ -3985,8 +4134,8 @@ mod command_path_tests {
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((
             conflict_id,
             version_id,
-            Ok(collab_types::MergePreflightProjectionV1 {
-                schema_version: collab_types::MERGE_PREFLIGHT_VERSION,
+            Ok(fs_protocol::MergePreflightProjectionV1 {
+                schema_version: fs_protocol::MERGE_PREFLIGHT_VERSION,
                 conflict_id,
                 safe: true,
                 explanation: "Changes are disjoint.".into(),
@@ -4009,8 +4158,8 @@ mod command_path_tests {
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((
             conflict_id,
             version_id,
-            Ok(collab_types::MergePreflightProjectionV1 {
-                schema_version: collab_types::MERGE_PREFLIGHT_VERSION,
+            Ok(fs_protocol::MergePreflightProjectionV1 {
+                schema_version: fs_protocol::MERGE_PREFLIGHT_VERSION,
                 conflict_id,
                 safe: false,
                 explanation: "Both revisions changed the same text region.".into(),
@@ -4030,7 +4179,7 @@ mod command_path_tests {
     fn late_merge_preflight_cannot_repurpose_an_unrelated_confirmation_sheet() {
         let stale_conflict = uuid::Uuid::from_u128(50);
         let current_conflict = uuid::Uuid::from_u128(51);
-        let version_id = collab_types::FileVersionId(uuid::Uuid::from_u128(52));
+        let version_id = fs_protocol::FileVersionId(uuid::Uuid::from_u128(52));
         let mut widget = FileExplorerWidget::new();
         widget.show_collab_panel(CollabPanel {
             history: None,
@@ -4046,8 +4195,8 @@ mod command_path_tests {
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((
             stale_conflict,
             version_id,
-            Ok(collab_types::MergePreflightProjectionV1 {
-                schema_version: collab_types::MERGE_PREFLIGHT_VERSION,
+            Ok(fs_protocol::MergePreflightProjectionV1 {
+                schema_version: fs_protocol::MERGE_PREFLIGHT_VERSION,
                 conflict_id: stale_conflict,
                 safe: true,
                 explanation: "Changes are disjoint.".into(),
@@ -4069,14 +4218,14 @@ mod command_path_tests {
         let socket = root.path().join("share-control.sock");
         xattr::set(
             root.path(),
-            crate::model::SHARE_CONTROL_XATTR,
+            fs_protocol::SHARE_CONTROL_XATTR,
             socket.as_os_str().as_encoded_bytes(),
         )
         .unwrap();
         let grant = uuid::Uuid::parse_str("c0d4e23f-c7cb-4ded-a427-b32cf9da9343").unwrap();
         let mut entry = ent("shared.txt", false, "text/plain");
         entry.path = file;
-        entry.share = crate::model::ShareProjection::parse(
+        entry.share = fs_protocol::ShareProjectionV1::parse_xattr(
             &serde_json::to_vec(&serde_json::json!({
                 "schema_version": 1,
                 "record_id": "b0d4e23f-c7cb-4ded-a427-b32cf9da9341",
@@ -4096,7 +4245,8 @@ mod command_path_tests {
                 }]
             }))
             .unwrap(),
-        );
+        )
+        .ok();
         let mut w = FileExplorerWidget::new();
         w.workspace_roots = vec![root.path().to_path_buf()];
         w.entries = vec![entry];
@@ -4279,33 +4429,23 @@ mod responsive_body_tests {
         }
 
         fn dispatch(&mut self, ev: &winit::event::WindowEvent) {
-            let mut handled = false;
-            let mut focus = None;
-            self.w.handle_event(
-                ev,
-                &mut ui::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &winit::event::Modifiers::default(),
-                    state: ui::widget::Edits::lend(&mut self.state.doc),
-                    path: &self.state.root,
-                    handled: &mut handled,
-                    focus_target: &mut focus,
-                    node_id: self.node,
-                    taffy: &self.taffy,
-                },
-            );
+            ui::testing::Dispatch::new()
+                .doc(&mut self.state.doc)
+                .path(&self.state.root)
+                .layout(&self.taffy, self.node)
+                .send(&mut self.w, ev);
         }
 
         fn cursor(&mut self, x: f64, y: f64) {
             self.dispatch(&winit::event::WindowEvent::CursorMoved {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 position: winit::dpi::PhysicalPosition::new(x, y),
             });
         }
 
         fn right_press(&mut self) {
             self.dispatch(&winit::event::WindowEvent::MouseInput {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 state: winit::event::ElementState::Pressed,
                 button: winit::event::MouseButton::Right,
             });
@@ -4313,7 +4453,7 @@ mod responsive_body_tests {
 
         fn left_release(&mut self) {
             self.dispatch(&winit::event::WindowEvent::MouseInput {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 state: winit::event::ElementState::Released,
                 button: winit::event::MouseButton::Left,
             });
@@ -4321,7 +4461,7 @@ mod responsive_body_tests {
 
         fn left_press(&mut self) {
             self.dispatch(&winit::event::WindowEvent::MouseInput {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 state: winit::event::ElementState::Pressed,
                 button: winit::event::MouseButton::Left,
             });
@@ -4364,47 +4504,37 @@ mod responsive_body_tests {
         fn draw(&mut self) {
             let theme = Theme::dark();
             let presence = ui::presence::PresenceCtx::empty();
-            let permissions = ui::permissions::PermissionContext::permissive();
             let mut scene = vello::Scene::new();
-            self.w.draw_with_presence(
+            self.w.draw(
                 &mut scene,
                 vello::kurbo::Affine::IDENTITY,
                 &mut self.tr,
                 &theme,
                 &presence,
-                &permissions,
             );
         }
 
         fn press_named(&mut self, key: winit::keyboard::NamedKey) {
-            let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
-            ev.logical_key = winit::keyboard::Key::Named(key);
-            ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-                winit::keyboard::NativeKeyCode::Unidentified,
+            let ev = ui::synthetic_input::key_event(
+                winit::keyboard::Key::Named(key),
+                None,
+                winit::event::ElementState::Pressed,
             );
-            ev.location = winit::keyboard::KeyLocation::Standard;
-            ev.state = winit::event::ElementState::Pressed;
-            ev.repeat = false;
-            ev.text = None;
             self.dispatch(&winit::event::WindowEvent::KeyboardInput {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 event: ev,
                 is_synthetic: false,
             });
         }
 
         fn type_char(&mut self, s: &str) {
-            let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
-            ev.logical_key = winit::keyboard::Key::Character(winit::keyboard::SmolStr::new(s));
-            ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-                winit::keyboard::NativeKeyCode::Unidentified,
+            let ev = ui::synthetic_input::key_event(
+                winit::keyboard::Key::Character(winit::keyboard::SmolStr::new(s)),
+                Some(winit::keyboard::SmolStr::new(s)),
+                winit::event::ElementState::Pressed,
             );
-            ev.location = winit::keyboard::KeyLocation::Standard;
-            ev.state = winit::event::ElementState::Pressed;
-            ev.repeat = false;
-            ev.text = Some(winit::keyboard::SmolStr::new(s));
             self.dispatch(&winit::event::WindowEvent::KeyboardInput {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 event: ev,
                 is_synthetic: false,
             });
@@ -5351,7 +5481,7 @@ mod accessibility_tests {
             Some(t("files-destructive-eviction-confirm").as_str())
         );
         assert_eq!(
-            xattr::get(&file, crate::model::AVAILABILITY_CONTROL_XATTR).unwrap(),
+            xattr::get(&file, fs_protocol::AVAILABILITY_CONTROL_XATTR).unwrap(),
             None,
             "opening the warning must not perform the destructive operation"
         );
@@ -5362,7 +5492,7 @@ mod accessibility_tests {
         widget.close_collab_panel();
         assert!(widget.apply_command(command));
         assert_eq!(
-            xattr::get(&file, crate::model::AVAILABILITY_CONTROL_XATTR)
+            xattr::get(&file, fs_protocol::AVAILABILITY_CONTROL_XATTR)
                 .unwrap()
                 .as_deref(),
             Some(b"evict-destructive".as_slice())
@@ -6153,7 +6283,7 @@ mod recent_resource_tests {
                 "Recent navigation and device history do not mutate shared files"
             );
         }
-        app.set_role(ui::permissions::Role::Denied);
+        app.leave_room();
         for action in ["reveal", "forget-recent"] {
             assert!(app.call_on(&row, action, serde_json::json!({})).is_err());
         }
@@ -6267,23 +6397,209 @@ fn completed_clipboard_undo_feedback_survives_the_actual_listing_refresh() {
     let home = tempfile::tempdir().unwrap();
     let mut widget = FileExplorerWidget::with_persistence(None, Some(home.path().to_owned()));
     widget.navigate(home.path().to_owned());
-    widget.follow_ops(&[]);
+    widget.follow_ops(&ui::tilo_resource::Outbox::new());
     let operation = "e44ac38c-627f-48a9-ad92-4a6cdf249216".to_owned();
-    let queued = crate::file_ops::QueuedOp {
-        id: "clipboard-undo".into(),
-        device: "local".into(),
-        order: 0,
-        op: crate::file_ops::FileOp::Revert {
-            op: operation.clone(),
+    let mut ops = ui::tilo_resource::Outbox::new();
+    let id = ops.push(
+        ui::tilo_resource::Id::from_raw("clipboard-undo"),
+        crate::resource::FileTask {
+            device: "local".into(),
+            op: crate::file_ops::FileOp::Revert {
+                op: operation.clone(),
+            },
         },
-        outcome: Some(crate::file_ops::Outcome::Done {
-            changes: vec![crate::file_ops::Change::ClipboardUndo { operation }],
-        }),
-    };
-    widget.follow_ops(&[queued]);
+    );
+    ops.settle(
+        &id,
+        ui::tilo_resource::Settled::Done(vec![crate::file_ops::Change::ClipboardUndo {
+            operation,
+        }]),
+    );
+    widget.follow_ops(&ops);
     assert_eq!(
         widget.status.as_deref(),
         Some(t("files-clipboard-undone").as_str())
     );
     assert!(widget.entries.is_empty());
+}
+
+mod oauth_cloud_location_tests {
+    use super::*;
+    use crate::remote_accounts::{self, RemoteAccountHealth};
+
+    const PROVIDERS: [(&str, &str); 4] = [
+        ("a-google", remote_accounts::GOOGLE_DRIVE_TYPE),
+        ("b-onedrive", remote_accounts::ONEDRIVE_TYPE),
+        ("c-dropbox", remote_accounts::DROPBOX_TYPE),
+        ("d-icloud", remote_accounts::ICLOUD_DRIVE_TYPE),
+    ];
+
+    fn fixture_store(root: &Path) -> accounts::AccountStore {
+        let mut store = accounts::AccountStore::new();
+        for (id, provider) in PROVIDERS {
+            let mut account = accounts::Account::new(id, provider);
+            account.display_name = "Cloud".into();
+            // Projection must select only public provider facts, not forward
+            // arbitrary stored configuration or imply authenticated access.
+            account.config = serde_json::json!({"unsupported_private_field":"secret-sentinel"});
+            store.upsert(account);
+        }
+        store.save_in(root).unwrap();
+        accounts::AccountSyncReporter::in_root(accounts::AccountId::from("a-google"), root)
+            .offline()
+            .unwrap();
+        store
+    }
+
+    #[test]
+    fn canonical_oauth_accounts_publish_sidebar_resources_and_open_exact_cloud_mounts() {
+        let config = tempfile::tempdir().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let _store = fixture_store(config.path());
+        let mut widget = FileExplorerWidget::with_persistence_dirs(
+            None,
+            Some(home.path().to_owned()),
+            favorites::UserDirs::default(),
+        );
+        widget.accounts_root = Some(config.path().to_owned());
+        widget.refresh_external_search_catalogs();
+        let mut document = automerge::AutoCommit::new();
+        let accounts = widget.remote_account_snapshot();
+        assert_eq!(accounts.len(), PROVIDERS.len());
+        let first = accounts
+            .iter()
+            .find(|account| account.id.as_str() == "a-google")
+            .unwrap();
+        assert_eq!(first.health, RemoteAccountHealth::Offline);
+        assert!(
+            accounts
+                .iter()
+                .filter(|account| account.id.as_str() != "a-google")
+                .all(|account| account.health == RemoteAccountHealth::NeverChecked)
+        );
+        for (index, (id, provider)) in PROVIDERS.iter().enumerate() {
+            let account = accounts
+                .iter()
+                .find(|account| account.id.as_str() == *id)
+                .unwrap();
+            assert_eq!(remote_accounts::type_id(account.kind).as_str(), *provider);
+            let name = if index == 0 {
+                "Cloud".into()
+            } else {
+                format!("Cloud ({})", index.checked_add(1).unwrap())
+            };
+            let mount = home.path().join("Remote").join(name);
+            assert_eq!(account.mount.as_ref(), Some(&mount));
+            std::fs::create_dir_all(&mount).unwrap();
+            std::fs::write(mount.join("Selected-provider.txt"), id.as_bytes()).unwrap();
+            let places = widget.current_places().sections();
+            assert!(places.iter().flat_map(|section| &section.items).any(|row| {
+                row.id == format!("loc:{}", mount.display()) && row.label == "Cloud"
+            }));
+            let resource_id = remote_accounts::resource_id(&account.id);
+            let resources = crate::files_app::published::tree(&widget, &document);
+            let resource = resources
+                .iter()
+                .flat_map(|root| &root.children)
+                .find(|resource| resource.id.as_str() == resource_id)
+                .unwrap();
+            assert_eq!(resource.kind, "files.remote-account");
+            let open = resource
+                .actions
+                .iter()
+                .find(|action| action.id == crate::search_provider::REMOTE_ACCOUNT_OPEN_ACTION)
+                .unwrap();
+            assert_eq!(open.contract.availability, Availability::Available);
+            assert!(
+                !serde_json::to_string(&resource.presentation)
+                    .unwrap()
+                    .contains("secret-sentinel")
+            );
+            assert!(matches!(
+                crate::files_app::published::invoke(
+                    &mut widget,
+                    &mut document,
+                    &resource_id,
+                    crate::search_provider::REMOTE_ACCOUNT_OPEN_ACTION,
+                    &serde_json::json!({})
+                )
+                .unwrap(),
+                Some(ui::framework::Effected::Done(_))
+            ));
+            assert_eq!(widget.current_path, mount);
+            assert_eq!(
+                std::fs::read(widget.current_path.join("Selected-provider.txt")).unwrap(),
+                id.as_bytes()
+            );
+        }
+        assert!(
+            !accounts::vault_dir_in(config.path()).exists(),
+            "projection and open must not create credential custody"
+        );
+    }
+
+    #[test]
+    fn disabled_and_removed_oauth_accounts_update_existing_places_and_semantic_actions() {
+        let config = tempfile::tempdir().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let mut store = fixture_store(config.path());
+        let mut disabled = store
+            .get(&accounts::AccountId::from("c-dropbox"))
+            .unwrap()
+            .clone();
+        disabled.enabled = false;
+        store.upsert(disabled);
+        store.save_in(config.path()).unwrap();
+        let mut widget = FileExplorerWidget::with_persistence_dirs(
+            None,
+            Some(home.path().to_owned()),
+            favorites::UserDirs::default(),
+        );
+        widget.accounts_root = Some(config.path().to_owned());
+        widget.refresh_external_search_catalogs();
+        let mut document = automerge::AutoCommit::new();
+        let places = widget.current_places().sections();
+        assert!(places.iter().flat_map(|section| &section.items).any(|row| {
+            row.id == "account:c-dropbox" && row.secondary.as_deref() == Some("Disabled")
+        }));
+        let id = remote_accounts::resource_id(&accounts::AccountId::from("c-dropbox"));
+        let resources = crate::files_app::published::tree(&widget, &document);
+        let resource = resources
+            .iter()
+            .flat_map(|root| &root.children)
+            .find(|resource| resource.id.as_str() == id)
+            .unwrap();
+        assert!(resource.actions.iter().any(|action| {
+            action.id == crate::search_provider::REMOTE_ACCOUNT_OPEN_ACTION
+                && matches!(&action.contract.availability, Availability::Unavailable { code, .. } if code == "account_disabled")
+        }));
+        store.remove(&accounts::AccountId::from("c-dropbox"));
+        store.save_in(config.path()).unwrap();
+        widget.refresh_external_search_catalogs();
+        assert!(
+            !widget
+                .current_places()
+                .sections()
+                .iter()
+                .flat_map(|section| &section.items)
+                .any(|row| row.id == "account:c-dropbox")
+        );
+        let resources = crate::files_app::published::tree(&widget, &document);
+        assert!(
+            !resources
+                .iter()
+                .flat_map(|root| &root.children)
+                .any(|resource| resource.id.as_str() == id)
+        );
+        assert!(
+            crate::files_app::published::invoke(
+                &mut widget,
+                &mut document,
+                &id,
+                crate::search_provider::REMOTE_ACCOUNT_OPEN_ACTION,
+                &serde_json::json!({})
+            )
+            .is_err()
+        );
+    }
 }

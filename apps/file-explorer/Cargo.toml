@@ -31,7 +31,9 @@ cloud-source = { path = "../../crates/system/cloud-source" }
 # Source of truth for which extensions are editable documents (so the file
 # manager and the codecs agree on what opens in the word processor).
 tilo-doc-codecs = { path = "../../crates/doc/tilo-doc-codecs", default-features = false }
-collab-types = { path = "../../crates/collab/collab-types" }
+# File records, the share/recipient control protocols and their canonical
+# encoding; the app needs nothing else from the collaboration core.
+fs-protocol = { path = "../../crates/system/fs-protocol" }
 tilo-user-identity = { path = "../../crates/collab/tilo-user-identity" }
 ed25519-dalek.workspace = true
 runtime-portal = { path = "../../crates/runtime/runtime-portal" }
@@ -44,7 +46,6 @@ sha2.workspace = true
 # Shared thumbnail generator and cache. PDF previews use dynamically loaded
 # pdfium and fall back to a badge; video remains a badge in this crate.
 tilo-thumbnail = { path = "../../crates/media/thumbnail", features = ["pdf"] }
-trash = "5.2.6"
 mime_guess.workspace = true
 chrono = { workspace = true, default-features = true }
 # CLDR-backed date/time and decimal formatting. Keep these scoped to Files:
@@ -64,6 +65,9 @@ tar.workspace = true
 flate2.workspace = true
 # Home, config, cache and the localized user folders.
 tilo-paths = { path = "../../crates/platform/tilo-paths" }
+# Change notification for the open directory (inotify, FSEvents), so an idle
+# window re-reads nothing on a timer.
+tilo-files = { path = "../../crates/platform/tilo-files", features = ["watch"] }
 tracing.workspace = true
 tracing-subscriber.workspace = true
 serde.workspace = true
@@ -80,10 +84,10 @@ taffy.workspace = true
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
+tilo-history = { path = "../../crates/sdk/tilo-history" }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 tempfile.workspace = true
-# The catalog tests parse each bundled locale exactly as Fluent will.
-fluent.workspace = true
+tilo-copy-lint = { path = "../../crates/dev/copy-lint" }
 tilo-test-env = { path = "../../crates/dev/test-env" }
 
 [target.'cfg(unix)'.dev-dependencies]

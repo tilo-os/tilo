@@ -38,6 +38,9 @@ impl Routes {
     pub(super) fn remove(&mut self, ws: u64) {
         self.entries.remove(&ws);
     }
+    pub(super) fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
 }
 
 /// The connected relay session of the joined room on topic `ws`.
@@ -51,21 +54,77 @@ pub(super) fn native_session(
 }
 
 impl ActorState {
+    /// Admit authenticated governance through the same durable owner before
+    /// replayed app state can stall the compositor's event drain. This actor
+    /// awaits one blocking admission at a time; the live scope still
+    /// checks current custody, revocation and its exact session pin.
+    pub(super) async fn admit_native_governance(
+        &self,
+        ws: u64,
+        event: super::HostEvent,
+    ) -> super::HostEvent {
+        let input = match &event {
+            super::HostEvent::NativeInput(input)
+                if matches!(
+                    input.message(),
+                    tilo_peer_state::NeighbourMsg::SyncResp { .. }
+                ) =>
+            {
+                input.clone()
+            }
+            _ => return event,
+        };
+        let Some(identity) = self.host_identity.clone() else {
+            return event;
+        };
+        let room = input.room();
+        match tokio::task::spawn_blocking(move || {
+            let before = input.generation().ok();
+            input.admit(&identity)?;
+            Ok::<_, String>(before != input.generation().ok())
+        })
+        .await
+        {
+            Ok(Ok(changed)) => {
+                if changed {
+                    self.drive_native_publication(ws);
+                    if let Some(wake) = &self.wake {
+                        wake();
+                    }
+                }
+            }
+            Ok(Err(error)) => {
+                tracing::warn!(%error, %room, "native relay governance admission denied");
+            }
+            Err(error) => {
+                tracing::warn!(%error, %room, "native relay governance admission worker failed");
+            }
+        }
+        event
+    }
+    /// Every native scope joined for the room on topic `ws`, with its relay
+    /// session and this host's identity. Without an identity there are none.
+    fn native_scopes(
+        &self,
+        ws: u64,
+    ) -> impl Iterator<Item = (&Scope, &RelayCoeditSession, &super::HostIdentity)> {
+        let identity = self.host_identity.as_ref();
+        self.host_sessions
+            .iter()
+            .filter(move |((topic, _), _)| *topic == ws)
+            .filter_map(move |(_, runtime)| {
+                Some((
+                    runtime.native_scope.as_deref()?,
+                    &*runtime.session,
+                    identity?,
+                ))
+            })
+    }
     /// A refresh only asks the original subscribed host to run its own genuine
     /// checkpoint barrier. It grants no local admission and retires no outbox.
     pub(super) fn request_native_refresh(&self, ws: u64) {
-        let Some(identity) = self.host_identity.as_ref() else {
-            return;
-        };
-        for ((topic, _), runtime) in &self.host_sessions {
-            if *topic != ws {
-                continue;
-            }
-            let Some(scope) = runtime.native_scope.as_ref() else {
-                continue;
-            };
-            let result = scope.refresh(&runtime.session, identity);
-            if let Err(error) = result {
+        for (scope, session, identity) in self.native_scopes(ws) {
+            if let Err(error) = scope.refresh(session, identity) {
                 tracing::debug!(%error, "native checkpoint refresh blocked");
             }
         }
@@ -92,18 +151,8 @@ impl ActorState {
     }
 
     pub(super) fn drive_native_publication(&self, ws: u64) {
-        let Some(identity) = self.host_identity.as_ref() else {
-            return;
-        };
-        for ((topic, _), runtime) in &self.host_sessions {
-            if *topic != ws {
-                continue;
-            }
-            let Some(scope) = runtime.native_scope.as_ref() else {
-                continue;
-            };
-            let result = scope.publish(&runtime.session, identity);
-            if let Err(error) = result {
+        for (scope, session, identity) in self.native_scopes(ws) {
+            if let Err(error) = scope.publish(session, identity) {
                 tracing::debug!(%error,"native publication remains in durable custody");
             }
         }

@@ -17,6 +17,7 @@ use tokio::sync::oneshot;
 // This label performs no HTTP request; the exact private scope is mandatory.
 const ORIGIN: &str = "https://tilo.so";
 const CAPACITY: usize = 8;
+const ANSWER_TIMEOUT: Duration = Duration::from_secs(30);
 type Reply<T> = oneshot::Sender<Result<T, SendError>>;
 enum Request {
     Prepare(Reply<EnrollmentReview>),
@@ -34,25 +35,13 @@ struct Port {
     wake: Wake,
     states: Arc<Mutex<BTreeMap<ServiceAccount, Projection>>>,
 }
-async fn answer<T>(receiver: oneshot::Receiver<Result<T, SendError>>) -> Result<T, SendError> {
-    tokio::time::timeout(Duration::from_secs(30), receiver)
-        .await
-        .map_err(|_| SendError::Unavailable)?
-        .map_err(|_| SendError::Unavailable)?
-}
 impl EnrollmentHost for Port {
     fn prepare(&self, service: String) -> EnrollmentReviewFuture {
         if service != "tilo" {
             return Box::pin(async { Err(SendError::InvalidRequest) });
         }
-        let (reply, receiver) = oneshot::channel();
-        let sent = self.sender.try_send(Request::Prepare(reply)).is_ok();
-        (self.wake)();
-        Box::pin(async move {
-            if !sent {
-                return Err(SendError::Unavailable);
-            }
-            answer(receiver).await
+        super::ask_owner(&self.sender, &self.wake, ANSWER_TIMEOUT, |reply| {
+            Request::Prepare(reply)
         })
     }
     fn begin(&self, _: String) -> PairingFuture {
@@ -62,41 +51,25 @@ impl EnrollmentHost for Port {
         Box::pin(async { Err(SendError::Unavailable) })
     }
     fn review(&self, account: ServiceAccount, name: String) -> EnrollmentApprovalFuture {
-        let (reply, receiver) = oneshot::channel();
-        let sent = self
-            .sender
-            .try_send(Request::Review(account, name, reply))
-            .is_ok();
-        (self.wake)();
-        Box::pin(async move {
-            if !sent {
-                return Err(SendError::Unavailable);
-            }
-            answer(receiver).await
+        super::ask_owner(&self.sender, &self.wake, ANSWER_TIMEOUT, |reply| {
+            Request::Review(account, name, reply)
         })
     }
     fn phase(&self, account: &ServiceAccount) -> EnrollmentPhase {
-        let Some((phase, cancelled, native)) = self.states.lock().ok().and_then(|states| {
-            states
-                .get(account)
-                .map(|state| (state.phase, state.cancelled, state.native.clone()))
-        }) else {
+        let Ok(states) = self.states.lock() else {
             return EnrollmentPhase::Empty;
         };
-        if cancelled {
-            return EnrollmentPhase::Interrupted;
-        }
-        if let Some(native) = native.and_then(|owner| owner.upgrade()) {
-            match native.state() {
-                tilo_messaging::AccountState::Ready => return EnrollmentPhase::Ready,
-                tilo_messaging::AccountState::Locked | tilo_messaging::AccountState::Failed => {
-                    return EnrollmentPhase::Interrupted;
-                }
-                _ if phase == EnrollmentPhase::Ready => return EnrollmentPhase::Interrupted,
-                _ => {}
-            }
-        }
-        phase
+        states.get(account).map_or(EnrollmentPhase::Empty, |state| {
+            super::projected_phase(
+                state.phase,
+                state.cancelled,
+                state
+                    .native
+                    .as_ref()
+                    .and_then(std::sync::Weak::upgrade)
+                    .map(|n| n.state()),
+            )
+        })
     }
     fn linked(&self, account: &ServiceAccount) -> Option<LinkedAccount> {
         self.states.lock().ok()?.get(account)?.linked.clone()
@@ -112,8 +85,7 @@ impl EnrollmentHost for Port {
     }
 }
 struct Permission {
-    request: accounts::AccessRequest,
-    proposal: String,
+    asked: super::OwnerPermission,
     name: String,
 }
 struct Attempt {
@@ -275,25 +247,15 @@ impl Actor {
             let item_id = apps
                 .prepare_native_messaging_profile_key(&attempt.identity, ORIGIN)
                 .map_err(|_| SendError::Revoked)?;
-            let request = accounts::AccessRequest {
-                app_id: "so.tilo.messages".into(),
+            let asked = super::OwnerPermission::ask(
+                apps,
+                &attempt.identity,
                 item_id,
-                purpose: "Private Tilo messaging using this personal identity".into(),
-                origin: Some(ORIGIN.into()),
-            };
-            let Ok(proposal) =
-                apps.propose_native_messaging_permission(&attempt.identity, request.clone())
-            else {
-                if let Some(vault) = &apps.credential_owner {
-                    let _ = vault.edit(|store| store.remove(&request.item_id));
-                }
-                return Err(SendError::Revoked);
-            };
-            attempt.permission = Some(Permission {
-                request,
-                proposal: proposal.clone(),
-                name,
-            });
+                "Private Tilo messaging using this personal identity".into(),
+                ORIGIN,
+            )?;
+            let proposal = asked.proposal.clone();
+            attempt.permission = Some(Permission { asked, name });
             proposal
         };
         self.phase(account, EnrollmentPhase::AwaitingPermission);
@@ -315,25 +277,21 @@ impl Actor {
         let Some(permission) = attempt.permission.as_ref() else {
             return;
         };
-        let credential =
-            apps.native_messaging_credential(&attempt.identity, permission.request.clone());
-        if !credential.as_ref().is_ok_and(|c| c.check().is_ok()) {
-            let pending = apps
-                .credential_owner
-                .as_ref()
-                .and_then(|v| v.proposals().ok())
-                .is_some_and(|p| p.iter().any(|p| p.id == permission.proposal));
-            if !pending {
+        let credential = match permission.asked.grant(apps, &attempt.identity) {
+            super::Grant::Approved(credential) => credential,
+            super::Grant::Pending => return,
+            super::Grant::Refused => {
                 self.retire(apps, attempt);
                 slot.take();
+                return;
             }
-            return;
-        }
+        };
         let account = attempt.review.account.clone();
         let result = (|| {
-            let credential = credential.map_err(|_| SendError::Revoked)?;
-            apps.publish_native_tilo_account(
+            apps.publish_native_account(
                 &attempt.identity,
+                tilo_messaging_protocol::Service::Tilo,
+                accounts::person::PersonAccounts::PUBLISH_TILO_ACCOUNT,
                 permission.name.clone(),
                 &attempt.review.scope,
             )
@@ -494,11 +452,8 @@ impl Actor {
         }
     }
     fn retire(&self, apps: &super::super::InProcessApps, attempt: &mut Attempt) {
-        if let Some(permission) = attempt.permission.take()
-            && let Some(vault) = &apps.credential_owner
-        {
-            let _ = vault.decide_proposal(&permission.proposal, accounts::AccessDecision::Deny);
-            let _ = vault.edit(|store| store.remove(&permission.request.item_id));
+        if let Some(permission) = attempt.permission.take() {
+            permission.asked.withdraw(apps);
         }
         self.phase(&attempt.review.account, EnrollmentPhase::Interrupted);
     }

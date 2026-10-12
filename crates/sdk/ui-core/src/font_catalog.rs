@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use cosmic_text::{FontSystem, fontdb};
 #[cfg(test)]
 use tilo_font_catalog::MANIFEST;
-use tilo_font_catalog::{Asset, Face, Manifest, Scope};
+use tilo_font_catalog::{Asset, Face, Manifest, Scope, Trust};
 
 /// The verified catalog materialized for this source build.
 pub use tilo_font_catalog::checkout_root;
@@ -30,10 +30,7 @@ pub(crate) use android::android_font_system;
 /// renderer gets its own copy of the database, so its shaping caches stay its
 /// own while font bytes and discovery are shared. `None` when no root in
 /// [`catalog_roots`] holds a catalog this build accepts.
-#[cfg_attr(
-    test,
-    allow(dead_code, reason = "unit tests build the fixture font system instead")
-)]
+#[cfg(not(test))]
 pub(crate) fn bundled_font_system(locale: String) -> Option<FontSystem> {
     static DATABASE: OnceLock<Option<fontdb::Database>> = OnceLock::new();
     let database = DATABASE.get_or_init(|| {
@@ -52,22 +49,56 @@ pub(crate) fn bundled_font_system(locale: String) -> Option<FontSystem> {
     database.as_ref().map(|db| system_over(locale, db.clone()))
 }
 
-/// Where a native process looks for the product catalog, in order: a
-/// `fonts/` directory next to the executable (an installed app bundle), the
-/// catalog the Tilo image installs (absent on other systems), then this
-/// build's verified artifact catalog, so a binary run from a checkout sets text in
-/// the faces the product ships.
+/// The product catalog read whole into memory, with no host fonts behind
+/// it: for a process about to lose the filesystem (a confined app worker)
+/// whose views still lay out text. `None` when no catalog loads.
 #[cfg_attr(
     test,
     allow(dead_code, reason = "unit tests build the fixture font system instead")
 )]
+pub(crate) fn catalog_in_memory(locale: &str) -> Option<FontSystem> {
+    let (locale, loaded) = load_first_catalog(&catalog_roots(), locale, |_| {})
+        .ok()?
+        .into_locale_and_db();
+    let mut held = fontdb::Database::new();
+    let mut read = HashSet::new();
+    for face in loaded.faces() {
+        let (fontdb::Source::File(path) | fontdb::Source::SharedFile(path, _)) = &face.source
+        else {
+            continue;
+        };
+        if read.insert(path.clone()) {
+            let (dir, name) = tilo_files::file_at(path).ok()?;
+            let bytes = tilo_files::blocking::read(&dir, &name).ok()?;
+            held.load_font_source(fontdb::Source::Binary(Arc::new(bytes)));
+        }
+    }
+    held.set_sans_serif_family(crate::text_render::UI_SANS_FAMILY);
+    held.set_serif_family(crate::text_render::UI_SERIF_FAMILY);
+    held.set_monospace_family(crate::text_render::UI_MONOSPACE_FAMILY);
+    Some(system_over(locale, held))
+}
+
+/// Where a native process looks for the product catalog, in order: a
+/// `fonts/` directory next to the executable (an installed app bundle), the
+/// catalog mounted from the selected signed SDK in a Tilo app sandbox,
+/// the catalog the Tilo image installs (absent on other systems), the immutable
+/// catalog named by this build's manifest digest, then this
+/// build's verified artifact catalog, so a binary run from a checkout sets text in
+/// the faces the product ships.
 pub(crate) fn catalog_roots() -> Vec<PathBuf> {
     let mut roots: Vec<PathBuf> = std::env::current_exe()
         .ok()
         .and_then(|exe| exe.parent().map(|dir| dir.join("fonts")))
         .into_iter()
         .collect();
+    // Launcher owns this fixed read-only mount in the app's private namespace.
+    // Each retained SDK can carry its own catalog without replacing OS fonts.
+    roots.push(PathBuf::from("/run/tilo-fonts"));
     roots.push(PathBuf::from("/usr/share/fonts/tilo"));
+    roots.push(
+        PathBuf::from("/usr/share/tilo/font-catalogs").join(tilo_font_catalog::manifest_sha256()),
+    );
     roots.push(checkout_root());
     roots
 }
@@ -80,10 +111,6 @@ pub(crate) fn catalog_roots() -> Vec<PathBuf> {
 /// # Errors
 ///
 /// Every root's failure, in order, when none loads.
-#[cfg_attr(
-    test,
-    allow(dead_code, reason = "unit tests build the fixture font system instead")
-)]
 pub(crate) fn load_first_catalog(
     roots: &[PathBuf],
     locale: &str,
@@ -143,10 +170,6 @@ pub(crate) fn drop_duplicate_faces(db: &mut fontdb::Database) {
 }
 
 /// A font system over an already verified database, with Tilo's fallback.
-#[cfg_attr(
-    test,
-    allow(dead_code, reason = "unit tests build the fixture font system instead")
-)]
 pub(crate) fn system_over(locale: String, db: fontdb::Database) -> FontSystem {
     FontSystem::new_with_locale_and_db_and_fallback(locale, db, fallback::TiloFallback)
 }
@@ -629,12 +652,14 @@ struct VerifiedBundle {
 type VerifiedBundles = HashMap<(PathBuf, bool), Arc<VerifiedBundle>>;
 
 /// Verify a catalog root once per process and hand every later load a clone
-/// of the resulting database. Hashing the ~43 MB of shipped fonts dominates
-/// loading (about 1.5 s in a debug build), while cloning the database copies
-/// only face metadata: the faces stay file-backed. A root that fails
-/// verification is not remembered, so a repaired installation loads on the
-/// next attempt. The lock is held across verification so concurrent first
-/// loads hash the fonts once rather than once per caller.
+/// of the resulting database; cloning copies only face metadata, the faces
+/// stay file-backed. Hashing the 54.9 MB of shipped fonts costs 22 ms with
+/// SHA instructions and about 140 ms without, so the image's immutable
+/// catalog is not hashed at all ([`tilo_font_catalog::Trust`]); any other
+/// root still is. A root that fails verification is not remembered, so a
+/// repaired installation loads on the next attempt. The lock is held across
+/// verification so concurrent first loads hash the fonts once rather than
+/// once per caller.
 fn verified_bundle(root: &Path, fixtures: bool) -> Result<Arc<VerifiedBundle>, FontCatalogError> {
     static VERIFIED: OnceLock<Mutex<VerifiedBundles>> = OnceLock::new();
     let mut verified = VERIFIED
@@ -657,6 +682,11 @@ fn verified_bundle(root: &Path, fixtures: bool) -> Result<Arc<VerifiedBundle>, F
 fn verify_bundle(root: &Path, fixtures: bool) -> Result<VerifiedBundle, FontCatalogError> {
     tilo_font_catalog::check_manifest(root)?;
     let manifest = tilo_font_catalog::manifest()?;
+    // The image's catalog is root-owned on a read-only mount, so its bytes
+    // are the image's (composefs/fs-verity) and need no hashing here; a
+    // checkout, a per-user runtime's or any writable catalog is hashed.
+    let trust = Trust::of_root(root);
+    tracing::debug!(root = %root.display(), ?trust, "verifying Tilo font catalog");
     let mut db = fontdb::Database::new();
     let mut canonical = HashSet::new();
     let mut reserved = HashSet::new();
@@ -673,7 +703,7 @@ fn verify_bundle(root: &Path, fixtures: bool) -> Result<VerifiedBundle, FontCata
         // Only this catalog's canonical faces reserve names. Product mode
         // can still discover an ambient Adwaita as a user-named font.
         reserved.extend(asset.reserved_aliases.iter().map(|s| s.to_lowercase()));
-        let path = verify_asset(root, asset)?;
+        let path = verify_asset(root, asset, trust)?;
         let ids = db.load_font_source(fontdb::Source::File(path.clone()));
         if ids.len() != asset.faces.len() {
             return Err(FontCatalogError::at(
@@ -717,20 +747,24 @@ fn verify_bundle(root: &Path, fixtures: bool) -> Result<VerifiedBundle, FontCata
     })
 }
 
-/// Check one catalog file against its pinned size and SHA-256.
+/// Check one catalog file against its pinned size and, unless `trust` and
+/// the file itself show it immutable, its SHA-256.
 #[cfg(not(windows))]
 fn verify_asset(
     root: &Path,
     asset: &tilo_font_catalog::Asset,
+    trust: Trust,
 ) -> Result<PathBuf, FontCatalogError> {
-    Ok(asset.verify(root)?)
+    Ok(asset.verify_with(root, trust)?)
 }
 
-/// Windows hashes through the platform provider (see [`windows::digest`]).
+/// Windows hashes through the platform provider (see [`windows::digest`]);
+/// no Windows root is ever [`Trust::Immutable`].
 #[cfg(windows)]
 fn verify_asset(
     root: &Path,
     asset: &tilo_font_catalog::Asset,
+    _trust: Trust,
 ) -> Result<PathBuf, FontCatalogError> {
     let path = asset.path_in(root)?;
     let metadata = std::fs::metadata(&path).map_err(|e| FontCatalogError::at(&path, e))?;

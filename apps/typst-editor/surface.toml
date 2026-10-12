@@ -1,0 +1,47 @@
+# Written by `tilo-app surface`; review changes like an API change.
+
+[[resources]]
+kind = "typst-editor.workspace"
+label = "Typst workspace"
+version = 1
+fields = [
+  { path = "files", type = "Collection<TypstFile>", stored = "collection" },
+  { path = "files.*.name", type = "Atom", label = true },
+  { path = "files.*.path", type = "Option<Atom>", readonly = true },
+  { path = "files.*.source", type = "String" },
+]
+
+[[resources.verbs]]
+id = "new-file"
+kind = "undoable"
+params = [
+  { name = "name", required = true, schema = { type = "string" } },
+  { name = "path", required = false, schema = { type = ["string", "null"] } },
+  { name = "source", required = false, schema = { type = ["string", "null"] } },
+]
+
+[[resources.verbs]]
+id = "saved-at"
+kind = "undoable"
+params = [
+  { name = "file", required = true, schema = { type = "string" } },
+  { name = "path", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "load"
+kind = "undoable"
+params = [
+  { name = "file", required = true, schema = { type = "string" } },
+  { name = "path", required = true, schema = { type = "string" } },
+  { name = "source", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "close-file"
+destructive = true
+kind = "undoable"
+params = [
+  { name = "file", required = true, schema = { type = "string" } },
+]
+

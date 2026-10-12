@@ -74,6 +74,22 @@ pub trait ComponentLifecycle: Widget {
     fn take_replacement(&mut self) -> Option<crate::application::ComponentReplacement> {
         None
     }
+
+    /// One-shot: the durability of this root's own component's record changed
+    /// since this was last asked, and the root already synced with the new
+    /// state. A host that asks (an [`App`](crate::App)) presents it with a
+    /// frame of its own, not a rebuilt tree; one that does not ask sees it
+    /// through `take_structure_dirty`.
+    fn take_save_status_presentation(&mut self) -> bool {
+        false
+    }
+}
+
+/// Whether the record `widget`'s own component shows changed durability,
+/// which the root has synced with and a frame must present.
+pub fn take_save_status_presentation(widget: &mut dyn Widget) -> bool {
+    capability_mut::<dyn ComponentLifecycle>(widget)
+        .is_some_and(ComponentLifecycle::take_save_status_presentation)
 }
 
 /// The component `widget`'s own component asked to show in its place.
@@ -160,4 +176,16 @@ pub fn on_window_close_requested(widget: &mut (impl Widget + ?Sized)) -> WindowC
 pub fn take_window_close_intent(widget: &mut (impl Widget + ?Sized)) -> bool {
     capability_mut::<dyn ComponentLifecycle>(widget)
         .is_some_and(ComponentLifecycle::take_window_close_intent)
+}
+
+/// A presentation can request activation without changing its document or owner.
+pub trait WindowActivation {
+    /// Consume one request to reveal this presentation's existing native window.
+    fn take_window_activation_intent(&self) -> bool;
+}
+
+/// Consume an activation request through the root's existing capability door.
+pub fn take_window_activation_intent(widget: &(impl Widget + ?Sized)) -> bool {
+    capability::<dyn WindowActivation>(widget)
+        .is_some_and(WindowActivation::take_window_activation_intent)
 }

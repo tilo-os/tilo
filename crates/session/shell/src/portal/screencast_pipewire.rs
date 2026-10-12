@@ -433,7 +433,7 @@ fn ensure_pipewire_initialised() {
 
 #[cfg(target_os = "linux")]
 fn pipewire_socket() -> Result<UnixStream, ProvisioningError> {
-    let runtime = xdg_paths::xdg::runtime_dir().ok_or_else(|| {
+    let runtime = tilo_paths::xdg::runtime_dir().ok_or_else(|| {
         ProvisioningError::DaemonUnreachable("XDG_RUNTIME_DIR is unset or not absolute".into())
     })?;
     let remote = std::env::var("PIPEWIRE_REMOTE").unwrap_or_else(|_| "pipewire-0".into());

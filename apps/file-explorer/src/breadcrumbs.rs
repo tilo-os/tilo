@@ -94,7 +94,8 @@ pub fn filesystem_root(path: &Path) -> PathBuf {
     }
 }
 
-#[cfg(all(test, windows))]
+#[cfg(test)]
+#[cfg(windows)]
 mod windows_tests {
     use super::*;
 

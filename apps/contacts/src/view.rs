@@ -15,7 +15,7 @@ use std::rc::Rc;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
-use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
+use winit::event::{ElementState, MouseButton, WindowEvent};
 
 use ui::a11y::{AccessNode, AccessState, Action, Role};
 use ui::icons::Icon;
@@ -25,8 +25,8 @@ use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::time::{Duration, Instant};
 use ui::widget::{
-    AvatarFace, EmptyState, EmptyStateContent, Interaction, ListRowFace, RowLeading, ScrollMetrics,
-    Scrollbar, TaffyTreeExt, Widget,
+    AvatarFace, EmptyState, EmptyStateContent, Interaction, ListRowFace, RowLeading, ScrollRegion,
+    TaffyTreeExt, Widget,
 };
 
 use crate::form::{RowKind, Slot, TypeTarget};
@@ -52,6 +52,9 @@ pub(crate) struct ListEntry {
 pub(crate) enum Request {
     /// A row was chosen.
     Select(ContactId),
+    /// A search hit or an agent opened a contact: show it, even when the
+    /// chosen group hides it.
+    Reveal(ContactId),
     /// A row was opened (double-click): edit it.
     Edit(ContactId),
     /// Edit the chosen fact through the same retained form.
@@ -103,6 +106,9 @@ pub(crate) struct Bridge {
     pub reveal: Option<ContactId>,
     /// The rows the list painted last, in window coordinates.
     pub painted: Vec<(ContactId, Rect)>,
+    /// The book as it was presented last: what a search hit or an agent
+    /// may open.
+    pub book: Rc<crate::resource::Contacts>,
     requests: Vec<Request>,
 }
 
@@ -155,18 +161,22 @@ fn select_target(id: ContactId) -> String {
 pub(crate) struct ContactList {
     shared: Shared,
     rect: Rect,
-    scroll: f64,
+    scroller: ScrollRegion,
+    /// The theme of the last paint, which the scroll region's lanes, steps
+    /// and fade read between paints.
+    theme: Theme,
     /// The measured row height, from the last paint.
     row_h: f64,
-    /// The scroll bar's gutter, from the last paint.
-    gutter: f64,
     seen: u64,
     cursor: Point,
     hovered: Option<ContactId>,
     pressed: Option<ContactId>,
     last_click: Option<(Instant, ContactId)>,
-    bar: Scrollbar,
+    /// Something the rows paint from changed besides the offset.
     dirty: bool,
+    /// Only the offset changed since the frame on screen: a host that
+    /// copies what stays on screen may move the rows instead.
+    scrolled: bool,
 }
 
 impl ContactList {
@@ -174,54 +184,22 @@ impl ContactList {
         Self {
             shared,
             rect: Rect::ZERO,
-            scroll: 0.0,
+            scroller: ScrollRegion::vertical(),
+            theme: Theme::dark(),
             row_h: 0.0,
-            gutter: 0.0,
             seen: u64::MAX,
             cursor: Point::new(f64::NEG_INFINITY, f64::NEG_INFINITY),
             hovered: None,
             pressed: None,
             last_click: None,
-            bar: Scrollbar::vertical(),
             dirty: true,
+            scrolled: false,
         }
-    }
-
-    fn metrics(&self) -> ScrollMetrics {
-        let rows = self.shared.borrow().rows.len();
-        ScrollMetrics::new(rows as f64 * self.row_h, self.rect.height(), self.scroll)
-    }
-
-    fn overflows(&self) -> bool {
-        let m = self.metrics();
-        m.content > m.viewport + 0.5
-    }
-
-    fn track(&self) -> Rect {
-        Rect::new(
-            self.rect.x1 - self.gutter,
-            self.rect.y0,
-            self.rect.x1,
-            self.rect.y1,
-        )
-    }
-
-    fn max_scroll(&self) -> f64 {
-        let m = self.metrics();
-        (m.content - m.viewport).max(0.0)
-    }
-
-    fn set_scroll(&mut self, scroll: f64) -> bool {
-        let next = scroll.clamp(0.0, self.max_scroll());
-        let changed = (next - self.scroll).abs() > f64::EPSILON;
-        self.scroll = next;
-        self.dirty |= changed;
-        changed
     }
 
     /// The row under `point`, from the last paint.
     fn row_at(&self, point: Point) -> Option<ContactId> {
-        if !self.rect.contains(point) || (self.overflows() && self.track().contains(point)) {
+        if !self.scroller.content_rect().contains(point) {
             return None;
         }
         self.shared
@@ -238,12 +216,10 @@ impl ContactList {
             return;
         }
         let top = index as f64 * self.row_h;
-        let bottom = top + self.row_h;
-        if top < self.scroll {
-            self.set_scroll(top);
-        } else if bottom > self.scroll + self.rect.height() {
-            self.set_scroll(bottom - self.rect.height());
-        }
+        let before = self.scroller.offset();
+        self.scroller
+            .scroll_into_view(Rect::new(0.0, top, 0.0, top + self.row_h));
+        self.dirty |= self.scroller.offset() != before;
     }
 
     fn paint(&mut self, ctx: &mut PaintCtx<'_>) {
@@ -252,7 +228,11 @@ impl ContactList {
             .secondary("Ag")
             .leading(RowLeading::Avatar(AvatarFace::new("Ag", "Ag")));
         self.row_h = probe.height(ctx.text, theme);
-        self.gutter = f64::from(theme.tokens.metrics.scrollbar_gutter);
+        self.theme = theme.clone();
+        let rows = self.shared.borrow().rows.len();
+        self.scroller.set_viewport(self.rect, theme);
+        self.scroller
+            .set_content_size(0.0, rows as f64 * self.row_h);
         let reveal = self.shared.borrow_mut().reveal.take();
         if let Some(id) = reveal {
             let index = self
@@ -265,23 +245,22 @@ impl ContactList {
                 self.reveal_index(index);
             }
         }
-        self.set_scroll(self.scroll);
 
-        let overflows = self.overflows();
+        let scroll = self.scroller.offset().y;
         let bridge = self.shared.borrow();
         // The rows' text starts on the column's content edge, where the
         // column's title starts; a row's lift bleeds past it. The scroll bar
         // keeps its gutter.
         let edge = ui::chrome::column_gutter(theme) - ui::chrome::row_bleed(theme);
         let row_x0 = self.rect.x0 + edge;
-        let width_end = if overflows {
-            self.rect.x1 - self.gutter
+        let width_end = if self.scroller.overflows_vertically() {
+            self.scroller.content_rect().x1
         } else {
             self.rect.x1 - edge
         };
         let mut painted = Vec::new();
         if self.row_h > 0.0 && !bridge.rows.is_empty() {
-            let first = (self.scroll / self.row_h).floor().max(0.0) as usize;
+            let first = (scroll / self.row_h).floor().max(0.0) as usize;
             let count = (self.rect.height() / self.row_h).ceil() as usize + 1;
             let end = first.saturating_add(count).min(bridge.rows.len());
             ctx.scene.push_layer(
@@ -295,7 +274,7 @@ impl ContactList {
                 let Some(row) = bridge.rows.get(index) else {
                     break;
                 };
-                let y = self.rect.y0 + index as f64 * self.row_h - self.scroll;
+                let y = self.rect.y0 + index as f64 * self.row_h - scroll;
                 let rect = Rect::new(row_x0, y, width_end, y + self.row_h);
                 let selected = bridge.selected == Some(row.id);
                 let identity = row.id.to_string();
@@ -327,36 +306,14 @@ impl ContactList {
             EmptyState::paint(ctx, self.rect, &content, self.cursor);
         }
         drop(bridge);
-        if overflows {
-            self.bar.draw(
-                ctx.scene,
-                ctx.transform,
-                self.track(),
-                self.metrics(),
-                theme,
-                false,
-            );
-        }
+        self.scroller.note_shown(ctx.transform, theme);
+        self.scroller.paint_bars(ctx.scene, ctx.transform, theme);
         self.shared.borrow_mut().painted = painted;
     }
 
     fn press(&mut self, button: MouseButton) -> bool {
         if !self.rect.contains(self.cursor) {
             return false;
-        }
-        if button == MouseButton::Left && self.overflows() {
-            let track = self.track();
-            match self.bar.press(track, self.metrics(), self.cursor) {
-                ui::widget::scrollbar::PressOutcome::Thumb => {
-                    self.dirty = true;
-                    return true;
-                }
-                ui::widget::scrollbar::PressOutcome::Page(target) => {
-                    self.set_scroll(target);
-                    return true;
-                }
-                ui::widget::scrollbar::PressOutcome::Miss => {}
-            }
         }
         let Some(id) = self.row_at(self.cursor) else {
             return true;
@@ -395,20 +352,11 @@ impl Widget for ContactList {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let node = taffy.leaf_node(fill_style());
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        taffy.widget_leaf(fill_style(), node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).copied().unwrap_or_default();
-        let rect = Rect::from_origin_size(
-            (
-                origin.x + f64::from(l.location.x),
-                origin.y + f64::from(l.location.y),
-            ),
-            (f64::from(l.size.width), f64::from(l.size.height)),
-        );
+        let rect = ui::widget::layout_rect(taffy, node, origin);
         if rect != self.rect {
             self.rect = rect;
             self.dirty = true;
@@ -423,26 +371,33 @@ impl Widget for ContactList {
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
-        self.seen = self.shared.borrow().revision;
+        // A new book revision is a change to the rows: the damage
+        // collected after this draw must cover it.
+        let revision = self.shared.borrow().revision;
+        self.dirty |= self.seen != revision;
+        self.seen = revision;
         self.paint(&mut PaintCtx::new(scene, transform, text, theme));
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        // The scroll region takes the wheel, touchpad gestures and its bar.
+        // A move of the offset alone moves the rows (the hovered and pressed
+        // rows are rows, and move with them); anything else repaints.
+        let offset = self.scroller.offset();
+        if self.scroller.handle_event(event, ctx, &self.theme) {
+            if self.scroller.offset() == offset {
+                self.dirty = true;
+            } else {
+                self.scrolled = true;
+            }
+        }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 self.cursor =
                     Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
-                if self.bar.is_dragging() {
-                    let track = self.track();
-                    if let Some(offset) = self.bar.drag_to(track, self.metrics(), self.cursor) {
-                        self.set_scroll(offset);
-                    }
-                    *ctx.handled = true;
+                if self.scroller.is_dragging() {
                     return;
                 }
-                let track = self.track();
-                let metrics = self.metrics();
-                self.dirty |= self.bar.update_hover(track, metrics, self.cursor);
                 let hovered = self.row_at(self.cursor);
                 if hovered != self.hovered {
                     self.hovered = hovered;
@@ -458,7 +413,7 @@ impl Widget for ContactList {
                 state: ElementState::Pressed,
                 button,
                 ..
-            } => {
+            } if !*ctx.handled => {
                 if self.press(*button) {
                     *ctx.handled = true;
                 }
@@ -467,20 +422,7 @@ impl Widget for ContactList {
                 state: ElementState::Released,
                 button: MouseButton::Left,
                 ..
-            } => {
-                let released = self.bar.release();
-                if self.pressed.take().is_some() || released {
-                    self.dirty = true;
-                }
-            }
-            WindowEvent::MouseWheel { delta, .. } if self.rect.contains(self.cursor) => {
-                let dy = match delta {
-                    MouseScrollDelta::LineDelta(_, y) => f64::from(-*y) * self.row_h.max(1.0),
-                    MouseScrollDelta::PixelDelta(p) => -p.y / ctx.scale_factor,
-                };
-                self.set_scroll(self.scroll + dy);
-                *ctx.handled = true;
-            }
+            } if self.pressed.take().is_some() => self.dirty = true,
             _ => {}
         }
     }
@@ -498,11 +440,39 @@ impl Widget for ContactList {
     }
 
     fn needs_redraw(&self) -> bool {
-        self.dirty || self.seen != self.shared.borrow().revision
+        self.dirty || self.scrolled || self.seen != self.shared.borrow().revision
+    }
+
+    /// A scroll that changed nothing else offers the host a copy of the
+    /// rows that stay on screen; a thumb fading while nothing else changes
+    /// repaints its track. Anything else repaints the list.
+    fn collect_damage(&self, regions: &mut Vec<Rect>) {
+        if !self.needs_redraw() {
+            self.scroller.damage_changed_bars(regions);
+            return;
+        }
+        if self.scrolled && !self.dirty && self.scroller.offer_copy(self, regions) {
+            return;
+        }
+        regions.push(self.rect);
     }
 
     fn mark_drawn(&mut self) {
+        self.scroller.mark_presented();
         self.dirty = false;
+        self.scrolled = false;
+    }
+
+    fn needs_animation_frame(&self) -> bool {
+        self.scroller.needs_animation_frame(&self.theme)
+    }
+
+    fn next_wake_deadline(&self) -> Option<Instant> {
+        self.scroller.next_wake_deadline(&self.theme)
+    }
+
+    fn wants_pointer_capture(&self) -> bool {
+        self.scroller.is_dragging()
     }
 
     fn tooltip(&self) -> Option<&str> {
@@ -514,7 +484,7 @@ impl Widget for ContactList {
         let bridge = self.shared.borrow();
         let total = bridge.rows.len();
         let start = if self.row_h > 0.0 {
-            (self.scroll / self.row_h).floor().max(0.0) as usize
+            (self.scroller.offset().y / self.row_h).floor().max(0.0) as usize
         } else {
             0
         };
@@ -578,96 +548,25 @@ impl Widget for ContactList {
 
 /// The content column when there is no one to show: the toolkit's empty
 /// state, one sentence and, on a first run, the one action that starts the
-/// book. Its action is handed to the app after every event and activation
-/// that reaches it.
-pub(crate) struct EmptyPane {
-    state: EmptyState,
-    shared: Shared,
-    request: Option<Request>,
+/// book.
+pub(crate) fn empty_pane(
+    shared: &Shared,
+    title: &str,
+    action: Option<(&str, Request)>,
+) -> ui::widget::Element {
+    let state = EmptyState::new(title).with_icon(Icon::Users);
+    Box::new(match action {
+        Some((label, request)) => state
+            .with_action(label)
+            .with_action_id(EMPTY_ACTION)
+            .on_view(queue(shared, request)),
+        None => state,
+    })
 }
 
 /// The empty state's action, for assistive technology and agents.
 pub(crate) const EMPTY_ACTION: &str = "contacts.empty.action";
 
-impl EmptyPane {
-    pub(crate) fn new(shared: Shared, title: &str, action: Option<(&str, Request)>) -> Self {
-        let state = EmptyState::new(title).with_icon(Icon::Users);
-        let (state, request) = match action {
-            Some((label, request)) => (
-                state.with_action(label).with_action_id(EMPTY_ACTION),
-                Some(request),
-            ),
-            None => (state, None),
-        };
-        Self {
-            state,
-            shared,
-            request,
-        }
-    }
-
-    fn drain(&mut self) {
-        if self.state.take_action()
-            && let Some(request) = &self.request
-        {
-            self.shared.borrow_mut().push(request.clone());
-        }
-    }
-}
-
-impl ui::widget::Decorator for EmptyPane {
-    type Inner = EmptyState;
-
-    fn inner(&self) -> &EmptyState {
-        &self.state
-    }
-
-    fn inner_mut(&mut self) -> &mut EmptyState {
-        &mut self.state
-    }
-
-    fn build_layout(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        theme: &Theme,
-        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        let node = Widget::build_layout(&mut self.state, taffy, theme, node_map);
-        // Keyboard activation reaches the focused node, so this pane answers
-        // for it and hands the action on.
-        ui::widget::decorator::register_node(node_map, node, self);
-        node
-    }
-
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
-        Widget::handle_event(&mut self.state, event, ctx);
-        self.drain();
-    }
-
-    fn perform_action(
-        &mut self,
-        action: &Action,
-        state: &mut ui::widget::Edits<'_>,
-        path: &ui::widget::ModelPath,
-    ) -> bool {
-        let done = Widget::perform_action(&mut self.state, action, state, path);
-        self.drain();
-        done
-    }
-
-    fn perform_semantic_action(
-        &mut self,
-        target: &str,
-        action: &Action,
-        state: &mut ui::widget::Edits<'_>,
-        path: &ui::widget::ModelPath,
-    ) -> bool {
-        let done = Widget::perform_semantic_action(&mut self.state, target, action, state, path);
-        self.drain();
-        done
-    }
-
-    fn test_id(&self) -> Option<&str> {
-        Some("contacts.empty")
-    }
-}
+#[cfg(test)]
+#[path = "view/copy_tests.rs"]
+mod copy_tests;

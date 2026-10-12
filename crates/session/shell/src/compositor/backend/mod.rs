@@ -656,9 +656,16 @@ pub trait Backend {
         false
     }
 
-    /// Whether the presenter consumes empty workspace transition frames by
-    /// retaining/replaying its previous pixels, rather than rasterising them.
-    fn supports_workspace_clip(&self) -> bool {
+    /// The presenter composites strip pans from retained layers
+    /// (`FramePaint::cache`) instead of rasterising every pixel of the strip.
+    fn composites_strip_layers(&self) -> bool {
+        false
+    }
+
+    /// The presenter keeps its target between frames and copies what a
+    /// scroll in an in-process app moved within it
+    /// (`FramePaint::scroll_copies`) before it repaints the damage.
+    fn copies_scrolls(&self) -> bool {
         false
     }
 
@@ -781,6 +788,19 @@ pub trait Backend {
     /// readiness rather than a fixed refresh deadline.
     fn adaptive_sync_active(&self) -> bool {
         false
+    }
+
+    /// What `output`'s primary plane would scan out of a fullscreen client,
+    /// as last learned while presenting one there; `None` when the output
+    /// cannot scan a client out (no planes, rotated, calibrated, HDR) or the
+    /// backend has no planes at all. Fullscreen clients are told through
+    /// their dma-buf feedback ([`crate::compositor::scanout_feedback`]).
+    #[cfg(target_os = "linux")]
+    fn scanout_plane(
+        &self,
+        _output: OutputId,
+    ) -> Option<std::sync::Arc<crate::compositor::scanout_feedback::ScanoutPlane>> {
+        None
     }
 
     /// The HDR signal an output is being driven with, or `None` for SDR.

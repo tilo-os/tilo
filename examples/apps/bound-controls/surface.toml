@@ -1,0 +1,18 @@
+# Written by `tilo-app surface`; review changes like an API change.
+
+[[resources]]
+kind = "example.preferences"
+label = "Preferences"
+version = 1
+fields = [
+  { path = "name", type = "String" },
+  { path = "updates", type = "bool" },
+  { path = "refresh_minutes", type = "f64" },
+  { path = "volume", type = "f64" },
+  { path = "region", type = "Atom" },
+]
+
+[[resources.verbs]]
+id = "reset"
+kind = "undoable"
+
