@@ -36,7 +36,7 @@ pub fn resolve_conflict(
     if bytes.len() > fs_protocol::MAX_HISTORY_CONTROL_BYTES {
         return Err(t("files-conflict-request-too-large"));
     }
-    xattr::set(path, crate::model::HISTORY_CONTROL_XATTR, &bytes).map_err(|error| {
+    xattr::set(path, fs_protocol::HISTORY_CONTROL_XATTR, &bytes).map_err(|error| {
         t_args(
             "files-conflict-resolve-failed",
             &[arg("error", error.to_string())],
@@ -114,7 +114,7 @@ mod tests {
                 version_id,
             )
             .unwrap();
-            let bytes = xattr::get(&path, crate::model::HISTORY_CONTROL_XATTR)
+            let bytes = xattr::get(&path, fs_protocol::HISTORY_CONTROL_XATTR)
                 .unwrap()
                 .unwrap();
             let request: fs_protocol::HistoryControlRequestV1 =
@@ -135,7 +135,7 @@ mod tests {
             )
             .unwrap();
             let merge: fs_protocol::HistoryControlRequestV1 = serde_json::from_slice(
-                &xattr::get(&path, crate::model::HISTORY_CONTROL_XATTR)
+                &xattr::get(&path, fs_protocol::HISTORY_CONTROL_XATTR)
                     .unwrap()
                     .unwrap(),
             )
