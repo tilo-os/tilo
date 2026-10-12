@@ -182,6 +182,15 @@ impl CaptureQueue {
     }
 }
 
+/// Whether an encoded Opus packet carries anything. With DTX the encoder
+/// returns a packet of at most two bytes for a silent frame that needs no
+/// transmission (libopus `opus_encode`); the receiver's decoder fills the gap
+/// with comfort noise from the last update it got.
+#[must_use]
+pub fn needs_transmission(packet: &[u8]) -> bool {
+    packet.len() > 2
+}
+
 fn validate_frame(duration: u16, payload: &[u8]) -> Result<(), AudioError> {
     if duration != 960 || payload.is_empty() || payload.len() > MAX_PACKET_BYTES {
         return Err(AudioError::InvalidFrame);

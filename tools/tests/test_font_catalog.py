@@ -1,4 +1,7 @@
 import importlib.util
+import os
+import subprocess
+import sys
 from pathlib import Path
 import tempfile
 import unittest
@@ -63,6 +66,49 @@ class CatalogTest(unittest.TestCase):
                 target.unlink()
                 with self.assertRaisesRegex(ValueError, "missing.*NotoSansMath"):
                     fc.verify(dest, "product")
+
+
+class CatalogBuildTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.directory = tempfile.TemporaryDirectory()
+        cls.build = Path(cls.directory.name) / "font-catalog-build"
+        environment = dict(os.environ, CARGO_MANIFEST_DIR=str(ROOT / "crates/sdk/font-catalog"))
+        subprocess.run(["rustc", "--edition=2024", str(ROOT / "crates/sdk/font-catalog/build.rs"),
+                        "-o", str(cls.build)], env=environment, check=True)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.directory.cleanup()
+
+    def test_missing_python_identifies_the_interpreter_and_preparation_tool(self):
+        environment = dict(os.environ, PATH=self.directory.name)
+        environment.pop("PYTHON", None)
+        default_python = "python" if os.name == "nt" else "python3"
+        for executable in [default_python, str(Path(self.directory.name) / "missing-python")]:
+            with self.subTest(executable=executable):
+                if executable != default_python:
+                    environment["PYTHON"] = executable
+                result = subprocess.run([str(self.build)], env=environment,
+                                        capture_output=True, text=True)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(f"could not launch `{executable}`", result.stderr)
+                self.assertIn("tools/font-catalog.py", result.stderr)
+                self.assertIn("Python 3.11+", result.stderr)
+                self.assertIn("dnf install python3", result.stderr)
+                self.assertNotIn("cargo::rustc-env=TILO_CHECKOUT_FONT_ROOT=", result.stdout)
+
+    def test_installed_python_prepares_the_real_verified_catalog_offline(self):
+        source = ROOT / "crates/sdk/ui-core/assets/fonts"
+        fc.prepared_root(source, "fixtures")
+        environment = dict(os.environ, PYTHON=sys.executable, CARGO_NET_OFFLINE="true")
+        result = subprocess.run([str(self.build)], env=environment,
+                                capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        prefix = "cargo::rustc-env=TILO_CHECKOUT_FONT_ROOT="
+        roots = [line[len(prefix):] for line in result.stdout.splitlines() if line.startswith(prefix)]
+        self.assertEqual(len(roots), 1, result.stdout)
+        self.assertEqual(fc.verify(Path(roots[0]), "fixtures"), (37, 55771564))
 
 
 if __name__ == "__main__":

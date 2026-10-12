@@ -5,10 +5,7 @@
     reason = "heatmap layout and colour interpolation are bounded numeric operations"
 )]
 
-use std::collections::HashMap;
-
 use crate::widget::ModelPath;
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
 use vello::peniko::{Color, Fill};
@@ -19,10 +16,10 @@ use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::TextRole;
+use crate::widget::Widget;
 use crate::widget::chart_navigation::{
     ChartNavAction, ChartTouchTracker, InteractiveChart, handle_chart_event, moved_item,
 };
-use crate::widget::{TaffyTreeExt, Widget};
 
 #[derive(Clone, Debug)]
 pub struct HeatmapCell {
@@ -265,24 +262,8 @@ impl InteractiveChart for Heatmap {
 }
 
 impl Widget for Heatmap {
-    fn build_layout(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
-        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        let style = Style {
-            size: Size {
-                width: Dimension::percent(1.0),
-                height: Dimension::length(self.height),
-            },
-            ..Default::default()
-        };
-        taffy.widget_leaf(style, node_map, self)
-    }
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
-    }
+    crate::widget::chart_navigation::chart_leaf!();
+
     #[allow(
         clippy::too_many_lines,
         reason = "matrix cells, axes and inspector share one retained paint pass"
@@ -363,7 +344,11 @@ impl Widget for Heatmap {
                 continue;
             };
             let color = if cell.value.is_finite() {
-                crate::tokens::colors::mix8_f64(low, high, (cell.value - min) / (max - min))
+                crate::tokens::colors::mix8(
+                    low,
+                    high,
+                    crate::num::f32_of_f64((cell.value - min) / (max - min)),
+                )
             } else {
                 missing
             };
@@ -470,7 +455,7 @@ impl Widget for Heatmap {
                 .with_children(children),
         )
     }
-    fn perform_action_at(
+    fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
         key_path: &[u64],
@@ -490,14 +475,8 @@ impl Widget for Heatmap {
     fn name(&self) -> &'static str {
         "Heatmap"
     }
-    fn get_rect(&self) -> Rect {
-        self.rect
-    }
     fn is_focusable(&self) -> bool {
         true
-    }
-    fn is_layout_dirty(&self) -> bool {
-        self.rect == Rect::ZERO
     }
 }
 

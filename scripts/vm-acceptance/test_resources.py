@@ -270,5 +270,74 @@ class Growth(unittest.TestCase):
         self.assertIsNone(resources.shell_anon_mib(table, 4242))
 
 
+def shell_report(**overrides):
+    """A `process_memory` answer as the compositor gives it (memory_report.rs)."""
+    report = {
+        "pid": 4299,
+        "status_kib": {"VmRSS": 460676, "RssAnon": 197912, "RssFile": 189760, "RssShmem": 73004, "Threads": 87},
+        "malloc": {"arena_kib": 90000, "mmapped_kib": 20000, "mmapped_blocks": 9, "in_use_kib": 70000,
+                   "free_kib": 40000, "top_releasable_kib": 100},
+        "threads": [{"name": "tokio-runtime-w", "count": 24}, {"name": "shell", "count": 1}],
+        "mappings": {"classes": {
+            "heap_arenas": {"resident_kib": 81920, "virtual_kib": 1048576, "mappings": 20},
+            "gpu_memfd": {"resident_kib": 74240, "virtual_kib": 79067, "mappings": 3},
+            "reserved": {"resident_kib": 0, "virtual_kib": 9000000, "mappings": 90},
+            "kernel_pages": {"resident_kib": 0, "virtual_kib": 12, "mappings": 2},
+            "thread_stacks": {"resident_kib": 10240, "virtual_kib": 180000, "mappings": 87},
+        }, "top_mappings": [], "top_files": [], "unreadable_mappings": 0},
+        "page_monitor": False,
+    }
+    report.update(overrides)
+    return report
+
+
+class ShellMemoryMap(unittest.TestCase):
+    def test_parts_are_resident_mib_per_class_without_address_space(self):
+        parts = resources.shell_parts_mib(resources.parse_shell_memory_map(shell_report()))
+        self.assertEqual(list(parts), ["heap_arenas", "gpu_memfd", "thread_stacks", "malloc_in_use", "malloc_free"])
+        self.assertEqual((parts["heap_arenas"], parts["gpu_memfd"], parts["malloc_free"]), (80.0, 72.5, 39.1))
+
+    def test_records_are_valid_kpis_in_one_unit(self):
+        ctx = Recorder()
+        resources.record_shell_parts(ctx, shell_report(), "after_close")
+        self.assertEqual(ctx.records["memory.shell_parts_mib.heap_arenas.after_close"], [80.0])
+        self.assertEqual(ctx.records["memory.shell_threads.after_close"], [87])
+        self.assertNotIn("memory.shell_parts_mib.reserved.after_close", ctx.records)
+
+    def test_an_error_or_an_empty_report_is_unobservable(self):
+        for answer in (None, "unknown op", shell_report(status_kib={}),
+                       shell_report(mappings={"classes": {"reserved": {"resident_kib": 0}}})):
+            with self.assertRaises(core.Unobservable):
+                resources.parse_shell_memory_map(answer)
+
+    def test_the_idle_compositor_is_held_to_its_anon_budget(self):
+        from run import BUDGETS
+        self.assertEqual(resources.shell_idle_anon_problems(159.0, BUDGETS), [])
+        problems = resources.shell_idle_anon_problems(238.7, BUDGETS)
+        self.assertEqual(len(problems), 1)
+        self.assertIn("238.7 MB > 200 MB", problems[0])
+
+    def test_the_compositor_is_asked_over_its_control_socket(self):
+        class Vm:
+            def raw(self, op):
+                assert op == {"op": "process_memory"}
+                return {"answer": shell_report()}
+
+        class Ctx:
+            vm = Vm()
+        self.assertEqual(resources.shell_memory_map(Ctx())["pid"], 4299)
+
+
+class DiskTest(unittest.TestCase):
+    def test_parses_the_slot_users_runtime_and_store_bytes(self):
+        out = "tilo-runtime 430080000\ntilo-apps 12582912\nbuilds 2\n"
+        self.assertEqual(resources.parse_disk(out), {
+            "runtime_bytes": 430080000, "app_store_bytes": 12582912, "runtime_builds": 2})
+
+    def test_a_missing_line_is_unobservable_not_zero(self):
+        with self.assertRaises(core.Unobservable):
+            resources.parse_disk("tilo-runtime 1\nbuilds 0\n")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -17,7 +17,7 @@ description = "Host services a Tilo UI process borrows from whatever hosts it."
 
 [features]
 # Thread-local chooser and URI backends a test selects for scoped requests.
-test-support = ["tilo-dialogs/test-support"]
+test-support = ["tilo-dialogs/test-support", "tilo-clock/test-support"]
 # The native desktop services (`native::services`): each platform crate's
 # system backend, speech, and the backends below. Without it the crate is the
 # host vocabulary only, and a host installs its own `host::HostServices`.

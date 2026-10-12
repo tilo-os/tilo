@@ -7,18 +7,15 @@
 //! changes (a cover that arrived, a renamed playlist); what a card asks for
 //! comes back as the app's own action.
 
-use std::cell::RefCell;
 use std::rc::Rc;
 
+use super::Action;
+use super::page_part::{Asked, Placed, asking};
 use ui::icons::Icon;
 use ui::paint::PaintCtx;
-use ui::presence::PresenceCtx;
-use ui::widget::{Embedded, MediaAspect, MediaCard, MediaGrid, MediaSize, MediaSource};
+use ui::widget::{MediaAspect, MediaCard, MediaGrid, MediaSize, MediaSource};
 use vello::kurbo::Rect;
 use vello::peniko::ImageData;
-use winit::event::WindowEvent;
-
-use super::Action;
 
 /// One card of a grid: what it shows and what it does.
 pub(super) struct CardSpec {
@@ -65,46 +62,40 @@ impl CardKey {
     }
 }
 
-type Asked = Rc<RefCell<Vec<Action>>>;
-
 /// A media grid and the host that lays it out in the painted page.
 pub(super) struct MediaGridHost {
-    host: Embedded<MediaGrid>,
+    pub(super) host: Placed<MediaGrid>,
     key: Vec<CardKey>,
     asked: Asked,
     /// The grid shows this many loading cards instead of covers.
     loading: Option<usize>,
-    /// Whether the grid was placed this frame.
-    placed: bool,
 }
 
 impl MediaGridHost {
     pub(super) fn new() -> Self {
         Self {
-            host: Embedded::new(MediaGrid::new(Vec::new()).with_size(MediaSize::Small)),
+            host: Placed::new(MediaGrid::new(Vec::new()).with_size(MediaSize::Small)),
             key: Vec::new(),
             asked: Rc::default(),
             loading: None,
-            placed: false,
         }
     }
 
     /// Show `count` loading cards: the shape of the covers on their way.
     pub(super) fn update_loading(&mut self, count: usize) {
-        self.placed = false;
+        self.host.unplace();
         if self.loading == Some(count) {
             return;
         }
         self.loading = Some(count);
         self.key.clear();
-        self.host = Embedded::new(
-            MediaGrid::loading(count, MediaAspect::Square).with_size(MediaSize::Small),
-        );
+        self.host
+            .replace(MediaGrid::loading(count, MediaAspect::Square).with_size(MediaSize::Small));
     }
 
     /// Bring the grid up to date with this frame's cards.
     pub(super) fn update(&mut self, cards: Vec<CardSpec>) {
-        self.placed = false;
+        self.host.unplace();
         let key: Vec<CardKey> = cards.iter().map(CardKey::of).collect();
         if key == self.key && self.loading.is_none() {
             return;
@@ -115,18 +106,17 @@ impl MediaGridHost {
             .into_iter()
             .map(|card| self.build_card(card))
             .collect();
-        self.host = Embedded::new(MediaGrid::new(built).with_size(MediaSize::Small));
+        self.host
+            .replace(MediaGrid::new(built).with_size(MediaSize::Small));
     }
 
     fn build_card(&self, card: CardSpec) -> MediaCard {
         let source = card
             .image
             .map_or(MediaSource::Placeholder, MediaSource::Image);
-        let activate = Rc::clone(&self.asked);
-        let action = card.action;
         let mut built = MediaCard::new(format!("music.card.{}", card.art_id), source)
             .title(card.title)
-            .on_activate(move || activate.borrow_mut().push(action.clone()));
+            .on_activate(asking(&self.asked, card.action));
         if card.portrait {
             built = built.aspect(MediaAspect::Circle);
         }
@@ -134,19 +124,13 @@ impl MediaGridHost {
             built = built.meta(line);
         }
         if let Some(menu) = card.menu {
-            let asked = Rc::clone(&self.asked);
             built = built.hover_action(
                 Icon::MoreHorizontal,
                 crate::i18n::t("music-spotify-playlist-actions"),
-                move || {
-                    asked.borrow_mut().push(menu.clone());
-                },
+                asking(&self.asked, menu),
             );
         } else if let Some(play) = card.play {
-            let asked = Rc::clone(&self.asked);
-            built = built.hover_action(Icon::Play, "Play", move || {
-                asked.borrow_mut().push(play.clone());
-            });
+            built = built.hover_action(Icon::Play, "Play", asking(&self.asked, play));
         }
         built
     }
@@ -163,35 +147,8 @@ impl MediaGridHost {
         if self.key.is_empty() && self.loading.is_none() {
             return top;
         }
-        let height = self
-            .host
-            .layout(Rect::new(left, top, right, top), ctx.theme, ctx.text);
-        let bottom = top + height;
-        if bottom > clip.y0 && top < clip.y1 {
-            // Cards scrolled out of the page are not painted.
-            let presence = PresenceCtx::default();
-            let outer = presence.push_viewport(clip);
-            self.host
-                .draw(ctx.scene, ctx.transform, ctx.text, ctx.theme, &presence);
-            presence.pop_viewport(outer);
-            self.placed = true;
-        }
-        bottom
-    }
-
-    /// Route one window event to the grid; a grid out of view takes none.
-    pub(super) fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
-        if !self.placed {
-            return;
-        }
-        self.host.handle_event(
-            event,
-            ctx.scale_factor,
-            ctx.modifiers,
-            &mut ctx.state,
-            ctx.path,
-            ctx.handled,
-        );
+        // Cards scrolled out of the page are not painted.
+        self.host.place(ctx, (left, right), top, clip)
     }
 
     /// What the cards asked for since the last call.

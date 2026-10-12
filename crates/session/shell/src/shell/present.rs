@@ -144,6 +144,15 @@ pub trait Presenter: Send {
     fn frame_detail(&mut self) -> Option<String> {
         None
     }
+
+    /// Idle work, not a frame: bring whatever this presenter retains for
+    /// `frame`'s layers up to them while the desktop rests, without showing
+    /// anything ([`PresentPipe::warm`]). Asks `keep_going` between steps
+    /// and stops as soon as it says a frame waits. Presenters that retain
+    /// nothing do nothing.
+    fn warm(&mut self, frame: &FramePaint, keep_going: &dyn Fn() -> bool) {
+        let _ = (frame, keep_going);
+    }
 }
 
 enum PresentMsg {
@@ -166,9 +175,18 @@ enum PresentMsg {
         /// buffers do not go back to their clients while it can be rendered.
         pins: crate::shell::gpu_frames::FramePins,
     },
+    /// Idle work for [`Presenter::warm`]; never presented, never counted in
+    /// flight. Its client frames stay pinned until it is done.
+    Warm(Box<Warm>),
     Resize((u32, u32)),
     Dpms(bool),
     Stop,
+}
+
+/// Idle work for the render thread ([`PresentPipe::warm`]).
+struct Warm {
+    frame: FramePaint,
+    pins: crate::shell::gpu_frames::FramePins,
 }
 
 /// Signalled by the render thread each time a frame retires. Boxed as a trait object so
@@ -234,7 +252,7 @@ fn log_frame_lifecycle(serial: u64, revision: u64, timing: FrameLifecycle) {
         || total >= SLOW_FRAME_LIFECYCLE
     {
         eprintln!(
-            "FRAME-LIFECYCLE serial={serial} event=render-retired queue_wait_us={} render_us={} total_us={} inflight_at_enqueue={inflight_at_enqueue} input_age_at_enqueue_us={} revision={} phase_timing={} encode_submit_us={} gpu_completion_wait_us={} bump_settle_us={} backdrop_us={} kms_retirement_us={} vblank_paced={} flip_to_vblank_us={}",
+            "FRAME-LIFECYCLE serial={serial} event=render-retired queue_wait_us={} render_us={} total_us={} inflight_at_enqueue={inflight_at_enqueue} input_age_at_enqueue_us={} revision={} phase_timing={} encode_submit_us={} gpu_completion_wait_us={} bump_settle_us={} backdrop_us={} kms_retirement_us={} vblank_paced={} flip_to_vblank_us={} monotonic_us={}",
             queue_wait.as_micros(),
             render.as_micros(),
             total.as_micros(),
@@ -255,6 +273,10 @@ fn log_frame_lifecycle(serial: u64, revision: u64, timing: FrameLifecycle) {
                     .as_micros()
                     .to_string()
             ),
+            // CLOCK_MONOTONIC at retirement, so a boot or sign-in measurement can place the
+            // session's first presented frame on the system's own clock (TIL-767).
+            crate::compositor::client_input::monotonic_time_ns()
+                .map_or_else(|| "none".to_owned(), |ns| (ns / 1_000).to_string()),
         );
     }
 }
@@ -274,6 +296,17 @@ impl RetireBoard {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .push_back(outcome);
+    }
+
+    /// Run [`Presenter::warm`] for `frame` while no frame is in flight: a
+    /// frame handed over before or during it goes first. Its client frames
+    /// go back once it is done.
+    fn warm(&self, presenter: &mut dyn Presenter, Warm { frame, pins }: Warm) {
+        let idle = || self.inflight.load(Ordering::Acquire) == 0;
+        if idle() {
+            presenter.warm(&frame, &idle);
+        }
+        drop(pins);
     }
 
     /// Publish one finished frame, ending with the in-flight decrement that
@@ -420,6 +453,7 @@ impl PresentPipe {
                             // Then wake the loop — strictly after the decrement, so a loop that wakes on this signal is guaranteed to see the capacity.
                             on_retire();
                         }
+                        PresentMsg::Warm(warm) => board.warm(&mut *presenter, *warm),
                         PresentMsg::Resize(size) => presenter.resize(size),
                         PresentMsg::Dpms(on) => presenter.set_dpms(on),
                         PresentMsg::Stop => break,
@@ -596,6 +630,18 @@ impl PresentPipe {
             return None;
         }
         Some(serial)
+    }
+
+    /// Hand the render thread idle work: `frame`'s layers, drawn while the
+    /// desktop rests, for the presenter to retain ([`Presenter::warm`]).
+    /// It runs after the frames already handed over and yields to any frame
+    /// handed over after it; it is not a frame, so it takes no capacity and
+    /// gets no serial. Returns `false` if the render thread has gone away.
+    pub fn warm(&self, frame: FramePaint) -> bool {
+        let pins = frame.client_frame_pins();
+        self.tx
+            .send(PresentMsg::Warm(Box::new(Warm { frame, pins })))
+            .is_ok()
     }
 
     pub fn resize(&self, size: (u32, u32)) {

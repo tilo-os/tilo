@@ -212,7 +212,10 @@ impl RecordReservation {
         }
         app_state::validate_document_schema(&doc, Path::new(self.checkout.id.as_str()))?;
         validate_identity(&doc, &self.checkout, &workspace)?;
-        doc.commit();
+        doc.commit_with(
+            automerge::transaction::CommitOptions::default()
+                .with_message(tilo_actions::FrameworkChange::Genesis.change_message()),
+        );
         let history = crate::state::UndoLog::new(&mut doc);
         let mut set = self.store.0.borrow_mut();
         if set

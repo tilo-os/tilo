@@ -181,6 +181,9 @@ fn action_in_scope(scope: &InteractiveWorkspaceScope, envelope: &EnvelopeV2) -> 
         | EnvelopeV2::CertifiedSignedDelivered { action: signed, .. } => {
             signed.action().room == scope.room
         }
+        // The session reader rebuilds a coded delta into `State`; one that
+        // reached this check whole names no scope.
+        EnvelopeV2::CodedDelta { .. } => false,
     }
 }
 
@@ -263,6 +266,9 @@ fn classify_connect_error(error: &iroh::endpoint::ConnectError) -> ClientError {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum RelayWireProtocol {
+    /// [`Self::TiloV2Presence`] whose live deltas arrive coded against the
+    /// session's previous delta from the same author (TIL-755).
+    TiloV2CodedDelta,
     /// [`Self::TiloV2Compact`] whose presence arrives batched and
     /// slot-coded.
     TiloV2Presence,
@@ -277,6 +283,7 @@ enum RelayWireProtocol {
 impl RelayWireProtocol {
     fn alpn(self) -> &'static [u8] {
         match self {
+            Self::TiloV2CodedDelta => tilo_delivery_protocol::transport_v2::ALPN_CODED_DELTA_V1,
             Self::TiloV2Presence => tilo_delivery_protocol::transport_v2::ALPN_PRESENCE_BATCH_V1,
             Self::TiloV2Compact => tilo_delivery_protocol::transport_v2::ALPN_COMPACT_STATE_V1,
             Self::TiloV2Signed => tilo_delivery_protocol::transport_v2::ALPN_SIGNED_ACTIONS_V1,
@@ -292,13 +299,17 @@ impl RelayWireProtocol {
     fn signs_actions(self) -> bool {
         matches!(
             self,
-            Self::TiloV2Presence | Self::TiloV2Compact | Self::TiloV2Signed
+            Self::TiloV2CodedDelta
+                | Self::TiloV2Presence
+                | Self::TiloV2Compact
+                | Self::TiloV2Signed
         )
     }
 
     fn framing(self) -> tilo_delivery_protocol::transport_v2::StateFraming {
         use tilo_delivery_protocol::transport_v2::StateFraming;
         match self {
+            Self::TiloV2CodedDelta => StateFraming::CodedDelta,
             Self::TiloV2Presence => StateFraming::Presence,
             Self::TiloV2Compact => StateFraming::Compact,
             Self::TiloV2Signed | Self::TiloV2 => StateFraming::V2,
@@ -307,11 +318,12 @@ impl RelayWireProtocol {
     }
 
     /// The protocol a relay that does not speak this one may still speak.
-    /// Batched presence degrades to one frame per presence, compact state to
+    /// Coded deltas degrade to whole deltas, batched presence degrades to one frame per presence, compact state to
     /// the full delta envelope, and signing to unsigned actions, which
     /// current brokers serve for effect-free reads only.
     fn fallback(self) -> Option<Self> {
         match self {
+            Self::TiloV2CodedDelta => Some(Self::TiloV2Presence),
             Self::TiloV2Presence => Some(Self::TiloV2Compact),
             Self::TiloV2Compact => Some(Self::TiloV2Signed),
             Self::TiloV2Signed => Some(Self::TiloV2),
@@ -464,37 +476,6 @@ impl RelayClient {
             revocations,
         )
         .await
-    }
-
-    /// Resolve content from a relay whose certified user root differs from
-    /// this client. The caller pins its derived relay service `NodeId`; the
-    /// challenge still proves the server holds its certified device key.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ClientError`] when dialing, framing, or authenticated
-    /// discovery fails.
-    pub async fn discover_content_endpoint_to_pinned_host(
-        endpoint: &Endpoint,
-        relay_addr: EndpointAddr,
-        workspace_id: u64,
-        expected_server_user: [u8; 32],
-        expected_server_device: [u8; 32],
-        own_cert: DeviceCert,
-        own_sk: ed25519_dalek::SigningKey,
-        revocations: RevocationList,
-    ) -> Result<EndpointAddr, ClientError> {
-        Ok(Self::discover_content_peer_with_server_trust(
-            endpoint,
-            relay_addr,
-            workspace_id,
-            Some((expected_server_user, expected_server_device)),
-            own_cert,
-            own_sk,
-            revocations,
-        )
-        .await?
-        .endpoint)
     }
 
     async fn discover_content_peer_with_server_trust(
@@ -775,7 +756,7 @@ impl RelayClient {
                 revocations,
                 action_key: Some(own_sk.clone()),
             },
-            RelayWireProtocol::TiloV2Presence,
+            RelayWireProtocol::TiloV2CodedDelta,
         )
         .await
     }
@@ -821,7 +802,7 @@ impl RelayClient {
                 revocations,
                 action_key: Some(own_sk.clone()),
             },
-            RelayWireProtocol::TiloV2Presence,
+            RelayWireProtocol::TiloV2CodedDelta,
         )
         .await
     }
@@ -1206,6 +1187,14 @@ impl RelayClient {
         self.inbound.lock().await.recv().await
     }
 
+    /// The connection's own packet and frame counters (UDP datagrams each
+    /// way, frames by type), read from the transport on each call: what a
+    /// bench needs to count packets, at no cost to the session.
+    #[must_use]
+    pub fn transport_stats(&self) -> Option<iroh::endpoint::ConnectionStats> {
+        self.carrier.transport_stats()
+    }
+
     /// Disconnect this session without closing an endpoint shared with state peers.
     pub(crate) async fn disconnect(&self) {
         self.carrier.disconnect().await;
@@ -1267,6 +1256,9 @@ where
     }
 }
 
+/// Write a session's outbound state and private frames. Pointer presence is
+/// paced per slot ([`crate::pointer_pacing`]); each wake writes what it took,
+/// and every held pointer that fell due, in one `write_all`.
 async fn run_v2_writer<W>(
     send: &mut W,
     states: &mut mpsc::Receiver<Envelope>,
@@ -1277,10 +1269,26 @@ async fn run_v2_writer<W>(
 where
     W: tokio::io::AsyncWrite + Unpin,
 {
+    use crate::pointer_pacing::{Admitted, PointerPacer};
+    use n0_future::time::Instant;
+
     let mut schedule = V2WriteSchedule::default();
+    let mut pointers = PointerPacer::default();
     loop {
-        match next_v2_outbound_event(states, actions, &mut schedule).await {
-            ClientEvent::State(Some(env)) => {
+        let due = pointers.next_due();
+        // Queued envelopes first: a newer move of a held pointer that is
+        // already waiting replaces it before the gap's end writes it.
+        let event = tokio::select! {
+            biased;
+            event = next_v2_outbound_event(states, actions, &mut schedule) => Some(event),
+            () = pointer_due(due) => None,
+        };
+        let now = Instant::now();
+        let mut out = Vec::new();
+        let mut written = None;
+        let mut closing = false;
+        match event {
+            Some(ClientEvent::State(Some(env))) => {
                 #[cfg(not(target_arch = "wasm32"))]
                 crate::trace_native_publication("client_write_started", &env, None);
                 if scope.is_some_and(|scope| !state_in_scope(scope, &env)) {
@@ -1296,38 +1304,77 @@ where
                 {
                     tracing::info!(phase = "client_delta_write", workspace_id, authored_at_ns);
                 }
-                let Ok(bytes) =
-                    tilo_delivery_protocol::transport_v2::encode_state_framed(&env, framing)
-                else {
-                    return false;
-                };
-                if tokio::io::AsyncWriteExt::write_all(send, &bytes)
-                    .await
-                    .is_err()
-                {
+                if let Admitted::Write { ahead, envelope } = pointers.admit(env, now) {
+                    if !encode_states(&ahead, framing, &mut out)
+                        || !encode_states(std::slice::from_ref(&envelope), framing, &mut out)
+                    {
+                        return false;
+                    }
+                    written = Some(envelope);
+                }
+            }
+            Some(ClientEvent::State(None)) => {
+                // The producer is gone; the resting positions still go.
+                if !encode_states(&pointers.take_all(now), framing, &mut out) {
                     return false;
                 }
-                #[cfg(not(target_arch = "wasm32"))]
-                crate::trace_native_publication("client_written", &env, None);
+                closing = true;
             }
-            ClientEvent::State(None) => return true,
-            ClientEvent::Action(Some(action)) => {
+            Some(ClientEvent::Action(Some(action))) => {
                 if scope.is_some_and(|scope| !action_in_scope(scope, &action)) {
                     return false;
                 }
                 let Ok(bytes) = tilo_delivery_protocol::transport_v2::encode(&action) else {
                     return false;
                 };
-                if tokio::io::AsyncWriteExt::write_all(send, &bytes)
-                    .await
-                    .is_err()
-                {
-                    return false;
-                }
+                out.extend_from_slice(&bytes);
             }
             // The v2 writer only selects outbound events; fail closed otherwise.
-            ClientEvent::Action(None) | ClientEvent::Inbound(_) => return false,
+            Some(ClientEvent::Action(None) | ClientEvent::Inbound(_)) => return false,
+            None => {}
         }
+        // Whatever fell due goes in the same write.
+        if !encode_states(&pointers.take_due(now), framing, &mut out) {
+            return false;
+        }
+        if !out.is_empty()
+            && tokio::io::AsyncWriteExt::write_all(send, &out)
+                .await
+                .is_err()
+        {
+            return false;
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(env) = &written {
+            crate::trace_native_publication("client_written", env, None);
+        }
+        #[cfg(target_arch = "wasm32")]
+        drop(written);
+        if closing {
+            return true;
+        }
+    }
+}
+
+/// Append `envelopes` to `out` as state frames, in order; `false` when one
+/// cannot be encoded.
+fn encode_states(
+    envelopes: &[Envelope],
+    framing: tilo_delivery_protocol::transport_v2::StateFraming,
+    out: &mut Vec<u8>,
+) -> bool {
+    envelopes.iter().all(|envelope| {
+        tilo_delivery_protocol::transport_v2::encode_state_framed(envelope, framing)
+            .map(|bytes| out.extend_from_slice(&bytes))
+            .is_ok()
+    })
+}
+
+/// Wait until a held pointer falls due, or forever while none is held.
+async fn pointer_due(due: Option<n0_future::time::Instant>) {
+    match due {
+        Some(due) => n0_future::time::sleep_until(due).await,
+        None => std::future::pending().await,
     }
 }
 
@@ -1883,16 +1930,31 @@ mod scheduling_tests {
     }
 
     #[test]
-    fn batched_presence_then_compact_state_degrade_before_signing_degrades() {
+    fn coded_deltas_then_batched_presence_then_compact_state_degrade_before_signing_degrades() {
         use super::RelayWireProtocol::{
-            TiloV1, TiloV2, TiloV2Compact, TiloV2Presence, TiloV2Signed,
+            TiloV1, TiloV2, TiloV2CodedDelta, TiloV2Compact, TiloV2Presence, TiloV2Signed,
         };
         use tilo_delivery_protocol::transport_v2::StateFraming;
-        let mut chain = vec![TiloV2Presence];
+        let mut chain = vec![TiloV2CodedDelta];
         while let Some(older) = chain.last().and_then(|protocol| protocol.fallback()) {
             chain.push(older);
         }
-        assert_eq!(chain, [TiloV2Presence, TiloV2Compact, TiloV2Signed, TiloV2]);
+        assert_eq!(
+            chain,
+            [
+                TiloV2CodedDelta,
+                TiloV2Presence,
+                TiloV2Compact,
+                TiloV2Signed,
+                TiloV2
+            ]
+        );
+        assert_eq!(TiloV2CodedDelta.framing(), StateFraming::CodedDelta);
+        assert_eq!(
+            TiloV2CodedDelta.alpn(),
+            tilo_delivery_protocol::transport_v2::ALPN_CODED_DELTA_V1
+        );
+        assert!(TiloV2CodedDelta.signs_actions());
         assert_eq!(TiloV2Presence.framing(), StateFraming::Presence);
         assert_eq!(TiloV2Compact.framing(), StateFraming::Compact);
         assert_eq!(TiloV2Signed.framing(), StateFraming::V2);
@@ -2127,6 +2189,210 @@ mod scheduling_tests {
         assert_eq!(action_sink.capacity(), 0);
         drop(state_tx);
         drop(action_tx);
+    }
+}
+
+/// The production session writer, driven on a paused clock: what it puts on
+/// the wire for pointer presence, and when.
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
+#[allow(
+    clippy::arithmetic_side_effects,
+    reason = "the assertions add fixed durations to a paused clock"
+)]
+mod pointer_pacing_writer_tests {
+    use super::*;
+    use crate::coedit::POINTER_GAP;
+    use crate::pointer_pacing::tests::{caret, left, pointer};
+    use std::pin::Pin;
+    use std::task::{Context, Poll};
+    use tilo_delivery_protocol::transport_v2::StateFraming;
+    use tokio::time::{Duration, Instant};
+
+    const FRAMING: StateFraming = StateFraming::CodedDelta;
+
+    /// One `write_all`'s bytes and when it went.
+    type Chunk = (Instant, Vec<u8>);
+
+    /// Every `write_all` the writer makes, as one chunk.
+    #[derive(Clone, Default)]
+    struct Wire(Arc<Mutex<Vec<Chunk>>>);
+
+    impl tokio::io::AsyncWrite for Wire {
+        fn poll_write(
+            self: Pin<&mut Self>,
+            _: &mut Context<'_>,
+            bytes: &[u8],
+        ) -> Poll<std::io::Result<usize>> {
+            self.0
+                .lock()
+                .unwrap()
+                .push((Instant::now(), bytes.to_vec()));
+            Poll::Ready(Ok(bytes.len()))
+        }
+
+        fn poll_flush(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+
+        fn poll_shutdown(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    impl Wire {
+        /// Each write, as the state envelopes a relay decodes from it.
+        async fn writes(&self) -> Vec<(Instant, Vec<Envelope>)> {
+            let chunks = self.0.lock().unwrap().clone();
+            let mut writes = Vec::new();
+            for (at, bytes) in chunks {
+                let mut reader = SessionReader::framed(std::io::Cursor::new(bytes), FRAMING);
+                let mut envelopes = Vec::new();
+                while let Some(frame) = reader.read_next().await.unwrap() {
+                    let EnvelopeV2::State(envelope) = frame else {
+                        panic!("a state write carried {frame:?}");
+                    };
+                    envelopes.push(envelope);
+                }
+                writes.push((at, envelopes));
+            }
+            writes
+        }
+    }
+
+    struct Writer {
+        states: mpsc::Sender<Envelope>,
+        _actions: mpsc::Sender<EnvelopeV2>,
+        wire: Wire,
+        task: tokio::task::JoinHandle<bool>,
+    }
+
+    fn writer() -> Writer {
+        let (states_tx, mut states) = mpsc::channel(256);
+        let (actions_tx, mut actions) = mpsc::channel(32);
+        let wire = Wire::default();
+        let mut send = wire.clone();
+        let task = tokio::spawn(async move {
+            run_v2_writer(&mut send, &mut states, &mut actions, None, FRAMING).await
+        });
+        Writer {
+            states: states_tx,
+            _actions: actions_tx,
+            wire,
+            task,
+        }
+    }
+
+    fn ms(n: u64) -> Duration {
+        Duration::from_millis(n)
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_30_hz_pointer_is_written_at_20_hz_from_its_first_move_to_its_resting_position() {
+        let pump = writer();
+        let t0 = Instant::now();
+        for step in 0..10_u32 {
+            tokio::time::sleep_until(t0 + ms(33) * step).await;
+            pump.states
+                .send(pointer("tile", f64::from(step)))
+                .await
+                .unwrap();
+        }
+        let last_posted = t0 + ms(33 * 9);
+        tokio::time::sleep(POINTER_GAP * 4).await;
+
+        let writes = pump.wire.writes().await;
+        assert_eq!(
+            writes.first(),
+            Some(&(t0, vec![pointer("tile", 0.0)])),
+            "the first move after a pause goes at once"
+        );
+        for pair in writes.windows(2) {
+            assert!(
+                pair[1].0 - pair[0].0 >= POINTER_GAP,
+                "one slot written twice within the gap: {:?}",
+                pair.iter().map(|(at, _)| *at - t0).collect::<Vec<_>>()
+            );
+        }
+        let (rested_at, rested) = writes.last().unwrap();
+        assert_eq!(
+            rested,
+            &vec![pointer("tile", 9.0)],
+            "the resting position goes"
+        );
+        assert!(*rested_at <= last_posted + POINTER_GAP);
+        assert!(writes.iter().all(|(_, envelopes)| envelopes.len() == 1));
+        // Ten moves over 297 ms: the first at once, then one per gap.
+        assert_eq!(writes.len(), 7);
+
+        drop(pump.states);
+        assert!(pump.task.await.unwrap());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_event_takes_the_held_pointer_ahead_of_it_in_one_write() {
+        let pump = writer();
+        let t0 = Instant::now();
+        pump.states.send(pointer("tile", 1.0)).await.unwrap();
+        tokio::time::sleep(ms(10)).await;
+        pump.states.send(pointer("tile", 2.0)).await.unwrap();
+        pump.states.send(left()).await.unwrap();
+        tokio::time::sleep(POINTER_GAP * 4).await;
+
+        assert_eq!(
+            pump.wire.writes().await,
+            vec![
+                (t0, vec![pointer("tile", 1.0)]),
+                (t0 + ms(10), vec![pointer("tile", 2.0), left()]),
+            ],
+            "an app's Left must never overtake its last pointer"
+        );
+        drop(pump.states);
+        assert!(pump.task.await.unwrap());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_caret_is_not_held_and_may_pass_a_held_pointer() {
+        let pump = writer();
+        let t0 = Instant::now();
+        pump.states.send(pointer("tile", 1.0)).await.unwrap();
+        tokio::time::sleep(ms(10)).await;
+        pump.states.send(pointer("tile", 2.0)).await.unwrap();
+        pump.states.send(caret(4)).await.unwrap();
+        tokio::time::sleep(POINTER_GAP * 4).await;
+
+        assert_eq!(
+            pump.wire.writes().await,
+            vec![
+                (t0, vec![pointer("tile", 1.0)]),
+                (t0 + ms(10), vec![caret(4)]),
+                (t0 + POINTER_GAP, vec![pointer("tile", 2.0)]),
+            ]
+        );
+        drop(pump.states);
+        assert!(pump.task.await.unwrap());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn closing_the_session_still_writes_the_resting_position() {
+        let pump = writer();
+        let t0 = Instant::now();
+        pump.states.send(pointer("tile", 1.0)).await.unwrap();
+        tokio::time::sleep(ms(10)).await;
+        pump.states.send(pointer("tile", 2.0)).await.unwrap();
+        drop(pump.states);
+
+        assert!(
+            pump.task.await.unwrap(),
+            "a closed producer finishes gracefully"
+        );
+        assert_eq!(
+            pump.wire.writes().await,
+            vec![
+                (t0, vec![pointer("tile", 1.0)]),
+                (t0 + ms(10), vec![pointer("tile", 2.0)]),
+            ]
+        );
     }
 }
 

@@ -5,14 +5,15 @@ use std::rc::Rc;
 use ed25519_dalek::{Signature, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use tilo_actions::remote::{Caller, CallerPrincipal};
-use tilo_app::feedback::{Error, FeedbackHost, MaskedScreenshot, Receipt, ReviewText, Submission};
-use ui::permissions::{CapDecision, PermissionContext, ResourceRef, Verb};
+use tilo_app::feedback::{
+    Error, FeedbackHost, MaskedScreenshot, Receipt, ReviewText, Submission, destination,
+};
+use ui::permissions::{ActionKind, Answer, PermissionContext, TreePath};
 use ui::record::{RecordId, RecordStore};
 
 use super::{Destination, DurableStore, PrivateFeedback, StorageKey};
 
 const DOMAIN: &[u8] = b"tilo-feedback-canonical-receipt-v1\0";
-const CHAT_PACKAGE: &str = "so.tilo.chat";
 
 /// Current enrollment, sampled by the existing authenticated transport.
 /// This is intentionally not deserializable from a request or launch config.
@@ -22,9 +23,6 @@ pub struct Enrollment {
     pub owner: Caller,
     pub reporter: Caller,
     pub permissions: PermissionContext,
-    /// The actual publication requirement. Browser Splice requires Write;
-    /// permission to invoke a Comment action does not supply it.
-    pub publication: Verb,
 }
 
 impl Enrollment {
@@ -51,7 +49,6 @@ impl Enrollment {
             destination: self.destination.clone(),
             owner: identity(&self.owner)?,
             reporter: identity(&self.reporter)?,
-            publication: self.publication,
         })
     }
 
@@ -63,7 +60,6 @@ impl Enrollment {
             .map_err(|_| Error::Invalid("feedback policy time unavailable"))?;
         if self.permissions.role().is_none()
             || self.permissions.user().0 != hex::encode(pin.reporter.user)
-            || !matches!(self.publication, Verb::Comment | Verb::Write)
         {
             return Err(Error::Invalid("reporter admission required"));
         }
@@ -72,12 +68,13 @@ impl Enrollment {
 
     fn authorize_startup(&self) -> Result<Pin, Error> {
         let (pin, permissions) = self.admitted_pin()?;
-        let resource = ResourceRef::Action {
-            app: CHAT_PACKAGE.into(),
-            resource: format!("chat.channel:{}", self.destination.channel),
-            action: "submit-feedback".into(),
-        };
-        if permissions.decide(&resource, Verb::Read) != CapDecision::Allow {
+        let submit = chat_action(
+            destination::CHANNELS,
+            &self.destination.channel,
+            Some(destination::SUBMIT_FIELD),
+            destination::SUBMIT,
+        );
+        if permissions.answer(&submit, ActionKind::Read) != Answer::Allow {
             return Err(Error::Invalid("feedback destination not authorized"));
         }
         Ok(pin)
@@ -86,27 +83,28 @@ impl Enrollment {
     fn authorize(&self) -> Result<Pin, Error> {
         let pin = self.authorize_startup()?;
         let (_, permissions) = self.admitted_pin()?;
-        let resource = ResourceRef::Action {
-            app: CHAT_PACKAGE.into(),
-            resource: format!("chat.channel:{}", self.destination.channel),
-            action: "submit-feedback".into(),
-        };
-        for verb in [Verb::Comment, self.publication] {
-            if permissions.decide(&resource, verb) != CapDecision::Allow {
-                return Err(Error::Invalid("feedback destination not authorized"));
-            }
+        // Publishing the report edits the channel: reading it is not enough.
+        let submit = chat_action(
+            destination::CHANNELS,
+            &self.destination.channel,
+            Some(destination::SUBMIT_FIELD),
+            destination::SUBMIT,
+        );
+        if permissions.answer(&submit, ActionKind::Undoable) != Answer::Allow {
+            return Err(Error::Invalid("feedback destination not authorized"));
         }
         Ok(pin)
     }
 
     fn authorize_receipt(&self, submission: &Submission) -> Result<Pin, Error> {
         let (pin, permissions) = self.admitted_pin()?;
-        let resource = ResourceRef::Action {
-            app: CHAT_PACKAGE.into(),
-            resource: format!("chat.feedback:{}", submission.id),
-            action: "read-feedback-receipt".into(),
-        };
-        if permissions.decide(&resource, Verb::Read) != CapDecision::Allow {
+        let read = chat_action(
+            destination::REPORTS,
+            &submission.id,
+            None,
+            destination::READ_RECEIPT,
+        );
+        if permissions.answer(&read, ActionKind::Read) != Answer::Allow {
             return Err(Error::Invalid("feedback receipt not authorized"));
         }
         Ok(pin)
@@ -124,7 +122,24 @@ struct Pin {
     destination: Destination,
     owner: Identity,
     reporter: Identity,
-    publication: Verb,
+}
+
+/// The resource id of the destination's item `id` in `field`.
+fn chat_item(field: &str, id: &str) -> String {
+    destination::item(field, id)
+}
+
+/// The node of `action` on the destination's item `id` in `field`, below
+/// the field `under` it writes, if any.
+fn chat_action(field: &str, id: &str, under: Option<&str>, action: &str) -> TreePath {
+    tilo_actions::action_node(
+        &TreePath::root(),
+        destination::PACKAGE,
+        &format!("{}.{field}", destination::RESOURCE_KIND),
+        &chat_item(field, id),
+        under,
+        action,
+    )
 }
 
 /// Wire acknowledgment signed only after the canonical owner's current save.
@@ -137,6 +152,34 @@ pub struct SignedReceipt {
 }
 
 impl SignedReceipt {
+    /// Verify a canonical acknowledgment for the exact current admission and
+    /// approved report. A decoded owner response alone is never a receipt.
+    /// # Errors
+    /// Refuses stale policy, wrong identity, destination, content or signature.
+    pub fn verify(
+        &self,
+        submission: &Submission,
+        enrollment: &Enrollment,
+    ) -> Result<Receipt, Error> {
+        let pin = enrollment.authorize_receipt(submission)?;
+        self.verify_pin(submission, &pin)
+    }
+
+    fn verify_pin(&self, submission: &Submission, pin: &Pin) -> Result<Receipt, Error> {
+        let signature =
+            Signature::from_slice(&self.signature).map_err(|_| Error::ReceiptMismatch)?;
+        VerifyingKey::from_bytes(&pin.owner.device)
+            .map_err(|_| Error::ReceiptMismatch)?
+            .verify_strict(digest(pin, &self.receipt)?.as_bytes(), &signature)
+            .map_err(|_| Error::ReceiptMismatch)?;
+        if self.receipt.id != submission.id
+            || self.receipt.destination != pin.destination
+            || self.receipt.digest != submission.digest()?
+        {
+            return Err(Error::ReceiptMismatch);
+        }
+        Ok(self.receipt.clone())
+    }
     /// Decode bounded wire data; authenticity is still checked by Host.
     /// # Errors
     /// Refuses oversized or malformed acknowledgments and non-signatures.
@@ -193,6 +236,16 @@ pub struct CanonicalRecord {
 
 pub type ReportProjection =
     fn(&ui::automerge::AutoCommit, &Submission) -> Result<(Receipt, String), Error>;
+
+/// The owner's current durable source. Implementations must read the actual
+/// retained storage and validate attributed content under current authority;
+/// a disposable reader cache or dispatch result is not a durable source.
+pub trait CanonicalReceiptSource {
+    fn namespace(&self) -> (String, String);
+    /// # Errors
+    /// Refuses missing, unauthorized, conflicting or undurable reports.
+    fn current_report(&self, submission: &Submission) -> Result<(Receipt, String), Error>;
+}
 
 fn digest(pin: &Pin, receipt: &Receipt) -> Result<blake3::Hash, Error> {
     let mut hash = blake3::Hasher::new();
@@ -263,8 +316,8 @@ impl Transport for SessionTransport {
         let target = tilo_actions::remote::RemoteActionTarget {
             provider: enrollment.destination.provider,
             address: tilo_actions::ActionAddress::new(
-                format!("chat.channel:{}", enrollment.destination.channel),
-                "submit-feedback",
+                chat_item(destination::CHANNELS, &enrollment.destination.channel),
+                destination::SUBMIT,
             ),
         };
         (self.send)(&target, submission)
@@ -308,7 +361,7 @@ impl Capture for NoCapture {
 pub struct CanonicalDestination {
     owner: Caller,
     destination: Destination,
-    source: CanonicalRecord,
+    source: Box<dyn CanonicalReceiptSource>,
     signer: Box<dyn ReceiptSigner>,
 }
 
@@ -322,12 +375,24 @@ impl CanonicalDestination {
         source: CanonicalRecord,
         signer: Box<dyn ReceiptSigner>,
     ) -> Result<Self, Error> {
+        Self::from_source(owner, destination, Box::new(source), signer)
+    }
+
+    /// Bind the owner's existing retained source, including non-UI host storage.
+    /// # Errors
+    /// Refuses missing owner identity, signer mismatch and foreign namespaces.
+    pub fn from_source(
+        owner: Caller,
+        destination: Destination,
+        source: Box<dyn CanonicalReceiptSource>,
+        signer: Box<dyn ReceiptSigner>,
+    ) -> Result<Self, Error> {
         destination.validate()?;
         if owner.room() != Some(destination.room.as_str())
             || owner.user_public_key().is_none()
             || owner.device_public_key().is_none()
             || owner != *signer.owner()
-            || source.records.package_and_home() != (CHAT_PACKAGE.into(), destination.room.clone())
+            || source.namespace() != (destination::PACKAGE.into(), destination.room.clone())
         {
             return Err(Error::ReceiptMismatch);
         }
@@ -364,7 +429,11 @@ impl CanonicalDestination {
             return Err(Error::ReceiptMismatch);
         }
         let (receipt, author) = self.current_report(submission)?;
-        if author != hex::encode(pin.reporter.user) || receipt.digest != submission.digest()? {
+        if author != hex::encode(pin.reporter.user)
+            || receipt.id != submission.id
+            || receipt.destination != submission.destination
+            || receipt.digest != submission.digest()?
+        {
             return Err(Error::ReceiptMismatch);
         }
         let request = ReceiptSigningRequest {
@@ -390,27 +459,37 @@ impl CanonicalDestination {
     }
 
     fn current_report(&self, submission: &Submission) -> Result<(Receipt, String), Error> {
+        if self.source.namespace() != (destination::PACKAGE.into(), self.destination.room.clone()) {
+            return Err(Error::ReceiptMismatch);
+        }
+        self.source.current_report(submission)
+    }
+}
+
+impl CanonicalReceiptSource for CanonicalRecord {
+    fn namespace(&self) -> (String, String) {
+        self.records.package_and_home()
+    }
+    fn current_report(&self, submission: &Submission) -> Result<(Receipt, String), Error> {
         if self
-            .source
             .records
-            .save_status(&self.source.record)
+            .save_status(&self.record)
             .map_err(|_| Error::NotDurable)?
             != ui::record::RecordSaveStatus::Saved
         {
             return Err(Error::NotDurable);
         }
-        self.source
-            .records
-            .read(&self.source.record, |doc| {
+        self.records
+            .read(&self.record, |doc| {
                 let scope = ui::record::room_scope(doc);
                 if scope
                     .as_deref()
-                    .is_some_and(|room| room != self.destination.room)
-                    || (!self.source.record.is_package_primary() && scope.is_none())
+                    .is_some_and(|room| room != submission.destination.room)
+                    || (!self.record.is_package_primary() && scope.is_none())
                 {
                     return Err(Error::ReceiptMismatch);
                 }
-                (self.source.project)(doc, submission)
+                (self.project)(doc, submission)
             })
             .ok_or(Error::NotDurable)?
     }
@@ -564,19 +643,7 @@ impl FeedbackHost for Host {
             return Ok(None);
         };
         self.current(Some(submission), true)?;
-        let signature =
-            Signature::from_slice(&signed.signature).map_err(|_| Error::ReceiptMismatch)?;
-        VerifyingKey::from_bytes(&self.pin.owner.device)
-            .map_err(|_| Error::ReceiptMismatch)?
-            .verify_strict(digest(&self.pin, &signed.receipt)?.as_bytes(), &signature)
-            .map_err(|_| Error::ReceiptMismatch)?;
-        if signed.receipt.id != submission.id
-            || signed.receipt.destination != self.pin.destination
-            || signed.receipt.digest != submission.digest()?
-        {
-            return Err(Error::ReceiptMismatch);
-        }
-        Ok(Some(signed.receipt))
+        signed.verify_pin(submission, &self.pin).map(Some)
     }
 }
 

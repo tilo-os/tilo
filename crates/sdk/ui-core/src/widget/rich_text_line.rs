@@ -565,6 +565,13 @@ impl RichTextLine {
         &self.inner
     }
 
+    /// What the last draw painted outside the line's rect
+    /// ([`TextInput::overhang`]).
+    #[must_use]
+    pub fn overhang(&self) -> Option<Rect> {
+        self.inner.overhang()
+    }
+
     fn refresh_attributes(&mut self) {
         let text = self.inner.value();
         // Ignore malformed mark endpoints while still retaining every UTF-8
@@ -1232,11 +1239,12 @@ impl Widget for RichTextLine {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
+        _key_path: &[u64],
         state: &mut crate::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         let (state, path) = crate::doc::document(state, path);
-        let handled = Widget::perform_action(&mut self.inner, action, state, path);
+        let handled = Widget::perform_action(&mut self.inner, action, &[], state, path);
         if handled && matches!(action, crate::a11y::Action::SetValue(_)) {
             self.marks.clear();
             self.pending_marks.clear();
@@ -1250,20 +1258,6 @@ impl Widget for RichTextLine {
 
 fn transient_color(theme: &Theme, kind: TokenKind) -> vello::peniko::Color {
     theme.tokens.syntax.color(kind)
-}
-
-/// Composes `transform` with a translation by `(dx, dy)`. `kurbo::Affine`'s
-/// `Mul` impl trips `arithmetic_side_effects` like any operator overload,
-/// but composing two f64-based affine transforms cannot meaningfully
-/// overflow — same reasoning clippy already exempts bare `f64` arithmetic
-/// for.
-#[allow(
-    dead_code,
-    clippy::arithmetic_side_effects,
-    reason = "feature-gated rendering helper; Affine::mul cannot meaningfully overflow"
-)]
-fn translated(transform: Affine, dx: f64, dy: f64) -> Affine {
-    transform * Affine::translate((dx, dy))
 }
 
 /// Clamps to the end. Converts Automerge marks (char-indexed) to the byte
@@ -1789,6 +1783,7 @@ mod tests {
                     anchor: 0,
                     focus: 4
                 },
+                &[],
                 &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT
             ));
@@ -1804,6 +1799,7 @@ mod tests {
                     anchor: 4,
                     focus: 4
                 },
+                &[],
                 &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT
             ));

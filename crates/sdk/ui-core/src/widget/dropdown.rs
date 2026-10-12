@@ -35,6 +35,8 @@
 //! container routes all events to it exclusively — how the out-of-layout
 //! list becomes hit-testable and click-outside dismissal works.
 
+use crate::num::f32_of_f64;
+use crate::num::f64_of_usize;
 use crate::widget::scrollbar::{PressOutcome, ScrollMetrics, Scrollbar};
 use crate::widget::{AppModel, ModelPath};
 use std::cell::Cell;
@@ -86,24 +88,6 @@ fn menu_min_width() -> f64 {
 }
 
 type SelectionChangeCallback = Box<dyn FnMut(&str)>;
-
-/// Widens a row/option count to `f64` for layout math, through `u32` (exact
-/// in `f64`) with a saturating fallback rather than an `as` cast — a
-/// dropdown never approaches `u32::MAX` options.
-fn count_f64(n: usize) -> f64 {
-    f64::from(u32::try_from(n).unwrap_or(u32::MAX))
-}
-
-/// Narrows a bounded screen-space `f64` (row/pixel geometry) to `f32` for
-/// vello/taffy; dropdown content stays far below `f32::MAX`.
-#[inline]
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "screen-space pixel values in this widget never approach f32::MAX"
-)]
-fn px(v: f64) -> f32 {
-    v as f32
-}
 
 /// Composes a paint transform with a translation. `Affine`'s `Mul` is pure
 /// `f64` matrix math with no overflow trap, so it cannot panic regardless of
@@ -809,7 +793,7 @@ impl Dropdown {
 
     /// Height of the visible rows of the open list, inside its inset.
     fn rows_height(&self, n: usize) -> f64 {
-        let authored = (count_f64(n.max(1)) * self.item_h).min(MAX_LIST_HEIGHT.max(self.item_h));
+        let authored = (f64_of_usize(n.max(1)) * self.item_h).min(MAX_LIST_HEIGHT.max(self.item_h));
         let Some(viewport) = self.viewport else {
             return authored;
         };
@@ -887,13 +871,13 @@ impl Dropdown {
     }
 
     fn max_scroll(&self, n: usize) -> f32 {
-        let content = count_f64(n) * self.item_h;
-        px((content - self.rows_height(n)).max(0.0))
+        let content = f64_of_usize(n) * self.item_h;
+        f32_of_f64((content - self.rows_height(n)).max(0.0))
     }
 
     fn scroll_metrics(&self, n: usize) -> ScrollMetrics {
         ScrollMetrics::new(
-            count_f64(n) * self.item_h,
+            f64_of_usize(n) * self.item_h,
             self.rows_height(n),
             f64::from(self.scroll),
         )
@@ -929,9 +913,9 @@ impl Dropdown {
 
     /// Scroll so the row at filtered-position `vi` is fully visible.
     fn ensure_visible(&mut self, vi: usize, n: usize) {
-        let box_h = px(self.rows_height(n));
-        let top = px(count_f64(vi) * self.item_h);
-        let bottom = top + px(self.item_h);
+        let box_h = f32_of_f64(self.rows_height(n));
+        let top = f32_of_f64(f64_of_usize(vi) * self.item_h);
+        let bottom = top + f32_of_f64(self.item_h);
         if top < self.scroll {
             self.scroll = top;
         } else if bottom > self.scroll + box_h {
@@ -1063,7 +1047,7 @@ impl Dropdown {
             let list = self.list_rect(filtered.len());
             let metrics = self.scroll_metrics(filtered.len());
             if let Some(offset) = self.scrollbar.drag_to(self.scrollbar_track, metrics, pos) {
-                self.scroll = px(offset);
+                self.scroll = f32_of_f64(offset);
                 *handled = true;
                 return;
             }
@@ -1103,7 +1087,7 @@ impl Dropdown {
                         return;
                     }
                     PressOutcome::Page(offset) => {
-                        self.scroll = px(offset);
+                        self.scroll = f32_of_f64(offset);
                         *handled = true;
                         return;
                     }
@@ -1142,7 +1126,7 @@ impl Dropdown {
     fn on_wheel(&mut self, delta: &MouseScrollDelta, handled: &mut bool) {
         let dy = match delta {
             MouseScrollDelta::LineDelta(_, y) => *y * -LINE_PX,
-            MouseScrollDelta::PixelDelta(p) => px(-p.y),
+            MouseScrollDelta::PixelDelta(p) => f32_of_f64(-p.y),
         };
         let n = self.filtered().len();
         self.scroll = (self.scroll + dy).clamp(0.0, self.max_scroll(n));
@@ -1285,7 +1269,7 @@ impl Widget for Dropdown {
         // overlay pass, so it doesn't reserve layout space.
         //
         // The control is as wide as its widest option (measured in
-        // `adjust_layout_with_measure`), or the row's width with `fill`. In
+        // `adjust_layout_style`), or the row's width with `fill`. In
         // both cases it is the item that gives when the row is short of
         // room, like `TextInput` and unlike fixed-size leaves such as
         // `Toggle`: with `flex_shrink: 0` a dropdown claimed the whole row
@@ -1296,7 +1280,7 @@ impl Widget for Dropdown {
         if self.menu.is_some() {
             // A menu button is an icon-only control of its size.
             self.caption_height = 0.0;
-            let side = px(self.control_size.height(theme));
+            let side = f32_of_f64(self.control_size.height(theme));
             let node = taffy.leaf_node(Style {
                 size: Size {
                     width: Dimension::length(side),
@@ -1318,17 +1302,17 @@ impl Widget for Dropdown {
         let width = if self.fill {
             Dimension::percent(1.0)
         } else if self.measured > 0.0 {
-            Dimension::length(px(self.field_width(self.measured)))
+            Dimension::length(f32_of_f64(self.field_width(self.measured)))
         } else {
             Dimension::auto()
         };
         let style = Style {
             size: Size {
                 width,
-                height: Dimension::length(px(self.field_height + self.caption_height)),
+                height: Dimension::length(f32_of_f64(self.field_height + self.caption_height)),
             },
             min_size: Size {
-                width: Dimension::length(px(PAD_X + CHEVRON_W)),
+                width: Dimension::length(f32_of_f64(PAD_X + CHEVRON_W)),
                 height: Dimension::auto(),
             },
             flex_shrink: 1.0,
@@ -1338,8 +1322,7 @@ impl Widget for Dropdown {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).copied().unwrap_or_default();
-        self.place(crate::widget::placed(&l, origin));
+        self.place(crate::widget::layout_rect(taffy, node, origin));
         self.layout_dirty = false;
     }
 
@@ -1354,7 +1337,7 @@ impl Widget for Dropdown {
         if self.menu.is_some() {
             // A menu button is the square of its size laid out in
             // `build_layout`.
-            let side = px(self.field_height);
+            let side = f32_of_f64(self.field_height);
             return Size {
                 width: known.width.unwrap_or(side),
                 height: known.height.unwrap_or(side),
@@ -1367,14 +1350,14 @@ impl Widget for Dropdown {
             self.field_width(self.measured)
         };
         Size {
-            width: known.width.unwrap_or(px(width)),
+            width: known.width.unwrap_or(f32_of_f64(width)),
             height: known
                 .height
-                .unwrap_or(px(self.field_height + self.caption_height)),
+                .unwrap_or(f32_of_f64(self.field_height + self.caption_height)),
         }
     }
 
-    fn adjust_layout_with_measure(
+    fn adjust_layout_style(
         &mut self,
         tree: &mut TaffyTree<()>,
         node: NodeId,
@@ -1388,7 +1371,7 @@ impl Widget for Dropdown {
             return false;
         };
         let mut style = current.clone();
-        style.size.width = Dimension::length(px(self.field_width(self.measured)));
+        style.size.width = Dimension::length(f32_of_f64(self.field_width(self.measured)));
         if style == *current {
             return false;
         }
@@ -1528,7 +1511,7 @@ impl Widget for Dropdown {
             );
         } else {
             for (vi, &opt_idx) in filtered.iter().enumerate() {
-                let row_top = rows.y0 + (count_f64(vi) * self.item_h) - f64::from(self.scroll);
+                let row_top = rows.y0 + (f64_of_usize(vi) * self.item_h) - f64::from(self.scroll);
                 let row_bottom = row_top + self.item_h;
                 // Cull rows scrolled out of the box (hundreds of zones).
                 if row_bottom < rows.y0 || row_top > rows.y1 {
@@ -1603,7 +1586,7 @@ impl Widget for Dropdown {
                 // rather than wrapping into the row beneath it.
                 let shown = text_renderer.elide_to_width_style(
                     opt,
-                    px((label_end - row.x0 - LIST_PAD).max(0.0)),
+                    f32_of_f64((label_end - row.x0 - LIST_PAD).max(0.0)),
                     &theme.text(TextRole::Body),
                 );
                 let (_, opt_h) =
@@ -1819,6 +1802,7 @@ impl Widget for Dropdown {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
+        _key_path: &[u64],
         state: &mut crate::widget::Edits<'_>,
         root: &ModelPath,
     ) -> bool {
@@ -1978,9 +1962,11 @@ fn paint_face(ctx: &mut PaintCtx<'_>, face: &FacePaint<'_>) -> Rect {
     let style = face.size.label_style(theme);
     if let Some(caption) = face.caption {
         let caption_style = theme.text(TextRole::Caption);
-        let shown =
-            ctx.text
-                .elide_to_width_style(caption, px(face.outer.width().max(1.0)), &caption_style);
+        let shown = ctx.text.elide_to_width_style(
+            caption,
+            f32_of_f64(face.outer.width().max(1.0)),
+            &caption_style,
+        );
         ctx.text(
             &shown,
             &caption_style,
@@ -2056,7 +2042,7 @@ fn paint_face(ctx: &mut PaintCtx<'_>, face: &FacePaint<'_>) -> Rect {
         // One line, elided to the room left of the chevron: a max width
         // handed to `draw_text` wraps instead, and a wrapped second line
         // lands under the control's bottom edge.
-        let room = px(content.width().max(0.0) + 0.5);
+        let room = f32_of_f64(content.width().max(0.0) + 0.5);
         let shown = ctx.text.elide_to_width_style(label, room, &style);
         let (_, th) = ctx.text.measure_style(&shown, None, &style);
         let ty = face.field.y0 + (face.field.height() - f64::from(th)) / 2.0;
@@ -2487,6 +2473,7 @@ mod tests {
         assert!(Widget::perform_action(
             &mut dropdown,
             &crate::a11y::Action::SetValue("second".into()),
+            &[],
             &mut crate::widget::Edits::lend(&mut document),
             &root
         ));
@@ -2494,6 +2481,7 @@ mod tests {
         assert!(!Widget::perform_action(
             &mut dropdown,
             &crate::a11y::Action::SetValue("foreign".into()),
+            &[],
             &mut crate::widget::Edits::lend(&mut document),
             &root
         ));
@@ -2533,6 +2521,7 @@ mod tests {
         assert!(Widget::perform_action(
             &mut dropdown,
             &crate::a11y::Action::Expand,
+            &[],
             &mut crate::widget::Edits::lend(&mut doc),
             &automerge::ROOT,
         ));
@@ -2579,7 +2568,7 @@ mod tests {
             Some(0)
         );
         assert!(
-            (list.height() - (count_f64(n) * ITEM_HEIGHT + 2.0 * LIST_PAD)).abs() < 1e-9,
+            (list.height() - (f64_of_usize(n) * ITEM_HEIGHT + 2.0 * LIST_PAD)).abs() < 1e-9,
             "the list hugs its rows plus the inset: {list:?}"
         );
     }
@@ -3171,6 +3160,7 @@ mod tests {
             assert!(Widget::perform_action(
                 &mut first,
                 &crate::a11y::Action::SetValue(String::from("Europe/Amsterdam")),
+                &[],
                 &mut crate::widget::Edits::lend(&mut document),
                 &automerge::ROOT,
             ));
@@ -3261,6 +3251,7 @@ mod tests {
             assert!(Widget::perform_action(
                 &mut dropdown,
                 &Action::Expand,
+                &[],
                 &mut crate::widget::Edits::lend(&mut document),
                 &root,
             ));
@@ -3268,6 +3259,7 @@ mod tests {
             assert!(Widget::perform_action(
                 &mut dropdown,
                 &Action::Collapse,
+                &[],
                 &mut crate::widget::Edits::lend(&mut document),
                 &root,
             ));
@@ -3275,6 +3267,7 @@ mod tests {
             assert!(!Widget::perform_action(
                 &mut dropdown,
                 &Action::SetValue(String::from("not an option")),
+                &[],
                 &mut crate::widget::Edits::lend(&mut document),
                 &root,
             ));
@@ -3381,6 +3374,7 @@ mod tests {
             assert!(Widget::perform_action(
                 &mut dropdown,
                 &crate::a11y::Action::SetValue("Asia/Tokyo".into()),
+                &[],
                 &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT
             ));
@@ -3432,7 +3426,8 @@ mod tests {
                 )])),
             ],
         );
-        let app = crate::headless::Driver::new(crate::State::new(), Box::new(section), (900, 400));
+        let app =
+            crate::headless::FrameHarness::new(crate::State::new(), Box::new(section), (900, 400));
         let targets = app.targets();
         let target = |id: &str| *targets.get(id).expect(id);
         let (zone, size) = (target("zone"), target("size"));
@@ -3458,7 +3453,8 @@ mod tests {
                     .with_id("device"),
             ),
         ]);
-        let app = crate::headless::Driver::new(crate::State::new(), Box::new(section), (900, 400));
+        let app =
+            crate::headless::FrameHarness::new(crate::State::new(), Box::new(section), (900, 400));
         let targets = app.targets();
         let target = |id: &str| *targets.get(id).expect(id);
         for id in ["size", "device"] {
@@ -3479,7 +3475,8 @@ mod tests {
                 .push(Box::new(
                     Dropdown::new(vec!["A".into(), "B".into()], "ab").with_id("tiny"),
                 ));
-            let app = crate::headless::Driver::new(crate::State::new(), Box::new(row), (900, 200));
+            let app =
+                crate::headless::FrameHarness::new(crate::State::new(), Box::new(row), (900, 200));
             let targets = app.targets();
             let hug = targets.get("hug").expect("hugging dropdown");
             let tiny = targets.get("tiny").expect("short dropdown");
@@ -3500,8 +3497,11 @@ mod tests {
 
             let filled = crate::widget::Row::new()
                 .push(Box::new(Dropdown::new(opts(), "tz").with_id("fill").fill()));
-            let app =
-                crate::headless::Driver::new(crate::State::new(), Box::new(filled), (900, 200));
+            let app = crate::headless::FrameHarness::new(
+                crate::State::new(),
+                Box::new(filled),
+                (900, 200),
+            );
             let fill = *app.targets().get("fill").expect("filling dropdown");
             assert!(fill.width() > 600.0, "fill spans the row: {fill:?}");
         }

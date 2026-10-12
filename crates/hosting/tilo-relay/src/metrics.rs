@@ -82,6 +82,7 @@ impl RoomCounters {
 struct SessionCounters {
     device_public_key: [u8; 32],
     bytes_sent: AtomicU64,
+    writes: AtomicU64,
 }
 
 /// Bytes one connected peer session has been sent so far.
@@ -91,6 +92,9 @@ pub struct SessionEgress {
     pub device_public_key: [u8; 32],
     /// Bytes written to the session's stream since it was authenticated.
     pub bytes_sent: u64,
+    /// Writes that put those bytes on the stream. Each is handed to QUIC
+    /// whole, so frames written together can share a packet (TIL-776).
+    pub writes: u64,
 }
 
 impl Metrics {
@@ -190,6 +194,7 @@ impl Metrics {
             .map(|session| SessionEgress {
                 device_public_key: session.device_public_key,
                 bytes_sent: session.bytes_sent.load(Ordering::Relaxed),
+                writes: session.writes.load(Ordering::Relaxed),
             })
             .collect()
     }
@@ -199,6 +204,7 @@ impl Metrics {
         let counters = Arc::new(SessionCounters {
             device_public_key,
             bytes_sent: AtomicU64::new(0),
+            writes: AtomicU64::new(0),
         });
         self.sessions
             .lock()
@@ -277,7 +283,11 @@ impl<W> EgressWrite<W> {
     }
 
     fn count(&self, written: usize) {
+        if written == 0 {
+            return;
+        }
         let written = u64::try_from(written).unwrap_or(u64::MAX);
+        self.lease.counters.writes.fetch_add(1, Ordering::Relaxed);
         self.lease
             .counters
             .bytes_sent
@@ -412,10 +422,12 @@ mod tests {
                 SessionEgress {
                     device_public_key: [1; 32],
                     bytes_sent: 6,
+                    writes: 2,
                 },
                 SessionEgress {
                     device_public_key: [2; 32],
                     bytes_sent: 11,
+                    writes: 1,
                 },
             ]
         );

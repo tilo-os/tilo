@@ -6,7 +6,7 @@
 //! production [`tilo_relay::Relay`] with authentication and the co-edit path
 //! as a daemon runs them. The parent then connects N collaborators in rooms
 //! of four, each its own device certificate, iroh endpoint and
-//! `tilo-relay/5` session, and plays a fixed, deterministic minute of work
+//! `tilo-relay/7` session, and plays a fixed, deterministic minute of work
 //! for each of them, over and over:
 //!
 //! - **typing**: 30 one-character edits, one every 200 ms, through the
@@ -14,7 +14,9 @@
 //!   `RelayCoeditSession::publish_retained_delta`), each followed by the
 //!   toolkit's `Typing` and `Caret` presence (`NeighbourMsg::AppPresenceV2`);
 //! - **pointing**: 4 seconds of pointer motion at the shell's 30 Hz publish
-//!   rate (`NeighbourMsg::PresenceMoved`, `peer_presence::MIN_PUBLISH_GAP`);
+//!   rate (`NeighbourMsg::PresenceMoved`, `peer_presence::MIN_PUBLISH_GAP`),
+//!   which the session writer paces to 20 Hz on the wire
+//!   (`tilo_relay_session::coedit::POINTER_GAP`), as it does for the shell;
 //! - **idle** for the rest of the minute.
 //!
 //! That is 1,800 edits and 7,200 pointer moves per active hour, the cost
@@ -25,9 +27,21 @@
 //! Per window the parent asks the relay process for its CPU time, resident
 //! memory, egress counters and the bytes its iroh endpoint put on UDP, and
 //! divides by collaborators and hours. Fan-out latency is publish to receipt
-//! by each other member of the room. Store fsyncs per edit divides the file
+//! by each other member of the room; pointer and caret latency are the same
+//! for each pointer move and caret the relay forwarded (one it coalesced
+//! away under a later one is never received, and not counted). Store fsyncs per edit divides the file
 //! and directory barriers the relay's workspace stores issued by the deltas
-//! it committed.
+//! it committed; listed entries per edit divides the directory entries they
+//! listed to retain them the same way. Compaction's own CPU time and the
+//! document signatures it verified are reported beside them, per
+//! collaborator-hour and per edit.
+//!
+//! Packets are counted where QUIC already counts them, on each
+//! collaborator's connection ([`Packets`]): the datagrams the collaborators
+//! sent (and of those, the ones carrying data) and the datagrams the relay
+//! sent them (and of those, the ones carrying only acknowledgements), per
+//! collaborator-hour. Bytes cannot see a change that sends the same bytes in
+//! more packets; these can.
 //!
 //! The samples go to `--out DIR/hosting-load.json` for
 //! `tools/perf/adapters.py hosting-load`, which turns them into records and
@@ -73,9 +87,19 @@ struct Args {
     /// Directory for `hosting-load.json`.
     #[arg(long)]
     out: Option<PathBuf>,
+    /// Confine the relay process to this many CPUs, as on a VM with that many
+    /// vCPUs: its daemon runtime then starts that many workers (at most
+    /// four), and its blocking pool shares the same CPUs. The collaborators
+    /// run on the CPUs left over. Linux only; by default the relay may use
+    /// every CPU.
+    #[arg(long)]
+    relay_cpus: Option<usize>,
     /// Run as the relay process (internal: the bench starts it itself).
     #[arg(long, hide = true)]
     serve: bool,
+    /// The CPUs the relay process runs on (internal: `--relay-cpus` picks them).
+    #[arg(long, hide = true, value_delimiter = ',')]
+    cpus: Vec<usize>,
 }
 
 fn main() -> ExitCode {
@@ -86,7 +110,7 @@ fn main() -> ExitCode {
     }
     let args = Args::parse();
     let result = if args.serve {
-        relay_process::serve()
+        relay_process::serve(&args.cpus)
     } else {
         bench(&args)
     };
@@ -106,19 +130,25 @@ fn bench(args: &Args) -> anyhow::Result<()> {
         "--collaborators must fill rooms of at least two"
     );
     anyhow::ensure!(args.minutes >= 1, "--minutes must be at least 1");
+    // Split the CPUs before this process starts its runtime, so its workers
+    // count only the collaborators' share.
+    let relay_cpus = match args.relay_cpus {
+        Some(count) => Some(relay_process::split_cpus(count)?),
+        None => None,
+    };
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?
-        .block_on(run(args))
+        .block_on(run(args, relay_cpus.as_deref()))
 }
 
-async fn run(args: &Args) -> anyhow::Result<()> {
+async fn run(args: &Args, relay_cpus: Option<&[usize]>) -> anyhow::Result<()> {
     let fleet = Fleet::enrol(args.collaborators, args.room_size)?;
     let state = tempfile::Builder::new()
         .prefix("tilo-relay-load-")
         .tempdir()
         .context("the relay's state directory")?;
-    let mut relay = RelayProcess::spawn(&fleet, state.path()).await?;
+    let mut relay = RelayProcess::spawn(&fleet, state.path(), relay_cpus).await?;
     let result = measure(args, &fleet, &mut relay).await;
     relay.stop().await;
     drop(state);
@@ -169,18 +199,22 @@ async fn measure(
     tokio::time::sleep_until(at(start, WINDOW, 1)?.into()).await;
     fleet.measuring.store(true, Ordering::SeqCst);
     let mut previous = relay.sample().await?;
+    let mut previous_packets = Packets::of(&sessions)?;
     let mut previous_at = Instant::now();
     let mut samples = Vec::with_capacity(windows);
     for window in 0..windows {
         tokio::time::sleep_until(at(start, WINDOW, window.saturating_add(2))?.into()).await;
         let sample = relay.sample().await?;
+        let packets = Packets::of(&sessions)?;
         let now = Instant::now();
         samples.push(Window::between(
             &previous,
             &sample,
+            packets.since(previous_packets),
             now.duration_since(previous_at),
         ));
         previous = sample;
+        previous_packets = packets;
         previous_at = now;
     }
     fleet.measuring.store(false, Ordering::SeqCst);
@@ -218,6 +252,62 @@ fn mib(bytes: u64) -> f64 {
     float(bytes) / MIB
 }
 
+/// The collaborators' QUIC connections to the relay, summed: the packets
+/// they sent it and it sent them. On the bench's loopback path nothing is
+/// lost, so what they received is what the relay sent. Read from each
+/// connection's own counters (`iroh::endpoint::Connection::stats`), which
+/// QUIC keeps anyway; nothing is logged or hooked per packet.
+#[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
+struct Packets {
+    /// UDP datagrams the collaborators sent the relay.
+    client: u64,
+    /// Of those, the ones carrying stream data: one STREAM frame each, as a
+    /// session has one stream and QUIC writes a stream once per packet.
+    client_data: u64,
+    /// UDP datagrams the relay sent the collaborators.
+    relay: u64,
+    /// Of those, the ones carrying stream data or a PING (keep-alives, path
+    /// MTU probes): the rest carry only acknowledgements.
+    relay_eliciting: u64,
+}
+
+impl Packets {
+    /// Every session's counters now. A session whose transport keeps none
+    /// fails the run: a packet KPI that cannot see its packets must not
+    /// report zero.
+    fn of(sessions: &[Arc<tilo_relay::RelayCoeditSession>]) -> anyhow::Result<Self> {
+        sessions.iter().try_fold(Self::default(), |sum, session| {
+            let stats = session
+                .transport_stats()
+                .context("a collaborator's session reports no transport counters")?;
+            Ok(Self {
+                client: sum.client.saturating_add(stats.udp_tx.datagrams),
+                client_data: sum.client_data.saturating_add(stats.frame_tx.stream),
+                relay: sum.relay.saturating_add(stats.udp_rx.datagrams),
+                relay_eliciting: sum
+                    .relay_eliciting
+                    .saturating_add(stats.frame_rx.stream)
+                    .saturating_add(stats.frame_rx.ping),
+            })
+        })
+    }
+
+    /// What was counted between `before` and these counters.
+    const fn since(self, before: Self) -> Self {
+        Self {
+            client: self.client.saturating_sub(before.client),
+            client_data: self.client_data.saturating_sub(before.client_data),
+            relay: self.relay.saturating_sub(before.relay),
+            relay_eliciting: self.relay_eliciting.saturating_sub(before.relay_eliciting),
+        }
+    }
+
+    /// Datagrams the relay sent that carried only acknowledgements.
+    const fn relay_ack_only(self) -> u64 {
+        self.relay.saturating_sub(self.relay_eliciting)
+    }
+}
+
 /// What the relay spent during one measured window, and how long it was.
 struct Window {
     cpu_s: f64,
@@ -228,11 +318,15 @@ struct Window {
     /// Deltas the relay committed and fanned out.
     deltas: u64,
     store_fsyncs: u64,
+    store_listed_entries: u64,
+    compaction_cpu_s: f64,
+    compaction_signature_checks: u64,
+    packets: Packets,
     hours: f64,
 }
 
 impl Window {
-    fn between(before: &Sample, after: &Sample, elapsed: Duration) -> Self {
+    fn between(before: &Sample, after: &Sample, packets: Packets, elapsed: Duration) -> Self {
         Self {
             cpu_s: float(after.cpu_ns.saturating_sub(before.cpu_ns)) / 1e9,
             rss_bytes: after.rss_bytes,
@@ -243,6 +337,18 @@ impl Window {
             live_bytes: after.bytes_sent_live.saturating_sub(before.bytes_sent_live),
             deltas: after.deltas_received.saturating_sub(before.deltas_received),
             store_fsyncs: after.store_fsyncs.saturating_sub(before.store_fsyncs),
+            store_listed_entries: after
+                .store_listed_entries
+                .saturating_sub(before.store_listed_entries),
+            compaction_cpu_s: float(
+                after
+                    .compaction_cpu_ns
+                    .saturating_sub(before.compaction_cpu_ns),
+            ) / 1e9,
+            compaction_signature_checks: after
+                .compaction_signature_checks
+                .saturating_sub(before.compaction_signature_checks),
+            packets,
             hours: elapsed.as_secs_f64() / SECONDS_PER_HOUR,
         }
     }
@@ -253,9 +359,14 @@ struct Report {
     collaborators: usize,
     rooms: usize,
     room_size: usize,
+    /// The CPUs the relay was confined to (`--relay-cpus`); none is all.
+    relay_cpus: Option<usize>,
     idle_rss_bytes: u64,
     windows: Vec<Window>,
     fanout_ms: Vec<f64>,
+    /// Pointer moves and carets, publish to receipt by each other member.
+    pointer_ms: Vec<f64>,
+    caret_ms: Vec<f64>,
     edits: u64,
     presence: u64,
     undelivered: usize,
@@ -274,13 +385,23 @@ impl Report {
             "no collaborator received another's edit while measuring; nothing was fanned out"
         );
         fanout_ms.sort_by(f64::total_cmp);
+        let (mut pointer_ms, mut caret_ms) = fleet.take_presence_latencies();
+        anyhow::ensure!(
+            !pointer_ms.is_empty() && !caret_ms.is_empty(),
+            "no collaborator received another's pointer move and caret while measuring"
+        );
+        pointer_ms.sort_by(f64::total_cmp);
+        caret_ms.sort_by(f64::total_cmp);
         Ok(Self {
             collaborators: args.collaborators,
             rooms: fleet.rooms(),
             room_size: args.room_size,
+            relay_cpus: args.relay_cpus,
             idle_rss_bytes: idle.rss_bytes,
             windows,
             fanout_ms,
+            pointer_ms,
+            caret_ms,
             edits: fleet.edits.load(Ordering::SeqCst),
             presence: fleet.presence.load(Ordering::SeqCst),
             undelivered: fleet.undelivered(),
@@ -311,12 +432,56 @@ impl Report {
         self.per_collaborator_hour(|window| float(window.live_bytes))
     }
 
+    /// UDP datagrams the collaborators sent the relay.
+    fn client_packets(&self) -> Vec<f64> {
+        self.per_collaborator_hour(|window| float(window.packets.client))
+    }
+
+    /// Client datagrams that carried stream data.
+    fn client_data_packets(&self) -> Vec<f64> {
+        self.per_collaborator_hour(|window| float(window.packets.client_data))
+    }
+
+    /// UDP datagrams the relay sent the collaborators.
+    fn relay_datagrams(&self) -> Vec<f64> {
+        self.per_collaborator_hour(|window| float(window.packets.relay))
+    }
+
+    /// Relay datagrams that carried only acknowledgements.
+    fn ack_only_datagrams(&self) -> Vec<f64> {
+        self.per_collaborator_hour(|window| float(window.packets.relay_ack_only()))
+    }
+
     /// Store fsyncs per committed delta: what durability costs an edit.
     fn store_fsyncs_per_edit(&self) -> Vec<f64> {
         self.windows
             .iter()
             .filter(|window| window.deltas > 0)
             .map(|window| float(window.store_fsyncs) / float(window.deltas))
+            .collect()
+    }
+
+    /// Directory entries listed per committed delta: zero while every
+    /// lineage's index is current, a lineage's length when it is not.
+    fn store_listed_entries_per_edit(&self) -> Vec<f64> {
+        self.windows
+            .iter()
+            .filter(|window| window.deltas > 0)
+            .map(|window| float(window.store_listed_entries) / float(window.deltas))
+            .collect()
+    }
+
+    /// Compaction's thread CPU, in milliseconds per collaborator-hour.
+    fn compaction_cpu_ms(&self) -> Vec<f64> {
+        self.per_collaborator_hour(|window| window.compaction_cpu_s * 1e3)
+    }
+
+    /// Document signatures compaction verified per committed delta.
+    fn compaction_signature_checks_per_edit(&self) -> Vec<f64> {
+        self.windows
+            .iter()
+            .filter(|window| window.deltas > 0)
+            .map(|window| float(window.compaction_signature_checks) / float(window.deltas))
             .collect()
     }
 
@@ -336,6 +501,7 @@ impl Report {
             "collaborators": self.collaborators,
             "rooms": self.rooms,
             "room_size": self.room_size,
+            "relay_cpus": self.relay_cpus,
             "window_s": WINDOW.as_secs(),
             "windows": self.windows.len(),
             "relay_idle_rss_mib": mib(self.idle_rss_bytes),
@@ -347,8 +513,17 @@ impl Report {
                 "hosting.relay.rss_mib_per_collab": kpi("MiB", self.rss_mib()),
                 "hosting.relay.egress_bytes_per_collab_hour": kpi("bytes", self.transport_bytes()),
                 "hosting.relay.frame_bytes_per_collab_hour": kpi("bytes", self.app_bytes()),
+                "hosting.relay.client_packets_per_collab_hour": kpi("count", self.client_packets()),
+                "hosting.relay.client_data_packets_per_collab_hour": kpi("count", self.client_data_packets()),
+                "hosting.relay.datagrams_per_collab_hour": kpi("count", self.relay_datagrams()),
+                "hosting.relay.ack_only_datagrams_per_collab_hour": kpi("count", self.ack_only_datagrams()),
                 "hosting.relay.fanout_ms": kpi("ms", self.fanout_ms.clone()),
+                "hosting.relay.presence_pointer_ms": kpi("ms", self.pointer_ms.clone()),
+                "hosting.relay.presence_caret_ms": kpi("ms", self.caret_ms.clone()),
                 "hosting.relay.store_fsyncs_per_edit": kpi("count", self.store_fsyncs_per_edit()),
+                "hosting.relay.store_listed_entries_per_edit": kpi("count", self.store_listed_entries_per_edit()),
+                "hosting.relay.compaction_cpu_ms_per_collab_hour": kpi("ms", self.compaction_cpu_ms()),
+                "hosting.relay.compaction_signature_checks_per_edit": kpi("count", self.compaction_signature_checks_per_edit()),
             },
         })
     }
@@ -358,8 +533,14 @@ impl Report {
             "HOSTING_LOAD collaborators={} rooms={} windows={} edits={} presence={} \
              undelivered_edits={} cpu_s_per_collab_hour_p50={:.3} rss_mib_per_collab_p50={:.3} \
              egress_mb_per_collab_hour_p50={:.3} frame_mb_per_collab_hour_p50={:.3} \
-             live_frame_mb_per_collab_hour_p50={:.3} fanout_ms_p50={:.1} fanout_ms_p99={:.1} \
-             store_fsyncs_per_edit_p50={:.3}",
+             live_frame_mb_per_collab_hour_p50={:.3} client_packets_per_collab_hour_p50={:.0} \
+             client_data_packets_per_collab_hour_p50={:.0} datagrams_per_collab_hour_p50={:.0} \
+             ack_only_datagrams_per_collab_hour_p50={:.0} fanout_ms_p50={:.1} fanout_ms_p99={:.1} \
+             presence_pointer_ms_p50={:.1} presence_pointer_ms_p99={:.1} \
+             presence_caret_ms_p50={:.1} presence_caret_ms_p99={:.1} \
+             store_fsyncs_per_edit_p50={:.3} store_listed_entries_per_edit_p50={:.3} \
+             compaction_cpu_ms_per_collab_hour_p50={:.1} \
+             compaction_signature_checks_per_edit_p50={:.3}",
             self.collaborators,
             self.rooms,
             self.windows.len(),
@@ -371,9 +552,20 @@ impl Report {
             median(self.transport_bytes()) / 1e6,
             median(self.app_bytes()) / 1e6,
             median(self.live_bytes()) / 1e6,
+            median(self.client_packets()),
+            median(self.client_data_packets()),
+            median(self.relay_datagrams()),
+            median(self.ack_only_datagrams()),
             nearest_rank(&self.fanout_ms, 50),
             nearest_rank(&self.fanout_ms, 99),
+            nearest_rank(&self.pointer_ms, 50),
+            nearest_rank(&self.pointer_ms, 99),
+            nearest_rank(&self.caret_ms, 50),
+            nearest_rank(&self.caret_ms, 99),
             median(self.store_fsyncs_per_edit()),
+            median(self.store_listed_entries_per_edit()),
+            median(self.compaction_cpu_ms()),
+            median(self.compaction_signature_checks_per_edit()),
         )
     }
 }
@@ -413,9 +605,44 @@ mod tests {
             transport_bytes_sent: 1_500,
             ..Sample::default()
         };
-        let window = Window::between(&before, &after, Duration::from_secs(1_800));
+        let window = Window::between(
+            &before,
+            &after,
+            Packets::default(),
+            Duration::from_secs(1_800),
+        );
         assert!((window.cpu_s - 3.0).abs() < 1e-9);
         assert!((window.hours - 0.5).abs() < 1e-9);
         assert_eq!(window.transport_bytes, 1_500);
+    }
+
+    #[test]
+    fn packets_are_counted_per_window_and_acks_are_what_carried_nothing_else() {
+        let before = Packets {
+            client: 1_000,
+            client_data: 400,
+            relay: 900,
+            relay_eliciting: 600,
+        };
+        let after = Packets {
+            client: 1_250,
+            client_data: 500,
+            relay: 1_200,
+            relay_eliciting: 780,
+        };
+        let window = after.since(before);
+        assert_eq!(
+            window,
+            Packets {
+                client: 250,
+                client_data: 100,
+                relay: 300,
+                relay_eliciting: 180,
+            }
+        );
+        assert_eq!(window.relay_ack_only(), 120);
+        // Counters never run backwards; if a reading did, nothing goes negative.
+        assert_eq!(before.since(after), Packets::default());
+        assert_eq!(Packets::default().relay_ack_only(), 0);
     }
 }

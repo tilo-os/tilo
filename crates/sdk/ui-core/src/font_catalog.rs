@@ -30,10 +30,7 @@ pub(crate) use android::android_font_system;
 /// renderer gets its own copy of the database, so its shaping caches stay its
 /// own while font bytes and discovery are shared. `None` when no root in
 /// [`catalog_roots`] holds a catalog this build accepts.
-#[cfg_attr(
-    test,
-    allow(dead_code, reason = "unit tests build the fixture font system instead")
-)]
+#[cfg(not(test))]
 pub(crate) fn bundled_font_system(locale: String) -> Option<FontSystem> {
     static DATABASE: OnceLock<Option<fontdb::Database>> = OnceLock::new();
     let database = DATABASE.get_or_init(|| {
@@ -52,6 +49,36 @@ pub(crate) fn bundled_font_system(locale: String) -> Option<FontSystem> {
     database.as_ref().map(|db| system_over(locale, db.clone()))
 }
 
+/// The product catalog read whole into memory, with no host fonts behind
+/// it: for a process about to lose the filesystem (a confined app worker)
+/// whose views still lay out text. `None` when no catalog loads.
+#[cfg_attr(
+    test,
+    allow(dead_code, reason = "unit tests build the fixture font system instead")
+)]
+pub(crate) fn catalog_in_memory(locale: &str) -> Option<FontSystem> {
+    let (locale, loaded) = load_first_catalog(&catalog_roots(), locale, |_| {})
+        .ok()?
+        .into_locale_and_db();
+    let mut held = fontdb::Database::new();
+    let mut read = HashSet::new();
+    for face in loaded.faces() {
+        let (fontdb::Source::File(path) | fontdb::Source::SharedFile(path, _)) = &face.source
+        else {
+            continue;
+        };
+        if read.insert(path.clone()) {
+            let (dir, name) = tilo_files::file_at(path).ok()?;
+            let bytes = tilo_files::blocking::read(&dir, &name).ok()?;
+            held.load_font_source(fontdb::Source::Binary(Arc::new(bytes)));
+        }
+    }
+    held.set_sans_serif_family(crate::text_render::UI_SANS_FAMILY);
+    held.set_serif_family(crate::text_render::UI_SERIF_FAMILY);
+    held.set_monospace_family(crate::text_render::UI_MONOSPACE_FAMILY);
+    Some(system_over(locale, held))
+}
+
 /// Where a native process looks for the product catalog, in order: a
 /// `fonts/` directory next to the executable (an installed app bundle), the
 /// catalog mounted from the selected signed SDK in a Tilo app sandbox,
@@ -59,10 +86,6 @@ pub(crate) fn bundled_font_system(locale: String) -> Option<FontSystem> {
 /// catalog named by this build's manifest digest, then this
 /// build's verified artifact catalog, so a binary run from a checkout sets text in
 /// the faces the product ships.
-#[cfg_attr(
-    test,
-    allow(dead_code, reason = "unit tests build the fixture font system instead")
-)]
 pub(crate) fn catalog_roots() -> Vec<PathBuf> {
     let mut roots: Vec<PathBuf> = std::env::current_exe()
         .ok()
@@ -88,10 +111,6 @@ pub(crate) fn catalog_roots() -> Vec<PathBuf> {
 /// # Errors
 ///
 /// Every root's failure, in order, when none loads.
-#[cfg_attr(
-    test,
-    allow(dead_code, reason = "unit tests build the fixture font system instead")
-)]
 pub(crate) fn load_first_catalog(
     roots: &[PathBuf],
     locale: &str,
@@ -151,10 +170,6 @@ pub(crate) fn drop_duplicate_faces(db: &mut fontdb::Database) {
 }
 
 /// A font system over an already verified database, with Tilo's fallback.
-#[cfg_attr(
-    test,
-    allow(dead_code, reason = "unit tests build the fixture font system instead")
-)]
 pub(crate) fn system_over(locale: String, db: fontdb::Database) -> FontSystem {
     FontSystem::new_with_locale_and_db_and_fallback(locale, db, fallback::TiloFallback)
 }

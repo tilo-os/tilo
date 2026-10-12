@@ -42,6 +42,8 @@ pub mod durable_backup;
 #[cfg(feature = "filesystem")]
 pub mod eviction;
 #[cfg(feature = "filesystem")]
+pub mod file_watch;
+#[cfg(feature = "filesystem")]
 pub mod fs;
 #[cfg(feature = "filesystem")]
 pub mod full_replica;
@@ -57,10 +59,14 @@ pub mod named_share_delivery;
 pub mod namespace;
 #[cfg(feature = "filesystem")]
 pub mod namespace_binding;
+#[cfg(feature = "filesystem")]
+pub mod namespace_persist;
 #[cfg(all(feature = "filesystem", target_os = "linux"))]
 pub mod native;
 #[cfg(feature = "filesystem")]
 pub mod peer_auth;
+#[cfg(feature = "filesystem")]
+pub mod reachability;
 #[cfg(feature = "filesystem")]
 pub mod recipient_control;
 #[cfg(feature = "filesystem")]
@@ -102,6 +108,8 @@ pub mod share_link;
 #[cfg(feature = "filesystem")]
 pub mod share_management;
 #[cfg(feature = "filesystem")]
+pub mod share_refresh;
+#[cfg(feature = "filesystem")]
 pub mod share_session;
 #[cfg(feature = "filesystem")]
 pub mod smart;
@@ -114,8 +122,6 @@ pub mod store;
 pub mod sync;
 #[cfg(feature = "filesystem")]
 pub mod sync_folder;
-#[cfg(feature = "filesystem")]
-pub mod syncstate;
 #[cfg(feature = "filesystem")]
 pub mod thumbs;
 #[cfg(feature = "filesystem")]
@@ -160,9 +166,7 @@ pub use fs_protocol::{
     RecipientFailureV1, RecipientSubscriptionKeyV1, RecipientSubscriptionStatusV1,
 };
 #[cfg(feature = "filesystem")]
-pub use history::{
-    FileHistoryStore, HISTORY_XATTR, HistoryError, HistoryProjectionV1, RecordHistorySnapshot,
-};
+pub use history::{FileHistoryStore, HistoryError, RecordHistorySnapshot};
 #[cfg(feature = "filesystem")]
 pub use hydration::Hydrator;
 #[cfg(feature = "filesystem")]
@@ -202,11 +206,12 @@ pub use record_materializer::{
 };
 #[cfg(feature = "filesystem")]
 pub use record_protocol::{
-    MAX_RECORD_PROTOCOL_FRAME_BYTES, RECORD_PROTOCOL_VERSION, RecordMutationSink,
-    RecordMutationSinkError, RecordProtocol, RecordProtocolClient, RecordProtocolClientError,
-    RecordProtocolCredentialV1, RecordProtocolError, RecordProtocolOperationV1,
-    RecordProtocolRequestV1, RecordProtocolResponseV1, RecordProtocolSessionV1,
-    RecordProtocolSnapshotV1, TILO_FS_RECORD_ALPN,
+    MAX_RECORD_CHANGE_AWAITS, MAX_RECORD_PROTOCOL_FRAME_BYTES, RECORD_AWAIT_CHANGE_LIMIT,
+    RECORD_PROTOCOL_VERSION, RecordMutationSink, RecordMutationSinkError, RecordProtocol,
+    RecordProtocolClient, RecordProtocolClientError, RecordProtocolCredentialV1,
+    RecordProtocolError, RecordProtocolOperationV1, RecordProtocolRequestV1,
+    RecordProtocolResponseV1, RecordProtocolSessionV1, RecordProtocolSnapshotV1,
+    RecordProtocolStream, TILO_FS_RECORD_ALPN,
 };
 #[cfg(feature = "filesystem")]
 pub use record_publisher::{
@@ -244,11 +249,7 @@ pub use replica_ack::{
     TILO_FS_REPLICA_ACK_ALPN,
 };
 #[cfg(feature = "filesystem")]
-pub use share_authority::{
-    MAX_SHARE_PROJECTION_BYTES, MAX_SHARES_PER_RECORD, Redemption, SHARE_PROJECTION_VERSION,
-    ShareAuthority, ShareAuthorityError, ShareGrantProjectionV1, ShareGrantStatus,
-    ShareProjectionError, ShareProjectionV1, ShareSubjectProjection,
-};
+pub use share_authority::{Redemption, ShareAuthority, ShareAuthorityError};
 #[cfg(feature = "filesystem")]
 pub use share_control::{
     MAX_SHARE_CONTROL_CONNECTIONS, MAX_SHARE_CONTROL_FRAME_BYTES,
@@ -273,8 +274,6 @@ pub use store::{BackendGcRelease, StoreEvictionError};
 pub use store::{ContentStore, DEFAULT_BLOB_GC_INTERVAL};
 #[cfg(feature = "filesystem")]
 pub use sync::{FsTransportIdentity, RecordServices, Ticket, Workspace};
-#[cfg(feature = "filesystem")]
-pub use syncstate::{SHARE_CONTROL_XATTR, SHARE_XATTR, SYNC_XATTR, SyncState, THUMB_XATTR};
 #[cfg(feature = "filesystem")]
 pub use thumbs::ThumbProvider;
 #[cfg(feature = "filesystem")]

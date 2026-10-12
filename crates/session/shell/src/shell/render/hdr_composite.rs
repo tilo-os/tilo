@@ -10,6 +10,7 @@ use settings_store::hardware::OutputTransform;
 use vello::peniko::ImageData;
 use vello::wgpu;
 
+use super::fullscreen_pass;
 use super::orientation::shader_code;
 use crate::shell::color_pipeline::sanitize_sdr_white_nits;
 use crate::shell::hdr_surface::{
@@ -74,15 +75,8 @@ impl HdrCompositor {
             label: Some("tilo-hdr-composite"),
             source: wgpu::ShaderSource::Wgsl(COMPOSITE_SHADER_SOURCE.into()),
         });
-        let texture_entry = |binding: u32, filterable: bool| wgpu::BindGroupLayoutEntry {
-            binding,
-            visibility: wgpu::ShaderStages::FRAGMENT,
-            ty: wgpu::BindingType::Texture {
-                sample_type: wgpu::TextureSampleType::Float { filterable },
-                view_dimension: wgpu::TextureViewDimension::D2,
-                multisampled: false,
-            },
-            count: None,
+        let texture_entry = |binding: u32, filterable: bool| {
+            fullscreen_pass::texture_entry(binding, wgpu::TextureViewDimension::D2, filterable)
         };
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("tilo-hdr-composite"),
@@ -98,24 +92,14 @@ impl HdrCompositor {
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                     count: None,
                 },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 6,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: wgpu::BufferSize::new(PARAMS_BYTES as u64),
-                    },
-                    count: None,
-                },
+                fullscreen_pass::uniform_entry(6, PARAMS_BYTES as u64),
             ],
         });
-        let params = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("tilo-hdr-composite-params"),
-            size: PARAMS_BYTES as u64,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
+        let params = fullscreen_pass::uniform_buffer(
+            device,
+            "tilo-hdr-composite-params",
+            PARAMS_BYTES as u64,
+        );
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("tilo-hdr-composite-plane"),
             mag_filter: wgpu::FilterMode::Linear,
@@ -158,40 +142,13 @@ impl HdrCompositor {
         if self.pipelines.iter().any(|(f, _)| *f == format) {
             return;
         }
-        let pipeline_layout = self
-            .device
-            .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some("tilo-hdr-composite"),
-                bind_group_layouts: &[Some(&self.layout)],
-                immediate_size: 0,
-            });
-        let pipeline = self
-            .device
-            .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some("tilo-hdr-composite"),
-                layout: Some(&pipeline_layout),
-                vertex: wgpu::VertexState {
-                    module: &self.module,
-                    entry_point: Some("vs_main"),
-                    compilation_options: wgpu::PipelineCompilationOptions::default(),
-                    buffers: &[],
-                },
-                fragment: Some(wgpu::FragmentState {
-                    module: &self.module,
-                    entry_point: Some("fs_main"),
-                    compilation_options: wgpu::PipelineCompilationOptions::default(),
-                    targets: &[Some(wgpu::ColorTargetState {
-                        format,
-                        blend: None,
-                        write_mask: wgpu::ColorWrites::ALL,
-                    })],
-                }),
-                primitive: wgpu::PrimitiveState::default(),
-                depth_stencil: None,
-                multisample: wgpu::MultisampleState::default(),
-                multiview_mask: None,
-                cache: None,
-            });
+        let pipeline = fullscreen_pass::pipeline(
+            &self.device,
+            "tilo-hdr-composite",
+            &self.module,
+            &self.layout,
+            format,
+        );
         self.pipelines.push((format, pipeline));
     }
 
@@ -375,22 +332,12 @@ impl HdrCompositor {
             });
         {
             let [r, g, b] = colour;
-            let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("tilo-hdr-composite-substitute"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color { r, g, b, a: 1.0 }),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-                multiview_mask: None,
-            });
+            let _pass = fullscreen_pass::begin(
+                &mut encoder,
+                "tilo-hdr-composite-substitute",
+                &view,
+                wgpu::LoadOp::Clear(wgpu::Color { r, g, b, a: 1.0 }),
+            );
         }
         self.queue.submit([encoder.finish()]);
         *slot = Some(SizedTexture {
@@ -467,30 +414,19 @@ impl HdrCompositor {
                 },
             ],
         });
-        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("tilo-hdr-composite"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: target,
-                depth_slice: None,
-                resolve_target: None,
-                ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(wgpu::Color {
-                        r: 0.0,
-                        g: 0.0,
-                        b: 0.0,
-                        a: 1.0,
-                    }),
-                    store: wgpu::StoreOp::Store,
-                },
-            })],
-            depth_stencil_attachment: None,
-            timestamp_writes: None,
-            occlusion_query_set: None,
-            multiview_mask: None,
-        });
-        pass.set_pipeline(pipeline);
-        pass.set_bind_group(0, &bind_group, &[]);
-        pass.draw(0..3, 0..1);
+        fullscreen_pass::draw(
+            encoder,
+            "tilo-hdr-composite",
+            target,
+            wgpu::LoadOp::Clear(wgpu::Color {
+                r: 0.0,
+                g: 0.0,
+                b: 0.0,
+                a: 1.0,
+            }),
+            pipeline,
+            &bind_group,
+        );
     }
 
     /// Read the completed second render back as tight RGBA, for the CPU

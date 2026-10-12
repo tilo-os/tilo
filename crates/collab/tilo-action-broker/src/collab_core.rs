@@ -207,7 +207,7 @@ impl BrokerChannels {
         {
             for op in &mut page {
                 if state.is_redacted(OpId::from_op(op))
-                    && op.op_class != collab_types::OpClass::Redact
+                    && op.kind != collab_types::OpKind::Redaction
                 {
                     op.payload.clone_from(&marker);
                 }
@@ -332,7 +332,7 @@ pub fn apply_redaction_from_envelope(
 mod tests {
     use std::time::SystemTime;
 
-    use collab_types::{AttestationId, Ed25519PublicKey, OpClass, SignedOp};
+    use collab_types::{AttestationId, Ed25519PublicKey, OpKind, SignedOp};
 
     use super::*;
 
@@ -344,7 +344,7 @@ mod tests {
             artifact,
             Ed25519PublicKey([7; 32]),
             AttestationId::default(),
-            OpClass::Splice,
+            OpKind::Change,
             SystemTime::UNIX_EPOCH,
             seq,
         )

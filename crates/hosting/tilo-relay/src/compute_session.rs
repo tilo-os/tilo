@@ -29,7 +29,7 @@ use crate::compute_transport::{
     MAX_COMPUTE_FRAME_BYTES,
 };
 use crate::frame::{read_frame, write_frame};
-use crate::handshake::{EndpointTrust, HandshakeError, ServerAuth};
+use crate::handshake::{EndpointTrust, HandshakeError, LiveIdentity};
 use crate::peer::WorkspaceRegistry;
 use crate::policy::TrustPolicy;
 use crate::room_access::{self, Decision, DenyReason, RelayTrust, RoomOperation};
@@ -78,10 +78,7 @@ impl From<HandshakeError> for ComputeSessionError {
 #[derive(Clone)]
 pub(crate) struct ComputeProtocol {
     workspaces: WorkspaceRegistry,
-    own_user_public_key: [u8; 32],
-    own_cert: DeviceCert,
-    own_signing_key: ed25519_dalek::SigningKey,
-    revocations: Arc<std::sync::RwLock<RevocationList>>,
+    identity: LiveIdentity,
     trust_policy: Arc<std::sync::RwLock<TrustPolicy>>,
     agents: crate::peer::AgentRegistry,
     metering: Arc<dyn crate::environment_host::Metering>,
@@ -89,31 +86,20 @@ pub(crate) struct ComputeProtocol {
 
 /// The relay-wide trust the compute ALPN admits by.
 pub(crate) struct ComputeTrust {
-    pub(crate) revocations: Arc<std::sync::RwLock<RevocationList>>,
     pub(crate) trust_policy: Arc<std::sync::RwLock<TrustPolicy>>,
     pub(crate) agents: crate::peer::AgentRegistry,
-}
-
-/// The relay's own identity on the compute ALPN.
-pub(crate) struct ComputeIdentity {
-    pub(crate) user_public_key: [u8; 32],
-    pub(crate) cert: DeviceCert,
-    pub(crate) signing_key: ed25519_dalek::SigningKey,
 }
 
 impl ComputeProtocol {
     pub(crate) fn new(
         workspaces: WorkspaceRegistry,
-        identity: ComputeIdentity,
+        identity: LiveIdentity,
         trust: ComputeTrust,
         metering: Arc<dyn crate::environment_host::Metering>,
     ) -> Self {
         Self {
             workspaces,
-            own_user_public_key: identity.user_public_key,
-            own_cert: identity.cert,
-            own_signing_key: identity.signing_key,
-            revocations: trust.revocations,
+            identity,
             trust_policy: trust.trust_policy,
             agents: trust.agents,
             metering,
@@ -122,9 +108,9 @@ impl ComputeProtocol {
 
     fn trust(&self) -> RelayTrust<'_> {
         RelayTrust {
-            revocations: &self.revocations,
+            revocations: &self.identity.revocations,
             policy: &self.trust_policy,
-            own_user: &self.own_user_public_key,
+            own_user: &self.identity.user_public_key,
             agents: &self.agents,
         }
     }
@@ -132,9 +118,9 @@ impl ComputeProtocol {
     fn routing(&self) -> crate::environment_routing::RoutingContext {
         crate::environment_routing::RoutingContext {
             workspaces: self.workspaces.clone(),
-            own_user_public_key: self.own_user_public_key,
+            own_user_public_key: self.identity.user_public_key,
             trust_policy: Arc::clone(&self.trust_policy),
-            revocations: Arc::clone(&self.revocations),
+            revocations: Arc::clone(&self.identity.revocations),
             agents: Arc::clone(&self.agents),
             metering: Arc::clone(&self.metering),
         }
@@ -168,7 +154,7 @@ async fn run_server_session(
     mut receive: RecvStream,
 ) -> Result<(), ComputeSessionError> {
     let peer = authenticate_server(&protocol, &mut send, &mut receive).await?;
-    let owner = peer.user_public_key == protocol.own_user_public_key;
+    let owner = peer.user_public_key == protocol.identity.user_public_key;
     let streams = tokio::spawn(accept_streams(
         protocol.routing(),
         peer.clone(),
@@ -291,13 +277,8 @@ async fn authenticate_server(
     send: &mut SendStream,
     receive: &mut RecvStream,
 ) -> Result<AuthenticatedPeer, ComputeSessionError> {
-    let server = ServerAuth {
-        own_user: &protocol.own_user_public_key,
-        cert: &protocol.own_cert,
-        key: &protocol.own_signing_key,
-        revocations: &protocol.revocations,
-    };
-    Ok(server
+    Ok(protocol
+        .identity
         .authenticate(
             EndpointTrust::Live(&protocol.trust_policy),
             receive,

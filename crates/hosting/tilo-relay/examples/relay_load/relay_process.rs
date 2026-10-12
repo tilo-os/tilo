@@ -61,6 +61,14 @@ pub struct Sample {
     /// File and directory barriers the relay's workspace stores issued
     /// ([`tilo_relay::store::fsyncs`]).
     pub store_fsyncs: u64,
+    /// Directory entries the stores listed to retain history
+    /// ([`tilo_relay::store::listed_entries`]).
+    pub store_listed_entries: u64,
+    /// Thread CPU time compaction spent ([`tilo_relay::compaction::cpu_ns`]).
+    pub compaction_cpu_ns: u64,
+    /// Document signatures compaction verified
+    /// ([`tilo_relay::compaction::signature_checks`]).
+    pub compaction_signature_checks: u64,
 }
 
 /// The parent's handle on the relay process.
@@ -74,11 +82,21 @@ pub struct RelayProcess {
 
 impl RelayProcess {
     /// Start the relay process for `fleet`, with its state under `state`.
-    pub async fn spawn(fleet: &Fleet, state: &Path) -> anyhow::Result<Self> {
+    /// With `cpus`, the relay process runs on those CPUs alone.
+    pub async fn spawn(
+        fleet: &Fleet,
+        state: &Path,
+        cpus: Option<&[usize]>,
+    ) -> anyhow::Result<Self> {
         let setup = fleet.relay_setup(state);
         let device = setup.relay_cert.device_public_key;
-        let mut child = Command::new(std::env::current_exe()?)
-            .arg("--serve")
+        let mut command = Command::new(std::env::current_exe()?);
+        command.arg("--serve");
+        if let Some(cpus) = cpus {
+            let list: Vec<String> = cpus.iter().map(ToString::to_string).collect();
+            command.arg("--cpus").arg(list.join(","));
+        }
+        let mut child = command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
@@ -136,9 +154,77 @@ async fn answer(stdout: &mut Lines<BufReader<ChildStdout>>) -> anyhow::Result<St
         .context("the relay process exited")
 }
 
-/// The `--serve` side: run the relay on the daemon's own runtime profile.
-pub fn serve() -> anyhow::Result<()> {
+/// The `--serve` side: run the relay on the daemon's own runtime profile,
+/// on `cpus` alone when the bench names any. The daemon sizes its runtime
+/// from the CPUs this process may use, so it starts as on a VM with that many.
+pub fn serve(cpus: &[usize]) -> anyhow::Result<()> {
+    if !cpus.is_empty() {
+        affinity::set(cpus)?;
+    }
     tilo_rt::daemon("tilo-relay").run(serve_relay())?
+}
+
+/// Give the relay the first `count` CPUs this process may use and keep the
+/// rest for this process, which starts its own runtime on them afterwards.
+/// Returns the relay's CPUs.
+pub fn split_cpus(count: usize) -> anyhow::Result<Vec<usize>> {
+    let mut cpus = affinity::get()?;
+    anyhow::ensure!(
+        count >= 1 && count < cpus.len(),
+        "--relay-cpus {count} must leave the collaborators at least one of the {} CPUs",
+        cpus.len()
+    );
+    let collaborators = cpus.split_off(count);
+    affinity::set(&collaborators)?;
+    Ok(cpus)
+}
+
+/// The calling thread's CPU affinity, which the threads and processes it
+/// starts afterwards inherit.
+#[cfg(target_os = "linux")]
+mod affinity {
+    const SET_BYTES: usize = std::mem::size_of::<libc::cpu_set_t>();
+
+    pub fn get() -> anyhow::Result<Vec<usize>> {
+        // SAFETY: `cpu_set_t` is a plain bit set, for which all-zero is the empty set.
+        let mut set: libc::cpu_set_t = unsafe { std::mem::zeroed() };
+        // SAFETY: writes at most `SET_BYTES` into the exclusive reference.
+        if unsafe { libc::sched_getaffinity(0, SET_BYTES, &raw mut set) } != 0 {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        let limit = usize::try_from(libc::CPU_SETSIZE)?;
+        Ok((0..limit)
+            // SAFETY: every index is below `CPU_SETSIZE`, inside the set.
+            .filter(|cpu| unsafe { libc::CPU_ISSET(*cpu, &set) })
+            .collect())
+    }
+
+    pub fn set(cpus: &[usize]) -> anyhow::Result<()> {
+        let limit = usize::try_from(libc::CPU_SETSIZE)?;
+        // SAFETY: `cpu_set_t` is a plain bit set, for which all-zero is the empty set.
+        let mut set: libc::cpu_set_t = unsafe { std::mem::zeroed() };
+        for &cpu in cpus {
+            anyhow::ensure!(cpu < limit, "CPU {cpu} is beyond the affinity set");
+            // SAFETY: `cpu` is below `CPU_SETSIZE`, inside the set.
+            unsafe { libc::CPU_SET(cpu, &mut set) };
+        }
+        // SAFETY: reads `SET_BYTES` from the shared reference.
+        if unsafe { libc::sched_setaffinity(0, SET_BYTES, &raw const set) } != 0 {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        Ok(())
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+mod affinity {
+    pub fn get() -> anyhow::Result<Vec<usize>> {
+        anyhow::bail!("--relay-cpus needs Linux's sched_setaffinity")
+    }
+
+    pub fn set(_cpus: &[usize]) -> anyhow::Result<()> {
+        anyhow::bail!("--relay-cpus needs Linux's sched_setaffinity")
+    }
 }
 
 #[expect(
@@ -219,6 +305,9 @@ fn sample(relay: &Relay) -> Sample {
         deltas_fanned_out: metrics.deltas_fanned_out,
         subscriber_dropped: metrics.subscriber_dropped,
         store_fsyncs: tilo_relay::store::fsyncs(),
+        store_listed_entries: tilo_relay::store::listed_entries(),
+        compaction_cpu_ns: tilo_relay::compaction::cpu_ns(),
+        compaction_signature_checks: tilo_relay::compaction::signature_checks(),
     }
 }
 

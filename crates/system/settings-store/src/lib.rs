@@ -47,10 +47,42 @@
     )
 )]
 
+/// `Serialize`/`Deserialize` of a type deriving them with
+/// `#[serde(remote = "Self")]`: writing runs the derived code, reading goes
+/// through one `serde_json::Value` and one function compiled here, rather
+/// than a derived decoder per deserializer in every crate reading the type.
+macro_rules! read_through_json_value {
+    ($ty:ty) => {
+        impl serde::Serialize for $ty {
+            fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+                Self::serialize(self, serializer)
+            }
+        }
+        read_through_json_value!($ty, deserialize);
+    };
+    ($ty:ty, deserialize) => {
+        impl<'de> serde::Deserialize<'de> for $ty {
+            fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+                let value = <serde_json::Value as serde::Deserialize>::deserialize(deserializer)?;
+                Self::from_json_value(value).map_err(serde::de::Error::custom)
+            }
+        }
+
+        impl $ty {
+            #[inline(never)]
+            fn from_json_value(value: serde_json::Value) -> Result<Self, serde_json::Error> {
+                Self::deserialize(value)
+            }
+        }
+    };
+}
+pub(crate) use read_through_json_value;
+
 use std::path::{Path, PathBuf};
 
 use serde_json::{Map, Value};
 
+pub mod accessibility;
 pub mod app_scope;
 pub mod appearance;
 pub mod continuity;
@@ -73,6 +105,7 @@ pub mod magnifier;
 pub mod notification_policy;
 pub mod person_displays;
 pub mod personal_dictionary;
+pub mod published;
 pub mod roaming_provenance;
 mod section_digest;
 mod session;
@@ -178,6 +211,7 @@ pub fn stamp() -> Option<SettingsStamp> {
 
 /// [`stamp`] of the document at `path`, ignoring any installed source.
 pub fn stamp_at(path: &Path) -> Option<SettingsStamp> {
+    published::note_file_read();
     let modified = std::fs::metadata(path).ok()?.modified().ok()?;
     Some(SettingsStamp::Modified(modified))
 }
@@ -185,6 +219,7 @@ pub fn stamp_at(path: &Path) -> Option<SettingsStamp> {
 /// [`load`] from an explicit path. Exposed so tests can drive a scratch file without
 /// touching the configured settings file.
 pub fn load_at(path: &Path) -> Map<String, Value> {
+    published::note_file_read();
     let Ok(text) = std::fs::read_to_string(path) else {
         return Map::new();
     };

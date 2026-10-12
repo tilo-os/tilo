@@ -120,13 +120,7 @@ impl Widget for Probe {
         dyn crate::resources::PublishesResources
     );
 
-    crate::testing::inert_widget_methods!(
-        leaf_layout,
-        apply_layout,
-        draw,
-        get_rect,
-        name = "Controlled owner"
-    );
+    crate::testing::inert_widget_methods!(leaf_layout, name = "Controlled owner");
     fn for_each_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) {
         for child in self.children.borrow().iter() {
             visitor(child.as_ref());
@@ -371,12 +365,12 @@ fn invoke(
             broker_admitted: false,
             ambient: None,
         },
+        None,
     )
 }
 
 #[test]
 fn retained_policy_time_document_door_denies_delayed_grant_without_mutation() {
-    use crate::permissions::{Actor, CapOverride, Scope, Subject, Verb};
     use std::sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
@@ -384,16 +378,11 @@ fn retained_policy_time_document_door_denies_delayed_grant_without_mutation() {
     let expiry = crate::time::try_unix_now().unwrap() + 3600;
     let time = Arc::new(AtomicU64::new(expiry - 1));
     let clock = time.clone();
-    let authority = PermissionContext::from_capabilities(
-        Actor::person(None, "fixture-user"),
-        vec![
-            CapOverride::grant(
-                Subject::person("fixture-user"),
-                Scope::App("so.tilo.controlled".into()),
-                Verb::Write,
-            )
-            .with_expiry(expiry),
-        ],
+    let authority = crate::permissions::PermissionContext::granted(
+        "fixture-user",
+        &crate::permissions::TreePath::root().app("so.tilo.controlled"),
+        crate::permissions::policy::KindSet::ALL,
+        Some(expiry),
     )
     .with_policy_time_sampler(Arc::new(move || Ok(clock.load(Ordering::Acquire))));
     let mut fixture = Fixture::new(811);
@@ -687,22 +676,21 @@ fn legacy_route_fresh_authority_availability_result_arguments_and_transport_refu
     let before = f.snapshot();
     let mut transport = LocalTransport::new();
     let registry = registry();
-    let denied = PermissionContext::from_capabilities(Actor::person(None, "fixture-user"), vec![]);
+    let denied = crate::permissions::PermissionContext::stranger("fixture-user");
     assert!(invoke(&mut f.tile, &f.target, &registry, &mut transport, &denied).is_err());
-    let grant = |actor: &str, expiry: Expiry, verb: Verb| {
-        let mut cap = CapOverride::new(
-            Subject::Principal(Principal::Person(actor.into())),
-            Scope::App("so.tilo.controlled".into()),
-            Effect::Grant,
-            verb,
-        );
-        cap.expiry = expiry;
-        PermissionContext::from_capabilities(Actor::person(None, actor), vec![cap]).at_unix_time(1)
+    let grant = |actor: &str, until: Option<u64>, kinds: KindSet| {
+        PermissionContext::granted(
+            actor,
+            &TreePath::root().app("so.tilo.controlled"),
+            kinds,
+            until,
+        )
+        .at_unix_time(1)
     };
     for authority in [
-        grant("fixture-user", Expiry::AtUnix(2), Verb::Write),
-        grant("other-user", Expiry::Never, Verb::Write),
-        grant("fixture-user", Expiry::Never, Verb::Read),
+        grant("fixture-user", Some(2), KindSet::ALL),
+        grant("other-user", None, KindSet::ALL),
+        grant("fixture-user", None, KindSet::READ),
     ] {
         assert!(
             invoke(
@@ -716,17 +704,17 @@ fn legacy_route_fresh_authority_availability_result_arguments_and_transport_refu
         );
     }
     // A weak operation permission never weakens the mandatory Document write.
-    f.probe.spec.borrow_mut().contract.permission = tilo_actions::PermissionRequirement::None;
+    f.probe.spec.borrow_mut().contract.kind = tilo_actions::ActionKind::Read;
     assert!(invoke(&mut f.tile, &f.target, &registry, &mut transport, &denied).is_err());
     *f.probe.spec.borrow_mut() = spec(2, false, false);
-    f.probe.spec.borrow_mut().contract.permission = tilo_actions::PermissionRequirement::Admin;
+    f.probe.spec.borrow_mut().contract.kind = ActionKind::Outside;
     assert!(
         invoke(
             &mut f.tile,
             &f.target,
             &registry,
             &mut transport,
-            &grant("fixture-user", Expiry::Never, Verb::Write)
+            &grant("fixture-user", None, KindSet::READ_UNDOABLE)
         )
         .is_err()
     );
@@ -782,7 +770,8 @@ fn legacy_route_fresh_authority_availability_result_arguments_and_transport_refu
                     actor,
                     broker_admitted: broker,
                     ambient: None
-                }
+                },
+                None
             )
             .is_err()
         );
@@ -805,7 +794,8 @@ fn legacy_route_fresh_authority_availability_result_arguments_and_transport_refu
                 actor: "fixture-user",
                 broker_admitted: false,
                 ambient: None
-            }
+            },
+            None
         )
         .is_err()
     );
@@ -1094,20 +1084,24 @@ fn legacy_route_actual_file_write_revocation_never_falls_back_to_app_grant() {
     f.checkout = checkout;
     f.target.owner = f.tile.history_owner().unwrap();
     let principal = Subject::Principal(Principal::Person("fixture-user".into()));
-    let app = CapOverride::new(
-        principal.clone(),
-        Scope::App("so.tilo.controlled".into()),
-        Effect::Grant,
-        Verb::Write,
-    );
     let file = CapOverride::new(
         principal,
         Scope::FsPath(path.to_string_lossy().into_owned()),
         Effect::Grant,
-        Verb::Write,
+        Access::Write,
     );
-    let authority =
-        |grants| PermissionContext::from_capabilities(Actor::person(None, "fixture-user"), grants);
+    let authority = |file: Option<CapOverride>| {
+        let app = PermissionContext::granted(
+            "fixture-user",
+            &TreePath::root().app("so.tilo.controlled"),
+            KindSet::ALL,
+            None,
+        );
+        match file {
+            Some(file) => app.granting(file),
+            None => app,
+        }
+    };
     let before = f.snapshot();
     let mut transport = LocalTransport::new();
     assert!(
@@ -1116,7 +1110,7 @@ fn legacy_route_actual_file_write_revocation_never_falls_back_to_app_grant() {
             &f.target,
             &registry(),
             &mut transport,
-            &authority(vec![app.clone()])
+            &authority(None)
         )
         .is_err()
     );
@@ -1128,7 +1122,7 @@ fn legacy_route_actual_file_write_revocation_never_falls_back_to_app_grant() {
             &f.target,
             &registry(),
             &mut transport,
-            &authority(vec![app.clone(), file])
+            &authority(Some(file.clone()))
         )
         .unwrap()
         .changed
@@ -1141,7 +1135,7 @@ fn legacy_route_actual_file_write_revocation_never_falls_back_to_app_grant() {
             &f.target,
             &registry(),
             &mut transport,
-            &authority(vec![app])
+            &authority(None)
         )
         .is_err()
     );
@@ -1160,7 +1154,7 @@ fn legacy_route_headless_two_real_owners_capture_and_model_ticks_do_not_duplicat
     let mut state = crate::State::new();
     state.doc.put(ROOT, "outer-only", 17).unwrap();
     state.commit_action(None, None);
-    let mut driver = crate::headless::Driver::new(state, Box::new(root), (700, 400));
+    let mut driver = crate::headless::FrameHarness::new(state, Box::new(root), (700, 400));
     driver
         .action_registry_mut()
         .register::<SetValue>("controlled.legacy");
@@ -1301,6 +1295,7 @@ fn legacy_effect_dispatch_captures_exact_selected_record_without_sibling_fallbac
             tilo_actions::OperationKind::Effect,
             &encoded,
             &mut outer,
+            None,
         )
         .unwrap();
     }
@@ -1323,6 +1318,7 @@ fn legacy_effect_dispatch_captures_exact_selected_record_without_sibling_fallbac
             tilo_actions::OperationKind::Effect,
             &encoded,
             &mut outer,
+            None,
         )
         .is_err()
     );

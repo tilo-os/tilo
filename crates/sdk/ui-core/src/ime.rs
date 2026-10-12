@@ -122,6 +122,7 @@ mod tests {
                 anchor: 6,
                 focus: 11
             },
+            &[],
             &mut crate::widget::Edits::lend(&mut automerge::AutoCommit::new()),
             &automerge::ROOT,
         ));
@@ -148,6 +149,7 @@ mod tests {
                 anchor: 0,
                 focus: 5
             },
+            &[],
             &mut crate::widget::Edits::lend(&mut automerge::AutoCommit::new()),
             &automerge::ROOT,
         ));

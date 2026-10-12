@@ -82,15 +82,6 @@ impl Widget for Fixed {
     fn apply_layout(&mut self, _taffy: &TaffyTree<()>, _node: NodeId, origin: Point) {
         self.rect = Rect::from_origin_size(origin, (f64::from(self.w), f64::from(self.h)));
     }
-    fn draw(
-        &mut self,
-        _scene: &mut Scene,
-        _transform: Affine,
-        _text_renderer: &mut TextRenderer,
-        _theme: &Theme,
-        _presence: &PresenceCtx,
-    ) {
-    }
     fn name(&self) -> &'static str {
         "Fixed"
     }

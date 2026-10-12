@@ -14,7 +14,7 @@ checkout.
 Current results come from the scheduled performance lane, not from this page.
 Each benchmark writes records with `tools/perf/record.py`, and the records are
 stored in the `tilo-perf-results` package. See
-[Performance results](../DEVELOPMENT.md#performance-results) for how a benchmark
+[Performance results](measurements/performance.md) for how a benchmark
 such as `ui-perf` or `redraw_bench` joins that lane.
 
 ## Where this runs
@@ -53,7 +53,7 @@ TILO_UI_DASH_WIDTH=3840 \
 TILO_UI_DASH_HEIGHT=2160 \
 TILO_UI_DASH_ALLOC_CALL_BUDGET_PER_REDRAW=650 \
 TILO_UI_DASH_ALLOC_BYTE_BUDGET_PER_REDRAW=70000 \
-TILO_UI_DASH_RASTER_PIXEL_BUDGET=600000 \
+TILO_UI_DASH_RASTER_PIXEL_BUDGET=150000 \
 TILO_UI_DASH_GPU_BUDGET_BYTES=65000000 \
 TILO_UI_DASH_GPU_GROWTH_BUDGET_BYTES=4194304 \
 TILO_UI_DASH_RSS_BUDGET_KIB=350000 \

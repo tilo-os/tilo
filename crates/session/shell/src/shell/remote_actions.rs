@@ -139,6 +139,14 @@ impl ActionHost for BrokerActionHost {
     ) -> Result<(), ActionHostError> {
         self.broker.state().action_cancel(caller, id)
     }
+
+    fn confirm(
+        &self,
+        caller: &Caller,
+        request: &InvokeRequest,
+    ) -> Pending<Result<tilo_actions::remote::Confirmation, ActionHostError>> {
+        self.broker.state().request_witness(caller, None, request)
+    }
 }
 
 #[cfg(test)]
@@ -228,7 +236,7 @@ mod tests {
                 action(
                     "rename",
                     tilo_actions::ActionContract {
-                        permission: tilo_actions::PermissionRequirement::Write,
+                        kind: tilo_actions::ActionKind::Undoable,
                         ..tilo_actions::ActionContract::default()
                     },
                 ),
@@ -303,8 +311,10 @@ mod tests {
                     ("7", "refresh"),
                     ("7", "erase"),
                     ("7", "rename"),
-                    ("workspace", "profile.save"),
-                    ("workspace", "profile.assign"),
+                    ("workspace", "grant"),
+                    ("workspace", "revoke"),
+                    ("workspace", "preset.save"),
+                    ("workspace", "preset.assign"),
                     ("workspace", "app-action.grant"),
                     ("workspace", "app-action.revoke"),
                     ("workspace", "create"),

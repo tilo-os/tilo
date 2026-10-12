@@ -869,8 +869,9 @@ impl WordProcessor {
         let Some(dispatch) = &self.dispatch else {
             return false;
         };
-        let context = tilo_actions::ActionContext::for_action("org.tilo.Writer", "Writer", &action);
-        dispatch.apply_now_with(state, &action, context).is_ok()
+        dispatch
+            .apply_now(state, &crate::model::action(&action))
+            .is_ok()
     }
 
     fn action_region(&self) -> crate::actions::RegionKind {
@@ -1111,47 +1112,6 @@ impl WordProcessor {
             crate::actions::RichTextAction::RejectChanges {
                 id: id.map(str::to_string),
             }
-        };
-        let _ = self.apply_rich(state, action);
-    }
-
-    /// The tracked-change ids present in the document, sorted by their anchored
-    /// `(block-order, start)` body position (earliest first). Falls back to the
-    /// canonical id order for changes whose anchoring mark is gone.
-    #[allow(
-        dead_code,
-        reason = "review navigation helper kept beside Accept/Reject until wired"
-    )]
-    fn changes_in_doc_order(&self, state: &AutoCommit) -> Vec<String> {
-        let Some(c) = self.containers.as_ref() else {
-            return Vec::new();
-        };
-        let block_order = self.ordered_blocks(state);
-        let pos = |bid: &str| {
-            block_order
-                .iter()
-                .position(|b| b == bid)
-                .unwrap_or(usize::MAX)
-        };
-        let mut ids = tilo_doc::model::change_ids(state, c);
-        ids.sort_by_key(|id| {
-            tilo_doc::model::change_range(state, c, id)
-                .map_or((usize::MAX, usize::MAX), |(b, s, _)| (pos(&b), s))
-        });
-        ids
-    }
-
-    /// Delete a comment by id: remove its anchoring `comment` mark over the body
-    /// range it covers, then drop the comment entry from the `comments`
-    /// container. After this the comment no longer appears in the materialized
-    /// snapshot and its highlight band disappears. No-op for an unknown id or an
-    /// unbound document.
-    pub fn delete_comment(&mut self, state: &mut ui::widget::Edits<'_>, comment_id: &str) {
-        if self.containers.is_none() || self.ids.is_none() {
-            return;
-        }
-        let action = crate::actions::RichTextAction::ResolveComment {
-            id: comment_id.to_string(),
         };
         let _ = self.apply_rich(state, action);
     }
@@ -1890,7 +1850,9 @@ impl WordProcessor {
     /// seat the caret, writing nothing.
     pub fn bind_view_only(&mut self, state: &AutoCommit, root: &ObjId) {
         if self.containers.is_none() {
-            let Ok(c) = tilo_doc::model::open(state, root) else {
+            let Some(c) = crate::model::body_at(state, root)
+                .and_then(|body| tilo_doc::model::open(state, &body).ok())
+            else {
                 return;
             };
             self.containers = Some(c);
@@ -1931,7 +1893,9 @@ impl WordProcessor {
         }
         if self.containers.is_none() {
             // The record's genesis made the document; a view never creates it.
-            let Ok(c) = tilo_doc::model::open(state, root) else {
+            let Some(c) = crate::model::body_at(state, root)
+                .and_then(|body| tilo_doc::model::open(state, &body).ok())
+            else {
                 return;
             };
             // Seed past existing block ids so editing a loaded/imported document
@@ -2054,35 +2018,6 @@ impl WordProcessor {
                 region: self.action_region(),
                 blocks: vec![block.to_string()],
             }
-        };
-        let _ = self.apply_rich(state, action);
-    }
-
-    #[allow(
-        dead_code,
-        reason = "clear-mark helper kept for region edits not yet on RichTextAction"
-    )]
-    fn region_remove_mark(
-        &self,
-        state: &mut ui::widget::Edits<'_>,
-        block: &str,
-        start: usize,
-        end: usize,
-        name: &str,
-    ) {
-        if start >= end {
-            return;
-        }
-        let action = crate::actions::RichTextAction::SetMark {
-            region: self.action_region(),
-            spans: vec![crate::actions::Span {
-                block: block.to_string(),
-                start,
-                end,
-            }],
-            name: name.to_string(),
-            value: None,
-            also_clear: Vec::new(),
         };
         let _ = self.apply_rich(state, action);
     }

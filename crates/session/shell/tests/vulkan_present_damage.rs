@@ -13,7 +13,7 @@ use smithay::reexports::wayland_server::Display;
 use smithay::wayland::compositor::{self, BufferAssignment, Damage, SurfaceAttributes};
 use wayland_client::protocol::{wl_compositor, wl_registry, wl_surface};
 use wayland_client::{Connection, Dispatch, Proxy, QueueHandle, delegate_noop};
-use wayland_protocols::xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_base};
+use wayland_protocols::xdg::shell::client::{xdg_toplevel, xdg_wm_base};
 
 #[derive(Clone, Debug)]
 struct Commit {
@@ -204,23 +204,7 @@ impl Dispatch<wl_registry::WlRegistry, ()> for Peer {
         }
     }
 }
-crate::support::wayland::test_client!(Peer: ping);
-
-impl Dispatch<xdg_surface::XdgSurface, ()> for Peer {
-    fn event(
-        peer: &mut Self,
-        surface: &xdg_surface::XdgSurface,
-        event: xdg_surface::Event,
-        (): &(),
-        _: &Connection,
-        _: &QueueHandle<Self>,
-    ) {
-        if let xdg_surface::Event::Configure { serial } = event {
-            surface.ack_configure(serial);
-            peer.configured = true;
-        }
-    }
-}
+crate::support::wayland::test_client!(Peer: ping, configured);
 delegate_noop!(Peer: ignore wl_compositor::WlCompositor);
 delegate_noop!(Peer: ignore wl_surface::WlSurface);
 delegate_noop!(Peer: ignore xdg_toplevel::XdgToplevel);

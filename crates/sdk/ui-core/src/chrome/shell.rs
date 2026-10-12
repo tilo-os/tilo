@@ -135,6 +135,26 @@ pub struct SelectionTier {
     pub scale: f64,
 }
 
+impl SelectionTier {
+    /// Paint this tier on `rect` rounded by `radius`: the fill unless it is
+    /// transparent, the border on the edge, and the inner glow one pixel
+    /// inside it.
+    pub fn paint(&self, scene: &mut Scene, transform: Affine, rect: Rect, radius: f64) {
+        let shape = RoundedRect::from_rect(rect, radius);
+        if self.fill.components[3] > 0.0 {
+            scene.fill(Fill::NonZero, transform, self.fill, None, &shape);
+        }
+        let hairline = vello::kurbo::Stroke::new(1.0);
+        if let Some(border) = self.border {
+            scene.stroke(&hairline, transform, border, None, &shape);
+        }
+        if let Some(glow) = self.inner_glow {
+            let inner = RoundedRect::from_rect(rect.inset(-1.0), (radius - 1.0).max(0.0));
+            scene.stroke(&hairline, transform, glow, None, &inner);
+        }
+    }
+}
+
 /// Resolve one control's appearance. **This is the only way the shell
 /// expresses "which one is chosen"** — active tab, active workspace,
 /// active strip, selected row, chosen scope chip, current power profile.
@@ -658,6 +678,31 @@ pub fn panel_shadow(
     token.color = token.color.with_alpha_factor(intensity.clamp(0.0, 1.0));
     crate::surface::shadow(scene, transform, rect, radius, &token);
     scene.pop_layer();
+}
+
+/// Paint a floating [`ChromeRole::Panel`] body: its shadow at
+/// `shadow_intensity`, the [`panel_ground`] fill and the 1 px
+/// [`panel_border`], all at the Panel radius. Returns the body's outline
+/// for callers that clip their content to it.
+pub fn paint_panel(
+    scene: &mut Scene,
+    transform: Affine,
+    rect: Rect,
+    theme: &Theme,
+    shadow_intensity: f32,
+) -> RoundedRect {
+    let radius = ChromeRole::Panel.radius(theme, rect.height());
+    panel_shadow(scene, transform, rect, radius, theme, shadow_intensity);
+    let body = RoundedRect::from_rect(rect, radius);
+    scene.fill(Fill::NonZero, transform, panel_ground(theme), None, &body);
+    scene.stroke(
+        &vello::kurbo::Stroke::new(1.0),
+        transform,
+        panel_border(theme),
+        None,
+        &body,
+    );
+    body
 }
 
 /// A separator or edge drawn on a chrome surface. Derived against the

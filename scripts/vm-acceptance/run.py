@@ -33,6 +33,7 @@ from acceptance.checks import (apps, basics, daily_apps, provenance, resources, 
                                startup, ui, window)
 from acceptance.context import Context  # noqa: E402
 from management import start_management  # noqa: E402
+from layer_artifacts import identities, verify as verify_artifacts  # noqa: E402
 from acceptance.vm import TiloVm, VmError, first_json  # noqa: E402
 
 REPO = HERE.parents[1]
@@ -56,6 +57,10 @@ BUDGETS = {
     # processes and the compositor by anonymous RSS, the memory they hold privately.
     "app_memory_mb": 400, "app_anon_mb": 250,
     "shell_anon_mb": 500, "process_anon_mb": 300, "session_memory_mb": 2500,
+    # The compositor with no app open (R01): 238.7 MB on main before its freed
+    # heap was trimmed after startup and quiet moments and before its renderer stopped
+    # initialising GL beside Vulkan; 159-167 MB after (runs 94419, 94637, lavapipe).
+    "shell_idle_anon_mb": 200,
     # Frames at 60 Hz. Work per frame: CPU everywhere, wall time on real display hardware.
     "work_ms_p95": 16.7, "work_ms_p99": 33.4,
     # Transitions, the compositor's side: frames painted, lateness against its own
@@ -74,6 +79,13 @@ BUDGETS = {
     # to a usable greeter (whole seconds, the boot gate's unit), and the render-path gate's
     # per-frame presentation and main-thread work on a software renderer.
     "boot_to_greeter_s": 20, "render_frame_ms": 1000, "render_frame_work_ms": 100,
+    # Userspace start to greetd active (R06), and the greeter's sign-in request to a drawn
+    # desktop whose control socket answers (R08): the account's first sign-in, with cold
+    # caches and first-login setup, and the next one. The same disk measured 4.4-4.5 s and
+    # 6.8-8.8 s to the greeter and 3.7-5.7 s to the desktop on runners of one class with
+    # no CPU steal, so these catch a stall of seconds, not drift; the records carry the
+    # trend. Software-rendered: the first frame waits on lavapipe compiling the renderer.
+    "userspace_to_greeter_s": 10.0, "sign_in_first_usable_s": 10.0, "sign_in_again_usable_s": 10.0,
 }
 
 # Run in a German session (a second slot), after the main pass.
@@ -81,14 +93,16 @@ DE_PASS = ("U03", "U04", "S03")
 # A14 runs before anything else opens Files, so it times the session's first launch. R05
 # runs last but P03, so the adapter lines of every app the run opened are in the log; R07
 # and A16 judge everything the run rendered and launched. R06 reads this boot's
-# timestamps, so it may run anywhere. A15 times apps R02 has already opened once.
-ORDER = ["P01", "P02", "R06", "R01", "A14", "R02", "R03", "A15", "R04",
+# timestamps, so it may run anywhere. A15 times apps R02 has already opened once. R08 signs
+# the dev account in at seat0's greeter, which starts a second compositor: it runs after
+# every check that measures or renders the slot's session.
+ORDER = ["P01", "P02", "R06", "R01", "A14", "R02", "R03", "A15", "A17", "R04",
          "W01", "W02", "W03", "W04", "W05", "W06", "W07", "W08", "W09", "W10", "W11", "W12",
          "W13", "W14", "W15", "W16", "W17", "W18", "W19", "W20", "W21",
          "A01", "A02", "A03", "A04", "A05", "A06", "A07",
          "A08", "A09", "A10", "A11", "A12", "A13",
          "S01", "S02", "S04", "S05", "S06", "S07", "S08", "S09",
-         "U01", "U02", "B01", "B02", "B03", "B04", "B05", "B06", "B07", "R07", "A16", "R05", "P03"]
+         "U01", "U02", "B01", "B02", "B03", "B04", "B05", "B06", "R07", "A16", "R05", "R08", "P03"]
 
 
 def git(*args: str, repo: Path = REPO) -> str:
@@ -162,8 +176,12 @@ HARDWARE_DRM_DRIVERS = {"i915", "xe", "amdgpu", "radeon", "nouveau", "nvidia", "
                         "rockchip-drm", "mediatek-drm", "imx-drm", "apple-drm", "asahi"}
 
 
-def renderer(vm: TiloVm) -> tuple[str, dict]:
-    """The renderer as a readable line, and whether frames reach real display hardware."""
+def renderer(vm: TiloVm, without_3d: bool = False) -> tuple[str, dict]:
+    """The renderer as a readable line, and whether frames reach real display hardware.
+
+    `without_3d`: this run created the VM without virgl, so its virtio GPU renders
+    nothing and every frame is a CPU rasterizer's. Mesa's dri2 warning is no proof
+    of that: a session pinned to lavapipe never asks Mesa's EGL for that GPU."""
     out = vm.exec(
         "echo nodes: $(ls /dev/dri 2>/dev/null | tr '\\n' ' '); "
         "echo drivers: $(for c in /sys/class/drm/card*/device/driver; do basename $(readlink $c); done 2>/dev/null | sort -u | tr '\\n' ' '); "
@@ -172,7 +190,7 @@ def renderer(vm: TiloVm) -> tuple[str, dict]:
     lines = [l for l in out.splitlines() if l.strip() and not l.startswith("receipt:")]
     text = " | ".join(lines)
     drivers = next((l.split(":", 1)[1].split() for l in lines if l.startswith("drivers:")), [])
-    soft = "renderD" not in text or "dri2" in text
+    soft = without_3d or "renderD" not in text or "dri2" in text
     hardware = sorted(set(drivers) & HARDWARE_DRM_DRIVERS)
     virgl = any(d.startswith("virtio") for d in drivers)
     label = ("software (no GPU render node; wgpu on a CPU rasterizer): " if soft
@@ -254,20 +272,43 @@ def component_scopes(source: Path) -> dict[str, str]:
     return {c["name"]: c.get("scope", "session") for c in manifest.get("component", [])}
 
 
-def swap_components(vm: TiloVm, components: list[str], ref: str, source: Path) -> dict:
-    """Build each component from the worktree `source` on the host and swap it into the VM:
+def swap_components(vm: TiloVm, components: list[str], ref: str, source: Path,
+                    artifact: dict | None = None) -> dict:
+    """Build each component from `source` and swap it into the VM:
+    optional artifacts enter through verified import; the default path builds on the host.
     session components and apps into the run's slot, VM-wide ones into `vm`. Then read back the
     layer each slot runs, so P01 states what was tested: the base image plus these, from `ref`."""
     scopes = component_scopes(source)
     head = git("rev-parse", "HEAD", repo=source)
+    if artifact:
+        if head != artifact["expected"]["source_commit"]:
+            raise ValueError("artifact consumer source checkout does not match producer")
+        components = verify_artifacts(artifact["receipt"], artifact["expected"],
+                                      artifact["sha256"], components)
+    # The artifact consumer verifies the cohort; it may be a newer CLI than the ref's
+    # own (the workflow's checkout), so a branch older than a consumer fix stays testable.
+    consumer = (artifact or {}).get("consumer") or vm
     swapped, slots = [], set()
     for component in components:
         slot = "vm" if scopes.get(component) == "vm" else vm.slot
         entry = {"component": component, "slot": slot}
+        if artifact:
+            entry["consumer"] = consumer.binary
         started = time.monotonic()
         try:
-            out = vm.run("--json", "swap", component, "--slot", slot, "--builder", "host",
-                         timeout=5400, slot=False, cwd=source)
+            if artifact:
+                expected = artifact["expected"]
+                out = consumer.run("--json", "swap-artifact", component, "--slot", slot,
+                             "--receipt", str(artifact["receipt"]),
+                             "--source", expected["source_commit"],
+                             "--builder-image", expected["builder_image"],
+                             "--run-id", str(expected["run_id"]),
+                             "--run-attempt", str(expected["run_attempt"]),
+                             "--receipt-sha256", artifact["sha256"],
+                             timeout=5400, slot=False, cwd=source)
+            else:
+                out = vm.run("--json", "swap", component, "--slot", slot, "--builder", "host",
+                             timeout=5400, slot=False, cwd=source)
             entry["seconds"] = round(time.monotonic() - started)
             entry["result"] = whole_json(out)
             slots.add(slot)
@@ -324,6 +365,14 @@ def main() -> int:
     ap.add_argument("--swap-from", type=Path, help="the worktree --swap builds from (default: this one)")
     ap.add_argument("--swap-ref", help="the ref the swapped components are built from, for the report "
                     "(default: the --swap-from worktree's HEAD)")
+    ap.add_argument("--artifact-receipt", type=Path, help="same-run verified prebuilt layer receipt")
+    ap.add_argument("--artifact-source", help="exact producing source commit")
+    ap.add_argument("--artifact-builder-image", help="digest-pinned producing CI builder")
+    ap.add_argument("--artifact-run-id", type=int, help="producing workflow API run ID")
+    ap.add_argument("--artifact-run-attempt", type=int)
+    ap.add_argument("--artifact-receipt-sha256", help="receipt hash from authenticated producer output")
+    ap.add_argument("--artifact-tilo-vm", help="the tilo-vm that verifies and imports the artifacts "
+                    "(default: --tilo-vm); it still runs in, and checks, the --swap-from checkout")
     ap.add_argument("--owners", help="area=owner,... to name who each area routes to")
     ap.add_argument("--records", type=Path, help="write the run's performance records here "
                     "(JSON lines, tools/perf/record.py)")
@@ -337,6 +386,21 @@ def main() -> int:
     swaps = [c.strip() for c in (args.swap or "").split(",") if c.strip()]
     swap_from = (args.swap_from or REPO).resolve()
     swap_ref = args.swap_ref or git("rev-parse", "HEAD", repo=swap_from)
+    artifact = None
+    handoff = (args.artifact_receipt, args.artifact_source, args.artifact_builder_image,
+               args.artifact_run_id, args.artifact_run_attempt, args.artifact_receipt_sha256)
+    if args.artifact_tilo_vm and args.artifact_receipt is None:
+        ap.error("--artifact-tilo-vm needs artifact mode")
+    if any(value is not None for value in handoff):
+        if not swaps or any(value is None for value in handoff):
+            ap.error("artifact mode requires swaps and all six --artifact-* identity arguments")
+        expected = identities(args.artifact_source, args.artifact_builder_image,
+                              args.artifact_run_id, args.artifact_run_attempt)
+        if git("rev-parse", "HEAD", repo=swap_from) != expected["source_commit"]:
+            ap.error("artifact source does not match acceptance checkout")
+        artifact = dict(receipt=args.artifact_receipt.resolve(), expected=expected,
+                        sha256=args.artifact_receipt_sha256)
+        verify_artifacts(artifact["receipt"], expected, artifact["sha256"], swaps)
     want_commit = git("rev-parse", args.commit) if args.commit else None
     if args.commit and not want_commit:
         want_commit = args.commit
@@ -356,6 +420,11 @@ def main() -> int:
             sys.exit(f"VM {vm_name} is not in vms.toml")
         disk = Path(entry["image"]).expanduser() if entry.get("image") else None
     vm = TiloVm(binary, vm_name, args.slot, out / "tilo-vm.log")
+    if artifact and args.artifact_tilo_vm:
+        # Exactly the named consumer: no fallback to another tilo-vm on PATH.
+        if not os.access(args.artifact_tilo_vm, os.X_OK) or not Path(args.artifact_tilo_vm).is_file():
+            sys.exit(f"--artifact-tilo-vm {args.artifact_tilo_vm} is not an executable file")
+        artifact["consumer"] = TiloVm(args.artifact_tilo_vm, vm_name, args.slot, out / "tilo-vm.log")
 
     startup_vm = (TiloVm(find_tilo_vm(args.bootstrap_tilo_vm), vm_name, args.slot, out / "tilo-vm.log")
                   if args.bootstrap_tilo_vm else vm)
@@ -404,7 +473,7 @@ def main() -> int:
                 print(f"the slot's logs: {logs}", file=sys.stderr)
             raise
         if swaps:
-            swapped = swap_components(vm, swaps, swap_ref, swap_from)
+            swapped = swap_components(vm, swaps, swap_ref, swap_from, artifact)
             if management:
                 if swapped["commit"] != management["commit"]:
                     raise VmError("management and session swaps have different source commits")
@@ -412,7 +481,7 @@ def main() -> int:
                 swapped["slot_layers"].update(management["slot_layers"])
             facts["provenance"]["swap"] = swapped
         time.sleep(5)
-        facts["renderer"], facts["display"] = renderer(vm)
+        facts["renderer"], facts["display"] = renderer(vm, without_3d=created and not args.gl)
         meta["renderer"], meta["display"] = facts["renderer"], facts["display"]
         config = {"budgets": BUDGETS, "outputs": outputs, "idle_seconds": args.idle_seconds, "locale": "en"}
         ctx = Context(vm, out, config)
@@ -452,6 +521,9 @@ def main() -> int:
         if ctx is not None and ctx.facts.get("session_recovered_after"):
             # The checks after which the harness restarted a session left locked.
             meta["session_recovered_after"] = ctx.facts["session_recovered_after"]
+        if ctx is not None and ctx.facts.get("session_restarted_during"):
+            # Where the slot's session unit restarted on its own: each lost every window.
+            meta["session_restarted_during"] = ctx.facts["session_restarted_during"]
         if ctx is not None and ctx.facts.get("dialog_recovered_after"):
             # The checks that left a dialog open, what it was, and how the harness closed it.
             meta["dialog_recovered_after"] = ctx.facts["dialog_recovered_after"]

@@ -12,6 +12,7 @@
 //! that point fixed on screen — otherwise zooming "to a feature" would feel
 //! like the image sliding away from the pointer.
 
+use crate::num::f32_of_f64;
 use std::collections::HashMap;
 
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -44,17 +45,6 @@ const ZOOM_STEP: f32 = 1.1;
 )]
 fn translated_and_scaled(transform: Affine, x: f64, y: f64, scale: f64) -> Affine {
     transform * Affine::translate((x, y)) * Affine::scale_non_uniform(scale, scale)
-}
-
-/// Narrows a scroll delta (`f64`, from winit's `PixelDelta`) to the `f32`
-/// this widget's zoom math uses. Real trackpad/mouse deltas never
-/// approach `f32`'s range, so this never truncates in practice.
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "scroll deltas are always far below f32's range"
-)]
-fn delta_f32(v: f64) -> f32 {
-    v as f32
 }
 
 /// Pure photo viewport geometry shared by live widgets and immutable History.
@@ -297,7 +287,7 @@ impl Widget for ImageViewer {
                 // platforms that report pixel deltas for trackpads.
                 let scroll_y = match delta {
                     MouseScrollDelta::LineDelta(_, y) => *y,
-                    MouseScrollDelta::PixelDelta(pp) => delta_f32(pp.y) / 100.0,
+                    MouseScrollDelta::PixelDelta(pp) => f32_of_f64(pp.y) / 100.0,
                 };
                 if scroll_y == 0.0 {
                     return;

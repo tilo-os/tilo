@@ -37,8 +37,7 @@ pub fn format_relative(ts_min: i64, now_min: i64) -> String {
 
     if day_diff == 0 {
         // Today → clock time.
-        let mins = ts_min.rem_euclid(1440);
-        format!("{:02}:{:02}", mins / 60, mins % 60)
+        clock(ts_min)
     } else if day_diff == 1 {
         "Yesterday".to_string()
     } else if (0..7).contains(&day_diff) {
@@ -53,14 +52,16 @@ pub fn format_relative(ts_min: i64, now_min: i64) -> String {
 pub fn format_absolute(ts_min: i64) -> String {
     let day = ts_min.div_euclid(1440);
     let (y, mo, d) = civil_from_days(day);
+    format!("{} {}, {}, {}", month_name(mo), d, y, clock(ts_min))
+}
+
+/// The time of day of a minutes-since-epoch timestamp, as the person reads
+/// clocks.
+fn clock(ts_min: i64) -> String {
     let mins = ts_min.rem_euclid(1440);
-    format!(
-        "{} {}, {}, {:02}:{:02}",
-        month_name(mo),
-        d,
-        y,
-        mins / 60,
-        mins % 60
+    ui::clock::hour_minute(
+        ui::num::u32_of_i64(mins / 60),
+        ui::num::u32_of_i64(mins % 60),
     )
 }
 

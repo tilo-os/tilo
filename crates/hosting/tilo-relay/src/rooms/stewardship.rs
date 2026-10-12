@@ -79,6 +79,19 @@ impl Stewardship {
             .map_err(|error| error.to_string())
     }
 
+    /// Open `channel` for this device's own endpoint, which is about to
+    /// write its first record there: create its group when it has none yet,
+    /// with `allowed` admitted as they ask, exactly as the first member's
+    /// request would. Returns the governance messages to publish.
+    #[cfg(feature = "agents")]
+    pub(super) fn open_channel(
+        &mut self,
+        channel: ChannelId,
+        allowed: &BTreeSet<Ed25519PublicKey>,
+    ) -> Result<Vec<NeighbourMsg>, String> {
+        self.reconcile(channel, allowed)
+    }
+
     fn device(&self) -> Ed25519PublicKey {
         Ed25519PublicKey::from_bytes(self.key.verifying_key().to_bytes())
     }

@@ -3,6 +3,7 @@
 //! `on_hover_enter`/`on_hover_leave`/`tick` drive the timing state so the
 //! primitive is unit-testable without a winit event loop or a wall clock.
 
+use crate::num::f32_of_f64;
 use crate::time::{Duration, Instant};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -35,17 +36,6 @@ fn translated(transform: Affine, x: f64, y: f64) -> Affine {
     transform * Affine::translate((x, y))
 }
 
-/// Narrows a screen-space length (`f64`) to the `f32` taffy consumes.
-/// The tooltip's fixed layout size never approaches `f32`'s range, so
-/// this never truncates in practice.
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "tooltip layout dimensions are small fixed constants, far below f32's range"
-)]
-fn px_f32(v: f64) -> f32 {
-    v as f32
-}
-
 /// The chip's size for `label`: wrapped `Caption` text plus the chip's pads.
 pub fn chip_size(label: &str, text_renderer: &mut TextRenderer, theme: &Theme) -> (f64, f64) {
     chip_size_with_width(label, text_renderer, theme, CHIP_MAX_W)
@@ -71,7 +61,7 @@ fn chip_size_with_width(
     theme: &Theme,
     width: f64,
 ) -> (f64, f64) {
-    let content_width = px_f32((width - 2.0 * CHIP_PAD_X).max(0.0));
+    let content_width = f32_of_f64((width - 2.0 * CHIP_PAD_X).max(0.0));
     let (tw, th) =
         text_renderer.measure_style(label, Some(content_width), &theme.text(TextRole::Caption));
     let w = (f64::from(tw) + 2.0 * CHIP_PAD_X).min(width);
@@ -205,7 +195,7 @@ pub fn draw_chip(
     if content.width() <= 0.0 || content.height() <= 0.0 {
         return;
     }
-    let content_width = px_f32(content.width());
+    let content_width = f32_of_f64(content.width());
     let (_, label_h) = text_renderer.measure_style(label, Some(content_width), &text_style);
     scene.push_layer(
         vello::peniko::Fill::NonZero,
@@ -258,9 +248,30 @@ pub fn draw_hover_tooltip_on(
     label: &str,
     viewport: Rect,
 ) {
-    let size = chip_size_in_viewport(label, text_renderer, theme, viewport);
-    let rect = chip_rect_on(anchor.1, anchor.0, size, viewport);
+    let rect = hover_chip_rect_on(text_renderer, theme, anchor, label, viewport);
     draw_chip(scene, transform, text_renderer, theme, rect, label);
+}
+
+/// Where [`draw_hover_tooltip_on`] places the chip for `label`.
+pub fn hover_chip_rect_on(
+    text_renderer: &mut TextRenderer,
+    theme: &Theme,
+    anchor: (Rect, TooltipSide),
+    label: &str,
+    viewport: Rect,
+) -> Rect {
+    let size = chip_size_in_viewport(label, text_renderer, theme, viewport);
+    chip_rect_on(anchor.1, anchor.0, size, viewport)
+}
+
+/// Every pixel [`draw_chip`] can paint for a chip at `rect`: the chip, its
+/// edge and snapping, and the floating shadow under it.
+pub fn chip_paint_bounds(rect: Rect, theme: &Theme) -> Rect {
+    // The chip snaps to whole pixels and strokes its edge on the outline:
+    // two pixels cover both, antialiasing included.
+    let chip = rect.inflate(2.0, 2.0);
+    crate::surface::shadow_bounds(rect, &theme.tokens.elevation.floating)
+        .map_or(chip, |shadow| shadow.union(chip))
 }
 
 use crate::presence::PresenceCtx;
@@ -375,7 +386,7 @@ impl Widget for Tooltip {
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         let (w, h) = if self.is_visible {
-            (px_f32(TOOLTIP_WIDTH), px_f32(TOOLTIP_HEIGHT))
+            (f32_of_f64(TOOLTIP_WIDTH), f32_of_f64(TOOLTIP_HEIGHT))
         } else {
             (0.0, 0.0)
         };
@@ -896,7 +907,7 @@ mod tests {
             );
             let (_, height) = text.measure_style(
                 label,
-                Some(px_f32((rect.width() - 2.0 * CHIP_PAD_X).max(0.0))),
+                Some(f32_of_f64((rect.width() - 2.0 * CHIP_PAD_X).max(0.0))),
                 &theme.text(TextRole::Caption),
             );
             assert!(

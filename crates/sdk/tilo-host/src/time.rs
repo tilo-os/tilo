@@ -21,3 +21,7 @@ pub use tilo_clock::{
 /// A file-system timestamp, as `std::fs::Metadata::modified` reports it, in
 /// the toolkit's [`SystemTime`].
 pub use tilo_clock::from_std as from_file_time;
+
+/// Scoped clock readings used by production-path input and deadline tests.
+#[cfg(feature = "test-support")]
+pub use tilo_clock::testing;

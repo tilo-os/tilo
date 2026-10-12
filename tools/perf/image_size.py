@@ -43,6 +43,23 @@ names in its `org.opencontainers.image.base.digest` label: tilo-vm:main-ci
 moves forward with main, so the nightly measures main's newest image. The
 records carry the image's own source revision as their commit.
 
+`--update-from OLD` adds what an update from OLD to the image downloads: the
+compressed layers the image has and OLD does not (bootc fetches a layer only
+when its digest is new; TIL-747). `--update-only` reads just the two
+manifests, for comparing many pairs of builds quickly:
+
+    python3 tools/perf/image_size.py --image registry.tilo.so/tilo/tilo-ci:main-6503ea1-x86_64 \\
+        --update-from registry.tilo.so/tilo/tilo-ci:main-e88a45c-x86_64 --update-only
+
+`--update-from-previous TEMPLATE` finds OLD itself: the image of the newest
+earlier first-parent commit of the image's revision (read from `--git-dir`)
+that has one, named by TEMPLATE in the image's repository. The nightly records
+that update as `footprint.image.update_bytes.<arch>` (what a device on main's
+previous build downloads), under a ceiling in tools/perf/kpi-budgets.toml:
+
+    python3 tools/perf/image_size.py --dev-base registry.tilo.so/tilo/tilo-vm:main-ci --arch x86_64 \\
+        --update-from-previous 'main-{sha7}-{arch}' --records image.jsonl --runner none
+
 zstd layers need Python 3.14's `compression.zstd` or the `zstd` command. A
 layer that cannot be read fails the run: a size that was not observed is not
 a pass.
@@ -91,9 +108,16 @@ CHUNK = 1 << 20
 RPMDB = "rpmdb.sqlite"
 RPMDBS = ("usr/lib/sysimage/rpm/rpmdb.sqlite", "usr/share/rpm/rpmdb.sqlite", "var/lib/rpm/rpmdb.sqlite")
 TOP = 30
+# How far back --update-from-previous looks for the previous build: Build / OS
+# dev builds main only when OS inputs change, a few times a day.
+PREVIOUS_DEPTH = 400
 
 
 # ---------------------------------------------------------------- sources
+
+
+class NotFound(ValueError):
+    """The registry has no such manifest or blob (HTTP 404)."""
 
 
 class Registry:
@@ -124,6 +148,8 @@ class Registry:
                 return reply
             except urllib.error.HTTPError as error:
                 challenge = error.headers.get("WWW-Authenticate", "")
+                if error.code == 404:
+                    raise NotFound(f"{url}: HTTP 404") from error
                 if error.code != 401 or attempt or not challenge.startswith("Bearer "):
                     raise ValueError(f"{url}: HTTP {error.code}") from error
                 self.token = self.fetch_token(challenge)
@@ -237,10 +263,13 @@ def select_platform(index: dict[str, Any], arch: str | None) -> str:
                  if item.get("platform", {}).get("os", "linux") == "linux"]
     if arch:
         manifests = [item for item in manifests if item.get("platform", {}).get("architecture") == ARCH[arch]]
-    if len(manifests) != 1:
-        raise ValueError(f"the index holds {len(manifests)} linux manifests for {arch or 'any architecture'}; "
+    # buildx's OCI archive names one image once per tag: one descriptor each,
+    # all with the same digest.
+    digests = sorted({item["digest"] for item in manifests})
+    if len(digests) != 1:
+        raise ValueError(f"the index holds {len(digests)} linux manifests for {arch or 'any architecture'}; "
                          "pass --arch")
-    return manifests[0]["digest"]
+    return digests[0]
 
 
 @dataclasses.dataclass
@@ -743,6 +772,65 @@ def report(image: Image, layers: list[Layer], root: Root) -> dict[str, Any]:
     return data
 
 
+def update(image: Image, old: Image) -> dict[str, Any]:
+    """What a device that has `old` downloads to move to `image`: the layers whose digests are new."""
+    have = {item["digest"] for item in old.manifest.get("layers", [])}
+    layers = image.manifest.get("layers", [])
+    new = [item for item in layers if item["digest"] not in have]
+    compressed = sum(int(item["size"]) for item in layers)
+    downloaded = sum(int(item["size"]) for item in new)
+    return {"from": old.reference, "from_revision": old.labels.get("org.opencontainers.image.revision", ""),
+            "layers": len(layers), "new_layers": len(new), "bytes": downloaded, "compressed": compressed,
+            "share": round(downloaded / compressed, 4) if compressed else 0.0}
+
+
+def first_parents(revision: str, git_dir: Path, depth: int) -> list[str]:
+    """`revision` and up to `depth - 1` of its first-parent ancestors, newest first."""
+    if not re.fullmatch(r"[0-9a-f]{40}", revision):
+        raise ValueError(f"the image names no source revision ({revision!r}), so it has no previous build")
+    listed = subprocess.run(["git", "-C", str(git_dir), "rev-list", "--first-parent", f"--max-count={depth}",
+                             revision], capture_output=True, text=True)
+    if listed.returncode != 0:
+        raise ValueError(f"git rev-list {revision} in {git_dir}: {listed.stderr.strip()}")
+    commits = listed.stdout.split()
+    if not commits or commits[0] != revision:
+        raise ValueError(f"{git_dir} does not hold {revision}")
+    return commits
+
+
+def previous_image(image: Image, template: str, commits: list[str],
+                   lookup: Callable[[str], Image | None]) -> Image:
+    """The image of the newest earlier commit in `commits` that has one: what a
+    device on the previous build updates from. `template` names an image by
+    {sha}, {sha7} and {arch}; `lookup` returns None for a name with no image."""
+    for commit in commits[1:]:
+        old = lookup(template.format(sha=commit, sha7=commit[:7], arch=image.arch))
+        if old is not None:
+            return old
+    raise ValueError(f"none of the {len(commits) - 1} commits before {commits[0] if commits else '?'} "
+                     f"has a {template} image")
+
+
+def registry_lookup(image: Image) -> Callable[[str], Image | None]:
+    """Images by tag in `image`'s repository; None where the registry has no such tag."""
+    host, repository, _ = parse_reference(image.reference)
+
+    def lookup(tag: str) -> Image | None:
+        try:
+            return registry_image(f"{host}/{repository}:{tag}", image.arch)
+        except NotFound:
+            return None
+    return lookup
+
+
+def update_markdown(data: dict[str, Any]) -> list[str]:
+    item = data["update"]
+    return ["", "## Update", "",
+            f"From `{item['from']}` (revision `{item['from_revision']}`): {item['new_layers']} of "
+            f"{item['layers']} layers are new, **{item['bytes']:,} B** ({mb(item['bytes'])}, "
+            f"{100 * item['share']:.1f} % of {item['compressed']:,} B)."]
+
+
 def mb(value: int) -> str:
     return f"{value / 1e6:,.1f} MB"
 
@@ -780,9 +868,17 @@ def records(data: dict[str, Any], runner: str, hardware: str, started_at: str) -
            "hardware": hardware, "started_at": started_at,
            "meta": {"image": data["image"], "rust_lto": lto or "unknown",
                     "layers": str(totals["layers"]), "files": str(totals["files"])}}
-    return [record.from_samples(f"footprint.image.{name}.{arch}", "bytes", [totals[key]], **env)
-            for name, key in (("compressed_bytes", "compressed"), ("unique_content_bytes", "unique_content"),
-                              ("redundant_payload_bytes", "redundant_payload"))]
+    items = [record.from_samples(f"footprint.image.{name}.{arch}", "bytes", [totals[key]], **env)
+             for name, key in (("compressed_bytes", "compressed"), ("unique_content_bytes", "unique_content"),
+                               ("redundant_payload_bytes", "redundant_payload"))]
+    if "update" in data:
+        # What a device on the previous build downloads to reach this one.
+        moved = data["update"]
+        meta = {**env["meta"], "update_from": moved["from"], "update_from_revision": moved["from_revision"],
+                "new_layers": str(moved["new_layers"])}
+        items.append(record.from_samples(f"footprint.image.update_bytes.{arch}", "bytes", [moved["bytes"]],
+                                         **{**env, "meta": meta}))
+    return items
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -800,10 +896,25 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--why", action="append", default=[], metavar="PACKAGE",
                         help="print what pulls PACKAGE into the image")
     parser.add_argument("--save-rpmdb", type=Path, help="write the merged root's rpmdb.sqlite here")
+    parser.add_argument("--update-from", metavar="OLD",
+                        help="also report what updating from OLD downloads (a reference or oci:DIR)")
+    parser.add_argument("--update-from-previous", metavar="TEMPLATE",
+                        help="also report the update from the image of the newest earlier first-parent commit "
+                             "that has one, named by TEMPLATE in the image's repository ({sha7}, {sha}, {arch})")
+    parser.add_argument("--git-dir", type=Path, default=Path("."),
+                        help="with --update-from-previous: a checkout holding the image's revision")
+    parser.add_argument("--update-only", action="store_true",
+                        help="with --update-from: read the two manifests only, no layers")
     parser.add_argument("--quiet", action="store_true")
     args = parser.parse_args(argv)
     progress = None if args.quiet else (lambda line: print(line, file=sys.stderr, flush=True))
     try:
+        if args.update_from and args.update_from_previous:
+            raise ValueError("choose --update-from or --update-from-previous")
+        if args.update_only and not (args.update_from or args.update_from_previous):
+            raise ValueError("--update-only needs --update-from or --update-from-previous")
+        if args.update_from_previous and args.oci_layout:
+            raise ValueError("--update-from-previous needs a registry image")
         if args.oci_layout:
             image = layout_image(args.oci_layout, args.arch)
         else:
@@ -815,6 +926,32 @@ def main(argv: list[str] | None = None) -> int:
             image = registry_image(reference, args.arch)
         if args.arch and image.arch != args.arch:
             raise ValueError(f"{image.reference} is {image.arch}, not {args.arch}")
+        moved = None
+        if args.update_from or args.update_from_previous:
+            if args.update_from_previous:
+                commits = first_parents(image.labels.get("org.opencontainers.image.revision", ""),
+                                        args.git_dir, PREVIOUS_DEPTH)
+                old = previous_image(image, args.update_from_previous, commits, registry_lookup(image))
+            elif args.update_from.startswith("oci:"):
+                old = layout_image(Path(args.update_from[4:]), args.arch)
+            else:
+                old = registry_image(args.update_from, args.arch)
+            if old.arch != image.arch:
+                raise ValueError(f"{old.reference} is {old.arch}, {image.reference} is {image.arch}")
+            moved = update(image, old)
+        if args.update_only:
+            assert moved is not None
+            data = {"schema": SCHEMA, "image": image.reference, "manifest_digest": image.manifest_digest,
+                    "architecture": image.arch,
+                    "revision": image.labels.get("org.opencontainers.image.revision", ""), "update": moved}
+            if args.json:
+                args.json.write_text(json.dumps(data, indent=1) + "\n", encoding="utf-8")
+            text = "\n".join([f"# Update to `{image.reference}`", "", *update_markdown(data)[3:]]) + "\n"
+            if args.markdown:
+                args.markdown.write_text(text, encoding="utf-8")
+            if not args.quiet:
+                print(text, end="")
+            return 0
         layers, root = replay(image, progress)
         data = report(image, layers, root)
         rpmdb = root.rpmdb
@@ -822,11 +959,15 @@ def main(argv: list[str] | None = None) -> int:
         chains = {name: why(name, installed) for name in args.why}
         data["why"] = chains
         data["rpmdb_paths"] = sorted(root.kept)
+        if moved is not None:
+            data["update"] = moved
         if args.save_rpmdb and rpmdb:
             args.save_rpmdb.write_bytes(rpmdb)
         if args.json:
             args.json.write_text(json.dumps(data, indent=1) + "\n", encoding="utf-8")
         text = markdown(data, chains)
+        if moved is not None:
+            text += "\n".join(update_markdown(data)) + "\n"
         if args.markdown:
             args.markdown.write_text(text, encoding="utf-8")
         if args.records:

@@ -11,7 +11,6 @@ use std::{
     ffi::OsString,
     io::{self, BufRead, BufReader, Read, Write},
     os::unix::{
-        fs::PermissionsExt,
         net::{UnixListener, UnixStream},
         process::CommandExt,
     },
@@ -683,20 +682,8 @@ pub fn serve<S: RuntimeServices>(profile: &Path, dev: bool) -> io::Result<()> {
     let path = profile.join("native.sock");
     // Session already owns runtime.lock. Only that owner may remove a stale
     // endpoint, and a second --daemon cannot reach this point.
-    match std::fs::symlink_metadata(&path) {
-        Ok(metadata) => {
-            use std::os::unix::fs::FileTypeExt;
-            if !metadata.file_type().is_socket() {
-                return Err(invalid("native runtime endpoint is not a socket"));
-            }
-            std::fs::remove_file(&path)?;
-        }
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-        Err(error) => return Err(error),
-    }
     stages.enter("binding the native endpoint");
-    let listener = UnixListener::bind(&path)?;
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+    let listener = tilo_files::native::private::bind_socket(&path)?;
     if let Some((config, room)) = mcp {
         stages.enter("binding the MCP HTTP endpoint");
         // Computer, viewer and media are scoped to this profile's private

@@ -360,7 +360,7 @@ fn read_fingerprint(path: &Path) -> Result<String, String> {
 /// no key operation is needed.
 pub(crate) fn existing_identity_at(path: &Path) -> Result<MintedIdentity, String> {
     use crate::shell::identity_provisioning::DiskIdentityStore;
-    use ui::widget::identity_flow::IdentityStore as _;
+    use tilo_identity_ceremony::IdentityStore as _;
 
     let record = DiskIdentityStore::at(path)
         .load()
@@ -370,6 +370,24 @@ pub(crate) fn existing_identity_at(path: &Path) -> Result<MintedIdentity, String
         fingerprint: hex::encode(record.threshold_identity.group_public_key),
         path: path.to_path_buf(),
     })
+}
+
+/// Whether the record at `path` carries no secret of the identity: neither a
+/// share in the file nor a reference to one in the secret store. That is the
+/// public record a device holds after joining from another device, whose root
+/// key stays there. An unreadable record counts as holding one, so the ready
+/// screen keeps recommending a backup when in doubt.
+pub(crate) fn holds_no_identity_secret(path: &Path) -> bool {
+    use crate::shell::identity_provisioning::DiskIdentityStore;
+    use tilo_identity_ceremony::IdentityStore as _;
+
+    DiskIdentityStore::at(path)
+        .load()
+        .ok()
+        .flatten()
+        .is_some_and(|record| {
+            record.secret_ref.is_none() && record.threshold_identity.secret_bytes.is_empty()
+        })
 }
 
 #[cfg(test)]

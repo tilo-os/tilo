@@ -869,25 +869,7 @@ impl BarGauge {
 }
 
 impl Widget for BarGauge {
-    fn build_layout(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
-        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        let style = Style {
-            size: Size {
-                width: Dimension::percent(1.0),
-                height: Dimension::length(self.height),
-            },
-            ..Default::default()
-        };
-        taffy.widget_leaf(style, node_map, self)
-    }
-
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
-    }
+    crate::widget::chart_navigation::chart_leaf!();
 
     fn draw(
         &mut self,
@@ -915,10 +897,6 @@ impl Widget for BarGauge {
         "BarGauge"
     }
 
-    fn get_rect(&self) -> Rect {
-        self.rect
-    }
-
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, Role};
         // `label` names it; `value` is the caller's readout when present
@@ -936,10 +914,6 @@ impl Widget for BarGauge {
                 .with_optional_name(name)
                 .with_value(value),
         )
-    }
-
-    fn is_layout_dirty(&self) -> bool {
-        self.rect == Rect::ZERO
     }
 }
 

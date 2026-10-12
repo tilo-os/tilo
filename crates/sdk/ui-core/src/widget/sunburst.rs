@@ -6,11 +6,9 @@
 )]
 
 use crate::widget::ModelPath;
-use std::collections::HashMap;
 use std::f64::consts::{FRAC_PI_2, TAU};
 use std::ops::Range;
 
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Circle, Point, Rect, Stroke};
 use vello::peniko::{Color, Fill};
@@ -20,11 +18,11 @@ use crate::a11y::{AccessNode, AccessState, Role};
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::widget::Widget;
 use crate::widget::chart_labels::format_compact;
 use crate::widget::chart_navigation::{
     ChartNavAction, ChartTouchTracker, InteractiveChart, handle_chart_event, moved_index,
 };
-use crate::widget::{TaffyTreeExt, Widget};
 
 const ARC_STEPS: u32 = 64;
 
@@ -385,7 +383,7 @@ impl SunburstChart {
         let target = colors.surfaces.base;
         let amount = (f64::from(u32::try_from(depth.saturating_sub(1)).unwrap_or(u32::MAX)) * 0.12)
             .min(0.48);
-        crate::tokens::colors::mix8_f64(base, target, amount)
+        crate::tokens::colors::mix8(base, target, crate::num::f32_of_f64(amount))
     }
 }
 
@@ -425,24 +423,8 @@ impl InteractiveChart for SunburstChart {
 }
 
 impl Widget for SunburstChart {
-    fn build_layout(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
-        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        let style = Style {
-            size: Size {
-                width: Dimension::percent(1.0),
-                height: Dimension::length(self.height),
-            },
-            ..Default::default()
-        };
-        taffy.widget_leaf(style, node_map, self)
-    }
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
-    }
+    crate::widget::chart_navigation::chart_leaf!();
+
     #[allow(
         clippy::too_many_lines,
         reason = "the retained draw pass keeps segment, center-label, and tooltip painting together"
@@ -566,7 +548,7 @@ impl Widget for SunburstChart {
                 .with_children(children),
         )
     }
-    fn perform_action_at(
+    fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
         key_path: &[u64],
@@ -586,14 +568,8 @@ impl Widget for SunburstChart {
     fn name(&self) -> &'static str {
         "SunburstChart"
     }
-    fn get_rect(&self) -> Rect {
-        self.rect
-    }
     fn is_focusable(&self) -> bool {
         true
-    }
-    fn is_layout_dirty(&self) -> bool {
-        self.rect == Rect::ZERO
     }
 }
 

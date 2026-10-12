@@ -352,6 +352,24 @@ impl Wakeups {
         self.rate(self.total())
     }
 
+    /// Voluntary switches of the whole tree in the window: how often its
+    /// threads blocked again, which is once per wakeup.
+    pub fn blocking(&self) -> u64 {
+        self.rows.iter().map(|row| row.voluntary).sum()
+    }
+
+    /// The whole tree's voluntary switches per second.
+    ///
+    /// Unlike [`Wakeups::per_second`] this leaves out preemptions. A thread
+    /// preempted while it handles one wakeup has still woken once, and how
+    /// often it is preempted depends on what else the machine runs, so a
+    /// gate on a shared runner that counts them measures the runner too. A
+    /// thread that spins without blocking barely shows here; pair this with
+    /// a bound on [`Wakeups::total_cpu_percent`].
+    pub fn blocking_per_second(&self) -> f64 {
+        self.rate(self.blocking())
+    }
+
     /// Share of one core `ticks` of CPU time are over the window, in percent.
     pub fn cpu_percent(&self, ticks: u64) -> f64 {
         let seconds = self.window.as_secs_f64();
@@ -642,6 +660,12 @@ mod tests {
         assert!(!wakeups.rows.iter().any(|row| row.thread == "gone"));
         assert_eq!(wakeups.threads_started, 1);
         assert_eq!(wakeups.total(), 11);
+        // Without the new worker's one preemption: 4 + 6 over 2 s.
+        assert_eq!(wakeups.blocking(), 10);
+        assert!(
+            (wakeups.blocking_per_second() - 5.0).abs() < 1e-9,
+            "{wakeups}"
+        );
         assert_eq!(wakeups.processes, 1);
         // 4 + 6 ticks of 10 ms over 2 s.
         assert!(

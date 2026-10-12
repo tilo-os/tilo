@@ -21,8 +21,8 @@
 //!   caption) shared across panels.
 //! - [`accounts`] — the **shared external-accounts store** Settings owns
 //!   and Mail / Calendar / file apps consume.
-//! - [`region`] — the **shared region & formats store** (global user
-//!   locale) Settings owns and Sheets / Weather consume.
+//! - the **shared region & formats store** (global user locale) is the
+//!   `tilo-locale` crate: Settings owns it and Sheets / Weather consume it.
 //! - [`prefs`] — the **shared system-preferences store** (device sounds,
 //!   display comfort, pointer/keyboard behaviour, update policy) Settings
 //!   owns and the compositor / update service consume.
@@ -52,14 +52,17 @@
     )
 )]
 
+mod accessibility_settings;
 pub mod account_probe;
 pub mod accounts;
 pub mod categories;
 pub mod resource;
+pub mod row;
 pub mod scenarios;
 pub use os_actions::codec_pack;
 mod continuity;
 mod device_fleet;
+pub(crate) mod device_read;
 pub mod dispatcher;
 pub mod effects;
 pub mod host;
@@ -68,7 +71,7 @@ pub(crate) mod input_sources;
 pub mod keyboard_preview;
 pub mod panes;
 pub mod prefs;
-pub mod region;
+pub(crate) mod radios;
 pub mod search;
 pub mod settings_app;
 pub mod sidebar;
@@ -81,7 +84,7 @@ pub use resource::{Settings, SettingsShell, parse_settings_uri};
 
 /// The app as every host mounts it.
 pub fn definition() -> &'static ui::application::ApplicationDefinition {
-    ui::framework::definition::<SettingsShell>()
+    ui::built_in_definition!(SettingsShell)
 }
 
 #[cfg(test)]

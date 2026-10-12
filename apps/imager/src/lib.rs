@@ -104,11 +104,9 @@
     )
 )]
 
-pub mod actions;
 pub mod app;
 pub mod customize;
 pub mod customize_image;
-pub mod doc;
 pub mod handoff;
 mod helpers;
 mod host;
@@ -125,8 +123,7 @@ pub mod write_setup;
 
 pub use app::ImagerApp;
 pub use model::{
-    Action, Filesystem, InstallMode, InstallProfile, Source, SourceKind, Step, TargetDrive,
-    TargetKind,
+    Action, Filesystem, InstallProfile, Source, SourceKind, Step, TargetDrive, TargetKind,
 };
 
 pub use resource::{Imager, ImagerShell};

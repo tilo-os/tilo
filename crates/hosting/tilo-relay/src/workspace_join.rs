@@ -43,21 +43,39 @@ impl<S> WorkspaceJoinProtocol<S> {
 #[cfg(not(target_arch = "wasm32"))]
 impl<S: WorkspaceJoinService> ProtocolHandler for WorkspaceJoinProtocol<S> {
     async fn accept(&self, connection: iroh::endpoint::Connection) -> Result<(), AcceptError> {
-        let _permit = self.exchanges.clone().try_acquire_owned().map_err(|_| {
-            AcceptError::from_err(std::io::Error::other(
-                "workspace join exchange concurrency limit reached",
-            ))
-        })?;
-        n0_future::time::timeout(EXCHANGE_TIMEOUT, self.exchange(&connection))
-            .await
-            .map_err(|_| {
-                AcceptError::from_err(std::io::Error::new(
-                    std::io::ErrorKind::TimedOut,
-                    "workspace join exchange timed out",
-                ))
-            })?
-            .map_err(|error| AcceptError::from_err(std::io::Error::other(error.to_string())))
+        bounded_accept(
+            &self.exchanges,
+            EXCHANGE_TIMEOUT,
+            "workspace join exchange",
+            self.exchange(&connection),
+        )
+        .await
     }
+}
+
+/// Run one `what` exchange under a slot of `exchanges` and `timeout`,
+/// refusing it outright when every slot is taken.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) async fn bounded_accept<E: std::fmt::Display>(
+    exchanges: &Arc<tokio::sync::Semaphore>,
+    timeout: std::time::Duration,
+    what: &str,
+    exchange: impl Future<Output = Result<(), E>>,
+) -> Result<(), AcceptError> {
+    let _permit = exchanges.clone().try_acquire_owned().map_err(|_| {
+        AcceptError::from_err(std::io::Error::other(format!(
+            "{what} concurrency limit reached"
+        )))
+    })?;
+    n0_future::time::timeout(timeout, exchange)
+        .await
+        .map_err(|_| {
+            AcceptError::from_err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                format!("{what} timed out"),
+            ))
+        })?
+        .map_err(|error| AcceptError::from_err(std::io::Error::other(error.to_string())))
 }
 
 #[cfg(not(target_arch = "wasm32"))]

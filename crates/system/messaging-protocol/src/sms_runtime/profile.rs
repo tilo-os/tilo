@@ -42,7 +42,8 @@ impl SimBinding {
         let sealed = FORMAT
             .seal(key, &bytes)
             .ok_or(Error::ConnectionUnavailable)?;
-        private_fs::write_atomic(path, &sealed).map_err(|_| Error::ConnectionUnavailable)
+        tilo_files::native::private::write_atomic(path, &sealed)
+            .map_err(|_| Error::ConnectionUnavailable)
     }
     /// Resume the exact reviewed physical SIM using a fresh authenticated daemon
     /// owner. No discovery, alternate modem, grant or changed generation is used.
@@ -58,7 +59,7 @@ impl SimBinding {
         if !path.is_absolute() || owner.service != crate::Service::Sms {
             return Err(Error::WrongAccount);
         }
-        let (file, _) = private_fs::open_owned_for_read(path, 8192)
+        let (file, _) = tilo_files::native::private::open_owned_for_read(path, 8192)
             .map_err(|_| Error::ConnectionUnavailable)?;
         let mut blob = Vec::new();
         file.take(8193)

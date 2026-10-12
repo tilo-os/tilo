@@ -5,11 +5,17 @@
 //! history, not the live Wayland selection, until explicitly activated.
 
 mod display_auto_leases;
+mod display_refresh;
+#[cfg(test)]
+mod display_refresh_tests;
 pub(crate) mod person_layout;
 mod receive_recovery;
 mod remote_capture;
 mod spatial_cleanup;
 mod spatial_protocol;
+#[cfg(test)]
+mod spatial_revocation_tests;
+mod spatial_withdrawal;
 mod window_views;
 
 pub use window_views::{WindowViewer, publish_window_views, window_viewers};
@@ -866,6 +872,7 @@ struct OutboundSpatialInput {
 struct SpatialInputState {
     protocol: spatial_protocol::SpatialProtocol,
     cleanup: spatial_cleanup::SpatialCleanup,
+    withdrawals: spatial_withdrawal::SpatialWithdrawals,
     /// Permissions this device issued and must enforce on inbound input.
     issued: BTreeMap<[u8; 16], InputLease>,
     automatic_issued: BTreeMap<crate::shell::personal_continuity::DeviceId, [u8; 16]>,
@@ -1597,7 +1604,11 @@ pub struct LocalFabricCapabilities {
 pub struct DeviceFabricRuntime {
     counter: u64,
     last_sample: Option<Instant>,
+    display_refresh: display_refresh::DisplayRefresh,
     last_publish: Option<Instant>,
+    /// What the display files last said, so a sample that changed nothing
+    /// leaves them (and every watcher of their directory) alone.
+    published_displays: Option<PublishedDisplays>,
     local_fingerprint: Option<[u8; 32]>,
     merged_settings_fingerprint: Option<[u8; 32]>,
     roaming_provenance_fingerprint: Option<[u8; 32]>,
@@ -1614,6 +1625,7 @@ pub struct DeviceFabricRuntime {
     inbound_gamepads: BTreeMap<[u8; 16], InboundGamepadForwarding>,
     local_app_focus: Option<crate::shell::physical_gamepad::PhysicalGamepadBinding>,
     policy: Option<ContinuityPolicySnapshot>,
+    policy_cache: Option<ContinuityPolicySnapshot>,
     policy_store_stamp: Option<SystemTime>,
     last_policy_store_check: Option<Instant>,
 }
@@ -1627,7 +1639,9 @@ impl DeviceFabricRuntime {
         Self {
             counter,
             last_sample: None,
+            display_refresh: display_refresh::DisplayRefresh::new(network.loop_waker()),
             last_publish: None,
+            published_displays: None,
             local_fingerprint: None,
             merged_settings_fingerprint: None,
             roaming_provenance_fingerprint: None,
@@ -1649,6 +1663,7 @@ impl DeviceFabricRuntime {
             inbound_gamepads: BTreeMap::new(),
             local_app_focus: None,
             policy: None,
+            policy_cache: None,
             policy_store_stamp: None,
             last_policy_store_check: None,
         }
@@ -1698,17 +1713,17 @@ impl DeviceFabricRuntime {
     }
 
     fn current_policy(&mut self, now: Instant) -> ContinuityPolicySnapshot {
-        if self.policy.is_some() && self.policy_cache_fresh(now) {
-            return self.policy.unwrap_or_default();
+        if self.policy_cache.is_some() && self.policy_cache_fresh(now) {
+            return self.policy_cache.unwrap_or_default();
         }
         self.last_policy_store_check = Some(now);
         let stamp = settings_store::settings_path()
             .and_then(|path| std::fs::metadata(path).ok()?.modified().ok());
-        if self.policy.is_none() || stamp != self.policy_store_stamp {
-            self.policy = Some(ContinuityPolicySnapshot::load());
+        if self.policy_cache.is_none() || stamp != self.policy_store_stamp {
+            self.policy_cache = Some(ContinuityPolicySnapshot::load());
             self.policy_store_stamp = stamp;
         }
-        self.policy.unwrap_or_default()
+        self.policy_cache.unwrap_or_default()
     }
 
     fn policy_cache_fresh(&self, now: Instant) -> bool {
@@ -1753,6 +1768,15 @@ impl DeviceFabricRuntime {
         selection: &SharedSelection,
         local: LocalFabricCapabilities,
     ) {
+        let changes = self.display_refresh.take_changes(local);
+        if changes.resample {
+            self.last_sample = None;
+        }
+        if changes.policy {
+            // Keep the last enforced policy: teardown compares against it.
+            self.policy_cache = None;
+            self.last_policy_store_check = None;
+        }
         let policy = self.current_policy(Instant::now());
         self.enforce_policy(network, selection, policy);
         // Always drain Bluetooth worker completions. Policy teardown removes
@@ -1803,6 +1827,7 @@ impl DeviceFabricRuntime {
         if policy.permits(ContinuityCapability::Media) {
             self.retry_waiting_media(network);
         }
+        spatial_withdrawal::flush(network);
         if policy.permits(ContinuityCapability::DisplayInput) {
             flush_spatial_input(network);
         }
@@ -1823,7 +1848,7 @@ impl DeviceFabricRuntime {
             crate::shell::mpris::withdraw_handoff_reports();
         }
         let Some((device, label)) = network.local_device_fabric_identity() else {
-            publish_device_displays(network, policy);
+            publish_device_displays(network, policy, &mut self.published_displays);
             return;
         };
         if !self.settings_origin_initialized {
@@ -1884,10 +1909,12 @@ impl DeviceFabricRuntime {
             );
         }
         let fingerprint = local_observation_fingerprint(&candidate, rich_outputs.as_deref());
-        publish_device_displays(network, policy);
-        let heartbeat_due = self
-            .last_publish
-            .is_none_or(|published| now.duration_since(published) >= PRESENCE_HEARTBEAT);
+        // A heartbeat tells the person's connected devices this one is still
+        // here; with none connected it would only rewrite the checkpoint on
+        // disk every beat. The first device to connect gets one at once.
+        let heartbeat_due = self.last_publish.is_none_or(|published| {
+            now.duration_since(published) >= PRESENCE_HEARTBEAT && network.has_personal_routes()
+        });
         if fingerprint != self.local_fingerprint || heartbeat_due {
             self.counter = tentative_stamp.counter;
             if fingerprint == self.local_fingerprint {
@@ -1917,12 +1944,23 @@ impl DeviceFabricRuntime {
             tracing::debug!(%error, "could not publish rich display observations");
         }
         self.merge_remote_state(network, selection, &device, policy);
+        publish_device_displays(network, policy, &mut self.published_displays);
         crate::shell::device_unlock_runtime::refresh(network);
         if policy.permits(ContinuityCapability::WifiSettings)
             && let Err(error) = network.refresh_wifi_credential_recipients()
         {
             tracing::warn!(%error, "could not refresh per-device Wi-Fi credential envelopes");
         }
+    }
+
+    #[cfg(test)]
+    pub(super) fn enforce_policy_for_test(
+        &mut self,
+        network: &ShellNetwork,
+        selection: &SharedSelection,
+        policy: ContinuityPolicySnapshot,
+    ) {
+        self.enforce_policy(network, selection, policy);
     }
 
     fn enforce_policy(
@@ -4015,15 +4053,7 @@ fn apply_spatial_action(
             }
         }
         PersonalFabricAction::InputLeaseRevoked { nonce } => {
-            spatial
-                .received
-                .retain(|device, lease| device != &source || lease.nonce != nonce);
-            if !spatial.received.contains_key(&source) {
-                spatial.received_routes.remove(&source);
-            }
-            spatial
-                .outbound
-                .retain(|input| input.target != source || input.lease_nonce != nonce);
+            spatial.accept_spatial_withdrawal(route, target, nonce);
         }
         action @ (PersonalFabricAction::SpatialInputProtocol { .. }
         | PersonalFabricAction::SpatialInputSequenced { .. }) => {
@@ -6920,10 +6950,16 @@ fn grant_input_control_automatic(
     {
         return Ok(());
     }
-    let renew = spatial_input_state()
-        .lock()
-        .map_err(|_| "spatial input state is unavailable".to_string())?
-        .automatic_needs_grant(controller, unix_now_ms());
+    let Some(route) = network.current_personal_route(controller) else {
+        return Ok(());
+    };
+    let renew = {
+        let spatial = spatial_input_state()
+            .lock()
+            .map_err(|_| "spatial input state is unavailable".to_string())?;
+        !spatial.automatic_route_withdrawn(&route)
+            && spatial.automatic_needs_grant(controller, unix_now_ms())
+    };
     if renew {
         grant_input_control_inner(network, controller, true)?;
     }
@@ -7002,6 +7038,9 @@ fn grant_input_control_inner(
         spatial.issued_routes.insert(nonce, route);
         spatial.issued.insert(nonce, lease.clone());
         spatial.automatic_issued.remove(controller);
+        if !automatic {
+            spatial.resume_controller_explicitly(controller);
+        }
         if automatic {
             spatial.automatic_issued.insert(controller.clone(), nonce);
         }
@@ -7199,6 +7238,7 @@ pub fn queue_spatial_input_cleanup_bound(
 }
 
 pub(super) fn flush_spatial_input(network: &ShellNetwork) {
+    spatial_withdrawal::flush(network);
     spatial_protocol::probe(network);
     for _ in 0..MAX_SPATIAL_INPUT_FLUSH_PER_FRAME {
         let prepared = spatial_input_state().lock().ok().and_then(|mut spatial| {
@@ -7233,6 +7273,41 @@ pub(super) fn flush_spatial_input(network: &ShellNetwork) {
     }
 }
 
+/// One causal native-seat phase. Releases precede every surviving input in a
+/// frame, so an old lease's barrier cannot erase a replacement lease's edge.
+pub(crate) enum SpatialInputBatch {
+    Releases(Vec<crate::shell::personal_continuity::DeviceId>),
+    Inputs(
+        Vec<(
+            crate::shell::personal_continuity::DeviceId,
+            FabricInputEvent,
+        )>,
+    ),
+}
+
+/// Take release barriers and admitted input under one state lock. Revocation
+/// already discards its old queued edges; fresh authority can enqueue afterward.
+pub(crate) fn take_spatial_input_batches() -> [SpatialInputBatch; 2] {
+    spatial_input_state().lock().map_or_else(
+        |_| {
+            [
+                SpatialInputBatch::Releases(Vec::new()),
+                SpatialInputBatch::Inputs(Vec::new()),
+            ]
+        },
+        |mut spatial| spatial.take_native_batches(),
+    )
+}
+
+impl SpatialInputState {
+    fn take_native_batches(&mut self) -> [SpatialInputBatch; 2] {
+        [
+            SpatialInputBatch::Releases(self.release_controllers.drain(..).collect()),
+            SpatialInputBatch::Inputs(self.inbound.drain(..).collect()),
+        ]
+    }
+}
+
 /// Drain input that already passed exact-route, lease, expiry, and capability
 /// validation. The native compositor is the sole consumer.
 pub fn take_spatial_input() -> Vec<(
@@ -7242,16 +7317,6 @@ pub fn take_spatial_input() -> Vec<(
     spatial_input_state().lock().map_or_else(
         |_| Vec::new(),
         |mut spatial| spatial.inbound.drain(..).collect(),
-    )
-}
-
-/// Drain controllers whose target-issued lease was revoked, expired, or lost
-/// with the device. The compositor releases only input actually attributed to
-/// that controller, so cleanup cannot release a sibling controller's keys.
-pub fn take_spatial_input_releases() -> Vec<crate::shell::personal_continuity::DeviceId> {
-    spatial_input_state().lock().map_or_else(
-        |_| Vec::new(),
-        |mut spatial| spatial.release_controllers.drain(..).collect(),
     )
 }
 
@@ -7369,6 +7434,14 @@ pub fn observed_device_displays(
                         device: snapshot.owner.as_str().to_owned(),
                         device_label: snapshot.presence.label.clone(),
                         connector: output.connector.clone(),
+                        output_id: fabric
+                            .display_outputs(&snapshot.owner)
+                            .and_then(|observations| {
+                                observations
+                                    .iter()
+                                    .find(|observed| observed.connector == output.connector)
+                            })
+                            .map(|observed| observed.output.id.clone()),
                         label: output.label.clone(),
                         online: snapshot.presence.online,
                         local: local == Some(&snapshot.owner),
@@ -7385,7 +7458,16 @@ pub fn observed_device_displays(
         .collect()
 }
 
-fn publish_device_displays(network: &ShellNetwork, policy: ContinuityPolicySnapshot) {
+type PublishedDisplays = (
+    settings_store::device_displays::DeviceDisplaySnapshot,
+    settings_store::person_displays::PersonDisplays,
+);
+
+fn publish_device_displays(
+    network: &ShellNetwork,
+    policy: ContinuityPolicySnapshot,
+    published: &mut Option<PublishedDisplays>,
+) {
     person_layout::refresh(network, policy);
     let Ok((publisher_pid, publisher_start_ticks)) = settings_store::hardware::publisher_identity()
     else {
@@ -7414,9 +7496,6 @@ fn publish_device_displays(network: &ShellNetwork, policy: ContinuityPolicySnaps
                     .is_ok_and(|owner| network.current_personal_route(&owner).is_some());
         }
     }
-    if let Err(error) = snapshot.save() {
-        tracing::debug!(%error, "could not publish device display observations");
-    }
     let view = settings_store::person_displays::PersonDisplays {
         schema_version: settings_store::person_displays::SCHEMA_VERSION,
         publisher_pid,
@@ -7429,9 +7508,27 @@ fn publish_device_displays(network: &ShellNetwork, policy: ContinuityPolicySnaps
             .filter(|_| policy.permits(ContinuityCapability::DisplayInput))
             .map_or_else(Vec::new, |local| network.person_display_devices(local)),
     };
-    if let Err(error) = view.save() {
-        tracing::debug!(%error, "could not publish person display observations");
+    if let Some((saved_snapshot, saved_view)) = published.as_ref()
+        && *saved_snapshot == snapshot
+        && *saved_view == view
+    {
+        return;
     }
+    let saved = match snapshot.save() {
+        Ok(()) => true,
+        Err(error) => {
+            tracing::debug!(%error, "could not publish device display observations");
+            false
+        }
+    };
+    let saved = match view.save() {
+        Ok(()) => saved,
+        Err(error) => {
+            tracing::debug!(%error, "could not publish person display observations");
+            false
+        }
+    };
+    *published = saved.then_some((snapshot, view));
 }
 
 fn build_local_snapshot(
@@ -8154,6 +8251,7 @@ fn secure_nonce() -> Option<[u8; 16]> {
 
 fn tear_down_spatial_input(network: &ShellNetwork) {
     if let Ok(mut spatial) = spatial_input_state().lock() {
+        spatial.queue_controller_withdrawals();
         let issued = spatial.issued.values().cloned().collect::<Vec<_>>();
         for lease in issued {
             let _ = network.send_personal_fabric_action(
@@ -8176,6 +8274,7 @@ fn tear_down_spatial_input(network: &ShellNetwork) {
         spatial.inbound.clear();
         spatial.retain_spatial_protocol();
     }
+    spatial_withdrawal::flush(network);
 }
 
 fn tear_down_nearby_transfers(network: &ShellNetwork) {

@@ -78,6 +78,16 @@ impl DesktopSurface {
             .retain(|strip, _| strips.contains(strip));
     }
 
+    /// Take over the pointer from `shown`, the surface this one replaces on
+    /// screen while `shown` is kept for a later return (a workspace switch):
+    /// where the pointer is carries over; a press that began over `shown`
+    /// does not, here or when `shown` comes back.
+    pub fn take_pointer_from(&mut self, shown: &mut Self) {
+        self.navigation.cursor = shown.navigation.cursor;
+        self.navigation.pressed_group = None;
+        shown.navigation.pressed_group = None;
+    }
+
     /// Hosts call this after applying local intents. The tree owns the local
     /// selection; this compositor-independent layer only presents it.
     pub fn sync_navigation(&mut self, tree: &DesktopTree) {

@@ -25,9 +25,9 @@ impl AuxiliaryCaptureFrames {
 /// from becoming the schema for every optional host integration.
 #[cfg_attr(
     not(feature = "native"),
-    allow(
+    expect(
         dead_code,
-        reason = "some fields are read only by the native event-loop runner"
+        reason = "the surface service client, presentations and capture handshake are read only by the native event-loop runner"
     )
 )]
 pub(super) struct FloatingRuntime {
@@ -135,20 +135,13 @@ impl App {
     /// value, masked or shown. Such a frame is withheld from captures like a
     /// protected app's, so a typed password never reaches a screenshot or a
     /// screen share.
-    #[cfg_attr(
-        not(feature = "native"),
-        allow(dead_code, reason = "only the native runner draws frames")
-    )]
+    #[cfg(feature = "native")]
     pub(crate) fn set_secret_on_screen(&mut self, shown: bool) {
         self.floating.secret_on_screen = shown;
     }
 
     /// What the shell should withhold: everything the app asked for, and
     /// any window while it shows a secret.
-    #[cfg_attr(
-        not(feature = "native"),
-        allow(dead_code, reason = "only the native runner draws frames")
-    )]
     #[must_use]
     pub(crate) fn wants_capture_protection(&self) -> bool {
         self.floating.capture_protected

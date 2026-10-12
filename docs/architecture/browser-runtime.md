@@ -129,8 +129,8 @@ time, so they are not compile blockers; they are listed under run-time gaps.
 | 3 | tokio `net` | `runtime-portal` | Moved to `[target.'cfg(unix)']`; only the Unix socket path used it, non-Unix already returned `NotAvailable` | fixed |
 | 4 | tokio `rt-multi-thread` | `tilo-rt` | `daemon()` runtimes are not built on wasm; `app()`, `cpu()` and `io` remain. Positioned I/O gains an `Unsupported` arm | fixed |
 | 5 | OpenMLS refuses wasm without `js` | `channel-crypto` | wasm target dep `openmls/js`; required `getrandom` 0.4.1 → 0.4.3 in `Cargo.lock` | fixed |
-| 6 | `ring`/`rustls` (pairing TLS in `identity_flow`) | `tilo-ui` | As in PR 541: `rustls` and `private-fs` are native-only dependencies; `remote_call` answers `None` in the browser. The bundle no longer contains `ring` or C code | fixed |
-| 7 | No private-file platform | `private-fs` | Third `platform` arm refusing with `Unsupported` | fixed |
+| 6 | `ring`/`rustls` (pairing TLS in `tilo-identity-ceremony`) | `tilo-ui` | As in PR 541: `rustls` and `tilo_files::native::private` are native-only dependencies; `remote_call` answers `None` in the browser. The bundle no longer contains `ring` or C code | fixed |
+| 7 | No private-file platform | `tilo_files::native::private` | Third `platform` arm refusing with `Unsupported` | fixed |
 | 8 | `libc::clock_gettime`; `Url::from_file_path` | `media` | Non-Unix `monotonic_now_ns` reports unreadable (0), as a failed `clock_gettime` did; `path_to_file_uri` returns `Unsupported` | fixed |
 | 9 | `Url::to_file_path` | `tilo-host::portal::to_local_path` | Non-Unix/Windows hosts have no local paths: `None` | fixed |
 | 10 | `web_time::SystemTime` ≠ `std::time::SystemTime` on wasm | `tilo-ui` (settings stamps, signed ops, identity flow) | `ui::time::{to_std, from_std}` — identity on native, epoch arithmetic on the web — at the six crossings | fixed |
@@ -162,7 +162,7 @@ With these, `tilo-ui --no-default-features` and `tilo-relay-client` (iroh
 | Fonts | cosmic-text `fontconfig` finds nothing | Verified product fonts from the manifest loaded as bytes before first frame. |
 | Speech, spellcheck | `tts`, `spellcheck` | *Done.* `NullSpeaker`. The English dictionary is compiled in, so spell checking works in-process; the warm-up thread is skipped on wasm. Other languages would need dictionaries fetched as assets. |
 | Clipboard, pickers, URI, notifications | `HostServices` | *Done* (`src/host_services.rs`, `web/host-services.mjs`). Clipboard: trusted clipboard events plus `execCommand('copy')` for clicked Copy (the async Clipboard API cannot give Cut the synchronous answer it needs). Files: `FilePicker::pick_contents`/`save_contents` (new, with path-reading defaults for native hosts) answered by `<input type=file>` and a download; path pickers refuse. URIs: `window.open` for http/https/mailto/tel only, without an opener. Notifications API with permission requested on first use. |
-| TCP pairing | `identity_flow` | Replaced by relay-mediated certification. |
+| TCP pairing | `tilo-identity-ceremony` | Replaced by relay-mediated certification. |
 
 ### Seams the page installs
 
@@ -795,6 +795,18 @@ than proposed (`AgentProposal::admits`), so an agent never exists without its
 delegation and the host never holds the root. `tilo-relay dev`'s approver
 approves proposals as they come; a production approver shows them.
 
+An agent never confirms an action by its own word. When its grants leave an
+action to the person, the host puts that one invocation to the same approvers
+as a question (`ApproverRequest::Confirmations` lists `PendingConfirmation`s,
+`ApproverRequest::Answer` gives `AllowOnce` or `Deny`); the approver shows it
+as the host's confirmation sheet ("<agent> wants to …, for you"). The agent
+shows it is waiting meanwhile, runs the step only on the witnessed answer, and
+takes no answer within two minutes as a refusal. `tilo-relay dev`'s approver
+allows each once. A Tilo shell that holds the person's root keeps an approver
+session with each host it connects to and shows every question on its own
+confirmation sheet, the one an agent acting for the person on that machine is
+confirmed on.
+
 `Relay::register_agent` verifies the delegation against the host's user:
 
 - The device is refused outside its rooms, at subscribe and on every
@@ -816,9 +828,9 @@ is the same one a page runs.
 - **Joining.** It joins the room's durable and live planes. The host's
   `Ready` follows its replay, so a task never starts on a half-seen room.
 - **Opening an app.** `open(app, record)` holds the record, from the
-  durable changes the host replayed, as a `ui::framework::Participant` of
-  the app's resource kind (`Replica`), as an agent principal holding the
-  editor role. Without a record it creates one (the resource's genesis)
+  durable changes the host replayed, in the app's own view mounted over it
+  and never drawn (`ui::framework::AttachedView`, the participant's
+  `Replica`), as an agent principal holding the editor role. Without a record it creates one (the resource's genesis)
   and publishes it.
 - **Which apps.** `component_apps()` is the browser desktop's registry:
   `tools/web/generate_web_desktop.py` writes the same manifest-derived app
@@ -884,7 +896,11 @@ process. Each agent's participant runs on its own thread with the host's
 model, pumping its session until it stops or the host shuts down. Between
 pumps the thread sleeps until its session or steering changes or its
 presence keep-alive is due, never on an interval; a pump runs a plan's local
-steps back to back for up to 5 ms and at most one model call. Records the
+steps back to back for up to 5 ms. Model calls run on the agent's planner
+thread, so a plan that takes seconds holds back no pump: remote actions,
+presence, pause and stop are taken in meanwhile, and the planner wakes the
+loop the moment the plan is ready. Steps written out in the task (JSON) are
+taken at once, without the planner. Records the
 agent has not opened are held as their documents, history kept and each
 change once, so opening one seeds its replica with exactly what its changes
 made: the shared desktop live, its changes merged once per pump, its tabs
@@ -894,9 +910,11 @@ from room members, so every merge goes through `tilo-automerge-isolate`
 first and none decodes in the host process; a change the isolate refuses is
 dropped, and with no isolate the record does not open. Grants
 (agent key, certificate, delegation) and agents (status, room, task log,
-conversation) are kept in `<state>/agents/agents.json` (owner-only). A
-ticker settles expired grants: the agent stops and the relay refuses its
-device. On start the file is restored: approved grants are registered again,
+conversation) are kept in `<state>/agents/agents.json` (owner-only), written
+when they change (at most every 500 ms). The thread that writes it also
+settles expired grants: the agent stops and the relay refuses its device. It
+sleeps until something changes or the next grant expires, never on an
+interval. On start the file is restored: approved grants are registered again,
 agents that were neither stopped nor failed start again with their queued
 tasks, a task that was running at shutdown is marked failed, paused agents
 come back paused, a grant still waiting for its approver is denied.
@@ -961,14 +979,14 @@ user may steer; an agent caller is refused.
 |---|---|---|
 | capabilities, list | `agents#status` | `AgentsStatus {agents: AgentInfo[], grants: AgentGrant[]}` |
 | `spawnAgent({name, task, grantSetId})` | `agents#spawn` `{grant, task}` | `{agentId, taskId}` |
-| grant picker | `agents#request-grant` `{label, rooms, apps, expiresInSecs, color?, mayConfirm?}` | `{grant, pairingCode}` |
+| grant picker | `agents#request-grant` `{label, rooms, apps, expiresInSecs, color?}` | `{grant, pairingCode}` |
 | revoke | `agent:<id>#revoke` | `{}` |
 | `sendMessage(agentId, text)` | `agent:<id>#message` (text) | `{taskId}` |
 | `stopTask` | `agent:<id>#stop` | `{}` |
 | (new) pause, resume | `agent:<id>#pause`, `#resume` | `{}` |
 
 `AgentGrant` carries `state` (`pending|approved|denied|expired|revoked`),
-`color`, `expiresAtMs`, `mayConfirm`, and the `pairingCode` while pending.
+`color`, `expiresAtMs`, and the `pairingCode` while pending.
 `AgentInfo` carries `status` (`starting|running|waiting|paused|stopped|failed`), `room`,
 `tasks[]` (`queued|running|completed|failed|cancelled`, each with the app
 actions it performed), the conversation, the activity line, the device
@@ -982,7 +1000,7 @@ key (the live publisher of its cursor) and the delegation.
 interface Agents {                       // certifiedPeer.agents (web/agents.mjs)
   status(): Promise<AgentsStatus>;
   requestGrant(input: {label: string; rooms: string[]; apps: string[]; expiresInSecs: number;
-    color?: string; mayConfirm?: boolean}): Promise<{grant: string; pairingCode: string}>;
+    color?: string}): Promise<{grant: string; pairingCode: string}>;
   spawn(input: {grant: string; task: string; room?: string}): Promise<{agentId: string; taskId: string}>;
   message(agentId: string, text: string): Promise<{taskId: string}>;
   pause(agentId: string): Promise<void>;
@@ -1084,7 +1102,7 @@ browser runtime. Parts that work on `main`'s APIs were ported, renamed
 | `scripts/build.sh` | `scripts/build.sh` | MoQ bundle dropped; optional `--wasm-opt`; fonts from the manifest's `browser_startup` flags |
 | `tilo-ui` `ime.rs`, `headless.rs` frame API, `image_store.rs` host factory | same files | Ported onto `main`'s `FrameHarness`; 541-only system-search and caller-palette branches left out |
 | `tilo-ui` browser fonts (`font_catalog.rs`, `text_render.rs`, `query_text.rs`, `name_field.rs`, `rich_text_editor.rs`, manifest, `tilo-font-catalog`) | same files | Patch applied; `richtext.rs` browser-emoji entry points hand-ported without 541's paragraph chunking and layout reuse |
-| `tilo-ui` rustls/`private-fs` exclusion, `tilo-user-identity` `persist` exclusion, `channel-crypto` `openmls/js`, wasm entropy deps | same | Ported; `tilo-ui` gating otherwise stays feature-based (`native`/`broker-transport` add `tokio/full`) |
+| `tilo-ui` rustls/`tilo_files::native::private` exclusion, `tilo-user-identity` `persist` exclusion, `channel-crypto` `openmls/js`, wasm entropy deps | same | Ported; `tilo-ui` gating otherwise stays feature-based (`native`/`broker-transport` add `tokio/full`) |
 
 ## Deliberately not taken
 

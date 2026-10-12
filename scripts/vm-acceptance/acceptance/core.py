@@ -8,6 +8,7 @@ import traceback
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from . import session_unit
 from .vm import VmError, wait_until
 
 # Who fixes what: each area's failures are routed to its owner.
@@ -70,6 +71,9 @@ def run_check(ctx, chk: Check) -> Result:
     res = Result(chk.id, chk.area, chk.title)
     started = time.monotonic()
     ctx.current = res
+    if "session_unit" not in ctx.facts:
+        ctx.facts["session_unit"] = session_unit.show(ctx)
+        ctx.facts["session_requested"] = getattr(ctx.vm, "requested_restarts", 0)
     try:
         for need in chk.needs:
             if not ctx.facts.get(need):
@@ -89,6 +93,10 @@ def run_check(ctx, chk: Check) -> Result:
         (ctx.out / "errors" / f"{chk.id}.txt").write_text(traceback.format_exc())
     leave_unlocked(ctx, chk, res)
     leave_no_dialog(ctx, chk, res)
+    restarted = session_restart(ctx, chk.id)
+    if restarted:
+        res.status = "fail"
+        res.detail = _join(res.detail, restarted)
     res.seconds = round(time.monotonic() - started, 2)
     ctx.current = None
     return res
@@ -118,6 +126,46 @@ def leave_unlocked(ctx, chk: Check, res: Result) -> None:
                                        f"{exc.reason()}")
         return
     res.detail = _join(res.detail, f"{LEFT_LOCKED}; the harness restarted the slot session")
+
+
+SESSION_RESTARTED = "the slot's desktop session restarted on its own"
+
+
+def session_restart(ctx, during: str) -> str | None:
+    """Why the check fails if the slot's session ended on its own since the last reading
+    (`acceptance/session_unit.py`): every window was lost, and nothing the check measured
+    after it is about the session it started in. Writes what the ended run left behind as
+    `data/<check>-<n>-session-restart.log` once per ending; None while the session is the
+    one the last reading saw, the harness asked for the restart (`TiloVm.restart_session`),
+    or the unit cannot be read (P03 reports that)."""
+    fields = session_unit.show(ctx)
+    before = ctx.facts.get("session_unit")
+    requested = getattr(ctx.vm, "requested_restarts", 0)
+    asked = requested != ctx.facts.get("session_requested", requested)
+    if fields is not None:
+        ctx.facts["session_unit"] = fields
+    ctx.facts["session_requested"] = requested
+    ended, ctx.facts["session_pending"] = session_unit.ended_on_its_own(
+        before, fields, asked, ctx.facts.get("session_pending", False))
+    if not ended:
+        return None
+    seen = ctx.facts.setdefault("session_restarted_during", [])
+    seen.append(during)
+    where, how = session_unit.dump(ctx, f"{ctx.current.id if ctx.current is not None else 'run'}-{len(seen)}",
+                                   fields)
+    return (f"{SESSION_RESTARTED} during {during}: {how}, and systemd starts "
+            f"{session_unit.unit(ctx.vm.slot)} again with every window gone; what the ended run "
+            f"left: {where}")
+
+
+def adopt_session(ctx) -> None:
+    """Take the slot session as it is now as the guard's baseline: for a check that ends
+    the session on purpose, the way a crash would (A17), once it has recovered. Counted in
+    `session_restarts_caused`, so P03 does not report that restart either."""
+    ctx.facts["session_restarts_caused"] = ctx.facts.get("session_restarts_caused", 0) + 1
+    ctx.facts["session_unit"] = session_unit.show(ctx)
+    ctx.facts["session_requested"] = getattr(ctx.vm, "requested_restarts", 0)
+    ctx.facts["session_pending"] = False
 
 
 LEFT_OPEN = "left a dialog open"
@@ -510,6 +558,36 @@ def _to_submit_us(r: dict) -> int:
                if isinstance(r.get(k), int))
 
 
+def paint_reasons(r: dict) -> set[str]:
+    """The reasons the compositor painted this tick (its `paint_reasons` column)."""
+    return {x for x in str(r.get("paint_reasons") or "").split("+") if x}
+
+
+def tick_phases(r):
+    """Where one tick's time went (wall ms per loop phase; `cpu_ms` is the loop
+    thread's CPU), so a stall names the phase it stalled in."""
+    if r is None:
+        return None
+    phases = {k[:-3] + "_ms": _ms(r[k]) for k in ("input_us", "pump_us", "layout_us", "scene_us",
+                                                  "submit_us", "clients_us")
+              if isinstance(r.get(k), int)}
+    cpu = _ms(r["cpu_us"]) if isinstance(r.get("cpu_us"), int) else None
+    return {"seq": r.get("seq"), "cpu_ms": cpu, **phases, "input_step": r.get("input_step") or "",
+            "paint_reasons": r.get("paint_reasons") or ""}
+
+
+def describe_phases(t) -> str:
+    """`tick_phases` as a sentence fragment, slowest phase first."""
+    if not t:
+        return ""
+    phases = sorted(((k[:-3], v) for k, v in t.items() if k.endswith("_ms") and k != "cpu_ms"
+                     and isinstance(v, (int, float)) and v), key=lambda kv: -kv[1])
+    text = ", ".join(f"{k} {v} ms" for k, v in phases)
+    step = f"; slowest input step {t['input_step']}" if t.get("input_step") else ""
+    why = f"; painted for {t['paint_reasons']}" if t.get("paint_reasons") else ""
+    return f" (tick {t.get('seq')}: {text} wall{step}{why})"
+
+
 def transition_stats(rows: list[dict]) -> dict:
     """One transition, from the first tick that wanted a frame to the last.
 
@@ -533,17 +611,26 @@ def transition_stats(rows: list[dict]) -> dict:
     # frame painted before that carries a deadline from before the previous frame. From
     # whichever is later, the previous submit or the end of the last park behind a full
     # presenter, the rest is the compositor's. The first frame is judged as input latency.
-    late = []
+    # `late_cpu` bounds each frame's lateness by the CPU its tick spent: the part of
+    # the lateness that was the compositor's own work rather than the loop thread
+    # waiting for a CPU (on a software renderer the rasteriser's threads compete for
+    # them) or blocked.
+    late, late_cpu = [], []
     prev_submit, ready = None, None
     for x, nxt in zip(rows, rows[1:] + [None]):
         if x.get("painted") == 1 and isinstance(x.get("deadline_late_us"), int):
             submit = x["start_us"] + _to_submit_us(x)
             if prev_submit is not None:
-                late.append(max(0, min(x["deadline_late_us"], submit - max(prev_submit, ready or 0))))
+                value = max(0, min(x["deadline_late_us"], submit - max(prev_submit, ready or 0)))
+                late.append(value)
+                if isinstance(x.get("cpu_us"), int):
+                    late_cpu.append(min(value, x["cpu_us"]))
             prev_submit, ready = submit, None
         elif x.get("backpressured") == 1 and nxt is not None:
             ready = nxt["start_us"]
     cpu = [r["cpu_us"] for r in rows if isinstance(r.get("cpu_us"), int)]
+    worst = max((r for r in rows if isinstance(r.get("cpu_us"), int)), key=lambda r: r["cpu_us"],
+                default=None)
     # The longest tick by wall time outside its park, and how much of that was CPU.
     longest = max(((wall, r) for r, wall in walls), key=lambda t: t[0], default=(None, {}))
     input_ms = input_compositor_ms = None
@@ -568,6 +655,12 @@ def transition_stats(rows: list[dict]) -> dict:
         "late_judged": len(late),
         "late_ms_p95": _ms(percentile(late, 95)),
         "late_ms_max": _ms(max(late) if late else None),
+        "late_cpu_ms_p95": _ms(percentile(late_cpu, 95)),
+        # Why each frame painted (the compositor's paint_reasons column; absent from
+        # traces of compositors that predate it).
+        "reasons_recorded": any("paint_reasons" in r for r in painted),
+        "transition_frames": sum("transition" in paint_reasons(r) for r in painted),
+        "cpu_max_tick": tick_phases(worst),
         "cpu_ms_p95": _ms(percentile(cpu, 95)),
         "cpu_ms_max": _ms(max(cpu) if cpu else None),
         "longest_tick_ms": _ms(longest[0]),
@@ -739,10 +832,27 @@ def processes(ctx) -> dict:
 # mappings by Anonymous kB: one `[heap]` or a run of 64 MiB-aligned `[anon]` regions
 # (glibc arenas) reads differently from one GPU buffer that doubled. Tilo's own kernel
 # has no smaps (CONFIG_PROC_PAGE_MONITOR=n, os/kernel/config-fragments/tilo.config), so
-# there only the status lines exist.
+# there only the status lines exist. Its shmem is read by fd instead: per memfd, dma-buf,
+# DRM and /dev/shm fd, its size and the bytes allocated to it (`stat -L` through the fd:
+# a memfd's st_blocks are its shmem pages, mapped or not), and from fdinfo a dma-buf's
+# size and exporter and a DRM fd's GEM totals. Shmem the compositor's cgroup holds that
+# nothing maps (TIL-731) is named here.
 SHELL_MEMORY = r'''
 pid=__PID__
 awk '/^(VmRSS|RssAnon|RssFile|RssShmem|VmSwap|Threads):/ {print "S", $1, $2}' /proc/$pid/status
+for fd in /proc/$pid/fd/*; do
+  target=$(readlink "$fd" 2>/dev/null) || continue
+  case "$target" in
+    /memfd:*|anon_inode:dmabuf*|/dmabuf:*|/dev/dri/*|/dev/udmabuf|/dev/shm/*) ;;
+    *) continue ;;
+  esac
+  n=${fd##*/}
+  sizes=$(stat -L -c '%s %b %B' "$fd" 2>/dev/null || echo '- - -')
+  info=$(awk '$1 ~ /^(size|exp_name|drm-driver|drm-total-[a-z0-9-]+|drm-resident-[a-z0-9-]+):$/ {
+              sub(/:$/, "", $1); v = $2; for (i = 3; i <= NF; i++) v = v "_" $i; printf "%s=%s ", $1, v}' \
+            "/proc/$pid/fdinfo/$n" 2>/dev/null)
+  printf 'F\t%s\t%s\t%s\t%s\n' "$n" "$sizes" "$info" "$target"
+done
 [ -d /proc/$pid ] && [ ! -e /proc/$pid/smaps_rollup ] && echo "PAGE-MONITOR no" && exit 0
 awk 'NR > 1 && $3 == "kB" {print "R", $1, $2}' /proc/$pid/smaps_rollup
 awk '/^[0-9a-f]+-[0-9a-f]+ / {range = $1; name = "[anon]"; if (NF >= 6) {name = $6; for (i = 7; i <= NF; i++) name = name " " $i}}
@@ -750,16 +860,54 @@ awk '/^[0-9a-f]+-[0-9a-f]+ / {range = $1; name = "[anon]"; if (NF >= 6) {name = 
 '''
 
 
+def _shm_fd(f: list[str]) -> dict | None:
+    """One `F` line, split on tabs: fd, `size blocks block_size`, fdinfo `key=value`s, target."""
+    sizes = f[2].split()
+    if not f[1].isdigit() or len(sizes) != 3:
+        return None
+    size, blocks, unit = (int(v) if v.isdigit() else None for v in sizes)
+    target = f[4]
+    kind = ("memfd" if target.startswith("/memfd:") else "dmabuf" if "dmabuf" in target
+            else "drm" if target.startswith("/dev/dri/") else "udmabuf" if target == "/dev/udmabuf"
+            else "shm")
+    name = target.removeprefix("/memfd:").removesuffix(" (deleted)") if kind == "memfd" else target
+    return {"fd": int(f[1]), "kind": kind, "name": name, "size_bytes": size,
+            "allocated_bytes": blocks * unit if blocks is not None and unit is not None else None,
+            "fdinfo": dict(kv.split("=", 1) for kv in f[3].split() if "=" in kv)}
+
+
+def shm_by_name(fds: list[dict]) -> dict:
+    """The compositor's memfds and /dev/shm files summed by name: how many, their size and
+    the shmem allocated to them, in MiB, largest allocation first."""
+    out: dict[str, dict] = {}
+    for f in fds:
+        if f["kind"] not in ("memfd", "shm") or f["allocated_bytes"] is None:
+            continue
+        o = out.setdefault(f["name"], {"count": 0, "size_mib": 0.0, "allocated_mib": 0.0})
+        o["count"] += 1
+        o["size_mib"] = round(o["size_mib"] + (f["size_bytes"] or 0) / 2**20, 1)
+        o["allocated_mib"] = round(o["allocated_mib"] + f["allocated_bytes"] / 2**20, 1)
+    return dict(sorted(out.items(), key=lambda kv: -kv[1]["allocated_mib"]))
+
+
 def parse_shell_memory(text: str) -> dict:
-    """`SHELL_MEMORY` output -> {"status_kib", "smaps_rollup_kib", "top_anon_mappings"}."""
-    status, rollup, top = {}, {}, []
+    """`SHELL_MEMORY` output -> {"status_kib", "smaps_rollup_kib", "top_anon_mappings",
+    "shm_fds", "shm_by_name"}."""
+    status, rollup, top, fds = {}, {}, [], []
     for line in text.splitlines():
+        if line.startswith("F\t"):
+            parts = line.split("\t", 4)
+            fd = _shm_fd(parts) if len(parts) == 5 else None
+            if fd:
+                fds.append(fd)
+            continue
         f = line.split()
         if len(f) >= 3 and f[0] in ("S", "R") and f[2].isdigit():
             (status if f[0] == "S" else rollup)[f[1].rstrip(":")] = int(f[2])
         elif len(f) >= 4 and f[0] == "A" and f[1].isdigit():
             top.append({"anon_kib": int(f[1]), "range": f[2], "name": " ".join(f[3:])})
-    return {"status_kib": status, "smaps_rollup_kib": rollup, "top_anon_mappings": top}
+    return {"status_kib": status, "smaps_rollup_kib": rollup, "top_anon_mappings": top,
+            "shm_fds": fds, "shm_by_name": shm_by_name(fds)}
 
 
 def shell_memory(ctx, pid: int) -> dict:

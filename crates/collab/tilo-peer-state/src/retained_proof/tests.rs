@@ -1,6 +1,7 @@
 use super::*;
 use crate::{NeighbourMsg, SeedDocument, SeedState, StatePeer, peer_handle, seed_room};
 use automerge::{AutoCommit, ROOT, transaction::Transactable};
+use collab_types::CommitNamed as _;
 use collab_types::{DocumentMutation, SignedOp};
 use ed25519_dalek::SigningKey;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
@@ -27,6 +28,7 @@ fn fixture() -> (SigningKey, RetentionAuthority, StatePeer, SystemTime) {
     let mut peer = StatePeer::new(ROOM, cert.clone(), vec![], RevocationList::new(), now).unwrap();
     let mut doc = AutoCommit::new();
     doc.put(ROOT, "value", "initial").unwrap();
+    doc.commit_edit("fixture", "value");
     let bytes = doc.save();
     peer.install_seed(
         SeedState {
@@ -94,7 +96,7 @@ fn signed(
         collab_types::document_artifact_id(APP, ROOM, "one"),
         collab_types::Ed25519PublicKey::from_bytes(source),
         collab_types::document_attestation_id(APP, ROOM, "one"),
-        collab_types::OpClass::Splice,
+        collab_types::OpKind::Change,
         now,
         seq,
     );
@@ -545,7 +547,7 @@ fn exact_coverage_receipt_hash_heads_watermarks_required() {
                 automerge::ScalarValue::Bytes(bytes),
             )
             .unwrap();
-            doc.commit();
+            doc.commit_edit("fixture", "fixture");
         }
         let (channel, body) = encoded(&room_message(&mut doc));
         if let Ok(room) = verify_room(
@@ -579,7 +581,7 @@ fn causal_tail_coverage_is_distinct_from_floor_safety_and_foreign_retirement() {
     let mut branch = AutoCommit::load(&peer.document(APP, "one").unwrap()).unwrap();
     let heads = branch.get_heads();
     branch.put(ROOT, "uncovered", true).unwrap();
-    branch.commit();
+    branch.commit_edit("fixture", "uncovered");
     let bytes: Vec<u8> = branch
         .get_changes(&heads)
         .iter()
@@ -760,7 +762,7 @@ fn hostile_tail_is_rejected_without_in_process_decode() {
     let mut branch = AutoCommit::load(&peer.document(APP, "one").unwrap()).unwrap();
     let heads = branch.get_heads();
     branch.put(ROOT, "next", true).unwrap();
-    branch.commit();
+    branch.commit_edit("fixture", "next");
     let valid = branch.save_after(&heads);
     assert_eq!(valid[8], 1, "the tail is one change chunk");
 

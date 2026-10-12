@@ -253,7 +253,9 @@ pub struct ElfFacts {
     pub toolchain: Option<String>,
 }
 
-/// The facts of the first ELF file under `tree`, in path order.
+/// Prefer the first ELF with embedded Rust compiler facts, in path order.
+/// Native dependencies may sort before the authored Rust runtime. Keep the
+/// first ELF as a fallback for components containing only native C binaries.
 pub fn first_elf(tree: &Path) -> Option<ElfFacts> {
     let mut entries: Vec<PathBuf> = std::fs::read_dir(tree)
         .ok()?
@@ -261,16 +263,28 @@ pub fn first_elf(tree: &Path) -> Option<ElfFacts> {
         .map(|e| e.path())
         .collect();
     entries.sort();
-    entries.into_iter().find_map(|path| {
-        let meta = std::fs::symlink_metadata(&path).ok()?;
-        if meta.is_dir() {
+    let mut first = None;
+    for path in entries {
+        let Ok(meta) = std::fs::symlink_metadata(&path) else {
+            continue;
+        };
+        let facts = if meta.is_dir() {
             first_elf(&path)
         } else if meta.is_file() {
-            elf_facts(&std::fs::read(&path).ok()?)
+            std::fs::read(&path)
+                .ok()
+                .and_then(|bytes| elf_facts(&bytes))
         } else {
             None
+        };
+        if let Some(facts) = facts {
+            if facts.toolchain.is_some() {
+                return Some(facts);
+            }
+            first.get_or_insert(facts);
         }
-    })
+    }
+    first
 }
 
 /// Machine and rustc of a little-endian ELF64 file; `None` for anything else.
@@ -644,6 +658,67 @@ mod tests {
                 Some(format!("{}-unknown-linux-gnu", std::env::consts::ARCH))
             );
         }
+    }
+
+    #[test]
+    fn native_layer_facts_find_rust_runtime_after_c_dependencies() {
+        let dir = tempfile::tempdir().unwrap();
+        let dependency = dir.path().join("usr/lib/tilo-runtime/00-deps");
+        let runtime = dir.path().join("usr/lib/tilo-runtime/zz-runtime");
+        std::fs::create_dir_all(&dependency).unwrap();
+        std::fs::create_dir_all(&runtime).unwrap();
+        std::fs::write(
+            dependency.join("libnative.so"),
+            elf(0x3e, b"GCC: (GNU) 16\0"),
+        )
+        .unwrap();
+        // This is the same reader that builderlayer::pack uses. With only the
+        // dependency, it must not fabricate a compiler from the build host.
+        assert_eq!(
+            first_elf(dir.path()),
+            Some(ElfFacts {
+                target: Some("x86_64-unknown-linux-gnu".into()),
+                toolchain: None,
+            })
+        );
+        std::fs::write(
+            runtime.join("libtilo_runtime.so"),
+            elf(0x3e, b"rustc version 1.98.0 (88d9e12ae 2026-08-18)\0"),
+        )
+        .unwrap();
+        let facts = first_elf(dir.path()).unwrap();
+        assert_eq!(
+            facts,
+            ElfFacts {
+                target: Some("x86_64-unknown-linux-gnu".into()),
+                toolchain: Some("rustc 1.98.0 (88d9e12ae 2026-08-18)".into()),
+            }
+        );
+        // Carry the observed facts through the maintained full-stream writer,
+        // just as builderlayer::pack does, and verify the complete footer.
+        let mut bytes = Vec::new();
+        crate::builderlayer::write_layer(
+            dir.path(),
+            crate::builderlayer::Packed {
+                component: "apps+runtime".into(),
+                target: facts.target.clone(),
+                toolchain: facts.toolchain.clone(),
+                source_digest: Some("a".repeat(64)),
+                ..crate::builderlayer::Packed::default()
+            },
+            &[],
+            &mut bytes,
+        )
+        .unwrap();
+        let mut stream = crate::builderlayer::Stream::new(std::io::Cursor::new(bytes));
+        let packed = stream.header(&mut Vec::new()).unwrap();
+        assert_eq!(packed.component, "apps+runtime");
+        assert_eq!(packed.target, facts.target);
+        assert_eq!(packed.toolchain, facts.toolchain);
+        assert!(!packed.reused);
+        assert!(packed.layer_hash.is_some());
+        std::io::Read::read_to_end(&mut stream, &mut Vec::new()).unwrap();
+        stream.finish().unwrap();
     }
 
     /// Packing keeps /usr and symlinks, and sccache JSON totals parse.

@@ -23,9 +23,7 @@ use std::rc::Rc;
 use std::sync::{Arc, RwLock};
 use taffy::style_helpers::percent;
 use taffy::{NodeId, Style, TaffyTree};
-use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
-use winit::event::WindowEvent;
+use vello::kurbo::Rect;
 
 /// Directory of live `*.json` screen graphs. When set, graph apps load and
 /// hot-reload screens from disk instead of the embed baked by `include_str!`.
@@ -1431,8 +1429,8 @@ impl LiveUi {
     )]
     fn graph_resource(&self) -> crate::tilo_actions::Resource {
         use crate::tilo_actions::{
-            ActionContract, ActionParam, ActionSpec, DiscoveryScope, EncodedAction, OperationKind,
-            ParamType, Resource, ResultSpec,
+            ActionContract, ActionParam, ActionSpec, EncodedAction, OperationKind, ParamType,
+            Resource, ResultSpec,
         };
         let id = self.seen_document.root.id();
         let mut resource = Resource::new(
@@ -1468,7 +1466,6 @@ impl LiveUi {
             },
         );
         apply.contract = ActionContract {
-            discovery: DiscoveryScope::Launchable,
             result: ResultSpec::None,
             ..ActionContract::default()
         };
@@ -1585,55 +1582,10 @@ impl Widget for LiveUi {
         crate::widget::TaffyTreeExt::widget_node(taffy, filling(), &[child], node_map, self)
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
-        if let Ok(children) = taffy.children(node)
-            && let Some(child) = children.first()
-        {
-            self.child
-                .apply_layout(taffy, *child, Point::new(self.rect.x0, self.rect.y0));
-        }
-    }
-
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut crate::text_render::TextRenderer,
-        theme: &Theme,
-        presence: &crate::presence::PresenceCtx,
-    ) {
-        self.child
-            .draw(scene, transform, text_renderer, theme, presence);
-    }
-
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
-        if let Ok(children) = ctx.taffy.children(ctx.node_id)
-            && let Some(child) = children.first()
-        {
-            self.child
-                .handle_event(event, &mut ctx.reborrow(ctx.path, *child));
-        }
-    }
-
-    fn children(&self) -> Vec<&dyn Widget> {
-        vec![self.child.as_ref()]
-    }
-
-    fn for_each_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) {
-        visitor(self.child.as_ref());
-    }
-
-    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        vec![self.child.as_mut()]
-    }
+    crate::forward_to_child!(child, rect);
 
     fn name(&self) -> &'static str {
         "LiveUi"
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
     }
 
     fn take_structure_dirty(&mut self) -> bool {
@@ -1677,25 +1629,6 @@ impl Widget for LiveUi {
         };
         self.invoke_graph_operation(request.type_id, request.payload)
             .map(|output| Some(crate::widget::ResourceOperationStart::Completed(output)))
-    }
-
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut crate::text_render::TextRenderer,
-        theme: &Theme,
-        presence: &crate::presence::PresenceCtx,
-        permissions: &crate::permissions::PermissionContext,
-    ) {
-        self.child.draw_with_presence(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            presence,
-            permissions,
-        );
     }
 }
 
@@ -1820,17 +1753,14 @@ fn focused_widget_snapshot(widget: &dyn Widget) -> Option<(String, Option<String
 }
 
 fn restore_widget_focus(widget: &mut dyn Widget, id: &str, state: Option<&str>) -> bool {
-    if widget.test_id() == Some(id) {
-        widget.set_focus(true);
-        if let Some(state) = state {
-            crate::undo::set_state(widget, state);
-        }
-        return true;
+    let Some(widget) = crate::widget::find_test_id_mut(widget, id) else {
+        return false;
+    };
+    widget.set_focus(true);
+    if let Some(state) = state {
+        crate::undo::set_state(widget, state);
     }
-    widget
-        .children_mut()
-        .into_iter()
-        .any(|child| restore_widget_focus(child, id, state))
+    true
 }
 
 #[derive(Clone, Copy)]
@@ -3207,48 +3137,7 @@ impl Widget for UiGraphEditor {
         crate::widget::TaffyTreeExt::widget_node(taffy, filling(), &[child], node_map, self)
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
-        if let Ok(children) = taffy.children(node)
-            && let Some(child) = children.first()
-        {
-            self.child
-                .apply_layout(taffy, *child, Point::new(self.rect.x0, self.rect.y0));
-        }
-    }
-
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut crate::text_render::TextRenderer,
-        theme: &Theme,
-        presence: &crate::presence::PresenceCtx,
-    ) {
-        self.child
-            .draw(scene, transform, text_renderer, theme, presence);
-    }
-
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
-        if let Ok(children) = ctx.taffy.children(ctx.node_id)
-            && let Some(child) = children.first()
-        {
-            self.child
-                .handle_event(event, &mut ctx.reborrow(ctx.path, *child));
-        }
-    }
-
-    fn children(&self) -> Vec<&dyn Widget> {
-        vec![self.child.as_ref()]
-    }
-
-    fn for_each_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) {
-        visitor(self.child.as_ref());
-    }
-
-    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        vec![self.child.as_mut()]
-    }
+    crate::forward_to_child!(child, rect);
 
     fn name(&self) -> &'static str {
         "UiGraphEditor"
@@ -3256,10 +3145,6 @@ impl Widget for UiGraphEditor {
 
     fn test_id(&self) -> Option<&str> {
         Some("ui-graph-editor")
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
     }
 
     fn take_structure_dirty(&mut self) -> bool {
@@ -3271,25 +3156,6 @@ impl Widget for UiGraphEditor {
         state.chrome_dirty
             || self.handle.revision() != Some(self.seen_graph_revision)
             || self.child.needs_idle_sync()
-    }
-
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut crate::text_render::TextRenderer,
-        theme: &Theme,
-        presence: &crate::presence::PresenceCtx,
-        permissions: &crate::permissions::PermissionContext,
-    ) {
-        self.child.draw_with_presence(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            presence,
-            permissions,
-        );
     }
 }
 
@@ -3331,7 +3197,8 @@ mod tests {
         ).unwrap();
         let context = UiBuildContext::default();
         let widget = document.build_with(&Theme::dark(), &context).unwrap();
-        let mut driver = crate::headless::Driver::new(crate::State::new(), widget, (360, 200));
+        let mut driver =
+            crate::headless::FrameHarness::new(crate::State::new(), widget, (360, 200));
         let before = driver.dump_json();
         driver.perform_named("check", &Action::ToggleCheck).unwrap();
         driver
@@ -3462,28 +3329,21 @@ mod tests {
         action: &Action,
         doc: &mut AutoCommit,
     ) -> bool {
-        if widget.test_id() == Some(id) {
-            return Widget::perform_action(
+        crate::widget::find_test_id_mut(widget, id).is_some_and(|widget| {
+            Widget::perform_action(
                 widget,
                 action,
+                &[],
                 &mut crate::widget::Edits::lend(doc),
                 &ROOT,
-            );
-        }
-        widget
-            .children_mut()
-            .into_iter()
-            .any(|child| perform_named(child, id, action, doc))
+            )
+        })
     }
 
     fn named_value(widget: &dyn Widget, id: &str) -> Option<String> {
-        if widget.test_id() == Some(id) {
-            return widget.accessibility().and_then(|node| node.value);
-        }
-        widget
-            .children()
-            .into_iter()
-            .find_map(|child| named_value(child, id))
+        crate::widget::find_test_id(widget, id)?
+            .accessibility()?
+            .value
     }
 
     fn run_operation(
@@ -3574,7 +3434,7 @@ mod tests {
             Ok(Box::new(Text::new(title).with_id(request.id)))
         });
         let widget = document.build_with(&Theme::dark(), &context).unwrap();
-        let mut app = crate::headless::Driver::new(crate::State::new(), widget, (320, 120));
+        let mut app = crate::headless::FrameHarness::new(crate::State::new(), widget, (320, 120));
         app.expect(
             &crate::headless::SemanticExpectation::named("profile")
                 .role(Role::StaticText)
@@ -3607,7 +3467,7 @@ mod tests {
         let handle = UiGraphHandle::new(document).unwrap();
         let editor = UiGraphEditor::new(handle.clone(), Theme::dark()).unwrap();
         let mut app =
-            crate::headless::Driver::new(crate::State::new(), Box::new(editor), (1200, 720));
+            crate::headless::FrameHarness::new(crate::State::new(), Box::new(editor), (1200, 720));
         app.expect(
             &crate::headless::SemanticExpectation::named("profile")
                 .role(Role::StaticText)
@@ -3648,7 +3508,7 @@ mod tests {
         title_doc.splice_text(&text, 0, 0, "Roadmap").unwrap();
         let values = UiValues::default();
         let context = UiBuildContext::default().with_values(values.clone());
-        let mut driver = crate::headless::Driver::new(
+        let mut driver = crate::headless::FrameHarness::new(
             crate::State::from_doc(title_doc),
             reparsed.build_with(&Theme::dark(), &context).unwrap(),
             (640, 360),
@@ -3716,7 +3576,7 @@ mod tests {
             value_path: "remember".into(),
             enabled: true,
         });
-        let mut driver = crate::headless::Driver::new(
+        let mut driver = crate::headless::FrameHarness::new(
             crate::State::new(),
             document.build(&Theme::dark()).unwrap(),
             (360, 120),
@@ -3842,7 +3702,7 @@ mod tests {
         .unwrap();
         let handle = router.handle();
         let mut driver =
-            crate::headless::Driver::new(crate::State::new(), Box::new(router), (640, 360));
+            crate::headless::FrameHarness::new(crate::State::new(), Box::new(router), (640, 360));
         let document_before = driver.dump_json();
 
         driver
@@ -3910,7 +3770,7 @@ mod tests {
                 &UiBuildContext::default().with_router(route.clone()),
             )
             .unwrap();
-        let mut driver = crate::headless::Driver::new(crate::State::new(), root, (640, 360));
+        let mut driver = crate::headless::FrameHarness::new(crate::State::new(), root, (640, 360));
         let inspection = driver.inspection();
         let missing = find_missing(&inspection.root).expect("missing-route button remains visible");
         assert!(missing.state.disabled);
@@ -3967,7 +3827,7 @@ mod tests {
         assert!(matches!(handle.node("save"), Ok(UiNode::Button { .. })));
         let live = handle.widget(&Theme::dark()).unwrap();
         let mut driver =
-            crate::headless::Driver::new(crate::State::new(), Box::new(live), (640, 360));
+            crate::headless::FrameHarness::new(crate::State::new(), Box::new(live), (640, 360));
         assert!(driver.inspection_json().unwrap().contains("Save"));
 
         handle
@@ -3995,35 +3855,21 @@ mod tests {
     }
 
     fn set_named_state(widget: &mut dyn Widget, id: &str, state: &str) -> bool {
-        if widget.test_id() == Some(id) {
-            widget.set_focus(true);
-            crate::undo::set_state(widget, state);
-            return true;
-        }
-        widget
-            .children_mut()
-            .into_iter()
-            .any(|child| set_named_state(child, id, state))
+        let Some(widget) = crate::widget::find_test_id_mut(widget, id) else {
+            return false;
+        };
+        widget.set_focus(true);
+        crate::undo::set_state(widget, state);
+        true
     }
 
     fn named_state(widget: &dyn Widget, id: &str) -> Option<String> {
-        if widget.test_id() == Some(id) {
-            return crate::undo::get_state(widget);
-        }
-        widget
-            .children()
-            .into_iter()
-            .find_map(|child| named_state(child, id))
+        crate::undo::get_state(crate::widget::find_test_id(widget, id)?)
     }
 
     fn named_widget_ptr(widget: &dyn Widget, id: &str) -> Option<usize> {
-        if widget.test_id() == Some(id) {
-            return Some((widget as *const dyn Widget).cast::<()>().addr());
-        }
-        widget
-            .children()
-            .into_iter()
-            .find_map(|child| named_widget_ptr(child, id))
+        crate::widget::find_test_id(widget, id)
+            .map(|widget| (widget as *const dyn Widget).cast::<()>().addr())
     }
 
     #[test]
@@ -4152,7 +3998,7 @@ mod tests {
         let doc = AutoCommit::new();
         Widget::sync(&mut live, &doc, &automerge::ROOT);
         assert!(
-            crate::headless::Driver::new(crate::State::new(), Box::new(live), (640, 360))
+            crate::headless::FrameHarness::new(crate::State::new(), Box::new(live), (640, 360))
                 .inspection_json()
                 .unwrap()
                 .contains("Save"),
@@ -4490,7 +4336,7 @@ mod tests {
             )
             .unwrap();
         let mut driver =
-            crate::headless::Driver::new(crate::State::new(), Box::new(live), (640, 360));
+            crate::headless::FrameHarness::new(crate::State::new(), Box::new(live), (640, 360));
         handle
             .insert_child(
                 "root",
@@ -4528,7 +4374,7 @@ mod tests {
         assert!(UiDocument::from_json(&handle.to_json_pretty().unwrap()).is_ok());
     }
 
-    fn edit_builder_button_properties(driver: &mut crate::headless::Driver) {
+    fn edit_builder_button_properties(driver: &mut crate::headless::FrameHarness) {
         driver
             .perform_named("builder-property", &Action::SetValue("Publish".into()))
             .unwrap();
@@ -4585,7 +4431,7 @@ mod tests {
                 Ok(())
             });
         let mut driver =
-            crate::headless::Driver::new(crate::State::new(), Box::new(editor), (1_400, 800));
+            crate::headless::FrameHarness::new(crate::State::new(), Box::new(editor), (1_400, 800));
 
         let initial = driver.inspection_json().unwrap();
         assert!(initial.contains("builder-add-button"));
@@ -4665,7 +4511,7 @@ mod tests {
         let handle = UiGraphHandle::new(sample()).unwrap();
         let editor = UiGraphEditor::new(handle.clone(), Theme::dark()).unwrap();
         let mut driver =
-            crate::headless::Driver::new(crate::State::new(), Box::new(editor), (1_400, 800));
+            crate::headless::FrameHarness::new(crate::State::new(), Box::new(editor), (1_400, 800));
 
         driver
             .perform_named("builder-add-container", &Action::Activate)
@@ -4711,7 +4557,7 @@ mod tests {
         let handle = UiGraphHandle::new(sample()).unwrap();
         let editor = UiGraphEditor::new(handle.clone(), Theme::dark()).unwrap();
         let mut driver =
-            crate::headless::Driver::new(crate::State::new(), Box::new(editor), (1_400, 800));
+            crate::headless::FrameHarness::new(crate::State::new(), Box::new(editor), (1_400, 800));
 
         driver
             .perform_named("builder-add-container", &Action::Activate)
@@ -4748,7 +4594,7 @@ mod tests {
         let handle = UiGraphHandle::new(sample()).unwrap();
         let editor = UiGraphEditor::new(handle.clone(), Theme::dark()).unwrap();
         let mut driver =
-            crate::headless::Driver::new(crate::State::new(), Box::new(editor), (1_400, 800));
+            crate::headless::FrameHarness::new(crate::State::new(), Box::new(editor), (1_400, 800));
 
         driver
             .perform_named("builder-column-gap", &Action::SetValue("12.5".into()))

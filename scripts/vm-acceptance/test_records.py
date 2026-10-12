@@ -44,6 +44,25 @@ class Renderer(unittest.TestCase):
         self.assertEqual(records.renderer("GPU (virgl): nodes: renderD128 | drivers: virtio-pci"), "virgl")
         self.assertEqual(records.renderer("GPU (i915): nodes: renderD128", {"hardware": True}), "gpu")
 
+    def test_a_vm_created_without_virgl_renders_in_software_without_mesas_warning(self):
+        class Vm:
+            def __init__(self, out):
+                self.out = out
+
+            def exec(self, _script, check=True):
+                return self.out
+
+        # A session pinned to lavapipe never asks Mesa's EGL for the virtio GPU,
+        # so the dri2 warning the label used to rely on is absent.
+        pinned = Vm("nodes: by-path card0 card1 renderD128\ndrivers: faux_driver virtio-pci\n")
+        label, display = run.renderer(pinned, without_3d=True)
+        self.assertEqual(records.renderer(label, display), "lavapipe")
+        label, display = run.renderer(pinned)
+        self.assertEqual(records.renderer(label, display), "virgl",
+                         "a VM someone else created may have virgl")
+        warned = Vm("nodes: renderD128\ndrivers: virtio-pci\nMESA-EGL: warning: egl: failed to create dri2 screen\n")
+        self.assertEqual(records.renderer(*run.renderer(warned)), "lavapipe")
+
     def test_an_unnamed_renderer_is_refused_rather_than_guessed(self):
         with self.assertRaises(ValueError):
             records.renderer(None)
@@ -262,6 +281,19 @@ class SoftwareRaster(unittest.TestCase):
         [problem] = resources._budget_problems(self.window(1), self.BUDGETS, "idle")
         self.assertTrue(problem.startswith("compositor CPU 1.7% > 1.0% (tilo-gpu-driver×2 1.4%"), problem)
 
+    def test_idle_frames_over_budget_name_why_and_whose(self):
+        painted = [{"painted": 1, "paint_reasons": "revision", "paint_clients": ""},
+                   {"painted": 1, "paint_reasons": "apps", "paint_clients": "so.tilo.file-explorer"},
+                   {"painted": 1, "paint_reasons": "apps", "paint_clients": "so.tilo.file-explorer"}]
+        m = {**self.window(3), "painted_by": resources.painters(painted)}
+        [problem] = resources._budget_problems(m, self.BUDGETS, "idle", software=True)
+        self.assertEqual(problem, "3 frames painted while idle > 2 "
+                                  "(apps by so.tilo.file-explorer 2, revision 1)")
+
+    def test_frames_from_an_older_trace_are_counted_unattributed(self):
+        self.assertEqual(resources.painters([{"painted": 1}, {"painted": 1, "paint_reasons": ""}]),
+                         {"no reason": 1, "unattributed": 1})
+
     def test_a_rasteriser_busy_with_no_frame_painted_fails(self):
         [problem] = resources._budget_problems(self.window(0), self.BUDGETS, "idle", software=True)
         self.assertEqual(problem, "software rasteriser CPU 1.4% with no frame painted > 0.1%")
@@ -301,6 +333,26 @@ class Gates(unittest.TestCase):
                          ["[anon]", "[heap]", "/memfd:wayland-shm (deleted)"])
         self.assertEqual(m["top_anon_mappings"][0]["anon_kib"], 262144)
 
+    def test_the_compositor_breakdown_names_its_shmem_by_fd(self):
+        text = "\n".join([
+            "S VmRSS: 600000", "S RssAnon: 256000", "S RssShmem: 167936",
+            "F\t31\t492830720 600000 512\t\t/memfd:allocation fd (deleted)",
+            "F\t40\t4194304 8192 512\t\t/memfd:wayland-shm (deleted)",
+            "F\t41\t4194304 4096 512\t\t/memfd:wayland-shm (deleted)",
+            "F\t12\t0 0 4096\tdrm-driver=virtio_gpu drm-total-memory=33_MiB \t/dev/dri/card0",
+            "F\t50\t- - -\tsize=8294400 exp_name=udmabuf \tanon_inode:dmabuf",
+            "PAGE-MONITOR no",
+        ])
+        m = resources.core.parse_shell_memory(text)
+        self.assertEqual(list(m["shm_by_name"]), ["allocation fd", "wayland-shm"])
+        self.assertEqual(m["shm_by_name"]["allocation fd"],
+                         {"count": 1, "size_mib": 470.0, "allocated_mib": 293.0})
+        self.assertEqual(m["shm_by_name"]["wayland-shm"]["count"], 2)
+        drm = next(f for f in m["shm_fds"] if f["kind"] == "drm")
+        self.assertEqual(drm["fdinfo"], {"drm-driver": "virtio_gpu", "drm-total-memory": "33_MiB"})
+        dmabuf = next(f for f in m["shm_fds"] if f["kind"] == "dmabuf")
+        self.assertEqual((dmabuf["allocated_bytes"], dmabuf["fdinfo"]["size"]), (None, "8294400"))
+
     def test_an_unreadable_compositor_breakdown_is_unobservable(self):
         class Vm:
             def root_exec(self, script):
@@ -314,10 +366,126 @@ class Gates(unittest.TestCase):
             resources.core.shell_memory(Ctx(), 42)
 
     def test_the_new_checks_are_in_the_run_order(self):
-        for cid in ("R06", "A15", "R07", "A16"):
+        for cid in ("R06", "A15", "R07", "A16", "R08"):
             self.assertIn(cid, run.ORDER)
         self.assertLess(run.ORDER.index("R02"), run.ORDER.index("A15"))
         self.assertLess(run.ORDER.index("A16"), run.ORDER.index("R05"))
+        # R08 starts a second compositor on seat0: after everything that measures the slot.
+        self.assertEqual(run.ORDER[-2:], ["R08", "P03"])
+
+
+# systemd-analyze output from a plain reboot of the dev disk (vm-acceptance R99, run 94108).
+BOOT_ANALYSIS_NM = """\
+== time
+Startup finished in 3.107s (kernel) + 2.591s (initrd) + 5.657s (userspace) = 11.357s
+graphical.target reached after 5.241s in userspace.
+== critical-chain greetd.service
+The time when unit became active or started is printed after the "@" character.
+The time the unit took to start is printed after the "+" character.
+
+greetd.service @4.459s
+└─plymouth-quit-wait.service @4.410s +41ms
+  └─systemd-user-sessions.service @4.358s +47ms
+    └─network.target @4.339s
+      └─NetworkManager.service @3.947s +391ms
+        └─network-pre.target @3.944s
+          └─firewalld.service @3.944s
+            └─basic.target @3.919s
+              └─sysinit.target @3.756s
+                └─local-fs.target @3.276s
+                  └─systemd-fsck@dev-disk-by\\x2duuid-5594\\x2d590C.service @3.011s +105ms
+                    └─dev-disk-by\\x2duuid-5594\\x2d590C.device
+== critical-chain graphical.target
+graphical.target @5.241s
+== blame
+834ms tilo-vm-restore.service
+== stamps
+userspace_us=5698000
+greetd_us=10157000
+== end
+"""
+
+
+class Boot(unittest.TestCase):
+    BUDGETS = {"userspace_to_greeter_s": 6.0}
+
+    def attribution(self, analysis):
+        class Vm:
+            def root_exec(self, script, timeout=120):
+                return analysis if "critical-chain" in script else "<svg/>"
+
+        class Ctx:
+            vm = Vm()
+            config = {"budgets": self.BUDGETS}
+            written: dict = {}
+            recorded: dict = {}
+
+            def write(self, name, text):
+                self.written[name] = text
+
+            def record(self, kpi, unit, values, **meta):
+                self.recorded[kpi] = values
+
+        ctx, res = Ctx(), resources.core.Result("R06", "resources", "boot")
+        return ctx, res, resources.boot_attribution(ctx, res)
+
+    def test_the_greeters_chain_and_start_are_read_from_systemd(self):
+        a = resources.parse_boot_analysis(BOOT_ANALYSIS_NM)
+        self.assertEqual(a["greeter_chain"][:5], ["greetd.service", "plymouth-quit-wait.service",
+                                                  "systemd-user-sessions.service", "network.target",
+                                                  "NetworkManager.service"])
+        self.assertEqual(a["greeter_chain"][-1], "dev-disk-by\\x2duuid-5594\\x2d590C.device")
+        self.assertEqual((a["greeter_s"], a["userspace_to_greeter_s"]), (10.157, 4.459))
+
+    def test_the_network_on_the_greeters_chain_fails_the_boot(self):
+        ctx, res, problems = self.attribution(BOOT_ANALYSIS_NM)
+        self.assertEqual(problems, ["network.target is on the greeter's critical chain",
+                                    "NetworkManager.service is on the greeter's critical chain",
+                                    "firewalld.service is on the greeter's critical chain"])
+        self.assertEqual(set(ctx.written), {"R06-boot-analysis.txt", "R06-boot-plot.svg"})
+        self.assertEqual(ctx.recorded["boot.greeter_s"], [10.157])
+        self.assertEqual(ctx.recorded["boot.userspace_to_greeter_s"], [4.459])
+
+    def test_a_chain_without_the_network_within_budget_passes(self):
+        chain = BOOT_ANALYSIS_NM.replace(
+            "    └─network.target @4.339s\n      └─NetworkManager.service @3.947s +391ms\n"
+            "        └─network-pre.target @3.944s\n          └─firewalld.service @3.944s\n", "")
+        self.assertEqual(self.attribution(chain)[2], [])
+
+    def test_a_slow_userspace_names_the_chain(self):
+        slow = BOOT_ANALYSIS_NM.replace("greetd_us=10157000", "greetd_us=12698000")
+        [problem] = [p for p in self.attribution(slow)[2] if "userspace" in p]
+        self.assertTrue(problem.startswith("userspace took 7.0 s to the greeter > 6.0 s (chain: greetd.service"))
+
+    def test_no_chain_is_unobservable(self):
+        with self.assertRaises(resources.core.Unobservable):
+            self.attribution("== critical-chain greetd.service\nFailed to get ID: ...\n== end\n")
+
+
+SIGN_IN_OUT = """\
+FRAME-LIFECYCLE serial=1 event=render-retired queue_wait_us=1873690 render_us=57520 total_us=1931211 flip_to_vblank_us=none monotonic_us=45103200
+SIGNIN t0=41.400 user_manager=42.140 session=42.220 shell=42.410 first_frame_us=45103200 usable=43.090
+{"status":"accepted"}
+"""
+
+
+class SignIn(unittest.TestCase):
+    def test_each_step_is_timed_from_the_request(self):
+        steps = resources.parse_sign_in(SIGN_IN_OUT)
+        self.assertEqual(steps, {"user_manager_s": 0.74, "session_s": 0.82, "shell_s": 1.01,
+                                 "control_s": 1.69, "first_frame_s": 3.703, "usable_s": 3.703})
+
+    def test_a_first_frame_without_a_time_leaves_usable_unknown(self):
+        steps = resources.parse_sign_in(SIGN_IN_OUT.replace("first_frame_us=45103200", "first_frame_us="))
+        self.assertNotIn("first_frame_s", steps)
+        self.assertNotIn("usable_s", steps)
+
+    def test_no_greeter_is_an_error(self):
+        self.assertEqual(resources.parse_sign_in("SIGNIN error=no-greeter-socket\n"),
+                         {"error": "no-greeter-socket"})
+
+    def test_the_dev_account_comes_from_account_env(self):
+        self.assertEqual(resources.dev_account(), ("quickuser", "tilo"))
 
 
 if __name__ == "__main__":

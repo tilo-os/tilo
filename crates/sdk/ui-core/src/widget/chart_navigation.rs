@@ -1,8 +1,48 @@
-//! Shared pointer, touch and keyboard semantics for interactive chart widgets.
+//! Shared layout, pointer, touch and keyboard semantics for chart widgets.
 
 use vello::kurbo::Point;
 use winit::event::{ElementState, KeyEvent, MouseButton, TouchPhase, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
+
+/// The layout half of a chart's `Widget` impl: a leaf as wide as its parent
+/// and `self.height` tall, placed into `self.rect`, dirty until first placed.
+macro_rules! chart_leaf {
+    () => {
+        fn build_layout(
+            &mut self,
+            taffy: &mut taffy::TaffyTree<()>,
+            _theme: &crate::theme::Theme,
+            node_map: &mut std::collections::HashMap<taffy::NodeId, *mut dyn Widget>,
+        ) -> taffy::NodeId {
+            let style = taffy::Style {
+                size: taffy::Size {
+                    width: taffy::Dimension::percent(1.0),
+                    height: taffy::Dimension::length(self.height),
+                },
+                ..Default::default()
+            };
+            crate::widget::TaffyTreeExt::widget_leaf(taffy, style, node_map, self)
+        }
+
+        fn apply_layout(
+            &mut self,
+            taffy: &taffy::TaffyTree<()>,
+            node: taffy::NodeId,
+            origin: vello::kurbo::Point,
+        ) {
+            self.rect = crate::widget::layout_rect(taffy, node, origin);
+        }
+
+        fn get_rect(&self) -> vello::kurbo::Rect {
+            self.rect
+        }
+
+        fn is_layout_dirty(&self) -> bool {
+            self.rect == vello::kurbo::Rect::ZERO
+        }
+    };
+}
+pub(crate) use chart_leaf;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ChartNavAction {

@@ -43,14 +43,6 @@ use ui::widget::{NavMode, SearchField};
 use ui::{AppKind, AppWidget, IconDescriptor};
 const MEASURE: f32 = ui::tokens::Metrics::BASE.panel_width_sheet;
 
-/// At or above this allocated width (logical px) the sidebar docks beside the
-/// content; below it the shell switches to the narrow list-vs-content screens.
-/// The toolkit's `compact_breakpoint` (HIG §9.6): a typical settings window is
-/// docked while a narrow / split-screen placement gets the phone layout. At a
-/// large-text preference the live breakpoint is this times the text scale
-/// (see `SettingsApp::build_shell`).
-pub const NAV_BREAKPOINT: f64 = ui::tokens::Metrics::BASE.compact_breakpoint as f64;
-
 /// One scroller's offset, shared with every scroller rebuilt in its place.
 type ScrollOffset = std::rc::Rc<std::cell::Cell<(f32, f32)>>;
 
@@ -163,6 +155,9 @@ impl SettingsApp {
         let cx = crate::host::PaneCx::detached(ui::storage::AppStorage::for_app(
             <crate::resource::SettingsShell as ui::framework::ResourceApp>::ID,
         ));
+        // A detached app reaches no device, so it probes for no installed
+        // software either: what a host reaches is read when it attaches.
+        let software = panes::accessibility::Software::for_host(&cx);
         Self {
             notifications: panes::notifications::NotificationsArea::new(&cx),
             default_apps: panes::personal_apps::DefaultAppsArea::new(&cx),
@@ -200,7 +195,7 @@ impl SettingsApp {
             shell: None,
             shell_text_scale: 1.0,
             wallpaper_status: ui::LocalState::new(None),
-            software: panes::accessibility::Software::installed(),
+            software,
         }
     }
 
@@ -241,6 +236,16 @@ impl SettingsApp {
     /// Ask for `category`'s pane; it opens at the next sync.
     pub(crate) fn request_pane(&self, category: Category) {
         self.sidebar_selection.set(Some(category));
+    }
+
+    /// Open the pane a search hit or an agent's `open` names by its row.
+    pub(crate) fn opener(&self) -> impl FnMut(&str) + 'static {
+        let selection = self.sidebar_selection.clone();
+        move |anchor| {
+            if let Some(category) = crate::effects::pane_of_row(anchor) {
+                selection.set(Some(category));
+            }
+        }
     }
 
     /// Switch the active category. Flags `structure_dirty`, swaps the shell's
@@ -381,11 +386,13 @@ impl SettingsApp {
             self.account_root = self.account_root.clone().with_person(record);
             // What the device's file held before it followed the record is
             // taken in once; then the services outside any app read the file
-            // as the record's projection.
-            if let Err(error) = self
-                .account_root
-                .take_in_device_accounts()
-                .and_then(|()| self.account_root.project())
+            // as the record's projection. A window that does not reach this
+            // device (a test's) leaves the device's file alone.
+            if cx.reaches_devices()
+                && let Err(error) = self
+                    .account_root
+                    .take_in_device_accounts()
+                    .and_then(|()| self.account_root.project())
             {
                 tracing::warn!(%error, "the device's account file could not follow the person's accounts");
             }
@@ -423,15 +430,17 @@ impl SettingsApp {
         !self.area_reads.deferred() || area.pane == self.selected || (area.is_open)(self)
     }
 
-    /// Read the next area that has not, so the published rows fill in a
-    /// frame at a time after the first. `false` once every area has read,
-    /// from when on every area is published.
-    pub(crate) fn read_next_area(&self) -> bool {
-        let Some(area) = self.area_reads.take_next(self) else {
-            return false;
-        };
-        let _ = (area.rows)(self);
-        true
+    /// Read on after the first frame, so the published rows fill in an area
+    /// at a time: the device reads that block run on the background
+    /// executor ([`crate::effects::AreaReads::step`]). Once every area has
+    /// read, the input sources are read the same way, last, so the Mouse &
+    /// Keyboard pane opens on them.
+    fn read_on(&self) {
+        match self.area_reads.step(self) {
+            crate::effects::Step::Read => self.area_reads.wake(),
+            crate::effects::Step::Waiting => {}
+            crate::effects::Step::Done => self.input.prefetch_catalog(),
+        }
     }
 
     /// Where the last wallpaper request stands.
@@ -806,10 +815,11 @@ impl Widget for SettingsApp {
         self.accounts.poll();
         self.displays.poll();
         self.network.poll();
-        // After the first frame, one more area reads per sync until every
+        self.bluetooth.poll();
+        // After the first frame, the areas read one at a time until every
         // area's rows are published.
-        if self.area_reads.take_due() && self.read_next_area() {
-            self.area_reads.wake();
+        if self.area_reads.take_due() {
+            self.read_on();
         }
         // A sidebar row opens its pane through the pane row's open effect;
         // only a bare app outside a host selects here. Search is local
@@ -912,29 +922,6 @@ impl Widget for SettingsApp {
     ) {
         if let Some(shell) = &mut self.shell {
             shell.draw(scene, transform, text_renderer, theme, presence);
-        }
-        self.area_reads.presented();
-        self.area_reads.wake();
-    }
-
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut vello::Scene,
-        transform: vello::kurbo::Affine,
-        text_renderer: &mut ui::text_render::TextRenderer,
-        theme: &ui::Theme,
-        presence: &ui::presence::PresenceCtx,
-        permissions: &ui::permissions::PermissionContext,
-    ) {
-        if let Some(shell) = &mut self.shell {
-            shell.draw_with_presence(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                presence,
-                permissions,
-            );
         }
         self.area_reads.presented();
         self.area_reads.wake();

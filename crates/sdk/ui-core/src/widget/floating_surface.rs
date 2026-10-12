@@ -19,6 +19,24 @@ pub fn radius(theme: &Theme) -> f64 {
     f64::from(theme.tokens.radii.panel)
 }
 
+/// How far a floating Panel's shadow reaches past its rect on any side:
+/// what a host repaints around a panel that appears, moves or changes.
+#[must_use]
+pub fn shadow_reach(theme: &Theme) -> f64 {
+    let elevation = &theme.tokens.elevation.floating;
+    f64::from(elevation.blur) * 2.0 + f64::from(elevation.offset_y).abs()
+}
+
+/// Every pixel a floating Panel in `rect` paints, its shadow included: what
+/// a host repaints where one appears, changes or goes. Tighter than
+/// [`shadow_reach`] on every side, as it follows the shadow's real kernel
+/// and offset ([`crate::surface::shadow_bounds`]).
+#[must_use]
+pub fn painted_bounds(rect: Rect, theme: &Theme) -> Rect {
+    crate::surface::shadow_bounds(rect, &theme.tokens.elevation.floating)
+        .map_or(rect, |shadow| shadow.union(rect))
+}
+
 /// Paint a floating Panel's body in `rect`: shadow, material, edge. Content
 /// is drawn on top by the caller.
 pub fn paint(scene: &mut Scene, transform: Affine, rect: Rect, theme: &Theme) {
@@ -41,7 +59,7 @@ pub fn paint_rounded(scene: &mut Scene, transform: Affine, rect: Rect, radius: f
     // outside the panel: the material below records this scene for blur,
     // and must not sample its own shadow as a dimmed foreground.
     let elevation = &theme.tokens.elevation.floating;
-    let reach = f64::from(elevation.blur) * 2.0 + f64::from(elevation.offset_y).abs();
+    let reach = shadow_reach(theme);
     let mut exterior = rect.inflate(reach, reach).to_path(0.1);
     exterior.extend(RoundedRect::from_rect(rect, radius).path_elements(0.1));
     scene.push_clip_layer(Fill::EvenOdd, transform, &exterior);
@@ -549,6 +567,42 @@ impl DetachedContent {
             )
         };
         Self { taffy, node }
+    }
+
+    /// Hand `event` to a floating Panel's `content`, in the host's tree at
+    /// `hosted` or else in `detached`'s own tree. Reports whether the content
+    /// handled it, while leaving `ctx.handled` set if it already was.
+    pub(crate) fn forward(
+        content: &mut dyn crate::widget::Widget,
+        hosted: Option<taffy::NodeId>,
+        detached: Option<&Self>,
+        event: &winit::event::WindowEvent,
+        ctx: &mut crate::widget::EventCtx<'_>,
+    ) -> bool {
+        let before = std::mem::replace(ctx.handled, false);
+        if let Some(node) = hosted {
+            content.handle_event(event, &mut ctx.reborrow(ctx.path, node));
+        } else if let Some(detached) = detached {
+            // A node of the Panel's own tree means nothing to the host; the
+            // content keeps its own focus.
+            let mut detached_focus = None;
+            content.handle_event(
+                event,
+                &mut crate::widget::EventCtx {
+                    scale_factor: ctx.scale_factor,
+                    modifiers: ctx.modifiers,
+                    state: ctx.state.reborrow(),
+                    path: ctx.path,
+                    handled: ctx.handled,
+                    focus_target: &mut detached_focus,
+                    node_id: detached.node,
+                    taffy: &detached.taffy,
+                },
+            );
+        }
+        let consumed = *ctx.handled;
+        *ctx.handled = before || consumed;
+        consumed
     }
 
     /// The laid-out size of the content's root.

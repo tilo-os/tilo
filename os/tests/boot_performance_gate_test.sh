@@ -330,13 +330,32 @@ if grep -Eq 'systemctl enable (NetworkManager|firewalld|chronyd)\.service' "$rep
   exit 1
 fi
 grep -Fq 'systemctl disable NetworkManager.service firewalld.service chronyd.service' "$repo/os/Containerfile"
-grep -Fq 'systemctl enable tilo-network-start.timer' "$repo/os/Containerfile"
-network_timer="$repo/os/usr/lib/systemd/system/tilo-network-start.timer"
-grep -Fqx 'OnBootSec=0' "$network_timer"
-grep -Fqx 'AccuracySec=1ms' "$network_timer"
-grep -Fqx 'Unit=tilo-network-start.target' "$network_timer"
-if grep -Eq '^(Before|After|Wants|Requires)=.*(greetd|graphical)' "$network_timer"; then
+# The greeter waits for systemd-user-sessions.service, which upstream orders
+# After=network.target: a NetworkManager start job queued any earlier (a timer
+# at OnBootSec=0 did) holds the greeter for NetworkManager's whole start. The
+# network is queued from a unit that runs once logins are allowed, and is not
+# waited for (TIL-767).
+grep -Fq 'systemctl enable tilo-network-start.service' "$repo/os/Containerfile"
+if [ -e "$repo/os/usr/lib/systemd/system/tilo-network-start.timer" ] \
+   || grep -Fq 'tilo-network-start.timer' "$repo/os/Containerfile"; then
+  echo 'a boot timer queues the network before logins are allowed, ahead of the greeter' >&2
+  exit 1
+fi
+network_start="$repo/os/usr/lib/systemd/system/tilo-network-start.service"
+grep -Fqx 'After=systemd-user-sessions.service' "$network_start"
+grep -Fqx 'Type=oneshot' "$network_start"
+grep -Fqx 'ExecStart=/usr/bin/systemctl --no-block start tilo-network-start.target' "$network_start"
+grep -Fqx 'WantedBy=multi-user.target' "$network_start"
+if grep -Eq '^(Before|Wants|Requires)=.*(greetd|graphical|display-manager|systemd-user-sessions)' "$network_start"; then
   echo 'asynchronous network start gained login-path ordering' >&2
+  exit 1
+fi
+# Nothing enabled at boot may pull the network units in directly either.
+if grep -Erq '^(Wants|Requires)=.*(NetworkManager|firewalld|tilo-network-start)\.(service|target)' \
+    "$repo/os/usr/lib/systemd/system" --include='*.service' --include='*.target' \
+    --exclude='tilo-network-start.target' --exclude='tilo-repair.target' \
+    --exclude='tilo-board-headless-session@.service'; then
+  echo 'a boot unit pulls the network in before logins are allowed' >&2
   exit 1
 fi
 network_target="$repo/os/usr/lib/systemd/system/tilo-network-start.target"
@@ -453,8 +472,7 @@ if grep -Eq '^\[Install\]|^WantedBy=' "$app_host_service"; then
   fail 'tilo-app-host service remains directly enableable instead of socket-only'
 fi
 grep -Fqx 'RuntimeDirectoryPreserve=yes' "$app_host_service"
-grep -Fq 'std::env::var("LISTEN_PID")' "$app_host_source"
-grep -Fq 'actual.as_pathname() == Some(expected)' "$app_host_source"
+grep -Fq 'activated_socket(&socket)' "$app_host_source"
 grep -Fq 'bounded_command::run_prepared(' "$app_host_rpc" \
   || fail 'app-host RPC trusts unbounded package-manager subprocesses'
 if grep -Fq '.output()' "$app_host_rpc"; then
@@ -486,8 +504,7 @@ for incompatible in ProtectKernelTunables ProtectKernelModules ProtectKernelLogs
 done
 grep -Fqx 'PartOf=tilo-graphical-session.target' "$ush_socket"
 grep -Fqx 'WantedBy=tilo-graphical-session.target' "$ush_socket"
-grep -Fq 'std::env::var("LISTEN_PID")' "$ush_source"
-grep -Fq 'listener.local_addr()?.as_pathname() == Some(expected)' "$ush_source"
+grep -Fq 'activated_socket(socket)' "$ush_source"
 ush_vm_probe="$repo/os/tests/ush-systemd-terminal-vm.sh"
 grep -Fq 'systemctl --user start tilo-ush.socket' "$ush_vm_probe"
 grep -Fq 'ush-systemd-terminal-probe.py' "$ush_vm_probe"
@@ -502,10 +519,14 @@ recipient_socket="$repo/os/usr/lib/systemd/user/tilo-fs-recipient.socket"
 grep -Fqx 'ListenStream=%t/tilo/services/tilo-fs.sock' "$recipient_socket"
 grep -Fqx 'SocketMode=0600' "$recipient_socket"
 grep -Fqx 'Backlog=16' "$recipient_socket"
-# Activation may omit a pathname; an explicit path must still be this socket.
 recipient_src="$repo/crates/system/fs/src/main.rs"
-if ! grep -A3 -F 'if let Some(actual) = listener.local_addr()?.as_pathname()' "$recipient_src"   | grep -Fq 'actual == socket'; then
-  echo 'recipient-service no longer requires the activation listener to be the expected socket' >&2
+grep -Fq 'activated_socket(socket)' "$recipient_src"
+# Activation may omit a pathname; an explicit path must still be the socket.
+activation_src="$repo/crates/platform/tilo-files/src/native/private.rs"
+grep -Fq 'std::env::var("LISTEN_PID")' "$activation_src"
+if ! grep -A2 -F 'if let Some(actual) = listener.local_addr()?.as_pathname()' "$activation_src" \
+  | grep -Fq 'actual != expected'; then
+  echo 'socket activation no longer requires the listener to be the expected socket' >&2
   exit 1
 fi
 app_host_gc_line="$(grep -n 'let _startup = tokio::task::spawn_blocking' "$app_host_source" | cut -d: -f1)"

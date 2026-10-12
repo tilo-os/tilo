@@ -334,8 +334,8 @@ mod tests {
                     .workspaces
                     .last()
                     .unwrap()
-                    .owner
-                    .as_deref(),
+                    .owner()
+                    .map(String::as_str),
                 Some("shell-fixture")
             );
             assert!(std::rc::Rc::ptr_eq(

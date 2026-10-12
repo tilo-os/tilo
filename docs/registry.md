@@ -597,10 +597,29 @@ tilo-registry-server sign-delegated-snapshot \
   --valid-for-seconds 86400
 ```
 
-The collector reads a version from its own content-addressed store when it
+The collector selects pending runtime providers before apps within the same
+item bound, so a full page of deferred apps cannot keep its provider beyond the
+cutoff. It reads a version from its own content-addressed store when it
 already holds the bytes the publisher signed, and fetches only new versions.
 A submission it cannot collect completely stays pending and out of the staged
 batch; the others are staged, and the collector exits non-zero listing it.
+
+The signer checks every collected request and package before selecting complete
+requests whose new native versions have exact runtime providers in the resulting
+catalogue. A missing runtime defers that whole request, preserving its pending
+metadata, signatures and referenced package bytes. Independently installable
+requests and runtime providers can still publish. An entirely deferred batch
+reports `status = "deferred"` without signing or approving anything; a partial
+promotion reports its promoted and deferred counts. Signature, authority, byte,
+retention and recovery failures remain errors. The durable promotion journal and
+staged inventory contain only the selected requests, so crash recovery repeats
+the same verified transition. The next collector reconsiders pending requests.
+
+To resolve a deferred request, publish its exact verified runtime or have the
+original publisher replace its signed pending entry through normal publication.
+Publisher reconciliation may retire an unpublished missing-runtime version only
+after four newer offered releases of the same target and channel remain; it does
+not rewrite package identities or remove published rollback history.
 
 The store keeps each staged package once, as the payload blobs and thin form it
 serves for thin installs plus a record of the package root, and rebuilds and
@@ -634,6 +653,28 @@ a first open takes the newest retained version whose runtime build the device
 already has (`app_cli::first_open_offer`). With the default of 20, an image or
 per-user runtime from within the last 20 releases of an app opens it with no
 runtime download; an older one downloads the runtime the newest version names.
+
+On the device, a downloaded runtime build lives in
+`$XDG_DATA_HOME/tilo-runtime/<version>/` only while something needs it
+(`runtime_bundle::gc`). After every `tilo-install install`, `update` and
+`uninstall`, and on `tilo-install gc`, a build is removed unless an installed
+package (the user's or the image's) names it as its `runtime` or among its
+`optional-runtimes`, it is pinned (`tilo-install runtime pin`, or installed
+with `--pinned`), it was installed within the last hour (an app's first open
+installs its runtime and then the app, in two steps), or a running app has it
+mounted. A build leaves its version's directory in one rename before any file
+is deleted, so a collection stopped halfway never leaves a build a launch
+would pick. Nothing runs on a timer.
+
+A launch holds what it runs on from before it looks at it until its sandbox
+exits: a shared `flock` on `.launches/<version>` in the runtime root for each
+per-user runtime build, and on `leases/<package id>` in the app store for its
+payload tree. Removal takes the same file exclusively without waiting, so an
+app opened while it is being updated keeps the build it chose, payload and
+runtime, and the collection after the launch ends takes them. A launcher that
+dies releases its holds with its descriptors. The app host's own installs and
+removals run the same collection as `tilo-install`, which also removes the
+staging a crashed install left in the store's `tmp/`.
 
 `prune-storage --dry-run --keep-releases N --keep-prereleases M` lists the
 published versions that policy drops and what pruning deletes once they are

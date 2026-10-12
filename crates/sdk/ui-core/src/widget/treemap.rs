@@ -5,10 +5,7 @@
     reason = "treemap partitioning is bounded floating-point geometry"
 )]
 
-use std::collections::HashMap;
-
 use crate::widget::ModelPath;
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{Color, Fill};
@@ -19,41 +16,12 @@ use crate::presence::PresenceCtx;
 use crate::text_render::{TextRenderer, TextWeight};
 use crate::theme::Theme;
 use crate::tokens::TextRole;
+use crate::widget::Widget;
+use crate::widget::chart_data::ChartItem;
+use crate::widget::chart_labels::format_compact;
 use crate::widget::chart_navigation::{
     ChartNavAction, ChartTouchTracker, InteractiveChart, handle_chart_event, moved_item,
 };
-use crate::widget::{TaffyTreeExt, Widget};
-
-#[derive(Clone, Debug)]
-pub struct TreemapItem {
-    pub id: String,
-    pub label: String,
-    pub value: f64,
-    pub color: Option<Color>,
-    pub detail: String,
-}
-
-impl TreemapItem {
-    pub fn new(id: impl Into<String>, label: impl Into<String>, value: f64) -> Self {
-        Self {
-            id: id.into(),
-            label: label.into(),
-            value,
-            color: None,
-            detail: String::new(),
-        }
-    }
-    #[must_use]
-    pub fn colored(mut self, color: Color) -> Self {
-        self.color = Some(color);
-        self
-    }
-    #[must_use]
-    pub fn with_detail(mut self, detail: impl Into<String>) -> Self {
-        self.detail = detail.into();
-        self
-    }
-}
 
 #[derive(Clone, Debug)]
 pub struct TreemapStyle {
@@ -85,7 +53,7 @@ struct Tile {
 }
 
 pub struct Treemap {
-    items: Vec<TreemapItem>,
+    items: Vec<ChartItem>,
     style: TreemapStyle,
     title: String,
     height: f32,
@@ -98,7 +66,7 @@ pub struct Treemap {
 }
 
 impl Treemap {
-    pub fn new(items: Vec<TreemapItem>) -> Self {
+    pub fn new(items: Vec<ChartItem>) -> Self {
         Self {
             items,
             style: TreemapStyle::default(),
@@ -137,7 +105,7 @@ impl Treemap {
         self.height = height.max(100.0);
         self
     }
-    pub fn set_items(&mut self, items: Vec<TreemapItem>) {
+    pub fn set_items(&mut self, items: Vec<ChartItem>) {
         self.items = items;
         self.hovered = None;
     }
@@ -323,25 +291,8 @@ impl InteractiveChart for Treemap {
 }
 
 impl Widget for Treemap {
-    fn build_layout(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
-        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        let style = Style {
-            size: Size {
-                width: Dimension::percent(1.0),
-                height: Dimension::length(self.height),
-            },
-            ..Default::default()
-        };
-        taffy.widget_leaf(style, node_map, self)
-    }
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = crate::widget::placed(&layout, origin);
-    }
+    crate::widget::chart_navigation::chart_leaf!();
+
     #[allow(
         clippy::too_many_lines,
         reason = "tiles, responsive labels and inspector share one paint pass"
@@ -477,7 +428,7 @@ impl Widget for Treemap {
                 .with_children(children),
         )
     }
-    fn perform_action_at(
+    fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
         key_path: &[u64],
@@ -497,26 +448,8 @@ impl Widget for Treemap {
     fn name(&self) -> &'static str {
         "Treemap"
     }
-    fn get_rect(&self) -> Rect {
-        self.rect
-    }
     fn is_focusable(&self) -> bool {
         true
-    }
-    fn is_layout_dirty(&self) -> bool {
-        self.rect == Rect::ZERO
-    }
-}
-
-fn format_compact(value: f64) -> String {
-    if value.abs() >= 1_000_000_000.0 {
-        format!("{:.1}B", value / 1_000_000_000.0)
-    } else if value.abs() >= 1_000_000.0 {
-        format!("{:.1}M", value / 1_000_000.0)
-    } else if value.abs() >= 1_000.0 {
-        format!("{:.1}K", value / 1_000.0)
-    } else {
-        format!("{value:.1}")
     }
 }
 
@@ -528,9 +461,9 @@ mod tests {
         // Case `layout_covers_each_positive_item_once`.
         {
             let mut map = Treemap::new(vec![
-                TreemapItem::new("a", "A", 3.0),
-                TreemapItem::new("b", "B", 2.0),
-                TreemapItem::new("c", "C", 1.0),
+                ChartItem::new("a", "A", 3.0),
+                ChartItem::new("b", "B", 2.0),
+                ChartItem::new("c", "C", 1.0),
             ]);
             map.rect = Rect::new(0.0, 0.0, 600.0, 300.0);
             assert_eq!(map.layout().len(), 3);
@@ -539,8 +472,8 @@ mod tests {
         // Case `invalid_values_are_omitted`.
         {
             let map = Treemap::new(vec![
-                TreemapItem::new("a", "A", f64::NAN),
-                TreemapItem::new("b", "B", -2.0),
+                ChartItem::new("a", "A", f64::NAN),
+                ChartItem::new("b", "B", -2.0),
             ]);
             assert!(map.valid_items().is_empty());
         }

@@ -232,6 +232,8 @@ struct RelayScopes {
     subscribe: Option<moq_net::origin::Consumer>,
     /// The session's own view of `subscribe`, the only thing it is served from.
     view: Option<crate::mirror::Mirror>,
+    /// Re-bundles the voice datagrams `view` serves for this session's loss.
+    downlink: Arc<crate::mirror::Downlink>,
     offered: Option<Offered>,
 }
 
@@ -342,8 +344,12 @@ impl Relay {
                 server = server.with_subscriber(own);
             }
             if let Some(subscribe) = &scopes.subscribe {
-                let view =
-                    crate::mirror::Mirror::start(subscribe.clone(), VIEW_BYTES, VOICE_RETAIN);
+                let view = crate::mirror::Mirror::start(
+                    subscribe.clone(),
+                    VIEW_BYTES,
+                    VOICE_RETAIN,
+                    Some(scopes.downlink.clone()),
+                );
                 server = server.with_publisher(view.consume());
                 scopes.view = Some(view);
             }
@@ -409,6 +415,7 @@ impl Relay {
             ingress,
             subscribe,
             view: None,
+            downlink: Arc::default(),
             offered,
         })
     }
@@ -511,8 +518,12 @@ impl Relay {
             ingress,
             subscribe: _subscribe,
             mut view,
+            downlink,
             mut offered,
         } = scopes;
+        // Voice redundancy toward this session follows the loss its own
+        // connection measures (TIL-624).
+        downlink.attach((*transport).clone());
         // Scopes were observed Current during admission; the loop below
         // re-observes them on the authority driver's schedule.
         if !scopes_well_formed(authorization.as_ref()) {
@@ -628,13 +639,13 @@ impl Drop for LoopbackRelay {
 }
 
 /// The next datagram or group of a subscribed track.
-enum Next {
+pub(crate) enum Next {
     Datagram(moq_net::Datagram),
     Group(Box<moq_net::group::Consumer>),
     End,
 }
 
-async fn next(track: &mut moq_net::track::Subscriber) -> Next {
+pub(crate) async fn next(track: &mut moq_net::track::Subscriber) -> Next {
     moq_net::kio::wait(|waiter| {
         if let Poll::Ready(datagram) = track.poll_recv_datagram(waiter) {
             return Poll::Ready(match datagram {

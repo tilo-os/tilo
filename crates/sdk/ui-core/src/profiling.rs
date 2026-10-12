@@ -23,6 +23,7 @@
 pub(crate) mod frame_probe;
 pub(crate) mod resource_trace;
 
+use crate::num::{f32_of_f64, f64_of_u64, f64_of_usize, usize_of_f64};
 use crate::time::{Duration, Instant};
 use std::collections::VecDeque;
 use std::path::Path;
@@ -193,7 +194,7 @@ impl DumpWriter {
 const HISTORY_CAP: usize = 240;
 
 /// The [`crate::app::App`] holds one of these behind an `Option`; the
-/// headless [`crate::headless::Driver`] holds another for the perf harness.
+/// headless [`crate::headless::FrameHarness`] holds another for the perf harness.
 /// Both feed it the same way: [`record`](Self::record) a pass duration, then
 /// [`commit_frame`](Self::commit_frame) once per frame.
 pub struct FrameProfiler {
@@ -217,49 +218,6 @@ pub struct FrameProfiler {
 /// saturates rather than truncates in practice.
 fn saturating_u64(value: u128) -> u64 {
     u64::try_from(value).unwrap_or(u64::MAX)
-}
-
-/// Frame counts and microsecond timings graphed and reported here are
-/// always far below 2^53, so this conversion never loses precision in
-/// practice.
-#[allow(
-    clippy::cast_precision_loss,
-    reason = "microsecond timings never approach 2^53; lossless in practice"
-)]
-fn lossy_f64(value: u64) -> f64 {
-    value as f64
-}
-
-/// Sample/bar counts here are always tiny (at most [`HISTORY_CAP`]), far
-/// below 2^53.
-#[allow(
-    clippy::cast_precision_loss,
-    reason = "sample counts never approach 2^53; lossless in practice"
-)]
-fn count_f64(value: usize) -> f64 {
-    value as f64
-}
-
-/// Percentile ranks are always small non-negative counts; Rust's
-/// float-to-int `as` cast saturates rather than panicking or wrapping.
-#[allow(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    reason = "percentile ranks are tiny non-negative counts, always in range"
-)]
-fn saturating_usize(value: f64) -> usize {
-    value as usize
-}
-
-/// Narrows a computed HUD panel width to `f32` for the text renderer. HUD
-/// panel dimensions are a few hundred logical px, far below `f32::MAX`, so
-/// the truncation the lint warns about can't occur.
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "HUD panel widths are tiny compared to f32::MAX"
-)]
-fn narrow_f32(value: f64) -> f32 {
-    value as f32
 }
 
 /// Fixed geometry for one [`FrameProfiler::draw_hud`] call, computed once
@@ -506,12 +464,12 @@ impl FrameProfiler {
         let max = self.history.iter().map(|f| f.total_us).max().unwrap_or(0);
         let over = self.history.iter().filter(|f| f.over_budget()).count();
         let fps = if last.total_us > 0 {
-            1_000_000.0 / lossy_f64(last.total_us)
+            1_000_000.0 / f64_of_u64(last.total_us)
         } else {
             0.0
         };
 
-        let ms = |us: u64| lossy_f64(us) / 1000.0;
+        let ms = |us: u64| f64_of_u64(us) / 1000.0;
         let mut ty = layout.y0 + layout.pad + 10.0;
         let tx = layout.x0 + layout.pad;
         // Passed in per call rather than captured, so this closure holds no
@@ -532,7 +490,7 @@ impl FrameProfiler {
                 11.0,
                 color,
                 origin,
-                Some(narrow_f32(layout.panel_w - layout.pad * 2.0)),
+                Some(f32_of_f64(layout.panel_w - layout.pad * 2.0)),
             );
             *ty += layout.line_h;
         };
@@ -620,8 +578,8 @@ impl FrameProfiler {
         let mut totals: Vec<u64> = self.history.iter().map(|f| f.total_us).collect();
         totals.sort_unstable();
         let p95 = percentile(&totals, 95.0);
-        let scale_top = lossy_f64((FRAME_BUDGET_US * 2).max(p95));
-        let y_of = |us: u64| gy1 - (lossy_f64(us) / scale_top).min(1.0) * layout.graph_h;
+        let scale_top = f64_of_u64((FRAME_BUDGET_US * 2).max(p95));
+        let y_of = |us: u64| gy1 - (f64_of_u64(us) / scale_top).min(1.0) * layout.graph_h;
 
         let budget_y = y_of(FRAME_BUDGET_US);
         let mut bl = vello::kurbo::BezPath::new();
@@ -636,9 +594,9 @@ impl FrameProfiler {
         );
 
         let shown = self.history.len().min(HISTORY_CAP);
-        let bar_w = (gw / count_f64(shown)).max(1.0);
+        let bar_w = (gw / f64_of_usize(shown)).max(1.0);
         for (i, f) in self.history.iter().rev().take(shown).enumerate() {
-            let bx1 = gx1 - count_f64(i) * bar_w;
+            let bx1 = gx1 - f64_of_usize(i) * bar_w;
             let bx0 = (bx1 - bar_w + 0.5).max(gx0);
             let by0 = y_of(f.total_us);
             let bar = Rect::new(bx0, by0, bx1, gy1);
@@ -697,7 +655,7 @@ fn percentile(sorted: &[u64], p: f64) -> u64 {
         return 0;
     }
     let n = sorted.len();
-    let rank = saturating_usize(((p / 100.0) * count_f64(n)).ceil());
+    let rank = usize_of_f64(((p / 100.0) * f64_of_usize(n)).ceil());
     let idx = rank.saturating_sub(1).min(n.saturating_sub(1));
     sorted.get(idx).copied().unwrap_or(0)
 }
@@ -735,7 +693,7 @@ impl PerfReport {
         };
         let over_budget = samples.iter().filter(|f| f.total_us > budget_us).count();
         let over_budget_pct = if frames > 0 {
-            count_f64(over_budget) * 100.0 / count_f64(frames)
+            f64_of_usize(over_budget) * 100.0 / f64_of_usize(frames)
         } else {
             0.0
         };
@@ -761,7 +719,7 @@ impl PerfReport {
     /// Microseconds shown as milliseconds.
     pub fn to_table(&self) -> String {
         use std::fmt::Write;
-        let ms = |us: u64| lossy_f64(us) / 1000.0;
+        let ms = |us: u64| f64_of_u64(us) / 1000.0;
         let mut s = String::new();
         let _ = writeln!(
             s,
@@ -839,7 +797,7 @@ pub enum PerfStep {
     ClickAt(f64, f64),
 }
 
-/// Reusable across any app: build a [`crate::headless::Driver`] over the
+/// Reusable across any app: build a [`crate::headless::FrameHarness`] over the
 /// app's real root + state, then call [`run_scenario`].
 #[derive(Debug, Clone)]
 pub struct PerfScenario {
@@ -889,7 +847,10 @@ impl PerfScenario {
     clippy::panic,
     reason = "invalid benchmark workloads must not return timing reports"
 )]
-pub fn run_scenario(driver: &mut crate::headless::Driver, scenario: &PerfScenario) -> PerfReport {
+pub fn run_scenario(
+    driver: &mut crate::headless::FrameHarness,
+    scenario: &PerfScenario,
+) -> PerfReport {
     driver.begin_profiling();
     for _ in 0..scenario.warmup {
         driver.profile_frame();
@@ -934,7 +895,7 @@ pub fn run_scenario_on(
     root: Box<dyn crate::widget::Widget>,
     scenario: &PerfScenario,
 ) -> PerfReport {
-    let mut driver = crate::headless::Driver::new(state, root, scenario.viewport);
+    let mut driver = crate::headless::FrameHarness::new(state, root, scenario.viewport);
     run_scenario(&mut driver, scenario)
 }
 
@@ -1058,7 +1019,7 @@ mod tests {
             let root = crate::widget::Button::new("activate", "Activate")
                 .on_click(move || observed.set(observed.get() + 1));
             let mut driver =
-                crate::headless::Driver::new(crate::State::new(), Box::new(root), (400, 300));
+                crate::headless::FrameHarness::new(crate::State::new(), Box::new(root), (400, 300));
             let scenario = PerfScenario {
                 name: "real-click".into(),
                 viewport: (400, 300),
@@ -1075,7 +1036,7 @@ mod tests {
         // `#[should_panic(expected = "missing-control")]`).
         {
             let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                let mut driver = crate::headless::Driver::new(
+                let mut driver = crate::headless::FrameHarness::new(
                     crate::State::new(),
                     Box::new(crate::widget::Text::new("Root")),
                     (400, 300),

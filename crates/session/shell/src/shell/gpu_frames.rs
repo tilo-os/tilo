@@ -865,6 +865,11 @@ static IMPORTS: Mutex<ImportCache<smithay::backend::allocator::dmabuf::WeakDmabu
 /// frame can be drawn, the caller holds the buffer for it ([`GpuFrame::hold`]):
 /// the client must not get it back while the frame lives.
 ///
+/// `declared_opaque` is the commit's opaque region covering the whole
+/// surface: an `ARGB`/`ABGR` buffer's alpha is then padding, and the frame is
+/// [`GpuFrame::opaque`] like an `X` format's — drawn ignoring its alpha, and
+/// eligible for scanout as its `X` twin.
+///
 /// # Errors
 ///
 /// No presenting device yet, a format or layout the import cannot describe,
@@ -873,9 +878,10 @@ static IMPORTS: Mutex<ImportCache<smithay::backend::allocator::dmabuf::WeakDmabu
 pub fn import_dmabuf(
     dmabuf: &smithay::backend::allocator::dmabuf::Dmabuf,
     surface: u64,
+    declared_opaque: bool,
 ) -> Result<Arc<GpuFrame>, String> {
     let present = present_device().ok_or_else(|| "no presenting GPU yet".to_owned())?;
-    import_dmabuf_on(&present, dmabuf, surface)
+    import_dmabuf_on(&present, dmabuf, surface, declared_opaque)
 }
 
 #[cfg(target_os = "linux")]
@@ -883,13 +889,14 @@ fn import_dmabuf_on(
     present: &PresentDevice,
     dmabuf: &smithay::backend::allocator::dmabuf::Dmabuf,
     surface: u64,
+    declared_opaque: bool,
 ) -> Result<Arc<GpuFrame>, String> {
     use smithay::backend::allocator::{Buffer as _, Fourcc};
     use std::os::fd::AsFd as _;
 
     let fourcc = dmabuf.format().code;
     let opaque = match fourcc {
-        Fourcc::Argb8888 | Fourcc::Abgr8888 => false,
+        Fourcc::Argb8888 | Fourcc::Abgr8888 => declared_opaque,
         Fourcc::Xrgb8888 | Fourcc::Xbgr8888 => true,
         other => return Err(format!("{other:?} is not an 8-bit RGB format")),
     };

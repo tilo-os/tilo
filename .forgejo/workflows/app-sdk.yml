@@ -21,7 +21,8 @@ on:
       - "tools/ci/workspace_graph.py"
       - "tools/policy/app_capability*"
       - "tools/policy/app_portability*"
-      - "tools/policy/check_app_*"
+      - "tools/policy/check_app_capabilities.py"
+      - "tools/policy/check_app_portability.py"
       - "tools/sdk/**"
       - "tools/web/**"
       - "vendor/**"
@@ -39,7 +40,8 @@ on:
       - "tools/ci/workspace_graph.py"
       - "tools/policy/app_capability*"
       - "tools/policy/app_portability*"
-      - "tools/policy/check_app_*"
+      - "tools/policy/check_app_capabilities.py"
+      - "tools/policy/check_app_portability.py"
       - "tools/sdk/**"
       - "tools/web/**"
       - "vendor/**"
@@ -121,6 +123,7 @@ jobs:
       image: ${{ steps.resolve.outputs.image }}
       main: ${{ steps.merge.outputs.main }}
       affected: ${{ steps.affected.outputs.affected }}
+      linux_affected: ${{ steps.affected.outputs.linux_affected }}
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -143,17 +146,19 @@ jobs:
         run: |
           if [ "${{ github.event_name }}" = workflow_dispatch ]; then
             echo affected=true >> "$GITHUB_OUTPUT"
+            echo linux_affected=true >> "$GITHUB_OUTPUT"
           else
             # A pull request compares the merge with the main it merged; a push
             # compares with its parent.
             python3 tools/ci/app_sdk_affected.py ${MAIN:+--base "$MAIN"} --github-output "$GITHUB_OUTPUT"
+            python3 tools/ci/app_sdk_affected.py ${MAIN:+--base "$MAIN"} --lane linux --github-output "$GITHUB_OUTPUT"
           fi
 
   # Linux: the CLI's own tests, the Linux artifact and .tapp of a
   # representative app, and a generated app built outside the repository.
   linux:
     needs: [builder, policy]
-    if: ${{ !cancelled() && needs.builder.result == 'success' && (github.event_name != 'pull_request' || needs.policy.result == 'success') && needs.builder.outputs.affected == 'true' }}
+    if: ${{ !cancelled() && needs.builder.result == 'success' && (github.event_name != 'pull_request' || needs.policy.result == 'success') && needs.builder.outputs.linux_affected == 'true' }}
     # Several full debug graphs (tilo-app-cli's tests, Calculator, a generated
     # app for two targets) share one target directory: they outgrow the
     # quality lane's 20 GiB disk and reach its 5 GiB memory limit. Each step
@@ -329,8 +334,7 @@ jobs:
       - name: Headless Chromium for Testing
         run: |
           # Chrome's shared-library dependencies; present on current builders.
-          dnf install -y nss atk at-spi2-atk cups-libs libdrm libXcomposite libXdamage \
-            libXrandr mesa-libgbm pango alsa-lib libxkbcommon || true
+          bash tools/ci/ensure-browser-dependencies.sh
           npx --yes @puppeteer/browsers@2 install chrome@stable --path "$RUNNER_TEMP/chrome" \
             | tee "$RUNNER_TEMP/chrome.txt"
           echo "CHROME=$(awk '{print $2}' "$RUNNER_TEMP/chrome.txt" | tail -n 1)" >> "$GITHUB_ENV"
@@ -466,8 +470,7 @@ jobs:
         run: |
           command -v node || dnf install -y nodejs
           # Chrome's shared-library dependencies; present on current builders.
-          dnf install -y nss atk at-spi2-atk cups-libs libdrm libXcomposite libXdamage \
-            libXrandr mesa-libgbm pango alsa-lib libxkbcommon || true
+          bash tools/ci/ensure-browser-dependencies.sh
           npx --yes @puppeteer/browsers@2 install chrome@stable --path "$RUNNER_TEMP/chrome" \
             | tee "$RUNNER_TEMP/chrome.txt"
           echo "CHROME=$(awk '{print $2}' "$RUNNER_TEMP/chrome.txt" | tail -n 1)" >> "$GITHUB_ENV"

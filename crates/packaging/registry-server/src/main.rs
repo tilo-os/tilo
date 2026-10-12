@@ -610,7 +610,16 @@ fn cmd_collect_first_party(
                 .eq_ignore_ascii_case(&publisher_hex)
         })
         .collect();
-    submissions.sort_by(|left, right| left.submission_id.cmp(&right.submission_id));
+    // Keep the bounded batch progressing when apps wait for a provider whose
+    // package id sorts after them. Verification remains independent of order.
+    submissions.sort_by(|left, right| {
+        let provider_priority = |pending: &registry_server::PendingSubmission| {
+            !registry_types::is_runtime_package_id(&pending.change.entry.package_id)
+        };
+        provider_priority(left)
+            .cmp(&provider_priority(right))
+            .then_with(|| left.submission_id.cmp(&right.submission_id))
+    });
     submissions.truncate(max_items);
     if submissions.is_empty() {
         let _deleted = storage.delete_staged_promotion()?;
@@ -820,9 +829,12 @@ fn cmd_sign_delegated_snapshot(
     let identity = storage.load_identity()?;
     let writer = storage.lock_snapshot()?;
     recover_snapshot_transaction(&writer, &identity.owner_pubkey_hex)?;
-    if storage.load_promotion_transaction()?.is_some() || storage.load_staged_promotion()?.is_some()
-    {
-        anyhow::bail!("staged first-party promotion must publish before a delegated refresh");
+    // A collected batch has not changed the public catalogue. Refreshing only
+    // the current entries keeps it available while an incomplete batch waits
+    // for its runtime. An active transaction owns a candidate/sequence and
+    // must complete before any independent snapshot can advance that sequence.
+    if storage.load_promotion_transaction()?.is_some() {
+        anyhow::bail!("active first-party promotion must publish before a delegated refresh");
     }
     let authorization = storage
         .load_channel_authorization()?
@@ -1029,10 +1041,19 @@ fn cmd_publish_staged_first_party(
             )?;
             writer.archive_current(current)?;
         }
-        let mut entries = current
-            .as_ref()
-            .map_or_else(Vec::new, |snapshot| snapshot.entries.clone());
-        apply_staged_changes(&mut entries, &staged.submissions)?;
+        let (entries, selected) = select_installable_promotions(&staged, current.as_ref())?;
+        if selected.submissions.is_empty() {
+            println!(
+                "{}",
+                serde_json::json!({
+                    "status": "deferred",
+                    "published": 0,
+                    "deferred": staged.submissions.len(),
+                    "reason": "exact native runtime is not offered",
+                })
+            );
+            return Ok(());
+        }
         validate_new_native_runtimes(&entries, current.as_ref())?;
         if entries.len() > authorization.max_snapshot_entries {
             anyhow::bail!("candidate exceeds delegated entry bound");
@@ -1050,9 +1071,15 @@ fn cmd_publish_staged_first_party(
             publisher_pubkey_hex: staged.publisher_pubkey_hex.clone(),
             reviewer: reviewer.to_string(),
             reason: reason.to_string(),
-            submissions: staged.submissions.clone(),
+            submissions: selected.submissions.clone(),
             candidate_snapshot: candidate,
         };
+        // A recovered journal must see exactly its selected, verified inventory.
+        // Unselected requests remain pending and retain their staged bytes; the
+        // next collector can reconsider them without changing their signatures.
+        if selected != staged {
+            storage.save_staged_promotion(&selected)?;
+        }
         storage.save_promotion_transaction(&journal)?;
         journal
     };
@@ -1081,6 +1108,7 @@ fn cmd_publish_staged_first_party(
         serde_json::json!({
             "status": "published",
             "promoted": reviews.len(),
+            "deferred": staged.submissions.len().saturating_sub(reviews.len()),
             "sequence": journal.candidate_snapshot.sequence,
             "snapshot_hash": registry_types::snapshot_hash(&journal.candidate_snapshot)?,
             "pruned": pruned,
@@ -1223,38 +1251,87 @@ fn validate_new_native_runtimes(
         if registry_types::is_runtime_package_id(&entry.package_id) {
             continue;
         }
-        let retained = previous.and_then(|snapshot| {
-            snapshot
-                .entries
+        if let Some(version) = missing_native_runtime(entry, entries, previous) {
+            anyhow::bail!(
+                "{}@{} ({}) has no offered native runtime {}; keep the app pending until its runtime is collected",
+                entry.package_id,
+                version.version,
+                version.target.architecture,
+                version.target.runtime.as_deref().unwrap_or_default(),
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Select complete signed requests, never individual versions. All collected
+/// signatures and bytes have already been reverified by the caller. A request
+/// whose new native versions would be uninstallable stays pending; it must not
+/// prevent independently installable requests (including SDK providers) from
+/// being published. Providers do not depend on app requests, so removing only
+/// apps leaves the candidate's provider inventory unchanged.
+fn select_installable_promotions(
+    staged: &StagedPromotion,
+    previous: Option<&SignedRegistrySnapshot>,
+) -> anyhow::Result<(Vec<registry_types::RegistryEntry>, StagedPromotion)> {
+    let baseline = previous.map_or_else(Vec::new, |snapshot| snapshot.entries.clone());
+    let mut entries = baseline.clone();
+    apply_staged_changes(&mut entries, &staged.submissions)?;
+    let deferred: BTreeSet<_> = entries
+        .iter()
+        .filter(|entry| !registry_types::is_runtime_package_id(&entry.package_id))
+        .filter(|entry| missing_native_runtime(entry, &entries, previous).is_some())
+        .map(|entry| entry.package_id.clone())
+        .collect();
+    for id in &deferred {
+        info!(
+            package_id = id,
+            "keeping request pending until its exact native runtimes are offered"
+        );
+    }
+    let mut selected = staged.clone();
+    selected
+        .submissions
+        .retain(|pending| !deferred.contains(&pending.change.entry.package_id));
+    selected.artifacts.retain(|artifact| {
+        selected.submissions.iter().any(|pending| {
+            pending
+                .change
+                .entry
+                .versions
                 .iter()
-                .find(|old| old.package_id == entry.package_id)
-        });
-        for version in &entry.versions {
-            if version.target.native_runtime().is_none()
-                || retained.is_some_and(|old| old.versions.contains(version))
-            {
-                continue;
-            }
-            let offered = entries.iter().any(|provider| {
+                .any(|version| staged_artifact_matches(artifact, pending, version))
+        })
+    });
+    let mut entries = baseline;
+    apply_staged_changes(&mut entries, &selected.submissions)?;
+    validate_new_native_runtimes(&entries, previous)?;
+    Ok((entries, selected))
+}
+
+fn missing_native_runtime<'a>(
+    entry: &'a registry_types::RegistryEntry,
+    entries: &[registry_types::RegistryEntry],
+    previous: Option<&SignedRegistrySnapshot>,
+) -> Option<&'a registry_types::RegistryVersion> {
+    let retained = previous.and_then(|snapshot| {
+        snapshot
+            .entries
+            .iter()
+            .find(|old| old.package_id == entry.package_id)
+    });
+    entry.versions.iter().find(|version| {
+        version.target.native_runtime().is_some()
+            && !retained.is_some_and(|old| old.versions.contains(version))
+            && !entries.iter().any(|provider| {
                 registry_types::is_runtime_package_id(&provider.package_id)
                     && provider.versions.iter().any(|provided| {
                         provided.target.platform == version.target.platform
                             && provided.target.architecture == version.target.architecture
                             && provided.target.runtime == version.target.runtime
                     })
-            });
-            if !offered {
-                anyhow::bail!(
-                    "{}@{} ({}) has no offered native runtime {}; keep the app pending until its runtime is collected",
-                    entry.package_id,
-                    version.version,
-                    version.target.architecture,
-                    version.target.runtime.as_deref().unwrap_or_default(),
-                );
-            }
-        }
-    }
-    Ok(())
+            })
+    })
 }
 
 fn unsigned_snapshot(

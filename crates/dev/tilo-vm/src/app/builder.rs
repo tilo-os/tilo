@@ -116,7 +116,7 @@ fn verified_layers(remote: &mut Remote, component: &str) -> Result<Vec<String>, 
         .collect())
 }
 
-fn validate_header(
+pub(super) fn validate_header(
     packed: &builderlayer::Packed,
     component: &str,
     digest: &str,

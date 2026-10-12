@@ -1,0 +1,25 @@
+[package]
+name = "tilo-action-policy"
+version = "0.1.0"
+edition = "2024"
+publish = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Who may invoke which action: grants over the published tree and the one function that decides them."
+
+[lib]
+name = "tilo_action_policy"
+path = "src/lib.rs"
+
+# Pure data and pure functions: every door, every host, the relay and the
+# browser decide with this crate, so it depends on nothing but serde.
+
+[dependencies]
+serde.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+
+[lints]
+workspace = true
