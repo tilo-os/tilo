@@ -229,7 +229,6 @@ history-files-error-unavailable = Der Dateiverlauf ist vorübergehend nicht verf
 history-files-error-too-large = Die frühere Vorschau überschreitet die unterstützte Größe
 history-files-error-no-content = Diese Version hat keinen gespeicherten Inhaltsverweis
 history-files-outcome-applied = Version { $revision } wiederhergestellt (Vorgang { $intent }). Der aktuelle zusammengeführte Dateiinhalt wird getrennt angezeigt. Vorheriger Verweis: beobachtete Version.
-history-files-outcome-applied-legacy = Version { $revision } wiederhergestellt (Vorgang { $intent }). Der aktuelle zusammengeführte Dateiinhalt wird getrennt angezeigt. Vorheriger Verweis: älterer Inhaltsvertreter; frühere Urheberschaft unbekannt.
 history-files-outcome-unchanged = Der ausgewählte Inhalt stimmt bereits überein; keine neue Version und kein Rückgängig-Eintrag
 history-files-outcome-pending = Die Wiederherstellung steht aus. Prüfe das Ergebnis oder versuche denselben Vorgang erneut
 history-files-outcome-review = Die aktuelle Datei hat sich geändert. Aktualisiere die Prüfung; die ausgewählte alte Version bleibt angeheftet
