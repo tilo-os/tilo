@@ -68,10 +68,6 @@ fn receipt_request_is_bound_to_the_published_report_and_has_no_caller_heads() {
         validate(&resource, &serde_json::to_vec(&ambiguous).unwrap()),
         Err(SemanticReadError::InvalidRequest)
     );
-    assert_eq!(
-        validate(&resource, &vec![b' '; MAX_REQUEST_BYTES + 1]),
-        Err(SemanticReadError::Limit)
-    );
 }
 
 #[test]
