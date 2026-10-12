@@ -14880,7 +14880,11 @@ mod tests {
             let mut services = std::collections::BTreeMap::new();
             services.insert(
                 launcher::services::COLLAB_SERVICE.to_string(),
-                "required@1".to_string(),
+                tilo_app_package::ServiceReq {
+                    protocol: launcher::services::COLLAB_SERVICE.to_string(),
+                    requirement: tilo_app_package::Requirement::Required,
+                    version: 1,
+                },
             );
             let resolved = launcher::services::resolve_service_binds_for_launch(
                 &services,

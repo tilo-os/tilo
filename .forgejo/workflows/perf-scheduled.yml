@@ -4,8 +4,8 @@ name: Perf / scheduled
 # results as records (tools/perf/record.py), compare.py checks them against
 # the store's rolling baseline and tools/perf/kpi-budgets.toml, and the
 # annotated records are appended to the store, the public generic package
-# tilo-perf-results (tools/perf/store.py). DEVELOPMENT.md "Performance
-# results" says how a benchmark joins.
+# tilo-perf-results (tools/perf/store.py). docs/measurements/performance.md
+# says how a benchmark joins.
 #
 # It is not a required check and never runs per push: wall-clock numbers
 # from a pull request's shared runner would only be noise. Benchmarks consume
@@ -252,6 +252,26 @@ jobs:
             --env-json perf/env.json --out perf/agent.jsonl --log perf/compositor.log
           cat perf/agent.jsonl
 
+      # Pipelined invokes (apps/agent, `pipelined_task_benchmark`): the
+      # agent's own task loop, a scripted model and a broker whose
+      # applications take 100 ms per step, one three-step plan on three
+      # records run as the model marks it (independent) and unmarked (in
+      # order). Whole task wall time; it draws nothing.
+      - name: Measure pipelined agent invokes
+        run: |
+          set -euo pipefail
+          python3 tools/perf/record.py env --profile release --renderer none \
+            --virtualization kvm --runner runner > perf/env-pipeline.json
+          TILO_AGENT_PIPELINE_REPS=30 TILO_AGENT_PIPELINE_SAMPLES="$PWD/perf/pipeline" \
+            bash scripts/ci-run.sh "pipelined agent invokes" -- \
+            cargo test --locked --release -p agent --lib pipelined_task_benchmark -- --nocapture
+          for plan in pipelined sequential; do
+            python3 tools/perf/record.py emit --kpi "agent.task.${plan}.wall" --unit ms \
+              --samples-file "perf/pipeline/${plan}.txt" --env-json perf/env-pipeline.json \
+              --meta steps=3 --meta step_ms=100 >> perf/agent.jsonl
+          done
+          tail -n 2 perf/agent.jsonl
+
       - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         if: always()
         with:
@@ -289,7 +309,7 @@ jobs:
             > perf/footprint.jsonl
           cat perf/footprint.jsonl
 
-      # The enforced app-size gate (DEVELOPMENT.md, "App package size"): every
+      # The enforced app-size gate (docs/measurements/app-package-size.md): every
       # published app within its budget, and the apps' median, p90 and max
       # within the fleet ceilings of tools/perf/tapp-size-budget/. The records
       # above are uploaded either way; compare fails the run on this job.
@@ -298,7 +318,7 @@ jobs:
           python3 tools/perf/tapp_size_ratchet.py fleet "$RUNNER_TEMP/entries.json"
           --summary "$GITHUB_STEP_SUMMARY"
 
-      # The shared runtime (TIL-604; DEVELOPMENT.md, "Runtime size"): the
+      # The shared runtime (TIL-604; docs/measurements/runtime-size.md): the
       # newest published libruntime_dylib.so of each architecture against
       # tools/perf/runtime-size-budget/, recorded as footprint.runtime.*.
       # Records are written before the gate's verdict, so a run over budget

@@ -2,6 +2,7 @@
 # tests/*.rs are modules of tests/it.rs, not separate binaries
 autotests = false
 name = "shell"
+description = "Wayland compositor and session: strips, windows, app hosting, collab"
 version = "0.1.0"
 edition = "2024"
 publish.workspace = true
