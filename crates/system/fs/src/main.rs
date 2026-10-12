@@ -19,6 +19,7 @@ use fs::full_replica::{
     prune_obsolete_workspace_content, save_status, validate_home_peer_set,
 };
 use fs::namespace::ROOT_INO;
+use fs::reachability;
 use fs::share_refresh::{
     ShareRefresh, ShareRefresher, SharedCredential, SharedFetchError, fetch_shared_snapshot,
 };
@@ -1771,17 +1772,20 @@ async fn serve(
     if let Some(authority) = share_authority.as_ref()
         && authority.has_unrevoked_grants()
     {
-        reachability.wake("a share grant is live");
+        reachability::wake(&reachability, "a share grant is live");
     }
     // Files act as the certified person by default; transport authorship and
     // device-specific grants continue to use the endpoint/device key.
     let caps = resolve_acl(&acl_args, credentials.user_public_key())?;
     let acl = caps.as_ref().map(|c| (c.handle(), c.identity()));
     let _acl_reachability = if let Some(caps) = &caps {
-        reachability
-            .wake_when_acl_admits_others(&caps.handle(), "the capability list names someone else")
+        reachability::wake_when_acl_admits_others(
+            &reachability,
+            &caps.handle(),
+            "the capability list names someone else",
+        )
     } else {
-        reachability.wake("the mount enforces no capability list");
+        reachability::wake(&reachability, "the mount enforces no capability list");
         None
     };
     let _reload = caps.map(|c| spawn_acl_reload(c, acl_args.acl_reload_secs));
@@ -1800,7 +1804,10 @@ async fn serve(
         Ticket::workspace_id,
     );
     if remote_ticket.is_some() {
-        reachability.wake("this device joined another device's workspace");
+        reachability::wake(
+            &reachability,
+            "this device joined another device's workspace",
+        );
     }
     let store = Arc::new(open_workspace_store(cache_dir.clone(), &data_plane, workspace_id).await?);
     let author = endpoint.id().to_string();
@@ -1837,7 +1844,10 @@ async fn serve(
         },
     };
     if ns_value.has_synced_with_peers() {
-        reachability.wake("this workspace has synced with a peer before");
+        reachability::wake(
+            &reachability,
+            "this workspace has synced with a peer before",
+        );
     }
     let namespace = Arc::new(Mutex::new(ns_value));
     let record_materializer = if let Some(records) = record_services.as_mut() {
@@ -1909,7 +1919,8 @@ async fn serve(
         .as_ref()
         .and_then(|records| records.workspace_authority.as_ref())
         .and_then(|authority| {
-            reachability.wake_when_acl_admits_others(
+            reachability::wake_when_acl_admits_others(
+                &reachability,
                 &authority.handle(),
                 "the workspace authority names someone else",
             )
@@ -3946,7 +3957,6 @@ async fn seed_from_dir(
     store: &Arc<ContentStore>,
     root: &Path,
 ) -> Result<()> {
-    let registry = tilo_doc_codecs::builtin_registry();
     let document_content = tilo_content::ContentStore::for_app();
     let mut stack = vec![(ROOT_INO, root.to_path_buf())];
     while let Some((parent_ino, dir)) = stack.pop() {
@@ -3966,18 +3976,14 @@ async fn seed_from_dir(
                 stack.push((ino, path));
             } else if ft.is_file() {
                 let data = std::fs::read(&path)?;
-                let codec = name
-                    .rsplit('.')
-                    .next()
-                    .filter(|e| *e != name)
-                    .and_then(|e| registry.provider_for_ext(e).map(|_| e.to_lowercase()));
+                let codec = fs::fs::document_codec_for(&name);
                 if let Some(c) = codec {
                     // Recognized rich-text format → seed as a CRDT document.
                     let mut ns = namespace
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner);
                     if let Some(ino) = ns.create_document(parent_ino, &name, &c, unix_now_ms()) {
-                        ns.import_document(ino, &registry, &data, unix_now_ms(), &document_content);
+                        ns.import_document(ino, &data, unix_now_ms(), &document_content);
                     }
                 } else {
                     let size = data.len() as u64;

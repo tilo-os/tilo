@@ -82,6 +82,18 @@ impl Default for AccountConfig {
 }
 
 impl AccountConfig {
+    /// What the account is called: its display name, falling back to the
+    /// email, falling back to a generic placeholder.
+    pub fn label(&self) -> &str {
+        if !self.display_name.is_empty() {
+            &self.display_name
+        } else if !self.email.is_empty() {
+            &self.email
+        } else {
+            "New account"
+        }
+    }
+
     /// Heuristic autofill: given an email, guess the provider's
     /// IMAP/SMTP hosts. Mirrors what Thunderbird's autoconfig does for the
     /// big providers. Returns true if it recognised the domain.
