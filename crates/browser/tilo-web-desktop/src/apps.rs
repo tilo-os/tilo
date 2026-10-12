@@ -18,6 +18,7 @@ pub(crate) fn register() {
         feeds::definition(),
         hex_editor::definition(),
         maps::definition(),
+        messages::definition(),
         music::definition(),
         notes::definition(),
         passwords::definition(),

@@ -373,7 +373,7 @@ mod tests {
             // The same bytes always produce the same id — that is what lets a book's
             // highlights and reading progress follow it across folders, devices and
             // peers. Two different files produce two different ids.
-            let bytes = include_bytes!("../assets/sample.epub");
+            let bytes = include_bytes!(concat!(env!("OUT_DIR"), "/sample.epub"));
             let a = parse_epub(bytes, 0, "Fable").unwrap();
             let b = parse_epub(bytes, 3, "Something else").unwrap();
             assert_eq!(
@@ -398,7 +398,7 @@ mod tests {
 
         // --- phase: parses_the_bundled_sample ---
         {
-            let bytes = include_bytes!("../assets/sample.epub");
+            let bytes = include_bytes!(concat!(env!("OUT_DIR"), "/sample.epub"));
             let book = parse_epub(bytes, 0, "Fable").expect("sample.epub parses");
             assert_eq!(book.title, "The Lantern-Keeper's Almanac");
             assert_eq!(book.author, "Wren Halloway");

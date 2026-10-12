@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 
 pub const MAX_REPORT_BYTES: usize = 1_048_576;
-pub const MAX_REPORTS: usize = 64;
+pub const MAX_REPORTS: usize = 128;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

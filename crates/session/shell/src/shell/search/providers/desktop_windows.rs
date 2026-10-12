@@ -21,7 +21,7 @@ use crate::shell::state::{GroupId, StripId, TabId, WorkspaceId};
 
 fn close_contract() -> tilo_actions::ActionContract {
     tilo_actions::ActionContract {
-        permission: tilo_actions::PermissionRequirement::Write,
+        kind: tilo_actions::ActionKind::Undoable,
         risk: tilo_actions::RiskLevel::Low,
         retry: tilo_actions::RetryPolicy::Idempotent,
         tags: vec!["desktop".into(), "window".into(), "close".into()],
@@ -31,7 +31,7 @@ fn close_contract() -> tilo_actions::ActionContract {
 
 fn move_contract() -> tilo_actions::ActionContract {
     tilo_actions::ActionContract {
-        permission: tilo_actions::PermissionRequirement::Write,
+        kind: tilo_actions::ActionKind::Undoable,
         risk: tilo_actions::RiskLevel::Low,
         retry: tilo_actions::RetryPolicy::AtMostOnce,
         tags: vec!["desktop".into(), "window".into(), "move".into()],
@@ -144,7 +144,7 @@ fn close_group(chrome: &Chrome, group_id: GroupId) -> Result<(), ActionError> {
             .map_err(|_| refused(tab))?;
     }
     if let Some(entry) = closed {
-        chrome.borrow_mut().remember_closed_tab(entry);
+        chrome.borrow_mut().remember_closed_tab_after_removal(entry);
     }
     Ok(())
 }
@@ -427,6 +427,10 @@ mod tests {
                 .invoke(&mut ui::widget::Edits::lend(&mut doc), &ROOT, &chrome, [])
                 .expect("close accepted");
 
+            crate::shell::tab_binding::close_tab_for_destroyed_surface_and_persist(
+                &mut chrome.borrow_mut().tree_mut(),
+                503,
+            );
             let mut state = chrome.borrow_mut();
             let tree = state.tree();
             let ids = tree.desktop.workspaces[0].strips[0]

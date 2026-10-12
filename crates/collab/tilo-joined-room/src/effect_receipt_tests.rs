@@ -2,9 +2,145 @@ use super::*;
 use crate::application_record::tests::{Fixture, fixture};
 use tilo_actions::{ActionContext, ActionFacet, EffectReceiptStatus, InvocationId};
 
+#[test]
+fn member_effect_uses_original_durable_receipt_and_refuses_changed_or_foreign_audit() {
+    let mut fixture = fixture();
+    let room = RoomId::parse(crate::testing::ROOM).unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let member = enroll_remote_history_member(&mut fixture, &directory.path().join("member.json"));
+    let frames = fixture
+        .governor
+        .outgoing()
+        .map(|(bytes, _)| bytes.to_vec())
+        .collect::<Vec<_>>();
+    for frame in frames {
+        fixture
+            .owner
+            .receive(
+                room,
+                tilo_peer_state::TransportOrigin::RetainedNativePublication {
+                    publisher: fixture.certificate.device_public_key,
+                },
+                postcard::from_bytes(&frame).unwrap(),
+                fixture.now,
+            )
+            .unwrap();
+    }
+    let mut operation = request(EffectReceiptStatus::Succeeded);
+    let mut effect = decode(&operation).unwrap();
+    effect.actor = blake3::Hash::from_bytes(member.user_public_key)
+        .to_hex()
+        .to_string();
+    if let CommitOperation::EffectReceipt { redacted, .. } = &mut operation.operation {
+        *redacted = serde_json::to_vec(&effect).unwrap();
+    }
+    let commit =
+        |owner: &NativeWorkspaceOwner, request: &OwnerCommitRequest, caller: &DeviceCert| {
+            owner.commit_member_effect_receipt(
+                request,
+                caller,
+                &fixture.certificate,
+                &fixture.key,
+                fixture.now,
+            )
+        };
+    let original = commit(&fixture.owner, &operation, &member).unwrap();
+    let path = fixture.directory.path().join("owner.json");
+    let committed = std::fs::read(&path).unwrap();
+    let reopened = crate::open_file(&path).unwrap();
+    let retry = commit(&reopened, &operation, &member).unwrap();
+    assert_eq!(retry.binding, original.binding);
+    assert_eq!(retry.generation, original.generation);
+    assert_eq!(retry.aggregate_hash, original.aggregate_hash);
+    assert_eq!(std::fs::read(&path).unwrap(), committed);
+    fill_member_capacity(&fixture, &reopened, &member);
+    let committed = std::fs::read(&path).unwrap();
+    let archived = commit(&reopened, &operation, &member).unwrap();
+    assert_eq!(archived.binding, original.binding);
+    assert_eq!(archived.generation, original.generation);
+    assert_eq!(archived.aggregate_hash, original.aggregate_hash);
+    assert_eq!(std::fs::read(&path).unwrap(), committed);
+    let mut conflict = operation.clone();
+    effect.status = EffectReceiptStatus::Cancelled;
+    if let CommitOperation::EffectReceipt { redacted, .. } = &mut conflict.operation {
+        *redacted = serde_json::to_vec(&effect).unwrap();
+    }
+    assert!(commit(&reopened, &conflict, &member).is_err());
+    assert!(commit(&reopened, &operation, &fixture.certificate).is_err());
+    let mut stale = member.clone();
+    stale.device_label = "changed certified evidence".into();
+    assert!(commit(&reopened, &operation, &stale).is_err());
+    assert_eq!(std::fs::read(&path).unwrap(), committed);
+    let messages = reopened
+        .with_current(room, |view| {
+            let mut peer = view.peer().clone();
+            assert!(peer.remove_member(member.user_public_key, &fixture.key, fixture.now)?);
+            peer.durable_mutation_messages(
+                view.peer(),
+                &fixture.key,
+                fixture.now,
+                view.generation().checked_add(1).unwrap(),
+            )
+        })
+        .unwrap();
+    for message in messages {
+        reopened
+            .receive(
+                room,
+                tilo_peer_state::TransportOrigin::RetainedNativePublication {
+                    publisher: fixture.certificate.device_public_key,
+                },
+                message,
+                fixture.now,
+            )
+            .unwrap();
+    }
+    let removed = std::fs::read(&path).unwrap();
+    assert!(
+        commit(&reopened, &operation, &member).is_err(),
+        "an existing UUID cannot waive current membership"
+    );
+    assert_eq!(std::fs::read(&path).unwrap(), removed);
+}
+
+fn fill_member_capacity(fixture: &Fixture, owner: &NativeWorkspaceOwner, member: &DeviceCert) {
+    // First archive the original member audit under other valid governor audits.
+    for _ in 0..128 {
+        owner
+            .commit_effect_receipt(
+                &request(EffectReceiptStatus::Succeeded),
+                &fixture.certificate,
+                &fixture.key,
+                fixture.now,
+            )
+            .unwrap();
+    }
+    // The signed public index retains the archived original audit. Fill its
+    // remaining per-member capacity with 127 new, admitted requests.
+    for _ in 0..127 {
+        let mut operation = request(EffectReceiptStatus::Succeeded);
+        let mut effect = decode(&operation).unwrap();
+        effect.actor = blake3::Hash::from_bytes(member.user_public_key)
+            .to_hex()
+            .to_string();
+        if let CommitOperation::EffectReceipt { redacted, .. } = &mut operation.operation {
+            *redacted = serde_json::to_vec(&effect).unwrap();
+        }
+        owner
+            .commit_member_effect_receipt(
+                &operation,
+                member,
+                &fixture.certificate,
+                &fixture.key,
+                fixture.now,
+            )
+            .unwrap();
+    }
+}
+
 fn request(status: EffectReceiptStatus) -> OwnerCommitRequest {
     let invocation = InvocationId::new();
-    let mut context = ActionContext::for_resource("Test effect", "workspace", "workspace", "Room");
+    let mut context = ActionContext::for_resource("workspace", "workspace", "Room");
     context.facets = vec![
         ActionFacet::new("tilo.receipt", "effect"),
         ActionFacet::new("tilo.invocation", invocation.0.to_string()),
@@ -337,7 +473,12 @@ fn effect_private_facets_and_unbounded_context_refuse_without_publication() {
                     code: "private error text".into(),
                 }
             }
-            _ => effect.context.action_label = "control\nlabel".into(),
+            _ => {
+                effect.context.item = Some(tilo_actions::ActionItem {
+                    id: "item".into(),
+                    label: "control\nlabel".into(),
+                });
+            }
         }
         if let CommitOperation::EffectReceipt { redacted, .. } = &mut operation.operation {
             *redacted = serde_json::to_vec(&effect).unwrap();

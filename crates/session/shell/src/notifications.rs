@@ -24,11 +24,11 @@ use crate::priority_contacts::PriorityContactRegistry;
 use std::collections::{HashMap, HashSet, VecDeque};
 use tilo_desktop::notifications::ContinuityNotificationId;
 #[cfg(target_os = "linux")]
-use zbus::names::{InterfaceName, MemberName, OwnedUniqueName};
+use zbus::names::OwnedUniqueName;
 #[cfg(target_os = "linux")]
 use zbus::object_server::{DispatchResult2, Interface, SignalEmitter};
 #[cfg(target_os = "linux")]
-use zbus::{Connection, ObjectServer, fdo, message::Header, message::Message};
+use zbus::{Connection, fdo, message::Header, message::Message};
 
 #[cfg(any(test, target_os = "linux"))]
 use std::path::Path;
@@ -259,6 +259,35 @@ pub struct IncomingNotification {
 
 type ActionTap = Arc<dyn Fn(u32, &str) + Send + Sync + 'static>;
 
+/// A host action on one durable calendar-alarm occurrence.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) enum ScheduledAction {
+    Snooze,
+    Dismiss,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct ScheduledActionRequest {
+    pub id: u64,
+    pub app_id: String,
+    pub target: tilo_desktop::notifications::ScheduledNotificationTarget,
+    pub action: ScheduledAction,
+}
+
+#[cfg(target_os = "linux")]
+struct ScheduledActionController {
+    store: std::sync::Weak<Mutex<scheduled::ScheduleStore>>,
+    changed: crate::idle_wake::IdleWake,
+}
+
+/// A pending snooze projected from the durable scheduler, independent of history.
+#[derive(Clone, Debug)]
+pub(crate) struct SnoozedAlarm {
+    pub app_id: String,
+    pub title: String,
+    pub target: tilo_desktop::notifications::ScheduledNotificationTarget,
+}
+
 #[derive(Default)]
 struct BridgeInner {
     /// `Notify` → compositor toast pump.
@@ -271,6 +300,11 @@ struct BridgeInner {
     closed_events: Vec<(u32, CloseReason)>,
     /// Toast action activated in the compositor → `ActionInvoked` signal.
     action_events: Vec<(u32, String)>,
+    #[cfg(target_os = "linux")]
+    schedule_controller: Option<ScheduledActionController>,
+    scheduled_actions: Vec<ScheduledActionRequest>,
+    scheduled_action_results: HashMap<u64, Result<(), String>>,
+    next_scheduled_action: u64,
     scheduled_targets: HashMap<
         u32,
         (
@@ -291,14 +325,22 @@ struct BridgeInner {
 
 impl std::fmt::Debug for BridgeInner {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("BridgeInner")
+        let mut debug = formatter.debug_struct("BridgeInner");
+        #[cfg(target_os = "linux")]
+        debug.field("schedule_controller", &self.schedule_controller.is_some());
+        debug
             .field("incoming", &self.incoming.len())
             .field("close_requests", &self.close_requests.len())
             .field("ongoing_owners", &self.ongoing_owners.len())
             .field("closed_events", &self.closed_events.len())
             .field("action_events", &self.action_events.len())
             .field("scheduled_targets", &self.scheduled_targets.len())
+            .field("scheduled_actions", &self.scheduled_actions.len())
+            .field(
+                "scheduled_action_results",
+                &self.scheduled_action_results.len(),
+            )
+            .field("next_scheduled_action", &self.next_scheduled_action)
             .field("action_taps", &self.action_taps.len())
             .field("sharing", &self.sharing.len())
             .field("continuity_routes", &self.continuity.by_id.len())
@@ -393,6 +435,127 @@ impl NotificationBridge {
             g.incoming.push(n);
         }
         self.wake_compositor();
+    }
+
+    #[cfg(target_os = "linux")]
+    fn attach_schedule_controller(
+        &self,
+        store: &Arc<Mutex<scheduled::ScheduleStore>>,
+        changed: crate::idle_wake::IdleWake,
+    ) {
+        if let Ok(mut inner) = self.inner.lock() {
+            inner.schedule_controller = Some(ScheduledActionController {
+                store: Arc::downgrade(store),
+                changed,
+            });
+        }
+    }
+
+    pub(crate) fn scheduled_actions_available(&self) -> bool {
+        #[cfg(target_os = "linux")]
+        {
+            self.inner.lock().ok().is_some_and(|inner| {
+                inner
+                    .schedule_controller
+                    .as_ref()
+                    .is_some_and(|controller| controller.store.upgrade().is_some())
+            })
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            false
+        }
+    }
+
+    pub(crate) fn snoozed_alarms(&self, room: &str) -> Vec<SnoozedAlarm> {
+        #[cfg(target_os = "linux")]
+        {
+            let store = self.inner.lock().ok().and_then(|inner| {
+                inner
+                    .schedule_controller
+                    .as_ref()
+                    .and_then(|controller| controller.store.upgrade())
+            });
+            store
+                .and_then(|store| store.lock().ok().map(|store| store.snoozed_alarms(room)))
+                .unwrap_or_default()
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = room;
+            Vec::new()
+        }
+    }
+
+    pub(crate) fn request_scheduled_action(
+        &self,
+        app_id: String,
+        target: tilo_desktop::notifications::ScheduledNotificationTarget,
+        action: ScheduledAction,
+    ) -> Result<u64, String> {
+        #[cfg(target_os = "linux")]
+        {
+            let (id, changed) = {
+                let mut inner = self
+                    .inner
+                    .lock()
+                    .map_err(|_| "notification mailbox failed")?;
+                let controller = inner
+                    .schedule_controller
+                    .as_ref()
+                    .filter(|controller| controller.store.upgrade().is_some())
+                    .ok_or("durable alarm actions are unavailable")?;
+                let changed = controller.changed.clone();
+                if inner
+                    .scheduled_actions
+                    .len()
+                    .saturating_add(inner.scheduled_action_results.len())
+                    >= 64
+                {
+                    return Err("too many pending alarm actions".into());
+                }
+                let id = inner
+                    .next_scheduled_action
+                    .checked_add(1)
+                    .ok_or("alarm action identifiers exhausted")?;
+                inner.next_scheduled_action = id;
+                inner.scheduled_actions.push(ScheduledActionRequest {
+                    id,
+                    app_id,
+                    target,
+                    action,
+                });
+                drop(inner);
+                (id, changed)
+            };
+            changed.poke();
+            Ok(id)
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = (app_id, target, action);
+            Err("durable alarm actions are unavailable".into())
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn drain_scheduled_actions(&self) -> Vec<ScheduledActionRequest> {
+        self.inner
+            .lock()
+            .map(|mut inner| std::mem::take(&mut inner.scheduled_actions))
+            .unwrap_or_default()
+    }
+
+    #[cfg(target_os = "linux")]
+    fn finish_scheduled_action(&self, id: u64, result: Result<(), String>) {
+        if let Ok(mut inner) = self.inner.lock() {
+            inner.scheduled_action_results.insert(id, result);
+        }
+        self.wake_compositor();
+    }
+
+    pub(crate) fn take_scheduled_action_result(&self, id: u64) -> Option<Result<(), String>> {
+        self.inner.lock().ok()?.scheduled_action_results.remove(&id)
     }
 
     #[cfg(target_os = "linux")]
@@ -1064,8 +1227,8 @@ impl NotificationService {
         priority_contacts: PriorityContactRegistry,
         schedule_workspaces: Option<crate::portal::GrantStoreHandle>,
     ) -> Self {
-        let path =
-            xdg_paths::xdg::state_home().map(|root| root.join("tilo/notifications/schedules.json"));
+        let path = tilo_paths::xdg::state_home()
+            .map(|root| root.join("tilo/notifications/schedules.json"));
         let schedules = path.and_then(|path| {
             scheduled::ScheduleStore::open(Some(path))
                 .inspect_err(|error| tracing::warn!(%error, "notification schedules unavailable"))
@@ -1074,6 +1237,7 @@ impl NotificationService {
         });
         let schedule_changed = crate::idle_wake::IdleWake::default();
         let schedule_worker = schedules.as_ref().map(|store| {
+            bridge.attach_schedule_controller(store, schedule_changed.clone());
             tokio::spawn(scheduled::drive(
                 Arc::downgrade(store),
                 bridge.clone(),
@@ -1454,65 +1618,21 @@ const NOTIFICATIONS_INTROSPECTION: &str = r#"<interface name="org.freedesktop.No
 "#;
 
 #[cfg(target_os = "linux")]
-#[zbus::export::async_trait::async_trait]
-impl Interface for NotificationService {
-    fn name() -> InterfaceName<'static> {
-        InterfaceName::from_static_str_unchecked("org.freedesktop.Notifications")
-    }
+interface_dispatch::method_interface!(
+    NotificationService,
+    "org.freedesktop.Notifications",
+    NOTIFICATIONS_INTROSPECTION
+);
 
-    async fn get(
-        &self,
-        _property: &str,
-        _server: &ObjectServer,
-        _connection: &Connection,
-        _header: Option<&Header<'_>>,
-        _emitter: &SignalEmitter<'_>,
-    ) -> Option<fdo::Result<OwnedValue>> {
-        None
-    }
-
-    async fn get_all(
-        &self,
-        _server: &ObjectServer,
-        _connection: &Connection,
-        _header: Option<&Header<'_>>,
-        _emitter: &SignalEmitter<'_>,
-    ) -> fdo::Result<HashMap<String, OwnedValue>> {
-        Ok(HashMap::new())
-    }
-
-    fn set<'call>(
+#[cfg(target_os = "linux")]
+impl NotificationService {
+    fn dispatch_call<'call>(
         &'call self,
-        _property: &'call str,
-        _value: &'call zbus::zvariant::Value<'_>,
-        _server: &'call ObjectServer,
-        _connection: &'call Connection,
-        _header: Option<&'call Header<'_>>,
-        _emitter: &'call SignalEmitter<'_>,
-    ) -> DispatchResult2<'call> {
-        DispatchResult2::NotFound
-    }
-
-    async fn set_mut(
-        &mut self,
-        _property: &str,
-        _value: &zbus::zvariant::Value<'_>,
-        _server: &ObjectServer,
-        _connection: &Connection,
-        _header: Option<&Header<'_>>,
-        _emitter: &SignalEmitter<'_>,
-    ) -> Option<fdo::Result<()>> {
-        None
-    }
-
-    fn call<'call>(
-        &'call self,
-        _server: &'call ObjectServer,
         connection: &'call Connection,
         message: &'call Message,
-        name: MemberName<'call>,
+        name: &str,
     ) -> DispatchResult2<'call> {
-        match name.as_str() {
+        match name {
             "Notify" => interface_dispatch::dispatch(
                 connection,
                 message,
@@ -1584,23 +1704,6 @@ impl Interface for NotificationService {
         }
     }
 
-    fn call_mut<'call>(
-        &'call mut self,
-        _server: &'call ObjectServer,
-        _connection: &'call Connection,
-        _message: &'call Message,
-        _name: MemberName<'call>,
-    ) -> DispatchResult2<'call> {
-        DispatchResult2::NotFound
-    }
-
-    fn introspect_to_writer(&self, writer: &mut dyn std::fmt::Write, level: usize) {
-        interface_dispatch::write_introspection(writer, level, NOTIFICATIONS_INTROSPECTION);
-    }
-}
-
-#[cfg(target_os = "linux")]
-impl NotificationService {
     /// `Notify` — the core method. Queues a toast and returns its id.
     async fn notify(&self, hdr: &Header<'_>, request: NotifyRequest) -> u32 {
         let NotifyRequest {
@@ -1790,20 +1893,11 @@ pub async fn serve_notifications(
     use futures_util::StreamExt;
     // Subscribe before admitting ongoing notifications. A missing bus observer
     // must fail registration rather than leave persistent orphaned notices.
-    let proxy = zbus::fdo::DBusProxy::new(&connection).await?;
-    let mut owners = proxy.receive_name_owner_changed().await?;
+    let mut gone = crate::portal::lifecycle::disconnected_peers(&connection).await?;
     let bridge = service.bridge.clone();
     tokio::spawn(async move {
-        while let Some(event) = owners.next().await {
-            let Ok(args) = event.args() else {
-                continue;
-            };
-            if args.name().as_str().starts_with(':')
-                && args.new_owner().as_ref().is_none()
-                && let Some(owner) = args.old_owner().as_ref()
-            {
-                bridge.close_ongoing_owner(owner.as_str());
-            }
+        while let Some(owner) = gone.next().await {
+            bridge.close_ongoing_owner(&owner);
         }
     });
     connection.object_server().at(OBJECT_PATH, service).await?;

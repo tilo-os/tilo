@@ -121,4 +121,10 @@ grep -Fxq -- "$store/containers:/var/lib/containers" "$work/podman-argv"
 grep -Fxq -- "TMPDIR=$store/tmp" "$work/sudo-env-argv"
 [ -d "$store/containers/storage" ] && [ -d "$store/run" ] && [ -d "$store/tmp" ]
 
+# sudo strips the rootless storage environment: an explicit root configuration
+# must reach the same Podman invocation that installs the image.
+run_install env TILO_ROOT_PODMAN_STORE="$store" TILO_ROOT_PODMAN_STORAGE_CONF="$store/storage.conf"
+grep -Fxq -- "CONTAINERS_STORAGE_CONF=$store/storage.conf" "$work/sudo-env-argv"
+grep -Fxq -- "$store/containers/storage" "$work/podman-argv"
+
 printf 'ok: root podman keeps its store where TILO_ROOT_PODMAN_STORE says, and only there\n'

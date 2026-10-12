@@ -96,7 +96,7 @@ fn forward_stdio_to_logcat() {
 }
 
 /// The directories and locale a desktop session would have exported, placed
-/// in the app's sandbox so `xdg-paths`, `dirs` and every store built on them
+/// in the app's sandbox so `tilo-paths`, `dirs` and every store built on them
 /// resolve there unchanged.
 fn install_environment(app: &AndroidApp) {
     let Some(files) = app.internal_data_path() else {

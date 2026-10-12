@@ -21,16 +21,6 @@
 //! accepted set stays active until the transaction is explicitly completed or
 //! aborted.
 
-#![cfg_attr(
-    test,
-    allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
-        clippy::panic,
-        reason = "tests use these as assertions"
-    )
-)]
 #![allow(
     clippy::missing_errors_doc,
     reason = "the compact public API is documented as one transaction protocol above; every fallible method returns one of the explicit ExtensionError variants"

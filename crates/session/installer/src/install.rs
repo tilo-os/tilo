@@ -8,7 +8,7 @@
 //!     --filesystem <btrfs|ext4|xfs> \
 //!     --hostname <name> [--timezone <tz>] \
 //!     --keymap <xkb-layout> [--keyvariant <xkb-variant>] \
-//!     --encrypt --pin [--fido2] [--codecs] --yes
+//!     --encrypt --pin [--fido2] [--extension media-codecs] --yes
 //! ```
 //!
 //! Native Tilo always uses full-disk encryption. The backend builds the LUKS2
@@ -224,12 +224,15 @@ pub struct InstallOptions {
     /// only with the guided plan; the backend re-derives every fact from the
     /// booted ESP, firmware and partition table and refuses any other mode.
     pub internal_handoff: String,
-    /// The owner opted in to the third-party media codecs pack; maps to
-    /// `--codecs`. The backend only records the choice on the installed system,
-    /// which downloads the packages from their publishers once it is online.
-    /// Default `false`.
+    /// The owner chose to play more video and audio formats; maps to
+    /// `--extension media-codecs`. The backend only records the opt-in on the
+    /// installed system, which downloads the media codecs extension from the
+    /// formats' publishers once it is online. Default `false`.
     pub codecs: bool,
 }
+
+/// The catalogue id of the downloaded media codecs extension.
+pub const MEDIA_CODECS_EXTENSION: &str = "media-codecs";
 
 impl Default for InstallOptions {
     fn default() -> Self {
@@ -417,7 +420,7 @@ pub fn install_command(disk: &str, user: &str, opts: &InstallOptions) -> Command
         cmd.arg("--fido2");
     }
     if opts.codecs {
-        cmd.arg("--codecs");
+        cmd.args(["--extension", MEDIA_CODECS_EXTENSION]);
     }
     cmd.arg("--yes");
     cmd
@@ -1219,14 +1222,18 @@ mod tests {
             .get_args()
             .map(|a| a.to_string_lossy().into_owned())
             .collect();
-        let codecs = args.iter().position(|a| a == "--codecs").expect("--codecs");
+        let codecs = args
+            .iter()
+            .position(|a| a == "--extension")
+            .expect("--extension");
+        assert_eq!(args[codecs + 1], "media-codecs");
         let yes = args.iter().position(|a| a == "--yes").expect("--yes");
         assert!(codecs < yes, "flags come before --yes");
         let default: Vec<String> = install_command("/dev/vda", "qq", &InstallOptions::default())
             .get_args()
             .map(|a| a.to_string_lossy().into_owned())
             .collect();
-        assert!(!default.iter().any(|a| a == "--codecs"));
+        assert!(!default.iter().any(|a| a == "--extension"));
     }
 
     #[test]

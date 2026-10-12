@@ -59,6 +59,10 @@ pub struct Delivery {
     /// Alarm tags this device owns until cancellation is confirmed.
     #[serde(default)]
     pub native_alarm_owners: BTreeSet<String>,
+    /// Completed host one-shot generations: automatic switch-off must not
+    /// cancel a snooze retained by the host. Edits and deletion still cancel.
+    #[serde(default)]
+    pub native_completed_alarms: BTreeMap<String, (u8, u8, u8, i64)>,
 }
 
 /// One alarm's armed occurrence on this device.
@@ -149,12 +153,18 @@ pub fn tick(
             continue;
         };
         let scheduled_for = instant(deadline);
+        let native_scheduled =
+            delivery.native_alarms_scheduled.remove(id.as_str()) == Some(deadline);
+        if alarm.repeat == 0 && native_scheduled {
+            delivery
+                .native_completed_alarms
+                .insert(id.as_str().to_owned(), schedule_of(alarm));
+        }
         found.due.push(DueEvent::Alarm {
             id: id.clone(),
             label: alarm.label.clone(),
             scheduled_for,
-            native_scheduled: delivery.native_alarms_scheduled.remove(id.as_str())
-                == Some(deadline),
+            native_scheduled,
         });
         armed.last_rung = Some(scheduled_for.with_timezone(&Local).date_naive());
         if alarm.repeat == 0 {

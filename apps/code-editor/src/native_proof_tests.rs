@@ -19,6 +19,63 @@ fn loaded_fixture() -> (
 }
 
 #[test]
+fn dictation_ime_final_uses_native_code_actions_and_system_undo() {
+    let (_directory, mut app, manifest) = loaded_fixture();
+    app.harness()
+        .perform_named("editor_view", &ui::a11y::Action::Focus)
+        .unwrap();
+    crate::test_support::editor(&mut app, |app| {
+        app.editor.set_caret_for_test(0, 0);
+    });
+    assert_eq!(
+        app.harness()
+            .ime_window()
+            .expect("focused native code field")
+            .purpose,
+        winit::window::ImePurpose::Normal
+    );
+    app.harness()
+        .send(&WindowEvent::Ime(winit::event::Ime::Preedit(
+            "temporary draft".into(),
+            None,
+        )));
+    assert_eq!(
+        cold_editor_snapshot(&mut app)["body_hash"],
+        manifest.body_hash
+    );
+    app.harness()
+        .send(&WindowEvent::Ime(winit::event::Ime::Commit(
+            "日本語 café العربية".into(),
+        )));
+    let changed = cold_editor_snapshot(&mut app);
+    assert_ne!(changed["body_hash"], manifest.body_hash);
+    assert!(crate::test_support::editor(&mut app, |app| {
+        app.editor
+            .text_for_test()
+            .starts_with("日本語 café العربية")
+    }));
+    assert!(app.undo(), "the final must be a system history action");
+    assert_eq!(
+        cold_editor_snapshot(&mut app)["body_hash"],
+        manifest.body_hash
+    );
+    assert!(app.redo());
+    assert_eq!(
+        cold_editor_snapshot(&mut app)["body_hash"],
+        changed["body_hash"]
+    );
+    crate::test_support::editor(&mut app, |app| app.editor.set_focus(false));
+    app.harness()
+        .send(&WindowEvent::Ime(winit::event::Ime::Commit(
+            "must not reach the unfocused editor".into(),
+        )));
+    assert_eq!(
+        cold_editor_snapshot(&mut app)["body_hash"],
+        changed["body_hash"]
+    );
+}
+
+#[test]
 fn native_snapshot_reports_readiness_durable_edits_and_wheel_input() {
     // Each phase builds a fresh app/fixture: edits and scroll must not leak.
     native_snapshot_of_unopened_editor_is_not_ready();
@@ -129,7 +186,7 @@ fn bottom_panel_availability_tracks_its_real_host_mode() {
         assert!(bindings.iter().any(|binding| matches!(
             &binding.kind,
             ui::widget::ControlBindingKind::Action(address)
-                if address.resource.as_str() == crate::resource::PROJECT_KIND
+                if address.resource.as_str() == <crate::project::Project as ui::tilo_resource::Resource>::KIND
                     && address.action == "toggle-bottom-panel"
         )));
         app.panel_visible
@@ -231,6 +288,131 @@ fn native_text_continuation_restores_shared_resource_selection_and_view_after_of
     assert_eq!(after["selection_chars"], before["selection_chars"]);
     assert_eq!(after["offset_y"], 10.75);
     assert_eq!(after["editor_focused"], false);
+}
+
+#[test]
+fn live_editor_views_follow_repeated_positions_without_editing_or_focus() {
+    use ui::widget::Continuable;
+    let (directory, mut source, _) = loaded_fixture();
+    let mut initial = source.peer_document();
+    let path = directory.path().join("fixture.rs");
+    let mut target = ui::framework::testing::TestApp::<crate::CodeEditorShell>::launched_replica(
+        &[path.to_str().unwrap()],
+        &mut initial,
+    )
+    .unwrap();
+    target
+        .settings::<crate::settings::CodeSettings>()
+        .set(&crate::settings::CodeSettings {
+            language_servers: false,
+        })
+        .unwrap();
+    target.settle();
+    for (line, focused) in [(20, false), (37, true)] {
+        let (metadata, expected) = crate::test_support::with_doc(&mut source, move |app, doc| {
+            stage_continuation_view(app, doc);
+            app.editor.set_selection_lc((line, 3), (line + 2, 5));
+            (
+                app.continuation_metadata(doc.doc(), &automerge::ROOT)
+                    .unwrap(),
+                app.native_input_snapshot(doc.doc(), &automerge::ROOT)
+                    .unwrap(),
+            )
+        });
+        crate::test_support::with_doc(&mut target, move |app, doc| {
+            app.editor
+                .force_geometry(Rect::new(200.0, 40.0, 800.0, 560.0), 16.0);
+            app.editor.set_focus(focused);
+            let before = app
+                .native_input_snapshot(doc.doc(), &automerge::ROOT)
+                .unwrap();
+            let heads = doc.doc().clone().get_heads();
+            assert!(
+                app.restore_live_continuation_metadata(&metadata, doc.doc(), &automerge::ROOT,)
+            );
+            let after = app
+                .native_input_snapshot(doc.doc(), &automerge::ROOT)
+                .unwrap();
+            assert_eq!(after["caret_line"], line + 2);
+            assert_eq!(after["caret_column"], expected["caret_column"]);
+            assert_eq!(after["selection_chars"], expected["selection_chars"]);
+            assert_eq!(after["offset_y"], expected["offset_y"]);
+            assert_eq!(after["editor_focused"], focused);
+            assert_eq!(after["body_hash"], before["body_hash"]);
+            assert_eq!(doc.doc().clone().get_heads(), heads);
+            assert!(app.pending_open.is_none());
+            assert!(app.pending_continuation.is_none());
+            let mut position: ui::text_position::TextPosition =
+                serde_json::from_slice(&metadata.bytes).unwrap();
+            position.resource_id = "99999999-2222-4333-8444-555555555555".into();
+            let foreign = ui::collaboration::ContinuationMetadata {
+                schema_version: 1,
+                bytes: serde_json::to_vec(&position).unwrap(),
+            };
+            assert!(
+                !app.restore_live_continuation_metadata(&foreign, doc.doc(), &automerge::ROOT,)
+            );
+            assert_eq!(
+                app.native_input_snapshot(doc.doc(), &automerge::ROOT)
+                    .unwrap(),
+                after
+            );
+        });
+    }
+}
+
+#[test]
+fn cold_live_continuation_opens_existing_text_and_preserves_local_focus() {
+    use tilo_actions::Action as _;
+    use ui::widget::Continuable as _;
+    let (_directory, mut source, _) = loaded_fixture();
+    let metadata = crate::test_support::with_doc(&mut source, |app, doc| {
+        stage_continuation_view(app, doc);
+        app.continuation_metadata(doc.doc(), &automerge::ROOT)
+            .unwrap()
+    });
+    let mut document = source.peer_document();
+    let heads = document.get_heads();
+    for focused in [false, true] {
+        let mut target = CodeApp::new();
+        target.editor.set_focus(focused);
+        assert!(target.active_file_node().is_none());
+        assert!(target.restore_live_continuation_metadata(&metadata, &document, &automerge::ROOT));
+        assert!(target.active_file_node().is_some());
+        let snapshot = target
+            .native_input_snapshot(&document, &automerge::ROOT)
+            .unwrap();
+        assert_eq!(snapshot["editor_focused"], focused);
+        assert!(snapshot["body_bytes"].as_u64().unwrap() > 0);
+        assert_eq!(document.get_heads(), heads);
+        assert!(target.pending_open.is_none());
+        assert!(target.pending_continuation.is_none());
+    }
+    let mut position: ui::text_position::TextPosition =
+        serde_json::from_slice(&metadata.bytes).unwrap();
+    position.resource_id = "99999999-2222-4333-8444-555555555555".into();
+    let foreign = ui::collaboration::ContinuationMetadata {
+        schema_version: 1,
+        bytes: serde_json::to_vec(&position).unwrap(),
+    };
+    let mut target = CodeApp::new();
+    assert!(!target.restore_live_continuation_metadata(&foreign, &document, &automerge::ROOT));
+    assert!(target.active_file_node().is_none());
+    assert_eq!(document.get_heads(), heads);
+    let position: ui::text_position::TextPosition =
+        serde_json::from_slice(&metadata.bytes).unwrap();
+    assert!(EditorDoc::file(&document, &position.resource_id).is_some());
+    crate::actions::delete_action(&position.resource_id)
+        .apply(&mut document)
+        .unwrap();
+    let deleted_heads = document.get_heads();
+    assert!(!target.restore_live_continuation_metadata(&metadata, &document, &automerge::ROOT));
+    assert!(target.active_file_node().is_none());
+    assert_eq!(
+        document.get_heads(),
+        deleted_heads,
+        "deleted resources cannot be reopened by a view"
+    );
 }
 
 #[test]

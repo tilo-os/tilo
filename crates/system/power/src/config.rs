@@ -103,12 +103,6 @@ pub fn policy_from_settings_json_for_profile(
     policy_from_section_for_profile(section, active_profile)
 }
 
-/// Parse a [`PowerPolicy`] from just the `"power"` object, with no active
-/// power profile.
-pub fn policy_from_section(section: &serde_json::Value) -> PowerPolicy {
-    policy_from_section_for_profile(section, None)
-}
-
 /// Resolve a policy for a known power-profiles-daemon profile.
 ///
 /// This separate entry point keeps parsing deterministic in tests and makes

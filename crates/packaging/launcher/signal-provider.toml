@@ -1,0 +1,25 @@
+# Source manifest. The normal release packager must supply the existing
+# accepted publisher identity and sign this package; no fixture signer works.
+[package]
+id = "so.tilo.signal-provider"
+name = "Signal provider"
+category = "System"
+version = "0.1.0"
+kind = "service"
+runtime = "tilo-runtime/2026.10.1-signal"
+[package.isa]
+x86_64 = "v3"
+[publisher]
+identity = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
+signature = ""
+[sandbox]
+namespaces = ["user", "pid", "uts", "ipc", "mount"]
+seccomp = "tilo-default"
+landlock = "strict"
+# Source/fixture delivery remains offline. Live network permission must be
+# reviewed through the normal release/account policy; this creates no grant.
+[sandbox.net]
+mode = "off"
+[entrypoint]
+bin = "bin/tilo-signal-provider"
+type = "cli"

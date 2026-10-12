@@ -308,7 +308,24 @@ impl ActionCatalog {
     /// Enumerate the typed descriptors the caller may see. Render-free —
     /// no scene is built, no widget is touched.
     pub fn enumerate(&self) -> Vec<ExportedAction> {
+        self.enumerate_rows(0..self.visible.len())
+    }
+
+    /// The visible actions' addresses, in [`Self::enumerate`]'s order,
+    /// without describing them.
+    pub fn addresses(&self) -> impl Iterator<Item = (&str, &str)> + '_ {
         self.visible
+            .iter()
+            .filter_map(|&i| self.results.get(i))
+            .map(|r| (r.provider_id.as_str(), r.id.as_str()))
+    }
+
+    /// [`Self::enumerate`]'s rows at `rows`, describing only those — one
+    /// page of a listing costs the page, not the catalogue.
+    pub fn enumerate_rows(&self, rows: std::ops::Range<usize>) -> Vec<ExportedAction> {
+        self.visible
+            .get(rows)
+            .unwrap_or_default()
             .iter()
             .filter_map(|&i| self.results.get(i).map(|result| (i, result)))
             .map(|(i, r)| ExportedAction {
@@ -460,24 +477,6 @@ impl SelectedAction<'_> {
         self.invoke_bound(doc, root, chrome, &bound)
     }
 
-    /// Begin an invocation without fabricating success for a remote action
-    /// whose current authority is still being checked. Agents can retain and
-    /// poll the returned ticket just as the visual palette does.
-    ///
-    /// # Errors
-    ///
-    /// Returns an argument-binding or provider refusal error; callers must
-    /// poll a pending disposition rather than treating it as success.
-    pub fn invoke_disposition(
-        &self,
-        doc: &mut ui::widget::Edits<'_>,
-        root: &ObjId,
-        chrome: &Chrome,
-        args: impl IntoIterator<Item = (String, ArgValue)>,
-    ) -> Result<InvocationDisposition, ActionError> {
-        self.invoke(doc, root, chrome, args)
-    }
-
     /// Invoke from the canonical JSON object used by control sockets and MCP.
     /// Unlike lossy JSON-to-enum guessing, binding consults each declared
     /// parameter, preserving resource/date-time/secret semantics and nested or
@@ -542,9 +541,7 @@ mod tests {
     use crate::shell::search::providers::{ActionsProvider, ApplicationsProvider};
     use crate::shell::state::FreshId as _;
     use crate::shell::state::{Workspace, WorkspaceId, WorkspaceTree, WorkspaceTreeHandle};
-    use parking_lot::RwLock;
     use std::rc::Rc;
-    use std::sync::Arc;
 
     fn chrome_rc() -> Chrome {
         let mut tree = WorkspaceTree::default();
@@ -553,7 +550,7 @@ mod tests {
         workspace.set_owner(crate::shell::state::local_user_id_for_room(&workspace.room));
         tree.desktop.workspaces.push(workspace);
         tree.desktop.active = id;
-        let handle: WorkspaceTreeHandle = Arc::new(RwLock::new(tree));
+        let handle: WorkspaceTreeHandle = crate::shell::state::WorkspaceTreeHandle::new(tree);
         ChromeState::new_with_handle(handle)
     }
 

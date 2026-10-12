@@ -218,7 +218,7 @@ pub fn execute_with_host(
                 ok: true,
                 status_line: format!("Opening {}…", item.name),
                 launch: Some(ApplicationLaunch {
-                    app_id: format!("host:{}.desktop", item.id),
+                    app_id: format!("host:{}", item.id),
                     package_root: None,
                 }),
             }

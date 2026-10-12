@@ -21,11 +21,7 @@
 #![cfg_attr(
     test,
     allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
         clippy::string_slice,
-        clippy::panic,
         clippy::unreachable,
         reason = "in a test these are the assertion, not a hazard"
     )
@@ -36,6 +32,7 @@ pub mod device_status;
 pub mod greeter_app;
 pub mod i18n;
 pub mod local_users;
+pub mod output_scale;
 pub mod sessions;
 
 pub use greetd_client;

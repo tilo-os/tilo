@@ -106,4 +106,11 @@ interface AppHost {
     # host owns durable rollback checkpoints; callers cannot supply keys/URLs.
     registryCatalogue @17 (registry :Text) -> (entries :Text);
 
+    # Review using this person's existing scoped attestors and revocations.
+    # No caller publisher, trust key, host path or download source is accepted.
+    reviewLocal @18 (tappBytes :Data) -> (reviewJson :Text);
+    # Exact archive/root from review, reverified against current host trust.
+    installLocal @19 (tappBytes :Data, reviewedRoot :Text,
+                      reviewedArchiveHash :Text) -> (id :Data);
+
 }

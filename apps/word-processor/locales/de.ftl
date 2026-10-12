@@ -252,3 +252,51 @@ file-choice-title = Zu öffnendes Dokument wählen
 file-choice-body = Diese Datei unterscheidet sich vom Dokument im Arbeitsbereich. Behalte die Version im Arbeitsbereich oder importiere die gewählte Datei in ihren Verlauf.
 file-choice-keep = Version im Arbeitsbereich behalten
 file-choice-use = Gewählte Datei verwenden
+
+## History: what each change did, by field and by verb
+word-processor-document-body = { $op ->
+    [splice] Text bearbeitet
+    [mark] { $on ->
+        [true] { $characters } Zeichen formatiert: { $mark ->
+            [strong] fett
+            [em] kursiv
+            [underline] unterstrichen
+            [strike] durchgestrichen
+           *[other] { $mark }
+        }
+       *[false] { $mark } von { $characters } Zeichen entfernt
+    }
+    [set] { $kind ->
+        [heading] Überschrift der Ebene { $level } erstellt
+        [list_item] Liste erstellt
+        [paragraph] Absatz erstellt
+       *[other] Absatzformat geändert
+    }
+    [insert] { $object ->
+        [table] Tabelle eingefügt
+        [image] Bild eingefügt
+        [page-break] Seitenumbruch eingefügt
+       *[other] In den Text eingefügt
+    }
+    [remove] { $blocks } Objekte entfernt
+    [replace] Ganzen Text ersetzt
+   *[other] Text bearbeitet
+}
+word-processor-append-paragraph = Absatz hinzugefügt
+word-processor-insert-table = Tabelle mit { $rows } × { $columns } eingefügt
+word-processor-add-row = Tabellenzeile hinzugefügt
+word-processor-add-column = Tabellenspalte hinzugefügt
+word-processor-delete-row = Tabellenzeile gelöscht
+word-processor-delete-column = Tabellenspalte gelöscht
+word-processor-delete-table = Tabelle gelöscht
+word-processor-delete-image = Bild gelöscht
+word-processor-accept-change = Änderung angenommen
+word-processor-reject-change = Änderung abgelehnt
+word-processor-accept-all-changes = Alle Änderungen angenommen
+word-processor-reject-all-changes = Alle Änderungen abgelehnt
+word-processor-add-comment = Kommentiert: { $text }
+word-processor-reply-to-comment = Geantwortet: { $text }
+word-processor-resolve-comment = Kommentar erledigt
+word-processor-set-page-margins = Seitenränder geändert
+word-processor-generate-toc = Inhaltsverzeichnis eingefügt
+word-processor-note-file-written = In die Datei gespeichert

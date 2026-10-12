@@ -2,7 +2,7 @@ use super::{Arc, CallTarget, Command, NativeWorkspaceOwner, Operation, Reply, Ti
 use crate::network::actor::{HostIdentity, native_ingress::NOT_CONNECTED};
 use crate::shell::{native_workspace_owner::NativeCommittedView, state::RoomId};
 use tilo_joined_room::voice::Channel;
-use tilo_relay::coedit::{RelayCoeditSession, VoiceEvent};
+use tilo_relay_session::coedit::{RelayCoeditSession, VoiceEvent};
 
 /// The relay session of a joined room's workspace, when it is connected.
 pub(crate) type Sessions<'a> = &'a dyn Fn(u64) -> Option<Arc<RelayCoeditSession>>;

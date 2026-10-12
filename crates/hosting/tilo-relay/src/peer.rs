@@ -8,9 +8,11 @@
 //! the connection closes; the reader stops on EOF / decode error;
 //! either termination cancels the other via drop.
 
+mod access_audit;
 pub mod sync_refresh;
 
 use crate::store::bounded::Invariant;
+use access_audit::AccessAudit;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -20,12 +22,15 @@ use tokio::sync::{Mutex as AsyncMutex, mpsc};
 
 use crate::auth::AuthenticatedPeer;
 use crate::persistence::{ReplayAdvance, ReplayHandle, ReplayTicket, WrittenBatch};
+use crate::room_access::{self, Decision, RelayTrust, RoomOperation};
 use crate::store::StoreError;
 use crate::store::bounded::WorkLimit;
 use crate::store::replay::Step;
 use crate::transport::Envelope;
 use crate::workspace::{SharedWorkspace, Subscriber};
-use tilo_delivery_protocol::peer_actions::{ActionMessage, DirectedAction, UnavailableReason};
+use tilo_delivery_protocol::peer_actions::{
+    ActionMessage, DirectedAction, SignedDirectedAction, UnavailableReason,
+};
 use tilo_delivery_protocol::transport_v2::{ActionCapability, EnvelopeV2, SessionReader};
 
 /// Maximum live fan-out backlog per connected peer. Deltas are durable before
@@ -48,42 +53,6 @@ pub enum CheckpointPrefixPromotionFaultState {
     Armed,
     /// The fault fired after the first promotion.
     Fired,
-}
-
-/// Arm the post-first-promotion fault marker under `root`, clearing any
-/// earlier fired marker.
-///
-/// # Errors
-///
-/// Returns the I/O error when a marker cannot be removed or created.
-#[cfg(feature = "test-support")]
-pub fn arm_checkpoint_prefix_post_first_promotion(root: &std::path::Path) -> std::io::Result<()> {
-    let armed = root.join(CHECKPOINT_PREFIX_FAULT_ARMED);
-    let fired = root.join(CHECKPOINT_PREFIX_FAULT_FIRED);
-    match std::fs::remove_file(fired) {
-        Ok(()) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => return Err(error),
-    }
-    std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(armed)?
-        .sync_all()
-}
-
-/// Which post-first-promotion fault marker exists under `root`.
-#[cfg(feature = "test-support")]
-pub fn checkpoint_prefix_post_first_promotion_state(
-    root: &std::path::Path,
-) -> CheckpointPrefixPromotionFaultState {
-    if root.join(CHECKPOINT_PREFIX_FAULT_FIRED).is_file() {
-        CheckpointPrefixPromotionFaultState::Fired
-    } else if root.join(CHECKPOINT_PREFIX_FAULT_ARMED).is_file() {
-        CheckpointPrefixPromotionFaultState::Armed
-    } else {
-        CheckpointPrefixPromotionFaultState::Absent
-    }
 }
 
 #[cfg(feature = "test-support")]
@@ -257,31 +226,6 @@ pub type AgentRegistry = Arc<
     >,
 >;
 
-/// Whether `device` may be in `workspace_id` as far as agent delegation is
-/// concerned: `Err` with the reason when it is an agent outside its scope.
-fn agent_admits(
-    agents: &AgentRegistry,
-    device: &[u8; 32],
-    workspace_id: u64,
-) -> Result<(), &'static str> {
-    let agents = agents
-        .read()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    match agents.get(device) {
-        None => Ok(()),
-        Some(None) => Err("the agent was withdrawn"),
-        Some(Some(delegation)) => {
-            if delegation.expires_at_ns <= unix_now_ns() {
-                Err("the agent's delegation expired")
-            } else if delegation.permits_workspace(workspace_id) {
-                Ok(())
-            } else {
-                Err("the agent is not delegated this room")
-            }
-        }
-    }
-}
-
 /// Read-mostly session state [`handle_envelope`] and its per-arm
 /// helpers read on every inbound message for one connection. Built
 /// once per [`run_peer`] call from a [`PeerContext`] plus the
@@ -299,7 +243,11 @@ struct SessionCtx<'a> {
     disconnect: &'a mpsc::Sender<()>,
     own_device_public_key: &'a [u8; 32],
     app_serving: Option<&'a Arc<dyn crate::app_serving::AppServingPlane>>,
-    v2: bool,
+    /// The state-lane framing the session's protocol fixed.
+    framing: tilo_delivery_protocol::transport_v2::StateFraming,
+    /// The session negotiated `ALPN_SIGNED_ACTIONS_V1`: it may receive
+    /// `CertifiedSignedDelivered`. Older sessions never see that variant.
+    signed_actions: bool,
     private_tx: &'a mpsc::Sender<PrivateOutbound>,
     revocations: &'a Arc<std::sync::RwLock<tilo_user_identity::RevocationList>>,
     live_bridge: Option<&'a LiveBridge>,
@@ -310,6 +258,41 @@ struct SessionCtx<'a> {
     resumes: &'a std::sync::Mutex<HashMap<u64, ResumeLog>>,
     /// Rooms whose live deliveries this connection could not take.
     lag: &'a Arc<Lag>,
+    /// Where this connection's rooms post the presence they fan out to it
+    /// (TIL-710); `None` takes each presence on the frame queue.
+    presence: Option<&'a Arc<crate::presence_mailbox::PresenceMailbox>>,
+}
+
+impl SessionCtx<'_> {
+    /// This relay's certificate and agent trust, as the session sees it.
+    fn trust(&self) -> RelayTrust<'_> {
+        RelayTrust {
+            revocations: self.revocations,
+            policy: self.trust_policy,
+            own_user: self.own_user_public_key,
+            agents: self.agents,
+        }
+    }
+
+    /// The room admission decision for `peer` on `op`.
+    fn decide(
+        &self,
+        room: &crate::workspace::WorkspaceRuntime,
+        peer: &AuthenticatedPeer,
+        op: RoomOperation,
+    ) -> Decision {
+        room_access::decide(room, &self.trust(), peer, op)
+    }
+
+    /// Whether `peer` may act in `room` on `op` now, without enrolment.
+    fn admits(
+        &self,
+        room: &crate::workspace::WorkspaceRuntime,
+        peer: &AuthenticatedPeer,
+        op: RoomOperation,
+    ) -> bool {
+        self.decide(room, peer, op).admitted()
+    }
 }
 
 /// What a resuming subscriber has received: the frames this connection wrote
@@ -357,10 +340,13 @@ impl ResumeLog {
 const LAG_POLL: std::time::Duration = std::time::Duration::from_millis(20);
 
 /// The next lagging room this connection can resume: a `SubscribeFrom` at
-/// its current position, handled as if the device had sent it. Rooms
-/// without a resume log wait for their next subscribe.
-fn lag_resume(session: &SessionCtx<'_>) -> Option<Envelope> {
+/// its current position, handled as if the device had sent it. A current
+/// plain subscription catches up through the same authorized full replay.
+fn lag_resume(session: &SessionCtx<'_>, subscribed: &[u64]) -> Option<Envelope> {
     while let Some(workspace_id) = session.lag.next() {
+        if !subscribed.contains(&workspace_id) {
+            continue;
+        }
         if let Some(Envelope::Position { position, .. }) = resume_record(session, workspace_id, [])
         {
             return Some(Envelope::SubscribeFrom {
@@ -368,6 +354,7 @@ fn lag_resume(session: &SessionCtx<'_>) -> Option<Envelope> {
                 position: Some(position),
             });
         }
+        return Some(Envelope::Subscribe { workspace_id });
     }
     None
 }
@@ -409,7 +396,53 @@ where
     R: tokio::io::AsyncRead + Unpin + Send + 'static,
     W: tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
-    run_peer_version(peer, connection, read, write, ctx, false).await
+    run_peer_version(peer, connection, read, write, ctx, SessionProtocol::V1).await
+}
+
+/// What a session negotiated through its ALPN.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct SessionProtocol {
+    /// How its state lane is framed.
+    pub(crate) framing: tilo_delivery_protocol::transport_v2::StateFraming,
+    /// It may send device-signed actions and receive them certified.
+    pub(crate) signed_actions: bool,
+}
+
+impl SessionProtocol {
+    /// `tilo-relay/1`.
+    pub(crate) const V1: Self = Self {
+        framing: tilo_delivery_protocol::transport_v2::StateFraming::V1,
+        signed_actions: false,
+    };
+    /// `ALPN_AGENT_READS_V1`.
+    pub(crate) const V2: Self = Self {
+        framing: tilo_delivery_protocol::transport_v2::StateFraming::V2,
+        signed_actions: false,
+    };
+    /// `ALPN_SIGNED_ACTIONS_V1`.
+    pub(crate) const SIGNED_ACTIONS: Self = Self {
+        framing: tilo_delivery_protocol::transport_v2::StateFraming::V2,
+        signed_actions: true,
+    };
+    /// `ALPN_COMPACT_STATE_V1`: signed actions, and zero-signature deltas
+    /// without their signature.
+    pub(crate) const COMPACT_STATE: Self = Self {
+        framing: tilo_delivery_protocol::transport_v2::StateFraming::Compact,
+        signed_actions: true,
+    };
+    /// `ALPN_PRESENCE_BATCH_V1`: [`Self::COMPACT_STATE`] whose presence may
+    /// arrive slotted and is written batched and slot-coded.
+    pub(crate) const PRESENCE_BATCH: Self = Self {
+        framing: tilo_delivery_protocol::transport_v2::StateFraming::Presence,
+        signed_actions: true,
+    };
+    /// `ALPN_CODED_DELTA_V1`: [`Self::PRESENCE_BATCH`] whose live deltas are
+    /// written coded against the session's previous delta from the same
+    /// author (TIL-755).
+    pub(crate) const CODED_DELTA: Self = Self {
+        framing: tilo_delivery_protocol::transport_v2::StateFraming::CodedDelta,
+        signed_actions: true,
+    };
 }
 
 /// [`run_peer`] over a carrier other than an iroh connection (a browser's
@@ -429,7 +462,7 @@ where
     R: tokio::io::AsyncRead + Unpin + Send + 'static,
     W: tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
-    run_peer_stream(peer, read, write, ctx, false, closed).await
+    run_peer_stream(peer, read, write, ctx, SessionProtocol::V1, closed).await
 }
 
 pub(crate) async fn run_peer_version<R, W>(
@@ -438,13 +471,13 @@ pub(crate) async fn run_peer_version<R, W>(
     read: R,
     write: W,
     ctx: PeerContext,
-    v2: bool,
+    protocol: SessionProtocol,
 ) -> Result<(), PeerError>
 where
     R: tokio::io::AsyncRead + Unpin + Send + 'static,
     W: tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
-    run_peer_stream(peer, read, write, ctx, v2, connection.closed()).await
+    run_peer_stream(peer, read, write, ctx, protocol, connection.closed()).await
 }
 
 // Shared stream driver also exercised with a deterministic in-memory wire.
@@ -459,9 +492,9 @@ where
 async fn run_peer_stream<R, W>(
     peer: AuthenticatedPeer,
     read: R,
-    mut write: W,
+    write: W,
     ctx: PeerContext,
-    v2: bool,
+    protocol: SessionProtocol,
     closed: impl std::future::Future,
 ) -> Result<(), PeerError>
 where
@@ -469,6 +502,11 @@ where
     W: tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
     tokio::pin!(closed);
+    let SessionProtocol {
+        framing,
+        signed_actions,
+    } = protocol;
+    let v2 = framing.is_v2();
     let PeerContext {
         workspaces,
         autobind,
@@ -486,21 +524,27 @@ where
     } = ctx;
     let resumes = std::sync::Mutex::new(HashMap::new());
     let lag = Arc::new(Lag::default());
+    // Everything this session is sent passes here, so its egress and the
+    // relay's are what the stream accepted, not an estimate.
+    let mut write = crate::metrics::EgressWrite::new(write, &metrics, peer.device_public_key);
 
     // Outbound channel — every workspace runtime this peer is
     // subscribed to writes into it; we drain to the wire.
     let (tx, mut rx) = mpsc::channel::<Envelope>(PEER_OUTBOUND_CAPACITY);
     let (state_tx, mut state_rx) = mpsc::channel::<StateDelivery>(PEER_OUTBOUND_CAPACITY);
     let (disconnect_tx, mut disconnect_rx) = mpsc::channel::<()>(1);
-    let mut reader = SessionReader::new(read, v2);
+    let mut reader = SessionReader::framed(read, framing);
     let (private_tx, mut private_rx) = mpsc::channel(PEER_OUTBOUND_CAPACITY);
     // Track our subscriptions so we can unregister on disconnect.
     let mut subscribed: Vec<u64> = Vec::new();
-    let mut access_audit = tokio::time::interval(std::time::Duration::from_secs(1));
-    access_audit.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    access_audit.tick().await;
+    let mut authority = crate::authority_epoch::subscribe();
+    authority.mark_unchanged();
+    let mut access_audit = AccessAudit::new();
 
     let connection_live = ConnectionLease(Arc::new(std::sync::atomic::AtomicBool::new(true)));
+    // Every protocol gets its presence coalesced and paced; only a
+    // `tilo-relay/6` session gets it batched and slot-coded.
+    let presence = Arc::new(crate::presence_mailbox::PresenceMailbox::default());
     let session = SessionCtx {
         workspaces: &workspaces,
         autobind: autobind.as_ref(),
@@ -514,7 +558,8 @@ where
         disconnect: &disconnect_tx,
         own_device_public_key: &own_device_public_key,
         app_serving: app_serving.as_ref(),
-        v2,
+        framing,
+        signed_actions,
         private_tx: &private_tx,
         revocations: &revocations,
         live_bridge: live_bridge.as_ref(),
@@ -523,6 +568,7 @@ where
         compactor: compactor.as_ref(),
         resumes: &resumes,
         lag: &lag,
+        presence: Some(&presence),
     };
 
     // A clean EOF is only one of the ways this ends: a write to a
@@ -540,17 +586,46 @@ where
             Arc<tokio::sync::OwnedSemaphorePermit>,
         )> = std::collections::VecDeque::new();
         let mut catching_up = false;
+        let mut reader_open = true;
         loop {
             let (frame, inbound_budget) = if let Some((frame, budget)) = backlog.pop_front() {
                 (frame, Some(budget))
             } else {
-                // Prefer an already-readable inbound frame over the periodic
-                // membership audit. After a live revoke the audit and a refused
-                // delta can become ready together; the delta must win so the
-                // peer still receives NotAuthorised rather than a bare close.
+                if !reader_open {
+                    // Keep the authenticated lease live until every owner job
+                    // admitted before the FIN has passed a durable barrier.
+                    for id in &subscribed {
+                        let workspace = session.workspaces.lock().await.get(id).cloned();
+                        if let Some(workspace) = workspace {
+                            let owner = crate::persistence::handle(&workspace).await;
+                            let done = owner
+                                .submit_prepared_wait(
+                                    1,
+                                    async { Ok(()) },
+                                    |_, ()| Ok(()),
+                                    |result| async { result },
+                                )
+                                .await?;
+                            crate::persistence::receipt(done).await?;
+                        }
+                    }
+                    return Ok::<(), PeerError>(());
+                }
+                // Prefer an already-readable inbound frame over the membership
+                // audit. After a live revoke the audit and a refused delta can
+                // become ready together; the delta must win so the peer still
+                // receives NotAuthorised rather than a bare close.
+                access_audit.cover(&subscribed);
                 tokio::select! {
                     biased;
-                    frame = reader.read_next() => match frame? { Some(frame) => (frame, None), None => return Ok::<(), PeerError>(()) },
+                    frame = reader.read_next() => {
+                        if let Some(frame) = frame? {
+                            (frame, None)
+                        } else {
+                            reader_open = false;
+                            continue;
+                        }
+                    },
                     () = lag.wake.notified() => { catching_up = true; continue; }
                     // A lagging room resumes once everything already queued
                     // for this connection is written, so its replay starts
@@ -559,15 +634,23 @@ where
                         if state_tx.capacity() < state_tx.max_capacity() || tx.capacity() < tx.max_capacity() {
                             continue;
                         }
-                        let resume = lag_resume(&session);
+                        let resume = lag_resume(&session, &subscribed);
                         catching_up = !lag.is_empty();
                         match resume { Some(frame) => (EnvelopeV2::State(frame), None), None => continue }
                     }
-                    _ = access_audit.tick() => { audit_subscriber_access(&revocations, &peer, &session, &subscribed).await?; continue; }
+                    () = tokio::time::sleep_until(access_audit.due()) => {
+                        let watched = audit_subscriber_access(&peer, &session, &subscribed).await?;
+                        access_audit.audited(&peer, &agents, &subscribed, watched);
+                        continue;
+                    }
+                    // The epoch's sender is a process-wide static and never
+                    // closes, so this cannot spin on an error.
+                    _ = authority.changed() => { access_audit.changed(); continue; }
                 }
             };
             match frame {
                 EnvelopeV2::State(env) => {
+                    trace_native_publication("server_received", &env, None);
                     let prefix_len =
                         eligible_checkpoint_prefix(&env, backlog.iter().map(|(frame, _)| frame));
                     let mut prefix = vec![env];
@@ -620,9 +703,9 @@ where
                             tokio::select! {
                                 biased;
                                 result = &mut operation => break result?,
-                                frame = reader.read_next(), if backlog.len() < 32 => {
-                                    let Some(frame) = frame? else { return Ok(()); };
-                                    let can_route = private_may_overtake(&frame, blocked_room, backlog.iter().map(|(frame, _)| frame));
+                                frame = reader.read_next(), if reader_open && backlog.len() < 32 => {
+                                    let Some(frame) = frame? else { reader_open = false; continue; };
+                                    let can_route = private_may_overtake(&frame, blocked_room, v2 && pending_replays.load(std::sync::atomic::Ordering::SeqCst) == 0, backlog.iter().map(|(frame, _)| frame));
                                     if can_route {
                                         // The state future may hold the authorization lane
                                         // needed by this private request. Keep polling it
@@ -700,9 +783,9 @@ where
                                     result.map_err(|_| PeerError::Protocol("reply writer closed".into()))?;
                                     break;
                                 }
-                                frame = reader.read_next(), if backlog.len() < 32 => {
-                                    let Some(frame) = frame? else { return Ok(()); };
-                                    let can_route = private_may_overtake(&frame, None, backlog.iter().map(|(frame, _)| frame));
+                                frame = reader.read_next(), if reader_open && backlog.len() < 32 => {
+                                    let Some(frame) = frame? else { reader_open = false; continue; };
+                                    let can_route = private_may_overtake(&frame, None, v2 && pending_replays.load(std::sync::atomic::Ordering::SeqCst) == 0, backlog.iter().map(|(frame, _)| frame));
                                     if can_route {
                                         if let Some(reply) = handle_private(frame, &peer, &session).await? {
                                             send_private_reply(&private_tx, reply).await?;
@@ -735,6 +818,9 @@ where
         let mut deferred_state = None;
         let mut deferred_frame = None;
         let mut raw_turn = false;
+        // This connection's halves of its presence and delta slot coding:
+        // they see every batch and coded delta this writer writes, in order.
+        let mut coding = SessionCoding::default();
         loop {
             if active.is_none() {
                 active = reply_rx.try_recv().ok();
@@ -773,19 +859,39 @@ where
                     && let Some(frame) = deferred_frame.take()
                 {
                     authorize_state_frame(&frame, &peer, &session).await?;
+                    // Presence and host-authored deltas are fan-out; the
+                    // rest of this lane answers or addresses one device.
+                    let live = matches!(frame, Envelope::Delta { .. } | Envelope::Presence { .. });
                     write
-                        .write_all(&tilo_delivery_protocol::transport_v2::encode_state(
-                            &frame, v2,
-                        )?)
+                        .write_all(&encode_charged(&frame, &session, live)?)
                         .await?;
+                    trace_native_publication("written", &frame, Some(&peer.device_public_key));
                     private_burst = 0;
                     raw_turn = false;
                     continue;
                 }
                 if let Some(state) = deferred_state.take() {
-                    write_state_delivery(state, &peer, &session, &mut write).await?;
+                    write_state_delivery(
+                        state,
+                        &peer,
+                        &session,
+                        &mut coding,
+                        &presence,
+                        &mut write,
+                    )
+                    .await?;
                     private_burst = 0;
                     raw_turn = true;
+                    continue;
+                }
+                // Presence goes once no delta is waiting: it never delays one.
+                if presence
+                    .next_due()
+                    .is_some_and(|due| due <= tokio::time::Instant::now())
+                {
+                    write_presence(&presence, &mut coding.presence, &peer, &session, &mut write)
+                        .await?;
+                    private_burst = 0;
                     continue;
                 }
             }
@@ -803,6 +909,7 @@ where
                 frame = rx.recv(), if live => {
                     deferred_frame = frame;
                 }
+                () = presence.ready(), if live => {}
             }
         }
         #[allow(
@@ -822,6 +929,11 @@ where
         .0
         .store(false, std::sync::atomic::Ordering::SeqCst);
     let outcome = finish_peer_outcome(outcome, &metrics, &peer.device_public_key);
+    tracing::debug!(
+        device = %hex::encode(&peer.device_public_key[..4]),
+        bytes_sent = write.bytes_sent(),
+        "peer session egress"
+    );
     if crate::persistence::correlated_diagnostics() {
         tracing::info!(phase = "peer_end", device = %hex::encode(&peer.device_public_key[..4]), outcome = ?outcome, workspaces = ?subscribed);
     }
@@ -882,16 +994,31 @@ fn control_room(frame: &EnvelopeV2) -> Option<u64> {
 fn private_may_overtake<'a>(
     frame: &EnvelopeV2,
     active_control: Option<u64>,
+    heartbeat_ready: bool,
     mut queued: impl Iterator<Item = &'a EnvelopeV2>,
 ) -> bool {
-    let EnvelopeV2::Directed(action) = frame else {
-        return false;
+    // A transport-only heartbeat cannot depend on state admission finishing:
+    // its silence deadline would otherwise replace an authorized live session.
+    // Preserve Ready and earlier capability/unsubscribe reply ordering.
+    if matches!(frame, EnvelopeV2::State(Envelope::Ping)) {
+        return heartbeat_ready
+            && active_control.is_none()
+            && queued.all(|frame| control_room(frame).is_none());
+    }
+    let action = match frame {
+        EnvelopeV2::Directed(action) => action,
+        EnvelopeV2::SignedDirected(signed) => signed.action(),
+        _ => return false,
     };
     let Ok(room) = crate::room_workspace_id(&action.room.to_string()) else {
         return false;
     };
     active_control != Some(room) && queued.all(|frame| control_room(frame) != Some(room))
 }
+
+// Both ends trace the same publication hop; the client side lives with the
+// session client.
+pub(crate) use tilo_relay_session::trace_native_publication;
 
 fn inbound_bytes(frame: &EnvelopeV2) -> usize {
     match frame {
@@ -1126,10 +1253,6 @@ async fn write_private<W: tokio::io::AsyncWrite + Unpin>(
     }
     Ok(())
 }
-#[expect(
-    clippy::significant_drop_tightening,
-    reason = "the membership guard spans the whole authorization so it observes one roster generation"
-)]
 async fn authorize_state_frame(
     frame: &Envelope,
     peer: &AuthenticatedPeer,
@@ -1142,6 +1265,22 @@ async fn authorize_state_frame(
         Envelope::SyncResponse { workspace_id, .. } => (*workspace_id, false),
         _ => return Ok(()),
     };
+    authorize_state_recipient(id, subscribed, peer, session).await
+}
+
+/// [`authorize_state_frame`] for a frame to room `id`; `subscribed` frames
+/// (deltas, presence, `Ready`) also need this connection to be the room's
+/// current subscriber.
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "the membership guard spans the whole authorization so it observes one roster generation"
+)]
+async fn authorize_state_recipient(
+    id: u64,
+    subscribed: bool,
+    peer: &AuthenticatedPeer,
+    session: &SessionCtx<'_>,
+) -> Result<(), PeerError> {
     let ws = session
         .workspaces
         .lock()
@@ -1150,8 +1289,7 @@ async fn authorize_state_frame(
         .cloned()
         .ok_or_else(|| PeerError::Protocol("workspace disappeared".into()))?;
     let wr = crate::workspace_io::fresh_membership(&ws).await?;
-    if !session_peer_authorized(peer, session)
-        || !state_member(&wr, peer)
+    if !session.admits(&wr, peer, RoomOperation::State)
         || ((subscribed || wr.subscribers.contains_key(&peer.device_public_key))
             && !current_session(&wr, peer, session.outbound))
     {
@@ -1212,10 +1350,13 @@ async fn finish_replay_write<W: tokio::io::AsyncWrite + Unpin>(
                         let source = StateSource::new(peer, session);
                         authorize_replay(&ws, &source, &ticket.authority).await?;
                         write
-                            .write_all(&tilo_delivery_protocol::transport_v2::encode_state(
-                                frame, session.v2,
-                            )?)
+                            .write_all(&encode_charged(frame, session, false)?)
                             .await?;
+                        trace_native_publication(
+                            "replay_written",
+                            frame,
+                            Some(&peer.device_public_key),
+                        );
                         // The position follows after `Ready`; a reconnect
                         // before it replays these frames once more.
                         let _ = resume_record(session, workspace_id, [frame]);
@@ -1347,17 +1488,13 @@ async fn finish_replay_write<W: tokio::io::AsyncWrite + Unpin>(
             }
         }
         write
-            .write_all(&tilo_delivery_protocol::transport_v2::encode_state(
-                &reply, session.v2,
-            )?)
+            .write_all(&encode_charged(&reply, session, false)?)
             .await?;
         if let Envelope::Ready { workspace_id, .. } = &reply
             && let Some(position) = resume_record(session, *workspace_id, [])
         {
             write
-                .write_all(&tilo_delivery_protocol::transport_v2::encode_state(
-                    &position, session.v2,
-                )?)
+                .write_all(&encode_charged(&position, session, false)?)
                 .await?;
         }
         if let Some((catchup, workspace, source, ticket)) = completed_replay {
@@ -1498,20 +1635,27 @@ fn authorize_replay_now(
     source: &StateSource,
     authority: &crate::persistence::ReplayAuthority,
 ) -> Result<(), StoreError> {
-    let members = store.load_membership()?;
+    // The in-memory set while the membership watch vouches for it; otherwise
+    // the file, as a fresh membership reload would read it.
+    let current = workspace.blocking_lock().membership_is_current();
+    let members = if current {
+        None
+    } else {
+        Some(store.load_membership()?)
+    };
     let runtime = workspace.blocking_lock();
-    let member = (members.contains(&source.peer.device_public_key)
-        && runtime
-            .membership_ceiling
-            .as_ref()
-            .is_none_or(|ceiling| ceiling.contains(&source.peer.device_public_key)))
-        || runtime
-            .admitted_users
-            .contains(&source.peer.user_public_key)
-        || (source.peer.role == crate::auth::PeerRole::PeerRelay
-            && runtime
-                .known_peer_relays
-                .contains(&source.peer.device_public_key));
+    let room = members.as_deref().map_or_else(
+        || room_access::Room::current(&runtime),
+        |listed| room_access::Room::with_listed(&runtime, listed),
+    );
+    let member = room_access::decide_in(
+        room,
+        &source.trust(),
+        &source.peer,
+        RoomOperation::Replay,
+        unix_now_ns(),
+    )
+    .admitted();
     if !member
         || !source.authorized(&runtime)
         || !runtime
@@ -1551,7 +1695,7 @@ async fn replay_direct_wait<T, W: tokio::io::AsyncWrite + Unpin>(
     write: &mut W,
 ) -> Result<T, PeerError> {
     tokio::pin!(operation);
-    let mut private_open = session.v2;
+    let mut private_open = session.framing.is_v2();
     loop {
         tokio::select! {
             biased;
@@ -1587,72 +1731,53 @@ async fn replay_direct_wait<T, W: tokio::io::AsyncWrite + Unpin>(
     }
 }
 
-/// Periodic membership + revocation re-check for every workspace this
-/// peer is subscribed to. Reloads membership from disk each tick —
-/// the only way a removal made while a device is connected takes
-/// effect promptly — and ends the session if the device's own cert
-/// was revoked or it fell out of membership.
+/// Membership + revocation re-check for every workspace this peer is
+/// subscribed to, run when [`AccessAudit`] says. Reloads membership
+/// from disk when the membership watch saw it change, or on every audit
+/// while no live watch covers the room, and ends the session if the
+/// device's own cert was revoked or it fell out of membership.
+///
+/// Returns whether every subscribed room's membership is change-notified,
+/// so the next audit can wait for a change instead of the disk.
 async fn audit_subscriber_access(
-    revocations: &Arc<std::sync::RwLock<tilo_user_identity::RevocationList>>,
     peer: &AuthenticatedPeer,
     session: &SessionCtx<'_>,
     subscribed: &[u64],
-) -> Result<(), PeerError> {
-    if revocations
-        .read()
-        .is_ok_and(|list| list.is_revoked(&peer.device_public_key))
-    {
-        return Err(PeerError::Protocol(
-            "authenticated device was revoked".into(),
-        ));
-    }
-    if !session
-        .trust_policy
-        .read()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .admits(&peer.cert, session.own_user_public_key)
-    {
-        return Err(PeerError::Protocol(
-            "collaborator was removed from signed workspace authority".into(),
-        ));
-    }
+) -> Result<bool, PeerError> {
+    let mut watched = true;
+    // Relay-wide first, so a revoked or untrusted device ends even with no
+    // bound room left to ask.
+    session
+        .trust()
+        .cert(peer, unix_now_ns())
+        .map_err(|reason| PeerError::Protocol(reason.reason().into()))?;
     for workspace_id in subscribed {
-        agent_admits(session.agents, &peer.device_public_key, *workspace_id)
-            .map_err(|reason| PeerError::Protocol(reason.into()))?;
         let Some(workspace) = session.workspaces.lock().await.get(workspace_id).cloned() else {
             continue;
         };
         let workspace = crate::workspace_io::fresh_membership(&workspace).await?;
-        if peer.role == crate::auth::PeerRole::PeerRelay
-            && peer.user_public_key != *session.own_user_public_key
-        {
-            return Err(PeerError::Protocol(
-                "cross-user certificates cannot federate relay rooms".into(),
-            ));
-        }
-        if !session_peer_authorized(peer, session)
-            || !current_session(&workspace, peer, session.outbound)
-        {
+        watched &= workspace.membership_is_current();
+        let current = current_session(&workspace, peer, session.outbound);
+        let decision = session.decide(&workspace, peer, RoomOperation::Subscribe);
+        drop(workspace);
+        if !current {
             return Err(PeerError::Protocol(
                 "subscriber authorization changed".into(),
             ));
         }
-        let is_federated = peer.role == crate::auth::PeerRole::PeerRelay
-            && peer.user_public_key == *session.own_user_public_key
-            && workspace
-                .known_peer_relays
-                .contains(&peer.device_public_key);
-        if !workspace.admit_authenticated
-            && !workspace.admitted_users.contains(&peer.user_public_key)
-            && !workspace.membership.contains(&peer.device_public_key)
-            && !is_federated
-        {
-            return Err(PeerError::Protocol(
-                "device was removed from workspace membership".into(),
-            ));
+        // A live subscription was enrolled when it subscribed: a device the
+        // room would only enrol now is no longer a member.
+        match decision {
+            Decision::Admit => {}
+            Decision::AdmitAndEnrol | Decision::Deny(room_access::DenyReason::NotAMember) => {
+                return Err(PeerError::Protocol(
+                    "device was removed from workspace membership".into(),
+                ));
+            }
+            Decision::Deny(reason) => return Err(PeerError::Protocol(reason.reason().into())),
         }
     }
-    Ok(())
+    Ok(watched)
 }
 
 /// Handle one successfully-decoded inbound envelope: dispatch to
@@ -1909,13 +2034,22 @@ async fn handle_subscribe(
     workspace_id: u64,
     resume: Subscription,
 ) -> Result<Option<Envelope>, PeerError> {
-    if let Err(reason) = agent_admits(session.agents, &peer.device_public_key, workspace_id) {
+    // An agent outside its delegation never gets a room bound for it.
+    if let Err(reason) = session
+        .trust()
+        .agent(&peer.device_public_key, workspace_id, unix_now_ns())
+    {
         return Ok(Some(Envelope::NotAuthorised {
             workspace_id,
-            reason: reason.into(),
+            reason: reason.reason().into(),
         }));
     }
-    let ws = get_or_autobind_workspace(session.workspaces, session.autobind, workspace_id).await?;
+    // Only the relay owner's own devices can be enrolled into an autobound
+    // room, so only they may cause one to be bound.
+    let autobind = session
+        .autobind
+        .filter(|_| peer.user_public_key == *session.own_user_public_key);
+    let ws = get_or_autobind_workspace(session.workspaces, autobind, workspace_id).await?;
     let Some(ws) = ws else {
         return Ok(Some(Envelope::NotAuthorised {
             workspace_id,
@@ -1930,31 +2064,16 @@ async fn handle_subscribe(
             "subscriber authorization changed".into(),
         ));
     }
-    if peer.role == crate::auth::PeerRole::PeerRelay
-        && peer.user_public_key != *session.own_user_public_key
-    {
-        return Ok(Some(Envelope::NotAuthorised {
-            workspace_id,
-            reason: "cross-user certificates cannot federate relay rooms".into(),
-        }));
-    }
-    // Membership gates DEVICE subscribers. Same-owner peer relays are
-    // separately gated by their active federation lease, so they don't need
-    // to appear in the workspace membership list.
-    let is_federated = peer.role == crate::auth::PeerRole::PeerRelay
-        && peer.user_public_key == *session.own_user_public_key
-        && wr.known_peer_relays.contains(&peer.device_public_key);
-    if !wr.membership.contains(&peer.device_public_key)
-        && !wr.admitted_users.contains(&peer.user_public_key)
-        && !is_federated
-    {
-        if wr.admit_authenticated {
+    // Same-owner peer relays are gated by their active federation lease, so
+    // they don't need to appear in the workspace membership list.
+    match session.decide(&wr, peer, RoomOperation::Subscribe) {
+        Decision::Admit => {}
+        Decision::AdmitAndEnrol => {
             let revision = wr.membership_revision;
             drop(wr);
             crate::workspace_io::admit_member(&ws, peer.device_public_key, revision).await?;
             wr = crate::workspace_io::fresh_membership(&ws).await?;
-            if !session_peer_authorized(peer, session)
-                || !current_member(&wr, peer)
+            if !session.admits(&wr, peer, RoomOperation::Subscribe)
                 || (subscribed.contains(&workspace_id)
                     && !current_session(&wr, peer, session.outbound))
             {
@@ -1962,10 +2081,11 @@ async fn handle_subscribe(
                     "subscriber authorization changed".into(),
                 ));
             }
-        } else {
+        }
+        Decision::Deny(reason) => {
             return Ok(Some(Envelope::NotAuthorised {
                 workspace_id,
-                reason: "device not in workspace membership".into(),
+                reason: reason.reason().into(),
             }));
         }
     }
@@ -1989,6 +2109,7 @@ async fn handle_subscribe(
     let catchup = Arc::new(ReplayCatchup::new());
     let session_catchup = catchup.clone();
     let session_lag = session.lag.clone();
+    let presence = session.presence.cloned();
 
     let rx = owner
         .submit_replay_resumable_wait(
@@ -2013,10 +2134,15 @@ async fn handle_subscribe(
                 let unchanged = match (expected.as_ref(), current) {
                     (Some(expected), Some(current)) => expected.same_channel(&current.tx),
                     (None, None) => true,
-                    _ => false,
+                    // The device's earlier connection held the slot when this
+                    // one subscribed, and its teardown has since released it.
+                    // This subscription would have displaced it anyway, so it
+                    // takes the slot. Only this connection's own slot
+                    // vanishing is a loss of authorization.
+                    (Some(expected), None) => !expected.same_channel(&source.tx),
+                    (None, Some(_)) => false,
                 };
-                if !source.alive() || !source.cert(&source.peer) || !state_member(&wr, &source.peer)
-                {
+                if !source.alive() || !source.admits(&wr, &source.peer) {
                     return Err(crate::persistence::error(
                         "replay subscriber authorization changed",
                     ));
@@ -2049,6 +2175,9 @@ async fn handle_subscribe(
                     tx: source.tx,
                     disconnect: source.disconnect,
                 });
+                if let Some(mailbox) = presence {
+                    wr.route_presence(source.peer.device_public_key, mailbox);
+                }
                 wr.state_sessions.insert(
                     source.peer.device_public_key,
                     StateSession {
@@ -2127,8 +2256,8 @@ impl StateSession {
 /// disk (its pending queue and the retained log). Once the connection's
 /// queues drain it resumes each of them from its position, so the replay
 /// carries exactly what it missed; a lagging reader costs disk and latency,
-/// never its session. A subscription without a resume log catches up on its
-/// next subscribe instead.
+/// never its session. A subscription without a resume log catches up through
+/// its ordinary full retained replay, with current authorization checked again.
 #[derive(Default)]
 pub(crate) struct Lag {
     rooms: std::sync::Mutex<std::collections::BTreeSet<u64>>,
@@ -2185,10 +2314,15 @@ pub(crate) struct StateSource {
     revocations: Arc<std::sync::RwLock<tilo_user_identity::RevocationList>>,
     policy: Arc<std::sync::RwLock<crate::policy::TrustPolicy>>,
     own_user: [u8; 32],
+    agents: AgentRegistry,
     federation: Option<Arc<std::sync::atomic::AtomicBool>>,
     session_live: Option<Arc<std::sync::atomic::AtomicBool>>,
 }
 impl StateSource {
+    /// The source of an outbound federation lease. Its trust is the
+    /// relay's own user only — not the live handshake policy, which may admit
+    /// collaborators' roots — and it carries no agent delegations: a peer
+    /// relay is never an agent.
     pub(crate) fn federated(
         peer: AuthenticatedPeer,
         tx: mpsc::Sender<Envelope>,
@@ -2206,6 +2340,7 @@ impl StateSource {
                 crate::policy::TrustPolicy::AllowMatchingUser,
             )),
             own_user,
+            agents: AgentRegistry::default(),
             federation: Some(lease),
             session_live: None,
         }
@@ -2228,27 +2363,31 @@ impl StateSource {
             revocations: session.revocations.clone(),
             policy: session.trust_policy.clone(),
             own_user: *session.own_user_public_key,
+            agents: session.agents.clone(),
             federation: None,
             session_live: session.connection_live.cloned(),
         }
     }
-    fn cert(&self, peer: &AuthenticatedPeer) -> bool {
-        peer.cert
-            .expires_at_ns
-            .is_none_or(|expiry| expiry > unix_now_ns())
-            && self
-                .revocations
-                .read()
-                .is_ok_and(|list| !list.is_revoked(&peer.device_public_key))
-            && self
-                .policy
-                .read()
-                .is_ok_and(|policy| policy.admits(&peer.cert, &self.own_user))
+    fn trust(&self) -> RelayTrust<'_> {
+        RelayTrust {
+            revocations: &self.revocations,
+            policy: &self.policy,
+            own_user: &self.own_user,
+            agents: &self.agents,
+        }
+    }
+    /// Whether `peer` may hold state in `runtime`'s room under this source's
+    /// trust: the source itself, or a recipient of its frames.
+    fn admits(
+        &self,
+        runtime: &crate::workspace::WorkspaceRuntime,
+        peer: &AuthenticatedPeer,
+    ) -> bool {
+        room_access::decide(runtime, &self.trust(), peer, RoomOperation::State).admitted()
     }
     pub(crate) fn authorized(&self, runtime: &crate::workspace::WorkspaceRuntime) -> bool {
         self.alive()
-            && self.cert(&self.peer)
-            && state_member(runtime, &self.peer)
+            && self.admits(runtime, &self.peer)
             && match &self.federation {
                 Some(lease) => {
                     lease.load(std::sync::atomic::Ordering::SeqCst)
@@ -2260,11 +2399,6 @@ impl StateSource {
                 None => current_session(runtime, &self.peer, &self.tx),
             }
     }
-}
-fn state_member(runtime: &crate::workspace::WorkspaceRuntime, peer: &AuthenticatedPeer) -> bool {
-    current_member(runtime, peer)
-        || (peer.role == crate::auth::PeerRole::PeerRelay
-            && runtime.known_peer_relays.contains(&peer.device_public_key))
 }
 
 #[derive(Clone)]
@@ -2668,7 +2802,6 @@ impl ReplayPendingWork {
 struct CheckpointBatchInput {
     continuity: Option<crate::store::continuity::Receipt>,
     envelope: Arc<Envelope>,
-    delta: Vec<u8>,
     raw: Vec<u8>,
     channel: [u8; 32],
     incoming: [u8; 32],
@@ -2705,9 +2838,8 @@ fn new_checkpoint_batch(
                 "checkpoint batch contained non-delta",
             ));
         };
-        let delta = delta.clone();
-        let Some(crate::coedit::CoeditPayload::Checkpoint { channel, .. }) =
-            crate::coedit::CoeditPayload::decode(&delta)
+        let Some((channel, crate::coedit::RetentionKind::Checkpoint)) =
+            crate::coedit::retention_metadata(delta)
         else {
             return Err(crate::persistence::error(
                 "checkpoint batch contained non-checkpoint",
@@ -2741,7 +2873,6 @@ fn new_checkpoint_batch(
         inputs.push(CheckpointBatchInput {
             continuity,
             envelope: Arc::new(envelope),
-            delta,
             raw,
             channel,
             incoming,
@@ -2854,30 +2985,21 @@ fn union_sessions<'a>(prepared: impl IntoIterator<Item = &'a PreparedRecipients>
     (sessions, replay_targets)
 }
 
-fn commit_log_and_materialize(
+fn commit_and_materialize(
     state: &mut crate::persistence::State,
     input: &CheckpointBatchInput,
 ) -> Result<u64, crate::store::StoreError> {
-    let sequence = input
-        .sequence
-        .ok_or_else(|| crate::persistence::error("checkpoint sequence was not reserved"))?;
-    let Envelope::Delta {
-        author_device_public_key,
-        ..
-    } = &*input.envelope
-    else {
+    if input.sequence.is_none() {
+        return Err(crate::persistence::error(
+            "checkpoint sequence was not reserved",
+        ));
+    }
+    let Envelope::Delta { delta, .. } = &*input.envelope else {
         return Err(crate::persistence::error(
             "checkpoint input was not a delta",
         ));
     };
-    let _ = state.store.append_log(&crate::store::LogEntry {
-        workspace_id: state.store.workspace_id(),
-        received_at_ns: sequence,
-        author_device_hex: hex::encode(author_device_public_key),
-        authored_at_ns: sequence,
-        delta_len: input.delta.len() as u64,
-    });
-    state.materialize(&input.delta);
+    state.materialize(delta);
     Ok(input
         .stage
         .as_ref()
@@ -3198,7 +3320,7 @@ impl ProjectedCheckpointCommit {
             {
                 Step::More => return Ok(ProjectedCheckpointStep::More),
                 Step::Done(()) => {
-                    commit_log_and_materialize(state, input)?;
+                    commit_and_materialize(state, input)?;
                     self.gc_index = self.gc_index.saturating_add(1);
                     return Ok(ProjectedCheckpointStep::More);
                 }
@@ -3614,7 +3736,7 @@ impl SerialCheckpointCommit {
             {
                 return Ok(Step::More);
             }
-            commit_log_and_materialize(state, input)?;
+            commit_and_materialize(state, input)?;
             let mut commit = state_commit_for(
                 input,
                 self.publication
@@ -3700,6 +3822,17 @@ async fn publish_checkpoint_commit(
     metrics: &crate::metrics::Metrics,
     mut commit: StateCommit,
 ) -> Result<(), crate::store::StoreError> {
+    trace_native_publication(
+        if commit.activation_error.is_some() {
+            "prefix_activation_error"
+        } else if commit.publish {
+            "prefix_durable"
+        } else {
+            "prefix_suppressed"
+        },
+        &commit.envelope,
+        None,
+    );
     if !commit.publish {
         return Ok(());
     }
@@ -3767,7 +3900,7 @@ async fn publish_checkpoint_commit(
             let Some(target) = runtime.state_sessions.get(recipient) else {
                 continue;
             };
-            if !state_member(&runtime, &target.peer) || !source.cert(&target.peer) {
+            if !source.admits(&runtime, &target.peer) {
                 continue;
             }
             let replay_phase = target
@@ -3927,6 +4060,9 @@ async fn enqueue_checkpoint_prefix(
     metrics: Arc<crate::metrics::Metrics>,
     inbound_budget: Vec<Option<Arc<tokio::sync::OwnedSemaphorePermit>>>,
 ) -> Result<(), PeerError> {
+    for envelope in &envelopes {
+        trace_native_publication("prefix_received", envelope, None);
+    }
     let diagnostics = crate::persistence::diagnostics();
     let admitted_at = diagnostics.then(std::time::Instant::now);
     let message_units = u32::try_from(envelopes.len())
@@ -3993,6 +4129,20 @@ async fn enqueue_checkpoint_prefix(
                 }
                 let projection_elapsed_ms =
                     projection_started.map_or(0, |started| started.elapsed().as_millis());
+                if tracing::enabled!(target: "tilo_relay::native_publication", tracing::Level::DEBUG) {
+                    for (index, input) in batch.inputs.iter().enumerate() {
+                        use crate::store::shell_selection::IncomingDisposition;
+                        let disposition = batch.projected.as_ref().and_then(|outcome| outcome.dispositions.get(index));
+                        let phase = match disposition {
+                            Some(IncomingDisposition::Covered) => "prefix_covered",
+                            Some(IncomingDisposition::Staged) => "prefix_staged",
+                            Some(IncomingDisposition::SelectedLive) => "prefix_selected_live",
+                            Some(IncomingDisposition::Original) => "prefix_original",
+                            None => "prefix_unclassified",
+                        };
+                        trace_native_publication(phase, &input.envelope, None);
+                    }
+                }
                 if diagnostics {
                     use crate::store::shell_selection::{
                         BatchProjectionReason, IncomingDisposition, Publication,
@@ -4066,6 +4216,7 @@ async fn enqueue_checkpoint_prefix(
                         .invariant("checkpoint input missing")?;
                     let Envelope::Delta {
                         author_device_public_key,
+                        delta,
                         ..
                     } = &*input.envelope
                     else {
@@ -4082,7 +4233,7 @@ async fn enqueue_checkpoint_prefix(
                             &work_source,
                             *author_device_public_key,
                             role,
-                            input.delta.len(),
+                            delta.len(),
                         )
                         .await?
                     };
@@ -4304,6 +4455,65 @@ struct AdmittedState {
     /// The durable host order it took; 0 until then, or when unpublished.
     sequence: Arc<std::sync::atomic::AtomicU64>,
 }
+
+/// Correlate admission and owner phases without retaining a signed payload.
+#[derive(Clone)]
+struct StateAdmissionTrace {
+    id: blake3::Hash,
+    kind: &'static str,
+    workspace_id: u64,
+    author: [u8; 4],
+}
+
+impl StateAdmissionTrace {
+    fn new(envelope: &Envelope) -> Option<Self> {
+        if !tracing::enabled!(target: "tilo_relay::native_publication", tracing::Level::DEBUG) {
+            return None;
+        }
+        let Envelope::Delta {
+            workspace_id,
+            author_device_public_key,
+            delta,
+            ..
+        } = envelope
+        else {
+            return None;
+        };
+        let payload = crate::coedit::CoeditPayload::decode(delta)?;
+        let (kind, body) = match payload {
+            crate::coedit::CoeditPayload::Checkpoint { body, .. } => ("checkpoint", body),
+            crate::coedit::CoeditPayload::RetainedDelta { body, .. } => ("delta", body),
+        };
+        let mut author = [0; 4];
+        author.copy_from_slice(&author_device_public_key[..4]);
+        Some(Self {
+            id: blake3::hash(&body),
+            kind,
+            workspace_id: *workspace_id,
+            author,
+        })
+    }
+
+    fn emit(&self, phase: &str) {
+        tracing::debug!(target: "tilo_relay::native_publication",
+            phase, id = %self.id, kind = self.kind,
+            workspace_id = self.workspace_id,
+            author = %hex::encode(self.author),
+            "native relay publication hop");
+    }
+}
+
+/// A dropped admission future must be distinguishable from a slow owner job.
+struct AdmissionWaitTrace(Option<StateAdmissionTrace>);
+
+impl Drop for AdmissionWaitTrace {
+    fn drop(&mut self) {
+        if let Some(trace) = &self.0 {
+            trace.emit("persistence_admission_cancelled");
+        }
+    }
+}
+
 /// Admit `envelope`, authored by this host's own device, through the
 /// workspace's ordered persistence owner, as a device's commit is admitted.
 /// Resolves with its host order once it is durable and published.
@@ -4382,17 +4592,23 @@ async fn enqueue_state_inner(
         tracing::info!(phase = "server_delta_admit", workspace_id, authored_at_ns);
     }
     let charge = delta.len().saturating_add(256).saturating_mul(3);
+    trace_native_publication("admission_started", &envelope, None);
     let runtime = crate::workspace_io::fresh_membership(workspace).await?;
     if source
         .as_ref()
         .is_some_and(|source| !source.authorized(&runtime))
     {
+        trace_native_publication("admission_source_changed", &envelope, None);
         return Err(PeerError::Protocol(
             "state source authorization changed".into(),
         ));
     }
+    trace_native_publication("admission_authorized", &envelope, None);
     drop(runtime);
     let owner = crate::persistence::handle(workspace).await;
+    trace_native_publication("persistence_admission_wait", &envelope, None);
+    let admission_trace = StateAdmissionTrace::new(&envelope);
+    let mut wait_trace = AdmissionWaitTrace(admission_trace.clone());
     let workers = owner.workers();
     let workspace = workspace.clone();
     let failure = source.clone();
@@ -4411,6 +4627,8 @@ async fn enqueue_state_inner(
     let mut replay_pending_work: Option<ReplayPendingWork> = None;
     let durable = Arc::new(std::sync::atomic::AtomicU64::new(0));
     let durable_sequence = durable.clone();
+    let operation_trace = admission_trace.clone();
+    let completion_trace = admission_trace.clone();
     let completion = Box::pin(owner.submit_resumable_wait(
         charge,
         async move {
@@ -4484,6 +4702,9 @@ async fn enqueue_state_inner(
         },
         move |state, prepared| {
             if commit.is_none() {
+                if let Some(trace) = &operation_trace {
+                    trace.emit("persistence_owner_started");
+                }
                 let (recipients, sessions, session_lives, replay_targets, logical_offline_bytes) =
                     prepared.take().invariant("ordered recipients")?;
                 let envelope = envelope.take().invariant("admitted envelope")?;
@@ -4515,11 +4736,9 @@ async fn enqueue_state_inner(
                 let raw = crate::transport::encode(&envelope)
                     .map_err(|e| crate::persistence::error(e.to_string()))?;
                 let retention =
-                    crate::coedit::CoeditPayload::decode(delta).map(|payload| match payload {
-                        crate::coedit::CoeditPayload::Checkpoint { channel, .. } => (channel, None),
-                        crate::coedit::CoeditPayload::RetainedDelta { channel, .. } => {
-                            (channel, Some(seq))
-                        }
+                    crate::coedit::retention_metadata(delta).map(|(channel, kind)| match kind {
+                        crate::coedit::RetentionKind::Checkpoint => (channel, None),
+                        crate::coedit::RetentionKind::Delta => (channel, Some(seq)),
                     });
                 if let Some((channel, seq)) = retention {
                     #[cfg(test)]
@@ -4617,6 +4836,11 @@ async fn enqueue_state_inner(
                                     .map_or(0, |stats| stats.peak_metadata_entries),
                             );
                         }
+                        if !build.holds_scratch() {
+                            // A plain delta made no scratch, so the owner has
+                            // nothing to dispose of after this job.
+                            state.retention_scratch = None;
+                        }
                         persist_metrics.add_bytes_queued(written);
                         current.persisted_bytes = written;
                         retained_build = None;
@@ -4655,23 +4879,27 @@ async fn enqueue_state_inner(
                     return Ok(Step::More);
                 }
             }
-            let seq = sequence.invariant("sequence missing")?;
+            sequence.invariant("sequence missing")?;
             let Envelope::Delta { delta, .. } = &*current.envelope else {
                 return Err(crate::persistence::error("state commit envelope is not a delta"));
             };
-            let _ = state.store.append_log(&crate::store::LogEntry {
-                workspace_id: state.store.workspace_id(),
-                received_at_ns: seq,
-                author_device_hex: hex::encode(author),
-                authored_at_ns: seq,
-                delta_len: delta.len() as u64,
-            });
             state.materialize(delta);
             Ok(Step::Done(commit.take().invariant("commit missing")?))
         },
         move |result| async move {
             let result = async {
                 let mut commit = result?;
+                trace_native_publication(
+                    if commit.activation_error.is_some() {
+                        "activation_error"
+                    } else if commit.publish {
+                        "durable"
+                    } else {
+                        "suppressed"
+                    },
+                    &commit.envelope,
+                    None,
+                );
                 if !commit.publish {
                     return Ok(commit);
                 }
@@ -4727,12 +4955,23 @@ async fn enqueue_state_inner(
                         break;
                     }
                     let checkpoint_channel = gated_checkpoint_channel(&envelope, source.as_ref());
+                    // Presence the author sent after this delta was held for
+                    // it and goes out with it; from here on nothing waits.
+                    if let Envelope::Delta { author_device_public_key, .. } = &*envelope {
+                        runtime.delta_published(author_device_public_key);
+                    }
                     for (recipient, original) in &commit.sessions {
                         if recovering && !captured_live_current(&commit.session_lives, &runtime, recipient, original) { continue; }
                         let Some(sub) = runtime.subscribers.get(recipient) else { continue };
                         if !sub.tx.same_channel(original) { continue; }
                         let Some(target) = runtime.state_sessions.get(recipient) else { continue };
-                        if !state_member(&runtime, &target.peer) || source.as_ref().is_some_and(|s| !s.cert(&target.peer)) { continue; }
+                        // A host-authored frame has no source trust to ask, and
+                        // checks the recipient's room listing only.
+                        let admitted = match source.as_ref() {
+                            Some(source) => source.admits(&runtime, &target.peer),
+                            None => room_access::listed(room_access::Room::current(&runtime), &target.peer, RoomOperation::State),
+                        };
+                        if !admitted { continue; }
                         let replay_phase = target.replay.as_ref().map(|replay| {
                             replay.phase.load(std::sync::atomic::Ordering::SeqCst)
                         });
@@ -4805,6 +5044,8 @@ async fn enqueue_state_inner(
                             }
                         }
                     }
+                    #[cfg(test)]
+                    crate::store::test_barrier::signal(runtime.store.root(), "live-publication-complete");
                 }
                 Ok(())
                 }.await;
@@ -4841,6 +5082,13 @@ async fn enqueue_state_inner(
                 Ok(commit)
             }
             .await;
+            if let Some(trace) = &completion_trace {
+                trace.emit(if result.is_ok() {
+                    "persistence_completed"
+                } else {
+                    "persistence_failed"
+                });
+            }
             if crate::persistence::correlated_diagnostics() && let Err(error) = &result {
                 tracing::info!(phase = "state_commit_error", error = %error);
             }
@@ -4852,11 +5100,154 @@ async fn enqueue_state_inner(
             result
         },
     ))
-    .await?;
+    .await;
+    wait_trace.0 = None;
+    let completion = match completion {
+        Ok(completion) => {
+            if let Some(trace) = &admission_trace {
+                trace.emit("persistence_admitted");
+            }
+            completion
+        }
+        Err(error) => {
+            if let Some(trace) = &admission_trace {
+                trace.emit("persistence_admission_failed");
+            }
+            return Err(error.into());
+        }
+    };
     Ok(AdmittedState {
         completion,
         sequence: durable,
     })
+}
+
+/// `envelope` in the framing `session` negotiated: on the compact protocol a
+/// zero-signature delta goes without its signature.
+fn encode_for_session(
+    envelope: &Envelope,
+    session: &SessionCtx<'_>,
+) -> Result<Vec<u8>, postcard::Error> {
+    tilo_delivery_protocol::transport_v2::encode_state_framed(envelope, session.framing)
+}
+
+/// [`encode_for_session`] for a frame about to be written, charged to its
+/// room's egress. `live` marks live fan-out (a delta or presence forwarded as
+/// it arrived), as opposed to replay, replies and positions.
+fn encode_charged(
+    envelope: &Envelope,
+    session: &SessionCtx<'_>,
+    live: bool,
+) -> Result<Vec<u8>, postcard::Error> {
+    let frame = encode_for_session(envelope, session)?;
+    if let Some(room) = envelope.workspace_id() {
+        session
+            .metrics
+            .add_room_egress(room, u64::try_from(frame.len()).unwrap_or(u64::MAX), live);
+    }
+    Ok(frame)
+}
+
+/// A live delta about to be written, charged to its room's live egress: on
+/// `tilo-relay/7` coded against what the session last received from the
+/// same author in the same room (`DeltaEncoder`), otherwise as
+/// [`encode_charged`] writes it. A delta the encoder does not code (signed,
+/// or larger than it keeps) goes whole and changes no slot.
+fn encode_delta_charged(
+    envelope: &Envelope,
+    session: &SessionCtx<'_>,
+    deltas: &mut tilo_delivery_protocol::transport_v2::DeltaEncoder,
+) -> Result<Vec<u8>, postcard::Error> {
+    if session.framing.codes_deltas()
+        && let Some(frame) = deltas.encode(envelope)?
+    {
+        if let Some(room) = envelope.workspace_id() {
+            session.metrics.add_room_egress(
+                room,
+                u64::try_from(frame.len()).unwrap_or(u64::MAX),
+                true,
+            );
+        }
+        return Ok(frame);
+    }
+    encode_charged(envelope, session, true)
+}
+
+/// Presence items one `PresenceBatch` frame carries at most.
+const PRESENCE_BATCH_ITEMS: usize = 64;
+
+/// One connection's writer-side slot coding: each half sees every frame of
+/// its kind the writer writes, in order, as the reader's half does.
+#[derive(Default)]
+struct SessionCoding {
+    /// Presence batches (`tilo-relay/6`, TIL-710).
+    presence: tilo_delivery_protocol::transport_v2::PresenceEncoder,
+    /// Live deltas (`tilo-relay/7`, TIL-755).
+    deltas: tilo_delivery_protocol::transport_v2::DeltaEncoder,
+}
+
+/// Write the presence due for this connection, with everything else that
+/// may ride along (`PresenceMailbox::take`), in one write.
+async fn write_presence<W: tokio::io::AsyncWrite + Unpin>(
+    mailbox: &crate::presence_mailbox::PresenceMailbox,
+    slots: &mut tilo_delivery_protocol::transport_v2::PresenceEncoder,
+    peer: &AuthenticatedPeer,
+    session: &SessionCtx<'_>,
+    write: &mut W,
+) -> Result<(), PeerError> {
+    let out = encode_presence(
+        mailbox.take(tokio::time::Instant::now(), true),
+        slots,
+        peer,
+        session,
+    )
+    .await?;
+    if !out.is_empty() {
+        write.write_all(&out).await?;
+    }
+    Ok(())
+}
+
+/// Encode `due` presence for this connection, each room's authorised once:
+/// on `tilo-relay/6` as slot-coded `PresenceBatch` frames, on older
+/// protocols as one `Presence` frame per payload. Charged to each room's
+/// live egress.
+async fn encode_presence(
+    due: Vec<crate::presence_mailbox::DuePresence>,
+    slots: &mut tilo_delivery_protocol::transport_v2::PresenceEncoder,
+    peer: &AuthenticatedPeer,
+    session: &SessionCtx<'_>,
+) -> Result<Vec<u8>, PeerError> {
+    let mut out = Vec::new();
+    for run in due.chunk_by(|a, b| a.workspace_id == b.workspace_id) {
+        let Some(room) = run.first().map(|presence| presence.workspace_id) else {
+            continue;
+        };
+        authorize_state_recipient(room, true, peer, session).await?;
+        let before = out.len();
+        if session.framing.batches_presence() {
+            for chunk in run.chunks(PRESENCE_BATCH_ITEMS) {
+                let items: Vec<_> = chunk
+                    .iter()
+                    .map(|presence| slots.item(presence.key, &presence.payload))
+                    .collect();
+                out.extend(tilo_delivery_protocol::transport_v2::encode_presence_batch(
+                    room, &items,
+                )?);
+            }
+        } else {
+            for presence in run {
+                let frame = Envelope::Presence {
+                    workspace_id: room,
+                    payload: presence.payload.to_vec(),
+                };
+                out.extend(encode_for_session(&frame, session)?);
+            }
+        }
+        let bytes = u64::try_from(out.len().saturating_sub(before)).unwrap_or(u64::MAX);
+        session.metrics.add_room_egress(room, bytes, true);
+    }
+    Ok(out)
 }
 
 #[expect(
@@ -4867,6 +5258,8 @@ async fn write_state_delivery<W: tokio::io::AsyncWrite + Unpin>(
     delivery: StateDelivery,
     peer: &AuthenticatedPeer,
     session: &SessionCtx<'_>,
+    coding: &mut SessionCoding,
+    presence: &crate::presence_mailbox::PresenceMailbox,
     write: &mut W,
 ) -> Result<(), PeerError> {
     let Envelope::Delta { workspace_id, .. } = &*delivery.envelope else {
@@ -4892,8 +5285,7 @@ async fn write_state_delivery<W: tokio::io::AsyncWrite + Unpin>(
     // A connection can unsubscribe and subscribe again on the same channel.
     // Check the captured lease after the membership wait, before either writing
     // or fencing: stale work must not affect the replacement subscription.
-    if !session_peer_authorized(peer, session)
-        || !state_member(&runtime, peer)
+    if !session.admits(&runtime, peer, RoomOperation::State)
         || !delivery.current_subscription(&runtime, peer, session.outbound)
     {
         return Ok(());
@@ -4922,27 +5314,31 @@ async fn write_state_delivery<W: tokio::io::AsyncWrite + Unpin>(
     {
         tracing::info!(phase="server_delta_wire", workspace_id, authored_at_ns, recipient=%hex::encode(&peer.device_public_key[..4]));
     }
-    write
-        .write_all(&tilo_delivery_protocol::transport_v2::encode_state(
-            &delivery.envelope,
-            session.v2,
-        )?)
-        .await?;
+    // One write, so one packet where it fits: the delta, its position, and
+    // the presence that may ride along, above all the author's caret and
+    // typing for this keystroke, held for it (TIL-776).
+    let mut out = encode_delta_charged(&delivery.envelope, session, &mut coding.deltas)?;
     if let Some(position) = resume_record(session, *workspace_id, [&*delivery.envelope]) {
-        write
-            .write_all(&tilo_delivery_protocol::transport_v2::encode_state(
-                &position, session.v2,
-            )?)
-            .await?;
+        out.extend(encode_charged(&position, session, false)?);
     }
+    out.extend(
+        encode_presence(
+            presence.take(tokio::time::Instant::now(), true),
+            &mut coding.presence,
+            peer,
+            session,
+        )
+        .await?,
+    );
+    write.write_all(&out).await?;
+    trace_native_publication("written", &delivery.envelope, Some(&peer.device_public_key));
     if let Some(path) = &delivery.cleanup {
         let path = path.clone();
         // Enqueue is never receipt. Exact cleanup is admitted only after the
         // complete frame write, and is ordered against commits/replay.
         let owner = crate::persistence::handle(&workspace).await;
         let runtime = crate::workspace_io::fresh_membership(&workspace).await?;
-        if session_peer_authorized(peer, session)
-            && state_member(&runtime, peer)
+        if session.admits(&runtime, peer, RoomOperation::State)
             && delivery.current_subscription(&runtime, peer, session.outbound)
         {
             owner.read(1, move |_| {
@@ -4996,6 +5392,7 @@ async fn handle_delta(
         ));
     }
     let Some(source) = authorized_state_source(&ws, peer, session).await? else {
+        trace_native_publication("server_source_refused", &env, None);
         // A live revoke already pushed NotAuthorised and dropped this
         // subscriber; a follow-up write must close rather than refuse twice.
         if !current_session(&*ws.lock().await, peer, session.outbound) {
@@ -5008,6 +5405,18 @@ async fn handle_delta(
             reason: "workspace membership changed".into(),
         }));
     };
+    trace_native_publication("server_authorized", &env, None);
+    // The change itself must say what it does and stay inside what its app
+    // publishes, before the relay keeps or forwards it.
+    let standings = ws.lock().await.standings.clone();
+    if let Envelope::Delta { delta, .. } = &env
+        && let Some(reason) = crate::surfaces::refusal(delta, standings.as_deref())
+    {
+        // Neither kept nor forwarded. The session stays: one bad change
+        // is not a membership decision.
+        tracing::warn!(%reason, device = %hex::encode(peer.device_public_key), "refused a document change");
+        return Ok(None);
+    }
     let observed = match (&env, session.compactor) {
         (Envelope::Delta { delta, .. }, Some(_)) => crate::compaction::Compactor::observe(delta),
         _ => None,
@@ -5016,14 +5425,22 @@ async fn handle_delta(
         .compactor
         .zip(observed)
         .map(|(compactor, observed)| compactor.admitting(workspace_id, observed));
-    let governor = ws.lock().await.governor_tap.clone().and_then(|tap| {
+    // The tap hands the body to another task, so it needs the one owned copy;
+    // it is taken after the workspace lock is released.
+    let governor_tap = {
+        let mut runtime = ws.lock().await;
+        if peer.role == crate::auth::PeerRole::Device {
+            // The caret and typing this device sends next wait for this delta.
+            runtime.note_delta(peer.device_public_key, tokio::time::Instant::now());
+        }
+        runtime.governor_tap.clone()
+    };
+    let governor = governor_tap.and_then(|tap| {
         let Envelope::Delta { delta, .. } = &env else {
             return None;
         };
-        match crate::coedit::CoeditPayload::decode(delta)? {
-            crate::coedit::CoeditPayload::Checkpoint { body, .. }
-            | crate::coedit::CoeditPayload::RetainedDelta { body, .. } => Some((tap, body)),
-        }
+        let (_, _, body) = crate::coedit::retention_view(delta)?;
+        Some((tap, body.to_vec()))
     });
     enqueue_state(&ws, env, Some(source), peer.role, session.metrics.clone()).await?;
     if let Some((tap, body)) = governor {
@@ -5465,6 +5882,9 @@ async fn handle_delta_prefix(
         ));
     }
     let Some(source) = authorized_state_source(&workspace, peer, session).await? else {
+        for envelope in &envelopes {
+            trace_native_publication("server_source_refused", envelope, None);
+        }
         if !current_session(&*workspace.lock().await, peer, session.outbound) {
             return Err(PeerError::Protocol(
                 "subscriber authorization changed".into(),
@@ -5475,6 +5895,9 @@ async fn handle_delta_prefix(
             reason: "workspace membership changed".into(),
         }));
     };
+    for envelope in &envelopes {
+        trace_native_publication("server_authorized", envelope, None);
+    }
     let governed_source = {
         let runtime = workspace.lock().await;
         checkpoint_prefix_recovery_allowed(&runtime, peer, *author_device_public_key, &source)
@@ -5544,6 +5967,7 @@ async fn handle_presence(
     subscribed: &[u64],
     mut env: Envelope,
 ) -> Result<Option<Envelope>, PeerError> {
+    let mut slot = None;
     let Envelope::Presence { workspace_id, .. } = &env else {
         return Err(PeerError::Protocol(
             "handle_presence called with a non-Presence envelope".into(),
@@ -5563,6 +5987,7 @@ async fn handle_presence(
         // A sender's claim is not transport evidence, even if that other
         // device has a valid certificate in the same workspace.
         attributed.author = peer.device_public_key;
+        slot = crate::coedit::presence_slot(&attributed.body);
         *payload = attributed
             .encode()
             .map_err(|error| PeerError::Protocol(error.to_string()))?;
@@ -5585,12 +6010,10 @@ async fn handle_presence(
             };
             if let Some(authority) = authority {
                 legacy_writer &= match authority.rooms() {
-                    Some(rooms) => matches!(
-                        rooms
-                            .legacy_writer_role(authority.room(), peer.device_public_key)
-                            .await,
-                        Some(collab_types::Role::Owner | collab_types::Role::Editor)
-                    ),
+                    Some(rooms) => rooms
+                        .legacy_writer_role(authority.room(), peer.device_public_key)
+                        .await
+                        .is_some_and(room_access::role_writes),
                     None => false,
                 };
             }
@@ -5603,7 +6026,7 @@ async fn handle_presence(
         if peer.role == crate::auth::PeerRole::Device {
             wr.request_checkpoint(&peer.device_public_key);
         }
-        wr.fanout_presence(&peer.device_public_key, peer.role, &env);
+        wr.fanout_presence(&peer.device_public_key, peer.role, &env, slot);
     }
     if legacy_writer
         && let (Some(bridge), crate::auth::PeerRole::Device, Envelope::Presence { payload, .. }) =
@@ -5630,11 +6053,13 @@ struct RemoteActionRoute {
 /// hand it to the addressed device's live connection, or — when addressed to
 /// this relay — to the app-serving plane. Never stored, never executed by the
 /// relay itself; every failure is answered as undeliverable so the sender
-/// need not wait out a timeout.
-#[expect(
-    clippy::significant_drop_tightening,
-    reason = "the flagged value is a shared workspace handle (an Arc clone); dropping it earlier releases no lock"
-)]
+/// need not wait out a timeout, with a reason that leads with
+/// [`UnavailableReason::wire_token`].
+///
+/// Both ends are re-authorised on every frame under a fresh membership read
+/// with [`action_peer_admitted`], the rule the v2 private lane uses: the
+/// connection-local `subscribed` list alone goes stale the moment a device is
+/// removed, revoked, or its agent delegation lapses.
 async fn handle_remote_action(
     peer: &AuthenticatedPeer,
     session: &SessionCtx<'_>,
@@ -5642,38 +6067,71 @@ async fn handle_remote_action(
     route: RemoteActionRoute,
     frame: Vec<u8>,
 ) -> Option<Envelope> {
+    use UnavailableReason as U;
     let RemoteActionRoute {
         workspace_id,
         version,
         to,
     } = route;
-    let undeliverable = |reason: &str| {
+    let refuse = |reason: UnavailableReason, detail: &str| {
         Some(Envelope::RemoteActionUndeliverable {
             workspace_id,
             to_device_public_key: to,
-            reason: reason.to_string(),
+            reason: format!("{}: {detail}", reason.wire_token()),
         })
     };
     if version != crate::transport::REMOTE_ACTION_ENVELOPE_VERSION {
-        return undeliverable("unsupported remote action envelope version");
+        return refuse(
+            U::InvalidRequest,
+            "unsupported remote action envelope version",
+        );
     }
     if !subscribed.contains(&workspace_id) {
-        return undeliverable("sender is not subscribed to the workspace");
+        return refuse(
+            U::NotAuthorised,
+            "sender is not subscribed to the workspace",
+        );
     }
     if frame.len() > tilo_actions::remote::MAX_REMOTE_ACTION_FRAME_BYTES {
-        return undeliverable("remote action frame exceeds the limit");
+        return refuse(U::InvalidRequest, "remote action frame exceeds the limit");
+    }
+    let Some(ws) = session.workspaces.lock().await.get(&workspace_id).cloned() else {
+        return refuse(U::NotAuthorised, "workspace is not bound on this relay");
+    };
+    let Ok(mut wr) = crate::workspace_io::fresh_membership(&ws).await else {
+        return refuse(
+            U::AdmissionUnavailable,
+            "workspace membership is unreadable",
+        );
+    };
+    if action_peer_admitted(&wr, peer, session).is_err()
+        || !current_session(&wr, peer, session.outbound)
+    {
+        return refuse(U::NotAuthorised, "sender may not act in the workspace");
     }
     if to == *session.own_device_public_key {
+        // Never hold the room across the plane: it may take its time.
+        drop(wr);
         let Some(plane) = session.app_serving else {
-            return undeliverable("this host does not serve apps");
+            return refuse(U::UnsupportedPeer, "this host does not serve apps");
         };
         return serve_locally(peer, session, plane.as_ref(), workspace_id, &frame)
-            .unwrap_or_else(undeliverable);
+            .unwrap_or_else(|(reason, detail)| refuse(reason, detail));
     }
-    let ws = {
-        let map = session.workspaces.lock().await;
-        map.get(&workspace_id).cloned()
+    // Every production subscription registers its authenticated peer beside
+    // its subscriber, so the addressee is re-authorised from it.
+    let Some(target) = wr.state_sessions.get(&to) else {
+        return refuse(
+            unavailable_target(&wr, &to),
+            "addressed device is not connected to the workspace",
+        );
     };
+    if action_peer_admitted(&wr, &target.peer, session).is_err() {
+        return refuse(
+            U::NotAuthorised,
+            "addressed device may not act in the workspace",
+        );
+    }
     let stamped = Envelope::RemoteAction {
         workspace_id,
         version,
@@ -5682,14 +6140,15 @@ async fn handle_remote_action(
         from_user_public_key: peer.user_public_key,
         frame,
     };
-    let delivered = match ws {
-        Some(ws) => ws.lock().await.route_directed(&to, stamped),
-        None => false,
-    };
+    let delivered = wr.route_directed(&to, stamped);
+    drop(wr);
     if delivered {
         None
     } else {
-        undeliverable("addressed device is not connected to the workspace")
+        refuse(
+            U::Offline,
+            "addressed device is not connected to the workspace",
+        )
     }
 }
 
@@ -5733,16 +6192,22 @@ async fn route_record_content(
 /// with the caller the connection authenticated. The answer is written to
 /// the connection whenever the plane has it, so a request that needs an
 /// application's help never stalls this peer's other traffic. `Err` when
-/// the frame cannot be used.
+/// the frame cannot be used. The caller was already admitted for the room
+/// by [`handle_remote_action`], agent delegation included.
 fn serve_locally(
     peer: &AuthenticatedPeer,
     session: &SessionCtx<'_>,
     plane: &dyn crate::app_serving::AppServingPlane,
     workspace_id: u64,
     frame: &[u8],
-) -> Result<Option<Envelope>, &'static str> {
+) -> Result<Option<Envelope>, (UnavailableReason, &'static str)> {
     use tilo_actions::remote::{Caller, RemoteActionFrame};
-    let request = RemoteActionFrame::decode(frame).map_err(|_| "malformed remote action frame")?;
+    let request = RemoteActionFrame::decode(frame).map_err(|_| {
+        (
+            UnavailableReason::InvalidRequest,
+            "malformed remote action frame",
+        )
+    })?;
     let agent = session
         .agents
         .read()
@@ -5755,7 +6220,9 @@ fn serve_locally(
             peer.user_public_key,
             peer.device_public_key,
         ),
-        Some(None) => return Err("the agent was withdrawn"),
+        Some(None) => {
+            return Err((UnavailableReason::NotAuthorised, "the agent was withdrawn"));
+        }
         None => Caller::authenticated(peer.user_public_key, peer.device_public_key),
     };
     let Some(reply) = plane.serve(workspace_id, &caller, request.message) else {
@@ -5841,7 +6308,7 @@ async fn handle_sync_request(
         }));
     };
     let wr = crate::workspace_io::fresh_membership(&ws).await?;
-    if !session_peer_authorized(peer, session) || !state_member(&wr, peer) {
+    if !session.admits(&wr, peer, RoomOperation::State) {
         return Ok(Some(Envelope::NotAuthorised {
             workspace_id,
             reason: "device not in workspace membership".into(),
@@ -5880,8 +6347,7 @@ async fn handle_sync_request(
                     _ => false,
                 };
                 if source.alive()
-                    && source.cert(&source.peer)
-                    && state_member(&wr, &source.peer)
+                    && source.admits(&wr, &source.peer)
                     && same
                     && source
                         .tx
@@ -5917,7 +6383,7 @@ pub(crate) async fn get_or_autobind_workspace(
         autobind.state_root.clone(),
         workspace_id,
         true,
-        true,
+        crate::room_access::AdmissionMode::SameOwner,
         MAX_AUTOBOUND_WORKSPACES,
     )
     .await
@@ -5988,10 +6454,6 @@ pub(crate) struct ActionTarget {
     tx: mpsc::Sender<PrivateOutbound>,
 }
 
-#[expect(
-    clippy::large_enum_variant,
-    reason = "both variants are large wire frames of similar size; boxing either only adds an allocation per private frame"
-)]
 pub(crate) enum PrivateOutbound {
     Reply(EnvelopeV2),
     Delivery(PrivateDelivery),
@@ -6001,6 +6463,9 @@ pub(crate) enum PrivateOutbound {
 pub(crate) struct PrivateDelivery {
     certified: bool,
     action: DirectedAction,
+    /// The source device's signature over `action`, forwarded unchanged.
+    /// Boxed so a queued reply is not as large as a signed delivery.
+    signed: Option<Box<SignedDirectedAction>>,
     source: AuthenticatedPeer,
     source_tx: mpsc::Sender<Envelope>,
     reply: mpsc::Sender<PrivateOutbound>,
@@ -6015,24 +6480,26 @@ fn current_action_peer(peer: &AuthenticatedPeer, session: &SessionCtx<'_>) -> bo
 }
 
 fn session_peer_authorized(peer: &AuthenticatedPeer, session: &SessionCtx<'_>) -> bool {
-    peer.cert
-        .expires_at_ns
-        .is_none_or(|expiry| expiry > unix_now_ns())
-        && session
-            .revocations
-            .read()
-            .is_ok_and(|list| !list.is_revoked(&peer.device_public_key))
-        && session
-            .trust_policy
-            .read()
-            .is_ok_and(|policy| policy.admits(&peer.cert, session.own_user_public_key))
+    session.trust().cert(peer, unix_now_ns()).is_ok()
 }
 
-fn current_member(wr: &crate::workspace::WorkspaceRuntime, peer: &AuthenticatedPeer) -> bool {
-    // Private authority is explicit and current. The broad auto-bind switch
-    // allows a Subscribe to enrol an owner device, never bypasses this check.
-    wr.membership.contains(&peer.device_public_key)
-        || wr.admitted_users.contains(&peer.user_public_key)
+/// May this connection originate (or receive) a remote action in this room
+/// right now? One rule for v1 `RemoteAction` and v2 `Directed`: a current,
+/// unrevoked, trusted device certificate; an agent only inside its live
+/// delegation; and current room membership. Whether it is the caller's own
+/// session is a separate check, since only the caller's channel is known.
+fn action_peer_admitted(
+    wr: &crate::workspace::WorkspaceRuntime,
+    peer: &AuthenticatedPeer,
+    session: &SessionCtx<'_>,
+) -> Result<(), UnavailableReason> {
+    // Private authority is explicit and current: a same-owner room enrols an
+    // owner device on Subscribe, never here.
+    if !current_action_peer(peer, session) || !session.admits(wr, peer, RoomOperation::RemoteAction)
+    {
+        return Err(UnavailableReason::NotAuthorised);
+    }
+    Ok(())
 }
 
 fn unavailable_target(
@@ -6093,8 +6560,7 @@ async fn private_membership<'a>(
     failure: &str,
 ) -> Result<tokio::sync::MutexGuard<'a, crate::workspace::WorkspaceRuntime>, PeerError> {
     let runtime = crate::workspace_io::fresh_membership(workspace).await?;
-    if !current_action_peer(peer, session)
-        || !current_member(&runtime, peer)
+    if action_peer_admitted(&runtime, peer, session).is_err()
         || !current_session(&runtime, peer, session.outbound)
     {
         return Err(PeerError::Protocol(failure.into()));
@@ -6108,6 +6574,7 @@ async fn handle_private(
     session: &SessionCtx<'_>,
 ) -> Result<Option<EnvelopeV2>, PeerError> {
     match frame {
+        EnvelopeV2::State(Envelope::Ping) => Ok(Some(EnvelopeV2::State(Envelope::Pong))),
         EnvelopeV2::EnableActions { room } => {
             if room.is_nil() || !current_action_peer(peer, session) {
                 return Err(PeerError::Protocol(
@@ -6178,6 +6645,21 @@ async fn handle_private(
         EnvelopeV2::Directed(action) => {
             let reason = route_private(&action, peer, session).await?;
             Ok(reason.map(|reason| EnvelopeV2::unavailable(&action, reason)))
+        }
+        // The relay forwards the source's signed bytes; it never signs. A
+        // signature that is not this session's device's is refused here, so
+        // it cannot reach (and close) the target's attachment.
+        EnvelopeV2::SignedDirected(signed) => {
+            let action = signed.action();
+            if signed.verify(&peer.device_public_key).is_err() {
+                private_phase(action, "route_rejected_signature");
+                return Ok(Some(EnvelopeV2::unavailable(
+                    action,
+                    UnavailableReason::NotAuthorised,
+                )));
+            }
+            let reason = route_private_signed(action, Some(&signed), peer, session).await?;
+            Ok(reason.map(|reason| EnvelopeV2::unavailable(action, reason)))
         }
         // Peers may send private results only inside a source-bound Directed
         // frame. Relay control responses can never be forged by a peer.
@@ -6258,6 +6740,17 @@ async fn route_private(
     peer: &AuthenticatedPeer,
     session: &SessionCtx<'_>,
 ) -> Result<Option<UnavailableReason>, PeerError> {
+    route_private_signed(action, None, peer, session).await
+}
+
+/// Route `action`, carrying the source's verified signature over it when
+/// there is one so a target that negotiated signed actions receives it.
+async fn route_private_signed(
+    action: &DirectedAction,
+    signed: Option<&SignedDirectedAction>,
+    peer: &AuthenticatedPeer,
+    session: &SessionCtx<'_>,
+) -> Result<Option<UnavailableReason>, PeerError> {
     use UnavailableReason as U;
     private_phase(action, "route_enter");
     if action.source != peer.device_public_key || !current_action_peer(peer, session) {
@@ -6273,7 +6766,7 @@ async fn route_private(
         private_phase(action, "route_rejected_encoding");
         return Ok(Some(U::InvalidRequest));
     }
-    let Some(ws) = private_workspace(action.room, peer, session).await? else {
+    let Some((_, ws)) = private_workspace_binding(action.room, peer, session).await? else {
         return Ok(Some(U::NotAuthorised));
     };
     #[cfg(test)]
@@ -6283,8 +6776,7 @@ async fn route_private(
     }
     let wr = crate::workspace_io::fresh_membership(&ws).await?;
     private_phase(action, "route_lock_acquired");
-    if !current_action_peer(peer, session)
-        || !current_member(&wr, peer)
+    if action_peer_admitted(&wr, peer, session).is_err()
         || !current_session(&wr, peer, session.outbound)
         || !wr
             .action_targets
@@ -6301,8 +6793,7 @@ async fn route_private(
     let Some(target) = wr.action_targets.get(&action.target) else {
         return Ok(Some(U::UnsupportedPeer));
     };
-    if !current_action_peer(&target.peer, session)
-        || !current_member(&wr, &target.peer)
+    if action_peer_admitted(&wr, &target.peer, session).is_err()
         || target.room != action.room
         || !target.state_tx.same_channel(&sub.tx)
     {
@@ -6337,6 +6828,7 @@ async fn route_private(
     private_phase(action, "route_authorized");
     let delivery = PrivateDelivery {
         action: action.clone(),
+        signed: signed.cloned().map(Box::new),
         source: peer.clone(),
         source_tx: session.outbound.clone(),
         reply: session.private_tx.clone(),
@@ -6368,10 +6860,21 @@ async fn write_private_delivery<W: tokio::io::AsyncWrite + Unpin>(
     match authorize_delivery(delivery, recipient, session).await {
         Ok(()) => {
             let frame = if delivery.certified {
-                EnvelopeV2::CertifiedDelivered {
-                    action: delivery.action.clone(),
-                    source_certificate: serde_json::to_vec(&delivery.source.cert)
-                        .map_err(|_| PeerError::Protocol("certificate encoding failed".into()))?,
+                let source_certificate = serde_json::to_vec(&delivery.source.cert)
+                    .map_err(|_| PeerError::Protocol("certificate encoding failed".into()))?;
+                match &delivery.signed {
+                    // Only a session that negotiated signed actions can decode
+                    // them; an older target gets the unsigned frame it knows.
+                    Some(signed) if session.signed_actions => {
+                        EnvelopeV2::CertifiedSignedDelivered {
+                            action: SignedDirectedAction::clone(signed),
+                            source_certificate,
+                        }
+                    }
+                    _ => EnvelopeV2::CertifiedDelivered {
+                        action: delivery.action.clone(),
+                        source_certificate,
+                    },
                 }
             } else {
                 EnvelopeV2::Delivered {
@@ -6450,10 +6953,10 @@ async fn authorize_delivery(
     if !current_action_peer(recipient, session) {
         return trace.reject("delivery_rejected_recipient_cert_current", U::NotAuthorised);
     }
-    if !current_member(&wr, &delivery.source) {
+    if !session.admits(&wr, &delivery.source, RoomOperation::RemoteAction) {
         return trace.reject("delivery_rejected_source_member", U::NotAuthorised);
     }
-    if !current_member(&wr, recipient) {
+    if !session.admits(&wr, recipient, RoomOperation::RemoteAction) {
         return trace.reject("delivery_rejected_recipient_member", U::NotAuthorised);
     }
     if delivery.action.target != recipient.device_public_key {
@@ -6598,6 +7101,7 @@ mod private_transport_tests {
                 crate::policy::TrustPolicy::AllowMatchingUser,
             )),
             own_user: user.public_key,
+            agents: AgentRegistry::default(),
             federation: None,
             session_live: Some(Arc::new(std::sync::atomic::AtomicBool::new(true))),
         };
@@ -6634,6 +7138,7 @@ mod private_transport_tests {
             revocations,
             policy: source.policy.clone(),
             own_user: user.public_key,
+            agents: AgentRegistry::default(),
             federation: None,
             session_live: Some(Arc::new(std::sync::atomic::AtomicBool::new(true))),
         };
@@ -6747,6 +7252,7 @@ mod private_transport_tests {
             )
             .unwrap()
             .user_public_key,
+            agents: AgentRegistry::default(),
             federation: None,
             session_live: Some(Arc::new(std::sync::atomic::AtomicBool::new(true))),
         };
@@ -7057,6 +7563,7 @@ mod private_transport_tests {
                 crate::policy::TrustPolicy::AllowMatchingUser,
             )),
             own_user: root_key.verifying_key().to_bytes(),
+            agents: AgentRegistry::default(),
             federation: None,
             session_live: Some(Arc::new(std::sync::atomic::AtomicBool::new(true))),
         };
@@ -7544,7 +8051,7 @@ mod private_transport_tests {
                 positions: None,
                 compactor: None,
             },
-            true,
+            SessionProtocol::V2,
             std::future::pending::<()>(),
         ));
         let (client_read, mut client_write) = tokio::io::split(client);
@@ -7594,7 +8101,7 @@ mod private_transport_tests {
         let selection_count = shell_selection::track_selection_constructions(&store_root);
         let blocker_raw = producer_frame(&meta, &meta["baseline"][0], 1);
         let blocker = crate::transport::decode(&blocker_raw[4..]).unwrap();
-        let envelopes = meta["baseline"]
+        let envelopes = meta["checkpoint2"]
             .as_array()
             .unwrap()
             .iter()
@@ -7623,6 +8130,9 @@ mod private_transport_tests {
             );
             tokio::task::yield_now().await;
         }
+        // A clean FIN after complete authenticated frames must not discard
+        // those frames while the preceding admission is backpressured.
+        client_write.shutdown().await.unwrap();
         release_tx.send(()).unwrap();
         crate::persistence::receipt(held).await.unwrap();
         while selection_count.load(std::sync::atomic::Ordering::SeqCst) < 1 {
@@ -7637,12 +8147,32 @@ mod private_transport_tests {
         crate::persistence::receipt(owner.read(1, |_| Ok(())).unwrap())
             .await
             .unwrap();
+        let tail = envelopes.last().unwrap();
+        tilo_test_env::within("the buffered checkpoint tail to become durable", async {
+            loop {
+                let retained = workspace.lock().await.store.load_retained().unwrap();
+                if retained
+                    .iter()
+                    .any(|raw| crate::transport::decode(&raw[4..]).unwrap() == *tail)
+                {
+                    break;
+                }
+                assert!(
+                    !task.is_finished(),
+                    "peer ended before persisting the buffered tail"
+                );
+                tokio::task::yield_now().await;
+            }
+        })
+        .await;
         stop_tracking_reader_backlog(id);
         assert_eq!(shell_selection::selection_constructions(&store_root), 1);
+        tilo_test_env::within("peer to finish after clean FIN", task)
+            .await
+            .unwrap()
+            .unwrap();
         drain.abort();
         let _ = drain.await;
-        task.abort();
-        let _ = task.await;
     }
 
     async fn checkpoint_prefix_activation_failure_fences_original_sessions_and_retry(
@@ -7752,6 +8282,7 @@ mod private_transport_tests {
             )
             .unwrap()
             .user_public_key,
+            agents: AgentRegistry::default(),
             federation: None,
             session_live: Some(Arc::new(std::sync::atomic::AtomicBool::new(true))),
         };
@@ -8371,7 +8902,7 @@ mod private_transport_tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn paused_state_persistence_releases_routing_lock() {
-        paused_state_private_roundtrip(true, false, false, false).await;
+        paused_state_private_roundtrip(true, false, false, false, None).await;
     }
 
     /// A peer that pipelines more private requests than the reply queue holds,
@@ -8426,7 +8957,7 @@ mod private_transport_tests {
             server_read,
             server_write,
             ctx,
-            true,
+            SessionProtocol::V2,
             std::future::pending::<()>(),
         ));
         let mut reader = SessionReader::new(replies, true);
@@ -8468,22 +8999,38 @@ mod private_transport_tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn paused_state_persistence_allows_same_connection_private_roundtrip() {
-        paused_state_private_roundtrip(false, false, false, false).await;
+        paused_state_private_roundtrip(false, false, false, false, None).await;
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn paused_replay_cleanup_with_full_reply_queue_keeps_private_reader_and_writer_live() {
-        paused_state_private_roundtrip(false, true, false, false).await;
+        paused_state_private_roundtrip(false, true, false, false, None).await;
     }
 
     #[tokio::test]
     async fn full_control_backlog_backpressures_and_recovers_after_held_writer() {
-        paused_state_private_roundtrip(false, true, true, false).await;
+        paused_state_private_roundtrip(false, true, true, false, None).await;
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn overtaking_private_keeps_held_state_authorization_future_pollable() {
-        paused_state_private_roundtrip(false, false, false, true).await;
+        paused_state_private_roundtrip(false, false, false, true, None).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn plain_subscription_recovers_retained_frame_after_live_budget_exhaustion() {
+        paused_state_private_roundtrip(false, false, false, false, Some(LagBoundary::Live)).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn plain_subscription_discards_stale_lag_after_explicit_unsubscribe() {
+        paused_state_private_roundtrip(false, false, false, false, Some(LagBoundary::Unsubscribed))
+            .await;
+    }
+
+    enum LagBoundary {
+        Live,
+        Unsubscribed,
     }
 
     #[expect(
@@ -8495,6 +9042,7 @@ mod private_transport_tests {
         held_cleanup: bool,
         full_backlog: bool,
         held_authorization: bool,
+        plain_lag: Option<LagBoundary>,
     ) {
         let (root, user) = UserIdentity::generate("alice", 1);
         let (a, _) = certified_device(&root, user.public_key, "a");
@@ -8544,7 +9092,7 @@ mod private_transport_tests {
                 read,
                 write,
                 ctx,
-                true,
+                SessionProtocol::V2,
                 std::future::pending::<()>(),
             )));
             let (read, mut write) = tokio::io::split(client);
@@ -8580,6 +9128,158 @@ mod private_transport_tests {
         }
         let (mut ar, mut aw) = wires.remove(0);
         let (mut br, mut bw) = wires.remove(0);
+        if let Some(boundary) = plain_lag {
+            let lag = workspace.lock().await.state_sessions[&b.device_public_key]
+                .lag
+                .as_ref()
+                .unwrap()
+                .clone();
+            let envelope = Envelope::Delta {
+                workspace_id: id,
+                author_device_public_key: a.device_public_key,
+                authored_at_ns: 1,
+                signature: [0; 64],
+                delta: crate::coedit::CoeditPayload::RetainedDelta {
+                    channel: [3; 32],
+                    body: vec![4; 4096],
+                }
+                .encode()
+                .unwrap(),
+            };
+            let fault = crate::store::test_barrier::fail(store.root(), "live-delivery-budget");
+            let (publication_release, published) =
+                crate::store::test_barrier::install(store.root(), "live-publication-complete");
+            let (release, reached) =
+                crate::store::test_barrier::install(store.root(), "live-delivery-budget");
+            aw.write_all(
+                &tilo_delivery_protocol::transport_v2::encode_state(&envelope, true).unwrap(),
+            )
+            .await
+            .unwrap();
+            tilo_test_env::within("the retained publication to reach its live budget", reached)
+                .await
+                .expect("ordinary retained publication never reached live budget");
+            drop(release);
+            tilo_test_env::within("the missed live publication recipient fan-out", published)
+                .await
+                .expect("missed live publication never completed its recipient fan-out");
+            drop(publication_release);
+            let owner = crate::persistence::handle(&workspace).await;
+            crate::persistence::receipt(owner.read(1, |_| Ok(())).unwrap())
+                .await
+                .unwrap();
+            drop(fault);
+            assert!(
+                store
+                    .load_retained()
+                    .unwrap()
+                    .iter()
+                    .any(|bytes| { crate::transport::decode(&bytes[4..]).unwrap() == envelope }),
+                "missed live frame must remain durably retained"
+            );
+            let unsubscribed = matches!(boundary, LagBoundary::Unsubscribed);
+            if unsubscribed {
+                for frame in [Envelope::Unsubscribe { workspace_id: id }, Envelope::Ping] {
+                    bw.write_all(
+                        &tilo_delivery_protocol::transport_v2::encode_state(&frame, true).unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                }
+                tilo_test_env::within("the explicit unsubscribe to complete", async {
+                    loop {
+                        match br.read_next().await.unwrap() {
+                            Some(EnvelopeV2::State(Envelope::Pong)) => break,
+                            Some(EnvelopeV2::State(
+                                Envelope::Delta { .. } | Envelope::Ready { .. },
+                            )) => {}
+                            other => panic!("unexpected explicit-unsubscribe reply: {other:?}"),
+                        }
+                    }
+                })
+                .await;
+                assert!(
+                    !workspace
+                        .lock()
+                        .await
+                        .state_sessions
+                        .contains_key(&b.device_public_key)
+                );
+                // A queued hint may outlive the subscription that produced it.
+                // Its ordering is fixed here after the real unsubscribe reply.
+                lag.mark(id);
+            }
+            // Publication has completed, so the lag marker was made. Wait for
+            // its actual consumption rather than guessing the polling interval.
+            tilo_test_env::within("the peer to consume its lag marker", async {
+                while !lag.is_empty() {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await;
+            bw.write_all(
+                &tilo_delivery_protocol::transport_v2::encode_state(&Envelope::Ping, true).unwrap(),
+            )
+            .await
+            .unwrap();
+            let mut frames = Vec::new();
+            let mut ready = 0_usize;
+            tilo_test_env::within("retained catch-up before the next peer reply", async {
+                loop {
+                    match br.read_next().await.unwrap() {
+                        Some(EnvelopeV2::State(Envelope::Pong)) => break,
+                        Some(EnvelopeV2::State(Envelope::Ready { .. })) => {
+                            ready = ready.checked_add(1).unwrap();
+                        }
+                        Some(EnvelopeV2::State(frame @ Envelope::Delta { .. })) => {
+                            frames.push(frame);
+                        }
+                        other => panic!("unexpected lag-recovery frame: {other:?}"),
+                    }
+                }
+            })
+            .await;
+            if !unsubscribed {
+                assert!(
+                    workspace.lock().await.state_sessions[&b.device_public_key]
+                        .live
+                        .load(std::sync::atomic::Ordering::SeqCst),
+                    "ordinary byte backpressure must preserve the authorized subscription"
+                );
+            }
+            for task in tasks {
+                task.abort();
+                let _ = task.await;
+            }
+            if unsubscribed {
+                assert!(
+                    frames.is_empty(),
+                    "a stale lag hint reopened an explicitly closed subscription"
+                );
+                assert_eq!(
+                    ready, 0,
+                    "an explicitly closed subscription cannot become ready again"
+                );
+                assert!(
+                    !workspace
+                        .lock()
+                        .await
+                        .state_sessions
+                        .contains_key(&b.device_public_key)
+                );
+            } else {
+                assert_eq!(
+                    frames,
+                    vec![envelope],
+                    "plain subscription lost its committed retained frame"
+                );
+                assert_eq!(
+                    ready, 1,
+                    "catch-up must complete its actual replay boundary"
+                );
+            }
+            return;
+        }
         let envelope = Envelope::Delta {
             workspace_id: id,
             author_device_public_key: a.device_public_key,
@@ -8824,6 +9524,16 @@ mod private_transport_tests {
         }
     }
 
+    #[tokio::test]
+    async fn heartbeat_keeps_progress_during_unrelated_workspace_admission() {
+        capability_control_lookahead(false, 3).await;
+    }
+
+    #[tokio::test]
+    async fn heartbeat_does_not_overtake_queued_capability_control() {
+        capability_control_lookahead(false, 4).await;
+    }
+
     async fn capability_control_lookahead(reply_wait: bool, control: u8) {
         let (root, user) = UserIdentity::generate("owner", 1);
         let (a, _) = certified_device(&root, user.public_key, "a");
@@ -8881,7 +9591,7 @@ mod private_transport_tests {
                     positions: None,
                     compactor: None,
                 },
-                true,
+                SessionProtocol::V2,
                 std::future::pending::<()>(),
             )));
             let (read, mut write) = tokio::io::split(client);
@@ -8940,7 +9650,143 @@ mod private_transport_tests {
             wires.push((reader, write));
         }
         let (mut ar, mut aw) = wires.remove(0);
-        let (mut br, _bw) = wires.remove(0);
+        let (mut br, mut bw) = wires.remove(0);
+        if control >= 3 {
+            let gated = control == 4;
+            let (release, reached) =
+                crate::store::test_barrier::install(store.root(), "membership-read");
+            let envelope = Envelope::Delta {
+                workspace_id: ids[2],
+                author_device_public_key: a.device_public_key,
+                authored_at_ns: 1,
+                signature: [0; 64],
+                delta: crate::coedit::CoeditPayload::RetainedDelta {
+                    channel: [3; 32],
+                    body: vec![4; 4096],
+                }
+                .encode()
+                .unwrap(),
+            };
+            aw.write_all(
+                &tilo_delivery_protocol::transport_v2::encode_state(&envelope, true).unwrap(),
+            )
+            .await
+            .unwrap();
+            tilo_test_env::within("the state admission membership read", reached)
+                .await
+                .unwrap();
+            assert!(store.load_retained().unwrap().is_empty());
+            let request = DirectedAction {
+                room: rooms[1],
+                request_id: uuid::Uuid::from_u128(77),
+                source: a.device_public_key,
+                target: b.device_public_key,
+                message: ActionMessage::CatalogueRefresh { scope: None },
+            };
+            if gated {
+                aw.write_all(
+                    &tilo_delivery_protocol::transport_v2::encode(&EnvelopeV2::EnableActions {
+                        room: rooms[0],
+                    })
+                    .unwrap(),
+                )
+                .await
+                .unwrap();
+            }
+            for frame in [
+                EnvelopeV2::State(Envelope::Ping),
+                EnvelopeV2::Directed(request.clone()),
+            ] {
+                aw.write_all(&tilo_delivery_protocol::transport_v2::encode(&frame).unwrap())
+                    .await
+                    .unwrap();
+            }
+            let Some(EnvelopeV2::Delivered { action, .. }) =
+                tilo_test_env::within("the unrelated-room private request", br.read_next())
+                    .await
+                    .unwrap()
+            else {
+                panic!("unrelated private request stalled during state admission")
+            };
+            assert_eq!(action, request);
+            let response = DirectedAction {
+                source: b.device_public_key,
+                target: a.device_public_key,
+                ..request
+            };
+            bw.write_all(
+                &tilo_delivery_protocol::transport_v2::encode(&EnvelopeV2::Directed(
+                    response.clone(),
+                ))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+            // A real later private response proves this reader and writer are
+            // live. Only an earlier control may hold the heartbeat behind it.
+            let first =
+                tilo_test_env::within("the heartbeat or later private reply", ar.read_next())
+                    .await
+                    .unwrap();
+            let later = if !gated && first == Some(EnvelopeV2::State(Envelope::Pong)) {
+                tilo_test_env::within("the private response after the heartbeat", ar.read_next())
+                    .await
+                    .unwrap()
+            } else {
+                None
+            };
+            assert!(store.load_retained().unwrap().is_empty());
+            drop(release);
+            let owner = crate::persistence::handle(&held_workspace).await;
+            crate::persistence::receipt(owner.read(1, |_| Ok(())).unwrap())
+                .await
+                .unwrap();
+            let delivered_state =
+                tilo_test_env::within("the state delivery after admission release", br.read_next())
+                    .await
+                    .unwrap();
+            assert_eq!(delivered_state, Some(EnvelopeV2::State(envelope)));
+            let after_control = if gated
+                && matches!(&first, Some(EnvelopeV2::Delivered { action, .. }) if action == &response)
+            {
+                let ready = tilo_test_env::within("the queued capability reply", ar.read_next())
+                    .await
+                    .unwrap();
+                let pong = tilo_test_env::within("the heartbeat after its control", ar.read_next())
+                    .await
+                    .unwrap();
+                Some((ready, pong))
+            } else {
+                None
+            };
+            for task in tasks {
+                task.abort();
+                let _ = task.await;
+            }
+            if gated {
+                assert!(
+                    matches!(first, Some(EnvelopeV2::Delivered { action, .. }) if action == response),
+                    "a heartbeat crossed its earlier capability control"
+                );
+                let (ready, pong) = after_control.unwrap();
+                assert!(matches!(
+                    ready,
+                    Some(EnvelopeV2::ActionsReady { room, .. }) if room == rooms[0]
+                ));
+                assert_eq!(pong, Some(EnvelopeV2::State(Envelope::Pong)));
+            } else {
+                assert_eq!(
+                    first,
+                    Some(EnvelopeV2::State(Envelope::Pong)),
+                    "a live transport withheld its heartbeat behind unrelated state admission"
+                );
+                assert!(
+                    matches!(later, Some(EnvelopeV2::Delivered { action, .. }) if action == response),
+                    "heartbeat progress lost the authorized private response"
+                );
+            }
+            return;
+        }
         let (release, reached) = crate::store::test_barrier::install(
             store.root(),
             if reply_wait {
@@ -9159,7 +10005,9 @@ mod private_transport_tests {
             metrics: &metrics,
             trust_policy: &trust,
             disconnect: &disconnect,
-            v2: false,
+            framing: tilo_delivery_protocol::transport_v2::StateFraming::V1,
+            presence: None,
+            signed_actions: false,
             private_tx: &private,
             revocations: &revocations,
             live_bridge: None,
@@ -9379,7 +10227,9 @@ mod private_transport_tests {
             metrics: &metrics,
             trust_policy: &trust,
             disconnect: &disconnect,
-            v2: true,
+            framing: tilo_delivery_protocol::transport_v2::StateFraming::V2,
+            presence: None,
+            signed_actions: false,
             private_tx: &ap,
             revocations: &revocations,
             live_bridge: None,
@@ -9504,7 +10354,9 @@ mod private_transport_tests {
             metrics: &metrics,
             trust_policy: &trust,
             disconnect: &disconnect,
-            v2: true,
+            framing: tilo_delivery_protocol::transport_v2::StateFraming::V2,
+            presence: None,
+            signed_actions: false,
             private_tx: &ap,
             revocations: &revocations,
             live_bridge: None,
@@ -9589,6 +10441,254 @@ mod private_transport_tests {
         }
     }
 
+    /// Counts what reaches the app-serving plane; needs no reply.
+    #[derive(Default)]
+    struct CountingPlane(std::sync::atomic::AtomicUsize);
+
+    impl crate::app_serving::AppServingPlane for CountingPlane {
+        fn serve(
+            &self,
+            _workspace_id: u64,
+            _caller: &tilo_actions::remote::Caller,
+            _message: tilo_actions::remote::RemoteActionMessage,
+        ) -> Option<tilo_actions::remote::Pending<tilo_actions::remote::RemoteActionMessage>>
+        {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            None
+        }
+    }
+
+    #[tokio::test]
+    async fn revoked_device_remote_action_is_refused() {
+        let (root, user) = UserIdentity::generate("alice", 1);
+        let (host, _) = certified_device(&root, user.public_key, "host");
+        let (a, _) = certified_device(&root, user.public_key, "a");
+        let id = 11;
+        let tmp = tempfile::tempdir().unwrap();
+        let mut wr = crate::workspace::WorkspaceRuntime::open(
+            tmp.path(),
+            id,
+            true,
+            crate::workspace::Membership::default(),
+        )
+        .unwrap();
+        wr.admit_device(a.device_public_key).unwrap();
+        let (atx, _arx) = mpsc::channel(2);
+        let (ap, _apr) = mpsc::channel(2);
+        let (disconnect, _disconnect_rx) = mpsc::channel(1);
+        wr.add_subscriber(Subscriber {
+            device_public_key: a.device_public_key,
+            role: a.role,
+            tx: atx.clone(),
+            disconnect: disconnect.clone(),
+        });
+        let registry = Arc::new(AsyncMutex::new(HashMap::from([(
+            id,
+            Arc::new(AsyncMutex::new(wr)),
+        )])));
+        let trust = Arc::new(std::sync::RwLock::new(
+            crate::policy::TrustPolicy::AllowMatchingUser,
+        ));
+        let revocations = Arc::new(std::sync::RwLock::new(RevocationList::new()));
+        let metrics = Arc::new(crate::metrics::Metrics::default());
+        let counting = Arc::new(CountingPlane::default());
+        let plane: Arc<dyn crate::app_serving::AppServingPlane> = counting.clone();
+        let session = SessionCtx {
+            workspaces: &registry,
+            autobind: None,
+            outbound: &atx,
+            state_outbound: None,
+            connection_live: None,
+            own_user_public_key: &user.public_key,
+            own_device_cert: &host.cert,
+            own_device_public_key: &host.cert.device_public_key,
+            app_serving: Some(&plane),
+            metrics: &metrics,
+            trust_policy: &trust,
+            disconnect: &disconnect,
+            framing: tilo_delivery_protocol::transport_v2::StateFraming::V1,
+            presence: None,
+            signed_actions: false,
+            private_tx: &ap,
+            revocations: &revocations,
+            live_bridge: None,
+            agents: Box::leak(Box::default()),
+            positions: None,
+            compactor: None,
+            resumes: Box::leak(Box::default()),
+            lag: Box::leak(Box::default()),
+        };
+        let frame = tilo_actions::remote::RemoteActionFrame::new(
+            tilo_actions::remote::RemoteActionMessage::CatalogueRequest {
+                correlation: 1,
+                query: tilo_actions::remote::CatalogueQuery::default(),
+            },
+        )
+        .encode()
+        .unwrap();
+        let route = || RemoteActionRoute {
+            workspace_id: id,
+            version: crate::transport::REMOTE_ACTION_ENVELOPE_VERSION,
+            to: host.device_public_key,
+        };
+        let served = || counting.0.load(std::sync::atomic::Ordering::SeqCst);
+
+        // A current member reaches the plane through this very path.
+        assert_eq!(
+            handle_remote_action(&a, &session, &[id], route(), frame.clone()).await,
+            None
+        );
+        assert_eq!(served(), 1);
+
+        // Revoked while its session (and its `subscribed` list) is still live.
+        let mut entry = tilo_user_identity::RevocationEntry {
+            user_public_key: user.public_key,
+            revoked_device_public_key: a.device_public_key,
+            revoked_at_ns: 1,
+            reason: tilo_user_identity::RevocationReason::Lost,
+            signature: [0; 64],
+        };
+        tilo_user_identity::sign_revocation_entry(&mut entry, &root).unwrap();
+        revocations.write().unwrap().insert(entry).unwrap();
+        let refused = handle_remote_action(&a, &session, &[id], route(), frame).await;
+        let Some(Envelope::RemoteActionUndeliverable {
+            reason,
+            to_device_public_key,
+            ..
+        }) = refused
+        else {
+            panic!("a revoked device is answered as undeliverable, got {refused:?}");
+        };
+        assert_eq!(to_device_public_key, host.device_public_key);
+        assert_eq!(
+            UnavailableReason::from_wire_reason(&reason),
+            Some(UnavailableReason::NotAuthorised),
+            "{reason}"
+        );
+        assert_eq!(served(), 1, "a revoked device never reaches the plane");
+    }
+
+    #[tokio::test]
+    async fn route_private_refuses_an_agent_whose_delegation_expired() {
+        let (root, user) = UserIdentity::generate("alice", 1);
+        let (a, _) = certified_device(&root, user.public_key, "a");
+        let (b, _) = certified_device(&root, user.public_key, "b");
+        let room = uuid::Uuid::from_u128(7);
+        let id = crate::room_workspace_id(&room.to_string()).unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let mut wr = crate::workspace::WorkspaceRuntime::open(
+            tmp.path(),
+            id,
+            true,
+            crate::workspace::Membership::default(),
+        )
+        .unwrap();
+        wr.admit_device(a.device_public_key).unwrap();
+        wr.admit_device(b.device_public_key).unwrap();
+        let (atx, _arx) = mpsc::channel(2);
+        let (btx, _brx) = mpsc::channel(2);
+        let (ap, _apr) = mpsc::channel(2);
+        let (bp, mut bpr) = mpsc::channel(4);
+        let (disconnect, _disconnect_rx) = mpsc::channel(1);
+        let (recipient_disconnect, _recipient_disconnect_rx) = mpsc::channel(1);
+        for (peer, tx, private, session_disconnect) in [
+            (&a, &atx, &ap, &disconnect),
+            (&b, &btx, &bp, &recipient_disconnect),
+        ] {
+            wr.add_subscriber(Subscriber {
+                device_public_key: peer.device_public_key,
+                role: peer.role,
+                tx: tx.clone(),
+                disconnect: session_disconnect.clone(),
+            });
+            wr.action_targets.insert(
+                peer.device_public_key,
+                ActionTarget {
+                    broker_host: None,
+                    broker_protocol: false,
+                    room,
+                    peer: peer.clone(),
+                    state_tx: tx.clone(),
+                    tx: private.clone(),
+                },
+            );
+        }
+        let registry = Arc::new(AsyncMutex::new(HashMap::from([(
+            id,
+            Arc::new(AsyncMutex::new(wr)),
+        )])));
+        let trust = Arc::new(std::sync::RwLock::new(
+            crate::policy::TrustPolicy::AllowMatchingUser,
+        ));
+        let revocations = Arc::new(std::sync::RwLock::new(RevocationList::new()));
+        let metrics = Arc::new(crate::metrics::Metrics::default());
+        let agents = AgentRegistry::default();
+        let session = SessionCtx {
+            workspaces: &registry,
+            autobind: None,
+            outbound: &atx,
+            state_outbound: None,
+            connection_live: None,
+            own_user_public_key: &user.public_key,
+            own_device_cert: &a.cert,
+            own_device_public_key: &a.cert.device_public_key,
+            app_serving: None,
+            metrics: &metrics,
+            trust_policy: &trust,
+            disconnect: &disconnect,
+            framing: tilo_delivery_protocol::transport_v2::StateFraming::V2,
+            presence: None,
+            signed_actions: false,
+            private_tx: &ap,
+            revocations: &revocations,
+            live_bridge: None,
+            agents: &agents,
+            positions: None,
+            compactor: None,
+            resumes: Box::leak(Box::default()),
+            lag: Box::leak(Box::default()),
+        };
+        let action = DirectedAction {
+            room,
+            request_id: uuid::Uuid::from_u128(8),
+            source: a.device_public_key,
+            target: b.device_public_key,
+            message: ActionMessage::CatalogueRefresh { scope: None },
+        };
+        // Signed for this room, already past its expiry: what a delegation
+        // looks like once its window closed under a live session.
+        let expired = |device: [u8; 32]| {
+            tilo_relay_protocol::agents::AgentDelegation::sign(
+                &root,
+                device,
+                "helper",
+                "Helper",
+                [1, 2, 3],
+                tilo_relay_protocol::agents::AgentScope {
+                    rooms: vec![room.to_string()],
+                    apps: Vec::new(),
+                },
+                1,
+                2,
+            )
+            .unwrap()
+        };
+
+        assert_eq!(route_private(&action, &a, &session).await.unwrap(), None);
+        assert!(matches!(bpr.try_recv(), Ok(PrivateOutbound::Delivery(_))));
+
+        for agent in [a.device_public_key, b.device_public_key] {
+            agents.write().unwrap().clear();
+            agents.write().unwrap().insert(agent, Some(expired(agent)));
+            assert_eq!(
+                route_private(&action, &a, &session).await.unwrap(),
+                Some(UnavailableReason::NotAuthorised),
+                "an expired agent at either end is refused per frame"
+            );
+            assert!(bpr.try_recv().is_err(), "nothing reaches the target");
+        }
+    }
+
     #[tokio::test]
     async fn replacement_action_capability_requires_enable_then_durable_registration() {
         let (root, user) = UserIdentity::generate("alice", 1);
@@ -9646,7 +10746,9 @@ mod private_transport_tests {
             metrics: &metrics,
             trust_policy: &trust,
             disconnect: &source_disconnect,
-            v2: true,
+            framing: tilo_delivery_protocol::transport_v2::StateFraming::V2,
+            presence: None,
+            signed_actions: false,
             private_tx: &source_private,
             revocations: &revocations,
             live_bridge: None,
@@ -9859,7 +10961,9 @@ mod private_transport_tests {
             metrics: &metrics,
             trust_policy: &trust,
             disconnect: &disconnect,
-            v2: true,
+            framing: tilo_delivery_protocol::transport_v2::StateFraming::V2,
+            presence: None,
+            signed_actions: false,
             private_tx: &ap,
             revocations: &revocations,
             live_bridge: None,
@@ -9886,6 +10990,7 @@ mod private_transport_tests {
             !private_may_overtake(
                 &EnvelopeV2::Directed(action.clone()),
                 Some(id),
+                false,
                 std::iter::empty(),
             ),
             "private traffic must not overtake its room's state control"
@@ -10230,7 +11335,9 @@ mod private_transport_tests {
             metrics: &metrics,
             trust_policy: &trust,
             disconnect: &bdis,
-            v2: false,
+            framing: tilo_delivery_protocol::transport_v2::StateFraming::V1,
+            presence: None,
+            signed_actions: false,
             private_tx: &ptx,
             revocations: &revocations,
             live_bridge: None,

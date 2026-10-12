@@ -108,8 +108,8 @@ fn ambient_lux_from(root: &Path) -> Option<f32> {
         .collect();
     devices.sort();
     for device in devices {
-        if let Some(v) = read_f32(&device.join("in_illuminance_input")) {
-            return v.is_finite().then_some(v.max(0.0));
+        if let Some(v) = read_f32(&device.join("in_illuminance_input")).filter(|v| v.is_finite()) {
+            return Some(v.max(0.0));
         }
         if let Some(raw) = read_f32(&device.join("in_illuminance_raw")) {
             let scale = read_f32(&device.join("in_illuminance_scale")).unwrap_or(1.0);
@@ -473,6 +473,28 @@ mod tests {
         {
             assert!(parse_brightness_machine("input3::capslock,leds,0,0%,1").is_err());
         }
+    }
+
+    #[test]
+    fn ambient_light_skips_nonfinite_sensor_readings() {
+        let root = tempfile::tempdir().unwrap();
+        let invalid = root.path().join("iio:device0");
+        let valid = root.path().join("iio:device1");
+        fs::create_dir_all(&invalid).unwrap();
+        fs::create_dir_all(&valid).unwrap();
+        fs::write(valid.join("in_illuminance_input"), "125\n").unwrap();
+        for reading in ["NaN", "inf", "-inf"] {
+            fs::write(invalid.join("in_illuminance_input"), reading).unwrap();
+            assert_eq!(ambient_lux_from(root.path()), Some(125.0));
+        }
+        fs::remove_file(invalid.join("in_illuminance_input")).unwrap();
+        for (raw, scale) in [("NaN", "1"), ("1", "NaN"), ("1e30", "1e30")] {
+            fs::write(invalid.join("in_illuminance_raw"), raw).unwrap();
+            fs::write(invalid.join("in_illuminance_scale"), scale).unwrap();
+            assert_eq!(ambient_lux_from(root.path()), Some(125.0));
+        }
+        fs::remove_dir_all(valid).unwrap();
+        assert_eq!(ambient_lux_from(root.path()), None);
     }
 
     #[test]

@@ -15,12 +15,7 @@ use std::path::Path;
 use tilo_pdf::{Destination, Engine, Error, PixelRect, RenderOptions, Rotation, SearchOptions};
 
 fn fixture(name: &str) -> Vec<u8> {
-    std::fs::read(
-        Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/fixtures")
-            .join(name),
-    )
-    .expect("fixture")
+    std::fs::read(Path::new(env!("OUT_DIR")).join(name)).expect("fixture")
 }
 
 fn squash(s: &str) -> String {

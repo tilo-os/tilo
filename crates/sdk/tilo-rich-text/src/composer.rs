@@ -241,6 +241,14 @@ mod tests {
             let rect = Rect::new(20.0, 100.0, 340.0, 176.0);
             let mut composer = composer("A short reply");
             composer.layout(rect, &theme, &mut text);
+            assert!(
+                !composer.host.widget().vertical_overflows(),
+                "a fully visible one-line draft must not advertise hidden vertical content: viewport {:?}, editor {:?}, measured {}, excess {}",
+                composer.host.widget().content_viewport_rect(),
+                composer.widget().editor().get_rect(),
+                composer.measured_height(),
+                composer.host.widget().max_offset_y()
+            );
             let editor = composer.widget().editor().get_rect();
             assert!(
                 (editor.center().y - rect.center().y).abs() < 0.5,

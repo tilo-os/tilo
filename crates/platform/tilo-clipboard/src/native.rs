@@ -61,6 +61,11 @@ impl NoWayland {
     fn text(&self, _target: ClipboardTarget) -> Option<String> {
         None
     }
+    fn request_text(&self, _target: ClipboardTarget) -> std::sync::mpsc::Receiver<Option<String>> {
+        let (reply, result) = std::sync::mpsc::channel();
+        let _ = reply.send(None);
+        result
+    }
     fn set_image(&self, _width: usize, _height: usize, _rgba: &[u8]) -> bool {
         false
     }
@@ -134,6 +139,15 @@ fn arboard_text(handle: &mut arboard::Clipboard, _target: ClipboardTarget) -> Op
 }
 
 impl ClipboardBackend for NativeClipboard {
+    fn request_text(&self, target: ClipboardTarget) -> std::sync::mpsc::Receiver<Option<String>> {
+        if let Some(wayland) = wayland() {
+            return wayland.request_text(target);
+        }
+        let (reply, result) = std::sync::mpsc::channel();
+        let _ = reply.send(self.text(target));
+        result
+    }
+
     fn set_text(&self, target: ClipboardTarget, text: &str) -> bool {
         if Self::set_shared(target, text) {
             return true;

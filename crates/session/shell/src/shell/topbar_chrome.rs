@@ -26,11 +26,7 @@ const CLOCK_ACTIVITY_REFRESH: Duration = Duration::from_millis(250);
 pub fn native_source(chrome: chrome_state::Chrome) -> Chrome {
     // Owned fixtures paint at an owned clock value. Reading wall time here
     // would change an otherwise identical scene at a minute boundary.
-    let fixture_clock = chrome
-        .borrow()
-        .hosted_inputs
-        .is_fixture()
-        .then(ClockSnapshot::default);
+    let fixture_clock = chrome.borrow().hosted_inputs.fixture_clock();
     Rc::new(NativeChrome {
         chrome,
         clock: RefCell::new(ClockPoll::default()),
@@ -139,13 +135,13 @@ fn refresh_clock_activity(state: &mut chrome_state::ChromeState, poll: &mut Cloc
 /// pins the palette: a screenshot harness comparing whole frames needs every
 /// part still. Unset (every real session) reads the wall clock.
 fn clock_snapshot() -> ClockSnapshot {
-    let now = chrono::Local::now();
+    let now = ui::clock::local_now();
     ClockSnapshot {
         unix_seconds: now.timestamp(),
         clock: std::env::var("TILO_CLOCK")
             .ok()
             .filter(|pinned| !pinned.is_empty())
-            .unwrap_or_else(|| now.format("%H:%M").to_string()),
+            .unwrap_or_else(|| ui::clock::time_of_day(&now)),
         weekday: now.format("%a").to_string(),
         date: now.format("%-d %B").to_string(),
     }
@@ -196,6 +192,10 @@ struct NativeChrome {
 impl DesktopChromeSource for NativeChrome {
     fn tree(&self) -> tilo_desktop_model::DesktopTree {
         self.chrome.borrow().tree().desktop.clone()
+    }
+
+    fn take_topbar_editor_request(&self) -> bool {
+        self.chrome.borrow_mut().take_topbar_editor_request()
     }
 
     fn snapshot(&self) -> DesktopChromeSnapshot {
@@ -367,6 +367,36 @@ mod native_source_tests {
             WorkspaceTree::bootstrap_default(),
         ));
         assert!(live.snapshot().clock.unix_seconds > 0);
+    }
+
+    #[test]
+    fn native_source_uses_each_fixtures_explicit_clock_on_repeated_frames() {
+        let parent = tempfile::tempdir().unwrap();
+        for (unix_seconds, display) in [(1_700_000_000, "09:41"), (1_700_000_060, "09:42")] {
+            let clock = ClockSnapshot {
+                unix_seconds,
+                clock: display.into(),
+                weekday: "Tuesday".into(),
+                date: "14 November".into(),
+            };
+            let inputs = crate::shell::hosted_inputs::HostedTileInputs::fixture_in(parent.path())
+                .unwrap()
+                .with_fixture_clock(clock.clone())
+                .unwrap();
+            let chrome = chrome_state::ChromeState::new_with_fixture_handle(
+                WorkspaceTree::bootstrap_default().shared(),
+                inputs,
+            );
+            let source = native_source(chrome);
+            for _ in 0..3 {
+                assert_eq!(source.snapshot().clock, clock);
+            }
+        }
+        assert!(
+            crate::shell::hosted_inputs::HostedTileInputs::default()
+                .with_fixture_clock(ClockSnapshot::default())
+                .is_err()
+        );
     }
 
     #[test]

@@ -201,6 +201,26 @@ def wait_terminal(socket, acknowledgement, process, *, public_failure_path=None)
             raise RuntimeError("pending ordinary action has no observable broker identity")
         response = call(socket, {"op": "actions_status", "invocation_id": broker_id})
         if "err" in response:
+            if public_failure_path is not None:
+                # This opt-in is only for a known public, test-owned operation.
+                # Retain the control protocol's error, never arbitrary reply
+                # payloads or a pending action's drafts/results. A status
+                # refusal is not evidence that the original action failed.
+                error = response["err"]
+                fields = {}
+                if isinstance(error, dict):
+                    for key, limit in (("code", 128), ("message", 4096)):
+                        value = error.get(key)
+                        if isinstance(value, str):
+                            fields[key] = value[:limit]
+                            if len(value) > limit:
+                                fields[key + "_truncated"] = True
+                public_failure_path.write_text(json.dumps({
+                    "observation": "actions_status_refused",
+                    "invocation": original[:256] if isinstance(original, str) else None,
+                    "broker_invocation_id": broker_id,
+                    "err": fields,
+                }, indent=2) + "\n")
             raise RuntimeError("ordinary action terminal observation was refused")
         receipt = response.get("answer", {}).get("receipt")
         if not isinstance(receipt, dict):

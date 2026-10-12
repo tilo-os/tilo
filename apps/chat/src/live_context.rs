@@ -110,7 +110,7 @@ mod tests {
 
     fn room() -> (automerge::AutoCommit, crate::ChatApp) {
         let mut doc = automerge::AutoCommit::new();
-        crate::doc::ChatDoc::seed_if_empty(&mut doc);
+        crate::demo::seed(&mut doc).unwrap();
         let mut app = crate::app::ChatApp::new_ephemeral();
         app.reload(&doc);
         app.active_ws = "ws_acme".into();

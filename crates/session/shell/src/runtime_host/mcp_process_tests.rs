@@ -136,6 +136,74 @@ fn connected_manager() -> ui::collaboration::CollaborationManager {
     reason = "each phase keeps one former test's body verbatim, and the duplicate-app phase holds its session and broker handles for the whole scenario on purpose"
 )]
 fn mcp_process_owns_and_reaps_its_children() {
+    fn rpc_clients_retire_before_the_native_writer_lease() {
+        use ed25519_dalek::Signer as _;
+        let Some(root) = isolated_root("rpc_clients_retire_before_the_native_writer_lease") else {
+            return;
+        };
+        let session = Session::start(&root).unwrap();
+        let (key, certificate) =
+            tilo_identity_host::broker::trusted_current_device(&session.room).unwrap();
+        let presentation = runtime_collab::CertifiedJoinIdentity {
+            workspace_id: session.room.clone(),
+            device_certificate: serde_json::to_vec(&certificate).unwrap(),
+            proof: key
+                .sign(&runtime_identity::collaboration_join_signing_bytes(
+                    &session.room,
+                ))
+                .to_bytes()
+                .to_vec(),
+        }
+        .encode()
+        .unwrap();
+        let endpoint = session.broker.capnp_socket().to_path_buf();
+        let workspace_id = session.room.clone();
+        let (ready, admitted) = std::sync::mpsc::channel();
+        let (release, released) = std::sync::mpsc::channel();
+        let client = std::thread::spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            runtime.block_on(tokio::task::LocalSet::new().run_until(async move {
+                let fd = runtime_portal::agent_transport::connect_endpoint(&endpoint).unwrap();
+                let connection = runtime_portal::CapnpClient::from_connected_fd(
+                    fd,
+                    capnp_rpc::rpc_twoparty_capnp::Side::Client,
+                )
+                .unwrap();
+                let broker = runtime_collab::CollabClient::from_raw(connection.bootstrap());
+                let channel = tokio::time::timeout(
+                    std::time::Duration::from_secs(10),
+                    broker.join_channel(&workspace_id, &presentation),
+                )
+                .await
+                .unwrap()
+                .unwrap();
+                ready.send(()).unwrap();
+                // Deliberately keep the actual imported channel and RPC connection
+                // while the client cannot consume EOF or send capability releases.
+                released
+                    .recv_timeout(std::time::Duration::from_secs(10))
+                    .unwrap();
+                drop(channel);
+                drop(broker);
+            }));
+        });
+        let ready = admitted.recv_timeout(std::time::Duration::from_secs(10));
+        if let Err(error) = ready {
+            let _ = release.send(());
+            client.join().unwrap();
+            panic!("the signed client never received its actual channel: {error}");
+        }
+        drop(session);
+        let replacement = Session::start(&root);
+        // Release before asserting so a failed lease assertion cannot orphan the peer.
+        release.send(()).unwrap();
+        client.join().unwrap();
+        drop(replacement.expect("RPC retirement must release the native writer lease without client cooperation or retries"));
+    }
+
     // Phase `zero_app_stdio_is_json_only_and_profile_contention_is_refused`.
     fn zero_app_stdio_is_json_only_and_profile_contention_is_refused() {
         let Some(root) =
@@ -348,6 +416,108 @@ fn mcp_process_owns_and_reaps_its_children() {
         assert!(roots.iter().all(|root| root.app_id == "dev.tilo.same"));
         assert_ne!(roots[0].peer_id, roots[1].peer_id);
     }
+    // A real broker lifecycle listener publishes a final snapshot during close.
+    fn shutdown_saves_finish_before_the_profile_is_released() {
+        use std::sync::{
+            Arc, Mutex,
+            atomic::{AtomicBool, Ordering},
+            mpsc,
+        };
+        let Some(root) = isolated_root("shutdown_saves_finish_before_the_profile_is_released")
+        else {
+            return;
+        };
+        let session = Session::start(&root).unwrap();
+        let tree = session.workspace_tree().downgrade();
+        let path = root.join("workspace.json");
+        let (started, saving) = mpsc::channel();
+        let (release, released) = mpsc::channel();
+        let released = Mutex::new(Some(released));
+        let listener: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
+            let tree = tree
+                .upgrade()
+                .expect("broker close still owns its workspace");
+            let released = released.lock().unwrap().take().expect("one close callback");
+            let started = started.clone();
+            crate::shell::persist::queue_save(&tree.read(), &path, move || {
+                started.send(()).unwrap();
+                released.recv_timeout(Duration::from_secs(5)).unwrap();
+            });
+        });
+        session.broker.local_session_lifecycle().watch(&listener);
+        let returned = Arc::new(AtomicBool::new(false));
+        let observed = returned.clone();
+        let controller = std::thread::spawn(move || {
+            saving.recv_timeout(Duration::from_secs(5)).unwrap();
+            // Keep the actual final writer occupied while checking retirement.
+            std::thread::sleep(Duration::from_millis(100));
+            let waited = !observed.load(Ordering::SeqCst);
+            let locked = tilo_runtime::profile::lock(&root)
+                .is_err_and(|error| error.kind() == std::io::ErrorKind::WouldBlock);
+            release.send(()).unwrap();
+            (root, waited, locked)
+        });
+        drop(session);
+        returned.store(true, Ordering::SeqCst);
+        let (root, waited, locked) = controller.join().unwrap();
+        assert!(
+            waited,
+            "session returned while its shutdown snapshot was still running"
+        );
+        assert!(
+            locked,
+            "profile lock was released before the shutdown save completed"
+        );
+        // No retry: the replacement must immediately acquire both profile and file leases.
+        drop(Session::start(&root).expect("completed retirement releases the native writer lease"));
+    }
+    fn identity_clients_retire_before_the_native_writer_lease() {
+        use runtime_identity::wire::{FRAMING, HANDSHAKE_FRAMING, Handshake, Request, Response};
+        use std::io::Write as _;
+        use std::os::unix::net::UnixStream;
+        let Some(root) = isolated_root("identity_clients_retire_before_the_native_writer_lease")
+        else {
+            return;
+        };
+        let session = Session::start(&root).unwrap();
+        let mut client = UnixStream::connect(session.identity_socket()).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        HANDSHAKE_FRAMING
+            .write(
+                &mut client,
+                &serde_json::to_vec(&Handshake {
+                    workspace_id: session.room.clone(),
+                    app_id: "so.tilo.file-explorer".into(),
+                })
+                .unwrap(),
+            )
+            .unwrap();
+        FRAMING
+            .write_value(&mut client, &Request::Metadata)
+            .unwrap();
+        let reply: Response = FRAMING.read_value(&mut client).unwrap().unwrap();
+        assert!(
+            !matches!(reply, Response::Denied(_)),
+            "the actual identity worker answered: {reply:?}"
+        );
+        // Another accepted connection stops inside a partial handshake.
+        let mut partial = UnixStream::connect(session.identity_socket()).unwrap();
+        partial.write_all(&[0]).unwrap();
+        drop(session);
+        // The client's socket stays open: host retirement must own cancellation.
+        let replacement = Session::start(&root)
+            .expect("retired identity clients release the native writer lease without retries");
+        assert!(
+            FRAMING
+                .read_value::<_, Response>(&mut client)
+                .unwrap()
+                .is_none(),
+            "the previous session cannot keep serving identity requests"
+        );
+        drop(replacement);
+    }
     // Helper role: a publication helper re-enters this test and must go
     // straight to its publishing loop, which never returns.
     if std::env::var_os("TILO_MCP_PUBLICATION_HELPER").is_some() {
@@ -361,4 +531,7 @@ fn mcp_process_owns_and_reaps_its_children() {
     output_failure_reaps_the_surviving_child_and_releases_the_profile();
     // Phase `duplicate_app_ids_publish_as_distinct_normal_sdk_instances` (defined above).
     duplicate_app_ids_publish_as_distinct_normal_sdk_instances();
+    shutdown_saves_finish_before_the_profile_is_released();
+    identity_clients_retire_before_the_native_writer_lease();
+    rpc_clients_retire_before_the_native_writer_lease();
 }

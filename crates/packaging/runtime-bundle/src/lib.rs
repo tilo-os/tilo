@@ -13,15 +13,15 @@
 #![cfg_attr(
     test,
     allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
         clippy::string_slice,
-        clippy::panic,
         clippy::unreachable,
         reason = "in a test these are the assertion, not a hazard"
     )
 )]
+
+pub mod component_pins;
+pub mod gc;
+pub mod verity;
 
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use std::collections::{BTreeMap, BTreeSet};
@@ -37,6 +37,10 @@ pub const BUNDLE_MANIFEST_FILENAME: &str = "bundle.toml";
 
 /// Domain-separation prefix for the bundle-signing preimage; bumped only on a wire-breaking change.
 pub const BUNDLE_SIGNING_DOMAIN: &[u8] = b"tilo-runtime-bundle-v1\0";
+
+/// Domain-separation prefix for the preimage of a bundle's fs-verity
+/// signature ([`BundleManifest::verity_signature_hex`]).
+pub const VERITY_SIGNING_DOMAIN: &[u8] = b"tilo-runtime-bundle-verity-v1\0";
 
 /// Domain-separation prefix of a runtime build's ABI digest.
 pub const ABI_DIGEST_DOMAIN: &[u8] = b"tilo-runtime-abi-v1\0";
@@ -104,6 +108,13 @@ pub struct BundleManifest {
     /// Optional Ed25519 signature over `blake3(DOMAIN || version || root_hash)`, hex-encoded (128 chars); present iff signed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub signature_hex: Option<String>,
+    /// The same publisher's Ed25519 signature over [`verity_signing_preimage`]:
+    /// the version, the root hash and every file's [`BundleFile::verity`]
+    /// digest. A separate signature, so the root hash, the runtime's ABI
+    /// digest and the signature older launchers check are unchanged by it.
+    /// Absent on unsigned bundles and on bundles built before fs-verity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verity_signature_hex: Option<String>,
 }
 
 /// One `(payload-relative-path, hash)` entry.
@@ -115,6 +126,12 @@ pub struct BundleFile {
     pub hash: String,
     /// Size in bytes.
     pub size: u64,
+    /// The file's fs-verity digest (SHA-256, 4 KiB blocks, no salt; see
+    /// [`verity`]), hex. Covered by [`BundleManifest::verity_signature_hex`];
+    /// a launch that measures this digest on a verity-enabled file trusts
+    /// the file without reading it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verity: Option<String>,
 }
 
 /// Errors produced by the builder + verifier.
@@ -154,6 +171,8 @@ pub enum BundleError {
     NotSigned,
     #[error("bundle signature does not verify against embedded publisher")]
     BadSignature,
+    #[error("bundle fs-verity signature does not verify against embedded publisher")]
+    BadVeritySignature,
     #[error("bundle publisher {actual} does not match required {required}")]
     PublisherMismatch { required: String, actual: String },
     #[error("bundle arch {actual:?} does not match host arch {host:?}")]
@@ -174,6 +193,15 @@ pub enum BundleError {
     IncludeUnnamed { path: PathBuf },
     #[error("included directory holds something other than files and directories: {path}")]
     IncludeSpecialFile { path: PathBuf },
+    #[error(
+        "{name} is named twice with different bytes, {first} and {second}: a bundle signs one \
+         library per soname"
+    )]
+    IncludeConflict {
+        name: String,
+        first: PathBuf,
+        second: PathBuf,
+    },
     #[error(
         "bundle version {version} claims ABI digest {claimed}, but its payload's digest is \
          {computed}: it is not the runtime build it names"
@@ -274,10 +302,6 @@ pub const HOST_MINIMAL_PATHS_AARCH64: &[&str] = &[
     "/lib/aarch64-linux-gnu/libutil.so.1",
 ];
 
-/// Legacy alias for [`HOST_MINIMAL_PATHS_X86_64`]; new code should use [`host_minimal_paths_for`].
-#[deprecated(note = "use host_minimal_paths_for(arch) — HOST_MINIMAL_PATHS is x86_64-only")]
-pub const HOST_MINIMAL_PATHS: &[&str] = HOST_MINIMAL_PATHS_X86_64;
-
 /// Optional `/etc/ld.so.cache` — loader falls back to a slower search without it; include when present.
 pub const HOST_LD_SO_CACHE: &str = "/etc/ld.so.cache";
 
@@ -316,7 +340,7 @@ pub fn bundle_root_from(root_override: Option<std::ffi::OsString>) -> Result<Pat
     {
         return Ok(PathBuf::from(dir));
     }
-    Ok(xdg_paths::data_dir()
+    Ok(tilo_paths::data_dir()
         .ok_or(BundleError::NoDataDir)?
         .join("tilo-runtime"))
 }
@@ -354,20 +378,6 @@ pub fn system_bundle_path(version: &str) -> PathBuf {
 /// Ed25519 key per line, `#` comments.
 pub const TRUSTED_PUBLISHERS_FILE: &str = "/etc/tilo/runtime-bundle-trusted-publishers.txt";
 
-/// Read a trusted-publisher list, ignoring blank and `#` lines; `None` when
-/// the file is absent or unreadable.
-#[must_use]
-pub fn load_trusted_publishers(path: &Path) -> Option<Vec<String>> {
-    let text = fs::read_to_string(path).ok()?;
-    Some(
-        text.lines()
-            .map(str::trim)
-            .filter(|line| !line.is_empty() && !line.starts_with('#'))
-            .map(str::to_ascii_lowercase)
-            .collect(),
-    )
-}
-
 /// Walk the search path and return the first existing bundle dir with a `bundle.toml` (per-user, then system).
 pub fn resolve_bundle_path(version: &str) -> Option<PathBuf> {
     if let Ok(p) = default_bundle_path(version)
@@ -398,6 +408,16 @@ pub struct BuildOptions<'a> {
     /// `lib/` so `LD_LIBRARY_PATH=<mount>/lib` resolves them by soname.
     /// Hashed and signature-covered like any other bundle file; absolute
     /// host paths, must exist.
+    ///
+    /// A loader-set library also given here (the shared runtime includes its
+    /// whole `ldd` closure, glibc too) is kept only at `lib/<name>`, where
+    /// `LD_LIBRARY_PATH` finds it, not again under its absolute-path shape,
+    /// which nothing searches. The loader is the exception: the launcher binds
+    /// it from its canonical interpreter path for `INTERP`, and tools that
+    /// follow `DT_NEEDED` by soname within `lib/` (the dev VM's cohort check,
+    /// the native SDK's linkage check) find it at `lib/<name>`, so an included
+    /// loader is kept at both. Either way the two sources must be the same
+    /// bytes.
     pub extra_libs: &'a [PathBuf],
 }
 
@@ -479,6 +499,32 @@ pub fn signing_preimage(version: &str, root_hash_hex: &str) -> [u8; 32] {
     hasher.update(BUNDLE_SIGNING_DOMAIN);
     hasher.update(version.as_bytes());
     hasher.update(root_hash_hex.as_bytes());
+    *hasher.finalize().as_bytes()
+}
+
+/// Preimage of [`BundleManifest::verity_signature_hex`]:
+/// `blake3(VERITY_DOMAIN || version || 0 || root_hash || 0 || lines)`, where
+/// `lines` is `<path>\t<verity>\n` for every file with a digest, sorted by
+/// path. Payload paths hold no control characters, so the lines parse one way.
+pub fn verity_signing_preimage(
+    version: &str,
+    root_hash_hex: &str,
+    files: &[BundleFile],
+) -> [u8; 32] {
+    let mut sorted: Vec<&BundleFile> = files.iter().filter(|f| f.verity.is_some()).collect();
+    sorted.sort_by(|a, b| a.path.cmp(&b.path));
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(VERITY_SIGNING_DOMAIN);
+    hasher.update(version.as_bytes());
+    hasher.update(b"\0");
+    hasher.update(root_hash_hex.as_bytes());
+    hasher.update(b"\0");
+    for file in sorted {
+        hasher.update(file.path.as_bytes());
+        hasher.update(b"\t");
+        hasher.update(file.verity.as_deref().unwrap_or_default().as_bytes());
+        hasher.update(b"\n");
+    }
     *hasher.finalize().as_bytes()
 }
 
@@ -589,10 +635,20 @@ fn stage_payload(
 
     // Copy each candidate, tracking what we got so the manifest is deterministic.
     let mut written: Vec<(String, PathBuf)> = Vec::new(); // relative-in-bundle → absolute-in-bundle
+    // One copy per soname (see `BuildOptions::extra_libs`).
+    let included = included_files(opts.extra_libs);
+    let mut loaders: BTreeMap<&str, PathBuf> = BTreeMap::new();
 
     for src_abs in paths {
         let src = resolve_from(host_root, src_abs);
         if !src.exists() {
+            continue;
+        }
+        let name = src_abs.rsplit('/').next().unwrap_or(src_abs);
+        if is_loader(name) {
+            loaders.entry(name).or_insert_with(|| src.clone());
+        } else if let Some(include) = included.get(name) {
+            ensure_same_bytes(name, &src, include)?;
             continue;
         }
         // Preserve the absolute-path shape under `lib/` (e.g.
@@ -608,7 +664,7 @@ fn stage_payload(
         written.push((rel_in_bundle, dst));
     }
 
-    copy_includes(out, opts.extra_libs, &mut written)?;
+    copy_includes(out, opts.extra_libs, &loaders, &mut written)?;
 
     // Optional ld.so.cache.
     let cache_src = resolve_from(host_root, HOST_LD_SO_CACHE);
@@ -628,14 +684,15 @@ fn stage_payload(
         });
     }
 
-    // Hash payload.
+    // Hash payload: BLAKE3 for identity, fs-verity for launches.
     let mut files: Vec<BundleFile> = Vec::with_capacity(written.len());
     for (rel, abs) in &written {
-        let (hash, size) = hash_file(abs)?;
+        let digests = digest_file(abs, true)?;
         files.push(BundleFile {
             path: rel.clone(),
-            hash,
-            size,
+            hash: digests.blake3,
+            size: digests.size,
+            verity: digests.verity,
         });
     }
     files.sort_by(|a, b| a.path.cmp(&b.path));
@@ -653,19 +710,24 @@ fn seal(
     let root_hash = compute_root_hash(&files);
 
     // Optional signing.
-    let (publisher_hex, signature_hex) = match identity {
+    let (publisher_hex, signature_hex, verity_signature_hex) = match identity {
         Some(id_path) => {
             use ed25519_dalek::Signer;
 
             let identity = Identity::load(id_path)?;
             let preimage = signing_preimage(&version, &root_hash);
             let sig = identity.signing_key.sign(&preimage);
+            let verity_sig = files.iter().any(|f| f.verity.is_some()).then(|| {
+                let preimage = verity_signing_preimage(&version, &root_hash, &files);
+                hex::encode(identity.signing_key.sign(&preimage).to_bytes())
+            });
             (
                 Some(identity.public_key_hex()),
                 Some(hex::encode(sig.to_bytes())),
+                verity_sig,
             )
         }
-        None => (None, None),
+        None => (None, None, None),
     };
 
     let manifest = BundleManifest {
@@ -676,6 +738,7 @@ fn seal(
         produced_at: produced_at()?,
         publisher_hex,
         signature_hex,
+        verity_signature_hex,
     };
 
     // Persist bundle.toml.
@@ -737,13 +800,79 @@ pub fn verify_bundle_with(
     root: &Path,
     opts: &VerifyOptions,
 ) -> Result<BundleManifest, BundleError> {
-    verify_bundle_impl(root, opts, true)
+    verify_bundle_impl(root, opts, PayloadMode::Hash).map(|(manifest, _)| manifest)
+}
+
+/// How a verification established the payload bytes.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PayloadCheck {
+    /// Files accepted by their kernel-measured fs-verity digest, unread.
+    pub by_verity: usize,
+    /// Files whose bytes were read and BLAKE3-hashed.
+    pub hashed: usize,
+    /// Payload bytes read to hash them.
+    pub hashed_bytes: u64,
+}
+
+/// [`verify_bundle_with`] for the launch path: the same checks and the same
+/// guarantee that every payload byte is the signed byte, without reading
+/// the files fs-verity already vouches for.
+///
+/// A file is accepted unread only when the manifest's
+/// [`BundleManifest::verity_signature_hex`] verifies against the bundle's
+/// publisher, the file has fs-verity enabled, and the kernel's measured
+/// digest equals the signed [`BundleFile::verity`]. fs-verity makes such a
+/// file's contents immutable and checks every page read against the
+/// measured tree, so equal digests mean equal bytes for as long as the file
+/// exists. Every other file (no digest in the manifest, no fs-verity on the
+/// filesystem, a digest that differs) is BLAKE3-hashed as
+/// [`verify_bundle_with`] does, so this never accepts a byte the full
+/// verification would refuse.
+///
+/// # Errors
+///
+/// Everything [`verify_bundle_with`] returns, plus
+/// [`BundleError::BadVeritySignature`] for a verity signature that does not
+/// verify.
+pub fn verify_bundle_verity_with(
+    root: &Path,
+    opts: &VerifyOptions,
+) -> Result<(BundleManifest, PayloadCheck), BundleError> {
+    verify_bundle_impl(root, opts, PayloadMode::Verity)
+}
+
+/// Enable fs-verity on every payload file of the bundle at `root` that
+/// `manifest` gives a digest, so [`verify_bundle_verity_with`] can trust it
+/// unread. Enabling makes the file immutable and has the kernel read it once
+/// to build its Merkle tree. Call it after a full verification: it does not
+/// check the bytes itself (a file whose bytes differ measures a different
+/// digest and is hashed at launch, then refused).
+///
+/// # Errors
+///
+/// The first file the kernel refuses: `ErrorKind::Unsupported` where the
+/// filesystem has no fs-verity (launches then hash the payload as before), or
+/// `InvalidInput` for a manifest path that leaves the bundle.
+pub fn enable_bundle_verity(root: &Path, manifest: &BundleManifest) -> std::io::Result<usize> {
+    let mut enabled = 0usize;
+    for file in manifest.files.iter().filter(|f| f.verity.is_some()) {
+        if !valid_payload_path(&file.path) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("payload path {} leaves the bundle", file.path),
+            ));
+        }
+        verity::enable(&root.join(&file.path))?;
+        enabled = enabled.saturating_add(1);
+    }
+    Ok(enabled)
 }
 
 /// Verify a bundle's signed manifest, file set and sizes without reading every
 /// payload byte. This is appropriate only when the caller independently proves
 /// the payload is immutable (the launcher uses it for root-owned system
-/// bundles). User-controlled bundles must use [`verify_bundle_with`].
+/// bundles). User-controlled bundles must use [`verify_bundle_with`] or
+/// [`verify_bundle_verity_with`].
 ///
 /// # Errors
 ///
@@ -755,14 +884,25 @@ pub fn verify_bundle_metadata_with(
     root: &Path,
     opts: &VerifyOptions,
 ) -> Result<BundleManifest, BundleError> {
-    verify_bundle_impl(root, opts, false)
+    verify_bundle_impl(root, opts, PayloadMode::Size).map(|(manifest, _)| manifest)
+}
+
+/// How [`verify_bundle_impl`] establishes each payload file.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PayloadMode {
+    /// Read and hash every byte.
+    Hash,
+    /// Compare sizes only; the caller proves immutability.
+    Size,
+    /// Trust a signed, kernel-measured fs-verity digest; hash otherwise.
+    Verity,
 }
 
 fn verify_bundle_impl(
     root: &Path,
     opts: &VerifyOptions,
-    hash_payload: bool,
-) -> Result<BundleManifest, BundleError> {
+    mode: PayloadMode,
+) -> Result<(BundleManifest, PayloadCheck), BundleError> {
     let manifest_path = root.join(BUNDLE_MANIFEST_FILENAME);
     if !manifest_path.exists() {
         return Err(BundleError::ManifestMissing {
@@ -782,6 +922,13 @@ fn verify_bundle_impl(
             host: required.to_string(),
         });
     }
+
+    // A launch checks the verity signature before it relies on any digest
+    // under it; the other modes check it last, after the signature they
+    // always checked. Every mode refuses a bad one, so the install-time
+    // verification vouches for what a launch trusts.
+    let verity_signed = mode == PayloadMode::Verity && verify_verity_signature(&manifest)?;
+    let mut check = PayloadCheck::default();
 
     // Recompute per-file hashes and compare against disk: a listed file
     // missing on disk is corruption; an unlisted file present is suspect
@@ -809,21 +956,30 @@ fn verify_bundle_impl(
                 path: expected.path.clone(),
             });
         }
-        if hash_payload {
-            let (hash, _size) = hash_file(&abs)?;
-            if hash != expected.hash {
-                return Err(BundleError::HashMismatch {
-                    expected: expected.hash.clone(),
-                    computed: hash,
-                });
-            }
-        } else {
+        let by_verity = verity_signed
+            && expected
+                .verity
+                .as_deref()
+                .is_some_and(|digest| verity_vouches(&abs, expected.size, digest));
+        if by_verity {
+            check.by_verity = check.by_verity.saturating_add(1);
+        } else if mode == PayloadMode::Size {
             let actual = abs.metadata()?.len();
             if actual != expected.size {
                 return Err(BundleError::SizeMismatch {
                     path: expected.path.clone(),
                     expected: expected.size,
                     actual,
+                });
+            }
+        } else {
+            let digests = digest_file(&abs, false)?;
+            check.hashed = check.hashed.saturating_add(1);
+            check.hashed_bytes = check.hashed_bytes.saturating_add(digests.size);
+            if digests.blake3 != expected.hash {
+                return Err(BundleError::HashMismatch {
+                    expected: expected.hash.clone(),
+                    computed: digests.blake3,
                 });
             }
         }
@@ -848,7 +1004,56 @@ fn verify_bundle_impl(
     verify_abi_digest(&manifest)?;
 
     verify_manifest_signature(&manifest, opts)?;
-    Ok(manifest)
+    if mode != PayloadMode::Verity {
+        verify_verity_signature(&manifest)?;
+    }
+    Ok((manifest, check))
+}
+
+/// Whether the file at `path` is a regular file of `size` bytes whose
+/// kernel-measured fs-verity digest is `expected`. Reads no file data.
+fn verity_vouches(path: &Path, size: u64, expected: &str) -> bool {
+    let mut options = fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC);
+    }
+    let Ok(file) = options.open(path) else {
+        return false;
+    };
+    file.metadata()
+        .is_ok_and(|meta| meta.is_file() && meta.len() == size)
+        && verity::measure(&file).is_some_and(|digest| hex::encode(digest) == expected)
+}
+
+/// Whether the manifest carries a valid fs-verity signature: `false` when it
+/// has none, an error when it has one that does not verify against the
+/// embedded publisher.
+fn verify_verity_signature(manifest: &BundleManifest) -> Result<bool, BundleError> {
+    use ed25519_dalek::Verifier;
+
+    let Some(sig_hex) = manifest.verity_signature_hex.as_deref() else {
+        return Ok(false);
+    };
+    let publisher_hex = manifest
+        .publisher_hex
+        .as_deref()
+        .ok_or(BundleError::BadVeritySignature)?;
+    let pub_bytes: [u8; 32] = decode_fixed_hex(publisher_hex, "publisher_hex")?;
+    let sig_bytes: [u8; 64] = decode_fixed_hex(sig_hex, "verity_signature_hex")?;
+    let vk = ed25519_dalek::VerifyingKey::from_bytes(&pub_bytes).map_err(|e| {
+        BundleError::SignatureFieldMalformed {
+            field: "publisher_hex",
+            reason: e.to_string(),
+        }
+    })?;
+    let sig = ed25519_dalek::Signature::from_bytes(&sig_bytes);
+    let preimage = verity_signing_preimage(&manifest.version, &manifest.root_hash, &manifest.files);
+    vk.verify(&preimage, &sig)
+        .map(|()| true)
+        .map_err(|_| BundleError::BadVeritySignature)
 }
 
 /// A version that names an ABI digest must name its own payload's: the
@@ -916,6 +1121,7 @@ fn valid_payload_path(path: &str) -> bool {
     !path.is_empty()
         && path != BUNDLE_MANIFEST_FILENAME
         && !path.contains('\\')
+        && !path.chars().any(char::is_control)
         && path
             .split('/')
             .all(|component| !component.is_empty() && component != "." && component != "..")
@@ -981,10 +1187,23 @@ fn compute_root_hash(files: &[BundleFile]) -> String {
     hasher.finalize().to_hex().to_string()
 }
 
-fn hash_file(path: &Path) -> Result<(String, u64), BundleError> {
+/// A payload file's digests.
+struct FileDigests {
+    /// BLAKE3, hex: the file's identity in the manifest and the root hash.
+    blake3: String,
+    /// fs-verity digest, hex, when asked for.
+    verity: Option<String>,
+    size: u64,
+}
+
+/// Read `path` once, BLAKE3-hashing it and, with `with_verity`, computing its
+/// fs-verity digest.
+fn digest_file(path: &Path, with_verity: bool) -> Result<FileDigests, BundleError> {
     let mut f = fs::File::open(path)?;
     let mut hasher = blake3::Hasher::new();
-    let mut buf = [0u8; 8192];
+    let mut verity = with_verity.then(verity::VerityHasher::new);
+    // Large reads let BLAKE3 hash many chunks in parallel SIMD lanes.
+    let mut buf = vec![0u8; 64 * 1024];
     let mut total = 0u64;
     loop {
         let n = f.read(&mut buf)?;
@@ -994,23 +1213,72 @@ fn hash_file(path: &Path) -> Result<(String, u64), BundleError> {
         // `Read::read` never returns more bytes than the buffer it was
         // given, so `n` is always in-bounds; `.get()` + an empty
         // fallback avoids indexing without changing behaviour.
-        hasher.update(buf.get(..n).unwrap_or_default());
+        let bytes = buf.get(..n).unwrap_or_default();
+        hasher.update(bytes);
+        if let Some(verity) = verity.as_mut() {
+            verity.update(bytes);
+        }
         total = total.saturating_add(n as u64);
     }
-    Ok((hasher.finalize().to_hex().to_string(), total))
+    Ok(FileDigests {
+        blake3: hasher.finalize().to_hex().to_string(),
+        verity: verity.map(|verity| hex::encode(verity.finalize())),
+        size: total,
+    })
+}
+
+/// Whether `name` is a dynamic loader (`ld-linux-x86-64.so.2`,
+/// `ld-linux-aarch64.so.1`, `ld-linux.so.2`): what the launcher binds at a
+/// canonical interpreter path rather than finding through `LD_LIBRARY_PATH`.
+fn is_loader(name: &str) -> bool {
+    name.starts_with("ld-linux")
+}
+
+/// The included regular files by the name they get at the top of `lib/`.
+fn included_files(includes: &[PathBuf]) -> BTreeMap<&str, &Path> {
+    let mut files = BTreeMap::new();
+    for include in includes {
+        if let Some(name) = include.file_name().and_then(|name| name.to_str())
+            && include.is_file()
+        {
+            files.entry(name).or_insert(include.as_path());
+        }
+    }
+    files
+}
+
+/// Fail unless `first` and `second`, two sources of the one library `name`,
+/// hold the same bytes: a loader must never be signed beside a C library
+/// from another build.
+fn ensure_same_bytes(name: &str, first: &Path, second: &Path) -> Result<(), BundleError> {
+    if digest_file(first, false)?.blake3 == digest_file(second, false)?.blake3 {
+        return Ok(());
+    }
+    Err(BundleError::IncludeConflict {
+        name: name.to_string(),
+        first: first.to_path_buf(),
+        second: second.to_path_buf(),
+    })
 }
 
 /// Extra libs (libstd, `libruntime_dylib.so`) copy verbatim to the top of
 /// `lib/` by file name for soname resolution via `LD_LIBRARY_PATH` — unlike
 /// the loader/libc set, these are explicit absolute paths, not resolved
 /// against the host root. A directory (an engine with its resources) keeps
-/// its tree under `lib/<name>/`.
+/// its tree under `lib/<name>/`. Repeated source paths are copied once. An
+/// include named like a loader in `loaders` (name → source) must be that
+/// loader's bytes.
 fn copy_includes(
     out: &Path,
     includes: &[PathBuf],
+    loaders: &BTreeMap<&str, PathBuf>,
     written: &mut Vec<(String, PathBuf)>,
 ) -> Result<(), BundleError> {
+    let mut sources = BTreeSet::new();
     for extra in includes {
+        if !sources.insert(extra) {
+            continue;
+        }
         let name = extra
             .file_name()
             .ok_or_else(|| BundleError::IncludeUnnamed {
@@ -1031,6 +1299,9 @@ fn copy_includes(
             return Err(BundleError::IncludeMissing {
                 path: extra.clone(),
             });
+        }
+        if let Some(loader) = loaders.get(name.as_str()) {
+            ensure_same_bytes(&name, loader, extra)?;
         }
         let rel_in_bundle = format!("lib/{name}");
         let dst = out.join(&rel_in_bundle);
@@ -1106,6 +1377,61 @@ fn produced_at_from(value: Result<String, std::env::VarError>) -> Result<u64, Bu
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sdk_font_catalog_is_signed_and_corruption_does_not_change_a_retained_sdk() {
+        let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
+        let work = tempfile::tempdir().unwrap();
+        let fonts = work.path().join("fonts");
+        let prepared = std::process::Command::new("python3")
+            .arg(repo.join("tools/font-catalog.py"))
+            .arg("prepare")
+            .arg(repo.join("crates/sdk/ui-core/assets/fonts"))
+            .arg(&fonts)
+            .args(["--scope", "product"])
+            .output()
+            .unwrap();
+        assert!(
+            prepared.status.success(),
+            "{}",
+            String::from_utf8_lossy(&prepared.stderr)
+        );
+        let identity = Identity::generate();
+        let identity_path = work.path().join("identity.json");
+        fs::write(&identity_path, identity.to_json_bytes()).unwrap();
+        let bundles = work.path().join("bundles");
+        let includes = [fonts];
+        let options = BuildOptions {
+            identity: Some(&identity_path),
+            extra_libs: &includes,
+            ..Default::default()
+        };
+        let (_, held) = build_abi_bundle(&bundles, "held", &options).unwrap();
+        let (_, current) = build_abi_bundle(&bundles, "current", &options).unwrap();
+        let verification = VerifyOptions {
+            require_publisher: Some(identity.public_key_hex()),
+            require_signature: true,
+            require_arch: None,
+        };
+        let manifest = verify_bundle_with(&current, &verification).unwrap();
+        assert!(
+            manifest
+                .files
+                .iter()
+                .any(|file| file.path == "lib/fonts/manifest.toml")
+        );
+        let original = fs::read(held.join("lib/fonts/NotoSansMath-Regular.ttf")).unwrap();
+        let changed = current.join("lib/fonts/NotoSansMath-Regular.ttf");
+        let mut bytes = fs::read(&changed).unwrap();
+        bytes[0] ^= 1;
+        fs::write(changed, bytes).unwrap();
+        assert!(verify_bundle_with(&current, &verification).is_err());
+        verify_bundle_with(&held, &verification).unwrap();
+        assert_eq!(
+            fs::read(held.join("lib/fonts/NotoSansMath-Regular.ttf")).unwrap(),
+            original
+        );
+    }
 
     #[test]
     fn an_abi_bundle_is_named_by_its_payload_and_cannot_claim_another_build() {
@@ -1414,6 +1740,189 @@ mod tests {
             )
             .unwrap_err();
             assert!(matches!(err, BundleError::IncludeMissing { .. }));
+        }
+    }
+
+    #[test]
+    fn repeated_extra_inputs_build_one_signed_abi_payload() {
+        let host = tempfile::tempdir().unwrap();
+        fake_x86_64_host(host.path());
+        let identity = Identity::generate();
+        let identity_path = host.path().join("identity.json");
+        fs::write(&identity_path, identity.to_json_bytes()).unwrap();
+        let libstd = host.path().join("libstd-fixture.so");
+        let libruntime = host.path().join("libruntime_dylib.so");
+        fs::write(&libstd, b"Rust standard library fixture").unwrap();
+        fs::write(&libruntime, b"Tilo runtime fixture").unwrap();
+        let unique = tempfile::tempdir().unwrap();
+        let repeated = tempfile::tempdir().unwrap();
+        let opts = BuildOptions {
+            from: Some(host.path()),
+            arch: Some("x86_64"),
+            identity: Some(&identity_path),
+            extra_libs: &[libstd.clone(), libruntime.clone()],
+        };
+        let (expected, _) = build_abi_bundle(unique.path(), "2026.07", &opts).unwrap();
+        // Explicit includes and ldd's transitive closure name the same inputs.
+        let (actual, root) = build_abi_bundle(
+            repeated.path(),
+            "2026.07",
+            &BuildOptions {
+                extra_libs: &[libruntime.clone(), libstd.clone(), libstd, libruntime],
+                ..opts
+            },
+        )
+        .unwrap();
+        verify_bundle_with(
+            &root,
+            &VerifyOptions {
+                require_publisher: Some(identity.public_key_hex()),
+                require_signature: true,
+                require_arch: Some("x86_64".to_string()),
+            },
+        )
+        .expect("repeated source inputs still produce a valid signed bundle");
+        assert_eq!(actual.version, expected.version);
+        assert_eq!(actual.root_hash, expected.root_hash);
+        assert_eq!(actual.files.len(), expected.files.len());
+    }
+
+    #[test]
+    fn different_extra_inputs_with_the_same_name_are_still_rejected() {
+        let host = tempfile::tempdir().unwrap();
+        fake_x86_64_host(host.path());
+        let first = tempfile::tempdir().unwrap();
+        let second = tempfile::tempdir().unwrap();
+        let name = "libruntime_dylib.so";
+        fs::write(first.path().join(name), b"first runtime").unwrap();
+        fs::write(second.path().join(name), b"conflicting runtime").unwrap();
+        let out = tempfile::tempdir().unwrap();
+        let (_, root) = build_abi_bundle(
+            out.path(),
+            "2026.07",
+            &BuildOptions {
+                from: Some(host.path()),
+                arch: Some("x86_64"),
+                identity: None,
+                extra_libs: &[first.path().join(name), second.path().join(name)],
+            },
+        )
+        .unwrap();
+        assert!(matches!(
+            verify_bundle(&root),
+            Err(BundleError::InvalidPayloadPath { path }) if path == format!("lib/{name}")
+        ));
+    }
+
+    /// The bundle's payload paths, sorted.
+    fn payload_paths(manifest: &BundleManifest) -> Vec<&str> {
+        manifest.files.iter().map(|f| f.path.as_str()).collect()
+    }
+
+    #[test]
+    fn a_library_in_the_loader_set_and_the_includes_is_signed_once() {
+        // x86_64: the shared runtime includes its `ldd` closure, which names the
+        // host's libc and loader again.
+        let host = tempfile::tempdir().unwrap();
+        fake_x86_64_host(host.path());
+        let runtime = host.path().join("libruntime_dylib.so");
+        fs::write(&runtime, b"Tilo runtime fixture").unwrap();
+        let closure = [
+            runtime,
+            host.path().join("lib64/libc.so.6"),
+            host.path().join("lib64/ld-linux-x86-64.so.2"),
+        ];
+        let out = tempfile::tempdir().unwrap();
+        let manifest = build_bundle_with(
+            out.path(),
+            "2026.07",
+            &BuildOptions {
+                from: Some(host.path()),
+                arch: Some("x86_64"),
+                identity: None,
+                extra_libs: &closure,
+            },
+        )
+        .unwrap();
+        // libc where LD_LIBRARY_PATH finds it, libm (no include) where it
+        // always was; the loader where the launcher binds it for INTERP and
+        // where soname-following tools find it.
+        assert_eq!(
+            payload_paths(&manifest),
+            [
+                "lib/ld-linux-x86-64.so.2",
+                "lib/lib64/ld-linux-x86-64.so.2",
+                "lib/lib64/libm.so.6",
+                "lib/libc.so.6",
+                "lib/libruntime_dylib.so",
+            ]
+        );
+        assert_eq!(
+            fs::read(out.path().join("lib/libc.so.6")).unwrap(),
+            b"fake contents of lib64/libc.so.6"
+        );
+        verify_bundle(out.path()).expect("the deduplicated bundle verifies");
+
+        // aarch64 Fedora lists libc under both /lib64 and /usr/lib64: neither
+        // copy stays beside the included one.
+        let host = tempfile::tempdir().unwrap();
+        fake_aarch64_fedora_host(host.path());
+        let usr = host.path().join("usr/lib64");
+        fs::create_dir_all(&usr).unwrap();
+        fs::copy(host.path().join("lib64/libc.so.6"), usr.join("libc.so.6")).unwrap();
+        let closure = [
+            host.path().join("lib64/libc.so.6"),
+            host.path().join("lib/ld-linux-aarch64.so.1"),
+        ];
+        let out = tempfile::tempdir().unwrap();
+        let manifest = build_bundle_with(
+            out.path(),
+            "1",
+            &BuildOptions {
+                from: Some(host.path()),
+                arch: Some("aarch64"),
+                identity: None,
+                extra_libs: &closure,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            payload_paths(&manifest),
+            [
+                "lib/ld-linux-aarch64.so.1",
+                "lib/lib/ld-linux-aarch64.so.1",
+                "lib/lib64/libgcc_s.so.1",
+                "lib/lib64/libm.so.6",
+                "lib/libc.so.6",
+            ]
+        );
+        verify_bundle(out.path()).expect("the deduplicated bundle verifies");
+    }
+
+    #[test]
+    fn a_loader_set_library_and_an_include_of_its_name_must_be_the_same_bytes() {
+        for name in ["libc.so.6", "ld-linux-x86-64.so.2"] {
+            let host = tempfile::tempdir().unwrap();
+            fake_x86_64_host(host.path());
+            let other = tempfile::tempdir().unwrap();
+            let include = other.path().join(name);
+            fs::write(&include, b"another glibc build").unwrap();
+            let out = tempfile::tempdir().unwrap();
+            let error = build_bundle_with(
+                out.path(),
+                "2026.07",
+                &BuildOptions {
+                    from: Some(host.path()),
+                    arch: Some("x86_64"),
+                    identity: None,
+                    extra_libs: std::slice::from_ref(&include),
+                },
+            )
+            .unwrap_err();
+            assert!(
+                matches!(&error, BundleError::IncludeConflict { name: named, .. } if named == name),
+                "{name}: {error}"
+            );
         }
     }
 
@@ -1783,11 +2292,12 @@ mod tests {
             Err(BundleError::FileUnlisted { path }) if path == "unexpected-link"
         ));
 
-        let (hash, size) = hash_file(&out.path().join("unexpected-link")).unwrap();
+        let digests = digest_file(&out.path().join("unexpected-link"), false).unwrap();
         manifest.files.push(BundleFile {
             path: "unexpected-link".to_string(),
-            hash,
-            size,
+            hash: digests.blake3,
+            size: digests.size,
+            verity: None,
         });
         manifest.files.sort_by(|a, b| a.path.cmp(&b.path));
         manifest.root_hash = compute_root_hash(&manifest.files);

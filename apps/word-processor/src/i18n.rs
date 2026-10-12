@@ -19,7 +19,7 @@ use ui::i18n::{ArgValue, EmbeddedCatalog};
 /// `locales/<lang>.ftl` next to `en-US.ftl` and listing it here.
 /// Translations are best-effort: any key a catalog omits transparently falls
 /// back to the English string.
-static CATALOG: EmbeddedCatalog = catalog();
+pub(crate) static CATALOG: EmbeddedCatalog = catalog();
 
 const fn catalog() -> EmbeddedCatalog {
     let catalog = EmbeddedCatalog::new(
@@ -28,7 +28,6 @@ const fn catalog() -> EmbeddedCatalog {
             ("en-US", include_str!("../locales/en-US.ftl")),
             ("de", include_str!("../locales/de.ftl")),
         ],
-        "toolbar-styles",
     )
     .with_system_locale();
     // Widget tests assert source copy; keep them independent of the locale

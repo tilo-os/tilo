@@ -202,6 +202,7 @@ fn a_collapsible_section_hides_its_items_and_toggles_from_its_header() {
     let mut doc = AutoCommit::new();
     assert!(header.perform_action(
         &crate::a11y::Action::Activate,
+        &[],
         &mut crate::widget::Edits::lend(&mut doc),
         &automerge::ROOT
     ));

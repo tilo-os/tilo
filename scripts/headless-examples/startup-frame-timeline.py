@@ -26,6 +26,99 @@ APP = "io.tilo.startup-frame-probe"
 POLL_SECONDS = 0.02
 
 
+class ProductionSeed:
+    """Exercise the ordinary publisher and launcher, without Mesa env overrides."""
+
+    def __init__(self, runtime: pathlib.Path, profile: pathlib.Path, out: pathlib.Path):
+        self.active = runtime / "tilo/pipeline-seed/mesa"
+        self.saved = out / "public-seed-source"
+        self.profile = profile
+        self.app_cache = None
+        self.hashes = {}
+
+    def wait(self, shell: subprocess.Popen, timeout: float) -> dict:
+        started = time.monotonic()
+        while not (self.active / "seed.json").is_file():
+            if shell.poll() is not None or time.monotonic() - started > timeout:
+                raise RuntimeError("ordinary compositor did not publish a public Mesa seed")
+            time.sleep(POLL_SECONDS)
+        shutil.copytree(self.active, self.saved)
+        manifest = json.loads((self.saved / "seed.json").read_text())
+        for entry in manifest["files"]:
+            path = self.saved / entry["path"]
+            if not path.is_relative_to(self.saved) or not path.is_file():
+                raise RuntimeError("publisher produced an invalid archive path")
+            self.hashes[entry["path"]] = hashlib.sha256(path.read_bytes()).hexdigest()
+        return {"publication_wait_ms": (time.monotonic() - started) * 1000,
+                "archive_bytes": sum(entry["bytes"] for entry in manifest["files"]),
+                "fingerprint": manifest["fingerprint"], "archive_sha256": self.hashes}
+
+    def select(self, index: int, count: int) -> str:
+        if self.app_cache is not None:
+            shutil.rmtree(self.app_cache, ignore_errors=False)
+        if self.active.exists():
+            shutil.rmtree(self.active)
+        mode = "cold" if index % 2 == 0 else "seed"
+        if index == count - 2:
+            mode = "wrong-driver"
+        elif index == count - 1:
+            mode = "corrupt"
+        if mode == "cold":
+            return mode
+        shutil.copytree(self.saved, self.active)
+        manifest_path = self.active / "seed.json"
+        manifest = json.loads(manifest_path.read_text())
+        if mode == "wrong-driver":
+            replacements = {}
+            for entry in manifest["files"]:
+                driver = pathlib.Path(entry["path"]).parts[0]
+                replacements[driver] = f"{(int(driver[0], 16) + 1) % 16:x}" + driver[1:]
+            if len(set(replacements.values())) != len(replacements):
+                raise RuntimeError("wrong-driver fixture namespaces collided")
+            # Stage every namespace first: an invalidated name may coincide
+            # with another original namespace, but must never merge archives.
+            for index, old in enumerate(replacements):
+                (self.active / old).rename(self.active / f"invalidated-{index}")
+            for index, new in enumerate(replacements.values()):
+                (self.active / f"invalidated-{index}").rename(self.active / new)
+            for entry in manifest["files"]:
+                parts = pathlib.Path(entry["path"]).parts
+                entry["path"] = str(pathlib.Path(replacements[parts[0]], *parts[1:]))
+            manifest_path.unlink()
+            manifest_path.write_text(json.dumps(manifest))
+        elif mode == "corrupt":
+            archive = self.active / manifest["files"][0]["path"]
+            data = bytearray(archive.read_bytes())
+            data[-1] ^= 1
+            archive.unlink()
+            archive.write_bytes(data)
+        return mode
+
+    def observe(self, metric: pathlib.Path, log: str, mode: str) -> None:
+        app = metric.parent.parent.parent
+        if not app.is_relative_to(self.profile / "data"):
+            raise RuntimeError("private app cache is outside the owned fixture")
+        self.app_cache = app / ".cache"
+        if not self.app_cache.is_dir():
+            raise RuntimeError("ordinary launcher private app cache is missing")
+        if "landlock: fully enforced" not in log:
+            raise RuntimeError("ordinary app did not report fully enforced Landlock")
+        if "no_new_privs=true" not in log or "net_restricted=true" not in log:
+            raise RuntimeError("ordinary app confinement was not observed")
+        seeded = "validated read-only Mesa seed in private bounded cache" in log
+        if seeded != (mode in ("seed", "wrong-driver")):
+            raise RuntimeError(f"ordinary launcher cache selection disagrees with {mode}")
+        if mode == "corrupt" and "Mesa seed unavailable" not in log:
+            raise RuntimeError("corrupt seed did not take the observed cold fallback")
+        if mode != "cold" and "public seed write-open denied" not in log:
+            raise RuntimeError("app did not observe read-only access to the session seed")
+        for relative, digest in self.hashes.items():
+            if hashlib.sha256((self.saved / relative).read_bytes()).hexdigest() != digest:
+                raise RuntimeError("public seed source changed")
+            if mode == "seed" and hashlib.sha256((self.active / relative).read_bytes()).hexdigest() != digest:
+                raise RuntimeError("ordinary app changed the read-only session seed")
+
+
 def stop(child: subprocess.Popen | None) -> None:
     if child is None or child.poll() is not None:
         return
@@ -46,6 +139,23 @@ def frames(sock: pathlib.Path) -> list[dict]:
         raise RuntimeError(f"foreign-frame response cannot observe its subject: {response}")
     return rows
 
+
+def idle_sample(shell: subprocess.Popen) -> dict:
+    def read():
+        proc = pathlib.Path(f"/proc/{shell.pid}")
+        fields = (proc / "stat").read_text().rsplit(") ", 1)[1].split()
+        rss = next(line.split()[1] for line in (proc / "status").read_text().splitlines()
+                   if line.startswith("VmRSS:"))
+        return int(fields[11]) + int(fields[12]), int(rss)
+    ticks, rss_before = read()
+    start = time.monotonic()
+    time.sleep(5)
+    after, rss_after = read()
+    seconds = time.monotonic() - start
+    return {"scope": "owned headless compositor after public-seed publication and all probe exits; watcher disabled; not full OS idle",
+            "seconds": seconds,
+            "cpu_percent_one_core": 100 * (after - ticks) / os.sysconf("SC_CLK_TCK") / seconds,
+            "rss_kib_before": rss_before, "rss_kib_after": rss_after}
 
 def seed_fixture(seed_dir: pathlib.Path, archive_root: pathlib.Path | None) -> None:
     seed_dir.mkdir(parents=True, mode=0o700)
@@ -77,9 +187,18 @@ def main() -> None:
     parser.add_argument("--mesa-seed-source", choices=("package", "session"), default="package")
     parser.add_argument("--alternate-mesa-seed", action="store_true")
     parser.add_argument("--timeout", type=float, default=90)
+    parser.add_argument("--production-mesa-seed", action="store_true",
+                        help="six alternating fresh-cache launches plus wrong-driver and corrupt fallbacks; requires --samples 8")
     args = parser.parse_args()
     if not 1 <= args.samples <= 10 or not 0 < args.timeout <= 240:
         parser.error("samples must be 1..10 and timeout must be positive and at most 240s")
+    if args.production_mesa_seed and (args.fresh_mesa_cache or args.mesa_seed or args.alternate_mesa_seed):
+        parser.error("ordinary production qualification cannot use test-only Mesa fixtures")
+    if args.production_mesa_seed and args.samples != 8:
+        parser.error("production Mesa qualification requires --samples 8")
+    if args.production_mesa_seed and any(name.startswith(("MESA_SHADER_CACHE_", "MESA_DISK_CACHE_")) for name in os.environ):
+        parser.error("production Mesa qualification requires an environment without cache overrides")
+
     if args.alternate_mesa_seed and (not args.mesa_seed or args.mesa_seed_source != "package" or args.samples % 2):
         parser.error("alternating seed mode requires a package seed and an even sample count")
     binaries = args.binaries.resolve()
@@ -127,6 +246,7 @@ def main() -> None:
     result = {"scope": "registered host wrapper launching a confined native SDK payload in a watched headless compositor",
               "physical_presentation": False, "cache": "fresh processes; private app data initially empty and retained between samples; host/driver caches not flushed",
               "poll_interval_ms": POLL_SECONDS * 1000, "samples": [],
+              "host_load_before": os.getloadavg(),
               "binary_sha256": {name: hashlib.sha256(path.read_bytes()).hexdigest() for name, path in paths.items()}}
     result["mesa_cache"] = (f"fresh private directory per app process with read-only {args.mesa_seed_source} seed"
                             if args.mesa_seed else "fresh private directory per app process"
@@ -147,6 +267,7 @@ def main() -> None:
         f'Exec={desktop_quote(helper)} --launch-probe {desktop_quote(payload)}\n'
         f'Terminal=false\nStartupWMClass={APP}\n')
     shell = None
+    production_seed = ProductionSeed(runtime, profile, out) if args.production_mesa_seed else None
     def stop_probe():
         pidfile = payload / "probe.pid"
         if not pidfile.exists():
@@ -199,7 +320,12 @@ def main() -> None:
                 if time.monotonic() >= deadline:
                     raise RuntimeError(f"registered synthetic launch action missing: {catalog}")
                 time.sleep(POLL_SECONDS)
+            if production_seed:
+                result["production_mesa_seed"] = production_seed.wait(shell, args.timeout)
+                result["cache"] = "fresh private app cache per launch; ordinary compositor-generated public seed; six alternating cold/seed launches and two observed fallback controls"
             for index in range(args.samples):
+                mode = production_seed.select(index, args.samples) if production_seed else None
+
                 seeded = bool(args.mesa_seed) and (not args.alternate_mesa_seed or index % 2 == 1)
                 if args.alternate_mesa_seed:
                     active, inactive = seed_dir / "mesa", seed_dir / "mesa-inactive"
@@ -211,6 +337,7 @@ def main() -> None:
                 for previous in (profile / "data").rglob("startup-frame-probe.json"):
                     previous.unlink()
                 ignore = {row["surface_id"] for row in frames(sock)}
+                host_load = os.getloadavg()
                 before = time.monotonic_ns()
                 response = call(str(sock), {"op": "actions_invoke", "provider": launch[0]["provider"], "id": launch[0]["id"]})
                 if "err" in response:
@@ -250,9 +377,16 @@ def main() -> None:
                 if (args.fresh_mesa_cache or args.mesa_seed) and f"probe-mesa-source-{args.mesa_seed_source}" not in names:
                     raise RuntimeError("app did not observe the requested read-only seed source")
                 row = {"index": index, "mesa_seeded": seeded, "launch_action_return_ms": (spawned - before) / 1e6,
+                       "host_load_before": host_load,
                        "first_frame_observation_lower_ms": (lower - before) / 1e6,
                        "first_frame_observation_upper_ms": (query_after - before) / 1e6,
                        "frame": frame, "sdk_startup": metrics}
+                if production_seed:
+                    if "probe-fresh-mesa-cache-ready" in names:
+                        raise RuntimeError("ordinary production launch unexpectedly enabled a test-only cache fixture")
+                    production_seed.observe(metric_paths[0], (payload / "probe.log").read_text(), mode)
+                    row["mesa_mode"] = mode
+                    row["mesa_seeded"] = mode == "seed"
                 result["samples"].append(row)
                 (out / "timeline.json").write_text(json.dumps(result, indent=2) + "\n")
                 print(json.dumps(row), flush=True)
@@ -269,6 +403,11 @@ def main() -> None:
             if not recorded or not any(row["painted"] == "1" for row in recorded):
                 raise RuntimeError("live compositor trace has no actually painted sample")
             result["live_trace_rows"] = len(recorded)
+            if production_seed:
+                unwatch = call(str(sock), {"op": "watch", "watching": False})
+                if "err" in unwatch:
+                    raise RuntimeError(f"idle observer could not stop the headless watch: {unwatch}")
+                result["idle_after_publication"] = idle_sample(shell)
             (out / "timeline.json").write_text(json.dumps(result, indent=2) + "\n")
     finally:
         try:

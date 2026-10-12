@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use std::os::unix::net::UnixStream;
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
 use shell::compositor::foreign::store;
@@ -13,10 +13,11 @@ use smithay::reexports::wayland_server::Display;
 use smithay::wayland::compositor::{self, BufferAssignment, Damage, SurfaceAttributes};
 use wayland_client::protocol::{wl_compositor, wl_registry, wl_surface};
 use wayland_client::{Connection, Dispatch, Proxy, QueueHandle, delegate_noop};
-use wayland_protocols::xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_base};
+use wayland_protocols::xdg::shell::client::{xdg_toplevel, xdg_wm_base};
 
 #[derive(Clone, Debug)]
 struct Commit {
+    ordinal: usize,
     surface: u64,
     rectangles: Vec<(i32, i32, i32, i32)>,
     buffer_coordinates: bool,
@@ -97,7 +98,10 @@ impl Server {
                                         drop(attributes);
                                         (rectangles, buffer_coordinates)
                                     };
-                                    recorded.lock().unwrap().push(Commit {
+                                    let mut recorded = recorded.lock().unwrap();
+                                    let ordinal = recorded.len().saturating_add(1);
+                                    recorded.push(Commit {
+                                        ordinal,
                                         surface: surface_id(surface),
                                         rectangles,
                                         buffer_coordinates,
@@ -126,16 +130,34 @@ impl Server {
         }
     }
 
-    fn captured(&self, previous: u64) -> (Commit, shell::shell::foreign::FrameSnapshot) {
+    fn captured(
+        &self,
+        previous: u64,
+        previous_commit: usize,
+        mut checkpoint: Option<(mpsc::Sender<()>, mpsc::Receiver<()>)>,
+    ) -> (Commit, shell::shell::foreign::FrameSnapshot) {
         let deadline = tilo_test_env::hang_deadline();
         loop {
-            let latest = self.commits.lock().unwrap().last().cloned();
+            // Keep damage records stable while observing the production frame.
+            // The checkpoint releases the lock to force the old reader race.
+            let mut commits = self.commits.lock().unwrap();
+            let latest = commits.last().cloned();
+            if let Some((read, resume)) = checkpoint.take() {
+                drop(commits);
+                read.send(()).expect("metadata read checkpoint");
+                resume
+                    .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+                    .expect("resume capture after presentation");
+                commits = self.commits.lock().unwrap();
+            }
             if let Some(commit) = latest
-                && store().frame_seq(commit.surface) > previous
+                && commit.ordinal > previous_commit
                 && let Some(frame) = store().snapshot(commit.surface)
+                && frame.seq > previous
             {
                 return (commit, frame);
             }
+            drop(commits);
             assert!(
                 Instant::now() < deadline,
                 "WSI pixels never reached capture"
@@ -182,35 +204,7 @@ impl Dispatch<wl_registry::WlRegistry, ()> for Peer {
         }
     }
 }
-impl Dispatch<xdg_wm_base::XdgWmBase, ()> for Peer {
-    fn event(
-        _: &mut Self,
-        base: &xdg_wm_base::XdgWmBase,
-        event: xdg_wm_base::Event,
-        (): &(),
-        _: &Connection,
-        _: &QueueHandle<Self>,
-    ) {
-        if let xdg_wm_base::Event::Ping { serial } = event {
-            base.pong(serial);
-        }
-    }
-}
-impl Dispatch<xdg_surface::XdgSurface, ()> for Peer {
-    fn event(
-        peer: &mut Self,
-        surface: &xdg_surface::XdgSurface,
-        event: xdg_surface::Event,
-        (): &(),
-        _: &Connection,
-        _: &QueueHandle<Self>,
-    ) {
-        if let xdg_surface::Event::Configure { serial } = event {
-            surface.ack_configure(serial);
-            peer.configured = true;
-        }
-    }
-}
+crate::support::wayland::test_client!(Peer: ping, configured);
 delegate_noop!(Peer: ignore wl_compositor::WlCompositor);
 delegate_noop!(Peer: ignore wl_surface::WlSurface);
 delegate_noop!(Peer: ignore xdg_toplevel::XdgToplevel);
@@ -361,10 +355,10 @@ fn vulkan_regions_reach_wayland_with_exact_captured_pixels() {
     connection.flush().expect("configure acknowledgement");
     let (surface, device, queue, format) = gpu_surface(&connection, &native);
     paint(&surface, &queue, format, false);
-    let (first, pixels) = server.captured(0);
+    let (first, pixels) = server.captured(0, 0, None);
     assert_eq!((pixels.width, pixels.height), (64, 64));
     assert_eq!(&pixels.rgba[..4], &[255, 0, 0, 255]);
-    let previous = store().frame_seq(first.surface);
+    let previous = pixels.seq;
     // SAFETY: only borrow the configured HAL surface to set the checked hint;
     // no native handles escape the guard or have their ownership changed.
     assert!(
@@ -378,8 +372,30 @@ fn vulkan_regions_reach_wayland_with_exact_captured_pixels() {
             }]),
         "this native WSI must support incremental presentation"
     );
-    paint(&surface, &queue, format, true);
-    let (second, pixels) = server.captured(previous);
+    // Force the server to publish the second presentation after the reader
+    // took its metadata snapshot. The metadata and pixel cursors must both
+    // advance: the old full-damage commit cannot describe the new pixels.
+    let (read, observed) = mpsc::channel();
+    let (resume, resumed) = mpsc::channel();
+    let (second, pixels) = std::thread::scope(|scope| {
+        let server = &server;
+        let ordinal = first.ordinal;
+        let reader = scope.spawn(move || server.captured(previous, ordinal, Some((read, resumed))));
+        let deadline = tilo_test_env::hang_deadline();
+        observed
+            .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+            .expect("capture reader took its metadata snapshot");
+        paint(&surface, &queue, format, true);
+        while store().frame_seq(first.surface) <= previous {
+            assert!(
+                Instant::now() < deadline,
+                "second presentation was not captured"
+            );
+            std::thread::yield_now();
+        }
+        resume.send(()).expect("release capture reader");
+        reader.join().expect("capture reader")
+    });
     assert!(
         second.buffer_coordinates,
         "driver damage must be in buffer pixels"

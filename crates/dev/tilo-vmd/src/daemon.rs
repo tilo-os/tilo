@@ -102,14 +102,102 @@ pub fn reconcile_seats(slots: &SlotStore, locks: &Locks, apply: &mut dyn Apply) 
     issues
 }
 
+fn layer_paths(layers: &LayerStore, generation: &Generation) -> Result<Vec<PathBuf>, DaemonError> {
+    generation
+        .layers
+        .iter()
+        .map(|hash| layers.require(hash))
+        .collect()
+}
+
+fn system_layers(
+    slots: &SlotStore,
+    layers: &LayerStore,
+    record: &SlotRecord,
+    own: Vec<PathBuf>,
+) -> Result<Vec<PathBuf>, DaemonError> {
+    let login = |r: &SlotRecord| r.device.as_ref().is_some_and(|d| d.login.is_some());
+    let other = match record.kind {
+        SlotKind::Vm => DEVICE_SLOT,
+        SlotKind::Device if login(record) => VM_SLOT,
+        _ => {
+            let vm = slots.load(VM_SLOT)?;
+            let vm_layers = layer_paths(layers, &slots.generation(VM_SLOT, vm.current)?)?;
+            let mut merged = system_layers(slots, layers, &vm, vm_layers)?;
+            for layer in own {
+                if !merged.contains(&layer) {
+                    merged.push(layer);
+                }
+            }
+            return Ok(merged);
+        }
+    };
+    let Some(stored) = slots.stored(other)? else {
+        return Ok(own);
+    };
+    if other == DEVICE_SLOT && !login(&stored) {
+        return Ok(own);
+    }
+    let theirs = layer_paths(layers, &slots.generation(other, stored.current)?)?;
+    let (first, second) = if record.kind == SlotKind::Vm {
+        (own, theirs)
+    } else {
+        (theirs, own)
+    };
+    let mut layers: Vec<PathBuf> = Vec::new();
+    for layer in first.into_iter().chain(second) {
+        if !layers.contains(&layer) {
+            layers.push(layer);
+        }
+    }
+    Ok(layers)
+}
+
+fn prepare_slot_session(
+    slots: &SlotStore,
+    layers: &LayerStore,
+    apply: &mut dyn Apply,
+    record: &SlotRecord,
+) -> Result<(), DaemonError> {
+    let session = record
+        .session()
+        .ok_or_else(|| DaemonError::InvalidParams("slot has no session".into()))?;
+    let generation = slots.generation(&record.name, record.current)?;
+    let paths = system_layers(slots, layers, record, layer_paths(layers, &generation)?)?;
+    let dropin = apply.session_layer_dropin(&record.name, generation.number, &paths)?;
+    let uid = apply::session_uid(apply, &session)?;
+    for unit in apply::layered_units(&session, uid) {
+        apply.write_dropin(&unit, apply::LAYERS_DROPIN, &dropin)?;
+    }
+    apply.reload()
+}
+
 /// Bring every slot back after the VM boots: re-create headful slots' vkms
 /// seats, then start each slot's session on its current generation. Run
 /// once at boot by `tilo-vm-restore.service`; a slot that cannot come back
 /// is reported, and the others still start.
-pub fn restore_slots(slots: &SlotStore, locks: &Locks, apply: &mut dyn Apply) -> Vec<Issue> {
+pub fn restore_slots(
+    slots: &SlotStore,
+    layers: &LayerStore,
+    locks: &Locks,
+    apply: &mut dyn Apply,
+) -> Vec<Issue> {
+    let issue = |slot: &str, error: DaemonError| Issue {
+        slot: slot.into(),
+        problem: format!("its session view could not be restored: {error}"),
+        hint: "tilo-vm doctor; then retry the normal slot restart".into(),
+    };
+    let _global = match locks.vm_shared() {
+        Ok(guard) => guard,
+        Err(error) => return vec![issue(VM_SLOT, error)],
+    };
+    let records = match slots.list() {
+        Ok(records) => records,
+        Err(error) => return vec![issue(VM_SLOT, error)],
+    };
     let mut issues = reconcile_seats(slots, locks, apply);
     let failed: BTreeSet<String> = issues.iter().map(|i| i.slot.clone()).collect();
-    for record in slots.list().unwrap_or_default() {
+    for record in records {
         let Some(session) = record.session() else {
             continue;
         };
@@ -118,7 +206,23 @@ pub fn restore_slots(slots: &SlotStore, locks: &Locks, apply: &mut dyn Apply) ->
         if failed.contains(&record.name) || session.login.is_some() {
             continue;
         }
-        if let Err(error) = apply.start_unit(&session.unit) {
+        let _slot = match locks.slot(&record.name) {
+            Ok(guard) => guard,
+            Err(error) => {
+                issues.push(issue(&record.name, error));
+                continue;
+            }
+        };
+        let record = match slots.load(&record.name) {
+            Ok(record) => record,
+            Err(error) => {
+                issues.push(issue(&record.name, error));
+                continue;
+            }
+        };
+        if let Err(error) = prepare_slot_session(slots, layers, apply, &record)
+            .and_then(|()| apply.start_unit(&session.unit))
+        {
             issues.push(Issue {
                 slot: record.name.clone(),
                 problem: format!("its session did not start at boot: {error}"),
@@ -154,6 +258,7 @@ fn unchanged(record: SlotRecord) -> ApplyResult {
         changed: false,
         policy: Policy::NoRestart,
         actions: Vec::new(),
+        cohort_selection: Vec::new(),
         warnings: Vec::new(),
         boot: None,
     }
@@ -174,6 +279,15 @@ pub fn abi_check(
     provenance: &Provenance,
     base: &BaseInfo,
     arch: &str,
+) -> Result<Vec<String>, DaemonError> {
+    abi_check_verified(provenance, base, arch, None)
+}
+
+pub(crate) fn abi_check_verified(
+    provenance: &Provenance,
+    base: &BaseInfo,
+    arch: &str,
+    cohort: Option<&crate::cohort::VerifiedCohort>,
 ) -> Result<Vec<String>, DaemonError> {
     let mismatch = |field: &str, layer: &str, vm: &str| DaemonError::AbiMismatch {
         field: field.into(),
@@ -208,7 +322,7 @@ pub fn abi_check(
     if let (Some(layer), Some(vm)) = (&provenance.cargo_lock_hash, &base.cargo_lock_hash)
         && layer != vm
     {
-        if provenance.cargo_profile.as_deref() == Some("thin-app") {
+        if provenance.cargo_profile.as_deref() == Some("thin-app") && cohort.is_none() {
             return Err(mismatch("Cargo.lock", short(layer), short(vm)));
         }
         warnings.push(format!(
@@ -216,6 +330,12 @@ pub fn abi_check(
             short(layer),
             short(vm)
         ));
+        if let Some(cohort) = cohort {
+            warnings.push(format!(
+                "verified complete apps+runtime cohort carries its own native toolkit {}",
+                cohort.version
+            ));
+        }
     }
     if let (Some(layer), Some(vm)) = (&provenance.base_image_digest, &base.image_digest)
         && layer != vm
@@ -380,37 +500,13 @@ impl Daemon {
     /// The layers to merge system-wide for `record`: the `vm` slot and a
     /// laptop's `device` slot (the owner's login runs in the host's mount
     /// namespace) share one `systemd-sysext` set, the `vm` slot's layers
-    /// first. Other slots stack only their own.
+    /// first. Other slots merge that system-wide set with their own.
     fn system_layers(
         &self,
         record: &SlotRecord,
         own: Vec<PathBuf>,
     ) -> Result<Vec<PathBuf>, DaemonError> {
-        let login = |r: &SlotRecord| r.device.as_ref().is_some_and(|d| d.login.is_some());
-        let other = match record.kind {
-            SlotKind::Vm => DEVICE_SLOT,
-            SlotKind::Device if login(record) => VM_SLOT,
-            _ => return Ok(own),
-        };
-        let Some(stored) = self.slots.stored(other)? else {
-            return Ok(own);
-        };
-        if other == DEVICE_SLOT && !login(&stored) {
-            return Ok(own);
-        }
-        let theirs = self.layer_paths(&self.slots.generation(other, stored.current)?)?;
-        let (first, second) = if record.kind == SlotKind::Vm {
-            (own, theirs)
-        } else {
-            (theirs, own)
-        };
-        let mut layers: Vec<PathBuf> = Vec::new();
-        for layer in first.into_iter().chain(second) {
-            if !layers.contains(&layer) {
-                layers.push(layer);
-            }
-        }
-        Ok(layers)
+        system_layers(&self.slots, &self.layers, record, own)
     }
 
     /// Load a slot, finding the machine's own session for the `device` slot.
@@ -425,7 +521,7 @@ impl Daemon {
 
     /// Bring every slot back after the VM boots; see [`restore_slots`].
     pub fn restore(&mut self) -> Vec<Issue> {
-        let issues = restore_slots(&self.slots, &self.locks, self.apply.as_mut());
+        let issues = restore_slots(&self.slots, &self.layers, &self.locks, self.apply.as_mut());
         self.seat_issues = Some(issues.clone());
         issues
     }
@@ -471,6 +567,15 @@ impl Daemon {
         }
         match request {
             Request::Hello(_) => Err(DaemonError::HelloRequired),
+            Request::DeviceActions(p) => self.device_actions(&p.line),
+            Request::DeviceUnlockEnrol(p) => {
+                p.validate().map_err(DaemonError::InvalidParams)?;
+                let _locks = self.slot_locks(DEVICE_SLOT)?;
+                let (_, session) = self.user_slot(DEVICE_SLOT)?;
+                self.require_device_action_owner(&session)?;
+                let uid = self.apply.account_uid(&session.user)?;
+                to_value(&self.apply.enroll_device_unlock(uid, &p)?)
+            }
             Request::Status(p) => to_value(&self.status(p.slot)?),
             Request::SlotCreate(p) => {
                 let _locks = self.slot_locks(&p.name)?;
@@ -494,13 +599,19 @@ impl Daemon {
                 to_value(&self.remove(&p.name)?)
             }
             Request::SlotShow(p) => to_value(&self.show(&p.name)?),
-            Request::LayerUploadBegin(_) => to_value(&self.upload_begin()?),
+            Request::LayerUploadBinary(_) | Request::LayerUploadBegin(_) => {
+                to_value(&self.upload_begin()?)
+            }
             Request::LayerUploadChunk(p) => to_value(&self.upload_chunk(&p.upload, &p.data)?),
             Request::LayerImport(p) => {
                 let _vm = self.locks.vm_shared()?;
                 to_value(&self.import(p.source, &p.provenance)?)
             }
             Request::LayerList(_) => to_value(&self.layers.list()?),
+            Request::LayerVerify(p) => {
+                let _vm = self.locks.vm_shared()?;
+                to_value(&self.layers.verify(&p.hash)?)
+            }
             Request::Swap(p) => {
                 let _locks = self.slot_locks(&p.slot)?;
                 to_value(&self.swap(&p.slot, &p.component, &p.layer, p.info)?)
@@ -574,6 +685,21 @@ impl Daemon {
         self.apply.confirm_boot(expect_version)
     }
 
+    pub(crate) fn user_device_action_session(&mut self) -> Result<(), DaemonError> {
+        let (_, session) = self.user_slot(DEVICE_SLOT)?;
+        self.require_device_action_owner(&session)
+    }
+
+    fn require_device_action_owner(&mut self, session: &Session) -> Result<(), DaemonError> {
+        if self.apply.device_action_owner(session) {
+            Ok(())
+        } else {
+            Err(DaemonError::InvalidParams(
+                "the device owner's signed-in session is required".into(),
+            ))
+        }
+    }
+
     fn input(&mut self, name: &str, actions: &[InputAction]) -> Result<InputResult, DaemonError> {
         tilo_vm_protocol::input::validate(actions).map_err(DaemonError::InvalidParams)?;
         let (record, _) = self.user_slot(name)?;
@@ -620,7 +746,6 @@ impl Daemon {
         source: LayerSource,
     ) -> Result<AppInstallResult, DaemonError> {
         let (record, session) = self.user_slot(slot)?;
-        let user = session.user;
         let (path, uploaded) = match source {
             LayerSource::Upload(id) => (
                 self.uploads
@@ -630,7 +755,7 @@ impl Daemon {
             ),
             LayerSource::Path(path) => (PathBuf::from(path), false),
         };
-        let output = self.apply.install_app(&user, &path);
+        let output = self.apply.install_app(&session, &path);
         if uploaded {
             let _ = fs::remove_file(&path);
         }
@@ -723,6 +848,36 @@ impl Daemon {
         fs::File::create(&path).map_err(DaemonError::io("create upload"))?;
         self.uploads.insert(id.clone(), path);
         Ok(LayerUploadBeginResult { upload: id })
+    }
+
+    pub(crate) fn cancel_upload(&mut self, id: &str) {
+        if let Some(path) = self.uploads.remove(id) {
+            let _ = fs::remove_file(path);
+        }
+    }
+
+    pub(crate) fn receive_binary(
+        &mut self,
+        id: &str,
+        input: impl std::io::Read,
+    ) -> (std::io::Result<u64>, bool) {
+        let Some(path) = self.uploads.get(id) else {
+            return (Err(std::io::Error::other("binary upload missing")), false);
+        };
+        let mut reader = tilo_vm_protocol::binary::Reader::new(input);
+        let result = fs::OpenOptions::new()
+            .append(true)
+            .open(path)
+            .and_then(|mut file| {
+                let bytes = std::io::copy(&mut reader, &mut file)?;
+                file.flush()?;
+                Ok(bytes)
+            });
+        let boundary = reader.decoder.at_boundary();
+        if result.is_err() {
+            self.cancel_upload(id);
+        }
+        (result, boundary)
     }
 
     fn upload_chunk(
@@ -1113,6 +1268,7 @@ impl Daemon {
             changed: true,
             policy,
             actions,
+            cohort_selection: Vec::new(),
             warnings: Vec::new(),
             boot: None,
         })
@@ -1177,21 +1333,61 @@ impl Daemon {
         info: Option<ComponentInfo>,
     ) -> Result<ApplyResult, DaemonError> {
         let mut record = self.load_slot(name)?;
-        self.layers.require(layer)?;
+        let layer_path = self.layers.require(layer)?;
         let provenance = self
             .layers
             .provenance(layer)
             .unwrap_or_else(|| Provenance::local(component));
-        let warnings = abi_check(&provenance, &self.base, std::env::consts::ARCH)?;
+        let cohort = if component == "apps+runtime"
+            && self
+                .manifest
+                .as_ref()
+                .and_then(|manifest| manifest.get(component))
+                .is_some_and(|entry| entry.image_assembled && entry.info.scope == Scope::Session)
+        {
+            if provenance.component != component
+                || provenance.source_commit.is_none()
+                || provenance.cargo_profile.as_deref() != Some("thin-app")
+            {
+                return Err(DaemonError::InvalidParams(
+                    "apps+runtime requires actual source-bound thin graph provenance".into(),
+                ));
+            }
+            Some(crate::cohort::verify(
+                &layer_path,
+                Path::new("/usr/share/tilo-apps"),
+                std::env::consts::ARCH,
+            )?)
+        } else {
+            None
+        };
+        let warnings = abi_check_verified(
+            &provenance,
+            &self.base,
+            std::env::consts::ARCH,
+            cohort.as_ref(),
+        )?;
         let info = self.component_info(&record, component, info);
         apply::check_scope(&record, component, &info)?;
-        let Some((from, to)) = self.slots.prepare_swap(&record, component, layer, info)? else {
-            return Ok(ApplyResult {
-                warnings,
-                ..unchanged(record)
-            });
+        let mut result = match self.slots.prepare_swap(&record, component, layer, info)? {
+            Some((from, to)) => self.transition(&mut record, &from, &to)?,
+            None => unchanged(record),
         };
-        let mut result = self.transition(&mut record, &from, &to)?;
+        if let Some(cohort) = &cohort {
+            let (_, session) = self.user_slot(name)?;
+            result.cohort_selection.extend(crate::cohort::select(
+                self.apply.as_mut(),
+                &session,
+                cohort,
+            )?);
+            let uid = self.apply.account_uid(&session.user)?;
+            result
+                .actions
+                .extend(apply::restart_session(self.apply.as_mut(), &session, uid)?);
+            self.verify_parity(Some(session))?;
+            result.changed = true;
+            result.policy = Policy::SessionRestart;
+        }
         result.warnings.splice(0..0, warnings);
         Ok(result)
     }
@@ -1202,10 +1398,49 @@ impl Daemon {
         if from.number == to.number {
             return Ok(unchanged(record));
         }
+        if let Some(current) = from.components.get("apps+runtime")
+            && to.components.get("apps+runtime").map(|entry| &entry.layer) != Some(&current.layer)
+        {
+            return Err(DaemonError::InvalidParams(
+                "cannot roll back the selected apps+runtime cohort: user packages may require its SDK; \
+                 select a complete verified cohort instead (unrelated component rollbacks remain available)".into(),
+            ));
+        }
         self.transition(&mut record, &from, &to)
     }
 
     fn transition(
+        &mut self,
+        record: &mut SlotRecord,
+        from: &Generation,
+        to: &Generation,
+    ) -> Result<ApplyResult, DaemonError> {
+        // Boot changes have a separate boot-confirmation lifecycle. Runtime
+        // transitions recover once, without recursively retrying a broken build.
+        let (policy, _) = apply::policy(record, from, to)?;
+        match self.activate_generation(record, from, to) {
+            Ok(result) => Ok(result),
+            Err(error) if policy != Policy::Reboot => {
+                let recovery = match self.activate_generation(record, to, from) {
+                    Ok(_) => format!("restored generation {}", from.number),
+                    Err(recovery) => format!(
+                        "recovery to generation {} also failed: {recovery}; inspect logs --slot {} and retry rollback --slot {} --to {}",
+                        from.number, record.name, record.name, from.number
+                    ),
+                };
+                Err(DaemonError::Apply {
+                    step: format!(
+                        "activate generation {} in slot '{}'",
+                        to.number, record.name
+                    ),
+                    detail: format!("{error}; {recovery}"),
+                })
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    fn activate_generation(
         &mut self,
         record: &mut SlotRecord,
         from: &Generation,
@@ -1227,10 +1462,10 @@ impl Daemon {
         let mut warnings = Vec::new();
         match policy {
             Policy::VmRefresh => {
-                self.slots.set_current(record, to.number)?;
                 actions.extend(self.restart_all_sessions(&restarts.user_units)?);
                 let sessions = self.sessions()?;
                 self.verify_parity(sessions)?;
+                self.slots.set_current(record, to.number)?;
             }
             Policy::Reboot => {
                 // The kernel's modules are merged now; its boot entry is next.
@@ -1262,8 +1497,8 @@ impl Daemon {
                 self.slots.set_current(record, to.number)?;
             }
             Policy::SessionRestart => {
-                self.slots.set_current(record, to.number)?;
                 self.verify_parity(record.session())?;
+                self.slots.set_current(record, to.number)?;
             }
             Policy::NoRestart => self.slots.set_current(record, to.number)?,
         }
@@ -1273,6 +1508,7 @@ impl Daemon {
             changed: true,
             policy,
             actions,
+            cohort_selection: Vec::new(),
             warnings,
             boot,
         })
@@ -1291,6 +1527,16 @@ impl Daemon {
                         unit: unit.clone(),
                     });
                 }
+            }
+            if session.stand_in {
+                let record = self
+                    .stored_slots()?
+                    .into_iter()
+                    .find(|record| record.session().as_ref() == Some(&session))
+                    .ok_or_else(|| {
+                        DaemonError::InvalidParams("stand-in session has no slot".into())
+                    })?;
+                prepare_slot_session(&self.slots, &self.layers, self.apply.as_mut(), &record)?;
             }
             let uid = apply::session_uid(self.apply.as_mut(), &session)?;
             actions.extend(apply::restart_session(self.apply.as_mut(), &session, uid)?);
@@ -1526,6 +1772,143 @@ impl Daemon {
 mod tests {
     use super::*;
     use crate::apply::session_unit;
+
+    #[test]
+    fn failed_swap_restores_generation_and_reports_failed_recovery() {
+        for (slot, recovery) in [
+            (DEVICE_SLOT, Ok(())),
+            (DEVICE_SLOT, Err("old desktop also failed".to_owned())),
+            ("review", Ok(())),
+            ("review", Err("old desktop also failed".to_owned())),
+        ] {
+            let root = tempfile::tempdir().unwrap();
+            let mirror = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+            let mut apply = RecordingApply::with_login("owner");
+            apply.mirror = Some(mirror.clone());
+            if slot != DEVICE_SLOT {
+                apply.readiness_replies.push_back(Ok(()));
+            }
+            apply.readiness_replies.extend([
+                Ok(()),
+                Err("new desktop failed".to_owned()),
+                recovery.clone(),
+            ]);
+            let mut daemon = Daemon::new(root.path(), Box::new(apply), None, BaseInfo::default());
+            if slot != DEVICE_SLOT {
+                daemon
+                    .create(slot, SlotKind::Headless, Owner::default(), &[], false)
+                    .unwrap();
+            }
+            // Start with a real prior generation, then exercise the production
+            // swap path: preparation, activation, readiness and recovery.
+            let hash = "ab".repeat(32);
+            fs::create_dir_all(root.path().join("layers").join(&hash).join("usr/bin")).unwrap();
+            let info = Some(ComponentInfo::new(Scope::Session, vec![]));
+            assert_eq!(
+                daemon
+                    .swap(slot, "shell", &hash, info.clone())
+                    .unwrap()
+                    .generation,
+                1
+            );
+            mirror.lock().unwrap().clear();
+            let next = "cd".repeat(32);
+            fs::create_dir_all(root.path().join("layers").join(&next).join("usr/bin")).unwrap();
+            let error = daemon.swap(slot, "shell", &next, info).unwrap_err();
+            let detail = error.to_string();
+            assert!(detail.contains("new desktop failed"), "{detail}");
+            let record = daemon.load_slot(slot).unwrap();
+            assert_eq!(
+                record.current, 1,
+                "a failed candidate never becomes current"
+            );
+            if slot == DEVICE_SLOT {
+                assert_eq!(record.device.as_ref().unwrap().account, "owner");
+            } else {
+                assert_eq!(record.kind, SlotKind::Headless);
+            }
+            let calls = mirror.lock().unwrap().clone();
+            assert_eq!(
+                calls
+                    .iter()
+                    .filter(|c| c.starts_with("wait_session_ready "))
+                    .count(),
+                2
+            );
+            assert!(
+                !calls
+                    .iter()
+                    .any(|c| c.contains("reset_desktop") || c.contains("remove_user"))
+            );
+            if recovery.is_ok() {
+                assert!(detail.contains("restored generation 1"), "{detail}");
+                assert_eq!(daemon.slots.pending(slot), None);
+            } else {
+                assert!(
+                    detail.contains("recovery to generation 1 also failed"),
+                    "{detail}"
+                );
+                assert!(detail.contains("old desktop also failed"), "{detail}");
+                assert_eq!(daemon.slots.pending(slot), Some(1));
+            }
+        }
+    }
+
+    #[test]
+    fn cohort_rollback_refuses_before_changing_layers_but_keeps_unrelated_rollback() {
+        let root = tempfile::tempdir().unwrap();
+        let mirror = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut apply = RecordingApply::with_login("tester");
+        apply.mirror = Some(mirror.clone());
+        let mut daemon = Daemon::new(root.path(), Box::new(apply), None, BaseInfo::default());
+        daemon
+            .handle(Request::Hello(tilo_vm_protocol::Hello {
+                protocol: PROTOCOL_VERSION,
+                client_version: String::new(),
+            }))
+            .unwrap();
+        let first = "01".repeat(32);
+        let next = "02".repeat(32);
+        for hash in [&first, &next] {
+            fs::create_dir_all(root.path().join("layers").join(hash).join("usr/bin")).unwrap();
+        }
+        let cohort = daemon
+            .swap(
+                DEVICE_SLOT,
+                "apps+runtime",
+                &first,
+                Some(ComponentInfo::new(Scope::Session, Vec::new())),
+            )
+            .unwrap();
+        daemon
+            .swap(
+                DEVICE_SLOT,
+                "shell",
+                &next,
+                Some(ComponentInfo::new(Scope::Session, Vec::new())),
+            )
+            .unwrap();
+        daemon
+            .rollback(DEVICE_SLOT, Some(cohort.generation))
+            .unwrap();
+        let record = daemon.load_slot(DEVICE_SLOT).unwrap();
+        let calls = mirror.lock().unwrap().len();
+        let error = daemon.rollback(DEVICE_SLOT, Some(0)).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("user packages may require its SDK")
+        );
+        assert_eq!(
+            mirror.lock().unwrap().len(),
+            calls,
+            "refusal must precede any layer side effect"
+        );
+        assert_eq!(
+            daemon.load_slot(DEVICE_SLOT).unwrap().current,
+            record.current
+        );
+    }
 
     /// Every connection's hello takes the keep-awake lease; `awake` holds it
     /// longer, reports it, and releases it, and the next hello takes it again.
@@ -1863,6 +2246,79 @@ mod tests {
     }
 
     #[test]
+    fn restored_slot_views_preserve_global_layers_and_refuse_missing_layers() {
+        let root = tempfile::tempdir().unwrap();
+        let slots = SlotStore::new(root.path());
+        let layers = LayerStore::new(root.path());
+        let locks = Locks::new(root.path());
+        let mut apply = RecordingApply::with_login("owner");
+        let mut expected = Vec::new();
+        for (slot, n) in [(VM_SLOT, 1u8), (DEVICE_SLOT, 2), ("proof", 3)] {
+            let mut record = if slot == VM_SLOT {
+                slots.load(slot).unwrap()
+            } else if slot == DEVICE_SLOT {
+                slots.load_with(slot, apply.device.clone()).unwrap()
+            } else {
+                slots
+                    .create(slot, SlotKind::Headless, Owner::default(), &[])
+                    .unwrap()
+                    .0
+            };
+            slots.save(&record).unwrap();
+            let hash = format!("{n:02x}").repeat(32);
+            let path = layers.path(&hash);
+            fs::create_dir_all(path.join("usr")).unwrap();
+            expected.push(path);
+            let (_, generation) = slots
+                .prepare_swap(
+                    &record,
+                    "component",
+                    &hash,
+                    ComponentInfo::new(Scope::Session, Vec::new()),
+                )
+                .unwrap()
+                .unwrap();
+            slots.set_current(&mut record, generation.number).unwrap();
+        }
+        assert!(restore_slots(&slots, &layers, &locks, &mut apply).is_empty());
+        assert_eq!(
+            apply.prepared_session_layers,
+            [("proof".into(), expected.clone())]
+        );
+        let reload = apply
+            .calls
+            .iter()
+            .position(|call| call == "reload")
+            .unwrap();
+        let start = apply
+            .calls
+            .iter()
+            .position(|call| call == &format!("start {}", session_unit("proof")))
+            .unwrap();
+        assert!(reload < start);
+        let held = locks.slot("proof").unwrap();
+        let mut busy = RecordingApply::with_login("owner");
+        let issues = restore_slots(&slots, &layers, &locks, &mut busy);
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0].slot, "proof");
+        assert!(busy.prepared_session_layers.is_empty());
+        assert!(!busy.calls.iter().any(|call| call.starts_with("start ")));
+        drop(held);
+        let held = locks.vm_exclusive().unwrap();
+        let issues = restore_slots(&slots, &layers, &locks, &mut busy);
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0].slot, VM_SLOT);
+        assert!(busy.prepared_session_layers.is_empty());
+        drop(held);
+        fs::remove_dir_all(&expected[2]).unwrap();
+        let mut missing = RecordingApply::with_login("owner");
+        let issues = restore_slots(&slots, &layers, &locks, &mut missing);
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0].slot, "proof");
+        assert!(!missing.calls.iter().any(|call| call.starts_with("start ")));
+    }
+
+    #[test]
     fn daemon_sessions_and_seats_are_restored_and_required_for_exec() {
         // Phase `exec_needs_a_user_slot_with_a_running_session`.
         {
@@ -1931,7 +2387,9 @@ mod tests {
                 }
             }
             let mut apply = RecordingApply::default();
-            assert!(restore_slots(&slots, &locks, &mut apply).is_empty());
+            assert!(
+                restore_slots(&slots, &LayerStore::new(tmp.path()), &locks, &mut apply).is_empty()
+            );
             let calls = &apply.calls;
             let seat = calls.iter().position(|c| c == "allocate_seat a").unwrap();
             let session = calls

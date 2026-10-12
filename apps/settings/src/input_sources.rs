@@ -20,10 +20,25 @@ pub(crate) struct CatalogEntry {
     pub label: String,
 }
 
+#[cfg(test)]
 pub(crate) fn installed_catalog() -> Vec<CatalogEntry> {
-    let mut entries = installed_layouts();
+    read_installed().0
+}
+
+/// The input sources this device offers and, when its layout list could not
+/// be read, why — the sources are then a short built-in list. One read of
+/// the catalogue: it parses the XKB rules file and checks each layout's
+/// symbols, so it is never repeated for the error alone.
+pub(crate) fn read_installed() -> (Vec<CatalogEntry>, Option<String>) {
+    let (mut entries, error) = match read_installed_layouts() {
+        Ok(entries) => (entries, None),
+        Err(error) => {
+            tracing::warn!(target: "tilo::settings", %error, "keyboard layout list unreadable; offering the built-in short list");
+            (fallback_catalog(), Some(error))
+        }
+    };
     entries.extend(input_method_entries(InputMethodEngine::is_installed));
-    entries
+    (entries, error)
 }
 
 /// Input-method engines (Rime, Anthy, Hangul) the image ships, listed with
@@ -54,15 +69,9 @@ pub(crate) fn layouts_full(active: &[String]) -> bool {
         >= settings_store::hardware::MAX_KEYBOARD_INPUT_SOURCES
 }
 
-fn installed_layouts() -> Vec<CatalogEntry> {
-    read_installed_layouts().unwrap_or_else(|error| {
-        tracing::warn!(target: "tilo::settings", %error, "keyboard layout list unreadable; offering the built-in short list");
-        fallback_catalog()
-    })
-}
-
 /// Why the device's keyboard layout list could not be read, when it could
 /// not; the layouts offered are then a short built-in list.
+#[cfg(test)]
 pub(crate) fn layout_catalog_error() -> Option<String> {
     read_installed_layouts().err()
 }
@@ -74,7 +83,23 @@ fn read_installed_layouts() -> Result<Vec<CatalogEntry>, String> {
         Path::new("/usr/share/X11/xkb/rules/base.xml"),
     ] {
         match catalog_from_path(path) {
-            Ok(entries) if !entries.is_empty() => return Ok(entries),
+            Ok(entries) if !entries.is_empty() => {
+                let installed = entries
+                    .into_iter()
+                    .filter_map(|entry| {
+                        let source = KeyboardInputSource::parse(&entry.id)?;
+                        match tilo_keyboard_map::is_installed(&source.layout) {
+                            Ok(true) => Some(Ok(entry)),
+                            Ok(false) => None,
+                            Err(error) => Some(Err(error.to_string())),
+                        }
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                if !installed.is_empty() {
+                    return Ok(installed);
+                }
+                errors.push(format!("{}: no installed symbols", path.display()));
+            }
             Ok(_) => errors.push(format!("{}: no layouts", path.display())),
             Err(error) => errors.push(format!("{}: {error}", path.display())),
         }

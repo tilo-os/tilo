@@ -39,4 +39,30 @@ endif()
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64|ARM64")
     set(GGML_CPU_ARM_ARCH armv8-a CACHE STRING "" FORCE)
 endif()
+# Fedora's ar/ranlib defaults retain archive timestamps. Those bytes become
+# Rust static-library cache inputs even when every native object is unchanged.
+# Use deterministic archives for both languages, including the symbol index.
+foreach(language C CXX)
+    set(CMAKE_${language}_ARCHIVE_CREATE
+        "<CMAKE_AR> qcD <TARGET> <LINK_FLAGS> <OBJECTS>")
+    set(CMAKE_${language}_ARCHIVE_APPEND
+        "<CMAKE_AR> qD <TARGET> <LINK_FLAGS> <OBJECTS>")
+    set(CMAKE_${language}_ARCHIVE_FINISH "<CMAKE_RANLIB> -D <TARGET>")
+endforeach()
+# This is a vendored archive subtree, not its own Git checkout. Upstream's
+# parent-HEAD probe otherwise embeds Tilo's changing commit in every ggml-base
+# compile command, invalidating the compiler cache for unchanged CPU sources.
+# Report the actual vendored source identity and leave Tilo's build provenance
+# to the enclosing package/image receipts.
+file(GLOB_RECURSE TILO_WHISPER_INPUTS CONFIGURE_DEPENDS
+    RELATIVE "${TILO_WHISPER_ROOT}" "${TILO_WHISPER_ROOT}/*")
+list(SORT TILO_WHISPER_INPUTS)
+set(TILO_WHISPER_DIGESTS "")
+foreach(input IN LISTS TILO_WHISPER_INPUTS)
+    file(SHA256 "${TILO_WHISPER_ROOT}/${input}" digest)
+    string(APPEND TILO_WHISPER_DIGESTS "${input}:${digest}\n")
+endforeach()
+string(SHA256 TILO_WHISPER_SOURCE_SHA256 "${TILO_WHISPER_DIGESTS}")
+set(GIT_EXE FALSE)
+set(GGML_BUILD_COMMIT "sha256:${TILO_WHISPER_SOURCE_SHA256}")
 add_subdirectory("${TILO_WHISPER_ROOT}" whisper)

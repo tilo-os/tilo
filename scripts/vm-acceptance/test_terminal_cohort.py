@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from acceptance.vm import VmError, first_json
+from acceptance.vm import TiloVm, VmError, first_json
 
 spec = importlib.util.spec_from_file_location('terminal_cohort', Path(__file__).with_name('terminal-cohort.py'))
 module = importlib.util.module_from_spec(spec)
@@ -21,15 +21,14 @@ class TerminalCohort(unittest.TestCase):
 
     def test_scoped_machine_catalogue_not_human_suggestions(self):
         expected = self.row(operation="inspect-session")
-        class Vm:
-            def actions(self, *args):
-                return []
+        class Vm(TiloVm):
             def control_json(self, *args):
                 self.args = args
-                return {"actions": [expected]}
-        vm = Vm()
+                return {"actions": [expected] if "--programmatic" in args else []}
+        vm = Vm("tilo-vm", "test-vm", "test-slot", Path("."))
+        self.assertEqual(vm.actions(module.APP), [])
         self.assertEqual(module.terminal_actions(vm), [expected])
-        self.assertEqual(vm.args, ("actions", "list", module.APP, "--programmatic", "--json"))
+        self.assertEqual(vm.args, ("actions", "list", module.APP, "--programmatic", "--json", "--limit", "2000"))
         self.assertIs(module.select(module.terminal_actions(vm), "inspect-session"), expected)
 
     def test_same_bound_connection_only(self):

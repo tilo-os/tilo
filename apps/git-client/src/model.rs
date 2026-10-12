@@ -13,9 +13,10 @@
 //! present. Nothing in this file performs IO.
 
 use serde::{Deserialize, Serialize};
+use ui::tilo_resource::{self, JsonSchema};
 
 /// Where a changed file sits relative to the index.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub enum ChangeArea {
     /// Difference between HEAD and the index — `git add`ed, ready to commit.
     Staged,
@@ -27,7 +28,7 @@ pub enum ChangeArea {
 
 /// The kind of change a file underwent, used for the leading status glyph
 /// and its colour.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub enum ChangeKind {
     Added,
     Modified,
@@ -64,7 +65,7 @@ impl ChangeKind {
 }
 
 /// One entry in the changes lists.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
 pub struct FileChange {
     pub path: String,
     /// For renames: the previous path. `None` otherwise.
@@ -208,7 +209,7 @@ impl FileDiff {
 /// A node in the commit graph. `lane` is the horizontal column the node's
 /// dot sits in; `parents` index into the commit list (by id) for drawing
 /// the connecting edges.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
 pub struct Commit {
     pub id: String,
     pub summary: String,
@@ -233,13 +234,13 @@ pub struct Commit {
 }
 
 /// A decorating ref drawn as a coloured pill next to a commit.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
 pub struct RefLabel {
     pub name: String,
     pub kind: RefKind,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub enum RefKind {
     Head,
     LocalBranch,
@@ -248,7 +249,7 @@ pub enum RefKind {
 }
 
 /// One local or remote branch in the branches panel.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
 pub struct Branch {
     pub name: String,
     pub is_head: bool,
@@ -262,21 +263,21 @@ pub struct Branch {
     pub tip: String,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
 pub struct Tag {
     pub name: String,
     pub target: String,
     pub message: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
 pub struct Stash {
     pub index: usize,
     pub message: String,
     pub branch: String,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
 pub struct Remote {
     pub name: String,
     pub url: String,

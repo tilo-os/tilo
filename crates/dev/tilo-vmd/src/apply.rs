@@ -99,6 +99,21 @@ pub fn user_unit(uid: u32) -> String {
     reason = "the trait documents its single error contract once"
 )]
 pub trait Apply {
+    /// Whether this actual account/session is the claimed device owner in wheel.
+    fn device_action_owner(&mut self, _session: &Session) -> bool {
+        false
+    }
+    /// Enroll the current encrypted root for the existing owner's actual session.
+    fn enroll_device_unlock(
+        &mut self,
+        _uid: u32,
+        _request: &tilo_vm_protocol::DeviceUnlockEnrol,
+    ) -> Result<tilo_vm_protocol::DeviceUnlockEnrolResult, DaemonError> {
+        Err(DaemonError::Apply {
+            step: "device unlock enrollment".into(),
+            detail: "this backend does not serve device unlock enrollment".into(),
+        })
+    }
     /// Create the slot's system user if missing; return its uid.
     fn ensure_user(&mut self, user: &str) -> Result<u32, DaemonError>;
     /// The uid of an existing account, which is left as it is.
@@ -111,6 +126,14 @@ pub trait Apply {
     fn remove_user(&mut self, user: &str) -> Result<(), DaemonError>;
     fn write_dropin(&mut self, unit: &str, file: &str, contents: &str) -> Result<(), DaemonError>;
     fn remove_dropin(&mut self, unit: &str, file: &str) -> Result<(), DaemonError>;
+    /// Prepare one readonly combined filesystem view for a stand-in slot.
+    fn session_layer_dropin(
+        &mut self,
+        slot: &str,
+        generation: u64,
+        layers: &[PathBuf],
+    ) -> Result<String, DaemonError>;
+    fn remove_session_view(&mut self, slot: &str) -> Result<(), DaemonError>;
     /// `systemctl daemon-reload`.
     fn reload(&mut self) -> Result<(), DaemonError>;
     fn start_unit(&mut self, unit: &str) -> Result<(), DaemonError>;
@@ -195,7 +218,17 @@ pub trait Apply {
     fn stop_input(&mut self, slot: &str) -> Result<(), DaemonError>;
     /// `tilo-install install --allow-self-signed --force <tapp>` as `user`;
     /// returns what it printed.
-    fn install_app(&mut self, user: &str, tapp: &std::path::Path) -> Result<String, DaemonError>;
+    fn install_app(
+        &mut self,
+        session: &Session,
+        tapp: &std::path::Path,
+    ) -> Result<String, DaemonError>;
+    /// Select an authenticated development-cohort package, preserving holds.
+    fn install_cohort_app(
+        &mut self,
+        session: &Session,
+        tapp: &std::path::Path,
+    ) -> Result<String, DaemonError>;
     /// Make the kernel in `layer` (already merged into `/usr`) the next boot,
     /// or with `None` put the image's own kernel back (see [`crate::boot`]).
     /// Returns what the next boot starts, and warnings.
@@ -256,6 +289,15 @@ pub fn check_scope(
     component: &str,
     info: &ComponentInfo,
 ) -> Result<(), DaemonError> {
+    if info.frame_cpu_trace
+        && (component != "shell"
+            || info.scope != Scope::Session
+            || !matches!(record.kind, SlotKind::Headful | SlotKind::Headless))
+    {
+        return Err(DaemonError::InvalidParams(
+            "phase CPU recording requires a stand-in slot's shell component".into(),
+        ));
+    }
     let fits = match record.kind {
         SlotKind::Vm => info.scope == Scope::Vm,
         SlotKind::Headful | SlotKind::Headless | SlotKind::Device => info.scope != Scope::Vm,
@@ -465,9 +507,19 @@ pub fn activate(
         record.seat = Some(seat);
     }
 
-    let dropin = layers_dropin(&record.name, generation.number, layers);
+    let dropin = apply.session_layer_dropin(&record.name, generation.number, layers)?;
     for unit in layered_units(&session, uid) {
-        apply.write_dropin(&unit, LAYERS_DROPIN, &dropin)?;
+        let text = if unit == session.unit
+            && generation
+                .components
+                .get("shell")
+                .is_some_and(|entry| entry.info.frame_cpu_trace)
+        {
+            format!("{dropin}\n[Service]\nEnvironment=TILO_VM_FRAME_CPU_TRACE=1\n")
+        } else {
+            dropin.clone()
+        };
+        apply.write_dropin(&unit, LAYERS_DROPIN, &text)?;
         actions.push(Action::WriteDropIn { unit });
     }
     // The device's own session picks its seat itself.
@@ -628,6 +680,7 @@ pub fn deactivate(apply: &mut dyn Apply, record: &SlotRecord) -> Result<Vec<Acti
     let uid = apply.ensure_user(&user)?;
     let user_manager = user_unit(uid);
     apply.stop_unit(&user_manager)?;
+    apply.remove_session_view(&record.name)?;
     actions.push(Action::StopUnit {
         unit: user_manager.clone(),
     });
@@ -659,11 +712,17 @@ pub struct RecordingApply {
     users: BTreeMap<String, u32>,
     units: BTreeMap<String, bool>,
     pub sysext: Vec<PathBuf>,
+    pub prepared_session_layers: Vec<(String, Vec<PathBuf>)>,
     /// The kernel layer the next boot runs; `None` for the image's.
     pub next_kernel: Option<PathBuf>,
     /// Answers for the next `control` calls, in order; an echo of the
     /// arguments once they run out.
     pub control_replies: std::collections::VecDeque<ControlResult>,
+    /// Scripted readiness observations, consumed once per restarted session.
+    pub readiness_replies: std::collections::VecDeque<Result<(), String>>,
+
+    /// Exact normal installer output for production cohort selection tests.
+    pub cohort_replies: std::collections::VecDeque<String>,
     /// The machine's own session, when it has one.
     pub device: Option<DeviceSession>,
     /// Every call is copied here too, for a test that hands this to a daemon.
@@ -714,6 +773,24 @@ impl RecordingApply {
 }
 
 impl Apply for RecordingApply {
+    fn wait_session_ready(&mut self, session: &Session) -> Result<(), String> {
+        self.call(format!("wait_session_ready {}", session.slot));
+        self.readiness_replies.pop_front().unwrap_or(Ok(()))
+    }
+
+    fn session_layer_dropin(
+        &mut self,
+        slot: &str,
+        generation: u64,
+        layers: &[PathBuf],
+    ) -> Result<String, DaemonError> {
+        self.prepared_session_layers
+            .push((slot.to_owned(), layers.to_vec()));
+        Ok(layers_dropin(slot, generation, layers))
+    }
+    fn remove_session_view(&mut self, _slot: &str) -> Result<(), DaemonError> {
+        Ok(())
+    }
     fn ensure_user(&mut self, user: &str) -> Result<u32, DaemonError> {
         self.call(format!("ensure_user {user}"));
         let next = u32::try_from(self.users.len())
@@ -882,13 +959,34 @@ impl Apply for RecordingApply {
         self.call(format!("stop_input {slot}"));
         Ok(())
     }
-    fn install_app(&mut self, user: &str, tapp: &std::path::Path) -> Result<String, DaemonError> {
-        self.call(format!("install_app {user}"));
+    fn install_app(
+        &mut self,
+        session: &Session,
+        tapp: &std::path::Path,
+    ) -> Result<String, DaemonError> {
+        self.call(format!("install_app {}", session.user));
         let name = tapp
             .file_stem()
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_default();
         Ok(format!("installed: so.tilo.{name} 0.1.0\n"))
+    }
+    fn install_cohort_app(
+        &mut self,
+        session: &Session,
+        tapp: &std::path::Path,
+    ) -> Result<String, DaemonError> {
+        self.call(format!(
+            "install_cohort_app {} {}",
+            session.user,
+            tapp.display()
+        ));
+        self.cohort_replies
+            .pop_front()
+            .ok_or_else(|| DaemonError::Apply {
+                step: "select cohort app".into(),
+                detail: "no recorded installer receipt".into(),
+            })
     }
     fn boot_kernel(
         &mut self,
@@ -989,6 +1087,49 @@ mod tests {
             );
         }
         g
+    }
+
+    #[test]
+    fn frame_cpu_trace_is_generation_scoped_and_stand_in_only() {
+        let mut apply = RecordingApply::default();
+        let mut slot = record("cpu", SlotKind::Headless);
+        let plain = generation(1, &[("shell", "h1", Scope::Session, &[])]);
+        let mut traced = plain.clone();
+        traced.number = 2;
+        traced
+            .components
+            .get_mut("shell")
+            .unwrap()
+            .info
+            .frame_cpu_trace = true;
+        let info = &traced.components["shell"].info;
+        check_scope(&slot, "shell", info).unwrap();
+        for kind in [SlotKind::Vm, SlotKind::Device] {
+            assert!(check_scope(&record("other", kind), "shell", info).is_err());
+        }
+        assert!(check_scope(&slot, "music", info).is_err());
+        let layers = [PathBuf::from("/var/lib/tilo-vm/layers/h1")];
+        let key = (session_unit("cpu"), LAYERS_DROPIN.into());
+        for (g, enabled) in [(&traced, true), (&plain, false), (&traced, true)] {
+            activate(
+                &mut apply,
+                &mut slot,
+                g,
+                &layers,
+                Policy::SessionRestart,
+                &Restarts::default(),
+                SessionChange::Keep,
+            )
+            .unwrap();
+            assert_eq!(
+                apply.dropins[&key].contains("Environment=TILO_VM_FRAME_CPU_TRACE=1"),
+                enabled
+            );
+            assert!(
+                !apply.dropins[&(user_unit(60_001), LAYERS_DROPIN.into())]
+                    .contains("TILO_VM_FRAME_CPU_TRACE")
+            );
+        }
     }
 
     #[test]

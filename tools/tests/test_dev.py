@@ -2,6 +2,7 @@
 import json
 from pathlib import Path
 import sys
+import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -110,6 +111,33 @@ class DevCheckTests(unittest.TestCase):
             selection = dev.plan("installer", steps=[name for name, _ in dev.SUITES["installer"]])
             self.assertEqual(selection["scope"], "contract-tests")
             self.assertEqual(selection["omitted_steps"], [])
+
+
+class TaskWorktreeTests(unittest.TestCase):
+    def test_real_worktrees_preserve_edits_and_share_git_but_not_targets(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "repo"
+            root.mkdir()
+            def git(*args):
+                return subprocess.check_output(["git", "-C", str(root), *args], text=True).strip()
+            git("init", "-q", "-b", "main")
+            (root / "source.txt").write_text("committed\n")
+            git("add", "source.txt")
+            git("-c", "commit.gpgsign=false", "-c", "user.name=fixture", "-c", "user.email=fixture@example.invalid",
+                "commit", "-qm", "fixture")
+            (root / "source.txt").write_text("active edits\n")
+            first = dev.task_worktree("first", "HEAD", root)
+            second = dev.task_worktree("second", "HEAD", Path(first["path"]))
+            self.assertEqual((root / "source.txt").read_text(), "active edits\n")
+            self.assertEqual((Path(first["path"]) / "source.txt").read_text(), "committed\n")
+            self.assertEqual(first["shared_git_dir"], second["shared_git_dir"])
+            self.assertNotEqual(first["target_dir"], second["target_dir"])
+            self.assertEqual(first["commit"], second["commit"])
+            with self.assertRaises(FileExistsError):
+                dev.task_worktree("first", "HEAD", root)
+            with self.assertRaises(ValueError):
+                dev.task_worktree("../outside", "HEAD", root)
+            self.assertEqual((root / "source.txt").read_text(), "active edits\n")
 
 
 if __name__ == "__main__":

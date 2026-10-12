@@ -12,6 +12,7 @@
 //! [`crate::interfaces`]).
 
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 use thiserror::Error;
 
@@ -56,11 +57,29 @@ impl SystemStore {
 }
 
 /// The stores one session reads.
-#[derive(Clone, Debug, PartialEq, Eq)]
+///
+/// The system store ships inside the immutable image, so its rows are read
+/// and checked once per `Catalog` and kept; only the user's registry is
+/// re-read on every lookup. A long-lived holder (a daemon) therefore pays
+/// for the system store once, and a per-call `Catalog` once per call.
+#[derive(Clone, Debug)]
 pub struct Catalog {
     user: Layout,
     system: Option<SystemStore>,
+    /// The system store's rows, once read successfully. A failed read is
+    /// not kept: the next lookup reports it again.
+    system_rows: OnceLock<Vec<InstalledPackage>>,
 }
+
+impl PartialEq for Catalog {
+    /// Two catalogues are equal when they read the same stores, whatever
+    /// either has cached.
+    fn eq(&self, other: &Self) -> bool {
+        self.user == other.user && self.system == other.system
+    }
+}
+
+impl Eq for Catalog {}
 
 impl Catalog {
     /// Explicit stores, for daemons that resolve locations once and tests.
@@ -68,6 +87,7 @@ impl Catalog {
         Self {
             user: Layout::new(user_root),
             system,
+            system_rows: OnceLock::new(),
         }
     }
 
@@ -167,10 +187,14 @@ impl Catalog {
     }
 
     fn image_packages(&self) -> Result<Vec<InstalledPackage>, CatalogError> {
-        match &self.system {
-            Some(system) => system_packages(system),
-            None => Ok(Vec::new()),
+        let Some(system) = &self.system else {
+            return Ok(Vec::new());
+        };
+        if let Some(rows) = self.system_rows.get() {
+            return Ok(rows.clone());
         }
+        let rows = system_packages(system)?;
+        Ok(self.system_rows.get_or_init(|| rows).clone())
     }
 
     /// The package that runs for `app_id`.
@@ -464,6 +488,41 @@ mod tests {
                 Err(CatalogError::Escapes { .. })
             ));
         }
+    }
+
+    #[test]
+    fn a_long_lived_catalog_reads_the_system_registry_once() {
+        let system = store_with(&["so.tilo.notes", "so.tilo.calculator"]);
+        let user = tempfile::tempdir().unwrap();
+        let long_lived = catalog(system.path(), user.path());
+        let ids = |rows: Vec<InstalledPackage>| -> Vec<String> {
+            rows.into_iter().map(|row| row.id).collect()
+        };
+        assert_eq!(
+            ids(long_lived.list().unwrap()),
+            ["so.tilo.notes", "so.tilo.calculator"]
+        );
+
+        // Were the system registry read again, this would now fail to parse.
+        std::fs::write(system.path().join("registry.toml"), "[[entry]]\nid = 3\n").unwrap();
+        // The user's registry is still read on every lookup.
+        let mine = store_with(&["so.tilo.mine"]);
+        std::fs::copy(
+            mine.path().join("registry.toml"),
+            user.path().join("registry.toml"),
+        )
+        .unwrap();
+        assert_eq!(
+            ids(long_lived.list().unwrap()),
+            ["so.tilo.notes", "so.tilo.calculator", "so.tilo.mine"]
+        );
+        assert!(long_lived.find("so.tilo.calculator").unwrap().is_some());
+
+        // A fresh catalogue reads the store as it now is.
+        assert!(matches!(
+            catalog(system.path(), user.path()).list(),
+            Err(CatalogError::Registry(RegistryError::Parse { .. }))
+        ));
     }
 
     /// A store whose rows carry versions, and `held` where asked.

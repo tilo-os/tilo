@@ -483,7 +483,7 @@ mod tests {
             editor.act(Action::New);
             assert!(editor.profiles.is_empty());
             assert!(editor.editing.is_none());
-            assert!(book.with(|saved| *saved == crate::autofill::SavedProfiles::default()));
+            assert!(book.with(|saved| *saved == crate::autofill::AddressBook::default()));
         }
     }
 }

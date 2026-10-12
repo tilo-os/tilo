@@ -27,10 +27,38 @@ valid_sha512_crypt() {
   return 1
 }
 
+# greetd must never turn an unfulfilled first-boot handoff into USER_UNKNOWN
+# retries. This check also covers a lost credential seed or a skipped oneshot.
+check_firstboot_session_user() {
+  local config="$1" line initial=0 seen=0 user=""
+  [ -f "$config" ] && [ ! -L "$config" ] || return 1
+  while IFS= read -r line || [ -n "$line" ]; do
+    if [[ "$line" =~ ^[[:space:]]*\[initial_session\][[:space:]]*$ ]]; then
+      initial=1
+      seen=1
+    elif [[ "$line" =~ ^[[:space:]]*\[ ]]; then
+      initial=0
+    elif [ "$initial" -eq 1 ] \
+      && [[ "$line" =~ ^[[:space:]]*user[[:space:]]*=[[:space:]]*\"([a-z_][a-z0-9_-]{0,31})\"[[:space:]]*$ ]]; then
+      user="${BASH_REMATCH[1]}"
+    fi
+  done < "$config"
+  [ "$seen" -eq 1 ] || return 0
+  if [ -z "$user" ] || ! getent passwd "$user" >/dev/null; then
+    echo "tilo-firstboot-user: initial graphical session account is unavailable; refusing to start greetd" >&2
+    return 1
+  fi
+}
+
 # Unit tests source this file to exercise the exact production parser without
 # running account-management side effects.
 if [[ "${BASH_SOURCE[0]}" != "$0" ]]; then
   return 0
+fi
+
+if [ "${1:-}" = --check-session ]; then
+  check_firstboot_session_user /etc/greetd/config.toml
+  exit $?
 fi
 
 CONF=/etc/tilo/install-user.conf

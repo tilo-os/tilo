@@ -28,6 +28,12 @@ use std::time::{Duration, Instant};
 
 type Job = Box<dyn FnOnce() + Send>;
 
+#[derive(Clone, PartialEq, Eq, Hash)]
+enum WriteKey {
+    Snapshot(PathBuf),
+    Ordered(u64),
+}
+
 struct Queued {
     /// The oldest submission this entry stands for. A replacement keeps it,
     /// so a barrier taken before the first submission waits for the newest.
@@ -37,7 +43,7 @@ struct Queued {
 
 #[derive(Default)]
 struct Queue {
-    queued: HashMap<PathBuf, Queued>,
+    queued: HashMap<WriteKey, Queued>,
     /// Ticket of the write in progress.
     running: Option<u64>,
     submitted: u64,
@@ -115,7 +121,7 @@ impl DurableWriter {
         queue.submitted = queue.submitted.saturating_add(1);
         let ticket = queue.submitted;
         let job: Job = Box::new(job);
-        match queue.queued.entry(key) {
+        match queue.queued.entry(WriteKey::Snapshot(key)) {
             std::collections::hash_map::Entry::Occupied(mut queued) => queued.get_mut().job = job,
             std::collections::hash_map::Entry::Vacant(slot) => {
                 slot.insert(Queued { ticket, job });
@@ -123,6 +129,47 @@ impl DurableWriter {
         }
         drop(queue);
         self.shared.work.notify_one();
+    }
+
+    /// Queue a command whose completion must not be replaced by a later
+    /// snapshot. Admission is bounded and never falls back to blocking the
+    /// caller when the worker is unavailable.
+    ///
+    /// # Errors
+    /// Returns an error if the worker is unavailable or 32 commands already
+    /// await storage. Existing coalesced snapshot writes keep their contract.
+    pub fn submit_ordered(&self, job: impl FnOnce() + Send + 'static) -> std::io::Result<()> {
+        if self.thread.is_none() {
+            return Err(std::io::Error::other("the state writer is unavailable"));
+        }
+        let mut queue = self.shared.queue.lock();
+        if queue
+            .queued
+            .keys()
+            .filter(|key| matches!(key, WriteKey::Ordered(_)))
+            .count()
+            >= 32
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::WouldBlock,
+                "the state writer command queue is full",
+            ));
+        }
+        let ticket = queue
+            .submitted
+            .checked_add(1)
+            .ok_or_else(|| std::io::Error::other("state writer tickets exhausted"))?;
+        queue.submitted = ticket;
+        queue.queued.insert(
+            WriteKey::Ordered(ticket),
+            Queued {
+                ticket,
+                job: Box::new(job),
+            },
+        );
+        drop(queue);
+        self.shared.work.notify_one();
+        Ok(())
     }
 
     /// Wait until every write submitted before this call is on disk.
@@ -216,6 +263,32 @@ mod tests {
         });
         running.recv().expect("blocker started");
         (writer, release)
+    }
+
+    #[test]
+    fn durable_writer_ordered_commands_are_bounded_and_never_coalesced() {
+        let (writer, release) = blocked_writer();
+        let written = Arc::new(Mutex::new(Vec::new()));
+        for index in 0..32 {
+            let written = Arc::clone(&written);
+            writer
+                .submit_ordered(move || written.lock().push(index))
+                .unwrap();
+        }
+        let overflow = writer.submit_ordered(|| panic!("refused job must not run"));
+        release.send(()).unwrap();
+        writer.flush();
+        assert_eq!(overflow.unwrap_err().kind(), std::io::ErrorKind::WouldBlock);
+        assert_eq!(*written.lock(), (0..32).collect::<Vec<_>>());
+        let unavailable = DurableWriter {
+            shared: Arc::clone(&writer.shared),
+            thread: None,
+        };
+        assert!(
+            unavailable
+                .submit_ordered(|| panic!("must not block caller"))
+                .is_err()
+        );
     }
 
     #[test]

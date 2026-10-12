@@ -20,6 +20,7 @@ use std::path::{Path, PathBuf};
 
 const PT_LOAD: u32 = 1;
 const PT_DYNAMIC: u32 = 2;
+const PT_INTERP: u32 = 3;
 const DT_NULL: u64 = 0;
 const DT_NEEDED: u64 = 1;
 const DT_STRTAB: u64 = 5;
@@ -98,13 +99,40 @@ pub fn read_dynamic_section(path: &Path) -> std::io::Result<Option<DynamicSectio
 /// A segment as `(file offset, virtual address, size in the file)`.
 type Segment = (u64, u64, u64);
 
+struct ProgramHeaders {
+    loads: Vec<Segment>,
+    dynamic: Option<Segment>,
+    interpreter: Option<Segment>,
+}
+
+/// Read an ELF interpreter without executing the object. Absence is distinct
+/// from a malformed/unsupported ELF, which is an error.
+///
+/// # Errors
+///
+/// Returns I/O errors for inaccessible or truncated objects, and rejects
+/// unsupported ELF headers or an invalid interpreter string.
+pub fn read_interpreter(path: &Path) -> std::io::Result<Option<String>> {
+    let file = File::open(path)?;
+    let malformed = || std::io::Error::other("invalid ELF interpreter");
+    let headers = program_headers(&file)?.ok_or_else(malformed)?;
+    let Some((offset, _, size)) = headers.interpreter else {
+        return Ok(None);
+    };
+    if !(2..=MAX_NAME_BYTES).contains(&size) {
+        return Err(malformed());
+    }
+    let mut bytes = vec![0; usize::try_from(size).map_err(|_| malformed())?];
+    file.read_exact_at(&mut bytes, offset)?;
+    if bytes.pop() != Some(0) || bytes.contains(&0) {
+        return Err(malformed());
+    }
+    String::from_utf8(bytes).map(Some).map_err(|_| malformed())
+}
+
 /// The `PT_LOAD` segments and the first `PT_DYNAMIC` one, or `None` for a
 /// file this reader does not understand.
-#[allow(
-    clippy::type_complexity,
-    reason = "the loads and the dynamic segment come out of one table walk"
-)]
-fn program_headers(file: &File) -> std::io::Result<Option<(Vec<Segment>, Option<Segment>)>> {
+fn program_headers(file: &File) -> std::io::Result<Option<ProgramHeaders>> {
     let mut header = [0u8; ELF64_HEADER_LEN];
     file.read_exact_at(&mut header, 0)?;
     // ELFCLASS64, ELFDATA2LSB.
@@ -129,6 +157,7 @@ fn program_headers(file: &File) -> std::io::Result<Option<(Vec<Segment>, Option<
 
     let mut loads = Vec::new();
     let mut dynamic = None;
+    let mut interpreter = None;
     for entry in table.chunks_exact(phentsize) {
         let (Some(kind), Some(offset), Some(vaddr), Some(filesz)) = (
             le_u32(entry, 0),
@@ -141,14 +170,20 @@ fn program_headers(file: &File) -> std::io::Result<Option<(Vec<Segment>, Option<
         match kind {
             PT_LOAD => loads.push((offset, vaddr, filesz)),
             PT_DYNAMIC if dynamic.is_none() => dynamic = Some((offset, vaddr, filesz)),
+            PT_INTERP if interpreter.is_none() => interpreter = Some((offset, vaddr, filesz)),
+            PT_INTERP => return Ok(None),
             _ => {}
         }
     }
-    Ok(Some((loads, dynamic)))
+    Ok(Some(ProgramHeaders {
+        loads,
+        dynamic,
+        interpreter,
+    }))
 }
 
 fn parse_dynamic(file: &File) -> std::io::Result<Option<DynamicSection>> {
-    let Some((loads, dynamic)) = program_headers(file)? else {
+    let Some(ProgramHeaders { loads, dynamic, .. }) = program_headers(file)? else {
         return Ok(None);
     };
     let Some((dyn_offset, _, dyn_size)) = dynamic else {
@@ -744,6 +779,15 @@ mod tests {
     #[test]
     fn reads_the_needed_libraries_of_a_real_dynamically_linked_binary() {
         let exe = std::env::current_exe().unwrap();
+        let interpreter = read_interpreter(&exe).unwrap().unwrap();
+        assert!(crate::sandbox::CANONICAL_LOADER_PATHS.contains(&interpreter.as_str()));
+        let loader = read_dynamic_section(Path::new(&interpreter))
+            .unwrap()
+            .unwrap();
+        assert!(
+            loader.needed.is_empty(),
+            "the native loader is a valid dependency leaf"
+        );
         let dynamic = read_dynamic_section(&exe).unwrap().unwrap();
         assert!(
             dynamic.needed.iter().any(|n| n.starts_with("libc.so")),
@@ -757,6 +801,20 @@ mod tests {
             SYSTEM_LIBRARY_DIRS.iter().map(PathBuf::from).collect(),
         );
         view.check(&exe).unwrap();
+    }
+
+    #[test]
+    fn interpreter_rejects_truncated_objects_and_distinguishes_absence() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("obj");
+        write(&path, &elf_fixture(&[], None));
+        assert_eq!(read_interpreter(&path).unwrap(), None);
+        assert_eq!(
+            read_dynamic_section(&path).unwrap(),
+            Some(DynamicSection::default())
+        );
+        write(&path, b"\x7fELF\x02\x01");
+        assert!(read_interpreter(&path).is_err());
     }
 
     #[test]

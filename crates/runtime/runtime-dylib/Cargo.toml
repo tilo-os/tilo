@@ -15,8 +15,19 @@ name = "runtime_dylib"
 path = "src/lib.rs"
 crate-type = ["dylib"]
 
+# What belongs here: the SDK an app links (the toolkit, `tilo-app`, the CLI
+# kit), crates several shipped apps share, and, until each moves to an engine
+# library of its own, engines too heavy for the one app that uses them to
+# carry in its tapp (Canvas's painting engines). What never does: OS daemons
+# and other OS-internal crates (the FUSE filesystem, the sandbox launcher, the
+# app host, the install CLI), light crates only one app uses, and engines that
+# already have their own library under crates/runtime/engines/ (Typst,
+# Spotify playback). Every app process maps this library, so a crate here
+# costs every app its relocations and dirty pages; an app that needs one of
+# those links it itself, or loads its engine library, and gets only the code
+# it calls. tools/policy/check_runtime_dylib_surface.py fails when a denied
+# crate re-enters the graph, through any dependency or feature.
 [dependencies]
-runtime = { path = "../runtime" }
 tilo-cli-kit = { path = "../cli" }
 # The UI toolkit and its rendering graph are included in the shared dylib.
 # `portal` covers apps that open host files through the XDG portal.
@@ -28,28 +39,13 @@ ui = { package = "tilo-ui", path = "../../sdk/ui-core", features = ["portal", "w
 # Apps bind resources, actions and native presentation through this public SDK.
 # Keep its dispatcher and runner in the runtime alongside the internal toolkit.
 tilo-app = { path = "../../sdk/tilo-app" }
-# Heavy document engines belong in the versioned runtime rather than each tapp.
-typst = "0.15"
-typst-render = "0.15"
-typst-pdf = "0.15"
-typst-layout = "0.15"
-typst-assets = { version = "0.15", features = ["fonts"] }
-tiny-skia = "0.12"
-comemo = "0.5"
-# Versioned live-service engines shared by shipped apps and loaded only for
+# Versioned live-service engine shared by Music and Tube and loaded only for
 # their feature-gated paths.
-tilo-callstream = { path = "../../collab/tilo-callstream" }
 rustypipe.workspace = true
-# Music keeps its library and controls in the tapp; native playback belongs
-# beside the other versioned media engines in the shared runtime.
-tilo-spotify = { path = "../../platform/tilo-spotify", features = ["native"] }
-iroh.workspace = true
-# Desktop-owned service implementations are shared runtime code, not app
-# payload. Settings composes all of these control surfaces and would otherwise
-# statically repeat several megabytes of the same implementations in its tapp.
+# Desktop policy and control-surface vocabulary shared by the toolkit and the
+# apps that configure the desktop.
 settings-store = { path = "../../system/settings-store" }
 desktop-policy = { path = "../../system/desktop-policy" }
-launcher = { path = "../../packaging/launcher" }
 tilo-desktop-entry = { path = "../../system/desktop-entry" }
 collab-types = { path = "../../collab/collab-types" }
 tilo-actions = { path = "../../collab/actions" }
@@ -57,12 +53,8 @@ os-actions = { path = "../../system/os-actions" }
 runtime-identity = { path = "../runtime-identity" }
 tilo-user-identity = { path = "../../collab/tilo-user-identity" }
 runtime-fs = { path = "../runtime-fs" }
-# The collaborative filesystem and content store linked by Files and
-# Scratchpad, stored once here rather than in both tapps.
-tilo-fs = { path = "../../system/fs" }
 tilo-relay-protocol = { path = "../../hosting/tilo-relay-protocol" }
 tilo-bluez = { path = "../../system/tilo-bluez" }
-runtime-portal-xdg = { path = "../runtime-portal-xdg" }
 accounts = { path = "../../system/accounts" }
 # Cloud-account custody (OAuth, Nextcloud Login Flow, iCloud sessions) and the
 # IMAP client are shared by Settings and Mail; linked statically they were
@@ -78,18 +70,27 @@ tilo-wet-media = { path = "../../media/wet-media" }
 tilo-subject = { path = "../../platform/tilo-subject" }
 media = { package = "tilo-media", path = "../../platform/tilo-media" }
 tilo-files = { path = "../../platform/tilo-files" }
+# The person's contact directory: Contacts, Mail and Messages each read it.
+tilo-contact-directory = { path = "../../platform/tilo-contact-directory" }
+# The rich-text document engine and its editor: the office apps, Notes, Chat,
+# Calendar, Ebook and PDF Viewer each carried a copy of about 300 KB.
+tilo-document = { path = "../../doc/tilo-document" }
+tilo-rich-text = { path = "../../sdk/tilo-rich-text" }
 # Versioned format/network engines used by system apps. Keeping these in the
 # runtime bundle lets tapps contain policy and UI while the replaceable engine
 # implementations are stored once per runtime generation.
 chrono-tz = "0.10.4"
 vte = "0.15.0"
 tilo-pdf = { path = "../../platform/tilo-pdf" }
+# Document codecs (Notes, Files, Mail, the office apps, ...) and the WebDAV
+# client (Calendar, Settings). Apps choose the codec features; the union is
+# built here once.
+tilo-doc-codecs = { path = "../../doc/tilo-doc-codecs", default-features = false }
+tilo-dav = { path = "../../system/tilo-dav", default-features = false }
 tilo-thumbnail = { path = "../../media/thumbnail", features = ["pdf"] }
 roxmltree.workspace = true
 xattr = "1.6.1"
 mime_guess.workspace = true
-app-cli = { path = "../../packaging/app-cli" }
-app-host = { path = "../../packaging/app-host" }
 registry-types = { path = "../../packaging/registry-types" }
 workspace-hack = { version = "0.1" }
 

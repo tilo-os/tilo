@@ -2,14 +2,13 @@
 //! record storage, permissions, per-author undo and History mode, driven the
 //! way a person drives the editor — by typing into it.
 
-use tilo_document::RichText;
 use ui::framework::testing::TestApp;
 use ui::permissions::Role;
 use word_processor::framework::{Document, WordProcessorApp};
 
 fn paragraphs(app: &TestApp<WordProcessorApp>) -> Vec<String> {
     app.read_document(|doc| {
-        let c = tilo_doc::model::open(doc, &automerge::ROOT).unwrap();
+        let c = word_processor::model::open(doc).unwrap();
         tilo_doc::model::materialize(doc, &c)
             .blocks
             .into_iter()
@@ -32,13 +31,16 @@ fn a_keystroke_is_an_action_and_typing_undoes_a_word_at_a_time() {
     assert!(typed > 1, "every keystroke is an attributed change");
     let last = app.versions().pop().unwrap();
     let context = last.context.as_ref().unwrap();
-    assert_eq!(context.action_label, "Splice Text");
+    assert!(
+        matches!(&context.what, Some(ui::tilo_actions::Did::Edit(edit)) if edit.field == "body"),
+        "{context:?}"
+    );
     assert_eq!(
         context
             .resource
             .as_ref()
             .map(|resource| resource.kind.as_str()),
-        Some("tilo.rich-text")
+        Some("word-processor.document")
     );
 
     // A word is one step: undo takes back "world", redo restores it, and a
@@ -93,7 +95,7 @@ fn history_draws_a_past_version_with_the_editors_own_layout() {
     assert!(shown.contains("First draft"), "{shown}");
     assert!(!shown.contains("Added later"), "{shown}");
     assert!(version.size().width() > 0.0, "the page was laid out");
-    assert_eq!(version.state().body().len(), 1);
+    assert_eq!(version.state().text().unwrap().body().len(), 1);
 }
 
 #[test]
@@ -103,8 +105,8 @@ fn the_document_survives_a_relaunch() {
     let app = app.reopen().unwrap();
     assert_eq!(paragraphs(&app), ["kept"]);
     assert_eq!(
-        <RichText as ui::tilo_resource::Resource>::KIND,
-        "tilo.rich-text"
+        <Document as ui::tilo_resource::Resource>::KIND,
+        "word-processor.document"
     );
 }
 
@@ -115,7 +117,7 @@ fn one_apply_creates_a_filled_table_and_one_undo_takes_it_back() {
     app.harness().type_text("These are the people");
     app.flush().unwrap();
     let after = app.read_document(|doc| {
-        let c = tilo_doc::model::open(doc, &automerge::ROOT).unwrap();
+        let c = word_processor::model::open(doc).unwrap();
         tilo_doc::model::blocks_in_order(doc, &c).remove(0)
     });
     let cells: Vec<Vec<String>> = [["Name", "Role"], ["Priya Natarajan", "Product lead"]]
@@ -124,8 +126,10 @@ fn one_apply_creates_a_filled_table_and_one_undo_takes_it_back() {
         .collect();
     let versions = app.versions().len();
     app.invoke_confirmed(
-        ui::tilo_resource::Invoke::<Document>::apply(&insert_filled_table_action(&after, cells))
-            .unwrap(),
+        ui::tilo_resource::Invoke::<Document>::edit(&word_processor::model::edit(
+            &insert_filled_table_action(&after, cells),
+        ))
+        .unwrap(),
     )
     .unwrap();
     assert_eq!(app.versions().len(), versions + 1, "one change");
@@ -140,7 +144,7 @@ fn one_apply_creates_a_filled_table_and_one_undo_takes_it_back() {
         ]
     );
     let kinds = app.read_document(|doc| {
-        let c = tilo_doc::model::open(doc, &automerge::ROOT).unwrap();
+        let c = word_processor::model::open(doc).unwrap();
         tilo_doc::model::materialize(doc, &c)
             .blocks
             .into_iter()
@@ -174,7 +178,7 @@ fn long_document(paragraphs: usize) -> TestApp<WordProcessorApp> {
         })
         .collect();
     let first = app.read_document(|doc| {
-        let c = tilo_doc::model::open(doc, &automerge::ROOT).unwrap();
+        let c = word_processor::model::open(doc).unwrap();
         tilo_doc::model::blocks_in_order(doc, &c).remove(0)
     });
     let paste = RichTextAction::PasteFragment {
@@ -186,8 +190,10 @@ fn long_document(paragraphs: usize) -> TestApp<WordProcessorApp> {
         blocks,
         adopt_first_style: false,
     };
-    app.invoke_confirmed(ui::tilo_resource::Invoke::<Document>::apply(&paste).unwrap())
-        .unwrap();
+    app.invoke_confirmed(
+        ui::tilo_resource::Invoke::<Document>::edit(&word_processor::model::edit(&paste)).unwrap(),
+    )
+    .unwrap();
     app
 }
 
@@ -243,7 +249,7 @@ fn a_keystroke_in_a_long_document_costs_what_it_costs_in_a_short_one() {
 /// The document as stored, formatting included.
 fn snapshot(app: &TestApp<WordProcessorApp>) -> tilo_doc::DocSnapshot {
     app.read_document(|doc| {
-        let c = tilo_doc::model::open(doc, &automerge::ROOT).unwrap();
+        let c = word_processor::model::open(doc).unwrap();
         tilo_doc::model::materialize(doc, &c)
     })
 }
@@ -256,7 +262,7 @@ fn undoing_a_mark_over_several_paragraphs_clears_it_from_every_one() {
     let load = RichTextAction::ReplaceBody {
         markdown: "Background\n\nMethod\n\nResults\n".into(),
     };
-    app.invoke_confirmed(Invoke::<Document>::apply(&load).unwrap())
+    app.invoke_confirmed(Invoke::<Document>::edit(&word_processor::model::edit(&load)).unwrap())
         .unwrap();
     let before = snapshot(&app);
     let spans = before
@@ -276,7 +282,10 @@ fn undoing_a_mark_over_several_paragraphs_clears_it_from_every_one() {
         also_clear: Vec::new(),
     };
     // Through `group`, the door an agent uses for a multi-part edit.
-    app.invoke_confirmed(Invoke::group([Invoke::<Document>::apply(&bold).unwrap()]))
+    app.invoke_confirmed(Invoke::group([Invoke::<Document>::edit(
+        &word_processor::model::edit(&bold),
+    )
+    .unwrap()]))
         .unwrap();
     let marked = snapshot(&app);
     assert_eq!(marked.blocks.len(), 3);
@@ -547,7 +556,7 @@ fn open_with_a_path_imports_the_file_under_a_configured_collaboration_service() 
     arguments.insert("path".into(), path.to_string_lossy().into_owned().into());
     app.harness()
         .invoke_action(
-            &tilo_actions::ActionAddress::new("tilo.rich-text", "open"),
+            &tilo_actions::ActionAddress::new("word-processor.document", "open-document"),
             &arguments,
             true,
             None,
@@ -604,7 +613,13 @@ fn scenarios_stage_the_document_through_actions() {
         let document = snapshot(&app);
         match *scenario {
             "comments" | "threaded-comments" => {
-                let comment = document.comments.first().expect("a staged comment");
+                let threads = app.read_document(|doc| {
+                    <Document as ui::tilo_resource::Resource>::read(doc)
+                        .unwrap()
+                        .comment_views(doc)
+                });
+                let comment = threads.first().expect("a staged comment");
+                assert!(comment.range.is_some(), "it is about some text");
                 assert_eq!(comment.author, "Maya Chen");
                 let replies = if *scenario == "comments" { 0 } else { 2 };
                 assert_eq!(comment.replies.len(), replies, "{scenario}");
@@ -644,24 +659,61 @@ fn scenarios_stage_the_document_through_actions() {
     }
 }
 
-/// The words a person added to the dictionary are their own settings: a
-/// window opened later, on any of their devices, knows them.
+/// Explicit local words follow the shared host dictionary in every window;
+/// application settings no longer create a separate vocabulary store.
 #[test]
 fn the_persons_own_words_are_spelled_right_in_every_window() {
-    use word_processor::{PersonalDictionary, WordProcessorWidget};
-    let mut app = open();
+    use settings_store::personal_dictionary::{Service, host::Host};
+    use std::sync::Arc;
+    use ui::personal_dictionary::{Edit, Word};
+    use word_processor::WordProcessorWidget;
+    struct Restore;
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            ui::local_identity::install_source(None);
+        }
+    }
+    let _guard = tilo_test_env::lock();
+    let _restore = Restore;
+    ui::local_identity::install_source(Some(Arc::new(ui::local_identity::FixedIdentity(
+        ui::local_identity::LocalIdentity {
+            group_public_key: [1; 32],
+            display_name: String::new(),
+            avatar_color: [0; 3],
+        },
+    ))));
+    let profile = tempfile::tempdir().unwrap();
+    let service = Arc::new(Service::new(profile.path().join("dictionary")).unwrap());
+    let source = Arc::new(Host::new(
+        Arc::new(settings_store::HostDocument::new(
+            serde_json::Map::new(),
+            |_| Ok(()),
+        )),
+        service,
+        Arc::new(|| Some([1; 32])),
+    ));
+    let mut app = TestApp::<WordProcessorApp>::for_person(&"01".repeat(32)).unwrap();
+    let mut host =
+        ui::personal_dictionary::TestHost::new(source, "so.tilo.word-processor", [1; 32]).unwrap();
+    let bias_reader = ui::personal_dictionary::reader();
     let flagged =
         app.with_surface(|editor: &mut WordProcessorWidget| !editor.is_spelled_right("qwordz"));
     assert_eq!(flagged, Some(true), "an unknown word is flagged");
-    app.settings::<PersonalDictionary>()
-        .set(&PersonalDictionary {
-            dictionary_words: vec!["qwordz".into()],
-        })
-        .unwrap();
+    ui::personal_dictionary::edit(0, Edit::Add(Word::new("qwordz", None).unwrap())).unwrap();
+    host.flush().unwrap();
     let mut app = app.reopen().unwrap();
     let known =
         app.with_surface(|editor: &mut WordProcessorWidget| editor.is_spelled_right("qwordz"));
     assert_eq!(known, Some(true), "the person's own word is known");
+    assert_eq!(
+        bias_reader
+            .snapshot()
+            .unwrap()
+            .hints("en")
+            .collect::<Vec<_>>(),
+        ["qwordz"],
+        "another consumer sees the same explicit addition"
+    );
 }
 
 /// The edits bound to the caret are published on the document itself, and
@@ -674,7 +726,7 @@ fn an_edit_bound_to_the_caret_is_invoked_on_the_document() {
     arguments.insert("text".into(), " world".into());
     app.harness()
         .invoke_action(
-            &tilo_actions::ActionAddress::new("tilo.rich-text", "type-text"),
+            &tilo_actions::ActionAddress::new("word-processor.document", "type-text"),
             &arguments,
             true,
             None,
@@ -802,4 +854,103 @@ fn layout_and_spelling_language_follow_the_person() {
     let language =
         app.with_surface(|editor: &mut WordProcessorWidget| editor.spell_language().to_owned());
     assert_eq!(language.as_deref(), Some("de_DE"));
+}
+
+/// What an agent does in a document for a person is history the person
+/// reads in their language: the app's sentence for each edit and verb, and
+/// who did it for whom.
+#[test]
+fn history_entries_render_as_the_apps_sentences() {
+    use tilo_document::action::{MarkVal, RegionKind, RichTextAction, Span};
+    use ui::tilo_actions::{ActionInvoker, ActorKind};
+    let mut app = open();
+    let kind = <Document as ui::tilo_resource::Resource>::KIND;
+    let block = app.read_document(|doc| {
+        let c = word_processor::model::open(doc).unwrap();
+        tilo_doc::model::blocks_in_order(doc, &c).remove(0)
+    });
+    let agent = ActionInvoker::actor("agent:claude")
+        .with_kind(ActorKind::Agent)
+        .acting_for("ada");
+    let edit = |op: RichTextAction| serde_json::json!({ "edit": word_processor::model::edit(&op) });
+    for op in [
+        RichTextAction::SpliceText {
+            region: RegionKind::Body,
+            block: block.clone(),
+            at: 0,
+            del: 0,
+            ins: "Quarterly report".into(),
+        },
+        RichTextAction::SetMark {
+            region: RegionKind::Body,
+            spans: vec![Span {
+                block: block.clone(),
+                start: 0,
+                end: 9,
+            }],
+            name: "strong".into(),
+            value: Some(MarkVal::Bool(true)),
+            also_clear: Vec::new(),
+        },
+        RichTextAction::SetParagraphStyle {
+            region: RegionKind::Body,
+            blocks: vec![block.clone()],
+            kind: "heading".into(),
+            level: Some(1),
+            ordered: None,
+        },
+    ] {
+        app.call_by(agent.clone(), kind, "field-edit", edit(op))
+            .unwrap();
+    }
+    app.call_by(
+        agent.clone(),
+        kind,
+        "append-paragraph",
+        serde_json::json!({"text": "Revenue grew."}),
+    )
+    .unwrap();
+    app.call_by(
+        agent.clone(),
+        kind,
+        "insert-table",
+        serde_json::json!({"after": block, "rows": 2, "columns": 3}),
+    )
+    .unwrap();
+    app.call_by(
+        agent,
+        kind,
+        "add-comment",
+        serde_json::json!({"block": block, "start": 0, "end": 9, "text": "Which quarter?"}),
+    )
+    .unwrap();
+
+    let entries: Vec<_> = app
+        .history()
+        .into_iter()
+        .filter(|entry| {
+            entry
+                .invoker
+                .as_ref()
+                .is_some_and(|invoker| invoker.actor == "agent:claude")
+        })
+        .collect();
+    let sentences = app.sentences(&entries);
+    assert_eq!(
+        sentences,
+        [
+            "Edited the text",
+            "Made 9 characters bold",
+            "Made a heading of level 1",
+            "Added a paragraph",
+            "Inserted a table of 2 by 3",
+            "Commented: Which quarter?",
+        ]
+    );
+    let invoker = entries[0].invoker.as_ref().unwrap();
+    assert_eq!(
+        (invoker.kind, invoker.on_behalf_of.as_deref()),
+        (ActorKind::Agent, Some("ada")),
+        "the entry names the agent and the person it acted for"
+    );
 }

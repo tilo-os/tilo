@@ -17,12 +17,12 @@ path = "src/main.rs"
 thin = ["dep:runtime-dylib"]
 
 [dependencies]
-tilo-xdg-paths = { path = "../../crates/system/xdg-paths" }
+tilo-process = { version = "0.1.0", path = "../../crates/platform/tilo-process", features = ["native-editor"] }
+tilo-paths.workspace = true
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 # OSC 8 links open through `ui::portal::open_uri` (the OpenURI portal on Linux).
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 automerge.workspace = true
-tilo-automerge.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 uuid.workspace = true

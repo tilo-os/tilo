@@ -1,0 +1,5 @@
+A  fresh.txt
+ D gone.txt
+ M kept.txt
+R  old.txt -> new.txt
+?? untracked.txt

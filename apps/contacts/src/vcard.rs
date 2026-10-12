@@ -544,8 +544,8 @@ mod tests {
             website: "https://example.com".into(),
             birthday: Birthday::parse("1815-12-10"),
             notes: "Note: with, punctuation; and a\nnewline".into(),
-            phones: vec![Labeled::new("mobile", "+44 20 7946 0101")],
-            emails: vec![Labeled::new("work", "ada@example.com")],
+            phones: vec![Labeled::new("mobile", "+44 20 7946 0101")].into(),
+            emails: vec![Labeled::new("work", "ada@example.com")].into(),
             addresses: vec![Address {
                 id: Uuid::new_v4(),
                 label: "home".into(),
@@ -554,8 +554,9 @@ mod tests {
                 region: String::new(),
                 postal: "SW1Y 4LE".into(),
                 country: "UK".into(),
-            }],
-            groups: vec![GroupEntry::new("Work"), GroupEntry::new("Favorites")],
+            }]
+            .into(),
+            groups: vec![GroupEntry::new("Work"), GroupEntry::new("Favorites")].into(),
             favorite: true,
         }
     }
@@ -761,7 +762,7 @@ mod tests {
         // --- phase: free_text_labels_cannot_break_the_content_line ---
         {
             let mut c = sample();
-            c.phones = vec![Labeled::new("desk; ext: 12", "+1 555 0100")];
+            c.phones = vec![Labeled::new("desk; ext: 12", "+1 555 0100")].into();
             let doc = to_vcard(&c, VCardVersion::V4);
             assert!(
                 doc.contains("TEL;TYPE=\"desk; ext: 12\":+1 555 0100"),

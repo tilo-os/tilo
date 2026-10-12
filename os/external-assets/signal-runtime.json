@@ -1,0 +1,39 @@
+{
+  "runtime": "2026.10.1-signal",
+  "architecture": "x86_64",
+  "signal_version": "0.14.8",
+  "java_version": "25.0.4.1",
+  "java_zero_source": {
+    "name": "jdk25u-520406d871955300957ef01e406ac2acd0f9b75c-source.tar.gz",
+    "sha256": "83ee12f7a58904436f04fd9179aa1286c7e5a98d1113671b08b64aebf9865444",
+    "url": "https://github.com/adoptium/jdk25u/archive/520406d871955300957ef01e406ac2acd0f9b75c.tar.gz",
+    "root": "jdk25u-520406d871955300957ef01e406ac2acd0f9b75c",
+    "commit": "520406d871955300957ef01e406ac2acd0f9b75c",
+    "source_date_epoch": 1787011200
+  },
+  "assets": {
+    "signal": {
+      "name": "signal-cli-0.14.8.tar.gz",
+      "sha256": "ccd408e831eff7e41ebaaf309704840bb00d78a7869f35ad700dbae5b5a5bb65",
+      "url": "https://github.com/AsamK/signal-cli/releases/download/v0.14.8/signal-cli-0.14.8.tar.gz",
+      "root": "signal-cli-0.14.8"
+    },
+    "java": {
+      "name": "OpenJDK25U-jre_x64_linux_hotspot_25.0.4.1_1.tar.gz",
+      "sha256": "1731a34baadec5479258ea0202e4d5d865d2efeee60cb0c7d7eb056fe96ca219",
+      "url": "https://github.com/adoptium/temurin25-binaries/releases/download/jdk-25.0.4.1%2B1/OpenJDK25U-jre_x64_linux_hotspot_25.0.4.1_1.tar.gz",
+      "root": "jdk-25.0.4.1+1-jre"
+    },
+    "license": {
+      "name": "signal-cli-0.14.8-LICENSE",
+      "sha256": "8ceb4b9ee5adedde47b31e975c1d90c73ad27b6b165a1dcd80c7c545eb65b903",
+      "url": "https://raw.githubusercontent.com/AsamK/signal-cli/22b028bbb9cee8f6aa22af71c6b3e9d09028a16a/LICENSE"
+    },
+    "source": {
+      "name": "signal-cli-0.14.8-source.tar.gz",
+      "sha256": "ca012287f714968e5ee4b043887c9cbfe04d30572c9c76527c09ed327e6060c4",
+      "url": "https://github.com/AsamK/signal-cli/archive/22b028bbb9cee8f6aa22af71c6b3e9d09028a16a.tar.gz"
+    }
+  },
+  "signal_source_commit": "22b028bbb9cee8f6aa22af71c6b3e9d09028a16a"
+}
