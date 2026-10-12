@@ -167,15 +167,7 @@ pub(super) fn snapshot(
 pub(super) fn schema() -> &'static serde_json::Value {
     static SCHEMA: OnceLock<serde_json::Value> = OnceLock::new();
     SCHEMA.get_or_init(|| {
-        let mut schema = crate::semantic_read::action::result_schema().clone();
-        let Some(properties) = schema
-            .get_mut("properties")
-            .and_then(serde_json::Value::as_object_mut)
-        else {
-            return serde_json::json!(false);
-        };
-        properties.insert(
-            "content".into(),
+        ui::semantic_document_read::result_schema(
             serde_json::json!({
                 "type":"object", "additionalProperties":false,
                 "required":["id","digest","destination","report"], "properties":{
@@ -190,9 +182,8 @@ pub(super) fn schema() -> &'static serde_json::Value {
                         }}
                 }
             }),
-        );
-        properties.insert("nextCursor".into(), serde_json::json!({"type":"null"}));
-        schema
+            false,
+        )
     })
 }
 
