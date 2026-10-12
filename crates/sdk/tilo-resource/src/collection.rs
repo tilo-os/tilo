@@ -1360,6 +1360,7 @@ fn load_into(
 
 /// The functions of every [`Collection`], over its item type's table.
 pub static COLLECTION_OPS: ModelOps = ModelOps {
+    without_absent: crate::shape::kept_whole,
     to_json: |table, value| {
         let (Ok(desc), Some(entries)) = (
             listed(table),
