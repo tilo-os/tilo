@@ -15,7 +15,7 @@ valid_sha512_crypt() {
 
   # crypt(5) SHA-512 hashes have an optional rounds field, a 1-16 byte
   # crypt-base64 salt, and an exact 86 byte crypt-base64 digest. Keep this
-  # parser strict: this value is passed directly to useradd(8)'s -p option.
+  # parser strict: this value is installed through chpasswd --encrypted.
   if [[ "$candidate" =~ ^\$6\$[./0-9A-Za-z]{1,16}\$[./0-9A-Za-z]{86}$ ]]; then
     return 0
   fi
@@ -127,12 +127,40 @@ repair_enrolled_device_key() {
   fi
 }
 
-if id "$user" >/dev/null 2>&1; then
-  echo "tilo-firstboot-user: refusing to modify pre-existing account '$user'" >&2
-  repair_enrolled_device_key
-  shred -u -- "$CONF" 2>/dev/null || rm -f -- "$CONF"
+# The private intent's random locked shadow value proves transaction ownership.
+TRANSACTION=/etc/tilo/install-user.transaction
+FILES_HELPER="$(dirname -- "${BASH_SOURCE[0]}")/tilo-firstboot-files.py"
+retry=0
+lock_value=""
+if [ -e "$TRANSACTION" ] || [ -L "$TRANSACTION" ]; then
+  valid_seed_file "$TRANSACTION" 1024 || exit 1
+  IFS=: read -r transaction_user lock_value < "$TRANSACTION" || true
+  [ "$transaction_user" = "$user" ] \
+    && [[ "$lock_value" =~ ^!tilo-firstboot-[a-f0-9]{32}$ ]] || exit 1
+  if id "$user" >/dev/null 2>&1; then
+    shadow="$(getent shadow "$user")" || exit 1
+    shadow="${shadow#*:}"
+    shadow="${shadow%%:*}"
+    # A crash after final unlock may leave the intent. Re-lock before retry.
+    [ "$shadow" = "$lock_value" ] || [ "$shadow" = "$hash" ] || exit 1
+    printf '%s:%s\n' "$user" "$lock_value" | chpasswd --encrypted
+    retry=1
+  fi
+elif id "$user" >/dev/null 2>&1; then
+  echo "tilo-firstboot-user: refusing to modify pre-existing account '$user'; preserving credential seed" >&2
   exit 1
-else
+fi
+
+if [ -z "$lock_value" ]; then
+  lock_value="!tilo-firstboot-$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')"
+  # Do not replace an unexpected intent; create it before useradd can succeed.
+  printf '%s:%s\n' "$user" "$lock_value" | /usr/bin/python3 -I "$FILES_HELPER" intent "$TRANSACTION"
+fi
+# Persist both the intent and its directory entry before account creation.
+# A power loss must not leave an account with no durable ownership witness.
+sync -f -- "$TRANSACTION"
+
+if [ "$retry" -eq 0 ]; then
   # `tilo-identity` is read access to the machine's device key. The
   # compositor runs in this user's session and presents the device
   # identity on the network — the same identity fs.service presents as
@@ -155,30 +183,40 @@ else
   done
   if [ -n "$seeded_home" ]; then
     if [ -n "$full_name" ]; then
-      useradd -M -d "$seeded_home" -p '!' -c "$full_name" -G wheel,tilo-identity,video "$user"
+      useradd -M -d "$seeded_home" -p "$lock_value" -c "$full_name" -G wheel,tilo-identity,video "$user"
     else
-      useradd -M -d "$seeded_home" -p '!' -G wheel,tilo-identity,video "$user"
+      useradd -M -d "$seeded_home" -p "$lock_value" -G wheel,tilo-identity,video "$user"
     fi
-    if [ -d /etc/skel ]; then
-      cp -an /etc/skel/. "$seeded_home/" || true
-    fi
-    chown -R "$user:$user" "$seeded_home"
   elif [ -n "$full_name" ]; then
-    useradd -m -p '!' -c "$full_name" -G wheel,tilo-identity,video "$user"
+    # Do not let useradd copy skeleton files non-atomically either.
+    useradd -M -p "$lock_value" -c "$full_name" -G wheel,tilo-identity,video "$user"
   else
-    useradd -m -p '!' -G wheel,tilo-identity,video "$user"
+    useradd -M -p "$lock_value" -G wheel,tilo-identity,video "$user"
   fi
 fi
 
-# Keep the account locked until shadow-utils accepts the complete hash.
+# useradd may commit passwd before creating the home. Provision the exact
+# passwd home on every attempt, and fail closed before password delivery.
+passwd_entry="$(getent passwd "$user")" || exit 1
+IFS=: read -r passwd_user _ account_uid account_gid _ account_home _ <<< "$passwd_entry"
+[ "$passwd_user" = "$user" ] && [[ "$account_uid:$account_gid" =~ ^[0-9]+:[0-9]+$ ]] || exit 1
+case "$account_home" in
+  "/home/$user"|"/var/home/$user") ;;
+  *) echo "tilo-firstboot-user: refusing unexpected account home" >&2; exit 1 ;;
+esac
+/usr/bin/python3 -I "$FILES_HELPER" home "$account_home" "$account_uid" "$account_gid" /etc/skel
+
+repair_enrolled_device_key
+
+# Keep the account locked until every fallible provisioning step succeeds.
 # printf is a shell builtin: credential bytes travel only over the pipe,
 # never through useradd/chpasswd's observable process arguments.
 printf '%s:%s\n' "$user" "$hash" | chpasswd --encrypted
 
-repair_enrolled_device_key
-
 # Remove the seed file (best-effort shred; fall back to rm).
 shred -u -- "$CONF" 2>/dev/null || rm -f -- "$CONF"
 [ ! -f "$FULL_NAME_CONF" ] || shred -u -- "$FULL_NAME_CONF" 2>/dev/null || rm -f -- "$FULL_NAME_CONF"
+
+rm -f -- "$TRANSACTION"
 
 echo "tilo-firstboot-user: created account '$user'"
