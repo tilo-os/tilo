@@ -88,8 +88,9 @@ pub struct Desktop {
 
 /// A Wayland client process and what it has written to stdout.
 pub struct Client {
-    child: Child,
+    child: Mutex<Child>,
     output: Arc<Mutex<String>>,
+    errors: Arc<Mutex<String>>,
 }
 
 impl Client {
@@ -101,6 +102,29 @@ impl Client {
             .unwrap_or_default()
     }
 
+    /// What became of the client process: still running, or how it ended, with
+    /// whatever it wrote to stderr. A client that vanished (crashed, was
+    /// killed, or left on a protocol error) reads differently from one that
+    /// is alive and silent.
+    pub fn fate(&self) -> String {
+        let status = match self.child.lock() {
+            Ok(mut child) => match child.try_wait() {
+                Ok(None) => "still running".to_owned(),
+                Ok(Some(status)) => {
+                    use std::os::unix::process::ExitStatusExt as _;
+                    status.signal().map_or_else(
+                        || format!("exited with {status}"),
+                        |signal| format!("killed by signal {signal}"),
+                    )
+                }
+                Err(error) => format!("status unreadable: {error}"),
+            },
+            Err(_) => "status unreadable".to_owned(),
+        };
+        let errors = self.errors.lock().map(|out| out.clone()).unwrap_or_default();
+        format!("the client process is {status}; its stderr:\n{errors}")
+    }
+
     /// How many times the client reported `event`.
     pub fn count(&self, event: &str) -> usize {
         self.output().matches(event).count()
@@ -109,8 +133,10 @@ impl Client {
 
 impl Drop for Client {
     fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        if let Ok(child) = self.child.get_mut() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
     }
 }
 
@@ -456,7 +482,7 @@ impl Desktop {
             .env("XDG_RUNTIME_DIR", &self.runtime_dir)
             .env("WAYLAND_DISPLAY", self.display_name())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
+            .stderr(Stdio::piped())
             .spawn()
             .unwrap_or_else(|e| panic!("start {}: {e}", binary.display()));
         let output = Arc::new(Mutex::new(String::new()));
@@ -470,7 +496,22 @@ impl Desktop {
                 }
             }
         });
-        Client { child, output }
+        let errors = Arc::new(Mutex::new(String::new()));
+        let stderr = child.stderr.take().expect("client stderr");
+        let sink = Arc::clone(&errors);
+        std::thread::spawn(move || {
+            for line in BufReader::new(stderr).lines().map_while(Result::ok) {
+                if let Ok(mut out) = sink.lock() {
+                    out.push_str(&line);
+                    out.push('\n');
+                }
+            }
+        });
+        Client {
+            child: Mutex::new(child),
+            output,
+            errors,
+        }
     }
 
     /// The last `n` lines the compositor wrote.

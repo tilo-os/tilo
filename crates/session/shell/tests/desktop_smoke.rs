@@ -206,7 +206,7 @@ fn scenario(desktop: &Desktop, max_idle_cpu: f64) {
         let wanted = before.saturating_add(5);
         desktop.wait_for_with(
             "the client to receive its keys",
-            || format!("the client reported:\n{}", client.output()),
+            || format!("{}\nthe client reported:\n{}", client.fate(), client.output()),
             || client.count("EVENT:KEY PRESS") >= wanted,
         );
     }
@@ -258,9 +258,13 @@ fn scenario(desktop: &Desktop, max_idle_cpu: f64) {
         desktop.chrome()["session_locked"].as_bool() == Some(false)
     });
 
-    // The clients' windows are still there and the desktop still answers.
+    // The clients' windows are still there and the desktop still answers. The
+    // tiles are laid out again by the frame after the unlock, so ask for them
+    // to be painted rather than reading them in the same instant.
     sweep_edges(desktop);
-    assert_eq!(painted_clients(desktop).len(), 2);
+    desktop.wait_for("both clients to be painted again after the unlock", || {
+        painted_clients(desktop).len() == 2
+    });
 
     // Left alone, the desktop is idle. A widget that reports a wake deadline
     // nothing can satisfy makes the loop pump every app on every pass: the
