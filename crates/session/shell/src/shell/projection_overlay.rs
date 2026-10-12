@@ -24,6 +24,7 @@ use settings_store::hardware::{
     DisplayConfig, DisplayHardwareSnapshot, DisplayOutputSnapshot, DisplayTransaction,
     DisplayTransactionState,
 };
+use settings_store::person_displays::PersonDisplays;
 use taffy::{Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
@@ -49,10 +50,14 @@ use ui::widget::ButtonRole;
 
 const OPEN_ANIM_MS: u64 = 220;
 const SCRIM_ALPHA: f32 = 0.45;
-/// How often an open sheet re-reads the compositor's display snapshot and
-/// the transaction it staged. Bounded so an open sheet never turns into
-/// per-frame settings I/O.
+/// How often an open sheet asks whether the settings document holding the
+/// committed layout and the staged change moved on. It parses the document
+/// again only when it did. Never asked while painting.
 const DISPLAY_POLL: Duration = Duration::from_millis(250);
+
+/// A settings file modified this recently may be modified again within the
+/// same timestamp tick, so a read taken now is not trusted to stay current.
+const RACY_STAMP: Duration = Duration::from_secs(1);
 
 #[allow(
     clippy::cast_possible_truncation,
@@ -136,14 +141,56 @@ fn waiting(transaction: &DisplayTransaction) -> bool {
     )
 }
 
+/// A display choice the sheet asks the host to make through its published
+/// action, so the person at the sheet passes the same authority check as an
+/// agent or a script invoking it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum DisplayRequest {
+    Layout(DisplayLayoutMode),
+    Keep,
+    Revert,
+}
+
+impl DisplayRequest {
+    /// The published action this choice is.
+    pub(crate) fn action_id(self) -> &'static str {
+        use crate::shell::search::providers::actions as ids;
+        match self {
+            Self::Layout(DisplayLayoutMode::Extend) => ids::DISPLAY_EXTEND_ID,
+            Self::Layout(DisplayLayoutMode::Mirror) => ids::DISPLAY_MIRROR_ID,
+            Self::Layout(DisplayLayoutMode::BuiltinOnly) => ids::DISPLAY_BUILTIN_ONLY_ID,
+            Self::Layout(DisplayLayoutMode::ExternalOnly) => ids::DISPLAY_EXTERNAL_ONLY_ID,
+            Self::Keep => ids::DISPLAY_KEEP_ID,
+            Self::Revert => ids::DISPLAY_REVERT_ID,
+        }
+    }
+}
+
+/// The display change a layout action staged, from its receipt.
+fn staged_transaction(receipt: &crate::shell::search::ActionReceipt) -> Option<u64> {
+    let tilo_actions::InvocationUpdate::Succeeded { output, .. } = &receipt.update else {
+        return None;
+    };
+    output.value.as_ref()?.get("transaction")?.as_u64()
+}
+
 /// Attached displays, the committed layout and the transaction this
-/// session staged, as the compositor published them.
+/// session staged. Displays come from what the compositor published in
+/// memory; the layout and the change from the settings document, read again
+/// only when it changed. None of it is read while painting.
 #[derive(Default)]
 pub(crate) struct DisplayLayouts {
     outputs: Vec<DisplayOutputSnapshot>,
     committed: DisplayConfig,
     transaction: Option<DisplayTransaction>,
     polled_at: Option<Instant>,
+    /// Generation of the published display snapshot `outputs` came from.
+    outputs_seen: Option<u64>,
+    /// Generation of the published person's displays `person` came from.
+    person_seen: Option<u64>,
+    /// Settings document version `committed` and `transaction` were read
+    /// at; `None` until read, or while that read may be stale.
+    settings_seen: Option<Option<settings_store::SettingsStamp>>,
     /// Id of the transaction this sheet staged, so an old rejection left in
     /// settings is never reported as the answer to a new choice.
     staged: Option<u64>,
@@ -151,8 +198,10 @@ pub(crate) struct DisplayLayouts {
     /// read for [`Self::settled`].
     followed: Option<u64>,
     notice: Option<String>,
-    answer: Option<crate::shell::display_persistence::PendingAnswer>,
-    staging: Option<crate::shell::display_persistence::PendingLayout>,
+    /// The Keep or Revert action this sheet invoked, until it is recorded.
+    answer: Option<crate::shell::search::PendingInvocation>,
+    /// The layout action this sheet invoked, until it is recorded.
+    staging: Option<crate::shell::search::PendingInvocation>,
 
     /// The person's displays across their devices, as this device routes by
     /// them; `None` while display continuity is off.
@@ -201,7 +250,7 @@ impl RemoteDisplay {
 
 impl DisplayLayouts {
     fn refresh_person(&mut self) {
-        self.person = shared_display_actions::current();
+        self.person = shared_display_actions::published();
     }
 
     /// The other devices' screens in display order.
@@ -229,64 +278,114 @@ impl DisplayLayouts {
             .collect()
     }
 
-    fn refresh(&mut self, now: Instant) {
-        self.refresh_person();
-        self.outputs = DisplayHardwareSnapshot::load()
-            .map(|snapshot| snapshot.outputs)
-            .unwrap_or_default();
+    /// Take what the compositor published since the last look, from
+    /// memory: the attached displays and the person's other screens.
+    /// Returns whether anything changed.
+    fn sync_published(&mut self) -> bool {
+        let mut changed = false;
+        let generation = DisplayHardwareSnapshot::published_generation();
+        if self.outputs_seen != Some(generation) {
+            self.outputs_seen = Some(generation);
+            let outputs = DisplayHardwareSnapshot::published()
+                .map(|snapshot| snapshot.outputs.clone())
+                .unwrap_or_default();
+            if outputs != self.outputs {
+                self.outputs = outputs;
+                // The committed layout is the attached set's own.
+                self.settings_seen = None;
+                self.polled_at = None;
+                changed = true;
+            }
+        }
+        let generation = PersonDisplays::published_generation();
+        if self.person_seen != Some(generation) {
+            self.person_seen = Some(generation);
+            self.refresh_person();
+            changed = true;
+        }
+        changed
+    }
+
+    /// Read the committed layout and the staged change from the settings
+    /// document, and the arrangement of the person's screens with them.
+    fn read_settings(&mut self, now: Instant) {
+        let stamp = settings_store::stamp();
         self.committed =
             DisplayConfig::load_for(&settings_store::display_mode::attached_set(&self.outputs));
         self.transaction = DisplayTransaction::load();
+        self.refresh_person();
         self.polled_at = Some(now);
+        // A file stamped just now can change again within the same tick
+        // and keep its stamp; read it once more on the next poll.
+        let racy = matches!(stamp, Some(settings_store::SettingsStamp::Modified(at))
+            if std::time::SystemTime::now().duration_since(at).is_ok_and(|age| age < RACY_STAMP));
+        self.settings_seen = (!racy).then_some(stamp);
     }
 
-    fn poll_completions(&mut self, now: Instant) -> bool {
+    /// Everything at once: when the sheet opens.
+    fn refresh(&mut self, now: Instant) {
+        self.sync_published();
+        self.read_settings(now);
+    }
+
+    fn poll_completions(&mut self) -> bool {
         let mut changed = false;
         if let Some(staging) = self.staging.as_ref() {
-            match staging.poll() {
+            match staging() {
                 Ok(None) => {}
-                Ok(Some(transaction)) => {
+                Ok(Some(receipt)) => {
                     changed = true;
                     self.staging = None;
-                    self.staged = Some(transaction.id);
-                    self.transaction = Some(transaction);
+                    self.staged = staged_transaction(&receipt);
                     self.notice = None;
+                    // Show the stored change, with its Keep and Revert.
+                    self.settings_seen = None;
+                    self.polled_at = None;
                 }
                 Err(error) => {
                     changed = true;
                     self.staging = None;
+                    tracing::warn!(%error, "display layout was not staged");
                     self.notice = Some(error.to_string());
                 }
             }
         }
         if let Some(answer) = self.answer.as_ref() {
-            match answer.poll() {
-                Ok(None) => {}
-                Ok(Some(())) => {
-                    changed = true;
-                    self.answer = None;
-                    self.notice = None;
-                    self.refresh(now);
-                }
-                Err(error) => {
-                    changed = true;
-                    self.answer = None;
-                    self.notice = Some(error.to_string());
-                    self.refresh(now);
-                }
+            let done = match answer() {
+                Ok(None) => None,
+                Ok(Some(_)) => Some(None),
+                Err(error) => Some(Some(error.to_string())),
+            };
+            if let Some(notice) = done {
+                changed = true;
+                self.answer = None;
+                self.notice = notice;
+                self.settings_seen = None;
+                self.polled_at = None;
             }
         }
         changed
     }
 
-    fn poll(&mut self, now: Instant) {
-        self.poll_completions(now);
+    /// The ordinary update while the sheet is open: completions, what the
+    /// compositor published, and the settings document if it moved on, at
+    /// most every [`DISPLAY_POLL`]. Returns whether anything changed.
+    fn poll(&mut self, now: Instant) -> bool {
+        let mut changed = self.poll_completions();
+        changed |= self.sync_published();
         if self
             .polled_at
             .is_none_or(|at| now.duration_since(at) >= DISPLAY_POLL)
         {
-            self.refresh(now);
+            self.polled_at = Some(now);
+            let stamp = settings_store::stamp();
+            if self.settings_seen != Some(stamp) {
+                let before = (self.committed.clone(), self.transaction.clone());
+                self.read_settings(now);
+                changed |= before != (self.committed.clone(), self.transaction.clone());
+            }
         }
+        changed
     }
 
     /// The staged transaction while it still waits for Keep or Revert.
@@ -297,12 +396,13 @@ impl DisplayLayouts {
     }
 
     /// Whether display change `id` is over: kept, reverted, refused, or
-    /// replaced by another. Storage is re-read at most every
+    /// replaced by another. Storage is asked at most every
     /// [`DISPLAY_POLL`], and at once when a new change is first followed.
     fn settled(&mut self, id: u64, now: Instant) -> bool {
         if self.followed != Some(id) {
             self.followed = Some(id);
             self.polled_at = None;
+            self.settings_seen = None;
         }
         self.poll(now);
         self.read_as_settled(id)
@@ -335,46 +435,32 @@ impl DisplayLayouts {
         display_mode::plan_layout(mode, &self.outputs, &self.committed).err()
     }
 
-    fn apply(&mut self, mode: DisplayLayoutMode, now: Instant) {
-        if self.staging.is_some() {
-            return;
-        }
-        match crate::shell::display_persistence::stage_layout(mode) {
-            Ok(staging) => {
-                self.staging = Some(staging);
-                self.notice = None;
+    /// Follow the action the host invoked for `request`: wait for its
+    /// receipt, or show why it was refused.
+    fn follow(
+        &mut self,
+        request: DisplayRequest,
+        outcome: Result<
+            crate::shell::search::InvocationDisposition,
+            crate::shell::search::action_api::ActionError,
+        >,
+    ) {
+        use crate::shell::search::InvocationDisposition;
+        let ticket: crate::shell::search::PendingInvocation = match outcome {
+            Ok(InvocationDisposition::Pending(ticket)) => ticket,
+            Ok(InvocationDisposition::Accepted(receipt)) => {
+                std::rc::Rc::new(move || Ok(Some(receipt.clone())))
             }
             Err(error) => {
-                tracing::warn!(%error, mode = mode.id(), "display layout was not staged");
+                tracing::warn!(%error, action = request.action_id(), "display choice refused");
                 self.notice = Some(error.to_string());
+                return;
             }
-        }
-        self.polled_at = Some(now);
-    }
-
-    fn keep(&mut self) {
-        self.queue_answer(crate::shell::display_persistence::Answer::Keep);
-    }
-
-    fn revert(&mut self) {
-        self.queue_answer(crate::shell::display_persistence::Answer::Revert);
-    }
-
-    fn queue_answer(&mut self, answer: crate::shell::display_persistence::Answer) {
-        if self.answer.is_some() {
-            return;
-        }
-        let Some(transaction) = self.transaction.as_ref() else {
-            return;
         };
-        match crate::shell::display_persistence::answer_for(answer, Some(transaction.id)) {
-            Ok(answer) => {
-                self.answer = Some(answer);
-                self.notice = None;
-            }
-            Err(error) => {
-                self.notice = Some(error.to_string());
-            }
+        self.notice = None;
+        match request {
+            DisplayRequest::Layout(_) => self.staging = Some(ticket),
+            DisplayRequest::Keep | DisplayRequest::Revert => self.answer = Some(ticket),
         }
     }
 
@@ -462,6 +548,9 @@ pub struct ProjectionOverlay {
     fps_rect: Rect,
     credential_input: TextInput,
     credential_rect: Rect,
+    /// A display choice made on the sheet, for the host to invoke as its
+    /// published action.
+    requested: Option<DisplayRequest>,
 }
 
 impl Default for ProjectionOverlay {
@@ -501,6 +590,7 @@ impl ProjectionOverlay {
                 .with_secret(true)
                 .with_enter_submits(true),
             credential_rect: Rect::ZERO,
+            requested: None,
         }
     }
 
@@ -563,11 +653,41 @@ impl ProjectionOverlay {
         Some(Rect::new(field.x0, field.y0, field.x1 + slide, field.y1))
     }
 
-    /// Drain storage receipts on the ordinary host update, even at rest.
-    /// Waiting itself is not animation; the existing native wake schedules
-    /// this update and only a completed receipt invalidates the sheet.
-    pub(crate) fn poll_storage(&mut self) -> bool {
-        self.displays.poll_completions(Instant::now())
+    /// The sheet's part of the ordinary host update: take the open-time
+    /// state when it opens, drain the receiver worker and the display
+    /// actions' receipts (even at rest), and, while open, take up what the
+    /// compositor published and what changed in settings. Painting reads
+    /// none of it again. Waiting itself is not animation; the existing native
+    /// wake schedules this update and only a change invalidates the sheet.
+    pub(crate) fn poll_storage(&mut self, open: bool) -> bool {
+        let opened = open && !self.session_open;
+        self.sync_open_state(open);
+        let mut changed = opened | self.controller.poll();
+        changed |= if open {
+            self.poll_displays(Instant::now())
+        } else {
+            self.displays.poll_completions()
+        };
+        changed
+    }
+
+    /// The display choice made on the sheet since the last look, for the
+    /// host to invoke as its published action.
+    pub(crate) fn take_request(&mut self) -> Option<DisplayRequest> {
+        self.requested.take()
+    }
+
+    /// What invoking the action for `request` answered: a job to follow to
+    /// its receipt, or why it was refused.
+    pub(crate) fn follow_request(
+        &mut self,
+        request: DisplayRequest,
+        outcome: Result<
+            crate::shell::search::InvocationDisposition,
+            crate::shell::search::action_api::ActionError,
+        >,
+    ) {
+        self.displays.follow(request, outcome);
     }
 
     /// Whether the display change an action opened this sheet for, `id`,
@@ -645,6 +765,7 @@ impl ProjectionOverlay {
             self.displays.notice = None;
             self.displays.staged = None;
             self.displays.refresh(Instant::now());
+            self.controller.refresh();
             let initial = self
                 .active_layout()
                 .or_else(|| self.enabled_layouts().first().copied());
@@ -697,7 +818,7 @@ impl ProjectionOverlay {
             self.controller.options.mode = wireless;
         }
         if self.displays.plan_error(mode).is_none() {
-            self.displays.apply(mode, Instant::now());
+            self.requested = Some(DisplayRequest::Layout(mode));
             self.focus = SheetFocus::Keep;
         } else {
             self.focus = SheetFocus::Layout(mode);
@@ -893,13 +1014,21 @@ impl ProjectionOverlay {
         self.focus = next;
     }
 
-    fn poll_displays(&mut self, now: Instant) {
+    /// Ask for Keep or Revert on the change waiting for one, unless an
+    /// answer is already on its way.
+    fn answer(&mut self, request: DisplayRequest) {
+        if self.displays.answer.is_none() && self.displays.transaction.is_some() {
+            self.requested = Some(request);
+        }
+    }
+
+    fn poll_displays(&mut self, now: Instant) -> bool {
         let focused = if let SheetFocus::Remote(index) = self.focus {
             self.displays.remote().get(index).cloned()
         } else {
             None
         };
-        self.displays.poll(now);
+        let changed = self.displays.poll(now);
         if let Some(display) = focused {
             self.focus = self
                 .displays
@@ -908,6 +1037,7 @@ impl ProjectionOverlay {
                 .position(|row| row.device == display.device && row.output == display.output)
                 .map_or(SheetFocus::Receivers, SheetFocus::Remote);
         }
+        changed
     }
 
     fn toggle_remote(&mut self, index: usize) {
@@ -962,11 +1092,11 @@ impl ProjectionOverlay {
         match self.focus {
             SheetFocus::Layout(mode) => self.choose_layout(mode),
             SheetFocus::Keep => {
-                self.displays.keep();
+                self.answer(DisplayRequest::Keep);
                 self.focus = self.active_layout().map_or(self.focus, SheetFocus::Layout);
             }
             SheetFocus::Revert => {
-                self.displays.revert();
+                self.answer(DisplayRequest::Revert);
                 self.focus = self.active_layout().map_or(self.focus, SheetFocus::Layout);
             }
             SheetFocus::Remote(index) => self.toggle_remote(index),
@@ -1145,15 +1275,20 @@ impl ProjectionOverlay {
 
         let mut sheet = AccessNode::new(Role::Dialog)
             .with_name(t("display-sheet-title"))
-            .with_description(if self.displays.staging.is_some() {
-                format!(
-                    "{}. {}",
-                    t("display-sheet-saving-layout"),
-                    t("display-sheet-a11y-description")
-                )
-            } else {
-                t("display-sheet-a11y-description")
-            })
+            .with_description(
+                if self.displays.staging.is_some() {
+                    Some(t("display-sheet-saving-layout"))
+                } else {
+                    // Why the last choice was refused is said, not only shown.
+                    self.displays
+                        .rejection()
+                        .filter(|reason| !reason.is_empty())
+                }
+                .map_or_else(
+                    || t("display-sheet-a11y-description"),
+                    |status| format!("{status}. {}", t("display-sheet-a11y-description")),
+                ),
+            )
             .with_bounds(self.sheet_rect())
             .with_state(AccessState::new().modal(true));
         let active = self.active_layout();
@@ -1250,7 +1385,8 @@ impl ProjectionOverlay {
             )
     }
 
-    /// Paint the complete sheet and return whether worker polling changed state.
+    /// Paint the complete sheet from the state the host update took. Reads
+    /// no storage and changes no state but its own geometry.
     pub fn draw(
         &mut self,
         scene: &mut Scene,
@@ -1260,14 +1396,14 @@ impl ProjectionOverlay {
         presence: &PresenceCtx,
         host_rect: Rect,
         open: bool,
-    ) -> bool {
+    ) {
         // Theme type tokens already carry the user's text scale, and this
         // sheet lays out and paints with those resolved sizes; the renderer
         // must not scale them a second time (HIG §7a), so it is reset for
         // the pass exactly as the lens pass resets it, and restored after.
         let renderer_scale = text_renderer.text_scale();
         text_renderer.set_text_scale(1.0);
-        let changed = self.draw_at_theme_scale(
+        self.draw_at_theme_scale(
             scene,
             transform,
             text_renderer,
@@ -1277,7 +1413,6 @@ impl ProjectionOverlay {
             open,
         );
         text_renderer.set_text_scale(renderer_scale);
-        changed
     }
 
     fn draw_at_theme_scale(
@@ -1289,18 +1424,10 @@ impl ProjectionOverlay {
         presence: &PresenceCtx,
         host_rect: Rect,
         open: bool,
-    ) -> bool {
+    ) {
         self.host_rect = host_rect;
-        self.sync_open_state(open);
-        let changed = self.controller.poll();
-        if open && !self.was_open {
-            self.controller.refresh();
-        }
         self.was_open = open;
         let now = Instant::now();
-        if open {
-            self.poll_displays(now);
-        }
         self.transition.set_open(
             open,
             if theme.reduce_motion {
@@ -1332,7 +1459,6 @@ impl ProjectionOverlay {
         } else {
             self.clear_geometry();
         }
-        changed
     }
 
     fn clear_geometry(&mut self) {
@@ -2543,8 +2669,74 @@ mod tests {
             ..ProjectionOverlay::default()
         };
         overlay.displays.outputs = outputs;
+        overlay.displays.outputs_seen = Some(DisplayHardwareSnapshot::published_generation());
         overlay.displays.polled_at = Some(Instant::now());
         overlay
+    }
+
+    #[test]
+    fn a_layout_choice_is_the_published_action_and_its_refusal_is_said() {
+        let mut overlay = overlay_with(two_displays());
+        overlay.focus = SheetFocus::Layout(DisplayLayoutMode::Mirror);
+        overlay.handle_key(&Key::Named(NamedKey::Enter), Modifiers::default());
+        let request = overlay
+            .take_request()
+            .expect("Enter hands the choice to the host as its action");
+        assert_eq!(request.action_id(), "display.layout.mirror");
+        assert!(
+            overlay.displays.staging.is_none(),
+            "the sheet stages nothing itself"
+        );
+        overlay.follow_request(
+            request,
+            Err(crate::shell::search::action_api::ActionError::Refused(
+                "not permitted here".into(),
+            )),
+        );
+        assert!(
+            overlay
+                .accessibility()
+                .description
+                .is_some_and(|description| description.contains("not permitted here")),
+            "the refusal is said, not only drawn"
+        );
+
+        // A staged layout's receipt names the change to answer.
+        let receipt = crate::shell::search::ActionReceipt::completed_with(
+            serde_json::json!({ "transaction": 7 }),
+        );
+        overlay.follow_request(
+            DisplayRequest::Layout(DisplayLayoutMode::Mirror),
+            Ok(crate::shell::search::InvocationDisposition::Accepted(
+                receipt,
+            )),
+        );
+        assert!(overlay.displays.poll_completions());
+        assert_eq!(overlay.displays.staged, Some(7));
+        assert!(overlay.displays.notice.is_none());
+    }
+
+    #[test]
+    fn keep_and_revert_wait_for_a_change_and_for_the_answer_in_flight() {
+        let mut overlay = overlay_with(two_displays());
+        overlay.focus = SheetFocus::Keep;
+        overlay.activate_focus();
+        assert_eq!(overlay.take_request(), None, "no change waits for Keep");
+        overlay.displays.transaction = Some(DisplayTransaction::default());
+        overlay.focus = SheetFocus::Revert;
+        overlay.activate_focus();
+        let request = overlay.take_request();
+        assert_eq!(request, Some(DisplayRequest::Revert));
+        let in_flight: crate::shell::search::PendingInvocation = std::rc::Rc::new(|| Ok(None));
+        overlay.follow_request(
+            DisplayRequest::Revert,
+            Ok(crate::shell::search::InvocationDisposition::Pending(
+                in_flight,
+            )),
+        );
+        overlay.focus = SheetFocus::Keep;
+        overlay.activate_focus();
+        assert_eq!(overlay.take_request(), None, "one answer at a time");
     }
 
     #[test]
