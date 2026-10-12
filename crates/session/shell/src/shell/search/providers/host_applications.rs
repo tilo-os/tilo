@@ -21,7 +21,7 @@ use std::collections::HashSet;
 #[cfg(test)]
 use std::sync::{Arc, Mutex};
 use tilo_desktop::notifications::{Notification, NotificationSeverity};
-use tilo_search::{Document, FieldWeight, Matching, Page, SearchIndex};
+use tilo_search::{Document, FieldWeight, Matching, SearchIndex};
 
 /// Chip label / group header, mirroring [`ResourceKind::HostApplication`].
 pub const HOST_APPLICATIONS_KIND: &str = "Host Apps";
@@ -175,7 +175,7 @@ impl HostApplicationsProvider {
             .collect();
         let index = index_apps(apps, &installed_ids);
         index
-            .search(needle, Page::first(apps.len()))
+            .search(needle, tilo_search::Page::first(apps.len()))
             .hits
             .iter()
             .filter_map(|hit| {
@@ -403,54 +403,18 @@ impl SearchProvider for HostApplicationsProvider {
         let Some(snapshot) = self.snapshot() else {
             return SearchPage::exhausted(revision, Vec::new());
         };
-        let offset = match cursor {
-            Some(cursor) if cursor.revision != revision => return SearchPage::stale(revision),
-            Some(cursor) => match cursor.token.strip_prefix("host:").and_then(|token| {
-                token
-                    .split_once('\u{1f}')
-                    .filter(|(_, query)| *query == ctx.needle)
-                    .and_then(|(offset, _)| offset.parse::<usize>().ok())
-            }) {
-                Some(offset) => offset,
-                None => return SearchPage::stale(revision),
-            },
-            None => 0,
-        };
-        let found = snapshot.index.search(
-            ctx.needle,
-            Page {
-                offset,
-                limit: budget.max_work.min(budget.max_results),
-            },
-        );
-        let mut shown = 0usize;
-        let mut bytes = 0usize;
-        let mut results = Vec::new();
-        for hit in &found.hits {
-            let Some(app) = usize::try_from(hit.key)
-                .ok()
-                .and_then(|at| snapshot.apps.get(at))
-            else {
-                continue;
-            };
-            let row = self.row(app, score_for(ctx.needle, hit.rank));
-            let row_bytes = row
-                .title
-                .len()
-                .saturating_add(row.subtitle.as_ref().map_or(0, String::len));
-            if bytes.saturating_add(row_bytes) > budget.max_bytes {
-                break;
-            }
-            bytes = bytes.saturating_add(row_bytes);
-            shown = shown.saturating_add(1);
-            results.push(row);
-        }
-        let exhausted = !found.more && shown == found.hits.len();
-        let next = offset.saturating_add(shown);
-        SearchPage::continuing(
+        crate::shell::search::index_page(
             revision,
-            results,
-            (!exhausted).then(|| format!("host:{next}\u{1f}{}", ctx.needle)),
+            cursor,
+            ctx.needle,
+            budget,
+            |page| snapshot.index.search(ctx.needle, page),
+            |hit| {
+                let app = usize::try_from(hit.key)
+                    .ok()
+                    .and_then(|at| snapshot.apps.get(at))?;
+                Some(self.row(app, score_for(ctx.needle, hit.rank)))
+            },
         )
     }
 }
