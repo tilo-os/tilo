@@ -997,16 +997,6 @@ fn request_bytes(request: &CollabRequest) -> Option<usize> {
             json_map_bytes(arguments, &mut meter);
             json_bytes(confirmation, &mut meter);
         }
-        CollabRequest::SubscribeEnrolledTasks { .. } => {}
-        CollabRequest::AcceptEnrolledTask { acceptance, .. } => {
-            serialized_bytes(acceptance, &mut meter)
-        }
-        CollabRequest::ReportEnrolledTask {
-            acceptance, update, ..
-        } => {
-            serialized_bytes(acceptance, &mut meter);
-            serialized_bytes(update, &mut meter);
-        }
         CollabRequest::ReportTaskRun { lease, update, .. } => {
             meter.string_capacity(lease);
             serialized_bytes(update, &mut meter);
@@ -1463,33 +1453,12 @@ fn event_diagnostics(event: &CollabEvent) -> (&'static str, Option<usize>) {
             }
             "InstalledApplicationLaunchResult"
         }
-        CollabEvent::TaskActionInvocationResult {
-            result,
-            continuation,
-            ..
-        } => {
+        CollabEvent::TaskActionInvocationResult { result, .. } => {
             match result {
                 Ok((_, update)) => serialized_bytes(update, &mut meter),
                 Err(error) => meter.string_capacity(error),
             }
-            if let Some(continuation) = continuation {
-                meter.add(continuation.capacity());
-            }
             "TaskActionInvocationResult"
-        }
-        CollabEvent::EnrolledTask(run) => {
-            serialized_bytes(run, &mut meter);
-            "EnrolledTask"
-        }
-        CollabEvent::EnrolledTaskReply { result, .. } => {
-            if let Err(error) = result {
-                meter.string_capacity(error);
-            }
-            "EnrolledTaskReply"
-        }
-        CollabEvent::EnrolledTaskDisconnected { detail } => {
-            meter.string_capacity(detail);
-            "EnrolledTaskDisconnected"
         }
         CollabEvent::TaskRun(run) => {
             task_run_bytes(run, &mut meter);
@@ -6050,30 +6019,6 @@ fn parse_task_update(id: u64, update: &str) -> TaskActionResult {
         .map_err(|error| error.to_string())
 }
 
-/// Project a stepped task reply onto the event fields: a committed step
-/// carries its continuation; a pending or lost step asks the caller to
-/// re-send the identical step.
-fn task_step_event(
-    reply: Result<runtime_collab::TaskStepReply, String>,
-) -> (TaskActionResult, Option<Vec<u8>>, bool) {
-    match reply {
-        Ok(runtime_collab::TaskStepReply::Committed {
-            update_json,
-            continuation,
-        }) => (
-            parse_task_update(0, &update_json),
-            Some(continuation),
-            false,
-        ),
-        Ok(runtime_collab::TaskStepReply::Retry) => (
-            Err("task step pending; retry the same step".into()),
-            None,
-            true,
-        ),
-        Err(error) => (Err(error), None, false),
-    }
-}
-
 // Not `Send`: `route.channel` wraps a capnp-rpc handle (`Rc`-based,
 // `!Send`), and this only ever runs inside the shovel thread's `LocalSet`.
 #[allow(
@@ -6508,43 +6453,11 @@ async fn dispatch_sdk_request(
         }
         #[cfg(unix)]
         CollabRequest::ManagedInvocationAttempt { attempt } => {
-            use crate::host_worker::managed_sender::{AttemptFailure, RequestView};
-            use managed_sender_transport::{Failure, Request};
             let result = match attempt.claim(&route.spec) {
                 None => return true, // A clone cannot dispatch the same local attempt twice.
                 Some(Err(error)) => Err(error),
-                Some(Ok(view)) => {
-                    let request = match view {
-                        RequestView::Invoke {
-                            invocation,
-                            binding,
-                            revision,
-                            resource,
-                            action,
-                            argument,
-                            confirmation_json,
-                        } => Request::Invoke {
-                            invocation,
-                            binding,
-                            revision,
-                            resource,
-                            action,
-                            argument,
-                            confirmation_json,
-                        },
-                        RequestView::Observe { host, invocation } => {
-                            Request::Observe { host, invocation }
-                        }
-                        RequestView::Cancel { host, invocation } => {
-                            Request::Cancel { host, invocation }
-                        }
-                    };
-                    managed_sender_transport::send(route, request, attempt.deadline())
-                        .await
-                        .map_err(|error| match error {
-                            Failure::Deadline => AttemptFailure::Deadline,
-                            Failure::Unavailable => AttemptFailure::Unavailable,
-                        })
+                Some(Ok(request)) => {
+                    managed_sender_transport::send(route, request, attempt.deadline()).await
                 }
             };
             if let Some(result) = attempt.finish(result) {
@@ -6695,66 +6608,6 @@ async fn dispatch_sdk_request(
             let _ = inbound_tx
                 .send_durable(CollabEvent::InstalledApplicationLaunchResult { request_id, result });
         }
-        CollabRequest::SubscribeEnrolledTasks { request_id } => {
-            let result = route
-                .channel
-                .subscribe_enrolled_tasks()
-                .await
-                .map_err(|error| error.to_string());
-            let reply = match result {
-                Ok(stream) => {
-                    let tx = inbound_tx.clone();
-                    tokio::task::spawn_local(async move {
-                        loop {
-                            match stream.read().await {
-                                Ok(run) => {
-                                    if !tx.send_durable(CollabEvent::EnrolledTask(run)) {
-                                        break;
-                                    }
-                                }
-                                Err(error) => {
-                                    let _ =
-                                        tx.send_durable(CollabEvent::EnrolledTaskDisconnected {
-                                            detail: error.to_string(),
-                                        });
-                                    break;
-                                }
-                            }
-                        }
-                    });
-                    Ok(())
-                }
-                Err(error) => Err(error),
-            };
-            let _ = inbound_tx.send_durable(CollabEvent::EnrolledTaskReply {
-                request_id,
-                result: reply,
-            });
-        }
-        CollabRequest::AcceptEnrolledTask {
-            request_id,
-            acceptance,
-        } => {
-            let result = route
-                .channel
-                .accept_enrolled_task(&acceptance)
-                .await
-                .map_err(|error| error.to_string());
-            let _ = inbound_tx.send_durable(CollabEvent::EnrolledTaskReply { request_id, result });
-        }
-        CollabRequest::ReportEnrolledTask {
-            request_id,
-            acceptance,
-            sequence,
-            update,
-        } => {
-            let result = route
-                .channel
-                .report_enrolled_task(&acceptance, sequence, &update)
-                .await
-                .map_err(|error| error.to_string());
-            let _ = inbound_tx.send_durable(CollabEvent::EnrolledTaskReply { request_id, result });
-        }
         CollabRequest::ReportTaskRun {
             request_id,
             run_id,
@@ -6778,11 +6631,63 @@ async fn dispatch_sdk_request(
             invocation,
             run_id,
             lease,
-            step,
             peer_id,
             resource,
             action,
             arguments,
+            wait: Some(wait),
+        } => {
+            // The broker holds this answer until the child moves; the
+            // connection's other traffic must not wait behind it. Polled
+            // once here, so the re-ask still goes out in the order it was
+            // asked, as a waiting remote action does.
+            let channel = route.channel.clone();
+            let mut round_trip = Box::pin(async move {
+                let argument = format!(
+                    "{}{}",
+                    tilo_actions::ARGUMENTS_JSON_PREFIX,
+                    serde_json::Value::Object(arguments)
+                );
+                let target = runtime_collab::TaskAction {
+                    peer_id,
+                    resource: &resource,
+                    action: &action,
+                    argument: Some(&argument),
+                };
+                channel
+                    .observe_task_child(run_id, &lease, target, &invocation.0.to_string(), wait)
+                    .await
+                    .map_err(|error| error.to_string())
+                    .and_then(|(id, update)| parse_task_update(id, &update))
+            });
+            let first = std::future::poll_fn(|context| {
+                std::task::Poll::Ready(round_trip.as_mut().poll(context))
+            })
+            .await;
+            let event =
+                move |result| CollabEvent::TaskActionInvocationResult { request_id, result };
+            match first {
+                std::task::Poll::Ready(result) => {
+                    let _ = inbound_tx.send_durable(event(result));
+                }
+                std::task::Poll::Pending => {
+                    let inbound = inbound_tx.clone();
+                    tokio::task::spawn_local(async move {
+                        let _ = inbound.send_durable(event(round_trip.await));
+                    });
+                }
+            }
+        }
+        CollabRequest::InvokeTaskAction {
+            request_id,
+            invocation,
+            run_id,
+            lease,
+            peer_id,
+            resource,
+            action,
+            arguments,
+            ..
         } => {
             let argument = format!(
                 "{}{}",
@@ -6795,31 +6700,14 @@ async fn dispatch_sdk_request(
                 action: &action,
                 argument: Some(&argument),
             };
-            let (result, continuation, retry_step) = match step {
-                Some(step) => task_step_event(
-                    route
-                        .channel
-                        .invoke_task_step(run_id, &lease, step, target)
-                        .await
-                        .map_err(|error| error.to_string()),
-                ),
-                None => (
-                    route
-                        .channel
-                        .invoke_task_action(run_id, &lease, target, "", &invocation.0.to_string())
-                        .await
-                        .map_err(|error| error.to_string())
-                        .and_then(|(id, update)| parse_task_update(id, &update)),
-                    None,
-                    false,
-                ),
-            };
-            let _ = inbound_tx.send_durable(CollabEvent::TaskActionInvocationResult {
-                request_id,
-                result,
-                continuation,
-                retry_step,
-            });
+            let result = route
+                .channel
+                .invoke_task_action(run_id, &lease, target, "", &invocation.0.to_string())
+                .await
+                .map_err(|error| error.to_string())
+                .and_then(|(id, update)| parse_task_update(id, &update));
+            let _ = inbound_tx
+                .send_durable(CollabEvent::TaskActionInvocationResult { request_id, result });
         }
         CollabRequest::TaskRunCancellation {
             request_id,
@@ -12185,34 +12073,6 @@ mod tests {
             assert_eq!(parse_invocation_context(8, "  "), None);
             assert_eq!(parse_invocation_context(9, "{not-json"), None);
         }
-    }
-
-    #[test]
-    fn task_step_replies_keep_committed_and_retry_apart() {
-        let update = serde_json::to_string(&tilo_actions::InvocationUpdate::Succeeded {
-            invocation: tilo_actions::InvocationId::new(),
-            output: tilo_actions::ActionOutput::default(),
-        })
-        .unwrap();
-        let (result, continuation, retry) =
-            task_step_event(Ok(runtime_collab::TaskStepReply::Committed {
-                update_json: update,
-                continuation: b"{\"succeeded\":{}}".to_vec(),
-            }));
-        assert!(matches!(
-            result,
-            Ok((0, tilo_actions::InvocationUpdate::Succeeded { .. }))
-        ));
-        assert_eq!(continuation.as_deref(), Some(&b"{\"succeeded\":{}}"[..]));
-        assert!(!retry);
-
-        let (result, continuation, retry) =
-            task_step_event(Ok(runtime_collab::TaskStepReply::Retry));
-        assert!(result.is_err() && continuation.is_none() && retry);
-
-        let (result, _, retry) = task_step_event(Err("task action is no longer live".into()));
-        assert_eq!(result.unwrap_err(), "task action is no longer live");
-        assert!(!retry, "a refusal is terminal, not a pending step");
     }
 
     fn assert_document_publication_failure(manager: &mut CollaborationManager, expected: &str) {

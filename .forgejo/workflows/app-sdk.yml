@@ -150,8 +150,7 @@ jobs:
           else
             # A pull request compares the merge with the main it merged; a push
             # compares with its parent.
-            python3 tools/ci/app_sdk_affected.py ${MAIN:+--base "$MAIN"} --github-output "$GITHUB_OUTPUT"
-            python3 tools/ci/app_sdk_affected.py ${MAIN:+--base "$MAIN"} --lane linux --github-output "$GITHUB_OUTPUT"
+            python3 tools/ci/app_sdk_affected.py ${MAIN:+--base "$MAIN"} --lane both --github-output "$GITHUB_OUTPUT"
           fi
 
   # Linux: the CLI's own tests, the Linux artifact and .tapp of a
@@ -334,8 +333,7 @@ jobs:
       - name: Headless Chromium for Testing
         run: |
           # Chrome's shared-library dependencies; present on current builders.
-          dnf install -y nss atk at-spi2-atk cups-libs libdrm libXcomposite libXdamage \
-            libXrandr mesa-libgbm pango alsa-lib libxkbcommon || true
+          bash tools/ci/ensure-browser-dependencies.sh
           npx --yes @puppeteer/browsers@2 install chrome@stable --path "$RUNNER_TEMP/chrome" \
             | tee "$RUNNER_TEMP/chrome.txt"
           echo "CHROME=$(awk '{print $2}' "$RUNNER_TEMP/chrome.txt" | tail -n 1)" >> "$GITHUB_ENV"
@@ -471,8 +469,7 @@ jobs:
         run: |
           command -v node || dnf install -y nodejs
           # Chrome's shared-library dependencies; present on current builders.
-          dnf install -y nss atk at-spi2-atk cups-libs libdrm libXcomposite libXdamage \
-            libXrandr mesa-libgbm pango alsa-lib libxkbcommon || true
+          bash tools/ci/ensure-browser-dependencies.sh
           npx --yes @puppeteer/browsers@2 install chrome@stable --path "$RUNNER_TEMP/chrome" \
             | tee "$RUNNER_TEMP/chrome.txt"
           echo "CHROME=$(awk '{print $2}' "$RUNNER_TEMP/chrome.txt" | tail -n 1)" >> "$GITHUB_ENV"

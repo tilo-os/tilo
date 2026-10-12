@@ -169,6 +169,8 @@ pub enum ProvisionOutcome {
 enum DeviceClass {
     Native,
     Foreign,
+    #[cfg(any(debug_assertions, feature = "throwaway-test-identity"))]
+    Throwaway,
 }
 
 impl DeviceClass {
@@ -182,7 +184,12 @@ impl DeviceClass {
     /// A foreign device never keeps a native certificate it finds on disk.
     /// Native provisioning keeps whatever verified certificate exists.
     fn must_reissue(self, cert: &DeviceCert) -> bool {
-        self == Self::Foreign && !cert.capabilities.foreign
+        match self {
+            Self::Foreign => !cert.capabilities.foreign,
+            Self::Native => false,
+            #[cfg(any(debug_assertions, feature = "throwaway-test-identity"))]
+            Self::Throwaway => cert.expires_at_ns.is_none(),
+        }
     }
 }
 
@@ -826,7 +833,11 @@ pub fn is_throwaway_test_identity(identity_dir: &Path) -> bool {
 /// [`io::ErrorKind::Unsupported`], touching nothing, in a release build
 /// without the `throwaway-test-identity` feature;
 /// [`io::ErrorKind::AlreadyExists`] when the directory already holds an
-/// identity that is not a throwaway one; otherwise as
+/// identity that is not a throwaway one; [`io::ErrorKind::PermissionDenied`]
+/// for the shared device tree. Test roots must be dedicated and disposable;
+/// their certificates expire after 24 hours. Disposable private shares use
+/// owner-only files in `identity_dir`, regardless of the requested storage,
+/// so deleting the fixture also deletes its secrets. Otherwise as
 /// [`ensure_collaboration_identity`].
 pub fn ensure_throwaway_test_identity(
     identity_dir: &Path,
@@ -851,8 +862,9 @@ pub fn ensure_throwaway_test_identity(
 fn mint_throwaway_test_identity(
     identity_dir: &Path,
     paths: &IdentityPaths,
-    storage: IdentityStorage,
+    _storage: IdentityStorage,
 ) -> Result<ProvisionOutcome, io::Error> {
+    validate_throwaway_identity_paths(paths)?;
     prepare_identity_directory(identity_dir)?;
     let marker = identity_dir.join(THROWAWAY_TEST_IDENTITY_MARKER);
     if runtime_identity::resolve_active_identity(identity_dir).is_some() {
@@ -871,10 +883,63 @@ fn mint_throwaway_test_identity(
         identity_dir,
         paths,
         IdentityProvisioningContext::ThrowawayTest,
-        storage,
-        DeviceClass::Native,
+        IdentityStorage::Files,
+        DeviceClass::Throwaway,
         None,
     )
+}
+
+/// A throwaway must never certify the real machine's shared device key.
+#[cfg(any(debug_assertions, feature = "throwaway-test-identity"))]
+fn validate_throwaway_identity_paths(paths: &IdentityPaths) -> io::Result<()> {
+    let shared = Path::new("/var/lib/tilo");
+    let shared_real = shared
+        .canonicalize()
+        .unwrap_or_else(|_| shared.to_path_buf());
+    for path in [
+        &paths.user_pubkey,
+        &paths.user_privkey,
+        &paths.device_privkey,
+        &paths.device_cert,
+    ] {
+        if !path.is_absolute()
+            || path
+                .components()
+                .any(|part| matches!(part, std::path::Component::ParentDir))
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "throwaway identity paths must be absolute without parent traversal",
+            ));
+        }
+        if path.starts_with(shared) {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "throwaway identities require a private TILO_IDENTITY_ROOT; refusing the shared /var/lib/tilo tree",
+            ));
+        }
+        // Resolve the nearest existing ancestor, including symlink aliases.
+        for ancestor in path.ancestors() {
+            if fs::read_link(ancestor).is_ok_and(|target| target.starts_with(shared)) {
+                return Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "throwaway identity root aliases the shared device tree",
+                ));
+            }
+            match ancestor.canonicalize() {
+                Ok(real) if real.starts_with(&shared_real) => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::PermissionDenied,
+                        "throwaway identity root resolves to the shared device tree",
+                    ));
+                }
+                Ok(_) => break,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error),
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Prepare the private per-user identity directory before either the key
@@ -1214,13 +1279,19 @@ fn issue_device_certificate(
     device_label: &str,
     class: DeviceClass,
 ) -> Result<DeviceCert, io::Error> {
+    let issued_at_ns = tilo_clock::unix_now_ns();
+    let expires_at_ns = match class {
+        DeviceClass::Native | DeviceClass::Foreign => None,
+        #[cfg(any(debug_assertions, feature = "throwaway-test-identity"))]
+        DeviceClass::Throwaway => Some(issued_at_ns.saturating_add(24 * 60 * 60 * 1_000_000_000)),
+    };
     let mut cert = DeviceCert {
         user_public_key: identity.group_public_key(),
         device_public_key,
         device_label: device_label.into(),
         capabilities: class.capabilities(),
-        issued_at_ns: tilo_clock::unix_now_ns(),
-        expires_at_ns: None,
+        issued_at_ns,
+        expires_at_ns,
         signature: [0; 64],
     };
     let digest = tilo_user_identity::device_cert_signing_digest(&cert)
@@ -1841,6 +1912,91 @@ mod tests {
     }
 
     use std::sync::{Arc, Barrier};
+
+    #[test]
+    #[cfg(any(debug_assertions, feature = "throwaway-test-identity"))]
+    fn throwaway_refuses_the_shared_device_tree_before_writing_any_identity() {
+        let tmp = tempfile::tempdir().unwrap();
+        let personal = tmp.path().join("personal");
+        let error =
+            ensure_throwaway_test_identity(&personal, &IdentityPaths::default_system(), FILES)
+                .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+        assert!(error.to_string().contains("private TILO_IDENTITY_ROOT"));
+        assert!(!personal.exists());
+        #[cfg(unix)]
+        {
+            let alias = tmp.path().join("shared-alias");
+            std::os::unix::fs::symlink("/var/lib/tilo", &alias).unwrap();
+            let error =
+                ensure_throwaway_test_identity(&personal, &IdentityPaths::under(alias), FILES)
+                    .unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+            assert!(
+                !personal.exists(),
+                "a shared-tree alias also writes nothing"
+            );
+        }
+    }
+
+    #[test]
+    #[cfg(any(debug_assertions, feature = "throwaway-test-identity"))]
+    fn disposable_home_contains_its_own_expiring_chain_and_preserves_real_trust() {
+        let tmp = tempfile::tempdir().unwrap();
+        let real = IdentityPaths::under(tmp.path().join("real-system"));
+        let real_personal = tmp.path().join("owner/identity");
+        ensure_collaboration_identity(&real_personal, &real).unwrap();
+        let before = fs::read(&real.device_cert).unwrap();
+        let real_key = fs::read(&real.device_privkey).unwrap();
+        let real_cert = persist::read_device_cert(&real.device_cert).unwrap();
+        assert_eq!(real_cert.expires_at_ns, None);
+        let mut keys = Vec::new();
+        for slot in ["a", "b"] {
+            let home = tmp.path().join(slot);
+            let personal = home.join(".config/tilo/identity");
+            let paths = IdentityPaths::under(home.join(".local/share/tilo/test-identity"));
+            ensure_throwaway_test_identity(&personal, &paths, IdentityStorage::Platform).unwrap();
+            let record: serde_json::Value =
+                serde_json::from_slice(&fs::read(personal.join(PRIMARY_IDENTITY_FILE)).unwrap())
+                    .unwrap();
+            assert_eq!(record["secret_ref"]["backend"], "broker-file-v1");
+            let cert = persist::read_device_cert(&paths.device_cert).unwrap();
+            let deadline = cert.issued_at_ns + 24 * 60 * 60 * 1_000_000_000;
+            assert_eq!(cert.expires_at_ns, Some(deadline));
+            tilo_user_identity::verify_device_cert_at(&cert, cert.issued_at_ns).unwrap();
+            assert!(tilo_user_identity::verify_device_cert_at(&cert, deadline).is_err());
+            assert_ne!(cert.device_public_key, real_cert.device_public_key);
+            keys.push(cert.device_public_key);
+            assert!(paths.device_cert_for_user(&cert.user_public_key).is_file());
+            assert_eq!(
+                ensure_throwaway_test_identity(&personal, &paths, FILES).unwrap(),
+                ProvisionOutcome::Existing
+            );
+        }
+        assert_ne!(
+            keys[0], keys[1],
+            "each test slot is a separate disposable device"
+        );
+        fs::remove_dir_all(tmp.path().join("a")).unwrap();
+        assert!(
+            !tmp.path()
+                .join("a/.local/share/tilo/test-identity")
+                .exists()
+        );
+        assert!(
+            tmp.path()
+                .join("b/.local/share/tilo/test-identity/device/cert.bin")
+                .exists()
+        );
+        assert_eq!(fs::read(&real.device_cert).unwrap(), before);
+        assert_eq!(fs::read(&real.device_privkey).unwrap(), real_key);
+        assert_eq!(
+            fs::read_dir(real.device_cert.parent().unwrap().join("certs"))
+                .unwrap()
+                .count(),
+            1
+        );
+    }
 
     #[test]
     #[cfg(any(debug_assertions, feature = "throwaway-test-identity"))]

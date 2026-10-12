@@ -73,30 +73,29 @@ impl AuthenticatedPendingSource {
             return Err(refused());
         }
         let expectation = expected.clone();
-        let (stream, result) =
-            super::owned_io::exchange(stream, cancel, deadline, move |stream| {
-                let expected = expectation;
+        let (stream, result) = super::owned_io::exchange(stream, cancel, deadline, move |stream| {
+            let expected = expectation;
 
-                stream.set_nonblocking(false)?;
-                stream.write_all(b"RPH1")?;
-                stream.write_all(&expected.ticket)?;
-                stream.write_all(&expected.challenge)?;
-                process_binding::arm(stream)?;
-                let challenge = nonce();
-                stream.write_all(&process_binding::MAGIC)?;
-                stream.write_all(&challenge)?;
-                let peer = process_binding::receive(stream, &challenge, expected.worker_uid)?;
-                if !peer.current()
-                    || peer.pid() != expected.worker_pid
-                    || peer.gid() != expected.worker_gid
-                    || peer.start_time()? != expected.worker_start
-                {
-                    return Err(refused());
-                }
-                stream.write_all(&[1])?;
-                Ok(peer)
-            })
-            .await?;
+            stream.set_nonblocking(false)?;
+            stream.write_all(b"RPH1")?;
+            stream.write_all(&expected.ticket)?;
+            stream.write_all(&expected.challenge)?;
+            process_binding::arm(stream)?;
+            let challenge = nonce();
+            stream.write_all(&process_binding::MAGIC)?;
+            stream.write_all(&challenge)?;
+            let peer = process_binding::receive(stream, &challenge, expected.worker_uid)?;
+            if !peer.current()
+                || peer.pid() != expected.worker_pid
+                || peer.gid() != expected.worker_gid
+                || peer.start_time()? != expected.worker_start
+            {
+                return Err(refused());
+            }
+            stream.write_all(&[1])?;
+            Ok(peer)
+        })
+        .await?;
         let peer = result?;
 
         if [program.metadata()?.dev(), program.metadata()?.ino()] != expected.worker_program

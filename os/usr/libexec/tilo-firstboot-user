@@ -196,7 +196,8 @@ if [ -z "$lock_value" ]; then
   # Do not replace an unexpected intent; create it before useradd can succeed.
   printf '%s:%s\n' "$user" "$lock_value" | /usr/bin/python3 -I "$FILES_HELPER" intent "$TRANSACTION"
 fi
-# Persist the ownership witness before useradd commits the locked account.
+# Persist both the intent and its directory entry before account creation.
+# A power loss must not leave an account with no durable ownership witness.
 sync -f -- "$TRANSACTION"
 
 native_home="/var/home/$user"

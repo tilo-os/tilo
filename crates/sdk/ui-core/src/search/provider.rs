@@ -3,11 +3,12 @@
 //! records in a [`tilo_search::SearchIndex`].
 
 use super::body::{BodyIndex, SearchBody};
+use super::ordinals;
 use super::query::{Facet, SearchQuery};
 use super::rank::FieldWeight;
 use super::row::SearchRow;
 use crate::icons::Icon;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, RwLock};
 use tilo_search::{Document, Page, SearchIndex};
 
@@ -334,6 +335,73 @@ impl SearchCatalogInner {
             tracing::error!(%error, "could not index search records");
         }
     }
+
+    /// Make `records`, validated and unique, the whole catalogue in their
+    /// order, touching only what differs. Returns how many records it
+    /// indexed again or dropped.
+    fn sync(&mut self, records: Vec<SearchRecord>) -> Result<usize, SearchCatalogError> {
+        let held: Vec<Option<u64>> = records
+            .iter()
+            .map(|record| self.ordinals.get(record.resource_id.as_str()).copied())
+            .collect();
+        let planned = ordinals::plan(&held).ok_or(SearchCatalogError::BrowseOrdinalExhausted)?;
+        let wanted: HashSet<&str> = records
+            .iter()
+            .map(|record| record.resource_id.as_str())
+            .collect();
+        let removed: Vec<Arc<str>> = self
+            .ordinals
+            .keys()
+            .filter(|id| !wanted.contains(id.as_ref()))
+            .cloned()
+            .collect();
+        // Placed records (new, moved, or changed in place) by position.
+        let placed: Vec<usize> = (0..records.len())
+            .filter(|&at| {
+                let (Some(record), Some(ordinal)) = (records.get(at), planned.get(at)) else {
+                    return false;
+                };
+                held.get(at).copied().flatten() != Some(*ordinal)
+                    || !self.same_content(*ordinal, record)
+            })
+            .collect();
+        drop(wanted);
+        if removed.is_empty() && placed.is_empty() {
+            return Ok(0);
+        }
+        let generation = self
+            .generation
+            .checked_add(1)
+            .ok_or(SearchCatalogError::GenerationExhausted)?;
+        let last = planned.last().copied().unwrap_or(0);
+        let next_browse_ordinal = self.next_browse_ordinal.max(
+            last.checked_add(1)
+                .ok_or(SearchCatalogError::BrowseOrdinalExhausted)?,
+        );
+        // Free every ordinal that changes hands before taking any: a placed
+        // record may take one a moved record held.
+        for id in &removed {
+            self.take(id);
+        }
+        for &at in &placed {
+            if let Some(record) = records.get(at) {
+                self.take(&record.resource_id);
+            }
+        }
+        let mut records: Vec<Option<SearchRecord>> = records.into_iter().map(Some).collect();
+        for &at in &placed {
+            let (Some(record), Some(&ordinal)) =
+                (records.get_mut(at).and_then(Option::take), planned.get(at))
+            else {
+                continue;
+            };
+            let resource_id: Arc<str> = record.resource_id.as_str().into();
+            self.insert(ordinal, resource_id, record);
+        }
+        self.generation = generation;
+        self.next_browse_ordinal = next_browse_ordinal;
+        Ok(removed.len().saturating_add(placed.len()))
+    }
 }
 
 /// A complete, incremental search catalogue keyed by canonical resource id.
@@ -433,16 +501,20 @@ impl SearchCatalog {
         records: impl IntoIterator<Item = SearchRecord>,
     ) -> Result<(), SearchCatalogError> {
         // A fresh index indexes everything in one bulk build on commit.
-        let mut next = SearchCatalogInner::default();
+        let mut next = SearchCatalogInner {
+            next_browse_ordinal: ordinals::GAP,
+            ..SearchCatalogInner::default()
+        };
         for record in records {
             validate(&record)?;
             let resource_id: Arc<str> = record.resource_id.as_str().into();
             if next.ordinals.contains_key(&resource_id) {
                 return Err(SearchCatalogError::DuplicateResourceId);
             }
+            // A gap apart, so a later sync can place records between.
             let ordinal = next.next_browse_ordinal;
             next.next_browse_ordinal = ordinal
-                .checked_add(1)
+                .checked_add(ordinals::GAP)
                 .ok_or(SearchCatalogError::BrowseOrdinalExhausted)?;
             next.insert(ordinal, resource_id, record);
         }
@@ -457,6 +529,59 @@ impl SearchCatalog {
         *inner = next;
         drop(inner);
         Ok(())
+    }
+
+    /// [`Self::sync_records`] for legacy `(resource id, searchable text,
+    /// result)` rows, as [`Self::replace_all`] takes them.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::sync_records`].
+    pub fn sync(
+        &self,
+        rows: impl IntoIterator<Item = (String, String, SearchResult)>,
+    ) -> Result<bool, SearchCatalogError> {
+        self.sync_records(
+            rows.into_iter().map(|(resource_id, text, result)| {
+                SearchRecord::legacy(resource_id, &text, result)
+            }),
+        )
+    }
+
+    /// Make `records`, in their order, the whole catalogue, as
+    /// [`Self::replace_all_records`] would, indexing only the records that
+    /// are new, changed or moved, and dropping those absent. Hits and
+    /// browsing come in the same order a bulk replacement gives. The
+    /// generation advances once if anything changed and not at all
+    /// otherwise, so an unchanged snapshot keeps every cursor current.
+    ///
+    /// The catalogue's write lock is held only to compare and stage the
+    /// records; indexing them waits for the next query or
+    /// [`Self::index_bytes`], incrementally when few changed.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::replace_all_records`]; the catalogue is then unchanged.
+    pub fn sync_records(
+        &self,
+        records: impl IntoIterator<Item = SearchRecord>,
+    ) -> Result<bool, SearchCatalogError> {
+        let records: Vec<SearchRecord> = records.into_iter().collect();
+        let mut seen = HashSet::with_capacity(records.len());
+        for record in &records {
+            validate(record)?;
+            if !seen.insert(record.resource_id.as_str()) {
+                return Err(SearchCatalogError::DuplicateResourceId);
+            }
+        }
+        drop(seen);
+        let mut inner = self
+            .inner
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let touched = inner.sync(records);
+        drop(inner);
+        touched.map(|touched| touched > 0)
     }
 
     /// Set this freshly-built catalogue's generation immediately after a
@@ -1857,7 +1982,15 @@ mod tests {
                 record("document:b", "B"),
             ])
             .unwrap();
-        let reused = rebuilt.inner.read().unwrap().entries[&0]
+        // The first record browses first, whatever its ordinal.
+        let reused = rebuilt
+            .inner
+            .read()
+            .unwrap()
+            .entries
+            .values()
+            .next()
+            .unwrap()
             .body
             .clone()
             .unwrap();
@@ -1930,5 +2063,146 @@ mod tests {
             page.inspected, 1,
             "the interior term's posting is the candidate list"
         );
+    }
+
+    /// A small deterministic generator, so a failure replays exactly.
+    struct Steps(u64);
+
+    impl Steps {
+        fn next(&mut self, below: usize) -> usize {
+            self.0 = self
+                .0
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            usize::try_from(self.0 >> 33).unwrap() % below.max(1)
+        }
+    }
+
+    const SYNC_WORDS: [&str; 6] = ["harbour", "atlas", "granite", "lagoon", "fjord", "kestrel"];
+
+    fn sync_record(id: usize, version: usize) -> SearchRecord {
+        let title = format!(
+            "{} {} {id}",
+            SYNC_WORDS[id % SYNC_WORDS.len()],
+            SYNC_WORDS[version % SYNC_WORDS.len()]
+        );
+        record(&format!("document:{id}"), &title)
+    }
+
+    fn answers(catalog: &SearchCatalog) -> Vec<(Vec<SearchResult>, bool)> {
+        ["", "harbour", "atlas granite", "lagoon", "1", "fjord 2"]
+            .into_iter()
+            .map(|query| {
+                let page = catalog.query_page(query, None, 256, 256);
+                (page.results, page.next.is_some())
+            })
+            .collect()
+    }
+
+    #[test]
+    fn syncing_a_snapshot_answers_as_a_bulk_replacement() {
+        let mut steps = Steps(0x5ea2_c4ed);
+        // (id, version) in snapshot order.
+        let mut snapshot: Vec<(usize, usize)> = (0..200).map(|id| (id, 0)).collect();
+        let catalog = SearchCatalog::new("Documents");
+        catalog
+            .replace_all_records(
+                snapshot
+                    .iter()
+                    .map(|&(id, version)| sync_record(id, version)),
+            )
+            .unwrap();
+        let mut next_id = 200;
+        for step in 1..150 {
+            match steps.next(5) {
+                // New records at one place, and at the same place again and
+                // again later, until its gap is crowded.
+                0 => {
+                    let at = if step % 3 == 0 {
+                        50
+                    } else {
+                        steps.next(snapshot.len())
+                    };
+                    for _ in 0..=steps.next(4) {
+                        snapshot.insert(at, (next_id, step));
+                        next_id += 1;
+                    }
+                }
+                1 => {
+                    snapshot.remove(steps.next(snapshot.len()));
+                }
+                2 => {
+                    let at = steps.next(snapshot.len());
+                    snapshot[at].1 = step;
+                }
+                3 => {
+                    let moved = snapshot.remove(steps.next(snapshot.len()));
+                    snapshot.insert(steps.next(snapshot.len()), moved);
+                }
+                _ => {}
+            }
+            catalog
+                .sync_records(
+                    snapshot
+                        .iter()
+                        .map(|&(id, version)| sync_record(id, version)),
+                )
+                .unwrap();
+            let bulk = SearchCatalog::new("Documents");
+            bulk.replace_all_records(
+                snapshot
+                    .iter()
+                    .map(|&(id, version)| sync_record(id, version)),
+            )
+            .unwrap();
+            assert_eq!(catalog.stats().records, snapshot.len());
+            assert_eq!(answers(&catalog), answers(&bulk), "step {step}");
+        }
+    }
+
+    #[test]
+    fn a_sync_indexes_only_what_changed_and_an_unchanged_one_nothing() {
+        let catalog = SearchCatalog::new("Documents");
+        let snapshot = |changed: Option<usize>| {
+            (0..1_000).map(move |id| sync_record(id, usize::from(changed == Some(id))))
+        };
+        catalog.replace_all_records(snapshot(None)).unwrap();
+        let generation = catalog.stats().generation;
+        let touched =
+            |records: Vec<SearchRecord>| catalog.inner.write().unwrap().sync(records).unwrap();
+        assert_eq!(touched(snapshot(None).collect()), 0);
+        assert_eq!(
+            catalog.stats().generation,
+            generation,
+            "cursors stay current"
+        );
+        assert_eq!(touched(snapshot(Some(500)).collect()), 1);
+        assert_eq!(catalog.stats().generation, generation + 1);
+        // One more record at the front, and one gone from the end.
+        let mut records: Vec<SearchRecord> = snapshot(Some(500)).collect();
+        records.pop();
+        records.insert(0, sync_record(5_000, 0));
+        assert_eq!(touched(records), 2);
+        let first = catalog.query_page("", None, 1, 1);
+        assert_eq!(
+            first.results[0].action_address().unwrap().resource,
+            "document:5000",
+            "the new first record browses first"
+        );
+    }
+
+    #[test]
+    fn a_refused_sync_changes_nothing() {
+        let catalog = SearchCatalog::new("Documents");
+        catalog
+            .replace_all_records([record("document:a", "A"), record("document:b", "B")])
+            .unwrap();
+        let before = catalog.stats();
+        assert_eq!(
+            catalog.sync_records([record("document:a", "A"), record("document:a", "again")]),
+            Err(SearchCatalogError::DuplicateResourceId)
+        );
+        assert_eq!(catalog.stats(), before);
+        assert!(!catalog.query_page("b", None, 8, 8).results.is_empty());
     }
 }

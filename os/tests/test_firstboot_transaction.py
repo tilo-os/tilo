@@ -43,6 +43,8 @@ def fail(name):
     if stage == name:
         if os.environ.get('TERMINATE') == '1':
             os.kill(os.getppid(), signal.SIGTERM)
+        if stage == 'crash':
+            os.kill(os.getppid(), signal.SIGKILL)
         raise SystemExit(1)
 def expired():
     assert (r / 'expiry').read_text() == '1970-01-02', 'delivery ran unexpired'
@@ -70,6 +72,8 @@ def locked():
             p.chmod(0o755)
         (r / 'skel').mkdir()
         (r / 'skel/default').write_text('generated')
+        (r / 'skel/seeded').write_text('skel')
+        (r / 'home/fixtureuser/seeded').write_text('installer')
         (r / 'seeds.py').write_text(common + f"""locked()
 fail('seeds')
 import importlib.util, stat
@@ -182,7 +186,7 @@ else:
 
     def test_retry_after_final_unlock_relocks_before_delivery(self):
         self.assertNotEqual(self.run_boot('seeds').returncode, 0)
-        # Model interruption after chpasswd succeeded but before seed cleanup.
+        # Model interruption after expiry release but before seed cleanup.
         (self.root / 'shadow').write_text(HASH)
         (self.root / 'expiry').write_text('-1')
         result = self.run_boot('deliver-home-user')
@@ -236,6 +240,16 @@ else:
         self.assertTrue((self.root / 'etc/install-user.transaction').exists())
         self.assertEqual(self.run_boot().returncode, 0)
 
+    def test_seeded_home_keeps_installer_content_and_gets_skel(self):
+        result = self.run_boot()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        home = self.root / 'home/fixtureuser'
+        self.assertEqual((home / 'seeded').read_text(), 'installer')
+        self.assertEqual((home / 'default').read_text(), 'generated')
+        args = json.loads((self.root / 'useradd').read_text())
+        self.assertIn('-M', args)
+        self.assertIn('Fixture User', args)
+
     def test_unseeded_home_is_repaired_after_account_committed(self):
         import shutil
         shutil.rmtree(self.root / 'home/fixtureuser')
@@ -247,6 +261,7 @@ else:
         self.assertEqual(result.returncode, 0, result.stderr)
         home = self.root / 'home/fixtureuser'
         self.assertTrue(home.is_dir())
+        self.assertEqual((home / 'default').read_text(), 'generated')
         self.assertIn('-M', json.loads((self.root / 'useradd').read_text()))
         self.assertEqual((home.stat().st_uid, home.stat().st_gid),
                          (os.getuid(), os.getgid()))

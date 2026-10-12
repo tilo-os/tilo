@@ -474,15 +474,11 @@ fn interfaces_unmet(
         .sandbox
         .services
         .iter()
-        .filter_map(
-            |(name, raw)| match crate::manifest::ServiceReq::parse(raw) {
-                Ok(crate::manifest::ServiceReq::Required(version)) => {
-                    Some(tilo_app_package::interfaces::InterfaceRequirement {
-                        name: name.clone(),
-                        version,
-                    })
-                }
-                _ => None,
+        .filter(|(_, req)| req.is_required())
+        .map(
+            |(name, req)| tilo_app_package::interfaces::InterfaceRequirement {
+                name: name.clone(),
+                version: req.version,
             },
         )
         .collect();
@@ -3577,8 +3573,7 @@ pub(crate) fn run_with_context(
             manifest
                 .sandbox
                 .services
-                .get(crate::services::IDENTITY_SERVICE)
-                .map(String::as_str),
+                .get(crate::services::IDENTITY_SERVICE),
         )? {
             resolved.push(identity);
         }
@@ -4321,8 +4316,7 @@ fn run_with_capture_spawn<T>(
         manifest
             .sandbox
             .services
-            .get(crate::services::IDENTITY_SERVICE)
-            .map(String::as_str),
+            .get(crate::services::IDENTITY_SERVICE),
     )? {
         resolved.push(identity);
     }

@@ -35,6 +35,16 @@ impl LiveRow {
         }
     }
 
+    /// `resource`, an entity the surface already describes as a resource
+    /// (a search hit, a catalogue entry), as a row: its presentation,
+    /// views, operations and children. Its document actions are dropped at
+    /// any depth: the resource's own publication carries them.
+    pub fn from_resource(resource: Resource) -> Self {
+        Self {
+            resource: resolved_outside_document(resource),
+        }
+    }
+
     /// Offer a view or effect operation on the row.
     ///
     /// # Panics

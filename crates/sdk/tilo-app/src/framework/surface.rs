@@ -678,7 +678,9 @@ impl<R: Resource, S: ResourceSurface<R, E> + 'static, E: Effect> SurfaceHost<R, 
         let runner = effects
             .env()
             .map(|env| EffectRunner::new(env.scoped(&scope)));
-        if runner.is_some() && !E::declarations().is_empty() {
+        // Captures and History describe their controls too. Publication is
+        // inert metadata; only the runner below can execute an effect.
+        if !E::declarations().is_empty() {
             let published = Rc::clone(&statuses);
             let lifetime = Rc::clone(&scope);
             effects.publish::<E>(scope.alive(), move || {

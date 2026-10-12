@@ -807,6 +807,10 @@ impl Widget for Tally {
     }
 }
 
+thread_local! {
+    static TALLY_EFFECT_CALLS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
 impl ResourceSurface<Mailbox, TallyEffect> for Tally {
     fn present(&mut self, _: &std::rc::Rc<Mailbox>) {}
 
@@ -815,6 +819,7 @@ impl ResourceSurface<Mailbox, TallyEffect> for Tally {
         effect: TallyEffect,
         cx: &mut EffectCx<Mailbox, Self>,
     ) -> Result<Effected, String> {
+        TALLY_EFFECT_CALLS.with(|calls| calls.set(calls.get().saturating_add(1)));
         match effect {
             TallyEffect::Count { by } => {
                 self.counted = self.counted.saturating_add(by);
@@ -881,7 +886,7 @@ impl ResourceSurface<Mailbox, TallyEffect> for NestedChild {
             }
             TallyEffect::Tally => {
                 let reply = cx.reply_then(|_, _, cx| {
-                    cx.submit(Mailbox::FETCHED.with("retired child changed document".into()));
+                    cx.submit(Mailbox::FETCHED.with("retired child changed document"));
                     Ok(Effected::done())
                 });
                 NESTED_REPLY.with(|saved| *saved.borrow_mut() = Some(reply));
@@ -1006,6 +1011,53 @@ impl ResourceApp for TallyApp {
     fn view(cx: &mut ViewCx<Mailbox>) -> Element {
         cx.surface(Tally::default())
     }
+}
+
+#[test]
+fn captures_publish_surface_effects_and_availability_without_running_handlers() {
+    TALLY_EFFECT_CALLS.with(|calls| calls.set(0));
+    let mut live = TestApp::<TallyApp>::new().unwrap();
+    let mut capture = TestApp::<TallyApp>::capture(None).unwrap();
+    let live_surface = live.agent_surface();
+    let capture_surface = capture.agent_surface();
+    for id in ["count", "tally"] {
+        assert_eq!(effect(&capture_surface, id), effect(&live_surface, id));
+        assert!(
+            effect(&capture_surface, id).is_some(),
+            "capture must publish {id}"
+        );
+    }
+    assert_eq!(
+        effect(&capture_surface, "tally").unwrap()["label"],
+        "Tally (0)"
+    );
+    assert!(capture.effect(&TallyEffect::Tally).is_err());
+    assert!(
+        capture
+            .effect_on("row:5", &TallyEffect::Count { by: 5 })
+            .is_err()
+    );
+    capture.settle();
+    assert_eq!(
+        capture.surface::<Tally, _>(|surface| surface.counted),
+        Some(0)
+    );
+    assert_eq!(capture.state(), Mailbox::default());
+    assert!(capture.effect_progress().is_empty());
+    assert_eq!(TALLY_EFFECT_CALLS.with(std::cell::Cell::get), 0);
+    assert_eq!(
+        live.effect(&TallyEffect::Tally).unwrap().value,
+        Some(serde_json::json!(1))
+    );
+    let head = live.versions().last().unwrap().hash;
+    let past = live.past_version(&[head]).unwrap();
+    assert_eq!(past.state().fetched, "tally 1");
+    assert_eq!(
+        TALLY_EFFECT_CALLS.with(std::cell::Cell::get),
+        1,
+        "History must not replay outside effects"
+    );
+    assert_eq!(live.surface::<Tally, _>(|surface| surface.counted), Some(1));
 }
 
 #[test]

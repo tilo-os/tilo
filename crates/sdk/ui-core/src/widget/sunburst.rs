@@ -160,19 +160,9 @@ impl SunburstChart {
         }
     }
     #[must_use]
-    pub fn styled(mut self, style: SunburstStyle) -> Self {
+    pub fn with_style(mut self, style: SunburstStyle) -> Self {
         self.style = style;
         self
-    }
-    #[must_use]
-    pub fn with_style(self, style: SunburstStyle) -> Self {
-        self.styled(style)
-    }
-    pub fn style(&self) -> &SunburstStyle {
-        &self.style
-    }
-    pub fn style_mut(&mut self) -> &mut SunburstStyle {
-        &mut self.style
     }
     #[must_use]
     pub fn with_center(mut self, title: impl Into<String>, subtitle: impl Into<String>) -> Self {

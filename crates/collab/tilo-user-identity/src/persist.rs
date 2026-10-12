@@ -592,11 +592,18 @@ fn signing_key_from_open_file(
         let mut bytes = Zeroizing::new(vec![0u8; 33]);
         let mut read = 0;
         while read < bytes.len() {
-            let found = file.read_at(&mut bytes[read..], read as u64)?;
+            let offset = u64::try_from(read)
+                .map_err(|_| io::Error::other("key read offset exceeds its bound"))?;
+            let remaining = bytes
+                .get_mut(read..)
+                .ok_or_else(|| io::Error::other("key reader exceeded its buffer"))?;
+            let found = file.read_at(remaining, offset)?;
             if found == 0 {
                 break;
             }
-            read += found;
+            read = read
+                .checked_add(found)
+                .ok_or_else(|| io::Error::other("key read length exceeds its bound"))?;
         }
         bytes.truncate(read);
         bytes

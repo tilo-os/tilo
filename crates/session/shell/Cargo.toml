@@ -2,6 +2,7 @@
 # tests/*.rs are modules of tests/it.rs, not separate binaries
 autotests = false
 name = "shell"
+description = "Wayland compositor and session: strips, windows, app hosting, collab"
 version = "0.1.0"
 edition = "2024"
 publish.workspace = true
@@ -123,6 +124,7 @@ iroh.workspace = true
 iroh-base.workspace = true
 iroh-gossip.workspace = true
 iroh-mdns-address-lookup.workspace = true
+tilo-endpoint-reachability = { path = "../../system/endpoint-reachability" }
 bytes.workspace = true
 blake3.workspace = true
 
@@ -235,6 +237,9 @@ resvg = { version = "0.47", default-features = false }
 # via `NeighbourMsg::AppCrdtIncrementalSigned`. The contract types and
 # the validator live in `tilo-collab-types`.
 collab-types = { path = "../../collab/collab-types" }
+# The collaborative filesystem's xattr names, read when opening a
+# workspace file by its stable record identity.
+fs-protocol = { path = "../../system/fs-protocol" }
 # The neighbour wire vocabulary (`NeighbourMsg`) and its retention rules,
 # shared with every other peer that speaks the collaboration protocol.
 neighbour-wire = { path = "../../collab/neighbour-wire" }
@@ -334,6 +339,7 @@ tilo-search = { path = "../../sdk/search", features = ["disk"] }
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
+tilo-endpoint-reachability = { path = "../../system/endpoint-reachability", features = ["test-support"] }
 # Signs the installed-package fixtures the launch path reads surfaces from.
 tilo-app-package = { path = "../../packaging/tilo-app-package" }
 # Native Store publication through the same certified session fixture as Browser.
@@ -346,9 +352,6 @@ tilo-app = { path = "../../sdk/tilo-app", features = ["test-support"] }
 greeter = { path = "../greeter" }
 # Private native-pair acceptance uses the governed host's real voice relay.
 tilo-relay = { path = "../../hosting/tilo-relay", features = ["agents"] }
-# An iroh relay of a test's own, so a desktop's relays can be started and a
-# home relay appear without the public ones.
-iroh-relay = { version = "1.0.3", features = ["server"] }
 # Signs the TPM quotes the disk-unlock auto-approval tests verify.
 p256 = { version = "0.14", features = ["ecdsa"] }
 tilo-copy-lint = { path = "../../dev/copy-lint" }

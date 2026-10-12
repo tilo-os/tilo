@@ -4,7 +4,7 @@
 //! canonical schema, whose identity is the signed `[package].id`. This
 //! module re-exports that view under the names the sandbox code uses and
 //! adds what only the launcher decides — which manifests it refuses to
-//! sandbox, and how it reads a service requirement.
+//! sandbox.
 //!
 //! ### `[sandbox.fs]` is not part of the vocabulary
 //!
@@ -18,7 +18,7 @@ pub use tilo_app_package::continuity_schema;
 pub use tilo_app_package::view::{
     ContinuityContract, ContinuityFacet, ContinuitySemanticSchema, Entrypoint, EntrypointType, Fs,
     KIND_APP, KIND_SERVICE, ManifestReadError, ManifestView, Net, PortalPolicy, Sandbox,
-    read_manifest,
+    ServiceReq, read_manifest,
 };
 
 /// A manifest asking for filesystem access it is not allowed to ask
@@ -87,55 +87,10 @@ pub fn enforce_fs_policy(manifest: &ManifestView) -> Result<(), FsPolicyViolatio
     Ok(())
 }
 
-/// Required/optional service version requirement. The version integer
-/// is opaque here; the launcher only needs to know if absence is fatal.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ServiceReq {
-    Required(u32),
-    Optional(u32),
-}
-
-impl ServiceReq {
-    /// # Errors
-    ///
-    /// Returns [`ServiceReqParseError::MissingAt`] if `raw` has no `@`,
-    /// [`ServiceReqParseError::BadVersion`] if the part after `@` is not a
-    /// `u32`, or [`ServiceReqParseError::BadKind`] if the part before `@` is
-    /// not `required`/`optional`.
-    pub fn parse(raw: &str) -> Result<ServiceReq, ServiceReqParseError> {
-        let (kind, rest) = raw
-            .split_once('@')
-            .ok_or_else(|| ServiceReqParseError::MissingAt(raw.to_string()))?;
-        let version: u32 = rest
-            .trim()
-            .parse()
-            .map_err(|_| ServiceReqParseError::BadVersion(rest.to_string()))?;
-        match kind.trim() {
-            "required" => Ok(ServiceReq::Required(version)),
-            "optional" => Ok(ServiceReq::Optional(version)),
-            other => Err(ServiceReqParseError::BadKind(other.to_string())),
-        }
-    }
-
-    pub fn version(&self) -> u32 {
-        match self {
-            ServiceReq::Required(v) | ServiceReq::Optional(v) => *v,
-        }
-    }
-
-    pub fn is_required(&self) -> bool {
-        matches!(self, ServiceReq::Required(_))
-    }
-}
-
-#[derive(Debug, thiserror::Error)]
-pub enum ServiceReqParseError {
-    #[error("service requirement `{0}` is missing `@<version>`")]
-    MissingAt(String),
-    #[error("service requirement version `{0}` is not a positive integer")]
-    BadVersion(String),
-    #[error("service requirement kind `{0}` must be `required` or `optional`")]
-    BadKind(String),
+/// A service requirement written as a manifest would (`"required@1"`).
+#[cfg(test)]
+pub(crate) fn service_req(raw: &str) -> ServiceReq {
+    ServiceReq::parse("", raw).expect("valid service requirement")
 }
 
 /// A canonical manifest for tests: `package` is the body of `[package]`,
@@ -280,43 +235,10 @@ bin = "bin/app"
                     .services
                     .get(service)
                     .unwrap_or_else(|| panic!("Settings declares the {service} integration"));
-                assert_eq!(
-                    ServiceReq::parse(requirement).expect("valid service requirement"),
-                    ServiceReq::Optional(1),
+                assert!(
+                    !requirement.is_required() && requirement.version == 1,
                     "Settings must open when {service} is not running"
                 );
-            }
-        }
-    }
-
-    #[test]
-    fn service_requirements_parse() {
-        // Phase `service_req_parses_required_and_optional`.
-        {
-            assert_eq!(
-                ServiceReq::parse("required@2").unwrap(),
-                ServiceReq::Required(2)
-            );
-            assert_eq!(
-                ServiceReq::parse("optional@7").unwrap(),
-                ServiceReq::Optional(7)
-            );
-        }
-        // Phase `service_req_rejects_malformed`.
-        {
-            assert!(ServiceReq::parse("required").is_err());
-            assert!(ServiceReq::parse("maybe@1").is_err());
-            assert!(ServiceReq::parse("required@abc").is_err());
-        }
-        // Phase `every_decoded_requirement_parses`.
-        // The view writes each requirement as `<severity>@<version>`, so
-        // whatever the canonical schema accepts the launcher can read.
-        {
-            let manifest = read_manifest(&repo().join("apps/settings/tilo-app.toml")).unwrap();
-            assert!(!manifest.sandbox.services.is_empty());
-            for (service, requirement) in &manifest.sandbox.services {
-                ServiceReq::parse(requirement)
-                    .unwrap_or_else(|e| panic!("{service} = {requirement:?}: {e}"));
             }
         }
     }

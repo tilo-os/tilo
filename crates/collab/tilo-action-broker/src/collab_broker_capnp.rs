@@ -6660,9 +6660,6 @@ impl CapnpBrokerState {
             | CollabEvent::ActionDirectoryPage { .. }
             | CollabEvent::PublishedActionResolution { .. }
             | CollabEvent::WorkspaceControl { .. }
-            | CollabEvent::EnrolledTask(_)
-            | CollabEvent::EnrolledTaskReply { .. }
-            | CollabEvent::EnrolledTaskDisconnected { .. }
             | CollabEvent::TaskRun(_)
             | CollabEvent::TaskActionInvocationResult { .. }
             | CollabEvent::TaskRunCancellation { .. }
@@ -9662,6 +9659,8 @@ impl channel_handle::Server for CapnpChannelHandle {
         let state = self.state.clone();
         let peer_id = self.peer_id;
         let caller = durable_local_invocation::LocalCaller::capture(&self).ok();
+        let route = self.route();
+        let identity = self.verified_identity.clone();
         Promise::from_future(async move {
             let request = params.get()?;
             // Interactive confirmations have no safe unattended equivalent.
@@ -9687,11 +9686,6 @@ impl channel_handle::Server for CapnpChannelHandle {
                 action: &action,
                 argument: argument.as_deref(),
             };
-            if request.get_has_step() {
-                return Err(capnp::Error::failed(
-                    "durable task steps are not served by this host".into(),
-                ));
-            }
             let invocation = request.get_invocation()?.to_str()?;
             let provenance = if runtime_collab::native_task_revision(&lease).is_some() {
                 let id = uuid::Uuid::parse_str(invocation).map_err(|_| {
@@ -9710,12 +9704,19 @@ impl channel_handle::Server for CapnpChannelHandle {
                 None
             };
             let observed = if let Some((caller, invocation)) = &provenance {
-                let run = state
-                    .task_run_for(peer_id, &agent_id, request.get_run_id(), &lease)
-                    .map_err(capnp::Error::failed)?;
+                let reask = native_task_execution::ChildReask {
+                    peer_id,
+                    agent_id: &agent_id,
+                    run_id: request.get_run_id(),
+                    lease: &lease,
+                    invocation: *invocation,
+                    target,
+                    caller,
+                };
+                let wait = native_task_execution::ChildWait::read(&request)?;
                 state
-                    .native_task_observation(&run, *invocation, target, caller)
-                    .map_err(capnp::Error::failed)?
+                    .observe_native_child(&reask, wait, (&route, &identity))
+                    .await?
             } else {
                 None
             };

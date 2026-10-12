@@ -33,16 +33,19 @@ class CredentialTransportTests(unittest.TestCase):
         source = SOURCE.read_text()
         replacements = {
             "CONF=/etc/tilo/install-user.conf": f"CONF={credential}",
-            "TRANSACTION=/etc/tilo/install-user.transaction": f"TRANSACTION={root}/transaction",
             "FULL_NAME_CONF=/etc/tilo/install-user-full-name": f"FULL_NAME_CONF={name}",
+            "TRANSACTION=/etc/tilo/install-user.transaction": f"TRANSACTION={root}/install-user.transaction",
             "key=/var/lib/tilo/device-private/keypair.bin": f"key={root}/absent-device-key",
             '"/home/$user"': f'"{root}/home/$user"',
             '"/var/home/$user"': f'"{root}/var-home/$user"',
             'seed_helper=/etc/tilo/firstboot-home-seeds.py': f'seed_helper={seeds}',
             'FILES_HELPER="$(dirname -- "${BASH_SOURCE[0]}")/tilo-firstboot-files.py"': f'FILES_HELPER="{ROOT}/os/usr/libexec/tilo-firstboot-files.py"',
         }
+        (root / 'home').mkdir(exist_ok=True)
+        (root / 'skel').mkdir()
         for original, replacement in replacements.items():
-            self.assertGreaterEqual(source.count(original), 1, original)
+            expected_count = 2 if original in ['"/home/$user"', '"/var/home/$user"'] else 1
+            self.assertEqual(source.count(original), expected_count, original)
             source = source.replace(original, replacement)
         script = root / "firstboot"
         script.write_text(source)

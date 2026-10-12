@@ -1,6 +1,7 @@
 [package]
 name = "imager"
 version = "0.1.0"
+description = "Writes OS images to drives and installs Tilo"
 edition = "2024"
 publish.workspace = true
 license.workspace = true

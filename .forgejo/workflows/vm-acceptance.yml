@@ -19,7 +19,7 @@ name: Dev / VM acceptance
 # The run also measures the installed desktop's performance KPIs (boot to the
 # greeter, idle CPU, wakeups and RAM, memory per app, warm app opens, frame CPU)
 # and writes them as records; the perf job compares them with the store and, for
-# the nightly run on main, publishes them (DEVELOPMENT.md "Performance results").
+# the nightly run on main, publishes them (docs/measurements/performance.md).
 #
 # Runners: runner-disk-100g, the Kata runners whose KVM the dev disk and legacy
 # guest boots already use. They have no GPU, so `gl: auto` runs without virgl
@@ -506,8 +506,7 @@ jobs:
 
   # The installed desktop's KPIs (boot, idle, memory, app, render) as performance
   # records, compared with the store's rolling baseline and tools/perf/kpi-budgets.toml
-  # the way Perf / scheduled compares its groups (DEVELOPMENT.md, "Performance
-  # results"). They come from this workflow's VM run rather than a second one there.
+  # the way Perf / scheduled compares its groups (docs/measurements/performance.md). They come from this workflow's VM run rather than a second one there.
   # Its verdict is this job's, apart from the acceptance checks'. Only the nightly run
   # on main, and a dispatch of every check on main, write to the store; the rest
   # compare read-only.
