@@ -75,6 +75,7 @@ pub mod history_narrative;
 pub mod host_apps;
 pub mod host_shell_allow;
 pub mod hosted_inputs;
+pub mod hosted_liveness;
 pub mod i18n;
 pub mod identity_provisioning;
 pub mod in_process;
@@ -507,18 +508,7 @@ fn try_to_ui_tile_for_tab(
             ..
         } => UiTile::Notice {
             title: label.clone(),
-            detail: crate::shell::i18n::t_args(
-                "hosted-window-running-on",
-                &[(
-                    "device",
-                    if host_label.trim().is_empty() {
-                        host.chars().take(8).collect::<String>()
-                    } else {
-                        host_label.clone()
-                    }
-                    .into(),
-                )],
-            ),
+            detail: hosted_liveness::running_on(host, host_label, hosted_liveness::is_live(host)),
         },
         ShellTile::LocalApp {
             app_id,

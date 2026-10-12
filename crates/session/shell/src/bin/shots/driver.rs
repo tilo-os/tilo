@@ -1423,6 +1423,8 @@ impl ShellDriver {
     pub fn scene_setup(&mut self, name: &str) -> Result<(), String> {
         match name {
             "desktop" => Self::scene_desktop(),
+            "hosted-online" => self.scene_hosted_window(true),
+            "hosted-offline" => self.scene_hosted_window(false),
             "overview" => self.scene_overview(),
             "overview-shared" => self.scene_overview_shared(),
             "palette" => self.scene_palette(),
@@ -1486,6 +1488,39 @@ impl ShellDriver {
 
     /// Bare desktop; the driver's default state already renders it.
     fn scene_desktop() {}
+
+    /// Production hosted-window card, without a live desktop or transport.
+    fn scene_hosted_window(&mut self, online: bool) {
+        let host = "aa".repeat(32);
+        shell::shell::hosted_liveness::set_live(if online {
+            std::collections::BTreeSet::from([host.clone()])
+        } else {
+            std::collections::BTreeSet::new()
+        });
+        self.with_chrome(|st| {
+            let mut tree = st.tree_mut();
+            if let Some(workspace) = tree.desktop.active_workspace_mut()
+                && let Some(group) = workspace
+                    .strips
+                    .first_mut()
+                    .and_then(|strip| strip.window_groups.first_mut())
+                && let Some(tab) = group.tabs.first_mut()
+            {
+                group.active_tab = tab.id;
+                tab.title = "Firefox on Laptop".into();
+                tab.tile = shell::shell::state::TileContent::HostedWindow {
+                    app_id: "org.mozilla.firefox".into(),
+                    label: "Firefox on Laptop".into(),
+                    host,
+                    host_label: "Laptop".into(),
+                };
+            }
+            tree.seed_doc_from_cache();
+            drop(tree);
+            st.bump();
+        });
+        self.fb.host_mut().refresh_hosted_window_cards();
+    }
 
     fn scene_overview(&mut self) {
         self.with_chrome(|st| st.overlays.overview = true);
@@ -2653,6 +2688,8 @@ impl ShellDriver {
     /// legacy `--scenes` flag for default expansion + validation.
     pub const ALL_SCENES: &'static [&'static str] = &[
         "desktop",
+        "hosted-online",
+        "hosted-offline",
         "multi-group",
         "multi-strip",
         "maximized",

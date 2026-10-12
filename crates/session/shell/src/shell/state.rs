@@ -4,12 +4,14 @@ use std::collections::{BTreeSet, HashMap};
 use tilo_automerge::ApplyIncoming;
 use tilo_clock::unix_now_i64;
 
+mod forwarded_commands;
 mod local_app_records;
 mod tree_handle;
 mod window_hosting;
 use super::fs_authority::schedule_fs_authority_publication;
 #[cfg(test)]
 use super::fs_authority::wait_for_fs_authority_publication_idle;
+pub use forwarded_commands::{ForwardedCommand, Gesture};
 pub use local_app_records::LocalAppRecord;
 pub use tree_handle::{WeakWorkspaceTreeHandle, WorkspaceTreeHandle, WorkspaceTreeWriteGuard};
 pub use window_hosting::WindowHosting;
@@ -850,6 +852,15 @@ pub struct WorkspaceTree {
     /// keeps what it was launched as.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub package_launches: HashMap<TabId, String>,
+    /// Topology namespaces of this person's other devices, told by the
+    /// network as it learns them. Session-scoped, never persisted.
+    #[serde(skip)]
+    pub personal_device_salts: BTreeSet<u16>,
+    /// Gestures on windows another device of this person owns, shown here
+    /// and handed to that device until its layout reflects them. Kept across
+    /// restarts so a gesture made while the owner is away still reaches it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub forwarded_commands: Vec<ForwardedCommand>,
     /// Where to write this tree when a capability changes. `None`
     /// disables it (tests, offscreen renderer). Set at boot by the
     /// compositor — what makes an `Always` grant survive a restart.
@@ -899,6 +910,8 @@ impl Default for WorkspaceTree {
             native_document_tabs: HashMap::new(),
             local_app_records: HashMap::new(),
             package_launches: HashMap::new(),
+            personal_device_salts: BTreeSet::new(),
+            forwarded_commands: Vec::new(),
             persist_path: None,
             fs_acl_path: None,
             window_hosting: None,
@@ -1822,10 +1835,21 @@ impl WorkspaceTree {
             .get(&room)
             .cloned()
             .unwrap_or_default();
-        let strips: Vec<Strip> = self.window_hosting.as_ref().map_or_else(
+        let mut strips: Vec<Strip> = self.window_hosting.as_ref().map_or_else(
             || ws.strips.clone(),
             |hosting| hosting.published(&ws.strips, &self.package_launches),
         );
+        // Groups minted only to show a gesture another of this person's
+        // devices has yet to apply are never published; that device mints
+        // its own.
+        let shown = self.forwarded_groups(room);
+        if !shown.is_empty() {
+            for strip in &mut strips {
+                strip
+                    .window_groups
+                    .retain(|group| !shown.contains(&group.id));
+            }
+        }
         let room_str = room.to_string();
         let local_salt = self.local_salt();
         let share_floor = self.room_share_floor.get(&room).copied();
@@ -2132,14 +2156,37 @@ impl WorkspaceTree {
             return false;
         };
         let replicated = projection::contents_of(doc);
-        let changed = projection::merge_room_contents(
+        let presets = self
+            .requires_native_owner(room)
+            .then(|| projection::workspace_presets_of(doc));
+        // Gestures still waiting on another of this person's devices are
+        // taken out, the room folded in, and the gestures shown again on top.
+        let pending = self.forwarded_commands.iter().any(|f| f.room == room);
+        let before = pending
+            .then(|| {
+                self.workspace_in_room(room)
+                    .map(|ws| serde_json::to_vec(&ws.strips).ok())
+            })
+            .flatten()
+            .flatten();
+        if pending {
+            self.withdraw_forwarded(room);
+        }
+        let merged = projection::merge_room_contents(
             &mut self.desktop,
             room,
             replicated,
             projection::Reader::Owner(local_salt),
         );
-        if self.requires_native_owner(room) {
-            let presets = projection::workspace_presets_of(doc);
+        let changed = if pending {
+            self.show_forwarded(room);
+            self.workspace_in_room(room)
+                .and_then(|ws| serde_json::to_vec(&ws.strips).ok())
+                != before
+        } else {
+            merged
+        };
+        if let Some(presets) = presets {
             let mut reprofiled = false;
             if let Some(ws) = self
                 .desktop
@@ -4906,6 +4953,11 @@ impl WorkspaceTree {
         // Cache and Automerge document form one transaction. Keep snapshots
         // so a stale/malformed document cannot leave the live cache moved
         // while replication still describes the old layout.
+        match self.forward_tab_drop(src_strip_id, dest_strip_id, tab_id, target) {
+            Some(Gesture::Local) => {}
+            Some(Gesture::Forwarded) => return true,
+            None => return false,
+        }
         let before_workspaces = self.desktop.workspaces.clone();
         let before_doc = self.doc.clone();
         let Some(moved) = self.desktop.move_tab_across_strips(
@@ -4955,6 +5007,14 @@ impl WorkspaceTree {
         tab_id: TabId,
         insert_at: usize,
     ) -> Option<GroupId> {
+        if self.forward_split(strip_id, tab_id, insert_at) == Gesture::Forwarded {
+            // Shown here under a group minted for the purpose; the owning
+            // device mints the group everyone keeps.
+            return self
+                .forwarded_commands
+                .last()
+                .and_then(|forwarded| forwarded.minted.first().copied());
+        }
         let before_workspaces = self.desktop.workspaces.clone();
         let before_doc = self.doc.clone();
         let moved =
@@ -5085,6 +5145,9 @@ impl WorkspaceTree {
         command: &tilo_desktop_model::commands::DesktopCommand,
     ) -> Result<bool, String> {
         use tilo_desktop_model::commands::{DesktopCommand, apply_command};
+        if self.forward_command(command) == Gesture::Forwarded {
+            return Ok(true);
+        }
         let strip_id = match command {
             DesktopCommand::ReorderTab { location, .. } => location.strip,
             DesktopCommand::ReorderGroup { strip, .. } => *strip,

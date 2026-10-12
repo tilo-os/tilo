@@ -12,8 +12,8 @@
 )]
 
 use tilo_desktop_model::commands::{
-    DesktopCommand, OpenContext, TabLocation, TabPlacement, apply_command, open_app_placement,
-    resolve_open_app,
+    DesktopCommand, FRONT, OpenContext, TabLocation, TabPlacement, apply_command,
+    open_app_placement, relocated_entries, resolve_open_app,
 };
 use tilo_desktop_model::{
     AppKind, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace, WorkspaceId,
@@ -386,4 +386,86 @@ fn shortcut_commands_save_replace_and_delete_by_id_with_the_owner_as_saver() {
     apply_command(&mut workspace, &delete("tidy"), &mut minter(0), &mut create).unwrap();
     assert!(workspace.shortcuts.is_empty());
     assert!(apply_command(&mut workspace, &delete("tidy"), &mut minter(0), &mut create).is_err());
+}
+
+#[test]
+fn a_front_anchor_places_first_and_relocations_name_their_entries() {
+    let mut workspace = workspace_with_group();
+    workspace.strips.push(tilo_desktop_model::Strip {
+        id: StripId(11),
+        name: "Side".into(),
+        window_groups: vec![WindowGroup {
+            id: 40,
+            active_tab: 41,
+            width: WindowWidth::Normal,
+            maximized: false,
+            tabs: vec![Tab {
+                id: 41,
+                title: "Notes".into(),
+                tile: notes(),
+            }],
+        }],
+    });
+    let at = TabLocation {
+        strip: 10,
+        group: 20,
+        tab: 31,
+    };
+    let into_group = DesktopCommand::MoveTab {
+        location: at,
+        placement: TabPlacement::InGroup {
+            strip: 11,
+            group: 40,
+            after: Some(FRONT),
+        },
+    };
+    assert_eq!(relocated_entries(&workspace, &into_group), vec![31]);
+    apply_command(
+        &mut workspace,
+        &into_group,
+        &mut minter(800),
+        &mut |_, _| unreachable!(),
+    )
+    .unwrap();
+    let side: Vec<u64> = workspace.strips[1].window_groups[0]
+        .tabs
+        .iter()
+        .map(|tab| tab.id)
+        .collect();
+    assert_eq!(side, [31, 41], "the front anchor lands before every tab");
+
+    let to_front = DesktopCommand::MoveTab {
+        location: TabLocation {
+            strip: 11,
+            group: 40,
+            tab: 41,
+        },
+        placement: TabPlacement::NewGroup {
+            strip: 10,
+            after: Some(FRONT),
+        },
+    };
+    apply_command(
+        &mut workspace,
+        &to_front,
+        &mut minter(900),
+        &mut |_, _| unreachable!(),
+    )
+    .unwrap();
+    assert_eq!(workspace.strips[0].window_groups[0].id, 901);
+    assert_eq!(workspace.strips[0].window_groups[0].tabs[0].id, 41);
+
+    let group = DesktopCommand::MoveGroup {
+        group: 20,
+        strip: 11,
+        before: None,
+    };
+    assert_eq!(relocated_entries(&workspace, &group), vec![20, 30]);
+    assert!(
+        relocated_entries(
+            &workspace,
+            &DesktopCommand::CreateStrip { name: "x".into() }
+        )
+        .is_empty()
+    );
 }

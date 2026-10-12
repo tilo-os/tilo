@@ -4654,6 +4654,50 @@ impl ShellOverlayHost {
         false
     }
 
+    /// Rebuild the card of every legacy window hosted on another device
+    /// whose host came or went, so it says whether that device is offline.
+    /// A window whose stream is mounted keeps its stream.
+    pub fn refresh_hosted_window_cards(&mut self) -> bool {
+        let Some(chrome) = self.chrome.clone() else {
+            return false;
+        };
+        let hosted: std::collections::HashMap<u64, crate::shell::state::TileContent> = {
+            let state = chrome.borrow();
+            let tree = state.tree();
+            tree.desktop
+                .workspaces
+                .iter()
+                .flat_map(|workspace| &workspace.strips)
+                .flat_map(|strip| &strip.window_groups)
+                .flat_map(|group| &group.tabs)
+                .filter(|tab| {
+                    matches!(
+                        tab.tile,
+                        crate::shell::state::TileContent::HostedWindow { .. }
+                    ) && !self.peer_stream_tabs.values().any(|id| *id == tab.id)
+                })
+                .map(|tab| (tab.id, tab.tile.clone()))
+                .collect()
+        };
+        if hosted.is_empty() {
+            return false;
+        }
+        let mut replaced = false;
+        for &row_ptr in self.group_row_ptrs.values() {
+            // SAFETY: same row ownership invariant as `mount_peer_stream`.
+            let row: &mut GroupRow = unsafe { &mut *row_ptr };
+            for group in &mut row.groups {
+                for (tab, tile) in &hosted {
+                    if let Some(host) = group.host_for_tab_mut(*tab) {
+                        host.replace_content(crate::shell::to_ui_tile(tile));
+                        replaced = true;
+                    }
+                }
+            }
+        }
+        replaced
+    }
+
     /// Whether any tab on screen is still holding a place for an app that
     /// hasn't drawn yet (see [`ui::widget::WindowGroup::any_tile_opening`]).
     /// A group in this state requests animation frames for as long as it

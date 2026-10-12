@@ -272,7 +272,19 @@ pub fn active_tab_id(st: &ChromeState) -> Option<TabId> {
 /// [`TabActionError::UnknownTab`] when the tab is not in the tree or the
 /// document refuses the deletion (nothing changed either way).
 pub fn close_tab(st: &mut ChromeState, tab_id: TabId) -> Result<(), TabActionError> {
-    let closed = crate::shell::closed_tabs::capture_tab(&st.tree(), tab_id);
+    // A window another of this person's devices opened is closed here at
+    // once and by that device when it is next reachable; reopening it is
+    // that device's.
+    let owned_elsewhere = {
+        let tree = st.tree();
+        tree.room_of_tab(tab_id)
+            .is_some_and(|room| tree.personal_owner_of_close(room, tab_id).is_some())
+    };
+    let closed = if owned_elsewhere {
+        None
+    } else {
+        crate::shell::closed_tabs::capture_tab(&st.tree(), tab_id)
+    };
     close_tab_unrecorded(st, tab_id)?;
     if let Some(entry) = closed {
         st.remember_closed_tab_after_removal(entry);
@@ -290,6 +302,9 @@ pub(crate) fn close_tab_unrecorded(
     st: &mut ChromeState,
     tab_id: TabId,
 ) -> Result<(), TabActionError> {
+    // Queued for the device that owns it, if another of this person's
+    // devices does; closed here either way.
+    let _ = st.tree_mut().forward_close(tab_id);
     let foreign = {
         let tree = st.tree();
         tree.desktop

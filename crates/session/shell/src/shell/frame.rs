@@ -871,6 +871,9 @@ pub struct FrameBuilder {
     /// The session network, once peer sync is up, so a control invoke can
     /// address an enrolled device.
     enrolled_actions: Option<std::sync::Arc<crate::shell::network::ShellNetwork>>,
+    /// The revision of the hosted-window liveness registry the cards on
+    /// screen were built against.
+    hosted_liveness_seen: u64,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -1149,6 +1152,7 @@ impl FrameBuilder {
             painted_backdrop: None,
             pointer_image: crate::compositor::cursor::PointerImage::default(),
             enrolled_actions: None,
+            hosted_liveness_seen: 0,
         };
         builder.rebuild_layout_tree();
         builder.relayout();
@@ -1793,6 +1797,8 @@ impl FrameBuilder {
         self.replicate_room_records();
         let records_done = std::time::Instant::now();
         self.pump_room_contents();
+        self.pump_handed_over_gestures();
+        self.pump_hosted_window_liveness();
         let rooms_done = std::time::Instant::now();
         let before_settle = (doc.base_heads(), doc.pending_ops());
         self.host.settle(&mut ui::widget::Edits::lend(doc), root);
@@ -1846,6 +1852,49 @@ impl FrameBuilder {
             );
         }
         changed || settled
+    }
+
+    /// Say on each legacy window's card whether its host is reachable, when
+    /// a host came or went.
+    fn pump_hosted_window_liveness(&mut self) {
+        let revision = crate::shell::hosted_liveness::revision();
+        if revision != self.hosted_liveness_seen {
+            self.hosted_liveness_seen = revision;
+            if self.host.refresh_hosted_window_cards() {
+                self.chrome.borrow_mut().bump();
+            }
+        }
+    }
+
+    /// Apply the window gestures this person's other devices handed here,
+    /// as if they were made at this desk, answer each, and tell the person
+    /// about gestures of theirs another device did not apply.
+    fn pump_handed_over_gestures(&self) {
+        let Some(network) = self.enrolled_actions.clone() else {
+            return;
+        };
+        for handed in network.take_handed_over() {
+            let result = apply_handed_over(&mut self.chrome.borrow_mut(), &handed);
+            if let Err(error) = &result {
+                tracing::info!(room = %handed.room, %error, "refused a handed-over window gesture");
+            }
+            network.answer(&handed, result);
+        }
+        let notices = network.take_desktop_command_notices();
+        if notices.is_empty() {
+            return;
+        }
+        let mut chrome = self.chrome.borrow_mut();
+        for notice in notices {
+            chrome.push_notification_full(
+                tilo_desktop::notifications::Notification::new(
+                    crate::shell::i18n::t("shell-window-stays"),
+                    notice,
+                )
+                .with_severity(tilo_desktop::notifications::NotificationSeverity::Warning),
+            );
+        }
+        chrome.bump();
     }
 
     /// Turn "a peer's changes landed in the tree" into "the widget tree is
@@ -9233,4 +9282,27 @@ fn scene_px(value: f64) -> u32 {
     {
         value as u32
     }
+}
+
+/// Apply one gesture another device of this person handed here: a close
+/// through the chrome's close, which also ends the window's client, every
+/// other rearrangement through the tree.
+fn apply_handed_over(
+    chrome: &mut crate::shell::chrome_state::ChromeState,
+    handed: &crate::shell::network::HandedOver,
+) -> Result<(), String> {
+    use tilo_desktop_model::commands::DesktopCommand;
+    if let DesktopCommand::CloseTab { location } = &handed.command {
+        chrome
+            .tree()
+            .check_handed_over(handed.room, &handed.command)?;
+        crate::shell::window_actions::close_tab(chrome, location.tab)
+            .map_err(|error| format!("{error:?}"))?;
+    } else {
+        chrome
+            .tree_mut()
+            .apply_handed_over(handed.room, &handed.command)?;
+    }
+    chrome.bump();
+    Ok(())
 }

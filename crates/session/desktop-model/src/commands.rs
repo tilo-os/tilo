@@ -20,7 +20,7 @@ use crate::workspace::Workspace;
 
 mod admission;
 mod placement;
-pub use admission::{check_owned, namespace_counter, resolve_open_app};
+pub use admission::{check_owned, namespace_counter, relocated_entries, resolve_open_app};
 pub use placement::{GroupSpan, OpenContext, OpenIntent, Seam, StripViewport, open_app_placement};
 
 pub const APP_ID: &str = "so.tilo.desktop";
@@ -68,6 +68,10 @@ pub struct TabLocation {
     pub group: u64,
     pub tab: u64,
 }
+
+/// A placement's `after` anchor that names no tab or group (no id is `0`):
+/// the tab or group lands first, before every existing one.
+pub const FRONT: u64 = 0;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TabPlacement {
@@ -513,6 +517,9 @@ fn location(workspace: &Workspace, at: &TabLocation) -> Result<TabIndex, String>
     Ok((strip, group, tab))
 }
 fn after<T>(items: &[T], anchor: Option<u64>, id: impl Fn(&T) -> u64) -> Result<usize, String> {
+    if anchor == Some(FRONT) {
+        return Ok(0);
+    }
     anchor.map_or(Ok(items.len()), |anchor| {
         items
             .iter()

@@ -7,7 +7,13 @@
 
 /// Deterministic 16-bit peer salt from the durable iroh endpoint key.
 pub fn peer_salt_from_keypair(key: &iroh::SecretKey) -> u16 {
-    let h = fnv1a_64(key.public().as_bytes());
+    peer_salt_of_endpoint(&key.public())
+}
+
+/// [`peer_salt_from_keypair`] from the public half: the topology namespace a
+/// peer device writes under.
+pub fn peer_salt_of_endpoint(endpoint: &iroh::EndpointId) -> u16 {
+    let h = fnv1a_64(endpoint.as_bytes());
     ((h & 0xFFFF) as u16)
         ^ (((h >> 16) & 0xFFFF) as u16)
         ^ (((h >> 32) & 0xFFFF) as u16)

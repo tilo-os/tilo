@@ -128,3 +128,44 @@ pub fn namespace_counter(workspace: &Workspace, salt: u16, stored: u64) -> u64 {
         .unwrap_or(0);
     stored.max(maximum.saturating_add(1))
 }
+
+/// The strips, groups and tabs `command` takes from where they are: the tab a
+/// tab command moves or closes, or a group command's group with every tab in
+/// it. Their writer is the one device that may apply `command` in a room
+/// where each entry has a single writer; destinations are not included, since
+/// a device may place its own tab inside another device's group. Empty for a
+/// command that relocates nothing, or whose entries `workspace` lacks.
+pub fn relocated_entries(workspace: &Workspace, command: &DesktopCommand) -> Vec<u64> {
+    match command {
+        DesktopCommand::CloseTab { location }
+        | DesktopCommand::ReorderTab { location, .. }
+        | DesktopCommand::MoveTab { location, .. }
+        | DesktopCommand::SplitTab { location, .. } => {
+            let present = workspace
+                .strips
+                .iter()
+                .flat_map(|strip| &strip.window_groups)
+                .flat_map(|group| &group.tabs)
+                .any(|tab| tab.id == location.tab);
+            if present {
+                vec![location.tab]
+            } else {
+                Vec::new()
+            }
+        }
+        DesktopCommand::ReorderGroup { group, .. } | DesktopCommand::MoveGroup { group, .. } => {
+            workspace
+                .strips
+                .iter()
+                .flat_map(|strip| &strip.window_groups)
+                .find(|candidate| candidate.id == *group)
+                .map(|found| {
+                    std::iter::once(found.id)
+                        .chain(found.tabs.iter().map(|tab| tab.id))
+                        .collect()
+                })
+                .unwrap_or_default()
+        }
+        _ => Vec::new(),
+    }
+}

@@ -6,11 +6,13 @@
 use crate::shell::state::WorkspaceAuthority as _;
 
 mod boot_join;
+mod desktop_forwarding;
 #[cfg(test)]
 mod display_input_tests;
 #[cfg(test)]
 mod display_observation_refresh_tests;
 mod display_observations;
+pub use desktop_forwarding::HandedOver;
 mod governor_actions;
 mod hosted_topology;
 #[cfg(test)]
@@ -1160,6 +1162,8 @@ pub struct PendingInviteSummary {
 pub struct ShellNetwork {
     native_enrollment: native_enrollment::State,
     hosted_topology: hosted_topology::State,
+    /// Window gestures handed between this person's devices.
+    desktop_forwarding: desktop_forwarding::State,
     relay_rooms: relay_rooms::State,
     record_content: record_content::State,
     /// Send commands into the actor (e.g. publish a `NeighbourMsg`).
@@ -1876,6 +1880,7 @@ impl ShellNetwork {
             pending_redemptions: Mutex::new(std::collections::HashMap::new()),
             native_enrollment: native_enrollment::State::default(),
             hosted_topology: hosted_topology::State::default(),
+            desktop_forwarding: desktop_forwarding::State::default(),
             relay_rooms: relay_rooms::State::default(),
             record_content: record_content::State::default(),
             inbound_presence: Arc::new(Mutex::new(Vec::new())),
@@ -3409,6 +3414,7 @@ impl ShellNetwork {
             {
                 self.note_remote_use(&identity.device_cert.device_label, request);
             }
+            let desktop_command = desktop_forwarding::is_desktop_command(&frame.message);
             let mut caller = tilo_actions::remote::Caller::authenticated(
                 identity.user_pubkey,
                 identity.device_pubkey,
@@ -3419,13 +3425,18 @@ impl ShellNetwork {
             if let Some(room) = self.room_for_topic(workspace_topic) {
                 caller = caller.in_room(room.to_string());
             }
-            if let Ok(mut inbound) = self.inbound_remote_actions.lock() {
-                inbound.push(crate::shell::remote_action_link::InboundRemoteAction {
-                    workspace_topic,
-                    from: peer,
-                    caller,
-                    message: frame.message,
-                });
+            let request = crate::shell::remote_action_link::InboundRemoteAction {
+                workspace_topic,
+                from: peer,
+                caller,
+                message: frame.message,
+            };
+            // A window gesture handed over by another device is applied by
+            // this device's desktop, not by an application's action.
+            if desktop_command {
+                self.queue_handed_over(request);
+            } else if let Ok(mut inbound) = self.inbound_remote_actions.lock() {
+                inbound.push(request);
             }
             self.drain_wake.poke();
         } else if !self.remote_action_replies.deliver(peer, &frame.message) {
@@ -6088,6 +6099,7 @@ impl ShellNetwork {
         self.refresh_home_peer_hosts_periodically();
         self.finish_shared_rooms();
         self.live_keepalive();
+        self.pump_desktop_forwarding();
         // Hold the lock for the whole drain so a concurrent frame-tick
         // never sees half-merged events. A poisoned mutex (a prior
         // holder panicked mid-drain) just skips this tick rather than
@@ -7820,6 +7832,7 @@ pub(crate) fn shell_network_for_test(
         pending_redemptions: Mutex::new(std::collections::HashMap::new()),
         native_enrollment: native_enrollment::State::default(),
         hosted_topology: hosted_topology::State::default(),
+        desktop_forwarding: desktop_forwarding::State::default(),
         relay_rooms: relay_rooms::State::default(),
         record_content: record_content::State::default(),
         inbound_presence: Arc::new(Mutex::new(Vec::new())),
@@ -14624,5 +14637,214 @@ mod tests {
             .expect("a remote-action frame was sent");
         assert_eq!(target, to_key.public(), "addressed to exactly one device");
         to.dispatch_neighbour_msg(ws, from.public(), None, false, msg);
+    }
+
+    /// A gesture on the Pi on a window the laptop opened reaches the laptop as
+    /// the exact desktop command, over the room's authenticated device route;
+    /// the laptop's receipt makes the Pi ask for the room at once. Another
+    /// person's device is refused.
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario: hand over, apply, answer, refuse, and a collaborator's attempt"
+    )]
+    fn a_window_gesture_is_handed_to_the_persons_device_that_owns_the_window() {
+        use tilo_desktop_model::commands::{DesktopCommand, TabLocation};
+
+        let person_root = ed25519_dalek::SigningKey::from_bytes(&[0xD1; 32]);
+        let laptop_key = iroh::SecretKey::from_bytes(&[0xD2; 32]);
+        let pi_key = iroh::SecretKey::from_bytes(&[0xD3; 32]);
+        let person = crate::shell::collab_broker_capnp::principal_id_for_root(
+            person_root.verifying_key().to_bytes(),
+        );
+        // A collaborator who may write in the room, but is not this person.
+        let collaborator_root = ed25519_dalek::SigningKey::from_bytes(&[0xE1; 32]);
+        let collaborator_key = iroh::SecretKey::from_bytes(&[0xE2; 32]);
+        let collaborator = crate::shell::collab_broker_capnp::principal_id_for_root(
+            collaborator_root.verifying_key().to_bytes(),
+        );
+        let (workspace, room) = remote_action_room(&person, &collaborator);
+        let topic = room_topic_id(room);
+        let tree_for = || {
+            let mut tree = WorkspaceTree::default();
+            tree.desktop.workspaces.push(workspace.clone());
+            tree.shared()
+        };
+        let user = person_root.verifying_key().to_bytes();
+        let (mut laptop, mut laptop_commands) = shell_network_for_test(tree_for(), 0xD2);
+        let (mut pi, mut pi_commands) = shell_network_for_test(tree_for(), 0xD3);
+        for net in [&mut laptop, &mut pi] {
+            net.require_peer_identity = true;
+            net.personal_continuity_user = Some(user);
+        }
+        let epoch = crate::network::actor::MembershipEpoch::for_test(1);
+        authenticated_personal_peer_on_topic(&pi, &person_root, &laptop_key, epoch, topic);
+        authenticated_personal_peer_on_topic(&laptop, &person_root, &pi_key, epoch, topic);
+        let laptop_salt = crate::network::behaviour::peer_salt_of_endpoint(&laptop_key.public());
+
+        let command = DesktopCommand::CloseTab {
+            location: TabLocation {
+                strip: 1,
+                group: 2,
+                tab: 3,
+            },
+        };
+        let hand_over = |net: &ShellNetwork| {
+            let id = uuid::Uuid::new_v4();
+            net.replica
+                .lock()
+                .unwrap()
+                .tree
+                .write()
+                .forwarded_commands
+                .push(crate::shell::state::ForwardedCommand {
+                    id,
+                    room,
+                    salt: laptop_salt,
+                    command: command.clone(),
+                    minted: Vec::new(),
+                    applied: false,
+                });
+            id
+        };
+        let pending = |net: &ShellNetwork| {
+            net.replica
+                .lock()
+                .unwrap()
+                .tree
+                .read()
+                .forwarded_commands
+                .clone()
+        };
+
+        // The laptop is away: nobody is told anything, nothing is sent, and
+        // the gesture waits for it.
+        let first = hand_over(&pi);
+        pi.pump_desktop_forwarding();
+        assert!(pi.take_desktop_command_notices().is_empty());
+        assert!(
+            std::iter::from_fn(|| pi_commands.try_recv().ok())
+                .all(|command| !matches!(command, NetCmd::PublishRemoteAction { .. }))
+        );
+        assert_eq!(pending(&pi).len(), 1);
+
+        // The laptop is back in the room: the waiting gesture goes out.
+        pi.live_room_peers
+            .lock()
+            .unwrap()
+            .insert((topic, laptop_key.public()));
+        pi.pump_desktop_forwarding();
+        assert!(pi.take_desktop_command_notices().is_empty());
+        deliver_remote_action(&pi_key, &mut pi_commands, &laptop, &laptop_key);
+        assert!(
+            laptop.inbound_remote_actions.lock().unwrap().is_empty(),
+            "a window gesture is the desktop's, not an application's"
+        );
+        let handed = laptop.take_handed_over();
+        assert_eq!(handed.len(), 1);
+        assert_eq!(handed[0].room, room);
+        assert_eq!(handed[0].command, command);
+
+        assert_eq!(handed[0].invocation.0, first);
+
+        // The laptop applied it. Delivered again (its answer lost), it is
+        // answered without being applied twice.
+        laptop.answer(&handed[0], Ok(()));
+        let _ = std::iter::from_fn(|| laptop_commands.try_recv().ok()).count();
+        pi.desktop_forwarding_resend_now();
+        pi.pump_desktop_forwarding();
+        deliver_remote_action(&pi_key, &mut pi_commands, &laptop, &laptop_key);
+        assert!(
+            laptop.take_handed_over().is_empty(),
+            "a repeat is not applied again"
+        );
+        // The answer reaches the Pi: it stops sending and pulls the room.
+        deliver_remote_action(&laptop_key, &mut laptop_commands, &pi, &pi_key);
+        pi.pump_desktop_forwarding();
+        assert!(pending(&pi).iter().all(|forwarded| forwarded.applied));
+        assert!(pi.take_desktop_command_notices().is_empty());
+        assert!(
+            std::iter::from_fn(|| pi_commands.try_recv().ok()).any(|command| matches!(
+                command,
+                NetCmd::Publish { msg: NeighbourMsg::SyncReq { room: ref asked, .. }, .. }
+                    if *asked == room.to_string()
+            )),
+            "the Pi pulls the room once the laptop has the change"
+        );
+
+        // A refusal is told to the person and the gesture is forgotten.
+        pi.replica
+            .lock()
+            .unwrap()
+            .tree
+            .write()
+            .forwarded_commands
+            .clear();
+        let refused = hand_over(&pi);
+        pi.pump_desktop_forwarding();
+        deliver_remote_action(&pi_key, &mut pi_commands, &laptop, &laptop_key);
+        let handed = laptop.take_handed_over();
+        laptop.answer(&handed[0], Err("that window is no longer here".into()));
+        deliver_remote_action(&laptop_key, &mut laptop_commands, &pi, &pi_key);
+        pi.pump_desktop_forwarding();
+        let notices = pi.take_desktop_command_notices();
+        assert_eq!(notices.len(), 1);
+        assert!(notices[0].contains("no longer here"), "{notices:?}");
+        assert!(pending(&pi).iter().all(|forwarded| forwarded.id != refused));
+
+        // A collaborator's device is answered with a refusal, never applied.
+        authenticated_personal_peer_on_topic(
+            &laptop,
+            &collaborator_root,
+            &collaborator_key,
+            epoch,
+            topic,
+        );
+        let (collaborator_net, mut collaborator_commands) =
+            shell_network_for_test(tree_for(), 0xE2);
+        let request = tilo_actions::remote::RemoteActionMessage::Invoke(
+            tilo_actions::remote::InvokeRequest {
+                invocation: tilo_actions::InvocationId::new(),
+                target: tilo_actions::remote::RemoteActionTarget {
+                    provider: format!("workspace:{room}"),
+                    address: tilo_actions::ActionAddress::new(
+                        tilo_desktop_model::commands::RESOURCE,
+                        tilo_desktop_model::commands::ACTION,
+                    ),
+                },
+                argument: tilo_actions::remote::InvokeArgument::None,
+                context: None,
+                confirmation: None,
+                revision: None,
+                on_behalf_of: None,
+                wait_ms: None,
+            },
+        );
+        assert!(collaborator_net.send_remote_action(topic, laptop_key.public(), request));
+        deliver_remote_action(
+            &collaborator_key,
+            &mut collaborator_commands,
+            &laptop,
+            &laptop_key,
+        );
+        assert!(laptop.take_handed_over().is_empty());
+        let refusal = std::iter::from_fn(|| laptop_commands.try_recv().ok())
+            .find_map(|command| match command {
+                NetCmd::PublishRemoteAction { target, msg, .. } => Some((target, msg)),
+                _ => None,
+            })
+            .expect("the stranger is answered");
+        assert_eq!(refusal.0, collaborator_key.public());
+
+        // Authority is checked again when the frame consumes the queue.
+        // A valid arrival followed by disconnect may not rearrange windows.
+        let _ = hand_over(&pi);
+        pi.pump_desktop_forwarding();
+        deliver_remote_action(&pi_key, &mut pi_commands, &laptop, &laptop_key);
+        assert!(!laptop.desktop_forwarding.inbound.lock().unwrap().is_empty());
+        laptop
+            .peer_identities
+            .remove(&crate::shell::state::PeerOrigin::peer(&pi_key.public()));
+        assert!(laptop.take_handed_over().is_empty());
     }
 }
