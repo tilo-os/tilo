@@ -9,7 +9,7 @@ use crate::shell::state::WorkspaceTree;
 use std::cell::RefCell;
 use std::collections::HashMap as StdHashMap;
 use std::rc::Rc;
-use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{AvailableSpace, NodeId, Size, Style, TaffyTree};
 use tilo_desktop::i18n::t as desktop_text;
 use ui::widget::TaffyTreeExt;
 use vello::Scene;
@@ -48,10 +48,7 @@ impl Widget for RecordingContent {
         node_map: &mut StdHashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         let style = Style {
-            size: Size {
-                width: Dimension::percent(1.0),
-                height: Dimension::percent(1.0),
-            },
+            size: Size::from_percent(1.0, 1.0),
             ..Default::default()
         };
         taffy.widget_leaf(style, node_map, self)
@@ -229,10 +226,7 @@ pub(super) fn lay_out_host_with_theme(
     let viewport = taffy
         .new_with_children(
             Style {
-                size: Size {
-                    width: Dimension::length(ui::num::f32_of_f64(vw)),
-                    height: Dimension::length(ui::num::f32_of_f64(vh)),
-                },
+                size: Size::from_lengths(ui::num::f32_of_f64(vw), ui::num::f32_of_f64(vh)),
                 ..Default::default()
             },
             &[child],

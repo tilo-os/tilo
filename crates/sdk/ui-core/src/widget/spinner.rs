@@ -7,7 +7,7 @@
 
 use crate::time::Instant;
 
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Circle, Point, Rect};
 
@@ -94,10 +94,7 @@ impl Widget for Spinner {
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         let style = Style {
-            size: Size {
-                width: Dimension::length(self.size),
-                height: Dimension::length(self.size),
-            },
+            size: Size::from_lengths(self.size, self.size),
             // Fixed target: never the item that gives in an overflowing row.
             flex_shrink: 0.0,
             ..Default::default()

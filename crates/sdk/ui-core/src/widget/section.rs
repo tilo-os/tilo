@@ -484,10 +484,7 @@ impl Widget for Chevron {
         let side = theme.tokens.metrics.icon_sm;
         let style = Style {
             flex_shrink: 0.0,
-            size: Size {
-                width: length(side),
-                height: length(side),
-            },
+            size: Size::from_lengths(side, side),
             ..Default::default()
         };
         taffy.widget_leaf(style, node_map, self)

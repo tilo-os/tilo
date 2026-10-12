@@ -284,10 +284,10 @@ impl Widget for Checkbox {
                     Dimension::length(self.control.interaction.minimum_target())
                 },
             },
-            min_size: Size {
-                width: Dimension::length(self.control.interaction.minimum_target()),
-                height: Dimension::length(self.control.interaction.minimum_target()),
-            },
+            min_size: Size::from_lengths(
+                self.control.interaction.minimum_target(),
+                self.control.interaction.minimum_target(),
+            ),
             flex_shrink: 1.0,
             ..Default::default()
         };

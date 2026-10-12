@@ -3812,10 +3812,7 @@ impl Widget for CalendarApp {
         // across every implementor, so there is nowhere to surface a
         // theoretical error.
         let style = Style {
-            size: Size {
-                width: Dimension::percent(1.0),
-                height: Dimension::percent(1.0),
-            },
+            size: Size::from_percent(1.0, 1.0),
             ..Default::default()
         };
         taffy.widget_node(style, &[editor_node], node_map, self)

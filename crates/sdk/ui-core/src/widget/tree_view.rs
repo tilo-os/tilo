@@ -5443,10 +5443,7 @@ mod tests {
             let node = view.build_layout(&mut taffy, &Theme::dark(), &mut node_map);
             let root_taffy = taffy.parent_node(
                 Style {
-                    size: Size {
-                        width: Dimension::length(200.0),
-                        height: Dimension::length(80.0),
-                    },
+                    size: Size::from_lengths(200.0, 80.0),
                     ..Default::default()
                 },
                 &[node],

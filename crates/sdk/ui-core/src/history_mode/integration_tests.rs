@@ -1030,10 +1030,7 @@ impl<T: Widget + 'static> Widget for TileEditor<T> {
         let child = self.0.build_layout(tree, theme, nodes);
         tree.new_with_children(
             taffy::Style {
-                size: taffy::Size {
-                    width: taffy::Dimension::length(500.0),
-                    height: taffy::Dimension::length(40.0),
-                },
+                size: taffy::Size::from_lengths(500.0, 40.0),
                 ..Default::default()
             },
             &[child],

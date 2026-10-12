@@ -902,10 +902,7 @@ mod component_adapter {
                 return taffy.leaf_node(taffy::Style::default());
             };
             let style = taffy::Style {
-                size: taffy::Size {
-                    width: taffy::Dimension::percent(1.0),
-                    height: taffy::Dimension::percent(1.0),
-                },
+                size: taffy::Size::from_percent(1.0, 1.0),
                 ..Default::default()
             };
             taffy.widget_node(style, &[child], node_map, self)

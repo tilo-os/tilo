@@ -7397,10 +7397,7 @@ impl PhotosApp {
                             right: LengthPercentageAuto::auto(),
                             bottom: LengthPercentageAuto::auto(),
                         },
-                        size: Size {
-                            width: Dimension::length(rect.width() as f32),
-                            height: Dimension::length(rect.height() as f32),
-                        },
+                        size: Size::from_lengths(rect.width() as f32, rect.height() as f32),
                         ..Default::default()
                     },
                 );
@@ -7454,10 +7451,7 @@ impl PhotosApp {
                 .new_with_children(
                     Style {
                         position: Position::Relative,
-                        size: Size {
-                            width: Dimension::percent(1.0),
-                            height: Dimension::percent(1.0),
-                        },
+                        size: Size::from_percent(1.0, 1.0),
                         ..Default::default()
                     },
                     &children,
@@ -7487,14 +7481,8 @@ impl PhotosApp {
             .set_style(
                 canvas,
                 Style {
-                    size: Size {
-                        width: Dimension::auto(),
-                        height: Dimension::auto(),
-                    },
-                    min_size: Size {
-                        width: Dimension::length(0.0),
-                        height: Dimension::length(0.0),
-                    },
+                    size: Size::auto(),
+                    min_size: Size::from_lengths(0.0, 0.0),
                     flex_grow: 1.0,
                     flex_shrink: 1.0,
                     flex_basis: Dimension::length(0.0),
@@ -11444,10 +11432,7 @@ impl Widget for PhotosApp {
 
         let style = Style {
             flex_direction: FlexDirection::Column,
-            size: Size {
-                width: Dimension::percent(1.0),
-                height: Dimension::percent(1.0),
-            },
+            size: Size::from_percent(1.0, 1.0),
             padding: taffy::Rect {
                 left: LengthPercentage::length(sidebar_inset as f32),
                 right: LengthPercentage::length(inspector_inset as f32),
@@ -13454,10 +13439,7 @@ mod history_reconcile_tests {
                 .set_style(
                     node,
                     Style {
-                        size: Size {
-                            width: Dimension::length(800.),
-                            height: Dimension::length(600.),
-                        },
+                        size: Size::from_lengths(800., 600.),
                         ..Default::default()
                     },
                 )

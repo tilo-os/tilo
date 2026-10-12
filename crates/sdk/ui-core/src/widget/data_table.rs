@@ -5831,10 +5831,7 @@ mod tests {
             Style {
                 display: taffy::Display::Flex,
                 flex_direction: taffy::FlexDirection::Column,
-                size: Size {
-                    width: Dimension::length(300.0),
-                    height: Dimension::length(400.0),
-                },
+                size: Size::from_lengths(300.0, 400.0),
                 ..Default::default()
             },
             &[tnode],
@@ -6794,10 +6791,7 @@ mod content_edge_tests {
                 Style {
                     display: taffy::Display::Flex,
                     flex_direction: taffy::FlexDirection::Column,
-                    size: Size {
-                        width: Dimension::length(width),
-                        height: Dimension::length(height),
-                    },
+                    size: Size::from_lengths(width, height),
                     ..Default::default()
                 },
                 &[tnode],

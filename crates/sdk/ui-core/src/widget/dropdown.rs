@@ -1282,10 +1282,7 @@ impl Widget for Dropdown {
             self.caption_height = 0.0;
             let side = f32_of_f64(self.control_size.height(theme));
             let node = taffy.leaf_node(Style {
-                size: Size {
-                    width: Dimension::length(side),
-                    height: Dimension::length(side),
-                },
+                size: Size::from_lengths(side, side),
                 flex_shrink: 0.0,
                 ..Default::default()
             });

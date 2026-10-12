@@ -175,10 +175,7 @@ fn render_widget(mut input: TextInput, doc: &AutoCommit, presence: &PresenceCtx)
     let root = taffy
         .new_with_children(
             Style {
-                size: Size {
-                    width: Dimension::length(W as f32),
-                    height: Dimension::length(H as f32),
-                },
+                size: Size::from_lengths(W as f32, H as f32),
                 ..Default::default()
             },
             &[child],
