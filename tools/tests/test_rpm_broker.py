@@ -63,6 +63,19 @@ class RpmBrokerTest(unittest.TestCase):
         self.assertNotIn('not-logged', self.request_path.read_text())
         self.assertNotIn('ACTIONS_ID_TOKEN', self.request_path.read_text())
 
+    def test_rpm6_full_fingerprint_output_is_verified(self):
+        output = f'Header OpenPGP V4 RSA/SHA256 signature, key fingerprint: {PIN.lower()}: OK\nHeader SHA256 digest: OK\nPayload SHA256 digest: OK\n'
+        self.assertEqual(self.qualify(signature=output), self.receipt)
+
+    def test_rpm6_substituted_or_truncated_fingerprint_is_rejected(self):
+        for fingerprint in ('B' * 40, PIN[-16:], 'B' * 24 + PIN[-16:]):
+            with self.subTest(fingerprint=fingerprint), self.assertRaisesRegex(ValueError, 'full fingerprint'):
+                self.qualify(signature=f'Header OpenPGP V4 RSA/SHA256 signature, key fingerprint: {fingerprint}: OK\n')
+            for name in ('gnupg', 'rpmdb'):
+                directory = self.root / name
+                if directory.exists():
+                    directory.rmdir()
+
     def test_immutable_hash_allows_signature_change_but_detects_payload_change(self):
         file = next(self.response.glob('*.rpm'))
         original = next(self.input.glob('*.rpm'))
