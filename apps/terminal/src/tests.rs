@@ -275,28 +275,40 @@ fn hosted_service_sockets_are_probed_and_never_fall_back() {
         use std::io::BufRead as _;
         use std::os::fd::AsRawFd;
 
-        // The supervisor's reply byte for byte as `ServeResponse::Session`
-        // serialises it for a bash session whose request named a key (ush's
-        // `a_session_reply_keeps_its_wire_form` pins this form). Every Terminal
-        // open names a key, so this is the reply of every default-environment open.
-        const REPLY: &[u8] = b"{\"result\":\"session\",\"session\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"environment\":\"default\",\"runs\":true}\n";
+        // The supervisor's reply byte for byte as a persistent connection
+        // sends it: `ServeResponse::Session` as ush's
+        // `a_session_reply_keeps_its_wire_form` pins it for a bash session whose
+        // request named a key, then the `protocol` the lease wrapper appends
+        // (`hand_off_session`). Every Terminal open names a key, so this is the
+        // reply of every default-environment open.
+        const REPLY: &[u8] = b"{\"result\":\"session\",\"session\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"environment\":\"default\",\"runs\":true,\"protocol\":2}\n";
         let (terminal_end, supervisor_end) =
             std::os::unix::net::UnixStream::pair().expect("socket pair");
         let supervisor = std::thread::spawn(move || {
-            let mut request = String::new();
-            std::io::BufReader::new(&supervisor_end)
-                .read_line(&mut request)
+            use std::io::Write as _;
+            let mut reader = std::io::BufReader::new(&supervisor_end);
+            // The persistent-control handshake precedes every open.
+            let mut hello = String::new();
+            reader.read_line(&mut hello).unwrap();
+            assert!(hello.contains("\"op\":\"hello\""), "{hello}");
+            (&supervisor_end)
+                .write_all(b"{\"result\":\"ready\",\"protocol\":2}\n")
                 .unwrap();
+            let mut request = String::new();
+            reader.read_line(&mut request).unwrap();
             let pair = portable_pty::native_pty_system()
                 .openpty(PtySize::default())
                 .unwrap();
-            runtime_portal::fd_transport::send_with_fd(
+            // PTY first, then the private session lease.
+            let (supervisor_lease, terminal_lease) =
+                std::os::unix::net::UnixStream::pair().unwrap();
+            runtime_portal::fd_transport::send_with_fds(
                 supervisor_end.as_raw_fd(),
                 REPLY,
-                pair.master.as_raw_fd().unwrap(),
+                &[pair.master.as_raw_fd().unwrap(), terminal_lease.as_raw_fd()],
             )
             .unwrap();
-            (request, supervisor_end, pair)
+            (request, supervisor_end, pair, supervisor_lease)
         });
         let opened = crate::inner::ush_backend_on(
             &terminal_end,
@@ -305,7 +317,7 @@ fn hosted_service_sockets_are_probed_and_never_fall_back() {
             crate::Requester::Person,
             None,
         );
-        let (request, _supervisor_end, _pair) = supervisor.join().unwrap();
+        let (request, _supervisor_end, _pair, _lease) = supervisor.join().unwrap();
         let request: serde_json::Value = serde_json::from_str(&request).unwrap();
         let backend = match opened {
             Ok(backend) => backend,
