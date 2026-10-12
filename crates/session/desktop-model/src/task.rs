@@ -250,7 +250,7 @@ impl WorkspaceTaskExecutionAuthority {
         &self,
         node: &tilo_action_policy::TreePath,
         kind: tilo_action_policy::ActionKind,
-        now: std::time::SystemTime,
+        now: web_time::SystemTime,
     ) -> bool {
         self.scope.covers(node)
             && self
@@ -532,7 +532,7 @@ mod execution_authority_tests {
             scope: attached.clone(),
             starter: Standing::person(RoomPolicy::new("room", "owner"), "owner"),
         };
-        let now = std::time::SystemTime::now();
+        let now = web_time::SystemTime::now();
         assert!(bound.allows(&attached.action("append"), ActionKind::Undoable, now));
         assert!(
             !bound.allows(

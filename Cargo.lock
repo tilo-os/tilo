@@ -15885,6 +15885,7 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
+ "web-time",
 ]
 
 [[package]]
@@ -16644,6 +16645,7 @@ dependencies = [
  "tilo-automerge",
  "tilo-automerge-fork",
  "uuid",
+ "web-time",
 ]
 
 [[package]]

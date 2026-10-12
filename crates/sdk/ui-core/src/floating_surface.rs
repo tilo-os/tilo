@@ -260,7 +260,7 @@ pub enum FloatingSurfaceClientMessage {
     /// Complete primary-surface marker inventory from a successfully presented
     /// SDK frame. The host resolves surface and room from launch custody.
     ActionMarkers {
-        markers: Vec<crate::app::PaintedActionMarker>,
+        markers: Vec<crate::PaintedActionMarker>,
     },
     /// A typed Settings request on the existing authenticated app connection.
     MoveDeviceDisplay {

@@ -18189,11 +18189,6 @@ impl Widget for ShellOverlayHost {
         };
         self.rect = ui::widget::placed(l, origin);
         self.workspace_settings_overlay.layout(self.overlay_area());
-        if let Some(agent_node) = self.agent_quick_composer_node {
-            self.agent_quick_composer
-                .apply_layout(taffy, agent_node, self.rect.origin());
-        }
-        self.agent_markers.apply(taffy, self.rect.origin());
         let contextual_tour = self
             .onboarding
             .as_ref()
@@ -18215,6 +18210,13 @@ impl Widget for ShellOverlayHost {
             }
             return;
         }
+        // The dedicated OOBE tree does not mount desktop agent controls.
+        // Their cached nodes belong only to the desktop layout built below.
+        if let Some(agent_node) = self.agent_quick_composer_node {
+            self.agent_quick_composer
+                .apply_layout(taffy, agent_node, self.rect.origin());
+        }
+        self.agent_markers.apply(taffy, self.rect.origin());
         // One more pass if the card sized against stale host dimensions or
         // focus moved to another display; settles in a single extra frame.
         if self.palette_layout_host != Some((self.rect, self.overlay_area())) {
