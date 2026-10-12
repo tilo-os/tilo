@@ -1816,15 +1816,15 @@ fn record_action(
         "arguments": arguments,
         "ok": outcome.is_ok(),
         "error": outcome.as_ref().err(),
-        "produced": outcome.as_ref().ok().flatten().map(produced).unwrap_or_default(),
+        "produced": outcome.as_ref().ok().and_then(Option::as_ref).map(produced).unwrap_or_default(),
         // The resources it answered with: a replay maps the ids it made (a
         // new sheet's) onto the ones the replay makes.
         "resources": outcome
             .as_ref()
             .ok()
-            .flatten()
+            .and_then(Option::as_ref)
             .map(|output| serde_json::to_value(&output.resources).unwrap_or_default()),
-        "value": outcome.as_ref().ok().flatten().and_then(|output| output.value.clone()),
+        "value": outcome.as_ref().ok().and_then(Option::as_ref).and_then(|output| output.value.clone()),
     });
     // One write per line, as the usage log does: agents append at once.
     let written = std::fs::OpenOptions::new()
