@@ -965,7 +965,7 @@ fn toolbar_and_palette_actions_dispatch_through_their_specs() {
         let aligned = wp
             .blocks
             .iter()
-            .any(|b| matches!(b.attrs.get("align"), Some(AttrVal::Str(s)) if s == "center"));
+            .any(|b| b.str_attr("align") == Some("center"));
         assert!(aligned, "the affordance set the paragraph alignment");
     }
 
@@ -2496,10 +2496,7 @@ fn paragraph_kind_font_size_and_bold_apply_from_panel_and_toolbar() {
                 .into_iter()
                 .next()
                 .unwrap();
-            let level = match b.attrs.get("level") {
-                Some(AttrVal::Int(n)) => Some(*n),
-                _ => None,
-            };
+            let level = b.int_attr("level");
             (b.kind, level)
         };
 
@@ -8222,7 +8219,7 @@ fn image_controls_are_named_and_resize_and_flip() {
             .blocks
             .iter()
             .find(|b| b.id == id)
-            .is_some_and(|b| matches!(b.attrs.get("flip_h"), Some(tilo_doc::AttrVal::Bool(true))));
+            .is_some_and(|b| b.flag("flip_h"));
         assert!(
             flipped,
             "the image's flip_h attr is set after clicking Flip Horizontal"

@@ -122,8 +122,8 @@ notifications = "via-host"
 open-uri      = "via-host"
 ```
 
-**Absence == no bus plumbed.** Your `ashpd` / `runtime::portal_xdg` calls
-will surface `PortalError::NotAvailable`. This is a security default: the
+**Absence == no bus plumbed.** Your `ashpd` calls will
+surface `PortalError::NotAvailable`. This is a security default: the
 D-Bus session bus is a wide attack surface, so the launcher only forwards
 it when the manifest says to.
 

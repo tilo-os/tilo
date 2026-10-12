@@ -317,10 +317,7 @@ fn blocks(app: &TestApp<WordProcessorApp>) -> Vec<(String, String, Option<String
         tilo_doc::model::materialize_blocks(doc, &containers, &order)
             .into_iter()
             .map(|block| {
-                let align = match block.attrs.get("align") {
-                    Some(tilo_doc::AttrVal::Str(align)) => Some(align.clone()),
-                    _ => None,
-                };
+                let align = block.str_attr("align").map(str::to_owned);
                 (block.kind, block.text, align)
             })
             .collect()

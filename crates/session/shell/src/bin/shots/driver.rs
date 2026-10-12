@@ -308,20 +308,9 @@ impl ShellDriver {
     /// `dispatch` so per-event hit-tests run in the same order they
     /// would on real hardware.
     pub fn click_at(&mut self, p: Point) {
-        self.dispatch(&WindowEvent::CursorMoved {
-            device_id: winit::event::DeviceId::dummy(),
-            position: PhysicalPosition::new(p.x, p.y),
-        });
-        self.dispatch(&WindowEvent::MouseInput {
-            device_id: winit::event::DeviceId::dummy(),
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        });
-        self.dispatch(&WindowEvent::MouseInput {
-            device_id: winit::event::DeviceId::dummy(),
-            state: ElementState::Released,
-            button: MouseButton::Left,
-        });
+        self.move_cursor(p);
+        self.press();
+        self.release();
     }
 
     /// Synthesise a `MouseWheel` event at the cursor's current position
@@ -344,30 +333,19 @@ impl ShellDriver {
     /// scrub-then-pause behaviour. Updates `self.last_cursor` so any
     /// follow-up `mouse_wheel()` lands at the new position.
     pub fn move_cursor(&mut self, p: Point) {
-        self.dispatch(&WindowEvent::CursorMoved {
-            device_id: winit::event::DeviceId::dummy(),
-            position: PhysicalPosition::new(p.x, p.y),
-        });
+        self.dispatch(&ui::synthetic_input::PointerAction::MoveTo(p).event(1.0));
     }
 
     /// Synthesise a left-button `Pressed` at the current cursor without
     /// releasing. Caller is responsible for the matching `release()`
     /// once the drag is complete.
     pub fn press(&mut self) {
-        self.dispatch(&WindowEvent::MouseInput {
-            device_id: winit::event::DeviceId::dummy(),
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        });
+        self.dispatch(&ui::synthetic_input::PointerAction::Press(MouseButton::Left).event(1.0));
     }
 
     /// Synthesise a left-button `Released` at the current cursor.
     pub fn release(&mut self) {
-        self.dispatch(&WindowEvent::MouseInput {
-            device_id: winit::event::DeviceId::dummy(),
-            state: ElementState::Released,
-            button: MouseButton::Left,
-        });
+        self.dispatch(&ui::synthetic_input::PointerAction::Release(MouseButton::Left).event(1.0));
     }
 
     /// Press at `from`, drag through `steps` intermediate `CursorMoved`

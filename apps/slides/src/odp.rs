@@ -324,7 +324,11 @@ fn collect_pictures(deck: &Deck, content: &ContentStore) -> Vec<BundledPicture> 
         let Some(bytes) = crate::assets::read_asset(content, &element.src) else {
             continue;
         };
-        let Some((ext, mime)) = picture_format(&bytes) else {
+        let Some(tilo_content::ImageFormat {
+            extension: ext,
+            mime,
+        }) = tilo_content::image_format(&bytes)
+        else {
             continue;
         };
         let href = format!("Pictures/picture-{}.{}", pictures.len() + 1, ext);
@@ -336,25 +340,6 @@ fn collect_pictures(deck: &Deck, content: &ContentStore) -> Vec<BundledPicture> 
         });
     }
     pictures
-}
-
-fn picture_format(bytes: &[u8]) -> Option<(&'static str, &'static str)> {
-    if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
-        Some(("png", "image/png"))
-    } else if bytes.starts_with(&[0xff, 0xd8, 0xff]) {
-        Some(("jpg", "image/jpeg"))
-    } else if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
-        Some(("gif", "image/gif"))
-    } else if bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WEBP") {
-        Some(("webp", "image/webp"))
-    } else if std::str::from_utf8(bytes)
-        .ok()
-        .is_some_and(|text| text.trim_start().starts_with("<svg"))
-    {
-        Some(("svg", "image/svg+xml"))
-    } else {
-        None
-    }
 }
 
 // ===========================================================================
@@ -473,7 +458,7 @@ pub(crate) fn cache_imported_picture(content: &ContentStore, bytes: &[u8]) -> Op
     if bytes.len() > MAX_IMPORTED_PICTURE_BYTES {
         return None;
     }
-    picture_format(bytes)?;
+    tilo_content::image_format(bytes)?;
     crate::assets::store_asset(content, bytes)
 }
 

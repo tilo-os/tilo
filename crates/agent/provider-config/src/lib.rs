@@ -7,37 +7,6 @@
 //! boundary here makes the same profile safe to render in Settings, sync as
 //! non-secret device intent, or hand to a sandboxed agent.
 
-/// `Serialize`/`Deserialize` of a type deriving them with
-/// `#[serde(remote = "Self")]`: writing runs the derived code, reading goes
-/// through one `serde_json::Value` and one function compiled here, rather
-/// than a derived decoder per deserializer in every crate reading the type.
-macro_rules! read_through_json_value {
-    ($ty:ty) => {
-        impl serde::Serialize for $ty {
-            fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-                Self::serialize(self, serializer)
-            }
-        }
-        read_through_json_value!($ty, deserialize);
-    };
-    ($ty:ty, deserialize) => {
-        impl<'de> serde::Deserialize<'de> for $ty {
-            fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-                let value = <serde_json::Value as serde::Deserialize>::deserialize(deserializer)?;
-                Self::from_json_value(value).map_err(serde::de::Error::custom)
-            }
-        }
-
-        impl $ty {
-            #[inline(never)]
-            fn from_json_value(value: serde_json::Value) -> Result<Self, serde_json::Error> {
-                Self::deserialize(value)
-            }
-        }
-    };
-}
-pub(crate) use read_through_json_value;
-
 use std::collections::BTreeSet;
 use std::path::Path;
 
@@ -66,7 +35,7 @@ pub enum ProviderProtocol {
     Anthropic,
 }
 
-crate::read_through_json_value!(ProviderProtocol);
+settings_store::read_through_json_value!(ProviderProtocol);
 
 impl ProviderProtocol {
     pub const ALL: &'static [Self] = &[Self::OpenAiCompatible, Self::Anthropic];
@@ -94,7 +63,7 @@ pub enum EndpointLocation {
     PrivateNetwork,
 }
 
-crate::read_through_json_value!(EndpointLocation);
+settings_store::read_through_json_value!(EndpointLocation);
 
 impl EndpointLocation {
     pub const ALL: &'static [Self] = &[Self::Hosted, Self::ThisDevice, Self::PrivateNetwork];
@@ -127,7 +96,7 @@ pub struct SecretReference {
     pub locator: String,
 }
 
-crate::read_through_json_value!(SecretReference);
+settings_store::read_through_json_value!(SecretReference);
 
 impl SecretReference {
     pub fn provider_api_key(profile_id: &str) -> Self {
@@ -178,7 +147,7 @@ pub struct ModelDescriptor {
     pub tool_calling: bool,
 }
 
-crate::read_through_json_value!(ModelDescriptor);
+settings_store::read_through_json_value!(ModelDescriptor);
 
 impl Default for ModelDescriptor {
     fn default() -> Self {
@@ -208,7 +177,7 @@ pub struct ModelRequestLimits {
     pub plan_timeout_ms: Option<u32>,
 }
 
-crate::read_through_json_value!(ModelRequestLimits);
+settings_store::read_through_json_value!(ModelRequestLimits);
 
 impl ModelRequestLimits {
     /// Validate bounded settings without estimating the token count of a prompt.
@@ -293,7 +262,7 @@ pub struct ProviderProfile {
     pub omit_params: Vec<String>,
 }
 
-crate::read_through_json_value!(ProviderProfile);
+settings_store::read_through_json_value!(ProviderProfile);
 
 /// Request fields a profile may not strip: without them there is no request.
 pub const REQUIRED_PARAMS: &[&str] = &["model", "messages", "tools", "tool_choice"];
@@ -308,7 +277,7 @@ pub enum TokenLimitParam {
     MaxCompletionTokens,
 }
 
-crate::read_through_json_value!(TokenLimitParam);
+settings_store::read_through_json_value!(TokenLimitParam);
 
 impl TokenLimitParam {
     pub fn key(self) -> &'static str {
@@ -334,7 +303,7 @@ pub enum ReasoningParam {
     Omit,
 }
 
-crate::read_through_json_value!(ReasoningParam);
+settings_store::read_through_json_value!(ReasoningParam);
 
 /// A profile's reasoning setting, applied by the gateway.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -348,7 +317,7 @@ pub struct ReasoningSetting {
     pub effort: String,
 }
 
-crate::read_through_json_value!(ReasoningSetting);
+settings_store::read_through_json_value!(ReasoningSetting);
 
 /// The reasoning efforts a profile may name.
 pub const REASONING_EFFORTS: &[&str] = &["none", "minimal", "low", "medium", "high", "xhigh"];
@@ -451,7 +420,7 @@ pub struct HostedProfiles {
     pub profiles: Vec<ProviderProfile>,
 }
 
-crate::read_through_json_value!(HostedProfiles);
+settings_store::read_through_json_value!(HostedProfiles);
 
 /// A portable profile list and the user's deliberate default. Kept separate
 /// from a task: tasks capture a chosen model at start so changing this default
@@ -465,7 +434,7 @@ pub struct ProviderConfig {
     pub default_profile: Option<String>,
 }
 
-crate::read_through_json_value!(ProviderConfig);
+settings_store::read_through_json_value!(ProviderConfig);
 
 impl ProviderConfig {
     pub fn load() -> Self {
