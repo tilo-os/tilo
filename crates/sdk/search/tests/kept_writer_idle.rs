@@ -17,11 +17,12 @@ fn is_writer_thread(name: &str) -> bool {
         || name.starts_with("merge_thread")
 }
 
-/// Context switches so far of every writer thread, by thread id.
+/// Context switches so far of every writer thread, by task path. An
+/// unreadable `/proc` finds none, which fails the test's search for them.
 fn writer_switches() -> BTreeMap<String, u64> {
     let mut switches = BTreeMap::new();
-    for task in std::fs::read_dir("/proc/self/task").expect("/proc/self/task") {
-        let path = task.expect("a task").path();
+    let tasks = std::fs::read_dir("/proc/self/task").into_iter().flatten();
+    for path in tasks.flatten().map(|task| task.path()) {
         let Ok(status) = std::fs::read_to_string(path.join("status")) else {
             continue; // the thread ended
         };
@@ -39,7 +40,7 @@ fn writer_switches() -> BTreeMap<String, u64> {
                 .and_then(|value| value.parse::<u64>().ok())
                 .unwrap_or(0)
         };
-        let tid = path.file_name().unwrap().to_string_lossy().into_owned();
+        let tid = path.to_string_lossy().into_owned();
         switches.insert(
             tid,
             count("voluntary_ctxt_switches:").saturating_add(count("nonvoluntary_ctxt_switches:")),
