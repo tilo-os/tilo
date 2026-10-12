@@ -487,14 +487,15 @@ impl DrillInList {
             clippy::cast_possible_truncation,
             reason = "the bounded quick-settings row width is represented as f32 by the text shaper"
         )]
-        let label = text.elide_to_width_style(label, label_width as f32, &style);
+        let label_width = label_width as f32;
+        let label = text.elide_to_width_style(label, label_width, &style);
         let (_, label_height) =
             text.measure_style(&label, None, &style.clone().with_weight(TextWeight::Medium));
         // A status line (`Connected`) stacks under the label and the pair is
         // centred as one block, so it stays inside the row at any name length
         // instead of hanging below it at a fixed offset.
         let detail = detail.map(|(detail, color)| {
-            let detail = text.elide_to_width_style(detail, label_width as f32, &style);
+            let detail = text.elide_to_width_style(detail, label_width, &style);
             let (_, height) = text.measure_style(&detail, None, &style);
             (detail, color, f64::from(height))
         });

@@ -167,6 +167,9 @@ impl CollaboratorsModel<'_> {
     }
 }
 
+/// Floor for a roster row: three caption lines plus a margin.
+const ROW_MIN_H: f64 = 56.0;
+
 struct RowFrame<'a> {
     row: &'a RosterRow,
     y: f64,
@@ -511,7 +514,7 @@ impl CollaboratorsOverlay {
                 theme,
                 &RowFrame {
                     row,
-                    y: list_top + f64_of_usize(visible_index) * self.row_height.max(64.0),
+                    y: list_top + f64_of_usize(visible_index) * self.row_h(),
                     followed: model.followed_id == Some(row.id.as_str()),
                     relationship,
                     relationship_partner,
@@ -1090,9 +1093,15 @@ impl CollaboratorsOverlay {
     /// The Follow/Stop button of the row whose top edge is `y`: one pointer
     /// target tall, centred in the row. Paint and hit-testing both read
     /// this, so they cannot drift apart.
+    /// One roster row's height: the follow control with a token margin, never
+    /// below what three caption lines need.
+    fn row_h(&self) -> f64 {
+        self.row_height.max(ROW_MIN_H)
+    }
+
     fn row_action_rect(&self, panel: Rect, y: f64) -> Rect {
         let height = self.follow_height.max(MIN_TARGET);
-        let top = y + (self.row_height.max(64.0) - height) / 2.0;
+        let top = y + (self.row_h() - height) / 2.0;
         Rect::new(
             panel.x1 - 12.0 - self.follow_width.max(76.0),
             top,
@@ -1453,7 +1462,7 @@ impl CollaboratorsOverlay {
             + self.status_block_height.max(92.0)
             + exposure_h
             + warning_h
-            + rows * self.row_height.max(64.0)
+            + rows * self.row_h()
             + pager_h
             + 16.0
             + actions_h
@@ -1480,7 +1489,7 @@ impl CollaboratorsOverlay {
                     + self.status_block_height.max(92.0)
                     + exposure_h
                     + warning_h
-                    + f64_of_usize(visible_index) * self.row_height.max(64.0);
+                    + f64_of_usize(visible_index) * self.row_h();
                 self.row_action_rect(self.panel, y)
             })
             .collect();
@@ -1497,12 +1506,12 @@ impl CollaboratorsOverlay {
                     + self.status_block_height.max(92.0)
                     + exposure_h
                     + warning_h
-                    + f64_of_usize(visible_index) * self.row_height.max(64.0);
+                    + f64_of_usize(visible_index) * self.row_h();
                 Rect::new(
                     self.panel.x0 + 8.0,
                     y,
                     self.panel.x1 - 8.0,
-                    y + self.row_height.max(64.0),
+                    y + self.row_h(),
                 )
             })
             .collect();
@@ -1512,7 +1521,7 @@ impl CollaboratorsOverlay {
                 + self.status_block_height.max(92.0)
                 + exposure_h
                 + warning_h
-                + rows * self.row_height.max(64.0);
+                + rows * self.row_h();
             let center = self.panel.x0 + self.panel.width() / 2.0;
             self.previous_people = if self.roster_offset > 0 {
                 Rect::new(
@@ -1760,7 +1769,7 @@ impl CollaboratorsOverlay {
         self.status_block_height =
             2.0 + self.status_height + 4.0 + sharing_height + f64::from(theme.tokens.spacing.s3);
         self.follow_height = ButtonFace::height(ControlSize::Large, theme);
-        self.row_height = (self.follow_height + 16.0).max(64.0);
+        self.row_height = (self.follow_height + 12.0).max(ROW_MIN_H);
         self.follow_width = ["people-panel-follow", "people-panel-stop-following"]
             .into_iter()
             .map(|key| {
@@ -1899,28 +1908,6 @@ impl CollaboratorsOverlay {
             &spark,
         );
         scene.fill(Fill::NonZero, transform, model.own_color, None, &spark);
-        if model.own_status_automatic && !model.status_editing {
-            let inset = f64::from(theme.tokens.spacing.s1) / 2.0;
-            let side = f64::from(theme.text(TextRole::Caption).size).min(avatar.width() / 2.0);
-            let badge = Rect::new(
-                avatar.x0 - inset,
-                avatar.y0 - inset,
-                avatar.x0 - inset + side,
-                avatar.y0 - inset + side,
-            );
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                ui::chrome::shell::panel_ground(theme),
-                None,
-                &RoundedRect::from_rect(
-                    badge.inflate(inset, inset),
-                    f64::from(theme.tokens.radii.detail),
-                ),
-            );
-            Icon::Sparkles.draw(scene, transform, badge, colors.intent.inverted);
-        }
-
         self.paint_status_field(scene, transform, text_renderer, theme, model, cursor);
         self.paint_sharing(
             scene,
@@ -1985,7 +1972,7 @@ impl CollaboratorsOverlay {
                 self.panel.x0 + 8.0,
                 frame.y + 3.0,
                 self.panel.x1 - 8.0,
-                frame.y + self.row_height.max(64.0) - 3.0,
+                frame.y + self.row_h() - 3.0,
                 f64::from(tokens.radii.control),
             );
             scene.fill(
@@ -2004,7 +1991,7 @@ impl CollaboratorsOverlay {
                     self.panel.x0 + 8.0,
                     frame.y + 11.0,
                     self.panel.x0 + 11.0,
-                    frame.y + self.row_height.max(64.0) - 11.0,
+                    frame.y + self.row_h() - 11.0,
                     1.5,
                 ),
             );
@@ -2036,7 +2023,7 @@ impl CollaboratorsOverlay {
     ) {
         let row = frame.row;
         let colors = &theme.tokens.colors;
-        let center = Point::new(self.panel.x0 + 28.0, frame.y + 29.0);
+        let center = Point::new(self.panel.x0 + 28.0, frame.y + self.row_h() / 2.0);
         let avatar_rect = Rect::new(
             center.x - 11.0,
             center.y - 11.0,
@@ -2105,7 +2092,7 @@ impl CollaboratorsOverlay {
         frame: &RowFrame<'_>,
     ) {
         let row = frame.row;
-        let center = Point::new(self.panel.x0 + 28.0, frame.y + 29.0);
+        let center = Point::new(self.panel.x0 + 28.0, frame.y + self.row_h() / 2.0);
         if !row.invited {
             // A live spark belongs on the identity itself: it reads as
             // "here now" without turning the row into a status report.
@@ -2198,44 +2185,17 @@ impl CollaboratorsOverlay {
         } else {
             self.panel.x1 - 12.0
         };
-        #[allow(
-            clippy::cast_possible_truncation,
-            reason = "the collaborator popover is only a few hundred logical pixels wide"
-        )]
-        let shown_label = text_renderer.elide_to_width_style(
-            &row.label,
-            (label_x1 - text_x).max(0.0) as f32,
-            &tokens.typography.style(TextRole::Caption),
-        );
-        let has_activity = row.invited || followed || row.activity.is_some() || row.role.is_some();
-        let label_y = if has_activity || row.status.is_some() {
-            row_y + 8.0
-        } else {
-            row_y + 22.0
-        };
-        text_renderer.draw_style(
-            scene,
-            &shown_label,
-            if row.invited {
-                colors.text_dim
-            } else {
-                colors.text_primary
-            },
-            transform.pre_translate((text_x, label_y).into()),
-            None,
-            &tokens.typography.style(TextRole::Caption),
-        );
+        let caption = tokens.typography.style(TextRole::Caption);
+        let line_h = f64::from(text_renderer.measure_style("Ag", None, &caption).1) + 2.0;
         let agent_tag = crate::i18n::t("people-panel-agent-tag");
-        if row.is_agent && !row.label.eq_ignore_ascii_case(&agent_tag) {
-            text_renderer.draw_style(
-                scene,
-                &agent_tag,
-                colors.text_dim,
-                transform.pre_translate((self.panel.x1 - 136.0, row_y + 9.0).into()),
-                None,
-                &tokens.typography.style(TextRole::Caption),
-            );
-        }
+        // The role sits on the right of the name line, so the left column is
+        // the person (name, then what they are doing) and the role reads as a
+        // label for the row, not as a second line of the person.
+        let role = if row.invited || row.is_agent {
+            None
+        } else {
+            row.role.as_deref()
+        };
         let subtitle = if row.invited {
             Some(crate::i18n::t("people-panel-invited-tag"))
         } else if followed {
@@ -2250,50 +2210,99 @@ impl CollaboratorsOverlay {
             )
         } else if let Some(activity) = &row.activity {
             Some(activity.clone())
-        } else {
+        } else if row.is_agent {
+            None
+        } else if role.is_none() {
             row.role.clone()
+        } else {
+            None
+        };
+        let lines = 1_usize
+            .saturating_add(usize::from(subtitle.is_some()))
+            .saturating_add(usize::from(row.status.is_some()));
+        let block_h = line_h * row_count_as_f64(lines);
+        let top = row_y + (self.row_h() - block_h) / 2.0;
+        let right = label_x1;
+        let role_shown = role.map(|role| {
+            let shown = text_renderer.elide_to_width_style(role, 96.0, &caption);
+            let (width, _) = text_renderer.measure_style(&shown, None, &caption);
+            (shown, f64::from(width))
+        });
+        let role_reserve = role_shown.as_ref().map_or(0.0, |(_, width)| width + 8.0);
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "the collaborator popover is only a few hundred logical pixels wide"
+        )]
+        let shown_label = text_renderer.elide_to_width_style(
+            &row.label,
+            (right - text_x - role_reserve).max(0.0) as f32,
+            &caption,
+        );
+        text_renderer.draw_style(
+            scene,
+            &shown_label,
+            if row.invited {
+                colors.text_dim
+            } else {
+                colors.text_primary
+            },
+            transform.pre_translate((text_x, top).into()),
+            None,
+            &caption,
+        );
+        if let Some((role, width)) = role_shown {
+            text_renderer.draw_style(
+                scene,
+                &role,
+                colors.text_dim,
+                transform.pre_translate((right - width, top).into()),
+                None,
+                &caption,
+            );
+        }
+        if row.is_agent && !row.label.eq_ignore_ascii_case(&agent_tag) {
+            text_renderer.draw_style(
+                scene,
+                &agent_tag,
+                colors.text_dim,
+                transform.pre_translate((self.panel.x1 - 136.0, top).into()),
+                None,
+                &caption,
+            );
+        }
+        let mut next_line = top + line_h;
+        let detail_x1 = if row.followable {
+            self.panel.x1 - self.follow_width.max(76.0) - 20.0
+        } else {
+            self.panel.x1 - 12.0
         };
         if let Some(subtitle) = subtitle {
-            let subtitle_x1 = if row.followable {
-                self.panel.x1 - self.follow_width.max(76.0) - 20.0
-            } else {
-                self.panel.x1 - 12.0
-            };
             #[allow(
                 clippy::cast_possible_truncation,
                 reason = "the collaborator popover is only a few hundred logical pixels wide"
             )]
             let subtitle = text_renderer.elide_to_width_style(
                 &subtitle,
-                (subtitle_x1 - text_x).max(0.0) as f32,
-                &tokens.typography.style(TextRole::Caption),
+                (detail_x1 - text_x).max(0.0) as f32,
+                &caption,
             );
             text_renderer.draw_style(
                 scene,
                 &subtitle,
                 colors.text_dim,
-                transform.pre_translate((text_x, row_y + 27.0).into()),
+                transform.pre_translate((text_x, next_line).into()),
                 None,
-                &tokens.typography.style(TextRole::Caption),
+                &caption,
             );
+            next_line += line_h;
         }
         if let Some(status) = &row.status {
-            let status_x1 = if row.followable {
-                self.panel.x1 - self.follow_width.max(76.0) - 20.0
-            } else {
-                self.panel.x1 - 12.0
-            };
             let icon = if status.automatic {
                 Icon::Sparkles
             } else {
                 Icon::Pencil
             };
-            let icon_rect = Rect::new(
-                text_x,
-                row_y + if has_activity { 45.0 } else { 29.0 },
-                text_x + 12.0,
-                row_y + if has_activity { 57.0 } else { 41.0 },
-            );
+            let icon_rect = Rect::new(text_x, next_line, text_x + 12.0, next_line + 12.0);
             icon.draw(scene, transform, icon_rect, colors.intent.inverted);
             let status_text_x = text_x + 17.0;
             #[allow(
@@ -2302,22 +2311,16 @@ impl CollaboratorsOverlay {
             )]
             let shown = text_renderer.elide_to_width_style(
                 &status.text,
-                (status_x1 - status_text_x).max(0.0) as f32,
-                &tokens.typography.style(TextRole::Caption),
+                (detail_x1 - status_text_x).max(0.0) as f32,
+                &caption,
             );
             text_renderer.draw_style(
                 scene,
                 &shown,
                 colors.intent.inverted,
-                transform.pre_translate(
-                    (
-                        status_text_x,
-                        row_y + if has_activity { 45.0 } else { 29.0 },
-                    )
-                        .into(),
-                ),
+                transform.pre_translate((status_text_x, next_line).into()),
                 None,
-                &tokens.typography.style(TextRole::Caption),
+                &caption,
             );
         }
         if row.followable {
