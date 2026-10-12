@@ -293,6 +293,8 @@ fn validate_task_run(run: &runtime_collab::TaskRunEnvelope) -> Result<(), String
         || run.task_id.len() > 256
         || run.title.trim().is_empty()
         || run.title.len() > 4 * 1024
+        || run.instruction().trim().is_empty()
+        || run.instruction().len() > 32 * 1024
         || run.lease.is_empty()
         || run.lease.len() > 128
     {
@@ -1180,7 +1182,7 @@ impl Session {
         run: &runtime_collab::TaskRunEnvelope,
     ) -> Result<(Vec<TaskAction>, Option<String>), String> {
         let catalogue = self.task_catalogue();
-        let (offer, arguments) = surface::from_verbs(&run.title, &catalogue.offers)
+        let (offer, arguments) = surface::from_verbs(run.instruction(), &catalogue.offers)
             .map_err(|error| format!("Rules-only planner could not choose an action: {error:?}"))?;
         task_action_from_offer(offer, arguments).map(|action| (vec![action], None))
     }
@@ -1933,6 +1935,7 @@ mod tests {
             version: 1,
             task_id: "task:review".into(),
             title: "Review draft".into(),
+            instruction: None,
             run_id: 7,
             lease: "broker-minted-lease".into(),
             planning: runtime_collab::TaskRunPlanning::RulesOnly,

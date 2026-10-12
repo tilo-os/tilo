@@ -834,8 +834,11 @@ impl Session {
             LoopEnd::Failed(message) => format!("(failed) {message}"),
             LoopEnd::Cancelled(message) => format!("(cancelled) {message}"),
         };
-        self.memory
-            .remember(&run.title, std::mem::take(&mut state.actions), &reply);
+        self.memory.remember(
+            run.instruction(),
+            std::mem::take(&mut state.actions),
+            &reply,
+        );
         Ok(end)
     }
 
@@ -872,7 +875,7 @@ impl Session {
         let catalogue = self.task_catalogue();
         // "ping/tell/notify … in Chat" requires a successful Chat operation,
         // whatever the model later claims.
-        let request = run.title.to_lowercase();
+        let request = run.instruction().to_lowercase();
         if request.contains("chat")
             && NOTIFY_WORDS.iter().any(|word| request.contains(word))
             && let Some(chat) = catalogue
@@ -922,7 +925,7 @@ impl Session {
             task: format!(
                 "{}The request:\n\n{}",
                 self.memory.render(),
-                run.title.trim()
+                run.instruction().trim()
             ),
         };
         let mut conversation = Conversation::new(protocol, &model, LOOP_SYSTEM, &first);
@@ -1504,7 +1507,7 @@ impl Session {
         };
         let instruction = match Instruction::from_answer(
             &invocation.operation,
-            &run.title,
+            run.instruction(),
             Some(&invocation.arguments),
             &catalogue.offers,
         ) {
@@ -3293,6 +3296,7 @@ mod tests {
             version: 1,
             task_id: "task:loop".into(),
             title: title.into(),
+            instruction: None,
             run_id: 7,
             lease: "broker-minted-lease".into(),
             planning: runtime_collab::TaskRunPlanning::Model,
@@ -3452,6 +3456,19 @@ mod tests {
                 ..
             }
         )));
+    }
+
+    #[test]
+    fn native_model_receives_the_full_private_instruction_not_a_truncated_title() {
+        let mut fixture = native_fixture(0);
+        let instruction =
+            "Inspect every release-note section and preserve the complete compatibility matrix. "
+                .repeat(6);
+        assert!(instruction.chars().count() > 240);
+        fixture.run.instruction = Some(instruction.clone());
+        fixture.session.run_task(&fixture.run).unwrap();
+        let bodies = fixture.script.bodies.lock().unwrap();
+        assert!(bodies[0].to_string().contains(instruction.trim()));
     }
 
     #[test]

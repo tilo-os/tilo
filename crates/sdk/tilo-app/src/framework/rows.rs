@@ -3,7 +3,9 @@
 //! fetched catalogue rows, running jobs — published beneath the resource for
 //! the palette, agents and scripts.
 
-use tilo_actions::{ActionSpec, OperationKind, Resource, ResourcePresentation};
+use tilo_actions::{
+    ActionSpec, OperationKind, Resource, ResourcePresentation, ResourceSemanticIdentity,
+};
 use tilo_resource::Effect;
 
 /// One live external entity a surface publishes beneath its resource, with
@@ -33,6 +35,16 @@ impl LiveRow {
         Self {
             resource: Resource::new(id, kind, label),
         }
+    }
+
+    /// Attach the stable source-domain identity used to find this row across
+    /// live dispatch aliases. It is descriptive metadata only and grants no
+    /// permission or authority. Invalid identities are omitted at this
+    /// publication boundary.
+    #[must_use]
+    pub fn semantic_identity(mut self, identity: ResourceSemanticIdentity) -> Self {
+        self.resource.semantic_identity = identity.is_valid().then_some(identity);
+        self
     }
 
     /// Offer a view or effect operation on the row.
@@ -146,11 +158,16 @@ pub(crate) fn merge(children: &mut Vec<Resource>, rows: impl IntoIterator<Item =
     }
 }
 
-/// Add to `existing` the presentation, operations, views and rows of `row`,
+/// Add to `existing` the presentation, semantic identity, operations, views and rows of `row`,
 /// which names it, that it lacks.
 pub(crate) fn join(existing: &mut Resource, row: Resource) {
     if existing.presentation.is_none() {
         existing.presentation = row.presentation;
+    }
+    if existing.semantic_identity.is_none() {
+        existing.semantic_identity = row
+            .semantic_identity
+            .filter(ResourceSemanticIdentity::is_valid);
     }
     for action in row.actions {
         if !existing.actions.iter().any(|known| known.id == action.id) {
@@ -174,4 +191,52 @@ pub(crate) fn find(resources: &[Resource], id: &str) -> Option<Resource> {
             find(&resource.children, id)
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn merging_retains_the_selector_identity_without_overwriting_the_first_publisher() {
+        let identity = ResourceSemanticIdentity::new("chat.agent", "chat.agent:scribe").unwrap();
+        let row = || {
+            LiveRow::new("agent:1", "chat.agent", "Scribe")
+                .semantic_identity(identity.clone())
+                .into_resource()
+        };
+        let mut children = vec![Resource::new("agent:1", "chat.agent", "Document label")];
+        merge(&mut children, [row()]);
+        assert_eq!(children.len(), 1);
+        assert_eq!(children[0].semantic_identity, Some(identity.clone()));
+        assert_eq!(children[0].label, "Document label");
+
+        let first = ResourceSemanticIdentity::new("chat.agent", "chat.agent:reed").unwrap();
+        children[0].semantic_identity = Some(first.clone());
+        merge(&mut children, [row()]);
+        assert_eq!(children[0].semantic_identity, Some(first));
+    }
+
+    #[test]
+    fn live_row_retains_only_a_valid_typed_semantic_identity() {
+        let identity = ResourceSemanticIdentity::new("chat.agent", "chat.agent:scribe")
+            .expect("the bounded typed identity is valid");
+        let resource = LiveRow::new("opaque:1", "chat.agent", "Scribe")
+            .semantic_identity(identity.clone())
+            .into_resource();
+        assert_eq!(resource.semantic_identity, Some(identity));
+
+        let invalid = ResourceSemanticIdentity {
+            kind: "chat agent".into(),
+            key: "chat.agent:scribe".into(),
+        };
+        assert!(
+            LiveRow::new("opaque:2", "chat.agent", "Scribe")
+                .semantic_identity(invalid)
+                .into_resource()
+                .semantic_identity
+                .is_none(),
+            "a live row never publishes malformed selector metadata"
+        );
+    }
 }

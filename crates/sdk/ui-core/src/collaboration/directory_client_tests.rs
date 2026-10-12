@@ -173,6 +173,7 @@ fn directory_manager(
         op_backlog: vec![],
         presence_backlog: vec![],
         context_backlog: vec![],
+        terminate_context_stream: false,
         scrollback_response: None,
     };
     broker.captures.lock().unwrap().directory.unsupported = unsupported;

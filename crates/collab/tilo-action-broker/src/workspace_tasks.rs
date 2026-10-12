@@ -9,8 +9,12 @@ use tilo_peer_state::workspace_task::{
 };
 
 const WORKSPACE: &str = "desktop:workspace";
+const COLLECTION: &str = "desktop:tasks";
 const TASK_PREFIX: &str = "desktop:task:";
 const MAX_ARGUMENT_BYTES: usize = 8192;
+const MAX_QUEUE_ARGUMENT_BYTES: usize =
+    tilo_desktop_model::MAX_WORKSPACE_TASK_INSTRUCTION_BYTES * 6 + 4096;
+const MAX_CURRENT_TASKS: usize = 256;
 
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -44,7 +48,12 @@ fn argument(envelope: &InvocationEnvelope) -> Result<&str, String> {
         .argument
         .as_deref()
         .ok_or("task arguments missing")?;
-    if encoded.len() > MAX_ARGUMENT_BYTES {
+    let maximum = if envelope.resource == COLLECTION && envelope.action == "queue" {
+        MAX_QUEUE_ARGUMENT_BYTES
+    } else {
+        MAX_ARGUMENT_BYTES
+    };
+    if encoded.len() > maximum {
         return Err("task arguments exceed bounded input".into());
     }
     Ok(encoded
@@ -82,9 +91,74 @@ fn queue_command(envelope: &InvocationEnvelope) -> Result<WorkspaceTaskCommand, 
     })
 }
 
+fn queue_instruction_command(
+    envelope: &InvocationEnvelope,
+) -> Result<WorkspaceTaskCommand, String> {
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Input {
+        title: String,
+        instruction: String,
+        assigned_agent: String,
+        planning: String,
+    }
+    let input: Input =
+        serde_json::from_str(argument(envelope)?).map_err(|error| error.to_string())?;
+    let route = match input.planning.as_str() {
+        "model" => WorkspaceTaskRoute::Model,
+        "rules_only" => WorkspaceTaskRoute::RulesOnly,
+        _ => return Err("managed task planning must be model or rules_only".into()),
+    };
+    Ok(WorkspaceTaskCommand::QueueInstruction {
+        title: input.title,
+        instruction: input.instruction,
+        assigned_agent: input.assigned_agent,
+        route,
+    })
+}
+
 pub(super) fn command(
     envelope: &InvocationEnvelope,
 ) -> Result<Option<WorkspaceTaskCommand>, String> {
+    if envelope.resource == COLLECTION && envelope.action == "queue" {
+        return queue_instruction_command(envelope).map(Some);
+    }
+    if let Some(task_id) = canonical_task_id(envelope)
+        && envelope.action == "direct"
+    {
+        #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Direction {
+            run_epoch: u64,
+            after_revision: u64,
+            text: String,
+        }
+        let input: Direction =
+            serde_json::from_str(argument(envelope)?).map_err(|error| error.to_string())?;
+        return Ok(Some(WorkspaceTaskCommand::DirectionForRun {
+            task_id,
+            run_epoch: input.run_epoch,
+            after_revision: input.after_revision,
+            text: input.text,
+        }));
+    }
+    if let Some(task_id) = canonical_task_id(envelope)
+        && envelope.action == "stop"
+    {
+        #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Stop {
+            run_epoch: u64,
+            after_revision: u64,
+        }
+        let input: Stop =
+            serde_json::from_str(argument(envelope)?).map_err(|error| error.to_string())?;
+        return Ok(Some(WorkspaceTaskCommand::CancelForRun {
+            task_id,
+            run_epoch: input.run_epoch,
+            after_revision: input.after_revision,
+        }));
+    }
     if let Some(id) = envelope.resource.strip_prefix(TASK_PREFIX)
         && envelope.action == "approve-run"
     {
@@ -186,6 +260,17 @@ fn manual(task: &WorkspaceTask) -> bool {
     task.route == WorkspaceTaskRoute::Manual && task.assigned_agent.is_none()
 }
 
+fn task_target(envelope: &InvocationEnvelope) -> Option<&str> {
+    envelope
+        .resource
+        .strip_prefix(TASK_PREFIX)
+        .filter(|task| !task.is_empty() && task.len() <= 256)
+}
+
+fn canonical_task_id(envelope: &InvocationEnvelope) -> Option<String> {
+    task_target(envelope).map(|task| format!("task:{task}"))
+}
+
 fn queue_action(workspace_label: &str) -> PublishedAction {
     use tilo_actions::{ActionParam, ParamType};
     let mut queue = action(
@@ -224,30 +309,57 @@ fn queue_action(workspace_label: &str) -> PublishedAction {
 pub(super) fn actions(
     snapshot: &WorkspaceTaskSnapshot,
     workspace_label: &str,
+    current_agents: &std::collections::BTreeSet<String>,
 ) -> Vec<PublishedAction> {
     use tilo_actions::{ActionParam, ParamType};
-    let mut result = vec![action(
-        WORKSPACE,
-        "create-task",
-        workspace_label,
-        "Create manual task",
-        vec![
-            ActionParam::required(
-                "title",
-                ParamType::Text,
-                "Manual coordination title; at most 240 characters",
-            ),
-            ActionParam::optional(
-                "resource_json",
-                ParamType::Text,
-                "Ordinary resource JSON: app_id, app_label, id, kind, label; grants no authority",
-            ),
-        ],
-        false,
-    )];
+    let mut result = vec![
+        current_tasks_action(),
+        queue_instruction_action(),
+        action(
+            WORKSPACE,
+            "create-task",
+            workspace_label,
+            "Create manual task",
+            vec![
+                ActionParam::required(
+                    "title",
+                    ParamType::Text,
+                    "Manual coordination title; at most 240 characters",
+                ),
+                ActionParam::optional(
+                    "resource_json",
+                    ParamType::Text,
+                    "Ordinary resource JSON: app_id, app_label, id, kind, label; grants no authority",
+                ),
+            ],
+            false,
+        ),
+    ];
     result.push(queue_action(workspace_label));
     for task in &snapshot.tasks {
+        if task
+            .assigned_agent
+            .as_ref()
+            .is_some_and(|agent| !current_agents.contains(agent))
+        {
+            continue;
+        }
         let target = format!("desktop:{}", task.id);
+        result.push(task_read_action(task));
+        if !manual(task) {
+            result.push(action(
+                &target,
+                "read-conversation",
+                &task.title,
+                "Read private task conversation",
+                vec![ActionParam::required(
+                    "run_epoch",
+                    ParamType::Integer,
+                    "Exact conversation run epoch",
+                )],
+                true,
+            ));
+        }
         result.push(action(
             &target,
             "inspect",
@@ -258,6 +370,17 @@ pub(super) fn actions(
         ));
         if !task.status.is_finished() {
             result.extend(task_grant_actions(&target, &task.title));
+        }
+        if task.status == tilo_desktop_model::WorkspaceTaskStatus::InProgress
+            && snapshot
+                .controls
+                .get(&task.id)
+                .is_some_and(|control| control.active_run.is_some())
+        {
+            if task.route == WorkspaceTaskRoute::Model {
+                result.push(direct_action(&target, &task.title));
+            }
+            result.push(stop_action(&target, &task.title));
         }
         if task.status == tilo_desktop_model::WorkspaceTaskStatus::Queued
             && !manual(task)
@@ -321,6 +444,100 @@ pub(super) fn actions(
         }
     }
     result
+}
+
+fn current_tasks_action() -> PublishedAction {
+    action(
+        COLLECTION,
+        "read-current-tasks",
+        "Tasks",
+        "Read current agent tasks",
+        vec![tilo_actions::ActionParam::required(
+            "agent",
+            tilo_actions::ParamType::Text,
+            "Exact admitted workspace agent",
+        )],
+        true,
+    )
+}
+
+fn queue_instruction_action() -> PublishedAction {
+    use tilo_actions::{ActionParam, ParamType};
+    action(
+        COLLECTION,
+        "queue",
+        "Tasks",
+        "Queue task",
+        vec![
+            ActionParam::required("title", ParamType::Text, "Bounded public task label"),
+            ActionParam::required(
+                "instruction",
+                ParamType::Text,
+                "Full private instruction; retained by the task owner",
+            ),
+            ActionParam::required(
+                "assigned_agent",
+                ParamType::Text,
+                "Exact current workspace agent",
+            ),
+            ActionParam::required(
+                "planning",
+                ParamType::Text,
+                "model or rules_only; never manual",
+            ),
+        ],
+        false,
+    )
+}
+
+fn task_read_action(task: &WorkspaceTask) -> PublishedAction {
+    action(
+        &format!("desktop:{}", task.id),
+        "read-task",
+        &task.title,
+        "Read current task",
+        Vec::new(),
+        true,
+    )
+}
+
+fn direct_action(target: &str, title: &str) -> PublishedAction {
+    use tilo_actions::{ActionParam, ParamType};
+    action(
+        target,
+        "direct",
+        title,
+        "Direct task",
+        vec![
+            ActionParam::required("run_epoch", ParamType::Integer, "Exact current run epoch"),
+            ActionParam::required(
+                "after_revision",
+                ParamType::Integer,
+                "Exact current direction revision",
+            ),
+            ActionParam::required("text", ParamType::Text, "Direction for this exact run"),
+        ],
+        false,
+    )
+}
+
+fn stop_action(target: &str, title: &str) -> PublishedAction {
+    use tilo_actions::{ActionParam, ParamType};
+    action(
+        target,
+        "stop",
+        title,
+        "Stop task",
+        vec![
+            ActionParam::required("run_epoch", ParamType::Integer, "Exact current run epoch"),
+            ActionParam::required(
+                "after_revision",
+                ParamType::Integer,
+                "Exact current direction revision",
+            ),
+        ],
+        false,
+    )
 }
 
 /// The actions that edit an open task's grant set.
@@ -400,7 +617,7 @@ fn action(
     PublishedAction {
         semantic_identity: None,
         resource: target.into(), action: operation.into(), resource_kind: if target == WORKSPACE { "workspace-membership" } else { "workspace-task" }.into(), resource_label: label.into(), action_label: operation_label.into(),
-        description: Some(if inspect { "Inspect current task coordination and execution policy; no execution result is asserted." } else if operation == "approve-run" { "Approve the observed queued task for its assigned agent. Existing workspace and action permissions still apply; approval does not assert execution or completion." } else { "Manual coordination only. Attachments are shared resource references; no agent run, execution, integration or verification is asserted." }.into()),
+        description: Some(if inspect { "Inspect current task coordination and execution policy; no execution result is asserted." } else if operation == "approve-run" { "Approve the observed queued task for its assigned agent. Existing workspace and action permissions still apply; approval does not assert execution or completion." } else if matches!(operation, "queue" | "direct" | "stop") { "Change owner-backed managed task state. Exact task, run, revision, membership and caller authority are revalidated before the mutation." } else { "Manual coordination only. Attachments are shared resource references; no agent run, execution, integration or verification is asserted." }.into()),
         operation_kind: if inspect { tilo_actions::OperationKind::View } else { tilo_actions::OperationKind::Document }, params,
         contract: tilo_actions::ActionContract {
             kind: if inspect { tilo_actions::ActionKind::Read } else { tilo_actions::ActionKind::Undoable },
@@ -411,13 +628,27 @@ fn action(
 }
 
 pub(super) fn is_inspect(envelope: &InvocationEnvelope) -> bool {
-    envelope.resource.starts_with(TASK_PREFIX) && envelope.action == "inspect"
+    (envelope.resource == COLLECTION && envelope.action == "read-current-tasks")
+        || (envelope.resource.starts_with(TASK_PREFIX)
+            && matches!(
+                envelope.action.as_str(),
+                "inspect" | "read-task" | "read-conversation"
+            ))
 }
 
 pub(super) fn inspect(
     snapshot: &WorkspaceTaskSnapshot,
     envelope: &InvocationEnvelope,
 ) -> Result<serde_json::Value, String> {
+    if envelope.resource == COLLECTION && envelope.action == "read-current-tasks" {
+        return read_current_tasks(snapshot, envelope);
+    }
+    if envelope.action == "read-task" {
+        return read_task(snapshot, envelope);
+    }
+    if envelope.action == "read-conversation" {
+        return read_conversation(snapshot, envelope);
+    }
     if envelope.argument.is_some() {
         return Err("task inspection takes no arguments".into());
     }
@@ -452,7 +683,11 @@ pub(super) fn inspect(
             })
         })
         .collect();
-    let mut output = serde_json::json!({"task":task,"grants":grants,
+    let mut public_task = task.clone();
+    if let Some(resource) = &mut public_task.resource {
+        resource.agent_request = None;
+    }
+    let mut output = serde_json::json!({"task":public_task,"grants":grants,
         "grants_read":tilo_action_policy::describe(&held, &tilo_action_policy::Ids),"coordination_only":manual(task),
         "managed_route":!manual(task), "run_epoch":control.run_epoch,
         "execution_budget":control.execution_budget,
@@ -466,6 +701,188 @@ pub(super) fn inspect(
             .insert("managed_execution".into(), serde_json::json!(false));
     }
     Ok(output)
+}
+
+fn active_execution<'a>(
+    control: &'a tilo_desktop_model::WorkspaceTaskControl,
+    active: &tilo_desktop_model::WorkspaceTaskActiveRun,
+) -> Option<&'a tilo_desktop_model::WorkspaceTaskExecution> {
+    control
+        .execution
+        .as_ref()
+        .filter(|execution| execution.run_epoch == active.epoch)
+}
+
+fn read_task(
+    snapshot: &WorkspaceTaskSnapshot,
+    envelope: &InvocationEnvelope,
+) -> Result<serde_json::Value, String> {
+    if envelope.argument.is_some() {
+        return Err("task read accepts no arguments".into());
+    }
+    let task_id = canonical_task_id(envelope).ok_or("task read target is invalid")?;
+    let task = snapshot
+        .tasks
+        .iter()
+        .find(|task| task.id == task_id)
+        .ok_or("task is absent from the current owner projection")?;
+    Ok(task_frontier(snapshot, task))
+}
+
+/// Only called behind the authenticated owner-person inspection custody gate.
+/// Public frontier/list/inspect projections deliberately never call this.
+fn read_conversation(
+    snapshot: &WorkspaceTaskSnapshot,
+    envelope: &InvocationEnvelope,
+) -> Result<serde_json::Value, String> {
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Query {
+        run_epoch: u64,
+    }
+    let query: Query =
+        serde_json::from_str(argument(envelope)?).map_err(|error| error.to_string())?;
+    let task_id = canonical_task_id(envelope).ok_or("conversation target is invalid")?;
+    let task = snapshot
+        .tasks
+        .iter()
+        .find(|task| task.id == task_id)
+        .ok_or("task is absent")?;
+    if manual(task) {
+        return Err("manual task has no private agent conversation".into());
+    }
+    let control = snapshot
+        .controls
+        .get(&task_id)
+        .ok_or("task control is absent")?;
+    if control.run_epoch != query.run_epoch {
+        return Err("conversation run changed".into());
+    }
+    let mut turns = Vec::new();
+    if let Some(instruction) = &control.instruction {
+        turns.push(serde_json::json!({
+            "task_id": task.id, "run_epoch": 0, "revision": 0,
+            "text": instruction, "author": task.created_by, "received_at": task.created_at,
+        }));
+    }
+    for direction in &control.directions {
+        turns.push(serde_json::json!({
+            "task_id": task.id, "run_epoch": query.run_epoch, "revision": direction.revision,
+            "text": direction.text, "author": direction.author, "received_at": direction.created_at,
+            "applied": direction.applied.as_ref().filter(|ack| ack.run_epoch == query.run_epoch),
+        }));
+    }
+    for (ordinal, event) in task
+        .audit
+        .iter()
+        .enumerate()
+        .filter(|(_, event)| {
+            event.for_run(query.run_epoch)
+                && matches!(event.action(), "public-progress" | "finish" | "abandon")
+        })
+        .take(tilo_desktop_model::task::MAX_WORKSPACE_TASK_PUBLIC_UPDATES + 1)
+    {
+        if let Some(text) = event
+            .note
+            .as_ref()
+            .filter(|text| text.len() <= tilo_desktop_model::MAX_WORKSPACE_TASK_SUMMARY_BYTES)
+        {
+            turns.push(serde_json::json!({
+                "task_id": task.id, "run_epoch": query.run_epoch, "revision": ordinal,
+                "kind": "agent-output", "text": text,
+                "author": format!("agent:{}", task.assigned_agent.as_deref().unwrap_or_default()),
+                "received_at": event.at,
+            }));
+        }
+    }
+    Ok(serde_json::json!({"task_id": task.id, "run_epoch": query.run_epoch, "turns": turns}))
+}
+
+fn read_current_tasks(
+    snapshot: &WorkspaceTaskSnapshot,
+    envelope: &InvocationEnvelope,
+) -> Result<serde_json::Value, String> {
+    let agent = inspection_agent_query(envelope)?;
+    let mut tasks = snapshot
+        .tasks
+        .iter()
+        .filter(|task| {
+            let active = snapshot
+                .controls
+                .get(&task.id)
+                .and_then(|control| control.active_run.as_ref());
+            task.status == tilo_desktop_model::WorkspaceTaskStatus::InProgress
+                && task.assigned_agent.as_deref() == Some(agent.as_str())
+                && active.is_some_and(|run| run.agent_id == agent)
+        })
+        .map(|task| task_frontier(snapshot, task))
+        .collect::<Vec<_>>();
+    tasks.sort_by(|left, right| left["task_id"].as_str().cmp(&right["task_id"].as_str()));
+    let total = u64::try_from(tasks.len()).map_err(|_| "current task count exceeds u64")?;
+    let complete = tasks.len() <= MAX_CURRENT_TASKS;
+    tasks.truncate(MAX_CURRENT_TASKS);
+    Ok(serde_json::json!({
+        "complete": complete,
+        "total": total,
+        "tasks": tasks,
+    }))
+}
+
+fn inspection_agent_query(envelope: &InvocationEnvelope) -> Result<String, String> {
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Query {
+        agent: String,
+    }
+    let query: Query =
+        serde_json::from_str(argument(envelope)?).map_err(|error| error.to_string())?;
+    if query.agent.is_empty()
+        || query.agent.len() > 128
+        || query.agent.chars().any(char::is_control)
+    {
+        return Err("current task query agent is invalid".into());
+    }
+    Ok(query.agent)
+}
+
+pub(super) fn inspection_agent(
+    snapshot: &WorkspaceTaskSnapshot,
+    envelope: &InvocationEnvelope,
+) -> Result<Option<String>, String> {
+    if envelope.resource == COLLECTION && envelope.action == "read-current-tasks" {
+        return inspection_agent_query(envelope).map(Some);
+    }
+    if matches!(envelope.action.as_str(), "read-task" | "read-conversation") {
+        let task_id = canonical_task_id(envelope).ok_or("task read target is invalid")?;
+        return snapshot
+            .tasks
+            .iter()
+            .find(|task| task.id == task_id)
+            .ok_or_else(|| "task is absent from the current owner projection".into())
+            .map(|task| task.assigned_agent.clone());
+    }
+    Ok(None)
+}
+
+fn task_frontier(snapshot: &WorkspaceTaskSnapshot, task: &WorkspaceTask) -> serde_json::Value {
+    let control = snapshot.controls.get(&task.id);
+    let active = control.and_then(|control| control.active_run.as_ref());
+    let execution =
+        control.and_then(|control| active.and_then(|active| active_execution(control, active)));
+    serde_json::json!({
+        "task_id": task.id,
+        "title": task.title,
+        "assigned_agent": task.assigned_agent,
+        "route": task.route,
+        "status": task.status,
+        "run_epoch": control.map(|control| control.run_epoch),
+        "active_agent": active.map(|run| &run.agent_id),
+        "after_revision": control
+            .and_then(|control| control.directions.last())
+            .map_or(0, |direction| direction.revision),
+        "applied_revision": active.map(|run| run.applied_direction_revision),
+        "execution": execution,
+    })
 }
 
 pub(super) fn result(
@@ -485,6 +902,62 @@ pub(super) fn result(
         | WorkspaceTaskMutationResult::ResourceAttached { task_id }
         | WorkspaceTaskMutationResult::RunStarted { task_id, .. } => (task_id, false),
         WorkspaceTaskMutationResult::ExecutionBudgetSet { task_id } => (task_id, true),
+        WorkspaceTaskMutationResult::DirectionAdded { task_id, revision }
+            if envelope.action == "direct"
+                && task_target(envelope) == task_id.strip_prefix("task:") =>
+        {
+            let task = snapshot
+                .tasks
+                .iter()
+                .find(|task| &task.id == task_id)
+                .ok_or("owner direction receipt has no canonical task")?;
+            let control = snapshot
+                .controls
+                .get(task_id)
+                .ok_or("owner direction receipt has no task control")?;
+            let run_epoch = control
+                .active_run
+                .as_ref()
+                .map(|run| run.epoch)
+                .ok_or("owner direction receipt has no active run")?;
+            return Ok(serde_json::json!({
+                "generation": generation,
+                "result": result.result,
+                "resource": format!("desktop:{task_id}"),
+                "task": task,
+                "run_epoch": run_epoch,
+                "revision": revision,
+                "saved": true,
+                "applied": control.active_run.as_ref().is_some_and(|run| {
+                    run.epoch == run_epoch && run.applied_direction_revision >= *revision
+                }),
+            }));
+        }
+        WorkspaceTaskMutationResult::Finished { task_id }
+            if envelope.action == "stop"
+                && task_target(envelope) == task_id.strip_prefix("task:") =>
+        {
+            let task = snapshot
+                .tasks
+                .iter()
+                .find(|task| &task.id == task_id)
+                .ok_or("owner stop receipt has no canonical task")?;
+            if task.status != tilo_desktop_model::WorkspaceTaskStatus::Cancelled
+                || snapshot
+                    .controls
+                    .get(task_id)
+                    .is_some_and(|control| control.active_run.is_some())
+            {
+                return Err("owner stop receipt did not cancel the exact task".into());
+            }
+            return Ok(serde_json::json!({
+                "generation": generation,
+                "result": result.result,
+                "resource": format!("desktop:{task_id}"),
+                "task": task,
+                "cancelled": true,
+            }));
+        }
         _ => return Err("task command returned an unexpected managed execution result".into()),
     };
     let task = snapshot
@@ -493,9 +966,13 @@ pub(super) fn result(
         .find(|task| &task.id == task_id)
         .ok_or("owner task receipt has no canonical task")?;
     let queued_agent = envelope.resource == WORKSPACE && envelope.action == "queue-agent-task";
+    let queued_instruction = envelope.resource == COLLECTION && envelope.action == "queue";
     let approved = envelope.action == "approve-run";
-    if (!approved && !budget_change && !queued_agent && !manual(task))
+    if (!approved && !budget_change && !queued_agent && !queued_instruction && !manual(task))
         || (queued_agent
+            && (manual(task)
+                || !matches!(result.result, WorkspaceTaskMutationResult::Queued { .. })))
+        || (queued_instruction
             && (manual(task)
                 || !matches!(result.result, WorkspaceTaskMutationResult::Queued { .. })))
     {
@@ -536,6 +1013,67 @@ mod tests {
             actor: "supplied-actor-is-not-authority".into(),
             context: None,
         }
+    }
+
+    #[test]
+    fn conversation_projects_only_exact_run_public_notes_and_real_outcome() {
+        let event = |epoch: u64, action: &str, text: &str| {
+            tilo_desktop_model::WorkspaceTaskAuditEvent::new(
+                2,
+                "agent:scribe",
+                action,
+                [("run_epoch", tilo_actions::Scalar::text(&epoch.to_string()))],
+            )
+            .noting(text)
+        };
+        let snapshot = WorkspaceTaskSnapshot {
+            tasks: vec![WorkspaceTask {
+                id: "task:output".into(),
+                title: "Update".into(),
+                created_by: "person".into(),
+                assigned_agent: Some("scribe".into()),
+                route: WorkspaceTaskRoute::Model,
+                status: tilo_desktop_model::WorkspaceTaskStatus::Done,
+                resource: None,
+                created_at: 1,
+                updated_at: 3,
+                audit: vec![
+                    event(1, "public-progress", "Old run"),
+                    event(2, "public-progress", "Appended the paragraph."),
+                    event(2, "finish", "The document is updated."),
+                ],
+            }],
+            controls: std::collections::BTreeMap::from([(
+                "task:output".into(),
+                tilo_desktop_model::WorkspaceTaskControl {
+                    run_epoch: 2,
+                    instruction: Some("Private full instruction".into()),
+                    ..Default::default()
+                },
+            )]),
+            grants: Vec::new(),
+        };
+        let mut request = envelope(&serde_json::json!({"run_epoch":2}));
+        request.resource = "desktop:task:output".into();
+        request.action = "read-conversation".into();
+        assert_eq!(
+            inspection_agent(&snapshot, &request).unwrap().as_deref(),
+            Some("scribe")
+        );
+        let read = inspect(&snapshot, &request).unwrap();
+        assert_eq!(read["turns"].as_array().unwrap().len(), 3);
+        assert_eq!(read["turns"][1]["text"], "Appended the paragraph.");
+        assert_eq!(read["turns"][2]["text"], "The document is updated.");
+        request.argument = envelope(&serde_json::json!({"run_epoch":1})).argument;
+        assert!(inspect(&snapshot, &request).is_err());
+        request.action = "inspect".into();
+        request.argument = None;
+        assert!(
+            !inspect(&snapshot, &request)
+                .unwrap()
+                .to_string()
+                .contains("Private full instruction")
+        );
     }
 
     fn enrolled_queue_owner() -> (
@@ -624,10 +1162,14 @@ mod tests {
             .validate_for(&enrolled)
             .unwrap();
         let before = owner.workspace_task_snapshot(room).unwrap();
-        let published = actions(&before, "Workspace")
-            .into_iter()
-            .find(|row| row.action == "queue-agent-task")
-            .unwrap();
+        let published = actions(
+            &before,
+            "Workspace",
+            &std::collections::BTreeSet::from(["scribe".into()]),
+        )
+        .into_iter()
+        .find(|row| row.action == "queue-agent-task")
+        .unwrap();
         assert_eq!(published.contract.kind, tilo_actions::ActionKind::Undoable);
         let mut public = envelope(
             &serde_json::json!({"title":"Inspect chip proof", "assigned_agent":"scribe", "planning":"model"}),
@@ -803,17 +1345,21 @@ mod tests {
             task.id.clone(),
             tilo_desktop_model::WorkspaceTaskControl::default(),
         );
-        let catalogue = actions(&snapshot, "Workspace");
+        let catalogue = actions(&snapshot, "Workspace", &std::collections::BTreeSet::new());
         // An open task offers its grant set's grant and revoke beside its
         // own actions.
-        assert_eq!(catalogue.len(), 6);
+        assert_eq!(catalogue.len(), 9);
         assert!(
             ["grant", "revoke"]
                 .iter()
                 .all(|id| catalogue.iter().any(|row| row.action == *id))
         );
-        assert_eq!(catalogue[0].resource_label, "Workspace");
-        assert_eq!(catalogue[0].resource_kind, "workspace-membership");
+        let create = catalogue
+            .iter()
+            .find(|row| row.action == "create-task")
+            .unwrap();
+        assert_eq!(create.resource_label, "Workspace");
+        assert_eq!(create.resource_kind, "workspace-membership");
         let inspect_action = catalogue
             .iter()
             .find(|row| row.action == "inspect")
@@ -827,8 +1373,12 @@ mod tests {
         task.assigned_agent = Some("scribe".into());
         task.route = WorkspaceTaskRoute::Model;
         snapshot.tasks = vec![task];
-        let managed = actions(&snapshot, "Workspace");
-        assert_eq!(managed.len(), 7);
+        let managed = actions(
+            &snapshot,
+            "Workspace",
+            &std::collections::BTreeSet::from(["scribe".into()]),
+        );
+        assert_eq!(managed.len(), 11);
         assert!(managed.iter().any(|row| row.action == "approve-run"));
         assert!(
             managed
@@ -846,3 +1396,7 @@ mod tests {
         assert!(observed.get("instruction").is_none());
     }
 }
+
+#[cfg(test)]
+#[path = "workspace_tasks/modern_control_tests.rs"]
+mod modern_control_tests;

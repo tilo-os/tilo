@@ -1136,6 +1136,13 @@ impl App {
     /// a locally-derived id is recognised in a room-keyed roster) and the
     /// host-assigned name; it never enters the roster itself.
     fn apply_collab_context(&mut self, collaborators: Vec<crate::collaboration::Collaborator>) {
+        let current = collaborators
+            .iter()
+            .map(|participant| crate::permissions::UserId(participant.id.clone()))
+            .collect::<std::collections::HashSet<_>>();
+        for departed in self.collaboration.context_participants.difference(&current) {
+            self.presence_ctx.unregister_peer(&departed.0);
+        }
         for participant in &collaborators {
             self.presence_ctx.set_participant_kind(
                 crate::permissions::UserId(participant.id.clone()),
@@ -1145,6 +1152,8 @@ impl App {
         if let Some(me) = collaborators.iter().find(|c| c.is_self) {
             self.presence_ctx
                 .set_self_participant(crate::permissions::UserId(me.id.clone()), me.name.clone());
+        } else {
+            self.presence_ctx.clear_self_participant();
         }
         // Filtered to others: letting the self row through would put the
         // local user in every list built from presence.
@@ -1167,6 +1176,7 @@ impl App {
                 },
             );
         }
+        self.collaboration.context_participants = current;
     }
 
     /// Every app in the room is handed every action; the one whose registry
