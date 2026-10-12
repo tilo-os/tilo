@@ -457,7 +457,7 @@ impl TypstApp {
             page_count: self.preview.page_count(),
         })
         .into_iter()
-        .map(crate::actions::live_row)
+        .map(ui::framework::LiveRow::from_resource)
         .collect()
     }
 

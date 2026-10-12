@@ -10,6 +10,15 @@ use crate::shell::test_control::{Command, Response};
 
 const PROVIDER: &str = "session-diagnostics";
 
+pub(super) fn owner_required(command: &Command) -> Option<Response> {
+    matches!(command, Command::ActionsInvoke { provider, .. } if provider == PROVIDER).then(|| {
+        Response::Err {
+            code: "not_permitted".into(),
+            message: crate::shell::i18n::t("session-diagnostics-owner-required"),
+        }
+    })
+}
+
 fn resources() -> Vec<Resource> {
     let mut configure = ActionSpec::typed_operation(
         "configure",
@@ -39,7 +48,11 @@ fn resources() -> Vec<Resource> {
         "",
         OperationKind::View,
         "session-diagnostics/v1",
-        vec![],
+        vec![ActionParam::optional_owned(
+            "app_id",
+            ParamType::Text,
+            crate::shell::i18n::t("session-diagnostics-app-filter"),
+        )],
         |_| EncodedAction {
             type_id: "session-diagnostics/v1".into(),
             payload: b"inspect".to_vec(),
@@ -137,9 +150,33 @@ pub(super) fn dispatch(command: &Command) -> Option<Response> {
         session.configure_diagnostics(Options(flags));
     }
     let flags = session.diagnostic_options();
-    Some(Response::Answer(
-        json!({"applies_to":"subsequent_launches","diagnostics":flags.value(),"live_input_delivery":flags.0[0],"current_gpu_renderer":"unchanged"}),
-    ))
+    let mut answer = serde_json::Map::from_iter([
+        ("applies_to".into(), json!("subsequent_launches")),
+        ("diagnostics".into(), flags.value()),
+        ("live_input_delivery".into(), json!(flags.0[0])),
+        ("current_gpu_renderer".into(), json!("unchanged")),
+    ]);
+    if admitted.encoded.payload == b"inspect" {
+        let mut history = session
+            .launch_history
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .value();
+        if let Some(app) = args.get("app_id").and_then(serde_json::Value::as_str)
+            && let Some(attempts) = history
+                .get_mut("attempts")
+                .and_then(serde_json::Value::as_array_mut)
+        {
+            attempts.retain(|attempt| {
+                attempt
+                    .get("package_id")
+                    .and_then(serde_json::Value::as_str)
+                    == Some(app)
+            });
+        }
+        answer.insert("launch_history".into(), history);
+    }
+    Some(Response::Answer(serde_json::Value::Object(answer)))
 }
 
 #[cfg(test)]
@@ -194,5 +231,24 @@ mod tests {
         assert!(
             matches!(dispatch(&read), Some(Response::Answer(value)) if value["applies_to"] == "subsequent_launches" && value["diagnostics"] == options.value())
         );
+        crate::shell::launcher::set_pending_placement(
+            "dev.tilo.diagnostic-app",
+            crate::shell::tab_binding::Placement::IntoTab(77),
+        );
+        let Some(Response::Answer(value)) = dispatch(&read) else {
+            panic!("owner inspect receipt");
+        };
+        assert_eq!(value["launch_history"]["attempts"][0]["saved_tab"], 77);
+        assert_eq!(
+            value["launch_history"]["stderr_policy"],
+            "fully_redacted_fixed_reason_only"
+        );
+        assert!(
+            value["launch_history"]["attempts"][0]["requested_epoch_ns"]
+                .as_u64()
+                .unwrap()
+                > 0
+        );
+        crate::shell::launcher::clear_pending_placements();
     }
 }

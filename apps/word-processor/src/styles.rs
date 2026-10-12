@@ -32,14 +32,15 @@ fn attr_f32(props: &BTreeMap<String, AttrVal>, key: &str, default: f32) -> f32 {
 }
 
 fn attr_str(props: &BTreeMap<String, AttrVal>, key: &str, default: &str) -> String {
-    match props.get(key) {
-        Some(AttrVal::Str(s)) => s.clone(),
-        _ => default.to_string(),
-    }
+    props
+        .get(key)
+        .and_then(AttrVal::as_str)
+        .unwrap_or(default)
+        .to_string()
 }
 
 fn attr_bool(props: &BTreeMap<String, AttrVal>, key: &str) -> bool {
-    matches!(props.get(key), Some(AttrVal::Bool(true)))
+    props.get(key).and_then(AttrVal::as_bool) == Some(true)
 }
 
 /// Every visual property of a style.
@@ -99,10 +100,10 @@ impl StyleProps {
             size: attr_f32(props, STYLE_SIZE, d.size),
             bold: attr_bool(props, STYLE_BOLD),
             italic: attr_bool(props, STYLE_ITALIC),
-            color: match props.get(STYLE_COLOR) {
-                Some(AttrVal::Str(s)) => hex_to_color(s),
-                _ => d.color,
-            },
+            color: props
+                .get(STYLE_COLOR)
+                .and_then(AttrVal::as_str)
+                .map_or(d.color, hex_to_color),
             align: attr_str(
                 props,
                 STYLE_ALIGN,

@@ -18,7 +18,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use tilo_search::{Document, FieldWeight, Matching, Page, SearchIndex};
+use tilo_search::{Document, FieldWeight, Matching, SearchIndex};
 
 use crate::shell::chrome_state::{Chrome, ChromeState};
 use crate::shell::i18n::{t, t_args};
@@ -225,28 +225,22 @@ impl SearchProvider for RecordsProvider {
         let Some(snapshot) = slot.as_ref() else {
             return SearchPage::exhausted(revision, Vec::new());
         };
-        super::page_hits(
+        crate::shell::search::index_page(
             revision,
-            &needle,
             cursor,
+            &needle,
             budget,
-            |offset| {
-                snapshot.index.search(
-                    &needle,
-                    Page {
-                        offset,
-                        limit: budget.max_work.min(budget.max_results),
-                    },
-                )
-            },
+            |page| snapshot.index.search(&needle, page),
             |hit| {
                 let record = usize::try_from(hit.key)
                     .ok()
                     .and_then(|at| snapshot.records.get(at))?;
+                let title = record.title();
+                let subtitle = provenance(record, here, &rooms);
                 Some(self.row(
                     record,
-                    record.title(),
-                    provenance(record, here, &rooms),
+                    title,
+                    subtitle,
                     crate::shell::search::provider_score(hit.rank.unwrap_or(0)),
                 ))
             },

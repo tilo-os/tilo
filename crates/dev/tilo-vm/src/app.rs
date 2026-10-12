@@ -4030,6 +4030,29 @@ impl App {
 
     // ---- swap -----------------------------------------------------------------
 
+    /// Use the imported replacement's mount logic for the ordinary VM swap.
+    fn handoff_daemon(
+        &mut self,
+        vm: &Resolved,
+        remote: Remote,
+        layer: &str,
+    ) -> Result<Remote, CliError> {
+        let command =
+            remote::imported_daemon_command(vm.entry.daemon.as_deref(), &remote.hello.root, layer)?;
+        let command: Vec<String> = command.iter().map(|word| vmbuild::sh_quote(word)).collect();
+        let endpoint = self.endpoint(vm)?;
+        let line = remote::ssh_command(&endpoint, vm.entry.key.as_deref(), &command, false);
+        let adapter = Self::adapter(vm)?;
+        let debug = Self::debug_commands(adapter.as_ref(), &vm.name);
+        let imported = self.receipt.phase("daemon-handoff", || {
+            remote.handoff(&vm.name, &line, &endpoint, debug)
+        })?;
+        // End the old RPC only after the replacement handshake succeeded.
+        drop(remote);
+        self.receipt.set("applying_daemon_layer", layer);
+        Ok(imported)
+    }
+
     fn swap(
         &mut self,
         slot: Option<String>,
@@ -4067,15 +4090,14 @@ impl App {
         }
         let manifest = self.manifest()?;
         let entry = manifest.as_ref().and_then(|m| m.get(&component)).cloned();
-        if let Some(c) = &entry {
-            let fits = (slot == VM_SLOT) == (c.info.scope == Scope::Vm);
-            if !fits {
-                return Err(CliError::ScopeMismatch {
-                    component,
-                    slot,
-                    scope: c.info.scope.as_str().into(),
-                });
-            }
+        if let Some(c) = &entry
+            && (slot == VM_SLOT) != (c.info.scope == Scope::Vm)
+        {
+            return Err(CliError::ScopeMismatch {
+                component,
+                slot,
+                scope: c.info.scope.as_str().into(),
+            });
         }
         let source = ci::parse(from, self.worktree.as_ref())?;
         if matches!(source, ci::Source::Worktree)
@@ -4116,6 +4138,9 @@ impl App {
         self.receipt.set("layer", &layer);
         // Building or pulling the layer can outlast the idle connection.
         remote = self.connect_for_swap(&vm)?;
+        if component == "vmd" {
+            remote = self.handoff_daemon(&vm, remote, &layer)?;
+        }
         let info = frame_cpu_info(entry, frame_cpu_trace)?;
         let result = self.receipt.phase("apply", || {
             remote.call(Swap {
@@ -8197,6 +8222,7 @@ mod tests {
         // Phase: slot_show_lists_files_by_component_with_digests.
         {
             let shown = SlotShowResult {
+                provenance: std::collections::BTreeMap::new(),
                 slot: slot_info("a", SlotKind::Headless, 2, &[0, 1, 2]),
                 files: vec![
                     tilo_vm_protocol::SlotFile {
@@ -8236,6 +8262,7 @@ mod tests {
         let shown = SlotShowResult {
             slot,
             files: vec![],
+            provenance: BTreeMap::new(),
         };
         let layers = vec![
             tilo_vm_protocol::LayerInfo {

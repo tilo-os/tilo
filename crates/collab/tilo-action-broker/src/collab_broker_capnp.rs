@@ -6657,9 +6657,6 @@ impl CapnpBrokerState {
             | CollabEvent::ActionDirectoryPage { .. }
             | CollabEvent::PublishedActionResolution { .. }
             | CollabEvent::WorkspaceControl { .. }
-            | CollabEvent::EnrolledTask(_)
-            | CollabEvent::EnrolledTaskReply { .. }
-            | CollabEvent::EnrolledTaskDisconnected { .. }
             | CollabEvent::TaskRun(_)
             | CollabEvent::TaskActionInvocationResult { .. }
             | CollabEvent::TaskRunCancellation { .. }
@@ -9545,11 +9542,6 @@ impl channel_handle::Server for CapnpChannelHandle {
                 action: &action,
                 argument: argument.as_deref(),
             };
-            if request.get_has_step() {
-                return Err(capnp::Error::failed(
-                    "durable task steps are not served by this host".into(),
-                ));
-            }
             let invocation = request.get_invocation()?.to_str()?;
             let provenance = if runtime_collab::native_task_revision(&lease).is_some() {
                 let id = uuid::Uuid::parse_str(invocation).map_err(|_| {
