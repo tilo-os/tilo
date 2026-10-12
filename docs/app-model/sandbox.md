@@ -140,9 +140,8 @@ address is `unix:path=<path>` (the common case), the launcher does:
 --setenv  DBUS_SESSION_BUS_ADDRESS <original-address>
 ```
 
-Otherwise the bus is NOT in the sandbox. Your `ashpd` /
-`runtime::portal_xdg` calls will surface `PortalError::NotAvailable`. This
-is the graceful-degradation contract — see [`runtime.md`](./runtime.md#portal_xdg).
+Otherwise the bus is NOT in the sandbox, and your `ashpd` calls fail as
+they would on a system without a session bus. Fall back to a local flow.
 
 Portal names the launcher understands today:
 

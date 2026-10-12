@@ -159,7 +159,9 @@ impl EncryptedSignalProfile {
             files: BTreeMap::new(),
         };
         let sealed = store.seal(&contents)?;
-        if !private_fs::create_atomic(&root.join("profile.enc"), &sealed).map_err(storage)? {
+        if !tilo_files::native::private::create_atomic(&root.join("profile.enc"), &sealed)
+            .map_err(storage)?
+        {
             return Err(ProfileError::Unavailable);
         }
         check(&store.authority)?;
@@ -180,9 +182,11 @@ impl EncryptedSignalProfile {
         if present(&root.join("active.enc"))? {
             return Err(ProfileError::Interrupted);
         }
-        let (file, _) =
-            private_fs::open_owned_for_read(&root.join("profile.enc"), MAX_SEALED_BYTES)
-                .map_err(storage)?;
+        let (file, _) = tilo_files::native::private::open_owned_for_read(
+            &root.join("profile.enc"),
+            MAX_SEALED_BYTES,
+        )
+        .map_err(storage)?;
         let mut sealed = Vec::new();
         file.take(MAX_SEALED_BYTES.saturating_add(1))
             .read_to_end(&mut sealed)
@@ -214,8 +218,9 @@ impl EncryptedSignalProfile {
         {
             return Err(ProfileError::Unavailable);
         }
-        private_fs::directory(root).map_err(storage)?;
-        let file = private_fs::lock_file(&root.join("owner.lock")).map_err(storage)?;
+        tilo_files::native::private::directory(root).map_err(storage)?;
+        let file =
+            tilo_files::native::private::lock_file(&root.join("owner.lock")).map_err(storage)?;
         let lock = FileLock::try_exclusive(file).map_err(|_| ProfileError::Busy)?;
         check(&authority)?;
         Ok(Self {
@@ -242,7 +247,9 @@ impl EncryptedSignalProfile {
         let marker = FORMAT
             .seal(&self.key, &marker)
             .ok_or(ProfileError::Unavailable)?;
-        if !private_fs::create_atomic(&self.root.join("active.enc"), &marker).map_err(storage)? {
+        if !tilo_files::native::private::create_atomic(&self.root.join("active.enc"), &marker)
+            .map_err(storage)?
+        {
             self.usable = false;
             return Err(ProfileError::Interrupted);
         }
@@ -271,8 +278,9 @@ impl EncryptedSignalProfile {
         let sealed = self.seal(&image.contents)?;
         // Authenticate the bounded, privately opened marker before publishing
         // or removing anything. Tampering leaves this lease interrupted.
-        let (file, _) = private_fs::open_owned_for_read(&self.root.join("active.enc"), 4096)
-            .map_err(storage)?;
+        let (file, _) =
+            tilo_files::native::private::open_owned_for_read(&self.root.join("active.enc"), 4096)
+                .map_err(storage)?;
         let mut marker = Vec::new();
         file.take(4097).read_to_end(&mut marker).map_err(storage)?;
         let marker = FORMAT
@@ -282,9 +290,10 @@ impl EncryptedSignalProfile {
         if marker != self.owner {
             return Err(ProfileError::InvalidImage);
         }
-        private_fs::write_atomic(&self.root.join("profile.enc"), &sealed).map_err(storage)?;
+        tilo_files::native::private::write_atomic(&self.root.join("profile.enc"), &sealed)
+            .map_err(storage)?;
         std::fs::remove_file(self.root.join("active.enc")).map_err(storage)?;
-        private_fs::sync_directory(&self.root).map_err(storage)?;
+        tilo_files::native::private::sync_directory(&self.root).map_err(storage)?;
         self.contents = Some(image.contents);
         self.usable = true;
         Ok(())

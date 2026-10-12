@@ -311,9 +311,11 @@ fn refuse_unusual_entries(root: &Path) -> Result<(), String> {
 /// model gateway services and no network.
 fn require_managed_service(manifest: &ManifestView) -> Result<(), String> {
     let requires = |service: &str| {
-        manifest.sandbox.services.get(service).is_some_and(|value| {
-            crate::manifest::ServiceReq::parse(value).is_ok_and(|req| req.is_required())
-        })
+        manifest
+            .sandbox
+            .services
+            .get(service)
+            .is_some_and(crate::manifest::ServiceReq::is_required)
     };
     if manifest.kind != crate::manifest::KIND_SERVICE
         || manifest.entrypoint.cli_bin().is_none()

@@ -3305,7 +3305,11 @@ impl RoomActivityPane {
     /// focus must remain visible with reduced-motion enabled and must not rely
     /// on a pulse or fade to be noticed.
     fn draw_keyboard_focus(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
-        let Some(rect) = self.focused_rect() else {
+        let Some(rect) = self
+            .keyboard_focus
+            .as_ref()
+            .and_then(|focus| self.rect_for_focus(focus))
+        else {
             return;
         };
         scene.stroke(
@@ -6413,83 +6417,6 @@ impl RoomActivityPane {
             order.push(ActivityFocus::MoreBriefs);
         }
         order
-    }
-
-    fn focused_rect(&self) -> Option<Rect> {
-        match self.keyboard_focus.as_ref()? {
-            ActivityFocus::Scope(value) => self
-                .scope_rects
-                .iter()
-                .find_map(|(item, rect)| (item == value).then_some(*rect)),
-            ActivityFocus::View(value) => self
-                .view_rects
-                .iter()
-                .find_map(|(item, rect)| (item == value).then_some(*rect)),
-            ActivityFocus::Period(value) => self
-                .period_rects
-                .iter()
-                .find_map(|(item, rect)| (item == value).then_some(*rect)),
-            ActivityFocus::Author(value) => self
-                .author_rects
-                .iter()
-                .find_map(|(item, rect)| (item == value).then_some(*rect)),
-            ActivityFocus::MorePeople => self.author_more_rect,
-            ActivityFocus::MorningCommand(key, command) => self
-                .morning_command_rects
-                .iter()
-                .find_map(|((id, item), rect)| (id == key && item == command).then_some(*rect)),
-            ActivityFocus::Morning(key, remove) => {
-                self.morning_rects
-                    .iter()
-                    .find_map(|((id, is_remove), rect)| {
-                        (id == key && is_remove == remove).then_some(*rect)
-                    })
-            }
-            ActivityFocus::Resume => Some(self.resume_rect),
-            ActivityFocus::Brief(value) => self
-                .brief_rects
-                .iter()
-                .find_map(|(item, rect)| (item == value).then_some(*rect)),
-            ActivityFocus::WorkSessionBoundary(value) => self
-                .boundary_rects
-                .iter()
-                .find_map(|(item, rect)| (item == value).then_some(*rect)),
-            ActivityFocus::MoreBriefs => self.brief_more_rect,
-            ActivityFocus::Acknowledge => self.acknowledge_rect,
-            ActivityFocus::NewTask => self.new_task_rect,
-            ActivityFocus::Task(value) => self
-                .task_rects
-                .iter()
-                .find_map(|(id, rect)| (id == value).then_some(*rect)),
-            ActivityFocus::TaskRoute(value) => self
-                .task_route_rects
-                .iter()
-                .find_map(|(route, rect)| (route == value).then_some(*rect)),
-            ActivityFocus::DirectionField => self.direction.as_ref().map(|draft| draft.rect),
-            ActivityFocus::TaskCreate => self.task_create_rect,
-            ActivityFocus::TaskCancelCompose => self.task_cancel_rect,
-            ActivityFocus::TaskAction(value) => self
-                .task_action_rects
-                .iter()
-                .find_map(|(action, rect)| (action == value).then_some(*rect)),
-            ActivityFocus::Lens(value) => self
-                .lens_rects
-                .iter()
-                .find_map(|(item, rect)| (item == value).then_some(*rect)),
-            ActivityFocus::MoreLenses => self.lens_more_rect,
-            ActivityFocus::Detail(value) => self
-                .detail_action_rects
-                .iter()
-                .find_map(|(item, rect)| (item == value).then_some(*rect)),
-            ActivityFocus::ExplorerPane(value) => self
-                .explorer_pane_rects
-                .iter()
-                .find_map(|(item, rect)| (item == value).then_some(*rect)),
-            ActivityFocus::Timeline => Some(self.timeline.rect()),
-            ActivityFocus::ReplayBack => Some(self.replay_back_rect),
-            ActivityFocus::ReplayPlay => Some(self.replay_play_rect),
-            ActivityFocus::ReplayForward => Some(self.replay_forward_rect),
-        }
     }
 
     fn move_focus(&mut self, backwards: bool, to_edge: Option<bool>) {

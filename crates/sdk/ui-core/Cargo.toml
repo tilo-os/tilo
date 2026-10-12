@@ -414,7 +414,6 @@ tilo-cpu-raster = { version = "0.1.0", path = "../tilo-cpu-raster" }
 # The paint stream's host side turns SVG images into vector items, so a page's
 # logos reach every client as paths rather than as bytes it cannot decode.
 tilo-paint-stream = { version = "0.1.0", path = "../../browser/paint-stream", features = ["svg"] }
-private-fs = { version = "0.1.0", path = "../../system/private-fs" }
 # Hyphenation patterns for every language. The browser toolkit core keeps
 # English and German only (the common table): the rest would add about 1 MB
 # downloaded before anything runs; other languages there are not hyphenated.
