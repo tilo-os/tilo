@@ -32,6 +32,16 @@ Each adapter reads what a benchmark already prints and emits records through
   one run; repeated runs become the samples of `wakeups.headless_two_apps`
   (the compositor's whole process tree), `.shell` (its own process) and
   `wakeups.frame_loop_ticks.headless_two_apps` (its frame loop's iterations).
+- `files-name-index LOG...`: the Files search name-index test
+  (`a_watched_change_costs_one_record_not_a_rebuild` in
+  `crates/session/shell/src/shell/search/providers/files.rs`) prints one
+  `FILES-NAME-INDEX names=<n> rebuild_ms=<x> change_ms=<a,b,...>
+  unchanged_ms=<a,b,...> rename_ms=<y> burst64_ms=<z>` line per run: process
+  CPU for one watched change to an index of `n` names, for an unchanged
+  one, a rename, a 64-file burst, and a whole-index build. Each becomes
+  `search.files_name_index.<metric>.<size>` (`change_cpu_ms`,
+  `unchanged_cpu_ms`, `rename_cpu_ms`, `burst64_cpu_ms`, `rebuild_cpu_ms`),
+  every listed value one sample, with sizes written `50k`.
 - `framework-open LOG...`: the `FRAMEWORK-OPEN tasks=<n> samples_ms=<a,b,...>
   allocations=<x> heap_per_task=<y>` lines of
   `crates/sdk/tilo-app/examples/framework-scaling.rs` (TIL-758), one per list
@@ -77,6 +87,7 @@ Usage:
     python3 tools/perf/adapters.py runtime-sizes --env-json env.json runtime.json >> results.jsonl
     python3 tools/perf/adapters.py workspace-switch --env-json env.json session.log >> results.jsonl
     python3 tools/perf/adapters.py idle-wakeups --env-json env.json run-*.log >> results.jsonl
+    python3 tools/perf/adapters.py files-name-index --env-json env.json run-*.log >> results.jsonl
     python3 tools/perf/adapters.py framework-open --env-json env.json framework-open.log >> results.jsonl
     python3 tools/perf/adapters.py framework-scroll --env-json env.json framework-scroll.log >> results.jsonl
     python3 tools/perf/adapters.py framework-focus --env-json env.json framework-focus.log >> results.jsonl
@@ -352,6 +363,40 @@ def framework_scroll(logs: list[str], env: dict[str, Any]) -> list[record.Record
     return [record.from_samples(kpi, units[kpi], values, meta=meta, **base) for kpi, values in samples.items()]
 
 
+FILES_NAME_INDEX_LINE = re.compile(
+    r"(?:^|\s)FILES-NAME-INDEX names=(?P<names>[0-9]+) rebuild_ms=(?P<rebuild_ms>[0-9.]+) "
+    r"change_ms=(?P<change_ms>[0-9.]+(?:,[0-9.]+)*) unchanged_ms=(?P<unchanged_ms>[0-9.]+(?:,[0-9.]+)*) "
+    r"rename_ms=(?P<rename_ms>[0-9.]+) burst64_ms=(?P<burst64_ms>[0-9.]+)$")
+# Line field -> KPI metric. Fields listing several values give one sample each.
+FILES_NAME_INDEX_KPIS = {"change_ms": "change_cpu_ms", "unchanged_ms": "unchanged_cpu_ms",
+                         "rename_ms": "rename_cpu_ms", "burst64_ms": "burst64_cpu_ms",
+                         "rebuild_ms": "rebuild_cpu_ms"}
+
+
+def files_name_index(logs: list[str], env: dict[str, Any]) -> list[record.Record]:
+    """Records for one or more runs of the Files search name-index update test."""
+    samples: dict[str, list[float]] = {}
+    sizes = set()
+    for log in logs:
+        lines = [match for line in log.splitlines() if (match := FILES_NAME_INDEX_LINE.search(line.rstrip()))]
+        if len(lines) != 1:
+            raise ValueError(f"expected one `FILES-NAME-INDEX` line per run, found {len(lines)}: "
+                             "did the test run with --nocapture?")
+        line = lines[0]
+        size = framework_open_size(int(line.group("names")))
+        sizes.add(size)
+        for field, metric in FILES_NAME_INDEX_KPIS.items():
+            kpi = f"search.files_name_index.{metric}.{size}"
+            samples.setdefault(kpi, []).extend(float(value) for value in line.group(field).split(","))
+    if not logs:
+        raise ValueError("no Files search name-index logs")
+    if len(sizes) != 1:
+        raise ValueError(f"runs measured different index sizes: {sorted(sizes)}")
+    meta = {**env.get("meta", {}), "runs": str(len(logs))}
+    base = {name: value for name, value in env.items() if name != "meta"}
+    return [record.from_samples(kpi, "ms", values, meta=meta, **base) for kpi, values in samples.items()]
+
+
 PRICES = Path(__file__).resolve().parent / "prices.toml"
 # The relay load bench's per-minute KPIs, as `relay_load` names them.
 HOSTING_KPIS = {
@@ -465,6 +510,9 @@ def main(argv: list[str] | None = None) -> int:
     idle = commands.add_parser("idle-wakeups", help="records from idle-wakeup gate logs")
     idle.add_argument("--env-json", required=True, type=Path)
     idle.add_argument("logs", nargs="+", type=Path)
+    names = commands.add_parser("files-name-index", help="records from FILES-NAME-INDEX test lines")
+    names.add_argument("--env-json", required=True, type=Path)
+    names.add_argument("logs", nargs="+", type=Path)
     opening = commands.add_parser("framework-open", help="records from framework-scaling's FRAMEWORK-OPEN lines")
     opening.add_argument("--env-json", required=True, type=Path)
     opening.add_argument("logs", nargs="+", type=Path)
@@ -510,6 +558,9 @@ def main(argv: list[str] | None = None) -> int:
                                       env)
         elif args.command == "idle-wakeups":
             records = idle_wakeups([path.read_text(encoding="utf-8", errors="replace") for path in args.logs], env)
+        elif args.command == "files-name-index":
+            records = files_name_index([path.read_text(encoding="utf-8", errors="replace") for path in args.logs],
+                                       env)
         else:
             records = tapp_sizes(json.loads(args.entries.read_text(encoding="utf-8")), env,
                                  tapp_size_ratchet.load().apps())
