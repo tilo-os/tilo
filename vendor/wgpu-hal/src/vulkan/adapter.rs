@@ -1292,6 +1292,18 @@ impl PhysicalDeviceProperties {
         // Optional `VK_EXT_external_memory_dma`
         if self.supports_extension(ext::external_memory_dma_buf::NAME) {
             extensions.push(ext::external_memory_dma_buf::NAME);
+
+            // Optional `VK_EXT_image_drm_format_modifier` (Tilo patch): lets a
+            // dma-buf import state its exact plane layout (offset, row pitch,
+            // modifier) instead of hoping the driver's linear pitch matches the
+            // producer's. Its dependencies (bind_memory2, sampler_ycbcr_conversion,
+            // image_format_list) are core from Vulkan 1.2, so it is only asked
+            // for there.
+            if self.device_api_version >= vk::API_VERSION_1_2
+                && self.supports_extension(ext::image_drm_format_modifier::NAME)
+            {
+                extensions.push(ext::image_drm_format_modifier::NAME);
+            }
         }
 
         // Optional `VK_EXT_memory_budget`
