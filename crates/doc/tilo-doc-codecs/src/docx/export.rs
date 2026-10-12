@@ -249,7 +249,7 @@ fn build_content_types(
             for img in &images.images {
                 let probe = format!(r#"Extension="{}""#, img.ext);
                 if !s.contains(&probe) {
-                    let (_, media) = image_ext_and_media(&img.bytes);
+                    let (_, media) = crate::office_image_part(&img.bytes);
                     let def = format!(
                         r#"<Default Extension="{}" ContentType="{}"/>"#,
                         img.ext, media
@@ -1431,7 +1431,7 @@ impl ImageExport {
         let mut out = Vec::new();
         for img in &self.images {
             if seen.insert(img.ext) {
-                let (_, media) = image_ext_and_media(&img.bytes);
+                let (_, media) = crate::office_image_part(&img.bytes);
                 out.push(format!(
                     r#"<Default Extension="{}" ContentType="{}"/>"#,
                     img.ext, media
@@ -1459,7 +1459,7 @@ impl ImageExport {
     /// package carries through (a text box's picture, say) under a name of the `imageN` kind.
     fn add(&mut self, bytes: &[u8]) -> String {
         let n = self.images.len().saturating_add(1);
-        let (ext, _) = image_ext_and_media(bytes);
+        let (ext, _) = crate::office_image_part(bytes);
         let rel_id = format!("rIdImg{n}");
         let hash = tilo_content::hash_bytes(bytes);
         let short = hash.get(..16).unwrap_or(&hash);
@@ -1473,15 +1473,6 @@ impl ImageExport {
         });
         rel_id
     }
-}
-
-/// Sniff an image's extension + media type from its magic bytes.
-fn image_ext_and_media(bytes: &[u8]) -> (&'static str, &'static str) {
-    tilo_doc::export::detect_image_media(bytes)
-        .filter(|media| matches!(media.extension, "png" | "jpg" | "gif"))
-        .map_or(("bin", "application/octet-stream"), |media| {
-            (media.extension, media.mime)
-        })
 }
 
 /// An image block's display size in EMU, defaulting to a 1-inch square when unset.

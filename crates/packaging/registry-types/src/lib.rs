@@ -92,9 +92,9 @@ pub use interfaces::{
 pub use moderation::{
     MODERATION_DOMAIN, ModerationActorRole, ModerationCase, ModerationCaseStatus,
     ModerationDecision, ModerationEvent, ModerationEventKind, ModerationMutation,
-    SignedModerationMutation, TransparencyPage, derive_verified_case, moderation_signing_message,
-    sign_moderation_mutation, transparency_event_hash, verify_moderation_authorization,
-    verify_moderation_mutation, verify_transparency_chain,
+    SignedModerationMutation, TransparencyPage, derive_verified_case, moderation_case_id,
+    moderation_signing_message, sign_moderation_mutation, transparency_event_hash,
+    verify_moderation_authorization, verify_moderation_mutation, verify_transparency_chain,
 };
 pub use snapshot::{
     CHANNEL_AUTHORIZATION_PROTOCOL, ChannelAuthorization, DELEGATED_SNAPSHOT_PROTOCOL,
