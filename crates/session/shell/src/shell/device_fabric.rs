@@ -2471,20 +2471,20 @@ impl DeviceFabric {
     pub fn speaker_member_states(
         &self,
         group: &crate::shell::speaker_group::SpeakerGroup,
-    ) -> Vec<crate::shell::speaker_group::SpeakerMemberState> {
-        use crate::shell::speaker_group::SpeakerMemberState;
+    ) -> Vec<crate::shell::speaker_group::SpeakerMemberStatus> {
+        use crate::shell::speaker_group::SpeakerMemberStatus;
         group
             .members
             .iter()
             .map(|member| {
                 let Some(snapshot) = self.snapshots.get(&member.device) else {
-                    return SpeakerMemberState::NotCertified;
+                    return SpeakerMemberStatus::NotCertified;
                 };
                 if member.device != group.leader && !snapshot.presence.capabilities.audio_group {
-                    return SpeakerMemberState::Unavailable;
+                    return SpeakerMemberStatus::Unavailable;
                 }
                 if snapshot.speakers.output(member.output).is_none() {
-                    return SpeakerMemberState::OutputMissing;
+                    return SpeakerMemberStatus::OutputMissing;
                 }
                 let consented = member.device == group.leader
                     || snapshot
@@ -2493,11 +2493,11 @@ impl DeviceFabric {
                         .iter()
                         .any(|membership| membership.covers(group, member));
                 if !consented {
-                    SpeakerMemberState::AwaitingConsent
+                    SpeakerMemberStatus::AwaitingConsent
                 } else if snapshot.presence.online {
-                    SpeakerMemberState::Ready
+                    SpeakerMemberStatus::Ready
                 } else {
-                    SpeakerMemberState::Offline
+                    SpeakerMemberStatus::Offline
                 }
             })
             .collect()
