@@ -7,7 +7,7 @@
 //! `level` attr; `- [ ]`/`- [x]` → `checked` attr; `` `code` `` → `fontFamily`=mono;
 //! fences → `code`=true block (+ optional `lang`).
 
-use crate::format::{CodecError, Confidence, FormatProvider};
+use crate::format::{CodecError, FormatProvider};
 use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
 use std::collections::BTreeMap;
 use tilo_content::{ContentInputs, ContentSource};
@@ -25,14 +25,6 @@ use std::fmt::Write as _;
 pub struct MarkdownCodec;
 
 impl FormatProvider for MarkdownCodec {
-    fn schema_id(&self) -> &str {
-        tilo_doc::schema::SCHEMA_ID
-    }
-
-    fn detect(&self, _head: &[u8]) -> Confidence {
-        Confidence::Medium
-    }
-
     fn import(
         &self,
         bytes: &[u8],
