@@ -1674,14 +1674,6 @@ impl StatePeer {
             .map(|(role, _)| role)
             .map_err(err)
     }
-    /// Name, in every op this peer signs for an app, the surface `of`
-    /// returns for it: the content hash of the app's `surface.toml`.
-    pub fn name_app_surfaces(
-        &mut self,
-        of: impl Fn(&str) -> Option<[u8; 32]> + Send + Sync + 'static,
-    ) {
-        self.app_surfaces = AppSurfaces(Some(std::sync::Arc::new(of)));
-    }
 
     /// Decide received changes by their claims against the app surfaces
     /// `surfaces` finds.

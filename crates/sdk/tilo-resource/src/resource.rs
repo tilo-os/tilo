@@ -1583,14 +1583,6 @@ impl<R: Resource> ActionDecl<R> {
         self
     }
 
-    /// Take content another action produced as the one input, described by
-    /// `prompt`; see [`Declaration::content`].
-    #[must_use]
-    pub fn collecting_content(mut self, prompt: impl Into<String>) -> Self {
-        self.decl.content = Some(prompt.into());
-        self
-    }
-
     #[must_use]
     pub fn describe(mut self, description: impl Into<String>) -> Self {
         self.decl.description = Some(description.into());

@@ -254,16 +254,6 @@ pub fn edit_text_action(
     )
 }
 
-/// Set the words of slide `slide`'s title and/or body text boxes.
-#[must_use]
-pub fn set_slide_text_action(slide: &str, title: Option<&str>, body: Option<&str>) -> Action {
-    stamped(DeckAction::SetText(deck::deck::SetText {
-        slide: Id::from(slide),
-        title: title.map(str::to_owned),
-        body: body.map(str::to_owned),
-    }))
-}
-
 /// The template for a freshly-created slide, shared by the toolbar's "New slide"
 /// button and the palette's "Add slide" so both insert the identical
 /// structure. Fresh ids are minted on each call (a new slide is genuinely new).
