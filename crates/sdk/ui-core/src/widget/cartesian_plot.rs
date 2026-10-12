@@ -785,13 +785,9 @@ impl CartesianPlot {
     }
 
     #[must_use]
-    pub fn styled(mut self, style: CartesianStyle) -> Self {
+    pub fn with_style(mut self, style: CartesianStyle) -> Self {
         self.style = style;
         self
-    }
-    #[must_use]
-    pub fn with_style(self, style: CartesianStyle) -> Self {
-        self.styled(style)
     }
     #[must_use]
     pub fn with_annotations(

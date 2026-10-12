@@ -193,13 +193,9 @@ impl CategoryChart {
         }
     }
     #[must_use]
-    pub fn styled(mut self, style: CategoryChartStyle) -> Self {
+    pub fn with_style(mut self, style: CategoryChartStyle) -> Self {
         self.style = style;
         self
-    }
-    #[must_use]
-    pub fn with_style(self, style: CategoryChartStyle) -> Self {
-        self.styled(style)
     }
     pub fn style(&self) -> &CategoryChartStyle {
         &self.style

@@ -115,13 +115,9 @@ impl SankeyChart {
         }
     }
     #[must_use]
-    pub fn styled(mut self, style: SankeyStyle) -> Self {
+    pub fn with_style(mut self, style: SankeyStyle) -> Self {
         self.style = style;
         self
-    }
-    #[must_use]
-    pub fn with_style(self, style: SankeyStyle) -> Self {
-        self.styled(style)
     }
     pub fn style(&self) -> &SankeyStyle {
         &self.style

@@ -98,13 +98,9 @@ impl FunnelChart {
         }
     }
     #[must_use]
-    pub fn styled(mut self, style: FunnelStyle) -> Self {
+    pub fn with_style(mut self, style: FunnelStyle) -> Self {
         self.style = style;
         self
-    }
-    #[must_use]
-    pub fn with_style(self, style: FunnelStyle) -> Self {
-        self.styled(style)
     }
     pub fn style(&self) -> &FunnelStyle {
         &self.style

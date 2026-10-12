@@ -81,13 +81,9 @@ impl Treemap {
         }
     }
     #[must_use]
-    pub fn styled(mut self, style: TreemapStyle) -> Self {
+    pub fn with_style(mut self, style: TreemapStyle) -> Self {
         self.style = style;
         self
-    }
-    #[must_use]
-    pub fn with_style(self, style: TreemapStyle) -> Self {
-        self.styled(style)
     }
     pub fn style(&self) -> &TreemapStyle {
         &self.style
