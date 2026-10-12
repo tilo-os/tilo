@@ -636,7 +636,11 @@ mod tests {
         let service = FloatingSurfaceService::start().unwrap();
         let declared = BTreeMap::from([(
             launcher::services::SHELL_UI_SERVICE.to_owned(),
-            "required@1".to_owned(),
+            launcher::manifest::ServiceReq::parse(
+                launcher::services::SHELL_UI_SERVICE,
+                "required@1",
+            )
+            .unwrap(),
         )]);
         let resolved = launcher::services::resolve_service_binds(&declared, false).unwrap();
         launcher::services::authenticate_shell_ui_bind(
@@ -693,7 +697,11 @@ mod tests {
         let service = FloatingSurfaceService::start().expect("start service");
         let declared = BTreeMap::from([(
             launcher::services::SHELL_UI_SERVICE.to_owned(),
-            "required@1".to_owned(),
+            launcher::manifest::ServiceReq::parse(
+                launcher::services::SHELL_UI_SERVICE,
+                "required@1",
+            )
+            .unwrap(),
         )]);
         let resolved = launcher::services::resolve_service_binds(&declared, false)
             .expect("resolve the real launch descriptor");
