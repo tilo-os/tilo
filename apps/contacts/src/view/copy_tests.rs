@@ -143,9 +143,6 @@ impl Host {
             if !copies.is_empty() {
                 run.copied_frames += 1;
                 run.repainted += covered(&rects, self.window.inner_size());
-                if std::env::var_os("TILO_COPY_DEBUG").is_some() {
-                    eprintln!("copies={copies:?} rects={rects:?}");
-                }
             }
             let _ = self.presented.render_copies_and_damage_gpu_wait(
                 &self.scene,
