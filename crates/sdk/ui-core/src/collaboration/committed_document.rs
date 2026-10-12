@@ -476,6 +476,31 @@ impl CommittedDocument {
         // between its check and its wait is never missed.
         self.merge_wake.notify_one();
     }
+    /// A current capture of `bytes`: the changes since `base`, or the whole
+    /// document when `base` is `None`.
+    #[cfg(test)]
+    pub(crate) fn for_test(bytes: Vec<u8>, base: Option<Vec<automerge::ChangeHash>>) -> Self {
+        let budget = ByteBudget::new();
+        let length = bytes.len().max(1);
+        Self {
+            data: Arc::new(Captured {
+                bytes: std::sync::Mutex::new(bytes),
+                _reservation: budget.reserve(length, length).unwrap(),
+            }),
+            merged: Arc::new(AtomicBool::new(false)),
+            merge_wake: Arc::new(tokio::sync::Notify::new()),
+            valid: Arc::new(AtomicBool::new(true)),
+            creation: None,
+            revision: [0; 32],
+            initialized: Arc::new(AtomicBool::new(false)),
+            base: base.map(Into::into),
+            refused: Arc::new(AtomicBool::new(false)),
+        }
+    }
+    #[cfg(test)]
+    pub(crate) fn was_applied(&self) -> bool {
+        self.merged.load(Ordering::Acquire)
+    }
 }
 struct Captured {
     bytes: std::sync::Mutex<Vec<u8>>,
