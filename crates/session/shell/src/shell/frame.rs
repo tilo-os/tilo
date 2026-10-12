@@ -2207,10 +2207,19 @@ impl FrameBuilder {
         // A presenter that moves pixels within its target gets what a scroll
         // in an app moved, while the scene is one display's view of the
         // desktop and nothing follows the pointer over all of it.
-        let copying = self.scroll_copy_presenter
-            && !self.pointer_filter()
-            && self.lone_output_transform().is_some();
-        let _copies_scope = ui::scroll_copy::HostCopies::begin(copying);
+        // Apps plan their copies in the display's pixels, so a step of half
+        // a logical pixel at 200 % copies.
+        let to_scene = self.lone_output_transform();
+        let copying = self.scroll_copy_presenter && !self.pointer_filter() && to_scene.is_some();
+        let device_per_unit = to_scene.map_or(1.0, |to_scene| {
+            let [a, b, c, d, _, _] = to_scene.as_coeffs();
+            if b == 0.0 && c == 0.0 && a.to_bits() == d.to_bits() {
+                a
+            } else {
+                1.0
+            }
+        });
+        let _copies_scope = ui::scroll_copy::HostCopies::begin_scaled(copying, device_per_unit);
         let layered = self.retained_layer_width.is_some();
         // A presenter that composites layers cannot composite HDR layers, and
         // they would be recorded in canvas coordinates.
