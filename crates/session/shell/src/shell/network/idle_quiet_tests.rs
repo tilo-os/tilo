@@ -188,6 +188,75 @@ fn bring_loopback_up() {
     unsafe { libc::close(fd) };
 }
 
+/// What a router advertising its prefix every few seconds does to a host:
+/// refreshes the lifetimes of an address it already has, which the kernel
+/// announces (`RTM_NEWADDR`) to every netlink subscriber. Replaces `fd00::1`
+/// on loopback with new lifetimes at each [`Self::refresh`]. Needs the
+/// private network namespace's root.
+struct AddressRefresher {
+    socket: libc::c_int,
+    sent: u32,
+}
+
+impl AddressRefresher {
+    fn new() -> Self {
+        // SAFETY: a plain netlink socket, closed on drop.
+        let socket = unsafe { libc::socket(libc::AF_NETLINK, libc::SOCK_RAW, libc::NETLINK_ROUTE) };
+        assert!(
+            socket >= 0,
+            "open a netlink socket: {}",
+            std::io::Error::last_os_error()
+        );
+        Self { socket, sent: 0 }
+    }
+
+    fn refresh(&mut self) {
+        const RTM_NEWADDR: u16 = 20;
+        const FLAGS: u16 = 0x1 | 0x4 | 0x100 | 0x400; // REQUEST | ACK | REPLACE | CREATE
+        self.sent += 1;
+        let lifetime = 100_000_u32.saturating_sub(self.sent);
+        let address: [u8; 16] = std::net::Ipv6Addr::new(0xfd00, 0, 0, 0, 0, 0, 0, 1).octets();
+        let mut message = Vec::with_capacity(84);
+        message.extend_from_slice(&84_u32.to_ne_bytes()); // length
+        message.extend_from_slice(&RTM_NEWADDR.to_ne_bytes());
+        message.extend_from_slice(&FLAGS.to_ne_bytes());
+        message.extend_from_slice(&self.sent.to_ne_bytes()); // sequence
+        message.extend_from_slice(&0_u32.to_ne_bytes()); // port
+        message.extend_from_slice(&[libc::AF_INET6 as u8, 128, 0, 0]); // ifaddrmsg
+        message.extend_from_slice(&1_u32.to_ne_bytes()); // lo
+        for kind in [2_u16, 1] {
+            // IFA_LOCAL, IFA_ADDRESS
+            message.extend_from_slice(&20_u16.to_ne_bytes());
+            message.extend_from_slice(&kind.to_ne_bytes());
+            message.extend_from_slice(&address);
+        }
+        message.extend_from_slice(&20_u16.to_ne_bytes()); // IFA_CACHEINFO
+        message.extend_from_slice(&6_u16.to_ne_bytes());
+        for value in [lifetime, lifetime, 0, 0] {
+            message.extend_from_slice(&value.to_ne_bytes());
+        }
+        let mut reply = [0_u8; 256];
+        // SAFETY: sends `message` to the kernel and reads its acknowledgement
+        // into `reply`, both alive for the calls.
+        let answered = unsafe {
+            libc::send(self.socket, message.as_ptr().cast(), message.len(), 0);
+            libc::recv(self.socket, reply.as_mut_ptr().cast(), reply.len(), 0)
+        };
+        assert!(
+            answered > 0,
+            "the kernel answered: {}",
+            std::io::Error::last_os_error()
+        );
+    }
+}
+
+impl Drop for AddressRefresher {
+    fn drop(&mut self) {
+        // SAFETY: the socket is ours and unused after this.
+        unsafe { libc::close(self.socket) };
+    }
+}
+
 /// Every thread of this process except the one driving the desktops'
 /// frame loops, whose 10 Hz is the simulation's and not the session's.
 fn session_threads(driver: Option<u32>) -> Vec<tilo_test_env::idle::ThreadSample> {
@@ -542,6 +611,12 @@ fn a_lone_idle_desktop_keeps_its_network_runtime_asleep() {
     if in_private_network("a_lone_idle_desktop_keeps_its_network_runtime_asleep") {
         return;
     }
+    // The address exists before the desktop does, as a router's does.
+    let refresher = std::env::var_os(PRIVATE_NETWORK).map(|_| {
+        let mut refresher = AddressRefresher::new();
+        refresher.refresh();
+        refresher
+    });
     let mut home = tilo_test_env::TestHome::new().unwrap();
     let dir = tempfile::tempdir().unwrap();
     let root = SigningKey::from_bytes(&[44; 32]);
@@ -573,12 +648,40 @@ fn a_lone_idle_desktop_keeps_its_network_runtime_asleep() {
     }
     std::thread::sleep(LONE_SETTLE);
 
+    // In the private network, a router refreshes an address's lifetimes
+    // five times a second, far oftener than a real one: the desktop must
+    // sleep through it. That thread is the simulation's, not the session's.
+    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let refresher = refresher.map(|mut refresher| {
+        let (tid_tx, tid_rx) = std::sync::mpsc::channel();
+        let stop = Arc::clone(&stop);
+        let thread = std::thread::spawn(move || {
+            // SAFETY: gettid has no arguments and cannot fail.
+            let tid = unsafe { libc::syscall(libc::SYS_gettid) };
+            tid_tx.send(u32::try_from(tid).unwrap_or(0)).unwrap();
+            while !stop.load(std::sync::atomic::Ordering::Acquire) {
+                refresher.refresh();
+                std::thread::sleep(Duration::from_millis(200));
+            }
+            refresher.sent
+        });
+        (tid_rx.recv().unwrap(), thread)
+    });
+    let driver = refresher.as_ref().map(|(tid, _)| *tid);
+    std::thread::sleep(Duration::from_millis(500));
+
     // Nothing drives this desktop, so every thread of the process counts.
-    let before = session_threads(None);
+    let before = session_threads(driver);
     let started = Instant::now();
     std::thread::sleep(LONE_IDLE);
     let measured = started.elapsed();
-    let wakeups = tilo_test_env::idle::Wakeups::between(before, session_threads(None), measured);
+    let wakeups = tilo_test_env::idle::Wakeups::between(before, session_threads(driver), measured);
+    stop.store(true, std::sync::atomic::Ordering::Release);
+    if let Some((_, thread)) = refresher {
+        let refreshes = thread.join().unwrap();
+        eprintln!("{refreshes} address lifetime refreshes during the run");
+        assert!(refreshes >= 50, "the router simulation ran: {refreshes}");
+    }
     eprintln!("a lone idle desktop's threads, {wakeups}");
     eprintln!(
         "a lone idle desktop's threads blocked {:.2} times a second",
