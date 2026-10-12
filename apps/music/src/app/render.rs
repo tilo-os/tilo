@@ -770,7 +770,7 @@ impl Widget for MusicApp {
         children.extend(
             self.track_tables
                 .iter()
-                .filter_map(|slot| slot.table.visible_widget()),
+                .filter_map(|slot| slot.table.host.visible().map(|table| table as &dyn Widget)),
         );
         let mode = self.source_widget_mode();
         match mode {
@@ -812,11 +812,12 @@ impl Widget for MusicApp {
                 .button_mut()
                 .map(|button| button as &mut (dyn Widget + '_)),
         );
-        children.extend(
-            self.track_tables
-                .iter_mut()
-                .filter_map(|slot| slot.table.visible_widget_mut()),
-        );
+        children.extend(self.track_tables.iter_mut().filter_map(|slot| {
+            slot.table
+                .host
+                .visible_mut()
+                .map(|table| table as &mut (dyn Widget + '_))
+        }));
         match mode {
             2 | 3 => children.extend(
                 self.source_buttons
@@ -3870,7 +3871,7 @@ impl MusicApp {
             if covered {
                 // The pointer is not over the page: no row stays lifted.
                 if let WindowEvent::CursorMoved { device_id, .. } = event {
-                    slot.table.handle_event(
+                    slot.table.host.handle_event(
                         &WindowEvent::CursorLeft {
                             device_id: *device_id,
                         },
@@ -3879,8 +3880,8 @@ impl MusicApp {
                 }
                 continue;
             }
-            slot.table.handle_event(event, ctx);
-            tooltip = tooltip.or_else(|| slot.table.tooltip_at(mouse));
+            slot.table.host.handle_event(event, ctx);
+            tooltip = tooltip.or_else(|| slot.table.host.tooltip_at(mouse));
             asked.extend(slot.table.take_events().into_iter().map(|ask| (index, ask)));
         }
         if tooltip != self.table_tooltip {
@@ -3892,7 +3893,7 @@ impl MusicApp {
             if covered {
                 // The pointer is not over the page: no card stays lifted.
                 if let WindowEvent::CursorMoved { device_id, .. } = event {
-                    grid.handle_event(
+                    grid.host.handle_event(
                         &WindowEvent::CursorMoved {
                             device_id: *device_id,
                             position: winit::dpi::PhysicalPosition::new(f64::MIN, f64::MIN),
@@ -3903,14 +3904,14 @@ impl MusicApp {
                 continue;
             }
             if !*ctx.handled {
-                grid.handle_event(event, ctx);
+                grid.host.handle_event(event, ctx);
             }
             cards.extend(grid.take_asked());
         }
         for part in &mut self.page_parts {
             if covered {
                 if let WindowEvent::CursorMoved { device_id, .. } = event {
-                    part.handle_event(
+                    part.host.handle_event(
                         &WindowEvent::CursorMoved {
                             device_id: *device_id,
                             position: winit::dpi::PhysicalPosition::new(f64::MIN, f64::MIN),
@@ -3921,10 +3922,10 @@ impl MusicApp {
                 continue;
             }
             if !*ctx.handled {
-                part.handle_event(event, ctx);
+                part.host.handle_event(event, ctx);
             }
             if self.table_tooltip.is_none()
-                && let Some(tip) = part.tooltip_at(mouse)
+                && let Some(tip) = part.host.tooltip_at(mouse)
             {
                 self.table_tooltip = Some(tip);
                 self.dirty = true;
@@ -4035,7 +4036,7 @@ impl MusicApp {
             return top;
         };
         part.update(key, build);
-        part.place(ctx, span, top, clip)
+        part.host.place(ctx, span, top, clip)
     }
 
     /// A song's offline status in words, and whether it failed. A failure

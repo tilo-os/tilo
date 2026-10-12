@@ -14,15 +14,14 @@ use std::rc::Rc;
 
 use ui::icons::Icon;
 use ui::paint::PaintCtx;
-use ui::presence::PresenceCtx;
 use ui::text_render::TextKind;
 use ui::theme::Theme;
 use ui::tokens::TextRole;
 use ui::widget::data_table::{CellState, ColumnDef, ColumnWidth, DataTable};
-use ui::widget::{Button, ButtonFace, ControlSize, Embedded, Row, Widget};
+use ui::widget::{Button, ButtonFace, ControlSize, Row, Widget};
 use vello::kurbo::{Point, Rect};
-use winit::event::WindowEvent;
 
+use super::page_part::Placed;
 use super::render::{paint_equalizer, square_around, text_line, text_right_in_band};
 
 /// A song's offline state, as its row shows it.
@@ -149,13 +148,11 @@ type Events = Rc<RefCell<Vec<RowEvent>>>;
 
 /// A track table and the host that lays it out in the painted page.
 pub(super) struct TrackTableHost {
-    host: Embedded<DataTable<TrackCell>>,
+    pub(super) host: Placed<DataTable<TrackCell>>,
     shape: Shape,
     rows: Vec<TrackCell>,
     selected: Option<usize>,
     events: Events,
-    /// Whether the table was placed (some of it is in view) this frame.
-    placed: bool,
     /// A row a capture shows under the pointer.
     staged_pointer: Option<usize>,
 }
@@ -164,12 +161,11 @@ impl TrackTableHost {
     pub(super) fn new(shape: Shape, theme: &Theme) -> Self {
         let events: Events = Rc::default();
         Self {
-            host: Embedded::new(build_table(shape, theme, &events)),
+            host: Placed::new(build_table(shape, theme, &events)),
             shape,
             rows: Vec::new(),
             selected: None,
             events,
-            placed: false,
             staged_pointer: None,
         }
     }
@@ -184,7 +180,7 @@ impl TrackTableHost {
         theme: &Theme,
     ) {
         if shape != self.shape {
-            self.host = Embedded::new(build_table(shape, theme, &self.events));
+            self.host.replace(build_table(shape, theme, &self.events));
             self.shape = shape;
             self.rows.clear();
             self.host.widget_mut().set_rows(rows.clone());
@@ -201,19 +197,7 @@ impl TrackTableHost {
             self.host.widget_mut().set_selection(selection);
             self.selected = selected;
         }
-        self.placed = false;
-    }
-
-    pub(super) fn visible_widget(&self) -> Option<&dyn Widget> {
-        self.placed.then_some(self.host.widget())
-    }
-
-    pub(super) fn visible_widget_mut(&mut self) -> Option<&mut (dyn Widget + '_)> {
-        if self.placed {
-            Some(self.host.widget_mut())
-        } else {
-            None
-        }
+        self.host.unplace();
     }
 
     pub(super) fn rows(&self) -> &[TrackCell] {
@@ -246,11 +230,8 @@ impl TrackTableHost {
                 return bottom;
             }
             table.set_host_window(shown_top - top, shown_bottom - shown_top - header);
-            self.host.layout(
-                Rect::new(left, shown_top, right, shown_bottom),
-                ctx.theme,
-                ctx.text,
-            );
+            self.host
+                .layout(Rect::new(left, shown_top, right, shown_bottom), ctx);
             let staged = (pass == 0)
                 .then(|| self.staged_pointer.take())
                 .flatten()
@@ -261,14 +242,7 @@ impl TrackTableHost {
                 break;
             }
         }
-        self.host.draw(
-            ctx.scene,
-            ctx.transform,
-            ctx.text,
-            ctx.theme,
-            &PresenceCtx::default(),
-        );
-        self.placed = true;
+        self.host.draw(ctx, clip);
         bottom
     }
 
@@ -289,21 +263,6 @@ impl TrackTableHost {
         true
     }
 
-    /// Route one window event to the table; a table out of view takes none.
-    pub(super) fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
-        if !self.placed {
-            return;
-        }
-        self.host.handle_event(
-            event,
-            ctx.scale_factor,
-            ctx.modifiers,
-            &mut ctx.state,
-            ctx.path,
-            ctx.handled,
-        );
-    }
-
     /// What the rows asked for since the last call.
     pub(super) fn take_events(&self) -> Vec<RowEvent> {
         std::mem::take(&mut *self.events.borrow_mut())
@@ -311,10 +270,7 @@ impl TrackTableHost {
 
     /// Where row `index` stands, when it is in view.
     pub(super) fn row_rect(&self, index: usize) -> Option<Rect> {
-        if !self.placed {
-            return None;
-        }
-        let table = self.host.widget();
+        let table = self.host.visible()?;
         let rect = table.row_rect(index)?;
         let body_top = table.get_rect().y0 + table.header_height();
         (rect.y1 > body_top && rect.y0 < table.get_rect().y1).then_some(rect)
@@ -331,29 +287,6 @@ impl TrackTableHost {
             .into_iter()
             .find_map(|cell| ui::widget::find_test_id(cell, &id))
             .map(Widget::get_rect)
-    }
-
-    /// Whether a control of a row (not the row itself) is under `point`,
-    /// and what it is called.
-    pub(super) fn tooltip_at(&self, point: Point) -> Option<String> {
-        fn find(widget: &dyn Widget, point: Point) -> Option<String> {
-            for child in widget.children() {
-                if let Some(found) = find(child, point) {
-                    return Some(found);
-                }
-            }
-            (widget.get_rect().contains(point))
-                .then(|| widget.tooltip().map(str::to_owned))
-                .flatten()
-        }
-        if !self.placed {
-            return None;
-        }
-        self.host
-            .widget()
-            .children()
-            .into_iter()
-            .find_map(|cell| find(cell, point))
     }
 }
 
