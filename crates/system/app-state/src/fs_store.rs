@@ -48,6 +48,7 @@ pub struct FsStore {
 }
 
 struct Shared {
+    root: PathBuf,
     state: Mutex<State>,
     changed: Condvar,
     debounce: Duration,
@@ -60,6 +61,8 @@ struct Shared {
 pub(crate) struct Faults {
     pub(crate) append_prefix: Option<usize>,
     pub(crate) sync_failure: Option<PathBuf>,
+    /// Every thread that has synced a file or directory, in order.
+    pub(crate) sync_threads: Vec<thread::ThreadId>,
 }
 
 #[derive(Default)]
@@ -70,6 +73,11 @@ struct State {
     keys: BTreeMap<StorageKey, KeyStatus>,
     owners: BTreeMap<StorageKey, Vec<Arc<Owner>>>,
     view_leases: BTreeSet<StorageKey>,
+    /// Keys whose existing bytes, read here rather than written here, still
+    /// need their file and ancestors synced: taken by the writer thread, so
+    /// no caller waits on the disk for them.
+    sync_queue: BTreeSet<StorageKey>,
+    syncing: BTreeSet<StorageKey>,
     running: bool,
     stopping: bool,
 }
@@ -162,6 +170,63 @@ enum Target {
     View(PathBuf),
 }
 
+/// A package's directory below `root`.
+fn package_dir_in(root: &Path, package: &str) -> Result<PathBuf, StoreError> {
+    validate_package_id(package)?;
+    validate_absolute_directory(root)?;
+    Ok(root.join(package))
+}
+
+fn target_in(root: &Path, key: &StorageKey) -> Result<Target, SeamError> {
+    match key {
+        StorageKey::Record {
+            package,
+            workspace,
+            record,
+        } => {
+            validate_record_key(workspace)?;
+            validate_record_key(record)?;
+            Ok(Target::Document(
+                package_dir_in(root, package)?
+                    .join(ROOMS_DIR)
+                    .join(workspace)
+                    .join(RECORDS_DIR)
+                    .join(record),
+            ))
+        }
+        StorageKey::Package { package } => Ok(Target::Document(package_dir_in(root, package)?)),
+        StorageKey::RoomIndex { package, workspace } => {
+            validate_record_key(workspace)?;
+            Ok(Target::Document(
+                package_dir_in(root, package)?
+                    .join(ROOMS_DIR)
+                    .join(workspace),
+            ))
+        }
+        StorageKey::View {
+            device,
+            workspace,
+            instance,
+        } => {
+            validate_absolute_directory(root)?;
+            for identity in [device, workspace] {
+                if identity.is_empty() {
+                    return Err(SeamError::InvalidKey {
+                        key: key.to_string(),
+                        reason: "view identities must not be empty".into(),
+                    });
+                }
+            }
+            Ok(Target::View(
+                root.join(INSTANCE_VIEWS_DIR)
+                    .join(hex::encode(device.as_bytes()))
+                    .join(hex::encode(workspace.as_bytes()))
+                    .join(format!("{instance}.postcard")),
+            ))
+        }
+    }
+}
+
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
@@ -206,8 +271,9 @@ impl FsStore {
         let root = profile_root.into();
         Self {
             namespace: root.to_string_lossy().into_owned(),
-            root,
+            root: root.clone(),
             shared: Arc::new(Shared {
+                root,
                 state: Mutex::new(State::default()),
                 changed: Condvar::new(),
                 debounce,
@@ -224,58 +290,11 @@ impl FsStore {
 
     /// A package's directory.
     fn package_dir(&self, package: &str) -> Result<PathBuf, StoreError> {
-        validate_package_id(package)?;
-        validate_absolute_directory(&self.root)?;
-        Ok(self.root.join(package))
+        package_dir_in(&self.root, package)
     }
 
     fn target(&self, key: &StorageKey) -> Result<Target, SeamError> {
-        match key {
-            StorageKey::Record {
-                package,
-                workspace,
-                record,
-            } => {
-                validate_record_key(workspace)?;
-                validate_record_key(record)?;
-                Ok(Target::Document(
-                    self.package_dir(package)?
-                        .join(ROOMS_DIR)
-                        .join(workspace)
-                        .join(RECORDS_DIR)
-                        .join(record),
-                ))
-            }
-            StorageKey::Package { package } => Ok(Target::Document(self.package_dir(package)?)),
-            StorageKey::RoomIndex { package, workspace } => {
-                validate_record_key(workspace)?;
-                Ok(Target::Document(
-                    self.package_dir(package)?.join(ROOMS_DIR).join(workspace),
-                ))
-            }
-            StorageKey::View {
-                device,
-                workspace,
-                instance,
-            } => {
-                validate_absolute_directory(&self.root)?;
-                for identity in [device, workspace] {
-                    if identity.is_empty() {
-                        return Err(SeamError::InvalidKey {
-                            key: key.to_string(),
-                            reason: "view identities must not be empty".into(),
-                        });
-                    }
-                }
-                Ok(Target::View(
-                    self.root
-                        .join(INSTANCE_VIEWS_DIR)
-                        .join(hex::encode(device.as_bytes()))
-                        .join(hex::encode(workspace.as_bytes()))
-                        .join(format!("{instance}.postcard")),
-                ))
-            }
-        }
+        target_in(&self.root, key)
     }
 
     fn ensure_worker(&self) -> Result<(), SeamError> {
@@ -312,33 +331,41 @@ impl FsStore {
 
     /// Make bytes that were read, rather than written by this store, durable.
     fn sync_existing(&self, key: &StorageKey) -> Result<(), StoreError> {
-        let (file, directory) = match self.target(key).map_err(seam_to_store)? {
-            Target::Document(directory) => (directory.join(DOCUMENT_FILE), directory),
-            Target::View(path) => {
-                let parent = path.parent().map(Path::to_path_buf).unwrap_or_default();
-                (path, parent)
-            }
-        };
-        if !directory.is_dir() {
-            return Ok(());
-        }
-        if file.is_file() {
-            let mut options = OpenOptions::new();
-            options.read(true);
-            #[cfg(windows)]
-            options.write(true);
-            options
-                .open(&file)
-                .and_then(|f| f.sync_all())
-                .map_err(|e| io_err(format!("syncing {}", file.display()), e))?;
-        }
-        sync_ancestors(&self.shared, &directory)
+        sync_existing_in(&self.shared, key)
     }
 
     #[cfg(test)]
     pub(crate) fn faults(&self) -> MutexGuard<'_, Faults> {
         lock(&self.shared.faults)
     }
+}
+
+/// Make bytes that were read, rather than written by this store, durable:
+/// the document file, then every directory above it.
+fn sync_existing_in(shared: &Shared, key: &StorageKey) -> Result<(), StoreError> {
+    let (file, directory) = match target_in(&shared.root, key).map_err(seam_to_store)? {
+        Target::Document(directory) => (directory.join(DOCUMENT_FILE), directory),
+        Target::View(path) => {
+            let parent = path.parent().map(Path::to_path_buf).unwrap_or_default();
+            (path, parent)
+        }
+    };
+    if !directory.is_dir() {
+        return Ok(());
+    }
+    if file.is_file() {
+        let mut options = OpenOptions::new();
+        options.read(true);
+        #[cfg(windows)]
+        options.write(true);
+        #[cfg(test)]
+        note_sync(shared);
+        options
+            .open(&file)
+            .and_then(|f| f.sync_all())
+            .map_err(|e| io_err(format!("syncing {}", file.display()), e))?;
+    }
+    sync_ancestors(shared, &directory)
 }
 
 fn seam_to_store(error: SeamError) -> StoreError {
@@ -462,7 +489,14 @@ impl DurableStore for FsStore {
             self.shared.changed.notify_all();
         }
         let mut state = lock(&self.shared.state);
-        while state.queue.keys().chain(state.writing.keys()).any(&matches) {
+        while state
+            .queue
+            .keys()
+            .chain(state.writing.keys())
+            .chain(state.sync_queue.iter())
+            .chain(state.syncing.iter())
+            .any(&matches)
+        {
             if !state.running {
                 // The writer exited unexpectedly with work still queued.
                 drop(state);
@@ -502,13 +536,46 @@ impl DurableStore for FsStore {
         Ok(())
     }
 
+    fn flush_without_waiting(&self, key: &StorageKey) -> Result<(), SeamError> {
+        self.target(key)?;
+        let mut state = lock(&self.shared.state);
+        if let Some((_, _, message)) = state.keys.get(key).and_then(|status| status.failed.last()) {
+            return Err(SeamError::Failed {
+                context: key.to_string(),
+                message: message.clone(),
+            });
+        }
+        if settled_in(&state, key) {
+            return Ok(());
+        }
+        // Whatever is queued commits now, and what was only read is synced:
+        // both on the writer thread, which is the one place that waits on the
+        // disk. The caller learns of it through `is_settled`.
+        for (candidate, batch) in &mut state.queue {
+            if candidate == key {
+                batch.urgent = true;
+            }
+        }
+        if !state.keys.get(key).is_some_and(|status| status.synced) {
+            state.sync_queue.insert(key.clone());
+        }
+        drop(state);
+        self.ensure_worker()?;
+        self.shared.changed.notify_all();
+        Err(SeamError::Pending(format!("{key} is being made durable")))
+    }
+
+    fn is_settled(&self, key: &StorageKey) -> bool {
+        settled_in(&lock(&self.shared.state), key)
+    }
+
     fn lease(&self, key: &StorageKey) -> Result<Lease, SeamError> {
         match self.target(key)? {
             Target::Document(directory) => {
                 if lock(&self.shared.state).owners.contains_key(key) {
                     return Err(SeamError::Busy(key.to_string()));
                 }
-                let owner = Arc::new(open_owner(&self.shared, &directory)?);
+                let owner = Arc::new(open_owner(&directory)?);
                 Ok(Box::new(self.register(key, owner)?))
             }
             Target::View(_) => {
@@ -682,6 +749,18 @@ impl Drop for FsStore {
     }
 }
 
+/// Whether everything read from or accepted for `key` is on stable storage:
+/// nothing queued, committing or waiting to be synced, and no failure.
+fn settled_in(state: &State, key: &StorageKey) -> bool {
+    state
+        .keys
+        .get(key)
+        .is_some_and(|status| status.synced && status.failed.is_empty())
+        && !state.busy(key)
+        && !state.sync_queue.contains(key)
+        && !state.syncing.contains(key)
+}
+
 fn durability_in(state: &State, key: &StorageKey, revision: Revision) -> Durability {
     let n = revision.0;
     if n == 0 || n > state.issued {
@@ -731,7 +810,7 @@ fn read_writer(path: &Path) -> Result<Option<Vec<u8>>, SeamError> {
     }
 }
 
-fn open_owner(shared: &Shared, directory: &Path) -> Result<Owner, StoreError> {
+fn open_owner(directory: &Path) -> Result<Owner, StoreError> {
     fs::create_dir_all(directory).map_err(|e| io_err("creating canonical directory", e))?;
     let handle =
         open_directory(directory, false).map_err(|e| io_err("opening canonical directory", e))?;
@@ -744,8 +823,10 @@ fn open_owner(shared: &Shared, directory: &Path) -> Result<Owner, StoreError> {
         writer_lock: None,
     };
     owner.check()?;
-    sync_ancestors(shared, directory)?;
-    owner.check()?;
+    // The directory's ancestors are synced by the writer thread with the
+    // key's first commit or `flush_without_waiting`, never here: leasing is
+    // done on the thread that opens the record, and nothing durable depends
+    // on the directory entry before a write commits (every commit syncs it).
     Ok(owner)
 }
 
@@ -779,6 +860,8 @@ fn sync_ancestors(shared: &Shared, directory: &Path) -> Result<(), StoreError> {
     let _ = shared;
     sync_directory_ancestors(directory, |path| {
         #[cfg(test)]
+        note_sync(shared);
+        #[cfg(test)]
         if lock(&shared.faults).sync_failure.as_deref() == Some(path) {
             return Err(io_err(
                 "injected directory sync failure",
@@ -788,6 +871,14 @@ fn sync_ancestors(shared: &Shared, directory: &Path) -> Result<(), StoreError> {
         let _ = path;
         Ok(())
     })
+}
+
+/// Note, in a test, which thread synced.
+#[cfg(test)]
+fn note_sync(shared: &Shared) {
+    lock(&shared.faults)
+        .sync_threads
+        .push(thread::current().id());
 }
 
 /// Marks the key being written as failed if the writer thread dies mid-commit.
@@ -819,6 +910,13 @@ impl Drop for WorkerGuard<'_> {
     }
 }
 
+/// What the writer thread does next.
+enum Work {
+    Commit(Taken),
+    /// Sync the key's file and ancestors: bytes it read, not wrote.
+    Sync(StorageKey),
+}
+
 struct Taken {
     key: StorageKey,
     batch: Batch,
@@ -832,7 +930,15 @@ fn writer_loop(shared: &Shared) {
         current: None,
         finished: false,
     };
-    while let Some(taken) = next_batch(shared) {
+    while let Some(work) = next_work(shared) {
+        let taken = match work {
+            Work::Commit(taken) => taken,
+            Work::Sync(key) => {
+                let result = sync_existing_in(shared, &key);
+                finish_sync(shared, &key, &result);
+                continue;
+            }
+        };
         guard.current = Some((taken.key.clone(), taken.batch.first, taken.batch.last));
         let started = Instant::now();
         let result = commit(shared, &taken);
@@ -848,7 +954,7 @@ fn writer_loop(shared: &Shared) {
     guard.finished = true;
 }
 
-fn next_batch(shared: &Shared) -> Option<Taken> {
+fn next_work(shared: &Shared) -> Option<Work> {
     let mut state = lock(&shared.state);
     loop {
         let now = Instant::now();
@@ -868,12 +974,28 @@ fn next_batch(shared: &Shared) -> Option<Taken> {
                 .and_then(|live| live.first())
                 .cloned();
             let poisoned = state.keys.get(&key).is_some_and(|status| status.poisoned);
-            return Some(Taken {
+            return Some(Work::Commit(Taken {
                 key,
                 batch,
                 owner,
                 poisoned,
-            });
+            }));
+        }
+        // Nothing due to commit: sync what was only read. A key with a commit
+        // still queued or running is left to it, which syncs everything.
+        let ready = state
+            .sync_queue
+            .iter()
+            .find(|key| !state.busy(key))
+            .cloned();
+        if let Some(key) = ready {
+            state.sync_queue.remove(&key);
+            if state.keys.get(&key).is_some_and(|status| status.synced) {
+                shared.changed.notify_all();
+                continue;
+            }
+            state.syncing.insert(key.clone());
+            return Some(Work::Sync(key));
         }
         if stopping {
             state.running = false;
@@ -896,6 +1018,18 @@ fn next_batch(shared: &Shared) -> Option<Taken> {
                 .unwrap_or_else(PoisonError::into_inner),
         };
     }
+}
+
+fn finish_sync(shared: &Shared, key: &StorageKey, result: &Result<(), StoreError>) {
+    let mut state = lock(&shared.state);
+    state.syncing.remove(key);
+    match result {
+        Ok(()) => state.keys.entry(key.clone()).or_default().synced = true,
+        // Left unsynced: the next blocking `flush` retries it and reports it.
+        Err(error) => tracing::warn!(%key, %error, "could not sync stored bytes in the background"),
+    }
+    drop(state);
+    shared.changed.notify_all();
 }
 
 fn finish(
