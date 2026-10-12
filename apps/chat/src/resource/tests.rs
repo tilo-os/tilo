@@ -832,13 +832,17 @@ fn explicit_start_is_semantic_and_refuses_without_a_selected_saved_task() {
 
 #[test]
 fn agent_row_task_navigation_keeps_source_custody_through_the_production_door() {
-    let mut app = TestApp::<ChatShell>::capture(Some("agent-task")).unwrap();
+    // Capture mode deliberately has inert effects. Stage the same explicit
+    // fixture on a live host so the published door must reach Chat's handler.
+    let mut app = TestApp::<ChatShell>::new().unwrap();
+    app.with_surface::<ChatApp, _>(|surface| surface.stage_scenario("agent-task"));
     let workspace = app.surface_mut::<ChatApp>().active_ws.clone();
     let target = "chat.agent:scribe";
     // The quick composer has saved this task, but Chat has not projected it.
     let arguments = serde_json::json!({"task": "task:newly-queued", "run_epoch": 0});
     app.call_on(target, "open-task-conversation", arguments.clone())
         .unwrap();
+    app.settle();
     let surface = app.surface_mut::<ChatApp>();
     assert_eq!(surface.active_ws, workspace);
     assert_eq!(surface.direct_agent.as_deref(), Some("scribe"));
@@ -874,6 +878,45 @@ fn agent_row_task_navigation_keeps_source_custody_through_the_production_door() 
         app.call_on("chat.agent:unadmitted", "open-task-conversation", arguments)
             .is_err()
     );
+    app.harness().resize((420, 680)).unwrap();
+    let chat = app
+        .harness()
+        .targets()
+        .keys()
+        .find(|name| name.ends_with("/ResourceApp[0]"))
+        .cloned()
+        .expect("the live Chat surface is addressable");
+    app.harness()
+        .perform_semantic_named(
+            &chat,
+            Some("chat.agent-window"),
+            &ui::a11y::Action::Activate,
+        )
+        .unwrap();
+    let id = app
+        .surface_mut::<ChatApp>()
+        .agent_surfaces
+        .values()
+        .next()
+        .map(|surface| {
+            assert_eq!(
+                surface
+                    .view
+                    .direct_agent_tasks()
+                    .unwrap()
+                    .selected_identity(),
+                Some(("task:newly-queued", 0))
+            );
+            surface.id.clone()
+        })
+        .expect("floating retains the selected task conversation");
+    app.with_surface::<ChatApp, _>(|surface| {
+        ui::widget::FloatingSurfaceProvider::on_floating_surface_host_message(
+            surface,
+            &ui::floating_surface::FloatingSurfaceHostMessage::Reattach { id },
+        );
+    });
+    app.settle();
     let surface = app.surface_mut::<ChatApp>();
     assert_eq!(surface.active_ws, workspace);
     assert_eq!(surface.direct_agent.as_deref(), Some("scribe"));
@@ -923,7 +966,7 @@ fn authenticated_agent_entry_has_navigation_without_an_ordinary_authority_lane()
         open_task
             .params()
             .iter()
-            .map(|param| param.name)
+            .map(|param| param.name.as_ref())
             .collect::<Vec<_>>(),
         ["task", "run_epoch"]
     );
