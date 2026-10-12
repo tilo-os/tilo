@@ -1761,8 +1761,7 @@ impl CollaboratorsOverlay {
             + self.status_height
             + 4.0
             + sharing_height
-            + f64::from(theme.text(TextRole::Caption).size)
-            + 20.0;
+            + f64::from(theme.tokens.spacing.s3);
         self.follow_height = ButtonFace::height(ControlSize::Large, theme);
         self.row_height = (self.follow_height + 16.0).max(64.0);
         self.follow_width = ["people-panel-follow", "people-panel-stop-following"]
