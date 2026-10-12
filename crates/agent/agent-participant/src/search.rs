@@ -139,7 +139,7 @@ impl Walk {
                         .any(|key| item.key.eq_ignore_ascii_case(key));
                     match item.value {
                         ValueRef::Object(kind) => {
-                            self.object(doc, &item.id(), kind, depth.saturating_add(1))
+                            self.object(doc, &item.id(), kind, depth.saturating_add(1));
                         }
                         ValueRef::Scalar(ScalarValueRef::Str(text))
                             if !bookkeeping && wordy(&text) =>
@@ -158,7 +158,7 @@ impl Walk {
                     self.budget = self.budget.saturating_sub(1);
                     match item.value {
                         ValueRef::Object(kind) => {
-                            self.object(doc, &item.id(), kind, depth.saturating_add(1))
+                            self.object(doc, &item.id(), kind, depth.saturating_add(1));
                         }
                         ValueRef::Scalar(ScalarValueRef::Str(text)) if wordy(&text) => {
                             self.push(&text);

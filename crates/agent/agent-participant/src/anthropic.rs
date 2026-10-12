@@ -293,7 +293,11 @@ impl PlanModel for AnthropicModel {
         getrandom::fill(&mut run).map_err(|_| "no randomness for the model call".to_string())?;
         let mut revealed = tilo_agent::tools::Revealed::new();
         let (stable, rest) = first_turn_parts(task, briefing, catalogue, &mut revealed);
-        let tools = claude_tools(&planning_tools(most_steps, briefing.describes()));
+        let tools = claude_tools(&planning_tools(
+            most_steps,
+            briefing.describes(),
+            briefing.searches(),
+        ));
         let mut messages = vec![first_message((&stable, &rest))];
         let mut reminded = false;
         for turn in 0..MOST_DISCOVERY_TURNS {

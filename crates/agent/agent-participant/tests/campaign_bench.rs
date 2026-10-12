@@ -66,7 +66,7 @@ use tilo_actions::remote::{
     InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionFrame, RemoteActionMessage,
     RemoteActionTarget,
 };
-use tilo_agent_participant::{AgentHost, ModelChoice, Replica, Seed};
+use tilo_agent_participant::{AgentHost, AppCatalogue, ModelChoice, Replica, Seed};
 use tilo_browser_peer::{DocumentRoute, Host, PeerEvent, PeerEvents, PeerHandle};
 use tilo_relay::certify::{ApproverDecision, ApproverReply};
 use tilo_relay::daemon::{Relay, RelayIdentity};
@@ -122,7 +122,7 @@ async fn start_with(root: &SigningKey, host: &Device, state: &Path, model: Model
         tilo_relay::agents::AgentOptions {
             state_dir: state.join("agents"),
             model,
-            catalogue: Some(Arc::new(common::catalogue)),
+            catalogue: Some(Arc::new(AppCatalogue::native)),
         },
     )
     .await
@@ -398,7 +398,7 @@ impl Browser {
     /// merged from the changes `author` made.
     fn bodies(&mut self, app: &str, author: [u8; 32]) -> Vec<String> {
         self.pump();
-        let catalogue = common::catalogue();
+        let catalogue = AppCatalogue::native();
         self.documents
             .iter()
             .filter(|(route, _)| route.app_id == app)

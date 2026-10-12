@@ -64,7 +64,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{Map, Value, json};
 use tilo_actions::door::{ActionAddress, ActionDescriptor};
-use tilo_agent_participant::{AppCatalogue, ConfinedReplica, Seed, component_apps};
+use tilo_agent_participant::{AppCatalogue, ConfinedReplica, Seed};
 use tilo_content::ContentStore;
 
 const ROOM: &str = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
@@ -72,6 +72,14 @@ const CANVAS: &str = "so.tilo.canvas";
 const SHEETS: &str = "so.tilo.sheets";
 const WRITER: &str = "so.tilo.word-processor";
 const NOTES: &str = "so.tilo.notes";
+const SLIDES: &str = "so.tilo.slides";
+const CALENDAR: &str = "so.tilo.calendar";
+const CONTACTS: &str = "so.tilo.contacts";
+const MAIL: &str = "so.tilo.mail";
+/// Slides a deck's frame shows at most, and the border marking the one an
+/// action touched.
+const MOST_SLIDES: usize = 9;
+const TOUCHED: [u8; 4] = [0x25, 0x63, 0xeb, 0xff];
 
 /// One line of `actions.jsonl`.
 #[derive(Clone, Debug, serde::Deserialize)]
@@ -101,6 +109,10 @@ struct Held {
     replica: ConfinedReplica,
     /// The latest frame, relative to `replay/`.
     frame: Option<String>,
+    /// What the frame shows beyond its pixels: a deck's slide grid.
+    meta: Value,
+    /// The slide (1-based) a deck's last action touched.
+    slide: usize,
 }
 
 /// Ids the run minted, mapped onto those the replay minted for the same
@@ -239,8 +251,12 @@ fn record8(app: &str, record: &str) -> String {
 }
 
 /// The record's current state through its app's own export: the
-/// extension and bytes of one frame.
-fn capture(held: &Held, store: &ContentStore, app: &str) -> Result<(String, Vec<u8>), String> {
+/// extension and bytes of one frame, and what it shows beyond its pixels.
+fn capture(
+    held: &Held,
+    store: &ContentStore,
+    app: &str,
+) -> Result<(String, Vec<u8>, Value), String> {
     let offered = held.replica.survey_with_effects();
     let find = |action: &str| {
         offered
@@ -265,6 +281,19 @@ fn capture(held: &Held, store: &ContentStore, app: &str) -> Result<(String, Vec<
     };
     let known = || -> Result<(String, Vec<u8>), String> {
         match app {
+            CALENDAR | CONTACTS => {
+                let (action, extension) = if app == CALENDAR {
+                    ("export-ics-content", "ics")
+                } else {
+                    ("export-vcard-content", "vcf")
+                };
+                let descriptor = find(action).ok_or_else(|| format!("no {action}"))?;
+                Ok((extension.into(), export(descriptor, json!({}))?))
+            }
+            MAIL => {
+                let descriptor = find("export-content").ok_or("the mailbox offers no export")?;
+                Ok(("md".into(), export(descriptor, json!({"format": "md"}))?))
+            }
             CANVAS => {
                 let descriptor = find("export").ok_or("the artwork offers no export")?;
                 Ok((
@@ -321,9 +350,134 @@ fn capture(held: &Held, store: &ContentStore, app: &str) -> Result<(String, Vec<
             other => Err(format!("no frame export of its own for {other}")),
         }
     };
-    known().or_else(|reason| {
-        generic_frame(&offered, &export).map_err(|generic| format!("{reason}; {generic}"))
-    })
+    if app == SLIDES
+        && let Some(descriptor) = find("export-slide-png-content")
+    {
+        return slide_grid(&offered, descriptor, &export, held.slide)
+            .map(|(bytes, meta)| ("png".to_owned(), bytes, meta));
+    }
+    known()
+        .or_else(|reason| {
+            generic_frame(&offered, &export).map_err(|generic| format!("{reason}; {generic}"))
+        })
+        .map(|(extension, bytes)| (extension, bytes, Value::Null))
+}
+
+/// A deck's `slides.slide:<id>` resources, in the order its survey lists them.
+fn slide_ids(offered: &[ActionDescriptor]) -> Vec<String> {
+    let mut ids: Vec<String> = Vec::new();
+    for descriptor in offered {
+        let resource = &descriptor.address.resource;
+        if resource.starts_with("slides.slide:") && !ids.contains(resource) {
+            ids.push(resource.clone());
+        }
+    }
+    ids
+}
+
+/// The slide (1-based) an action on a deck touched: the one its `slide`
+/// argument or its resource names, the new one for an added slide, else the
+/// one touched before.
+fn touched_slide(
+    replica: &ConfinedReplica,
+    action: &str,
+    resource: &str,
+    arguments: &Map<String, Value>,
+    previous: usize,
+) -> usize {
+    let ids = slide_ids(&replica.survey_with_effects());
+    let position = |id: &str| {
+        let id = id.strip_prefix("slides.slide:").unwrap_or(id);
+        ids.iter()
+            .position(|known| known.strip_prefix("slides.slide:") == Some(id))
+            .map(|index| index + 1)
+    };
+    let named = match arguments.get("slide") {
+        Some(Value::Number(number)) => number.as_u64().map(|n| n as usize),
+        Some(Value::String(text)) => text.parse::<usize>().ok().or_else(|| position(text)),
+        _ => None,
+    };
+    let touched = named
+        .or_else(|| position(resource))
+        .or_else(|| {
+            matches!(action, "add-slide" | "duplicate")
+                .then_some(ids.len())
+                .filter(|count| *count > 0)
+        })
+        .unwrap_or(previous);
+    touched.clamp(1, ids.len().max(1))
+}
+
+/// A deck's slides as one picture: each slide's own PNG export at half size
+/// in a grid, the touched one outlined.
+fn slide_grid(
+    offered: &[ActionDescriptor],
+    export_slide: &ActionDescriptor,
+    export: &Export<'_>,
+    touched: usize,
+) -> Result<(Vec<u8>, Value), String> {
+    let count = slide_ids(offered).len().clamp(1, MOST_SLIDES);
+    let mut slides = Vec::new();
+    for slide in 1..=count {
+        let bytes = export(export_slide, json!({"slide": slide}))?;
+        let picture = ui::png::decode_rgba8(&bytes).map_err(|error| error.to_string())?;
+        slides.push(half(
+            &picture.rgba,
+            picture.width as usize,
+            picture.height as usize,
+        ));
+    }
+    let (cell_w, cell_h) = slides
+        .first()
+        .map_or((640, 360), |(_, width, height)| (*width, *height));
+    let cols = (1..=count).find(|cols| cols * cols >= count).unwrap_or(1);
+    let rows = count.div_ceil(cols);
+    let gap = 8;
+    let width = cols * cell_w + (cols + 1) * gap;
+    let height = rows * cell_h + (rows + 1) * gap;
+    let mut canvas = [0x1c, 0x1f, 0x25, 0xff].repeat(width * height);
+    for (index, (rgba, w, h)) in slides.iter().enumerate() {
+        let x0 = gap + (index % cols) * (cell_w + gap);
+        let y0 = gap + (index / cols) * (cell_h + gap);
+        if index + 1 == touched {
+            for y in y0.saturating_sub(4)..(y0 + h + 4).min(height) {
+                for x in x0.saturating_sub(4)..(x0 + w + 4).min(width) {
+                    let at = (y * width + x) * 4;
+                    canvas[at..at + 4].copy_from_slice(&TOUCHED);
+                }
+            }
+        }
+        for y in 0..*h {
+            let from = y * w * 4;
+            let to = ((y0 + y) * width + x0) * 4;
+            canvas[to..to + w * 4].copy_from_slice(&rgba[from..from + w * 4]);
+        }
+    }
+    let png = ui::png::encode_rgba8(width as u32, height as u32, &canvas)
+        .map_err(|error| error.to_string())?;
+    let meta = json!({
+        "slides": count, "cols": cols, "cell": [cell_w, cell_h], "gap": gap, "slide": touched,
+    });
+    Ok((png, meta))
+}
+
+/// An RGBA picture at half its size, each pixel the mean of four.
+fn half(rgba: &[u8], width: usize, height: usize) -> (Vec<u8>, usize, usize) {
+    let (w, h) = ((width / 2).max(1), (height / 2).max(1));
+    let mut out = vec![0u8; w * h * 4];
+    for y in 0..h {
+        for x in 0..w {
+            for channel in 0..4 {
+                let mut sum = 0u32;
+                for (dx, dy) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
+                    let (sx, sy) = ((2 * x + dx).min(width - 1), (2 * y + dy).min(height - 1));
+                    sum += u32::from(rgba[(sy * width + sx) * 4 + channel]);
+                }
+                out[(y * w + x) * 4 + channel] = (sum / 4) as u8;
+            }
+        }
+    }
+    (out, w, h)
 }
 
 /// Run one export of the record with these arguments: the bytes it kept.
@@ -513,7 +667,9 @@ fn campaign_replay() {
         logged.sort_by_key(|action| (action.started_unix_ms, action.ended_unix_ms));
     }
 
-    let catalogue = AppCatalogue::new(component_apps());
+    // Every app an agent's worker can hold: the browser desktop's and the
+    // agent-only ones (Mail).
+    let catalogue = AppCatalogue::native();
     let store = ContentStore::memory();
     // The scenario's input content: content addresses are hashes, so each
     // input gets the address the run's tasks named.
@@ -586,6 +742,8 @@ fn campaign_replay() {
                 Held {
                     replica,
                     frame: None,
+                    meta: Value::Null,
+                    slide: 1,
                 },
             );
         }
@@ -641,6 +799,15 @@ fn campaign_replay() {
         let address = ActionAddress::new(resource.clone(), action.action.clone());
         let outcome = record.replica.invoke(&address, &arguments, true);
         let changed = matches!(record.replica.take_mutation(), Ok(Some(_)));
+        if action.app == SLIDES {
+            record.slide = touched_slide(
+                &record.replica,
+                &action.action,
+                &resource,
+                &arguments,
+                record.slide,
+            );
+        }
         let mut event = json!({
             "seq": seq,
             "resource": resource,
@@ -687,7 +854,8 @@ fn campaign_replay() {
         }
         if changed || record.frame.is_none() {
             match capture(record, &store, &action.app) {
-                Ok((extension, bytes)) => {
+                Ok((extension, bytes, meta)) => {
+                    record.meta = meta;
                     let file = format!(
                         "frames/{seq:05}-{}.{extension}",
                         record8(&action.app, &action.record)
@@ -700,6 +868,9 @@ fn campaign_replay() {
             }
         }
         line["file"] = json!(record.frame);
+        if !record.meta.is_null() {
+            line["meta"] = record.meta.clone();
+        }
         event["ids"] = json!(notes);
         append(&out.join("frames.jsonl"), &line);
         append(&out.join("events.jsonl"), &event);
