@@ -5,14 +5,14 @@ name: Dev / apps-macos
 # turning one app source into a working .app. No Linux lane observes either.
 #
 # One persistent development Mac (`macos-aarch64`) serves all macOS jobs, and
-# a cold build of every app takes it longer than main takes to move on, so
-# this runs every four hours and on demand rather than per push or pull
-# request. Pull requests get dev-runtime-macos.yml, which checks the runtime
-# the apps share. Nothing here requests an OIDC token or touches the release
+# building and testing every app takes it over an hour even with a warm
+# target directory, so this runs nightly and on demand rather than per push
+# or pull request; pull requests keep the Mac for dev-runtime-macos.yml,
+# which checks the runtime the apps share. Nothing here requests an OIDC token or touches the release
 # label `imager-macos-aarch64`.
 on:
   schedule:
-    - cron: "17 */4 * * *"
+    - cron: "17 1 * * *"
   workflow_dispatch:
 
 concurrency:
