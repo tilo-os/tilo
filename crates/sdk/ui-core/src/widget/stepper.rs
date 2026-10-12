@@ -656,11 +656,11 @@ impl Widget for Stepper {
                     .map(|index| {
                         AccessNode::new(Role::Button)
                             .with_name(self.steps.get(index).cloned().unwrap_or_default())
-                            .with_state(AccessState {
-                                focusable: true,
-                                focused: self.focused && self.focused_station == Some(index),
-                                ..Default::default()
-                            })
+                            .with_state(
+                                AccessState::new()
+                                    .focusable(true)
+                                    .focused(self.focused && self.focused_station == Some(index)),
+                            )
                             .with_action_target(self.station_id(index))
                     })
                     .collect(),

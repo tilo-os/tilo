@@ -1774,13 +1774,13 @@ impl Widget for Dropdown {
         let mut node = AccessNode::new(role)
             .with_optional_name(name)
             .with_optional_value(value)
-            .with_state(AccessState {
-                focusable: self.is_focusable(),
-                focused: self.is_focused(),
-                disabled: !self.is_enabled(),
-                expanded: Some(self.open),
-                ..Default::default()
-            });
+            .with_state(
+                AccessState::new()
+                    .focusable(self.is_focusable())
+                    .focused(self.is_focused())
+                    .disabled(!self.is_enabled())
+                    .expanded(self.open),
+            );
         // Surface the chosen option's ordinal so the reader can say "2 of 5".
         if let Some(idx) = self.values.iter().position(|value| *value == self.selected) {
             node = node.with_position(idx.saturating_add(1), self.options.len());

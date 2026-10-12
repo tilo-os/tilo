@@ -1361,11 +1361,11 @@ impl Widget for FilePicker {
                         .with_name("Up")
                         .with_key(control.id())
                         .with_bounds(self.up_rect)
-                        .with_state(AccessState {
-                            focusable: true,
-                            focused: self.has_keyboard_focus && self.focus == Some(control),
-                            ..Default::default()
-                        }),
+                        .with_state(
+                            AccessState::new()
+                                .focusable(true)
+                                .focused(self.has_keyboard_focus && self.focus == Some(control)),
+                        ),
                     PickerFocus::List => {
                         let total = self.entries.len();
                         let rows = self
@@ -1401,11 +1401,11 @@ impl Widget for FilePicker {
                             })
                             .with_key(control.id())
                             .with_bounds(self.list_rect())
-                            .with_state(AccessState {
-                                focusable: true,
-                                focused: self.has_keyboard_focus && self.focus == Some(control),
-                                ..Default::default()
-                            })
+                            .with_state(
+                                AccessState::new().focusable(true).focused(
+                                    self.has_keyboard_focus && self.focus == Some(control),
+                                ),
+                            )
                             .with_children(rows)
                     }
                     PickerFocus::Filter => AccessNode::new(Role::ComboBox)
@@ -1413,23 +1413,23 @@ impl Widget for FilePicker {
                         .with_value(self.active_filter_label())
                         .with_key(control.id())
                         .with_bounds(self.filter_rect)
-                        .with_state(AccessState {
-                            focusable: true,
-                            focused: self.has_keyboard_focus && self.focus == Some(control),
-                            expanded: Some(false),
-                            ..Default::default()
-                        }),
+                        .with_state(
+                            AccessState::new()
+                                .focusable(true)
+                                .focused(self.has_keyboard_focus && self.focus == Some(control))
+                                .expanded(false),
+                        ),
                     PickerFocus::Filename => AccessNode::new(Role::TextInput)
                         .with_name("Filename")
                         .with_value(self.filename().to_owned())
                         .with_text_selection(filename_anchor, filename_cursor)
                         .with_key(control.id())
                         .with_bounds(self.filename_rect)
-                        .with_state(AccessState {
-                            focusable: true,
-                            focused: self.has_keyboard_focus && self.focus == Some(control),
-                            ..Default::default()
-                        }),
+                        .with_state(
+                            AccessState::new()
+                                .focusable(true)
+                                .focused(self.has_keyboard_focus && self.focus == Some(control)),
+                        ),
                     PickerFocus::Cancel | PickerFocus::Confirm => {
                         let (label, rect, enabled) = if control == PickerFocus::Cancel {
                             ("Cancel", self.cancel_rect, true)
@@ -1440,14 +1440,16 @@ impl Widget for FilePicker {
                             .with_name(label)
                             .with_key(control.id())
                             .with_bounds(rect)
-                            .with_state(AccessState {
-                                focusable: enabled,
-                                focused: enabled
-                                    && self.has_keyboard_focus
-                                    && self.focus == Some(control),
-                                disabled: !enabled,
-                                ..Default::default()
-                            })
+                            .with_state(
+                                AccessState::new()
+                                    .focusable(enabled)
+                                    .focused(
+                                        enabled
+                                            && self.has_keyboard_focus
+                                            && self.focus == Some(control),
+                                    )
+                                    .disabled(!enabled),
+                            )
                     }
                     // Only on the replace prompt, which replaces this list.
                     PickerFocus::KeepExisting | PickerFocus::Replace => return None,
@@ -1463,12 +1465,12 @@ impl Widget for FilePicker {
         Some(
             AccessNode::new(Role::Dialog)
                 .with_name(self.title.clone())
-                .with_state(AccessState {
-                    modal: true,
-                    focusable: true,
-                    focused: self.has_keyboard_focus,
-                    ..Default::default()
-                })
+                .with_state(
+                    AccessState::new()
+                        .modal(true)
+                        .focusable(true)
+                        .focused(self.has_keyboard_focus),
+                )
                 .with_children(controls),
         )
     }
@@ -1666,11 +1668,11 @@ impl FilePicker {
                 .with_name(label)
                 .with_key(control.id())
                 .with_bounds(rect)
-                .with_state(AccessState {
-                    focusable: true,
-                    focused: self.has_keyboard_focus && self.focus == Some(control),
-                    ..Default::default()
-                })
+                .with_state(
+                    AccessState::new()
+                        .focusable(true)
+                        .focused(self.has_keyboard_focus && self.focus == Some(control)),
+                )
         };
         Some(
             AccessNode::new(Role::Dialog)
@@ -1680,12 +1682,12 @@ impl FilePicker {
                 .with_description(REPLACE_PROMPT_DETAIL)
                 .with_key(REPLACE_PROMPT_KEY)
                 .with_bounds(self.replace_card_rect)
-                .with_state(AccessState {
-                    modal: true,
-                    focusable: true,
-                    focused: self.has_keyboard_focus,
-                    ..Default::default()
-                })
+                .with_state(
+                    AccessState::new()
+                        .modal(true)
+                        .focusable(true)
+                        .focused(self.has_keyboard_focus),
+                )
                 .with_children(vec![
                     button(PickerFocus::KeepExisting, "Cancel", self.keep_existing_rect),
                     button(PickerFocus::Replace, "Replace", self.replace_rect),

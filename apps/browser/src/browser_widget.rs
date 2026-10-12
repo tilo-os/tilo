@@ -3985,11 +3985,11 @@ impl Widget for BrowserWidget {
                         direction.as_str(),
                         entry.id
                     ))
-                    .with_state(AccessState {
-                        focusable: true,
-                        focused: self.back_menu.hovered() == Some(index),
-                        ..Default::default()
-                    })
+                    .with_state(
+                        AccessState::new()
+                            .focusable(true)
+                            .focused(self.back_menu.hovered() == Some(index)),
+                    )
             })
             .collect();
         let name = match direction {

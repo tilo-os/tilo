@@ -2806,12 +2806,12 @@ impl Widget for EditorView {
         Some(
             ui::a11y::AccessNode::new(ui::a11y::Role::Document)
                 .with_name("Code editor")
-                .with_state(ui::a11y::AccessState {
-                    focusable: true,
-                    focused: self.is_focused,
-                    multiline: true,
-                    ..Default::default()
-                }),
+                .with_state(
+                    ui::a11y::AccessState::new()
+                        .focusable(true)
+                        .focused(self.is_focused)
+                        .multiline(true),
+                ),
         )
     }
 

@@ -796,11 +796,11 @@ impl Widget for WebView {
         Some(
             crate::a11y::AccessNode::new(crate::a11y::Role::Document)
                 .with_name(self.accessible_name.clone())
-                .with_state(crate::a11y::AccessState {
-                    focusable: true,
-                    focused: self.focused,
-                    ..Default::default()
-                }),
+                .with_state(
+                    crate::a11y::AccessState::new()
+                        .focusable(true)
+                        .focused(self.focused),
+                ),
         )
     }
 
