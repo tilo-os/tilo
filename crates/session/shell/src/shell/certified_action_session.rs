@@ -221,6 +221,90 @@ impl DesktopActionSession {
     }
 }
 
+impl CertifiedActionSession {
+    /// Bind a fresh execution to the selected Person and device in `room`.
+    ///
+    /// `expected_person` is only a consistency fence for the UI projection;
+    /// the certified device presentation remains the authority.
+    ///
+    /// # Errors
+    ///
+    /// Refuses an invalid room, unavailable/revoked selected identity,
+    /// mismatched projected Person, or action-broker admission failure.
+    pub(crate) fn open(
+        broker: AppActionBroker,
+        room: &str,
+        expected_person: Option<&str>,
+    ) -> Result<Self, String> {
+        let parsed = uuid::Uuid::parse_str(room).map_err(|_| "invalid action room")?;
+        if parsed.is_nil() {
+            return Err("invalid action room".into());
+        }
+        // Minted from disk and the device key only when the identity, key,
+        // certificate or fleet files changed; the broker verifies it below
+        // against current membership and policy either way.
+        let joined = tilo_identity_host::join_proof::trusted_current_join_proof(room)
+            .map_err(|error| format!("selected workspace identity unavailable: {error}"))?;
+        let certificate = &joined.certificate;
+        let person = tilo_action_broker::collab_broker_capnp::principal_id_for_root(
+            certificate.user_public_key,
+        );
+        if expected_person.is_some_and(|expected| expected != person) {
+            return Err("displayed workspace Person differs from selected identity".into());
+        }
+        let presentation = runtime_collab::CertifiedJoinIdentity {
+            workspace_id: room.to_owned(),
+            device_certificate: serde_json::to_vec(certificate)
+                .map_err(|error| format!("encoding selected device certificate failed: {error}"))?,
+            proof: joined.proof.to_vec(),
+        }
+        .encode()
+        .map_err(|error| format!("encoding certified action identity failed: {error}"))?;
+        let caller =
+            Caller::authenticated(certificate.user_public_key, certificate.device_public_key)
+                .in_room(room)
+                .in_new_execution();
+        let host = broker.certified_local_action_host(&caller, &presentation)?;
+        Ok(Self {
+            broker,
+            caller,
+            host,
+        })
+    }
+
+    pub(crate) fn query(
+        &self,
+        query: CatalogueQuery,
+    ) -> Pending<Result<CataloguePage, ActionHostError>> {
+        self.host.query(&self.caller, query)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn cancel(
+        &self,
+        invocation: &tilo_actions::InvocationId,
+    ) -> Result<(), ActionHostError> {
+        self.host.cancel(&self.caller, invocation)
+    }
+
+    pub(crate) fn invoke_job(
+        &self,
+        request: InvokeRequest,
+    ) -> Pending<Result<(u64, InvocationReceipt), ActionHostError>> {
+        let broker = self.broker.clone();
+        let caller = self.caller.clone();
+        let invocation = request.invocation;
+        self.host.invoke(&self.caller, request).map(move |result| {
+            let receipt = result?;
+            let job = broker
+                .state()
+                .remote_job(&caller, &invocation)
+                .ok_or(ActionHostError::UnknownInvocation)?;
+            Ok((job, receipt))
+        })
+    }
+}
+
 #[cfg(test)]
 mod forwarding_tests {
     use super::*;
@@ -313,94 +397,11 @@ mod forwarding_tests {
             invocation
         );
         let mut changed = session.next_change(&invocation).unwrap();
+        drop(session);
         assert!(matches!(
             crate::shell::search::invocation_wake::poll(&mut changed, std::task::Waker::noop()),
             PendingPoll::Ready(())
         ));
         assert_eq!(probe.calls.load(Ordering::Relaxed), 3);
-    }
-}
-
-impl CertifiedActionSession {
-    /// Bind a fresh execution to the selected Person and device in `room`.
-    ///
-    /// `expected_person` is only a consistency fence for the UI projection;
-    /// the certified device presentation remains the authority.
-    ///
-    /// # Errors
-    ///
-    /// Refuses an invalid room, unavailable/revoked selected identity,
-    /// mismatched projected Person, or action-broker admission failure.
-    pub(crate) fn open(
-        broker: AppActionBroker,
-        room: &str,
-        expected_person: Option<&str>,
-    ) -> Result<Self, String> {
-        let parsed = uuid::Uuid::parse_str(room).map_err(|_| "invalid action room")?;
-        if parsed.is_nil() {
-            return Err("invalid action room".into());
-        }
-        // Minted from disk and the device key only when the identity, key,
-        // certificate or fleet files changed; the broker verifies it below
-        // against current membership and policy either way.
-        let joined = tilo_identity_host::join_proof::trusted_current_join_proof(room)
-            .map_err(|error| format!("selected workspace identity unavailable: {error}"))?;
-        let certificate = &joined.certificate;
-        let person = tilo_action_broker::collab_broker_capnp::principal_id_for_root(
-            certificate.user_public_key,
-        );
-        if expected_person.is_some_and(|expected| expected != person) {
-            return Err("displayed workspace Person differs from selected identity".into());
-        }
-        let presentation = runtime_collab::CertifiedJoinIdentity {
-            workspace_id: room.to_owned(),
-            device_certificate: serde_json::to_vec(certificate)
-                .map_err(|error| format!("encoding selected device certificate failed: {error}"))?,
-            proof: joined.proof.to_vec(),
-        }
-        .encode()
-        .map_err(|error| format!("encoding certified action identity failed: {error}"))?;
-        let caller =
-            Caller::authenticated(certificate.user_public_key, certificate.device_public_key)
-                .in_room(room)
-                .in_new_execution();
-        let host = broker.certified_local_action_host(&caller, &presentation)?;
-        Ok(Self {
-            broker,
-            caller,
-            host,
-        })
-    }
-
-    pub(crate) fn query(
-        &self,
-        query: CatalogueQuery,
-    ) -> Pending<Result<CataloguePage, ActionHostError>> {
-        self.host.query(&self.caller, query)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn cancel(
-        &self,
-        invocation: &tilo_actions::InvocationId,
-    ) -> Result<(), ActionHostError> {
-        self.host.cancel(&self.caller, invocation)
-    }
-
-    pub(crate) fn invoke_job(
-        &self,
-        request: InvokeRequest,
-    ) -> Pending<Result<(u64, InvocationReceipt), ActionHostError>> {
-        let broker = self.broker.clone();
-        let caller = self.caller.clone();
-        let invocation = request.invocation;
-        self.host.invoke(&self.caller, request).map(move |result| {
-            let receipt = result?;
-            let job = broker
-                .state()
-                .remote_job(&caller, &invocation)
-                .ok_or(ActionHostError::UnknownInvocation)?;
-            Ok((job, receipt))
-        })
     }
 }

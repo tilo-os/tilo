@@ -83,7 +83,7 @@ impl Decorator for MarkerControl {
     fn inner_mut(&mut self) -> &mut Button {
         &mut self.button
     }
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "AgentActionMarker"
     }
     fn draw(
@@ -389,13 +389,10 @@ impl super::ShellOverlayHost {
         let Some(broker) = self.shortcut_triggers.broker() else {
             return false;
         };
-        let source = crate::shell::certified_action_session::ActionSessionSource::new(broker);
-        if !self
-            .agent_actions
-            .entry(owner.clone())
-            .or_default()
-            .open(source, owner.clone())
-        {
+        if !self.agent_actions.entry(owner.clone()).or_default().open(
+            crate::shell::certified_action_session::ActionSessionSource::new(broker),
+            owner.clone(),
+        ) {
             return false;
         }
         let viewport = self.overlay_area();
@@ -635,7 +632,10 @@ mod tests {
             "an open composer owns input"
         );
         let expired = AccessibleAgentMarker {
-            published_at: Instant::now() - MAX_AGE - Duration::from_secs(1),
+            published_at: Instant::now()
+                .checked_sub(MAX_AGE)
+                .and_then(|instant| instant.checked_sub(Duration::from_secs(1)))
+                .expect("expired marker timestamp must be representable"),
             ..source
         };
         markers.publish(7, vec![expired]);

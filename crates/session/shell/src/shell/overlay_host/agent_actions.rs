@@ -107,6 +107,7 @@ impl Frontier {
     }
 }
 
+#[derive(Default)]
 pub(super) struct AgentActions {
     owner: Option<ComposerOwner>,
     source: Option<ActionSessionSource>,
@@ -117,22 +118,6 @@ pub(super) struct AgentActions {
     selected: Option<ComposerTask>,
     refresh_at: Option<Instant>,
     follows: Vec<(ComposerRequest, ComposerTask, Instant, Instant)>,
-}
-
-impl Default for AgentActions {
-    fn default() -> Self {
-        Self {
-            owner: None,
-            source: None,
-            session: None,
-            calls: Vec::new(),
-            offers: HashMap::new(),
-            tasks: Vec::new(),
-            selected: None,
-            refresh_at: None,
-            follows: Vec::new(),
-        }
-    }
 }
 
 impl AgentActions {
@@ -210,7 +195,7 @@ impl AgentActions {
         self.calls.push(Call {
             operation,
             phase,
-            deadline: Instant::now() + TIMEOUT,
+            deadline: deadline_after(TIMEOUT),
         });
     }
 
@@ -223,7 +208,7 @@ impl AgentActions {
         self.begin(Operation {
             resource: TASKS.into(),
             action: "read-current-tasks".into(),
-            arguments: Map::from_iter([("agent".into(), agent.clone().into())]),
+            arguments: Map::from_iter([("agent".into(), agent.into())]),
             purpose: Purpose::Current,
             chat: false,
         });
@@ -237,7 +222,7 @@ impl AgentActions {
         if let Some(task) = self.selected.clone() {
             self.task_offers(&task);
         }
-        self.refresh_at = Some(Instant::now() + REFRESH);
+        self.refresh_at = Some(deadline_after(REFRESH));
     }
 
     pub(super) fn pump(&mut self, composer: &mut AgentQuickComposer) -> bool {
@@ -269,9 +254,9 @@ impl AgentActions {
         if active && self.refresh_at.is_none_or(|due| Instant::now() >= due) {
             self.refresh();
         }
-        let mut pending = std::mem::take(&mut self.calls);
+        let pending = std::mem::take(&mut self.calls);
         let mut changed = false;
-        for mut call in pending.drain(..) {
+        for mut call in pending {
             if Instant::now() >= call.deadline {
                 self.refuse(&call.operation, composer, true);
                 changed = true;
@@ -289,7 +274,7 @@ impl AgentActions {
         }
         let selected = composer.selected_task();
         if selected != self.selected {
-            self.selected = selected.clone();
+            self.selected.clone_from(&selected);
             if let Some(task) = &selected {
                 self.task_offers(task);
             }
@@ -401,8 +386,8 @@ impl AgentActions {
                     self.tasks.clear();
                     return;
                 };
-                if value["complete"] != true
-                    || value["total"].as_u64() != u64::try_from(rows.len()).ok()
+                if value.get("complete").and_then(Value::as_bool) != Some(true)
+                    || value.get("total").and_then(Value::as_u64) != u64::try_from(rows.len()).ok()
                     || rows.len() > 64
                 {
                     self.tasks.clear();
@@ -424,7 +409,7 @@ impl AgentActions {
                     self.follows.push((
                         request.clone(),
                         saved.clone(),
-                        Instant::now() + TIMEOUT,
+                        deadline_after(TIMEOUT),
                         Instant::now(),
                     ));
                 }
@@ -485,7 +470,7 @@ impl AgentActions {
         let mut reads = Vec::new();
         for (request, saved, _, next) in &mut self.follows {
             if Instant::now() >= *next {
-                *next = Instant::now() + REFRESH;
+                *next = deadline_after(REFRESH);
                 reads.push((request.clone(), saved.clone()));
             }
         }
@@ -512,6 +497,11 @@ impl AgentActions {
             )
             .min()
     }
+}
+
+fn deadline_after(duration: Duration) -> Instant {
+    let now = Instant::now();
+    now.checked_add(duration).unwrap_or(now)
 }
 
 fn submission_operation(request: ComposerRequest) -> Option<Operation> {
@@ -667,7 +657,7 @@ fn resolve_step(
         return Step::Refused(false);
     }
     if !page.exhausted && !page.next_cursor.is_empty() && *pages > 1 {
-        *pages -= 1;
+        *pages = pages.saturating_sub(1);
         *answer = watch(session.query(CatalogueQuery {
             provider: Some(provider.into()),
             needle: operation.action.clone(),
@@ -825,10 +815,13 @@ fn mutation_outcome(request: &ComposerRequest, value: Option<&Value>) -> Compose
     if request.stop && value["cancelled"] == true {
         return ComposerOutcome::Stopped(before.clone());
     }
+    let Some(next_revision) = before.revision.checked_add(1) else {
+        return ComposerOutcome::Unknown;
+    };
     if !request.stop
         && value["saved"] == true
         && value["run_epoch"].as_u64() == Some(before.run_epoch)
-        && value["revision"].as_u64() == before.revision.checked_add(1)
+        && value["revision"].as_u64() == Some(next_revision)
         && value
             .pointer("/result/direction_added/task_id")
             .and_then(Value::as_str)
@@ -836,10 +829,10 @@ fn mutation_outcome(request: &ComposerRequest, value: Option<&Value>) -> Compose
         && value
             .pointer("/result/direction_added/revision")
             .and_then(Value::as_u64)
-            == before.revision.checked_add(1)
+            == Some(next_revision)
     {
         return ComposerOutcome::DirectionSaved(ComposerTask {
-            revision: before.revision + 1,
+            revision: next_revision,
             ..before.clone()
         });
     }

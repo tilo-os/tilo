@@ -117,12 +117,7 @@ fn queue_instruction_command(
     })
 }
 
-pub(super) fn command(
-    envelope: &InvocationEnvelope,
-) -> Result<Option<WorkspaceTaskCommand>, String> {
-    if envelope.resource == COLLECTION && envelope.action == "queue" {
-        return queue_instruction_command(envelope).map(Some);
-    }
+fn run_command(envelope: &InvocationEnvelope) -> Result<Option<WorkspaceTaskCommand>, String> {
     if let Some(task_id) = canonical_task_id(envelope)
         && envelope.action == "direct"
     {
@@ -159,6 +154,18 @@ pub(super) fn command(
             after_revision: input.after_revision,
         }));
     }
+    Ok(None)
+}
+
+pub(super) fn command(
+    envelope: &InvocationEnvelope,
+) -> Result<Option<WorkspaceTaskCommand>, String> {
+    if envelope.resource == COLLECTION && envelope.action == "queue" {
+        return queue_instruction_command(envelope).map(Some);
+    }
+    if let Some(command) = run_command(envelope)? {
+        return Ok(Some(command));
+    }
     if let Some(id) = envelope.resource.strip_prefix(TASK_PREFIX)
         && envelope.action == "approve-run"
     {
@@ -181,29 +188,7 @@ pub(super) fn command(
     if let Some(id) = envelope.resource.strip_prefix(TASK_PREFIX)
         && envelope.action == "set-execution-budget"
     {
-        #[derive(serde::Deserialize)]
-        #[serde(deny_unknown_fields)]
-        struct Input {
-            expected_run_epoch: u64,
-            #[serde(default)]
-            expected_budget: Option<collab_types::task_budget::TaskExecutionBudget>,
-            #[serde(default)]
-            budget: Option<collab_types::task_budget::TaskExecutionBudget>,
-        }
-        let input: Input =
-            serde_json::from_str(argument(envelope)?).map_err(|error| error.to_string())?;
-        if let Some(budget) = input.budget {
-            budget.validate()?;
-        }
-        if let Some(budget) = input.expected_budget {
-            budget.validate()?;
-        }
-        return Ok(Some(WorkspaceTaskCommand::SetExecutionBudget {
-            task_id: format!("task:{id}"),
-            expected_run_epoch: input.expected_run_epoch,
-            expected_budget: input.expected_budget,
-            budget: input.budget,
-        }));
+        return execution_budget_command(envelope, id).map(Some);
     }
     if envelope.resource == WORKSPACE && envelope.action == "queue-agent-task" {
         return queue_command(envelope).map(Some);
@@ -254,6 +239,35 @@ pub(super) fn command(
     } else {
         Ok(None)
     }
+}
+
+fn execution_budget_command(
+    envelope: &InvocationEnvelope,
+    id: &str,
+) -> Result<WorkspaceTaskCommand, String> {
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Input {
+        expected_run_epoch: u64,
+        #[serde(default)]
+        expected_budget: Option<collab_types::task_budget::TaskExecutionBudget>,
+        #[serde(default)]
+        budget: Option<collab_types::task_budget::TaskExecutionBudget>,
+    }
+    let input: Input =
+        serde_json::from_str(argument(envelope)?).map_err(|error| error.to_string())?;
+    if let Some(budget) = input.budget {
+        budget.validate()?;
+    }
+    if let Some(budget) = input.expected_budget {
+        budget.validate()?;
+    }
+    Ok(WorkspaceTaskCommand::SetExecutionBudget {
+        task_id: format!("task:{id}"),
+        expected_run_epoch: input.expected_run_epoch,
+        expected_budget: input.expected_budget,
+        budget: input.budget,
+    })
 }
 
 fn manual(task: &WorkspaceTask) -> bool {
@@ -315,25 +329,7 @@ pub(super) fn actions(
     let mut result = vec![
         current_tasks_action(),
         queue_instruction_action(),
-        action(
-            WORKSPACE,
-            "create-task",
-            workspace_label,
-            "Create manual task",
-            vec![
-                ActionParam::required(
-                    "title",
-                    ParamType::Text,
-                    "Manual coordination title; at most 240 characters",
-                ),
-                ActionParam::optional(
-                    "resource_json",
-                    ParamType::Text,
-                    "Ordinary resource JSON: app_id, app_label, id, kind, label; grants no authority",
-                ),
-            ],
-            false,
-        ),
+        create_manual_task_action(workspace_label),
     ];
     result.push(queue_action(workspace_label));
     for task in &snapshot.tasks {
@@ -403,32 +399,7 @@ pub(super) fn actions(
                 .get(&task.id)
                 .is_some_and(|control| control.active_run.is_none())
         {
-            let mut operation = action(
-                &target,
-                "set-execution-budget",
-                &task.title,
-                "Configure bounded task execution",
-                vec![
-                    ActionParam::required(
-                        "expected_run_epoch",
-                        ParamType::Integer,
-                        "Exact epoch observed through inspect",
-                    ),
-                    ActionParam::optional(
-                        "expected_budget",
-                        ParamType::Object,
-                        "Exact observed budget, or null when absent",
-                    ),
-                    ActionParam::optional(
-                        "budget",
-                        ParamType::Object,
-                        "Owner policy: turn_ms up to 900000, total_ms up to7200000, turn <= total; null restores defaults",
-                    ),
-                ],
-                false,
-            );
-            operation.description = Some("Only the current workspace owner can configure the next task run. This grants no action, model, check or resource authority.".into());
-            result.push(operation);
+            result.push(execution_budget_action(&target, &task.title));
         }
         if manual(task)
             && !task.status.is_finished()
@@ -444,6 +415,59 @@ pub(super) fn actions(
         }
     }
     result
+}
+
+fn execution_budget_action(target: &str, title: &str) -> PublishedAction {
+    use tilo_actions::{ActionParam, ParamType};
+    let mut operation = action(
+        target,
+        "set-execution-budget",
+        title,
+        "Configure bounded task execution",
+        vec![
+            ActionParam::required(
+                "expected_run_epoch",
+                ParamType::Integer,
+                "Exact epoch observed through inspect",
+            ),
+            ActionParam::optional(
+                "expected_budget",
+                ParamType::Object,
+                "Exact observed budget, or null when absent",
+            ),
+            ActionParam::optional(
+                "budget",
+                ParamType::Object,
+                "Owner policy: turn_ms up to 900000, total_ms up to7200000, turn <= total; null restores defaults",
+            ),
+        ],
+        false,
+    );
+    operation.description = Some("Only the current workspace owner can configure the next task run. This grants no action, model, check or resource authority.".into());
+    operation
+}
+
+fn create_manual_task_action(workspace_label: &str) -> PublishedAction {
+    use tilo_actions::{ActionParam, ParamType};
+    action(
+        WORKSPACE,
+        "create-task",
+        workspace_label,
+        "Create manual task",
+        vec![
+            ActionParam::required(
+                "title",
+                ParamType::Text,
+                "Manual coordination title; at most 240 characters",
+            ),
+            ActionParam::optional(
+                "resource_json",
+                ParamType::Text,
+                "Ordinary resource JSON: app_id, app_label, id, kind, label; grants no authority",
+            ),
+        ],
+        false,
+    )
 }
 
 fn current_tasks_action() -> PublishedAction {
@@ -885,6 +909,34 @@ fn task_frontier(snapshot: &WorkspaceTaskSnapshot, task: &WorkspaceTask) -> serd
     })
 }
 
+fn stop_result(
+    snapshot: &WorkspaceTaskSnapshot,
+    task_id: &str,
+    result: &WorkspaceTaskMutationResult,
+    generation: u64,
+) -> Result<serde_json::Value, String> {
+    let task = snapshot
+        .tasks
+        .iter()
+        .find(|task| task.id == task_id)
+        .ok_or("owner stop receipt has no canonical task")?;
+    if task.status != tilo_desktop_model::WorkspaceTaskStatus::Cancelled
+        || snapshot
+            .controls
+            .get(task_id)
+            .is_some_and(|control| control.active_run.is_some())
+    {
+        return Err("owner stop receipt did not cancel the exact task".into());
+    }
+    Ok(serde_json::json!({
+        "generation": generation,
+        "result": result,
+        "resource": format!("desktop:{task_id}"),
+        "task": task,
+        "cancelled": true,
+    }))
+}
+
 pub(super) fn result(
     snapshot: &WorkspaceTaskSnapshot,
     envelope: &InvocationEnvelope,
@@ -937,26 +989,7 @@ pub(super) fn result(
             if envelope.action == "stop"
                 && task_target(envelope) == task_id.strip_prefix("task:") =>
         {
-            let task = snapshot
-                .tasks
-                .iter()
-                .find(|task| &task.id == task_id)
-                .ok_or("owner stop receipt has no canonical task")?;
-            if task.status != tilo_desktop_model::WorkspaceTaskStatus::Cancelled
-                || snapshot
-                    .controls
-                    .get(task_id)
-                    .is_some_and(|control| control.active_run.is_some())
-            {
-                return Err("owner stop receipt did not cancel the exact task".into());
-            }
-            return Ok(serde_json::json!({
-                "generation": generation,
-                "result": result.result,
-                "resource": format!("desktop:{task_id}"),
-                "task": task,
-                "cancelled": true,
-            }));
+            return stop_result(snapshot, task_id, &result.result, generation);
         }
         _ => return Err("task command returned an unexpected managed execution result".into()),
     };

@@ -1183,7 +1183,7 @@ impl NativeAgentMarkerSource {
             && state
                 .client_input
                 .surface(self.surface)
-                .and_then(|surface| surface.client())
+                .and_then(smithay::reexports::wayland_server::Resource::client)
                 .is_some_and(|client| client.id() == self.client)
             && foreign::store().is_presented(self.surface)
             && foreign::store().painted_frame_rect(self.surface, self.rect)
@@ -1302,7 +1302,7 @@ fn revalidate_native_agent_markers(
         .filter(|(_, source)| !suppressed && source.is_current(state, frame))
         .map(|(connection, source)| (*connection, source.clone()))
         .collect();
-    state.native_agent_markers = current.clone();
+    state.native_agent_markers.clone_from(&current);
     let identities: HashMap<_, _> = current
         .iter()
         .map(|(connection, source)| {
@@ -1360,7 +1360,7 @@ fn revalidate_native_agent_markers(
     if !source.is_current(state, frame) {
         return changed;
     }
-    let Some(session) = broker else {
+    let Some(session) = broker.as_ref() else {
         return changed;
     };
     let Some(identity) = session.certified_marker_agent(&marker.room, &marker.interaction.actor.id)
@@ -1373,6 +1373,7 @@ fn revalidate_native_agent_markers(
     let Some(identity_revision) = session.identity_revision(&marker.room) else {
         return changed;
     };
+    drop(broker);
     let person = frame.chrome_handle().borrow().active_local_user();
     frame.host_mut().open_agent_quick_composer(
         crate::shell::agent_quick_composer::ComposerOwner {

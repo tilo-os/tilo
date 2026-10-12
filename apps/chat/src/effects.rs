@@ -447,7 +447,7 @@ impl ChatApp {
         if !self.direct_agent_is_available()
             || !self
                 .direct_agent_tasks()
-                .is_some_and(|view| view.can_start())
+                .is_some_and(super::agent_tasks::AgentTaskView::can_start)
         {
             unavailable.push(EffectStatus::unavailable(
                 ChatEffect::START_AGENT_TASK,
