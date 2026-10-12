@@ -2032,6 +2032,74 @@ fn type_popover_values_edit_and_persist() {
     }
 }
 
+/// Edge coverage, in premultiplied 8-bit channel steps, that one GPU
+/// rasterizer may compute differently from another for the same geometry.
+const FOREIGN_RASTERIZER_EDGE_STEPS: u16 = 16;
+
+/// Pixels of `actual` that differ from a reader reference.
+///
+/// The Linux references are Mesa llvmpipe renders, the adapter Linux CI pins
+/// (`WGPU_ADAPTER_NAME=llvmpipe`), and the Windows ones renders of that
+/// platform's adapter; there the comparison keeps the ±1 antialiasing
+/// tolerance. Another rasterizer (Metal on a Mac, a desktop Vulkan driver)
+/// evaluates the same coverage with its own float arithmetic: glyph edges
+/// land up to about 15 channel steps away, at thousands of edge pixels,
+/// while every stroke, line break and position matches. There the comparison
+/// is of premultiplied colour within those edge steps, so near-transparent
+/// chrome pixels cannot magnify a coverage difference through their alpha,
+/// yet a changed glyph, wrap or offset still moves whole strokes and fails.
+fn pixels_differing_from_reader_reference(
+    renderer: &ui::offscreen::OffscreenRenderer,
+    actual: &[u8],
+    expected: &[u8],
+) -> usize {
+    let adapter = renderer.adapter_info();
+    if cfg!(windows)
+        || adapter
+            .as_ref()
+            .is_some_and(|info| info.name.contains("llvmpipe"))
+    {
+        return ui::offscreen::OffscreenRenderer::pixels_differing_beyond_aa(actual, expected);
+    }
+    eprintln!(
+        "reader reference is an llvmpipe render; comparing a {:?} render within \
+         {FOREIGN_RASTERIZER_EDGE_STEPS} premultiplied edge steps",
+        adapter.map(|info| info.name)
+    );
+    let premultiplied = |pixel: &[u8]| {
+        let alpha = u16::from(pixel[3]);
+        [
+            u16::from(pixel[0]).saturating_mul(alpha) / 255,
+            u16::from(pixel[1]).saturating_mul(alpha) / 255,
+            u16::from(pixel[2]).saturating_mul(alpha) / 255,
+            alpha,
+        ]
+    };
+    let beyond_edge_steps = |a: &[u8], b: &[u8]| {
+        a.chunks_exact(4)
+            .zip(b.chunks_exact(4))
+            .filter(|(a, b)| {
+                premultiplied(a)
+                    .iter()
+                    .zip(premultiplied(b))
+                    .any(|(x, y)| x.abs_diff(y) > FOREIGN_RASTERIZER_EDGE_STEPS)
+            })
+            .count()
+    };
+    // The tolerance must still see text move: the reference against itself
+    // one pixel to the right differs along every glyph.
+    let shifted = beyond_edge_steps(
+        &expected[4..],
+        &expected[..expected.len().saturating_sub(4)],
+    );
+    assert!(
+        shifted > 1000,
+        "a one-pixel shift of the reference must exceed the edge tolerance, got {shifted} pixels"
+    );
+    beyond_edge_steps(actual, expected)
+        .saturating_add(actual.len().abs_diff(expected.len()).div_ceil(4))
+}
+
 fn reader_typography_baseline(filename: &str) -> std::path::PathBuf {
     let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let result = std::process::Command::new("python3")
@@ -2099,7 +2167,7 @@ fn serif_reader_matches_typography_baseline() {
         (width, height),
         "ebook typography baseline changed dimensions"
     );
-    let differing = OffscreenRenderer::pixels_differing_beyond_aa(&actual, expected.as_raw());
+    let differing = pixels_differing_from_reader_reference(&renderer, &actual, expected.as_raw());
     if differing != 0 {
         let output = std::env::temp_dir().join(baseline.file_name().unwrap());
         image::save_buffer(output, &actual, width, height, image::ColorType::Rgba8).unwrap();
@@ -2148,7 +2216,7 @@ fn mathematical_reader_matches_shared_typesetting_baseline() {
         })
         .to_rgba8();
     assert_eq!(expected.dimensions(), (width, height));
-    let differing = OffscreenRenderer::pixels_differing_beyond_aa(&actual, expected.as_raw());
+    let differing = pixels_differing_from_reader_reference(&renderer, &actual, expected.as_raw());
     if differing != 0 {
         let output = std::env::temp_dir().join(baseline.file_name().unwrap());
         image::save_buffer(output, &actual, width, height, image::ColorType::Rgba8).unwrap();
