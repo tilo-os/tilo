@@ -79,6 +79,8 @@ fn file_identity_follows_the_file_not_its_path_or_bytes() {
         assert_ne!(twin_id, copy_id);
     }
     // phase: the_filesystems_record_id_is_used_verbatim
+    // The collaborative filesystem serves its id bare; it exists on Linux.
+    #[cfg(target_os = "linux")]
     {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("shared.pdf");
