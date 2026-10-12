@@ -433,7 +433,7 @@ def increases(before: Budget, after: Budget, new_raises: set[str]) -> list[str]:
         problems.append("headroom raised")
     for stat, value in after.targets.items():
         if value > before.targets.get(stat, value):
-            problems.append(f"KPI target {stat} raised; the KPI document sets it")
+            problems.append(f"KPI target {stat} raised; the KPI targets set it")
     for kind, old, new in (("apps", before.app_totals(), after.app_totals()),
                            ("fleet", before.fleet_ceilings(), after.fleet_ceilings())):
         allowance = after.added(kind, new_raises)

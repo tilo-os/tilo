@@ -1,4 +1,4 @@
-//! How often an idle desktop wakes the machine (TIL-614).
+//! How often an idle desktop wakes the machine.
 //!
 //! A desktop nobody is touching should leave the CPU asleep. Every timer, poll
 //! or self-rescheduling worker in the compositor, or in anything it started,
@@ -44,31 +44,31 @@ use tilo_identity_ceremony::IdentityRecord;
 /// thread of the compositor and its children. The product target is 5/s.
 ///
 /// Counted as voluntary switches, one per wakeup: preemptions measure what
-/// else the runner runs (TIL-749), and the shell shard runs this beside other
+/// else the runner runs, and the shell shard runs this beside other
 /// tests. [`IDLE_CPU_BUDGET`] still catches a thread that spins without
 /// blocking.
 ///
 /// Measured on CI's shared x86-64 runner (headless, llvmpipe, debug build;
 /// `docs/benchmarks/idle-wakeups-2026-10-09.md` has the tables): 60/s with
-/// the frame loop parked. Before TIL-696 a run could also land in a spin of
+/// the frame loop parked. Before the change a run could also land in a spin of
 /// up to 2008/s: an in-process app whose record was still saving at its last
 /// frame left a wake deadline that only its next draw moved, so the loop ran
 /// ~950 times a second without painting. The hosted pump now resamples it.
 ///
-/// TIL-704 parked the audio-output authority watchdog while no output is
+/// The audio-output authority now parks its audio-output authority watchdog while no output is
 /// open (20/s before, 0/s after): the parked desktop measured 31.9/s (run
 /// 89960).
 ///
-/// TIL-707 parked the collaboration broker's service thread (20.1/s before,
+/// The collaboration broker now parks its service thread (20.1/s before,
 /// 0.0/s after, run 90830), which comes off that parked figure too.
 ///
-/// With all three, and TIL-702/TIL-740 quieting the network runtime, the
+/// With all three, and the network runtime quieted the network runtime, the
 /// desktop measured 7.30, 7.60 and 7.30/s alone on a runner (runs 92406,
 /// 92444, 92445) with the frame loop parked, and 10.29/s in the shell shard
 /// beside other tests (run 92498: the collaboration shovel and the identity
 /// client preempted by its neighbours).
 ///
-/// TIL-754 let the Terminal's collaboration shovel wait for channel key
+/// The Terminal's collaboration shovel now waits for channel key
 /// changes instead of asking the identity service once a second: the shovel
 /// went from 3.3 to 0.4–0.5/s and the identity client from 2.0 to 0.2/s.
 /// Seven runs alone on a runner then blocked 2.60–3.10/s with the frame loop
@@ -76,7 +76,7 @@ use tilo_identity_ceremony::IdentityRecord;
 /// whose window held one frame-loop wake, the top bar's minute repaint
 /// (92944, 92946, 92856), each also waking the settings reader and the
 /// network runtime. (92856's summary line blamed startup's Terminal frames on
-/// that wake; TIL-756 counts per tick.) A ten-second window holds a
+/// that wake; a per-tick count would see.) A ten-second window holds a
 /// minute boundary one run in six, so that is part of the spread: its top
 /// plus a half, 7.5/s.
 ///
@@ -115,9 +115,8 @@ const KEY_ROUND_BUDGET: f64 = 0.35;
 /// Most iterations per second the compositor's frame loop may make while
 /// idle, from its `paint-tick` lines. A loop that wakes on a deadline that
 /// never moves spins without blocking, which context switches hardly show.
-/// An idle loop parks: measured 0/s parked, and 946/s in the TIL-696 spin.
-/// Counted from one line per iteration, so only iterations inside the window
-/// (TIL-756).
+/// An idle loop parks: measured 0/s parked, and 946/s in the frame-loop spin.
+/// Counted from one line per iteration, so only iterations inside the window.
 const LOOP_TICK_BUDGET: f64 = 1.0;
 
 /// Frames the top bar's clock paints when a wall-clock minute turns: the one

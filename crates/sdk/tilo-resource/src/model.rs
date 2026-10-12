@@ -577,7 +577,7 @@ pub fn read_key<T: Model>(doc: &Doc, obj: &ObjId, key: &str) -> Result<T, ModelE
 /// generic, and the generic ones only call it. A generic function is
 /// compiled again into each app that instantiates it, and Automerge's
 /// generic lookup and op-tree walk with it; these are compiled once, into
-/// the shared runtime every app maps (TIL-765).
+/// the shared runtime every app maps.
 #[inline(never)]
 pub(crate) fn get_slot<'doc>(
     doc: &'doc Doc,
@@ -629,7 +629,7 @@ pub fn read_slots<const N: usize>(doc: &Doc, obj: &ObjId, keys: [&str; N]) -> [M
 
 /// [`read_slots`]' walk, out of its generic shell so that it is compiled once
 /// into the shared runtime rather than into every app that derives a
-/// [`Model`] with another number of fields (TIL-765).
+/// [`Model`] with another number of fields.
 #[inline(never)]
 pub(crate) fn fill_slots(doc: &Doc, obj: &ObjId, keys: &[&str], slots: &mut [MapSlot]) {
     let mut missing = keys.len();
@@ -665,7 +665,7 @@ pub(crate) fn map_slots(doc: &Doc, obj: &ObjId) -> Vec<(String, MapSlot)> {
 
 /// The slot at `index` of what [`read_slots`] returned, taken out of it, or
 /// an empty slot past its end. Not generic over the number of slots, so the
-/// derived reads share one copy (TIL-765).
+/// derived reads share one copy.
 #[must_use]
 #[inline(never)]
 pub fn take_slot(slots: &mut [MapSlot], index: usize) -> MapSlot {
