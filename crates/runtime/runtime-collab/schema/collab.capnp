@@ -259,10 +259,15 @@ interface ChannelHandle {
   # attribution/context crosses this method. `invocation` is the caller's
   # tilo_actions::InvocationId: a retry with the same id reports the
   # original invocation, which remoteAction (@42) observes and cancels.
+  # `waitMs` (non-zero) on a re-ask of a native task's existing child asks
+  # the broker to hold the answer until the child moves past `seenJson` (a
+  # tilo_actions::remote::UpdateMark), settles, the run is cancelled, or the
+  # wait (capped by the broker) ends; the answer is observed and authorized
+  # afresh when it is given. A broker without it answers at once.
   invokeTaskAction @30 (runId :UInt64, lease :Text, peerId :UInt64,
                         resource :Text, action :Text, argument :Text,
                         hasArgument :Bool, confirmationJson :Text,
-                        invocation :Text)
+                        invocation :Text, waitMs :UInt32, seenJson :Text)
       -> (id :UInt64, updateJson :Text);
   # Cooperative cancellation for a leased task. The broker reflects a Task
   # Center cancellation; it never lets an agent cancel a task by itself.
