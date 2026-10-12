@@ -8,6 +8,8 @@ use sha_crypt::{PasswordHasher, ShaCrypt};
 use sha2::{Digest, Sha256};
 use zeroize::Zeroize;
 
+#[cfg(feature = "srp")]
+pub mod srp_apple;
 #[cfg(feature = "tls-fixture")]
 mod tls_fixture;
 #[cfg(feature = "tls-fixture")]

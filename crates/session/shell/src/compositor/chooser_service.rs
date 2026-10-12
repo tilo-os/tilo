@@ -20,7 +20,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::Duration;
 
-use collab_types::caps::Verb;
+use collab_types::caps::Access;
 use tilo_dialogs::shell::{Handshake, MAX_FRAME_BYTES, PROTOCOL, PickMode, Reply, Request};
 
 use crate::portal::{
@@ -328,9 +328,9 @@ fn authorized_scope(
     mode: PickMode,
 ) -> Option<PickerScope> {
     let verb = if mode == PickMode::Save {
-        Verb::Write
+        Access::Write
     } else {
-        Verb::Read
+        Access::Read
     };
     let granted = context
         .grants
@@ -392,9 +392,9 @@ fn permitted(
                 PickMode::Open | PickMode::Directory => path.canonicalize().ok(),
             };
             let verb = if mode == PickMode::Save {
-                Verb::Write
+                Access::Write
             } else {
-                Verb::Read
+                Access::Read
             };
             resolved
                 .filter(|resolved| grants.filesystem_path_allows(caller, resolved, verb))

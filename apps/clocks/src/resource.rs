@@ -79,6 +79,11 @@ impl ResourceApp for ClocksShell {
     type Resource = Clocks;
     const ID: &'static str = "so.tilo.clocks";
     const TITLE: &'static str = "Clocks";
+
+    fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {
+        Some(&crate::locales::CATALOG)
+    }
+
     const ICON: Option<&'static str> = Some("clocks");
     const ARGUMENTS: usize = 1;
 
@@ -262,7 +267,7 @@ fn live_rows(shown: &Shown) -> Vec<LiveRow> {
         .presentation(ResourcePresentation {
             detail: Some(format!(
                 "At {0}, repeating {1}.",
-                alarm.local_time().format("%H:%M"),
+                ui::clock::time_of_day(&alarm.local_time()),
                 repeat_summary(&alarm.weekdays())
             )),
             badge: Some(if alarm.enabled { "On" } else { "Off" }.into()),

@@ -1,8 +1,9 @@
 //! A sample artwork for screenshots and tests, painted through the same
 //! actions a person or an agent uses. Never shown in the app a user opens.
+use ui::tilo_resource::Invoke;
 
-use crate::CanvasAction;
 use crate::actions::{AddLayer, Draw, NewMark, NewStroke, Paint, RemoveLayer};
+use crate::model::Artwork;
 use crate::model::{Gradient, Shape};
 
 fn mark(id: &str, shape: Shape, fill: &str) -> NewMark {
@@ -32,10 +33,10 @@ fn stroke(points: &[[f64; 3]], size: f64, colour: &str, wet: bool) -> NewStroke 
     clippy::too_many_lines,
     reason = "one composition's actions, read top to bottom"
 )]
-pub fn landscape() -> Vec<CanvasAction> {
+pub fn landscape() -> Vec<Invoke<Artwork>> {
     let mut art = Vec::new();
     let layer = |id: &str, name: &str, medium: &str| {
-        CanvasAction::AddLayer(AddLayer {
+        Artwork::ADD_LAYER.with(AddLayer {
             id: Some(id.into()),
             name: name.into(),
             medium: Some(medium.into()),
@@ -43,13 +44,13 @@ pub fn landscape() -> Vec<CanvasAction> {
         })
     };
     // A new sheet starts with one empty layer; the landscape brings its own.
-    art.push(CanvasAction::RemoveLayer(RemoveLayer {
+    art.push(Artwork::REMOVE_LAYER.with(RemoveLayer {
         id: "layer-1".into(),
     }));
     art.push(layer("sky", "Sky", "watercolour-wet"));
     art.push(layer("land", "Land", "oil"));
     art.push(layer("ink", "Linework", ""));
-    art.push(CanvasAction::Draw(Draw {
+    art.push(Artwork::DRAW.with(Draw {
         layer: Some("sky".into()),
         marks: vec![
             mark(
@@ -78,7 +79,7 @@ pub fn landscape() -> Vec<CanvasAction> {
             },
         ],
     }));
-    art.push(CanvasAction::Draw(Draw {
+    art.push(Artwork::DRAW.with(Draw {
             layer: Some("land".into()),
             marks: vec![
                 NewMark {
@@ -104,7 +105,7 @@ pub fn landscape() -> Vec<CanvasAction> {
             ],
         }),
     );
-    art.push(CanvasAction::Paint(Paint {
+    art.push(Artwork::PAINT.with(Paint {
         layer: Some("land".into()),
         strokes: vec![
             stroke(
@@ -136,7 +137,7 @@ pub fn landscape() -> Vec<CanvasAction> {
         ],
         group: None,
     }));
-    art.push(CanvasAction::Draw(Draw {
+    art.push(Artwork::DRAW.with(Draw {
         layer: Some("ink".into()),
         marks: vec![
             NewMark {
@@ -178,7 +179,7 @@ pub fn landscape() -> Vec<CanvasAction> {
             ),
         ],
     }));
-    art.push(CanvasAction::Paint(Paint {
+    art.push(Artwork::PAINT.with(Paint {
         layer: Some("ink".into()),
         strokes: vec![
             stroke(
@@ -224,7 +225,7 @@ pub fn landscape() -> Vec<CanvasAction> {
     clippy::too_many_lines,
     reason = "one composition's actions, read top to bottom"
 )]
-pub fn shapes() -> Vec<CanvasAction> {
+pub fn shapes() -> Vec<Invoke<Artwork>> {
     use ui::vello::kurbo::{Affine, Point};
     let turned = |degrees: f64, about: (f64, f64)| {
         Some(Affine::rotate_about(degrees.to_radians(), Point::new(about.0, about.1)).as_coeffs())
@@ -318,12 +319,12 @@ pub fn shapes() -> Vec<CanvasAction> {
         )
     });
     vec![
-        CanvasAction::AddLayer(AddLayer {
+        Artwork::ADD_LAYER.with(AddLayer {
             id: Some("ink".into()),
             name: "Ink".into(),
             ..AddLayer::default()
         }),
-        CanvasAction::Draw(Draw {
+        Artwork::DRAW.with(Draw {
             layer: Some("ink".into()),
             marks,
         }),

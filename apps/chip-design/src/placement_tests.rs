@@ -1,5 +1,6 @@
 //! Public import, resource navigation and real retained placement geometry.
-use crate::{ChipDesignShell, ChipProject, VerificationRecord};
+use crate::tests::Parsed as _;
+use crate::{ChipDesignShell, Project as ChipProject, VerificationRecord};
 use serde_json::{Value, json};
 use ui::framework::testing::TestApp;
 use ui::tilo_resource::Resource;
@@ -41,7 +42,7 @@ fn physical(value: &mut Value) -> &mut Value {
 #[test]
 fn placement_public_read_search_geometry_and_click_share_the_resource() {
     let mut app = TestApp::<ChipDesignShell>::new().unwrap();
-    assert!(app.state().verifications.is_empty());
+    assert!(app.parsed().verifications.is_empty());
     let raw = fixture().to_string();
     app.call("import-verification", json!({"json":raw}))
         .unwrap();
@@ -55,7 +56,7 @@ fn placement_public_read_search_geometry_and_click_share_the_resource() {
         json!([100_000, 100_000, 600_000, 200_000])
     );
     assert_eq!(read["content"]["placement"]["omitted_instances"], 10);
-    let anchor = format!("{id}/placement/physical/macro-a");
+    let anchor = child.clone();
     assert!(
         ChipProject::search(&app.state())
             .iter()
@@ -88,7 +89,7 @@ fn placement_public_read_search_geometry_and_click_share_the_resource() {
         "real macro control must select its inspector"
     );
     assert!(app.undo());
-    assert!(app.state().verifications.is_empty());
+    assert!(app.parsed().verifications.is_empty());
 }
 
 #[test]
@@ -114,6 +115,6 @@ fn malformed_placement_refuses_atomically_through_public_import() {
             app.call("import-verification", json!({"json":value.to_string()}))
                 .is_err()
         );
-        assert!(app.state().verifications.is_empty());
+        assert!(app.parsed().verifications.is_empty());
     }
 }

@@ -7,6 +7,8 @@ pub mod awake;
 pub mod boot;
 mod cohort;
 pub mod daemon;
+mod device_actions;
+mod disk_unlock;
 pub mod display;
 pub mod error;
 pub mod exec;

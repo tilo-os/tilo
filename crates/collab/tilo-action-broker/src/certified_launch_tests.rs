@@ -6,14 +6,12 @@ fn certified_launch_action() -> runtime_collab::ExportedAction {
         .row()
         .descriptor
         .unwrap();
-    action.operation_kind = "effect".into();
-    action.contract_json = serde_json::to_string(&tilo_actions::ActionContract {
-        discovery: tilo_actions::DiscoveryScope::Launchable,
+    action.operation_kind = tilo_actions::OperationKind::Effect;
+    action.contract = tilo_actions::ActionContract {
         execution: tilo_actions::ExecutionMode::Background { cancellable: true },
         result: tilo_actions::ResultSpec::Job,
         ..tilo_actions::ActionContract::default()
-    })
-    .unwrap();
+    };
     action
 }
 
@@ -71,7 +69,7 @@ fn certified_launch_gate(
     let launches = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let count = launches.clone();
     rig.state.launchable.replace_launcher_for_test(
-        Arc::new(move |app, workspace| {
+        Arc::new(move |app, workspace, _, _| {
             assert_eq!(app, "so.tilo.word-processor");
             assert!(!workspace.room.is_nil());
             count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);

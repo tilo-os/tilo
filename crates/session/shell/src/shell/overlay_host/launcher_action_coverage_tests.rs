@@ -123,7 +123,7 @@ fn workspace_creation_chrome() -> crate::shell::chrome_state::Chrome {
     tree.desktop.workspaces.push(workspace);
     tree.desktop.active = id;
     ChromeState::new_with_fixture_handle(
-        std::sync::Arc::new(parking_lot::RwLock::new(tree)),
+        crate::shell::state::WorkspaceTreeHandle::new(tree),
         crate::shell::hosted_inputs::HostedTileInputs::default(),
     )
 }
@@ -149,10 +149,7 @@ fn workspace_create_address_creates_and_selects_one_owned_empty_room() {
     assert_eq!(action.params().len(), 1);
     assert_eq!(action.params()[0].name, "name");
     let contract = action.contract().unwrap();
-    assert_eq!(
-        contract.permission,
-        tilo_actions::PermissionRequirement::Write
-    );
+    assert_eq!(contract.kind, tilo_actions::ActionKind::Undoable);
     assert_eq!(contract.retry, tilo_actions::RetryPolicy::AtMostOnce);
     let previous = chrome.borrow().tree().desktop.active;
     action
@@ -171,7 +168,7 @@ fn workspace_create_address_creates_and_selects_one_owned_empty_room() {
     assert_ne!(tree.desktop.active, previous);
     let created = tree.desktop.active_workspace().unwrap();
     assert_eq!(created.name, "Browser acceptance");
-    assert_eq!(created.owner.as_deref(), Some("shell-fixture"));
+    assert_eq!(created.owner().map(String::as_str), Some("shell-fixture"));
     assert_ne!(created.room, tree.desktop.workspaces[0].room);
     assert!(
         created
@@ -180,10 +177,17 @@ fn workspace_create_address_creates_and_selects_one_owned_empty_room() {
             .all(|strip| strip.window_groups.is_empty())
     );
     assert!(created.collaborators.is_empty());
+    assert!(
+        created.policy.members.is_empty(),
+        "only the owner is present"
+    );
     assert_eq!(
-        created.capabilities.len(),
-        1,
-        "only the production owner membership is present"
+        created.policy.grants,
+        tilo_action_policy::roles::room_role_grants(
+            &created.room.to_string(),
+            &tilo_action_policy::Subject::Role(tilo_action_policy::Role::Owner),
+        ),
+        "only the default role grants are present"
     );
     assert_eq!(tree.desktop.workspaces[0].name, "Existing");
 }
@@ -191,7 +195,7 @@ fn workspace_create_address_creates_and_selects_one_owned_empty_room() {
 #[test]
 #[serial_test::serial]
 fn workspace_create_refuses_denied_actors_revocation_and_stale_context() {
-    use crate::shell::search::visibility::CapabilityVisibility;
+    use crate::shell::search::visibility::PolicyVisibility;
     let _home = tilo_test_env::TestHome::new().unwrap();
     let chrome = workspace_creation_chrome();
     let host = ShellOverlayHost::new(Box::new(Container::new()));
@@ -205,7 +209,7 @@ fn workspace_create_refuses_denied_actors_revocation_and_stale_context() {
             workspace.actor_for_person(&"unrelated".to_string()),
             workspace.actor_for_agent("uninvited"),
         ] {
-            let visibility = CapabilityVisibility::new(workspace, actor);
+            let visibility = PolicyVisibility::new(workspace, actor);
             assert!(
                 host.action_catalog_for_resource(
                     &address,
@@ -244,8 +248,8 @@ fn workspace_create_refuses_denied_actors_revocation_and_stale_context() {
                     .set_owner("shell-fixture");
             } else {
                 let workspace = tree.desktop.active_workspace_mut().unwrap();
-                workspace.owner = None;
-                workspace.capabilities.clear();
+                workspace.policy.owner = None;
+                workspace.policy.members.clear();
             }
         }
         let count = chrome.borrow().tree().desktop.workspaces.len();

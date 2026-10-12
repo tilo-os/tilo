@@ -10,7 +10,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-use collab_types::{
+use fs_protocol::{
     ConflictResolution, ConflictStatus, FileConflictV1, FileProvenance, FileRecordError,
     FileRecordId, FileVersionId, FileVersionV1,
 };
@@ -448,7 +448,7 @@ fn stage_resolution(
         .ok_or(HistoryError::UnknownConflict(conflict_id))?;
     if let Some(existing) = &conflict.resolution
         && (existing == resolution
-            || !collab_types::prefer_conflict_resolution(resolution, existing))
+            || !fs_protocol::prefer_conflict_resolution(resolution, existing))
     {
         return Ok(None);
     }
@@ -890,24 +890,6 @@ impl FileHistoryStore {
         Some(result)
     }
 
-    /// Content roots retained by the durable immutable history.  A home peer
-    /// uses these to keep historical versions recoverable while reclaiming
-    /// only blobs proven unreachable from both the live namespace and history.
-    pub fn retained_content_hashes(&self) -> Vec<collab_types::ContentHash> {
-        let Ok(current) = self.state.lock() else {
-            return Vec::new();
-        };
-        let mut hashes = current
-            .records
-            .values()
-            .flat_map(|record| record.versions.values())
-            .filter_map(|version| version.content_hash)
-            .collect::<Vec<_>>();
-        hashes.sort_unstable_by_key(|hash| hash.0);
-        hashes.dedup();
-        hashes
-    }
-
     pub fn projection(&self, record_id: FileRecordId) -> Option<HistoryProjectionV1> {
         let snapshot = self.snapshot(record_id)?;
         let total_versions = snapshot.versions.len() as u64;
@@ -1169,9 +1151,8 @@ pub enum HistoryError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use collab_types::{
-        ConflictStrategy, ContentHash, Ed25519PublicKey, FileActor, FileProvenance,
-    };
+    use collab_types::Ed25519PublicKey;
+    use fs_protocol::{ConflictStrategy, ContentHash, FileActor, FileProvenance};
 
     fn actor(byte: u8) -> FileActor {
         FileActor {

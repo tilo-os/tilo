@@ -15,6 +15,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 use ui::widget::ModelPath;
+use ui::widget::TaffyTreeExt;
 
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -25,7 +26,7 @@ use ui::a11y::{AccessNode, Action};
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::Widget;
+use ui::widget::{Widget, layout_rect};
 
 use crate::core::{Core, OverviewEventCtx};
 
@@ -59,45 +60,22 @@ impl DetailPane {
     }
 }
 
-// `Widget::build_layout`/`apply_layout` (the callers below) return
-// `NodeId`/`()`, not a `Result` — the trait is shared by every widget in
-// `ui`, so its signature isn't ours to change here. `TaffyTree::new_leaf`
-// and `::layout` both wrap an infallible operation in this taffy version
-// (`new_leaf` always inserts; `layout` always finds a node this module
-// just registered) — the `Result` is vestigial, not a real failure mode.
-#[allow(
-    clippy::unwrap_used,
-    reason = "TaffyTree::new_leaf never fails in this taffy version, and the Widget trait's build_layout signature isn't ours to change to Result"
-)]
+/// A leaf node that fills what its parent gives it, registered for `me`.
 fn leaf(
     taffy: &mut TaffyTree<()>,
     node_map: &mut HashMap<NodeId, *mut dyn Widget>,
-    me: *mut dyn Widget,
+    me: &mut (dyn Widget + 'static),
 ) -> NodeId {
-    let node = taffy
-        .new_leaf(Style {
+    taffy.widget_leaf(
+        Style {
             size: Size {
                 width: Dimension::percent(1.0),
                 height: Dimension::percent(1.0),
             },
             ..Default::default()
-        })
-        .unwrap();
-    node_map.insert(node, me);
-    node
-}
-
-#[allow(
-    clippy::unwrap_used,
-    reason = "node is an id this module just registered with the same taffy tree, so TaffyTree::layout always finds it, and the Widget trait's apply_layout signature isn't ours to change to Result"
-)]
-fn store_rect(taffy: &TaffyTree<()>, node: NodeId, origin: Point) -> Rect {
-    let l = taffy.layout(node).unwrap();
-    Rect::new(
-        origin.x + f64::from(l.location.x),
-        origin.y + f64::from(l.location.y),
-        origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-        origin.y + f64::from(l.location.y) + f64::from(l.size.height),
+        },
+        node_map,
+        me,
     )
 }
 
@@ -108,11 +86,11 @@ impl Widget for OverviewPane {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        leaf(taffy, node_map, std::ptr::from_mut::<dyn Widget>(self))
+        leaf(taffy, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = store_rect(taffy, node, origin);
+        self.rect = layout_rect(taffy, node, origin);
     }
 
     fn draw(
@@ -189,7 +167,7 @@ impl Widget for OverviewPane {
         Some(self.core.borrow().overview_accessibility(self.rect))
     }
 
-    fn perform_action_at(
+    fn perform_action(
         &mut self,
         action: &Action,
         key_path: &[u64],
@@ -234,11 +212,11 @@ impl Widget for DetailPane {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        leaf(taffy, node_map, std::ptr::from_mut::<dyn Widget>(self))
+        leaf(taffy, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = store_rect(taffy, node, origin);
+        self.rect = layout_rect(taffy, node, origin);
     }
 
     fn draw(
@@ -289,7 +267,7 @@ impl Widget for DetailPane {
 
     /// The forecast's one accessible control: the out-of-date notice's
     /// Retry button.
-    fn perform_action_at(
+    fn perform_action(
         &mut self,
         action: &Action,
         key_path: &[u64],

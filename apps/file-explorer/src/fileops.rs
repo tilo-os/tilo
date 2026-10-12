@@ -59,9 +59,7 @@ pub use host_fs::trash::{is_trash_dir, trash_dir};
 /// Ensure the trash files directory exists, so opening an empty trash shows an
 /// empty listing rather than a "no such directory" error. Returns the dir.
 pub fn ensure_trash_dir() -> Option<PathBuf> {
-    let d = trash_dir()?;
-    let _ = std::fs::create_dir_all(&d);
-    Some(d)
+    host_fs::trash::ensure_trash_dir().ok()
 }
 
 /// Snapshot the names currently visible in the home Trash.
@@ -230,10 +228,7 @@ pub fn rename(path: &Path, new_name: &str) -> Result<PathBuf, String> {
 /// fails (e.g. a path no longer exists, or crosses a filesystem the trash
 /// backend can't handle).
 pub fn delete_to_trash(paths: &[PathBuf]) -> Result<(), String> {
-    if paths.is_empty() {
-        return Ok(());
-    }
-    trash::delete_all(paths).map_err(|e| e.to_string())
+    host_fs::trash::delete(paths)
 }
 
 /// Recursively copy `src` into the directory `dest_dir`, choosing a
@@ -398,11 +393,31 @@ pub fn transfer_into_with(
     remove_source: bool,
     observer: &mut impl TransferObserver,
 ) -> Result<PathBuf, String> {
-    ensure_destination_is_outside_source(src, dest_dir)?;
     let name = src
         .file_name()
-        .map(|name| name.to_string_lossy().into_owned())
         .ok_or_else(|| crate::i18n::t("files-source-no-name"))?;
+    transfer_into_named_with(src, dest_dir, name, remove_source, observer)
+}
+
+/// Transfer to one explicit leaf name with the same live admission and recovery.
+/// This grants no filesystem access and never replaces an occupied destination.
+///
+/// # Errors
+/// Refuses invalid names, lost authority, collisions and I/O failures.
+pub fn transfer_into_named_with(
+    src: &Path,
+    dest_dir: &Path,
+    name: &std::ffi::OsStr,
+    remove_source: bool,
+    observer: &mut impl TransferObserver,
+) -> Result<PathBuf, String> {
+    let mut components = Path::new(name).components();
+    if !matches!(components.next(), Some(std::path::Component::Normal(_)))
+        || components.next().is_some()
+    {
+        return Err(crate::i18n::t("files-invalid-destination-name"));
+    }
+    ensure_destination_is_outside_source(src, dest_dir)?;
     let source_parent = src
         .parent()
         .and_then(|parent| std::fs::canonicalize(parent).ok());
@@ -411,7 +426,7 @@ pub fn transfer_into_with(
         return Err("the item is already in this folder".into());
     }
 
-    let names = DestinationNames::new(&name);
+    let names = DestinationNames::new(name);
     // Preserve the existing diagnostic for an inaccessible destination before
     // allocating staging storage beneath it.
     inspect_destination(&dest_dir.join(names.for_suffix(1)))?;
@@ -625,32 +640,32 @@ fn restore_failed_cut(
 }
 
 struct DestinationNames {
-    original: String,
-    stem: String,
-    extension: Option<String>,
+    original: std::ffi::OsString,
+    stem: std::ffi::OsString,
+    extension: Option<std::ffi::OsString>,
 }
 
 impl DestinationNames {
-    fn new(name: &str) -> Self {
+    fn new(name: &std::ffi::OsStr) -> Self {
         let path = Path::new(name);
         Self {
-            original: name.to_owned(),
-            stem: path
-                .file_stem()
-                .map(|stem| stem.to_string_lossy().into_owned())
-                .unwrap_or_default(),
-            extension: path
-                .extension()
-                .map(|extension| extension.to_string_lossy().into_owned()),
+            original: name.to_os_string(),
+            stem: path.file_stem().unwrap_or_default().to_os_string(),
+            extension: path.extension().map(std::ffi::OsStr::to_os_string),
         }
     }
 
-    fn for_suffix(&self, suffix: u32) -> String {
+    fn for_suffix(&self, suffix: u32) -> std::ffi::OsString {
         if suffix == 1 {
-            self.original.clone()
-        } else {
-            suffixed_name(&self.stem, self.extension.as_deref(), suffix)
+            return self.original.clone();
         }
+        let mut name = self.stem.clone();
+        name.push(format!(" {suffix}"));
+        if let Some(extension) = &self.extension {
+            name.push(".");
+            name.push(extension);
+        }
+        name
     }
 }
 
@@ -685,7 +700,7 @@ fn publish_staging(
     Err(crate::i18n::t_args(
         "files-destination-names-exhausted",
         &[
-            crate::i18n::arg("name", names.original.clone()),
+            crate::i18n::arg("name", names.original.to_string_lossy().into_owned()),
             crate::i18n::arg("path", dest_dir.to_string_lossy().into_owned()),
         ],
     ))
@@ -966,6 +981,102 @@ fn copy_capability_entry(
 mod tests {
     use super::*;
     use std::fs;
+
+    #[cfg(unix)]
+    #[test]
+    fn opening_empty_trash_creates_owner_only_directories() {
+        use std::os::unix::fs::MetadataExt as _;
+        let _home = tilo_test_env::TestHome::new().expect("private test home");
+        let files = ensure_trash_dir().expect("opening empty Trash");
+        let trash = files.parent().expect("Trash root");
+        let owner = fs::metadata(trash.parent().expect("data directory"))
+            .expect("data metadata")
+            .uid();
+        let info = trash.join("info");
+        for directory in [trash, files.as_path(), info.as_path()] {
+            let metadata = fs::symlink_metadata(directory).expect("created Trash directory");
+            assert!(metadata.is_dir());
+            assert_eq!(metadata.uid(), owner);
+            assert_eq!(metadata.mode() & 0o777, 0o700, "{}", directory.display());
+        }
+        assert_eq!(ensure_trash_dir().as_deref(), Some(files.as_path()));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn opening_trash_does_not_rewrite_existing_directory_permissions() {
+        use std::os::unix::fs::MetadataExt as _;
+        let _home = tilo_test_env::TestHome::new().expect("private test home");
+        let files = trash_dir().expect("test Trash path");
+        fs::create_dir_all(&files).expect("existing nonprivate Trash fixture");
+        let trash = files.parent().expect("Trash root");
+        for directory in [trash, files.as_path()] {
+            host_fs::set_mode(directory, 0o755).expect("explicit nonprivate fixture");
+        }
+        assert!(
+            ensure_trash_dir().is_none(),
+            "nonprivate Trash must be refused"
+        );
+        #[cfg(not(target_os = "macos"))]
+        {
+            let source = trash.parent().expect("data directory").join("notes.txt");
+            fs::write(&source, b"keep private contents").expect("refused deletion source");
+            let error = delete_to_trash(std::slice::from_ref(&source))
+                .expect_err("deletion must refuse nonprivate Trash");
+            assert!(error.contains("not a private directory owned by this user"));
+            assert_eq!(
+                fs::read(&source).expect("source retained"),
+                b"keep private contents"
+            );
+            assert_eq!(
+                fs::read_dir(&files)
+                    .expect("no published private contents")
+                    .count(),
+                0
+            );
+        }
+        for directory in [trash, files.as_path()] {
+            assert_eq!(
+                fs::symlink_metadata(directory)
+                    .expect("untouched fixture")
+                    .mode()
+                    & 0o777,
+                0o755
+            );
+        }
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    #[test]
+    fn legacy_delete_creates_owner_only_trash_metadata_and_payload_directories() {
+        use std::os::unix::fs::MetadataExt as _;
+        let home = tilo_test_env::TestHome::new().expect("private test home");
+        let source = home.home().join("notes.txt");
+        fs::write(&source, b"private notes").expect("source contents");
+        delete_to_trash(std::slice::from_ref(&source)).expect("production legacy delete");
+        assert!(!source.exists());
+        for directory in ["Trash", "Trash/files", "Trash/info"] {
+            let path = home.data().join(directory);
+            let metadata = fs::symlink_metadata(&path).expect("created Trash directory");
+            assert!(metadata.is_dir());
+            assert_eq!(metadata.mode() & 0o777, 0o700, "{}", path.display());
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn opening_trash_refuses_a_symlink_without_populating_its_target() {
+        let home = tilo_test_env::TestHome::new().expect("private test home");
+        let outside = tempfile::tempdir().expect("unrelated directory");
+        host_fs::symlink(outside.path(), &home.data().join("Trash")).expect("symlink fixture");
+        assert!(ensure_trash_dir().is_none());
+        assert_eq!(
+            fs::read_dir(outside.path())
+                .expect("untouched target")
+                .count(),
+            0
+        );
+    }
 
     type TestHook<'a> = Box<dyn FnMut(&Path) -> std::io::Result<()> + 'a>;
 

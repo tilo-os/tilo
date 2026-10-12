@@ -16,7 +16,7 @@ use ui::widget::toggle_group::Segment;
 use ui::widget::{
     Actions, Banner, Button, ButtonRole, Element, EmptyState, Field, Form, FormPage, FormSection,
     ListRow, NavItem, NavList, NavSection, Section, SectionHeader, TextInput, TextInputKind,
-    ToggleGroup, Widget,
+    ToggleGroup,
 };
 
 use crate::app::Action;
@@ -185,15 +185,14 @@ pub(crate) fn connection_list(
                     .with_message("Pin the machines you use most to keep them here."),
             )
         } else {
-            Box::new(Actionable::new(
+            Box::new(
                 EmptyState::new("No saved connections")
                     .with_icon(Icon::Monitor)
                     .with_message("Save a machine to reach it over SSH, VNC or as a Tilo device.")
                     .with_action("New connection")
-                    .with_action_id("remote.connection.new"),
-                requests,
-                Action::NewConnection,
-            ))
+                    .with_action_id("remote.connection.new")
+                    .on_view(queue(requests, Action::NewConnection)),
+            )
         };
     }
     let list = |rows: Vec<&RowModel>| -> Vec<Element> {
@@ -489,13 +488,12 @@ pub(crate) fn session_status(requests: &Requests, model: StatusModel) -> Element
     }
     .with_icon(model.icon);
     match model.action {
-        Some((label, action)) => Box::new(Actionable::new(
+        Some((label, action)) => Box::new(
             state
                 .with_action(label)
-                .with_action_id("remote.session.recover"),
-            requests,
-            action,
-        )),
+                .with_action_id("remote.session.recover")
+                .on_effect(queue(requests, action)),
+        ),
         None => Box::new(state),
     }
 }
@@ -532,59 +530,4 @@ pub(crate) fn session_actions(
             .on_click(queue(requests, Action::Disconnect)),
     ));
     actions
-}
-
-/// An [`EmptyState`] whose one action reports to the queue.
-pub(crate) struct Actionable {
-    inner: EmptyState,
-    requests: Requests,
-    action: Action,
-}
-
-impl Actionable {
-    fn new(inner: EmptyState, requests: &Requests, action: Action) -> Self {
-        Self {
-            inner,
-            requests: Rc::clone(requests),
-            action,
-        }
-    }
-
-    fn report(&mut self) {
-        if self.inner.take_action() {
-            self.requests.borrow_mut().push(self.action);
-        }
-    }
-}
-
-impl ui::widget::Decorator for Actionable {
-    type Inner = EmptyState;
-
-    fn inner(&self) -> &EmptyState {
-        &self.inner
-    }
-
-    fn inner_mut(&mut self) -> &mut EmptyState {
-        &mut self.inner
-    }
-
-    fn handle_event(
-        &mut self,
-        event: &winit::event::WindowEvent,
-        ctx: &mut ui::widget::EventCtx<'_>,
-    ) {
-        self.inner.handle_event(event, ctx);
-        self.report();
-    }
-
-    fn perform_action(
-        &mut self,
-        action: &ui::a11y::Action,
-        state: &mut ui::widget::Edits<'_>,
-        path: &ui::widget::ModelPath,
-    ) -> bool {
-        let done = self.inner.perform_action(action, state, path);
-        self.report();
-        done
-    }
 }

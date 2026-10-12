@@ -127,6 +127,7 @@ test('capabilities report unsupported instead of simulating a codec', async () =
     channels: 1,
     frameSamples: 960,
     bitrate: 32_000,
+    dtx: false,
     reason: 'WebCodecs Opus audio is unavailable',
   });
 });
@@ -153,10 +154,29 @@ test('capabilities qualify a real Opus encode and decode without opening input',
     channels: 1,
     frameSamples: 960,
     bitrate: 32_000,
+    dtx: true,
     reason: null,
   });
   assert.deepEqual(f.environment.AudioEncoder.lastConfig.opus, {format: 'opus', frameDuration: 20_000});
   assert.equal(mediaCalls, 0);
+});
+
+test('the call encoder uses Opus DTX only where the browser confirms it', async () => {
+  for (const [echo, dtx] of [
+    [config => config, true],
+    // An encoder that does not know usedtx leaves it out of its answer.
+    [config => ({...config, opus: {format: config.opus.format, frameDuration: config.opus.frameDuration}}), false],
+  ]) {
+    const f = lifecycleEnvironment();
+    f.environment.AudioEncoder.isConfigSupported = async config => ({supported: true, config: echo(config)});
+    const audio = createBrowserAudio({environment: f.environment});
+    assert.equal((await audio.capabilities()).dtx, dtx);
+    const session = await audio.start({muted: true, onFrame() {}});
+    const init = f.workers[0].sent.find(message => message.type === 'init');
+    assert.equal(init.encoderConfig.opus.usedtx === true, dtx);
+    assert.equal(init.encoderConfig.bitrate, 32_000);
+    await session.stop();
+  }
 });
 
 test('capabilities fail closed when the advertised decoder cannot complete qualification', async () => {

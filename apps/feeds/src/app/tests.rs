@@ -3,10 +3,10 @@
 #![allow(clippy::float_cmp, reason = "tests assert exact values")]
 
 use super::*;
-use crate::doc::FeedsDoc;
-use crate::model::{BlockKind, ContentBlock};
+use crate::model::{BlockKind, ContentBlock, Feed, Fetched};
 use automerge::ReadDoc as _;
 use ui::headless::Framed;
+use ui::tilo_resource::Resource as _;
 use ui::widget::Widget;
 use winit::event::MouseScrollDelta;
 
@@ -40,46 +40,40 @@ fn synced(app: &mut FeedsApp) -> AutoCommit {
         "so.tilo.feeds",
         "component-test-author",
     ));
-    // A component fixture presents the same typed actions a capture applies;
+    // A component fixture writes the same field edits a capture applies;
     // the live app never seeds its document during sync.
-    let core = app.core();
-    if !core.store.feeds.is_empty() || !core.store.folders.is_empty() {
-        tilo_actions::Action::apply(
-            &FeedsAction::ImportSubscriptions {
-                folders: core.store.folders.clone(),
-                feeds: core.store.feeds.clone(),
-            },
-            &mut doc,
-        )
-        .unwrap();
-        tilo_actions::Action::apply(
-            &FeedsAction::UpsertFetched {
-                articles: core.store.articles.clone(),
-                feeds: Vec::new(),
-            },
-            &mut doc,
-        )
-        .unwrap();
+    for edit in crate::resource::whole(&app.core().store) {
+        edit.apply_local(&mut doc).unwrap();
     }
-    drop(core);
     app.sync(&doc, &automerge::ROOT);
     doc
 }
 
-fn article(feed_id: Id, title: &str, published: i64, blocks: Vec<ContentBlock>) -> Article {
-    Article {
-        id: Uuid::new_v4(),
-        feed_id,
+/// The library `doc` holds.
+fn loaded(doc: &AutoCommit) -> Library {
+    Library::read(doc).unwrap()
+}
+
+/// Show the window what `doc` holds now, as the framework presents it.
+fn present(app: &FeedsApp, doc: &AutoCommit) {
+    app.present_library(Rc::new(loaded(doc)));
+}
+
+/// An article a refresh fetched, titled `title`.
+fn fetched(title: &str, published: i64, blocks: Vec<ContentBlock>) -> Fetched {
+    Fetched {
         title: title.into(),
         author: "Reporter".into(),
-        url: format!("https://example.com/{}", Uuid::new_v4()),
+        url: format!("https://example.com/{}", title.replace(' ', "-")),
         published,
         summary: "A summary".into(),
         blocks,
-        read: false,
-        starred: false,
-        tags: Vec::new(),
     }
+}
+
+/// The id of the `n`th subscription the window shows.
+fn nth_feed(app: &FeedsApp, n: usize) -> Id {
+    app.core().store.feeds.ids().nth(n).unwrap().clone()
 }
 
 fn synth_device() -> winit::event::DeviceId {
@@ -87,36 +81,19 @@ fn synth_device() -> winit::event::DeviceId {
 }
 
 fn cursor_at(p: Point) -> WindowEvent {
-    WindowEvent::CursorMoved {
-        device_id: synth_device(),
-        position: winit::dpi::PhysicalPosition::new(p.x, p.y),
-    }
+    ui::synthetic_input::cursor_moved(p.x, p.y)
 }
 
 fn press(button: MouseButton) -> WindowEvent {
-    WindowEvent::MouseInput {
-        device_id: synth_device(),
-        state: ElementState::Pressed,
-        button,
-    }
+    ui::synthetic_input::mouse_input(ui::winit::event::ElementState::Pressed, button)
 }
 
 fn key_event(key: Key, text: Option<&str>) -> WindowEvent {
-    // winit's `KeyEventExtra` is crate-private: start from zero and set the
-    // inspected fields, as the toolkit's own widget tests do.
-    let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
-    ev.logical_key = key;
-    ev.physical_key =
-        winit::keyboard::PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
-    ev.location = winit::keyboard::KeyLocation::Standard;
-    ev.state = ElementState::Pressed;
-    ev.repeat = false;
-    ev.text = text.map(Into::into);
-    WindowEvent::KeyboardInput {
-        device_id: synth_device(),
-        event: ev,
-        is_synthetic: false,
-    }
+    ui::synthetic_input::keyboard_input(ui::synthetic_input::key_event(
+        key,
+        text.map(Into::into),
+        ElementState::Pressed,
+    ))
 }
 
 fn char_key(s: &str) -> WindowEvent {
@@ -134,24 +111,11 @@ fn dispatch_mods(
     event: &WindowEvent,
     mods: winit::event::Modifiers,
 ) -> bool {
-    let mut taffy: TaffyTree<()> = TaffyTree::new();
-    let node = taffy.new_leaf(taffy::Style::default()).unwrap();
-    let mut handled = false;
-    let mut focus_target = None;
-    a.handle_event(
-        event,
-        &mut ui::widget::EventCtx {
-            scale_factor: 1.0,
-            modifiers: &mods,
-            state: ui::widget::Edits::lend(doc),
-            path: &automerge::ROOT,
-            handled: &mut handled,
-            focus_target: &mut focus_target,
-            node_id: node,
-            taffy: &taffy,
-        },
-    );
-    handled
+    ui::testing::Dispatch::new()
+        .modifiers(mods)
+        .doc(doc)
+        .send(a, event)
+        .handled
 }
 
 fn dispatch(a: &mut FeedsApp, doc: &mut AutoCommit, event: &WindowEvent) -> bool {
@@ -209,16 +173,14 @@ fn startup_is_empty_live_and_populated_only_in_demo() {
         !demo
             .core()
             .store
-            .article(selected)
+            .article(&selected)
             .expect("the open article")
             .blocks
+            .0
             .is_empty()
     );
     let doc = synced(&mut demo);
-    assert_eq!(
-        FeedsDoc::load(&doc).feeds.len(),
-        demo.core().store.feeds.len()
-    );
+    assert_eq!(loaded(&doc).feeds.len(), demo.core().store.feeds.len());
 }
 
 /// The empty library disables what has nothing to act on and offers one
@@ -243,7 +205,7 @@ fn an_empty_library_disables_its_commands_and_offers_to_add_a_feed() {
     settle(&mut mounted);
     let (a, _) = Framed::split(&mut mounted);
     assert_eq!(
-        a.modal.as_ref().map(|m| m.intent),
+        a.modal.as_ref().map(|m| m.intent.clone()),
         Some(ModalIntent::AddSubscription),
         "the empty state's action opens the add dialog"
     );
@@ -272,35 +234,37 @@ fn refresh_runs_off_thread_and_lands_through_the_store() {
             "outstanding fetches wake the loop without animation"
         );
 
-        let feed_id = a.core().store.feeds[0].id;
-        let fresh = article(feed_id, "Fresh from the worker", a.core().now, vec![]);
+        let feed_id = nth_feed(&a, 0);
+        let fresh = fetched("Fresh from the worker", a.core().now, vec![]);
         let before = a.core().store.articles.len();
         tx.send(FetchResult::Articles {
-            feed_id,
+            feed_id: feed_id.clone(),
             title: None,
             articles: vec![fresh.clone()],
+            certificate_pin: None,
         })
         .unwrap();
         assert!(a.core_mut().drain_fetches_live());
-        assert_eq!(a.core().store.articles.len(), before + 1);
         assert_eq!(a.core().refresh.done, 1);
         assert_eq!(a.core().refresh.new_items, 1);
         assert!(
-            !a.core().pending_doc_writes.is_empty(),
-            "the write is queued"
+            !a.core().pending_landings.is_empty(),
+            "the landing is queued"
         );
         a.core_mut()
             .flush_doc_writes(&mut ui::widget::Edits::lend(&mut doc));
-        assert!(a.core().pending_doc_writes.is_empty());
+        assert!(a.core().pending_landings.is_empty());
+        present(&a, &doc);
+        assert_eq!(a.core().store.articles.len(), before + 1);
         assert!(
-            FeedsDoc::load(&doc)
+            loaded(&doc)
                 .articles
-                .iter()
-                .any(|x| x.id == fresh.id)
+                .values()
+                .any(|x| x.title == fresh.title && x.feed_id == feed_id)
         );
 
         tx.send(FetchResult::Failed {
-            feed_id: Some(a.core().store.feeds[1].id),
+            feed_id: Some(nth_feed(&a, 1)),
             message: "unreachable".into(),
         })
         .unwrap();
@@ -312,6 +276,41 @@ fn refresh_runs_off_thread_and_lands_through_the_store() {
         );
     }
 
+    // --- phase: a feed pins the certificate of its first fetch, and only that ---
+    {
+        let mut a = app();
+        let mut doc = synced(&mut a);
+        let (worker, tx) = FetchWorker::for_test();
+        a.core_mut().worker = Some(worker);
+        let feed_id = nth_feed(&a, 0);
+        assert_eq!(a.core().store.feed(&feed_id).unwrap().certificate_pin, None);
+        for presented in ["first", "impostor"] {
+            tx.send(FetchResult::Articles {
+                feed_id: feed_id.clone(),
+                title: None,
+                articles: vec![],
+                certificate_pin: Some(presented.into()),
+            })
+            .unwrap();
+            a.core_mut().drain_fetches_live();
+            a.core_mut()
+                .flush_doc_writes(&mut ui::widget::Edits::lend(&mut doc));
+            present(&a, &doc);
+        }
+        let pinned = |library: &Library| {
+            library
+                .feeds
+                .get(&feed_id)
+                .and_then(|f: &Feed| f.certificate_pin.clone())
+        };
+        assert_eq!(pinned(&a.core().store).as_deref(), Some("first"));
+        assert_eq!(
+            pinned(&loaded(&doc)).as_deref(),
+            Some("first"),
+            "the pin syncs with the subscription"
+        );
+    }
+
     // --- phase: a large batch persists at most FLUSH_BUDGET writes a frame ---
     {
         let mut a = app();
@@ -319,15 +318,14 @@ fn refresh_runs_off_thread_and_lands_through_the_store() {
         let (worker, tx) = FetchWorker::for_test();
         a.core_mut().worker = Some(worker);
         a.core_mut().refresh_all();
-        let feed_ids: Vec<Id> = a.core().store.feeds.iter().map(|f| f.id).collect();
+        let feed_ids: Vec<Id> = a.core().store.feeds.ids().cloned().collect();
         let now = a.core().now;
         let mut total = 0usize;
         for fid in &feed_ids {
-            let articles: Vec<Article> = (0..100)
+            let articles: Vec<Fetched> = (0..100)
                 .map(|i| {
-                    article(
-                        *fid,
-                        &format!("Article {i}"),
+                    fetched(
+                        &format!("Article {fid} {i}"),
                         now - i64::from(i) * 60,
                         vec![ContentBlock::new(BlockKind::Paragraph, "Body.")],
                     )
@@ -335,27 +333,37 @@ fn refresh_runs_off_thread_and_lands_through_the_store() {
                 .collect();
             total += articles.len();
             tx.send(FetchResult::Articles {
-                feed_id: *fid,
+                feed_id: fid.clone(),
                 title: None,
                 articles,
+                certificate_pin: None,
             })
             .unwrap();
         }
         let heads = doc.get_heads();
         a.core_mut().drain_fetches_live();
         assert_eq!(doc.get_heads(), heads, "the drain persists nothing");
-        let before = a.core().pending_doc_writes.len();
+        let queued = |a: &FeedsApp| -> usize {
+            a.core()
+                .pending_landings
+                .iter()
+                .map(|landing| landing.fetched.articles.len())
+                .sum()
+        };
+        let before = queued(&a);
         assert!(before >= total);
+        let articles = loaded(&doc).articles.len();
         a.core_mut()
             .flush_doc_writes(&mut ui::widget::Edits::lend(&mut doc));
-        assert!(before - a.core().pending_doc_writes.len() <= FLUSH_BUDGET);
+        assert!(before - queued(&a) <= FLUSH_BUDGET);
+        assert!(loaded(&doc).articles.len() - articles <= FLUSH_BUDGET);
         let mut frames = 0;
-        while !a.core().pending_doc_writes.is_empty() && frames < 5000 {
+        while !a.core().pending_landings.is_empty() && frames < 5000 {
             a.core_mut()
                 .flush_doc_writes(&mut ui::widget::Edits::lend(&mut doc));
             frames += 1;
         }
-        assert!(FeedsDoc::load(&doc).articles.len() >= total);
+        assert!(loaded(&doc).articles.len() >= total);
     }
 
     // --- phase: progress finishes when every feed reported back ---
@@ -368,17 +376,18 @@ fn refresh_runs_off_thread_and_lands_through_the_store() {
         let total = a.core().refresh.total;
         assert_eq!(total, a.core().store.feeds.len());
         assert!(a.core().refresh.status().starts_with("Refreshing 0 of"));
-        let feeds = a.core().store.feeds.clone();
+        let feeds: Vec<Id> = a.core().store.feeds.ids().cloned().collect();
         for (i, f) in feeds.iter().enumerate() {
             let result = if i % 2 == 0 {
                 FetchResult::Articles {
-                    feed_id: f.id,
+                    feed_id: f.clone(),
                     title: None,
                     articles: vec![],
+                    certificate_pin: None,
                 }
             } else {
                 FetchResult::Failed {
-                    feed_id: Some(f.id),
+                    feed_id: Some(f.clone()),
                     message: "x".into(),
                 }
             };
@@ -427,46 +436,50 @@ fn reader_state_edits_persist_through_the_document() {
         a.core_mut()
             .apply(request, &mut ui::widget::Edits::lend(&mut doc));
     }
-    let loaded = a.read_settings_for_test();
-    assert_eq!(loaded.font, ReadFont::Sans);
-    assert_eq!(loaded.theme, ReadTheme::Sepia);
-    assert!((loaded.font_scale - 1.2).abs() < 0.001);
+    let settings = a.read_settings_for_test();
+    assert_eq!(settings.font, ReadFont::Sans);
+    assert_eq!(settings.theme, ReadTheme::Sepia);
+    assert!((settings.font_scale - 1.2).abs() < 0.001);
 
     let unread = a
         .core()
         .store
-        .articles_for(Filter::All)
+        .articles_for(&Filter::All)
         .into_iter()
         .find(|x| !x.read)
-        .map(|x| x.id)
+        .map(|x| x.id.clone())
         .expect("an unread article");
     a.core_mut()
-        .select_article(unread, &mut ui::widget::Edits::lend(&mut doc));
-    assert!(FeedsDoc::load(&doc).article(unread).is_some_and(|x| x.read));
+        .select_article(&unread, &mut ui::widget::Edits::lend(&mut doc));
+    assert!(loaded(&doc).article(&unread).is_some_and(|x| x.read));
 
-    let id = a.core().store.articles[0].id;
-    let before = a.core().store.article(id).is_some_and(|x| x.starred);
+    let id = nth_article(&a, 0);
+    let before = a.core().store.article(&id).is_some_and(|x| x.starred);
     a.core_mut()
-        .toggle_star(id, &mut ui::widget::Edits::lend(&mut doc));
-    assert_eq!(
-        FeedsDoc::load(&doc).article(id).map(|x| x.starred),
-        Some(!before)
-    );
+        .toggle_star(&id, &mut ui::widget::Edits::lend(&mut doc));
+    assert_eq!(loaded(&doc).article(&id).map(|x| x.starred), Some(!before));
 
     a.core_mut().set_filter(Filter::Starred);
     let selected = a.selected_article();
     assert!(
         a.core()
             .store
-            .articles_for(Filter::Starred)
+            .articles_for(&Filter::Starred)
             .iter()
-            .any(|x| Some(x.id) == selected)
+            .any(|x| Some(x.id) == selected.as_ref())
     );
 
     a.core_mut().set_filter(Filter::All);
     a.core_mut()
         .mark_all_read(&mut ui::widget::Edits::lend(&mut doc));
+    present(&a, &doc);
     assert_eq!(a.core().store.total_unread(), 0);
+    assert_eq!(loaded(&doc).total_unread(), 0, "marked read in the library");
+}
+
+/// The id of the `n`th article the library holds.
+fn nth_article(app: &FeedsApp, n: usize) -> Id {
+    app.core().store.articles.ids().nth(n).unwrap().clone()
 }
 
 /// The window's semantics: the sidebar list, the article rows with their
@@ -484,18 +497,19 @@ fn accessibility_mirrors_and_operates_the_reader() {
     assert_eq!(list.role, Role::List);
     assert_eq!(list.name.as_deref(), Some("All articles"));
     let (a, st) = Framed::split(&mut mounted);
-    let id = a.core().list.rows[0].id;
+    let id = a.core().list.rows[0].id.clone();
     assert!(has_target(&list, &format!("feeds.article:{id}")));
     assert!(has_target(&list, &format!("feeds.star:{id}")));
-    let before = a.core().store.article(id).is_some_and(|x| x.starred);
+    let before = a.core().store.article(&id).is_some_and(|x| x.starred);
     assert!(a.perform_semantic_action(
         &format!("feeds.star:{id}"),
         &A11yAction::ToggleCheck,
         &mut ui::widget::Edits::lend(&mut st.doc),
         &st.root,
     ));
+    present(a, &st.doc);
     assert_ne!(
-        a.core().store.article(id).is_some_and(|x| x.starred),
+        a.core().store.article(&id).is_some_and(|x| x.starred),
         before
     );
     assert!(a.perform_semantic_action(
@@ -510,12 +524,11 @@ fn accessibility_mirrors_and_operates_the_reader() {
     let tagged = a
         .core()
         .store
-        .articles
-        .iter()
+        .article_rows()
         .find(|x| !x.tags.is_empty())
-        .map(|x| (x.id, crate::model::tag_key(&x.tags[0])))
+        .map(|x| (x.id.clone(), crate::model::tag_key(&x.tag_list()[0])))
         .expect("a tagged sample article");
-    a.core_mut().selected = Some(tagged.0);
+    a.core_mut().selected = Some(tagged.0.clone());
     settle(&mut mounted);
     let (a, st) = Framed::split(&mut mounted);
     assert!(a.perform_semantic_action(
@@ -549,8 +562,10 @@ fn the_tag_editor_uses_the_canonical_action() {
     a.stage_tag_editor();
     a.take_pending_modal();
     assert_eq!(
-        a.modal.as_ref().map(|m| m.intent),
-        Some(ModalIntent::EditArticleTags { article_id: id })
+        a.modal.as_ref().map(|m| m.intent.clone()),
+        Some(ModalIntent::EditArticleTags {
+            article_id: id.clone()
+        })
     );
     a.modal
         .as_mut()
@@ -560,14 +575,15 @@ fn the_tag_editor_uses_the_canonical_action() {
         .set_value("Design, Later, design");
     a.submit_modal(&mut ui::widget::Edits::lend(&mut doc));
     assert_eq!(
-        FeedsDoc::load(&doc).article(id).unwrap().tags,
+        loaded(&doc).article(&id).unwrap().tag_list(),
         ["design", "later"]
     );
+    present(&a, &doc);
     a.stage_tag_editor();
     a.take_pending_modal();
     a.modal.as_mut().unwrap().dialog.content_mut().set_value("");
     a.submit_modal(&mut ui::widget::Edits::lend(&mut doc));
-    assert!(FeedsDoc::load(&doc).article(id).unwrap().tags.is_empty());
+    assert!(loaded(&doc).article(&id).unwrap().tags.is_empty());
 }
 
 /// The shell docks the sidebar in a wide window, floats it as a drawer in
@@ -609,9 +625,9 @@ fn the_window_shell_adapts_to_its_width() {
         let (a, st) = Framed::split(&mut mounted);
         a.shell_mut().show(NavPane::Overview);
         a.shell_mut().snap();
-        let id = a.core().store.articles_for(Filter::All)[1].id;
+        let id = a.core().store.articles_for(&Filter::All)[1].id.clone();
         a.core_mut()
-            .select_article(id, &mut ui::widget::Edits::lend(&mut st.doc));
+            .select_article(&id, &mut ui::widget::Edits::lend(&mut st.doc));
         a.settle(&mut ui::widget::Edits::lend(&mut st.doc), &st.root);
         assert_eq!(a.shell().front_pane(), NavPane::Content);
     }
@@ -647,19 +663,15 @@ fn opml_portal_import_and_export_report_honestly() {
         let mut a = app();
         let mut doc = synced(&mut a);
         let before = a.core().store.feeds.len();
-        let new_ids = a
+        let added = a
             .core_mut()
             .apply_opml_import(opml::sample_opml(), &mut ui::widget::Edits::lend(&mut doc));
-        assert_eq!(new_ids.len(), 3);
+        assert_eq!(added.len(), 3);
+        present(&a, &doc);
         assert_eq!(a.core().store.feeds.len(), before + 3);
-        let loaded = FeedsDoc::load(&doc);
-        assert!(
-            loaded
-                .feeds
-                .iter()
-                .any(|f| f.url == "https://jvns.ca/atom.xml")
-        );
-        assert!(loaded.folders.iter().any(|f| f.name == "Reading"));
+        let library = loaded(&doc);
+        assert!(library.feed_at("https://jvns.ca/atom.xml").is_some());
+        assert!(library.folders.values().any(|f| f.name == "Reading"));
         assert!(
             a.core_mut()
                 .apply_opml_import(opml::sample_opml(), &mut ui::widget::Edits::lend(&mut doc))
@@ -671,7 +683,7 @@ fn opml_portal_import_and_export_report_honestly() {
     {
         let mut a = app();
         let doc = synced(&mut a);
-        let directory = std::env::temp_dir().join(format!("feeds-export-{}", Uuid::new_v4()));
+        let directory = std::env::temp_dir().join(format!("feeds-export-{}", std::process::id()));
         std::fs::create_dir_all(&directory).unwrap();
         let path = directory.join("Subscriptions Grün 🌍.opml");
         let xml = opml::export(&a.core().store);
@@ -681,8 +693,8 @@ fn opml_portal_import_and_export_report_honestly() {
         assert_eq!(std::fs::read_to_string(&path).unwrap(), xml);
         assert!(a.core().export_rx.is_none());
         assert!(
-            a.core()
-                .toast_visible()
+            a.shell()
+                .toast_text()
                 .is_some_and(|t| t.starts_with("Exported subscriptions"))
         );
         std::fs::remove_dir_all(directory).unwrap();
@@ -697,7 +709,7 @@ fn opml_portal_import_and_export_report_honestly() {
         let doc = synced(&mut a);
         export_with(&a, outcome.clone());
         a.sync(&doc, &automerge::ROOT);
-        let message = a.core().toast_visible().map(str::to_owned).unwrap();
+        let message = a.shell().toast_text().map(str::to_owned).unwrap();
         match outcome {
             PortalOutcome::Cancelled => assert_eq!(message, "Export cancelled"),
             PortalOutcome::Failed(reason) => {
@@ -721,7 +733,7 @@ fn opml_portal_import_and_export_report_honestly() {
         let mut doc = synced(&mut a);
         let (worker, _tx) = FetchWorker::for_test();
         a.core_mut().worker = Some(worker);
-        let dir = std::env::temp_dir().join(format!("feeds-opml-test-{}", Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("feeds-opml-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("subs.opml");
         std::fs::write(&path, opml::sample_opml()).unwrap();
@@ -730,7 +742,13 @@ fn opml_portal_import_and_export_report_honestly() {
         a.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
         a.sync(&doc, &automerge::ROOT);
         assert!(a.core().import_rx.is_none());
+        present(&a, &doc);
         assert_eq!(a.core().store.feeds.len(), before + 3);
+        assert_eq!(
+            a.core().refresh.total,
+            3,
+            "the imported subscriptions are refreshed once the library holds them"
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
     {
@@ -760,7 +778,11 @@ fn opml_portal_import_and_export_report_honestly() {
 fn the_feed_menu_opens_on_its_row_and_runs_its_actions() {
     let mut mounted = framed(app());
     settle(&mut mounted);
-    let (feed, row) = mounted.core().first_feed_row.expect("a painted feed row");
+    let (feed, row) = mounted
+        .core()
+        .first_feed_row
+        .clone()
+        .expect("a painted feed row");
 
     // Right click on the row.
     let harness = Framed::harness_mut(&mut mounted);
@@ -770,13 +792,13 @@ fn the_feed_menu_opens_on_its_row_and_runs_its_actions() {
     {
         let core = mounted.core();
         let open = core.menu.as_ref().expect("the right click opened the menu");
-        assert_eq!(open.kind, MenuKind::Feed(feed));
+        assert_eq!(open.kind, MenuKind::Feed(feed.clone()));
         assert_eq!(
             open.actions,
             vec![
-                MenuAction::MarkFeedRead(feed),
-                MenuAction::RenameFeed(feed),
-                MenuAction::Unsubscribe(feed),
+                MenuAction::MarkFeedRead(feed.clone()),
+                MenuAction::RenameFeed(feed.clone()),
+                MenuAction::Unsubscribe(feed.clone()),
             ]
         );
     }
@@ -787,9 +809,8 @@ fn the_feed_menu_opens_on_its_row_and_runs_its_actions() {
     let before: Vec<_> = a
         .core()
         .store
-        .articles
-        .iter()
-        .map(|x| (x.id, x.read, x.starred))
+        .article_rows()
+        .map(|x| (x.id.clone(), x.read, x.starred))
         .collect();
     for key in ["m", "s", "j", "k"] {
         dispatch(a, doc, &char_key(key));
@@ -797,9 +818,8 @@ fn the_feed_menu_opens_on_its_row_and_runs_its_actions() {
     let after: Vec<_> = a
         .core()
         .store
-        .articles
-        .iter()
-        .map(|x| (x.id, x.read, x.starred))
+        .article_rows()
+        .map(|x| (x.id.clone(), x.read, x.starred))
         .collect();
     assert_eq!(before, after, "the menu captures article shortcuts");
     assert!(a.core().menu.is_some());
@@ -810,8 +830,10 @@ fn the_feed_menu_opens_on_its_row_and_runs_its_actions() {
     dispatch(a, doc, &named_key(NamedKey::Enter));
     assert!(a.core().menu.is_none());
     assert_eq!(
-        a.modal.as_ref().map(|m| m.intent),
-        Some(ModalIntent::RenameFeed { feed_id: feed })
+        a.modal.as_ref().map(|m| m.intent.clone()),
+        Some(ModalIntent::RenameFeed {
+            feed_id: feed.clone()
+        })
     );
     a.modal
         .as_mut()
@@ -820,46 +842,36 @@ fn the_feed_menu_opens_on_its_row_and_runs_its_actions() {
         .content_mut()
         .set_value("My feed");
     a.submit_modal(&mut ui::widget::Edits::lend(doc));
-    assert_eq!(FeedsDoc::load(doc).feed(feed).unwrap().title, "My feed");
+    assert_eq!(loaded(doc).feed(&feed).unwrap().title, "My feed");
 
     // Losing focus dismisses an open menu.
-    a.core_mut().open_feed_menu(feed, row);
+    a.core_mut().open_feed_menu(feed.clone(), row);
     assert!(dispatch(a, doc, &WindowEvent::Focused(false)) || a.core().menu.is_none());
     assert!(a.core().menu.is_none());
 
     // Mark all as read marks the feed's articles and persists.
     a.core_mut().apply_menu_action(
-        MenuAction::MarkFeedRead(feed),
+        MenuAction::MarkFeedRead(feed.clone()),
         &mut ui::widget::Edits::lend(doc),
     );
-    assert_eq!(a.core().store.unread_for_feed(feed), 0);
-    assert!(
-        FeedsDoc::load(doc)
-            .articles
-            .iter()
-            .filter(|x| x.feed_id == feed)
-            .all(|x| x.read)
-    );
+    present(a, doc);
+    assert_eq!(a.core().store.unread_for_feed(&feed), 0);
+    assert_eq!(loaded(doc).unread_for_feed(&feed), 0);
 
-    // Unsubscribe asks first, as a destructive confirmation.
+    // Unsubscribe is the host's to confirm: the window asks nothing of its
+    // own and removes nothing before the person agreed (resource tests
+    // confirm it through the host).
     a.core_mut().apply_menu_action(
-        MenuAction::Unsubscribe(feed),
+        MenuAction::Unsubscribe(feed.clone()),
         &mut ui::widget::Edits::lend(doc),
     );
     a.take_pending_modal();
-    assert_eq!(
-        a.modal.as_ref().map(|m| m.intent),
-        Some(ModalIntent::Unsubscribe { feed_id: feed })
-    );
-    assert!(a.core().store.feed(feed).is_some(), "not until confirmed");
-    a.submit_modal(&mut ui::widget::Edits::lend(doc));
-    assert!(a.core().store.feed(feed).is_none());
-    let loaded = FeedsDoc::load(doc);
-    assert!(!loaded.feeds.iter().any(|f| f.id == feed));
-    assert!(!loaded.articles.iter().any(|x| x.feed_id == feed));
+    assert!(a.modal.is_none(), "the window asks nothing itself");
+    assert!(a.core().store.feed(&feed).is_some(), "not until confirmed");
+    assert!(loaded(doc).feed(&feed).is_some());
 
     // The menu stays inside a shrinking window and captures host undo.
-    let other = a.core().store.feeds[0].id;
+    let other = nth_feed(a, 0);
     a.core_mut()
         .open_feed_menu(other, Rect::new(900.0, 700.0, 1200.0, 740.0));
     assert!(ui::undo::handle_local_undo_request(
@@ -874,7 +886,7 @@ fn the_feed_menu_opens_on_its_row_and_runs_its_actions() {
 fn sidebar_counts_and_titles_follow_the_library() {
     let mut a = app();
     let mut doc = synced(&mut a);
-    let feed = a.core().store.feeds[1].id;
+    let feed = nth_feed(&a, 1);
     let sections = a.core().nav_sections();
     let library = &sections[0].items;
     assert_eq!(
@@ -895,9 +907,9 @@ fn sidebar_counts_and_titles_follow_the_library() {
         .items
         .iter()
         .flat_map(|i| std::iter::once(i).chain(i.children.iter()))
-        .find(|i| i.id == crate::sidebar::nav_id(Filter::Feed(feed)))
+        .find(|i| i.id == crate::sidebar::nav_id(&Filter::Feed(feed.clone())))
         .expect("the feed's row");
-    let unread = a.core().store.unread_for_feed(feed);
+    let unread = a.core().store.unread_for_feed(&feed);
     assert_eq!(
         item.count,
         Some(ui::chrome::NavCount::Neutral(
@@ -907,10 +919,10 @@ fn sidebar_counts_and_titles_follow_the_library() {
 
     a.requests
         .borrow_mut()
-        .push(Request::Show(Filter::Feed(feed)));
+        .push(Request::Show(Filter::Feed(feed.clone())));
     a.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
-    assert_eq!(a.active_filter(), Filter::Feed(feed));
-    let title = a.core().store.feed(feed).unwrap().title.clone();
+    assert_eq!(a.active_filter(), Filter::Feed(feed.clone()));
+    let title = a.core().store.feed(&feed).unwrap().title.clone();
     assert_eq!(a.titles.0, title);
 }
 
@@ -946,15 +958,20 @@ fn the_list_scrolls_and_keeps_the_open_article_in_view() {
     // Enough articles to overflow the window.
     {
         let mut core = a.core_mut();
-        let feed = core.store.feeds[0].id;
+        let feed = core.store.feeds.ids().next().unwrap().clone();
         let now = core.now;
         for i in 0..40 {
-            core.store.insert_article_dedup(article(
-                feed,
-                &format!("Archive {i}"),
-                now - 86_400 * 30 - i64::from(i),
-                vec![],
-            ));
+            let archived = Article::fetched(
+                feed.clone(),
+                fetched(
+                    &format!("Archive {i}"),
+                    now - 86_400 * 30 - i64::from(i),
+                    vec![],
+                ),
+            );
+            Rc::make_mut(&mut core.store)
+                .articles
+                .push(Id::from_raw(format!("archive-{i}")), archived);
         }
     }
     let mut mounted = framed_at(a, (1280, 600));
@@ -983,9 +1000,9 @@ fn the_list_scrolls_and_keeps_the_open_article_in_view() {
 
     // Stepping to the first article brings it back into view.
     let (a, st) = Framed::split(&mut mounted);
-    let first = a.core().store.articles_for(Filter::All)[0].id;
+    let first = a.core().store.articles_for(&Filter::All)[0].id.clone();
     a.core_mut()
-        .select_article(first, &mut ui::widget::Edits::lend(&mut st.doc));
+        .select_article(&first, &mut ui::widget::Edits::lend(&mut st.doc));
     settle(&mut mounted);
     assert_eq!(mounted.core().list.scroll(), 0.0);
 }
@@ -993,12 +1010,13 @@ fn the_list_scrolls_and_keeps_the_open_article_in_view() {
 /// Links open only web, Gemini and mail addresses.
 #[test]
 fn article_links_reject_local_files() {
-    let reader = FeedsApp::new();
+    let mut reader = FeedsApp::new();
     reader
         .core_mut()
         .open_url("file:///does-not-exist-tilo-link-proof");
+    reader.take_toast();
     assert_eq!(
-        reader.core().toast_visible(),
+        reader.shell().toast_text(),
         Some(ui::i18n!("feeds-open-link-invalid").as_str())
     );
 }
@@ -1068,9 +1086,9 @@ fn check_add_dialog_enter_subscribes() {
         .set_value(url);
     assert!(dispatch(&mut a, &mut doc, &named_key(NamedKey::Enter)));
     assert!(a.modal.is_none());
-    assert!(FeedsDoc::load(&doc).feeds.iter().any(|f| f.url == url));
+    assert!(loaded(&doc).feed_at(url).is_some());
     assert_eq!(
-        a.core().toast_visible(),
+        a.shell().toast_text(),
         Some(format!("Subscribing to {url}").as_str())
     );
 }
@@ -1090,15 +1108,20 @@ fn check_add_dialog_an_empty_required_field_keeps_the_dialog_open() {
         .set_value("Later");
     a.submit_modal(&mut ui::widget::Edits::lend(&mut doc));
     assert!(a.modal.is_none());
+    present(&a, &doc);
     let folder = a
         .core()
         .store
         .folders
         .iter()
-        .find(|f| f.name == "Later")
-        .map(|f| f.id)
+        .find(|(_, f)| f.name == "Later")
+        .map(|(id, _)| id.clone())
         .expect("created folder");
-    assert_eq!(a.active_filter(), Filter::Folder(folder));
+    assert_eq!(
+        a.active_filter(),
+        Filter::Folder(folder),
+        "the new folder is shown once the library holds it"
+    );
     // The managed record owns Undo; a detached view has no writer history.
     let mut host = ui::prelude::TestApp::<crate::resource::FeedsShell>::new().unwrap();
     let versions_before = host.versions().len();
@@ -1118,9 +1141,8 @@ fn check_add_dialog_an_empty_required_field_keeps_the_dialog_open() {
     host.settle();
     assert!(
         host.state()
-            .store
             .folders
-            .iter()
+            .values()
             .any(|folder| folder.name == "Later")
     );
     assert_eq!(
@@ -1129,5 +1151,5 @@ fn check_add_dialog_an_empty_required_field_keeps_the_dialog_open() {
         "the dialog submits one canonical action"
     );
     assert!(host.undo(), "the record owns the undo step");
-    assert!(host.state().store.folders.is_empty());
+    assert!(host.state().folders.is_empty());
 }

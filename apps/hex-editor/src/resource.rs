@@ -1,354 +1,153 @@
-//! The hex buffer as a [`Resource`]: a file's bytes, kept in the record so
+//! The hex buffer as a record: a file's bytes, kept in the document so
 //! they sync, undo and show in history like any document.
 //!
-//! The bytes are stored as a list of pages of a few KiB each. An edit
-//! rewrites only the pages it touches: typing over one byte of a large file
-//! writes one page, an insert grows one page (split when it gets long), and
-//! collaborators editing different pages merge cleanly. Two people editing
-//! the same page concurrently keep one of their versions of it.
+//! The bytes are a [`ByteBuffer`], stored in pages and edited at its path
+//! in its own vocabulary ([`BufferEdit`]): a keystroke writes the page it
+//! lands in. The verbs below offer the same edits by offset, for the
+//! palette, agents and scripts; loading a file is a verb of its own, which
+//! no undo takes back.
 
-use automerge::transaction::Transactable as _;
-use automerge::{ObjId, ObjType, ROOT, ReadDoc as _, ScalarValue, Value};
 use ui::framework::{LaunchInput, ResourceApp, ViewCx};
+use ui::i18n::EmbeddedCatalog;
 use ui::record::RecordId;
-use ui::tilo_actions::ActionError;
-use ui::tilo_resource::{ActionDecl, Doc, Invoke, ModelError, Resource};
+use ui::tilo_resource::{self, Atom, Invoke, Model, Refusal, resource};
 use ui::widget::Element;
 
-use crate::actions::{HEX_EDITOR_ACTION_TYPE, HexEditorAction};
-use crate::model::common_suffix;
+use crate::buffer::{ByteBuffer, Hex};
+use crate::model::BufferEdit;
 use crate::view::HexView;
 
-/// The bytes a page holds when a file is opened or a long page is split.
-const PAGE: usize = 4096;
-/// The longest a page grows by inserts before it is split.
-const MAX_PAGE: usize = 2 * PAGE;
+/// The hex editor's Fluent catalogs, source locale first.
+pub const LOCALES: &[(&str, &str)] = &[
+    ("en-US", include_str!("../locales/en-US.ftl")),
+    ("de-DE", include_str!("../locales/de-DE.ftl")),
+];
+
+static CATALOG: EmbeddedCatalog = EmbeddedCatalog::new("en-US", LOCALES).with_system_locale();
 
 /// The open buffer.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct HexState {
-    /// The opened file's name; `None` until a file is opened.
-    pub name: Option<String>,
-    pub bytes: Vec<u8>,
-    /// How many times a file was opened into this record: a view takes the
+#[derive(Model, Clone, Debug, Default, PartialEq)]
+pub struct HexEditor {
+    /// File name
+    ///
+    /// The opened file's name; `None` until a file is opened. Written whole
+    /// by a load.
+    #[model(readonly)]
+    pub name: Option<Atom>,
+    /// Loads
+    ///
+    /// How many times a file was loaded into this record: a view takes the
     /// bytes after a change of it as freshly loaded, not as edits.
+    #[model(readonly)]
     pub opened: u64,
+    /// Bytes
+    pub bytes: ByteBuffer,
 }
 
-impl HexState {
+impl HexEditor {
     pub fn has_file(&self) -> bool {
         self.name.is_some()
     }
+
+    /// The opened file's name.
+    pub fn name(&self) -> Option<&str> {
+        self.name.as_ref().map(|name| name.0.as_str())
+    }
 }
 
-/// The hex buffer resource.
-pub struct HexEditor;
+#[resource(kind = "hex-editor.document", label = "Hex document")]
+impl HexEditor {
+    /// Load a file's bytes.
+    ///
+    /// The bytes come from outside: loading them syncs to everyone, but no
+    /// undo takes them back. Unchanged bytes of the same file change nothing.
+    #[action(external)]
+    pub fn load(
+        &mut self,
+        #[param("The file's name")] name: String,
+        #[param("The file's bytes")] bytes: Hex,
+    ) {
+        if self.name() == Some(name.as_str()) && self.bytes == bytes.0 {
+            return;
+        }
+        self.name = Some(Atom(name));
+        self.opened = self.opened.saturating_add(1);
+        self.bytes = ByteBuffer::of(&bytes.0);
+    }
 
-impl Resource for HexEditor {
-    const KIND: &'static str = "hex_editor.document";
-    const LABEL: &'static str = "Hex document";
-    const ACTION_TYPE: &'static str = HEX_EDITOR_ACTION_TYPE;
+    /// Insert bytes before an offset, growing the buffer.
+    #[action]
+    pub fn insert_bytes(
+        &mut self,
+        #[param("Byte offset, from 0")] offset: usize,
+        #[param("Hexadecimal bytes, e.g. `de ad be ef`")] bytes: Hex,
+    ) -> Result<(), Refusal> {
+        self.bytes.edit(&BufferEdit::Insert { offset, bytes })
+    }
 
-    type State = HexState;
-    type Action = HexEditorAction;
+    /// Replace the bytes at an offset in place.
+    #[action]
+    pub fn overwrite_bytes(
+        &mut self,
+        #[param("Byte offset, from 0")] offset: usize,
+        #[param("Hexadecimal bytes, e.g. `de ad be ef`")] bytes: Hex,
+    ) -> Result<(), Refusal> {
+        self.bytes.edit(&BufferEdit::Overwrite { offset, bytes })
+    }
 
-    fn read(doc: &Doc) -> Result<HexState, ModelError> {
-        let name = match doc.get(ROOT, "name")? {
-            Some((Value::Scalar(value), _)) => match value.as_ref() {
-                ScalarValue::Str(name) => Some(name.to_string()),
-                _ => return Err(ModelError::shape("text").at("name")),
-            },
-            Some(_) => return Err(ModelError::shape("text").at("name")),
-            None => None,
+    /// Remove bytes starting at an offset.
+    #[action(destructive)]
+    pub fn delete_bytes(
+        &mut self,
+        #[param("Byte offset, from 0")] offset: usize,
+        #[param("How many bytes")] len: usize,
+    ) -> Result<(), Refusal> {
+        self.bytes.edit(&BufferEdit::Delete { offset, len })
+    }
+}
+
+impl HexEditor {
+    /// The byte edits bound to where the person is: insert or overwrite at
+    /// the cursor, delete the selection or the byte under the cursor.
+    pub(crate) fn at_cursor(
+        cursor: usize,
+        len: usize,
+        selection: Option<(usize, usize)>,
+    ) -> Vec<ui::tilo_resource::ActionDecl<Self>> {
+        // The append position is valid for an insert even in an empty buffer.
+        let at = cursor.min(len);
+        let mut bound = vec![
+            Self::INSERT_BYTES
+                .bind(hex_editor::InsertBytes::paths().offset, at)
+                .declaration("insert-byte", "Insert at cursor"),
+        ];
+        if cursor < len {
+            bound.push(
+                Self::OVERWRITE_BYTES
+                    .bind(hex_editor::OverwriteBytes::paths().offset, cursor)
+                    .declaration("overwrite-byte", "Overwrite at cursor"),
+            );
+        }
+        let delete = |offset: usize, len: usize| {
+            Self::DELETE_BYTES
+                .bind(hex_editor::DeleteBytes::paths().offset, offset)
+                .and(hex_editor::DeleteBytes::paths().len, len)
         };
-        let opened = match doc.get(ROOT, "opened")? {
-            Some((Value::Scalar(value), _)) => match value.as_ref() {
-                ScalarValue::Uint(count) => *count,
-                _ => return Err(ModelError::shape("count").at("opened")),
-            },
-            _ => 0,
-        };
-        let bytes = read_pages(doc)?.concat();
-        Ok(HexState {
-            name,
-            bytes,
-            opened,
+        if let Some((lo, hi)) = selection {
+            bound.push(delete(lo, hi - lo + 1).declaration("delete-selection", "Delete selection"));
+        } else if cursor < len {
+            bound.push(delete(cursor, 1).declaration("delete-byte", "Delete byte"));
+        }
+        bound.into_iter().flatten().collect()
+    }
+
+    /// The load of `name`'s `bytes`, as an invocation.
+    pub(crate) fn loading(name: impl Into<String>, bytes: Vec<u8>) -> Invoke<Self> {
+        Self::LOAD.with(hex_editor::Load {
+            name: name.into(),
+            bytes: Hex(bytes),
         })
     }
-
-    fn coalesces(previous: &HexEditorAction, next: &HexEditorAction) -> bool {
-        previous.continues(next)
-    }
-
-    fn declarations() -> Vec<ActionDecl<Self>> {
-        crate::actions::declarations()
-    }
-}
-
-/// The pages list, when the record holds one.
-fn pages_list(doc: &Doc) -> Result<Option<ObjId>, ModelError> {
-    match doc.get(ROOT, "pages")? {
-        Some((Value::Object(ObjType::List), id)) => Ok(Some(id)),
-        Some(_) => Err(ModelError::shape("list").at("pages")),
-        None => Ok(None),
-    }
-}
-
-fn read_pages(doc: &Doc) -> Result<Vec<Vec<u8>>, ModelError> {
-    let Some(list) = pages_list(doc)? else {
-        return Ok(Vec::new());
-    };
-    (0..doc.length(&list))
-        .map(|index| match doc.get(&list, index)? {
-            Some((Value::Scalar(value), _)) => match value.as_ref() {
-                ScalarValue::Bytes(page) => Ok(page.clone()),
-                _ => Err(ModelError::shape("bytes").at("pages")),
-            },
-            _ => Err(ModelError::shape("bytes").at("pages")),
-        })
-        .collect()
-}
-
-/// The pages list, created empty when the record has none yet.
-fn pages_list_or_new(doc: &mut Doc) -> Result<ObjId, ActionError> {
-    match pages_list(doc).map_err(refused)? {
-        Some(list) => Ok(list),
-        None => Ok(doc.put_object(ROOT, "pages", ObjType::List)?),
-    }
-}
-
-/// How long each page is, read without copying any of them.
-fn page_lengths(doc: &Doc, list: &ObjId) -> Result<Vec<usize>, ModelError> {
-    (0..doc.length(list))
-        .map(|index| match doc.get(list, index)? {
-            Some((Value::Scalar(value), _)) => match value.as_ref() {
-                ScalarValue::Bytes(page) => Ok(page.len()),
-                _ => Err(ModelError::shape("bytes").at("pages")),
-            },
-            _ => Err(ModelError::shape("bytes").at("pages")),
-        })
-        .collect()
-}
-
-/// The pages `range` of the list, copied to be edited.
-fn read_page_range(
-    doc: &Doc,
-    list: &ObjId,
-    range: std::ops::Range<usize>,
-) -> Result<Vec<Vec<u8>>, ModelError> {
-    range
-        .map(|index| match doc.get(list, index)? {
-            Some((Value::Scalar(value), _)) => match value.as_ref() {
-                ScalarValue::Bytes(page) => Ok(page.clone()),
-                _ => Err(ModelError::shape("bytes").at("pages")),
-            },
-            _ => Err(ModelError::shape("bytes").at("pages")),
-        })
-        .collect()
-}
-
-/// Write `new` over the pages `old` that start at page `base`, touching only
-/// the pages that differ.
-fn write_pages(
-    doc: &mut Doc,
-    list: &ObjId,
-    base: usize,
-    old: &[Vec<u8>],
-    new: &[Vec<u8>],
-) -> Result<(), ActionError> {
-    let prefix = old.iter().zip(new).take_while(|(a, b)| a == b).count();
-    let old_rest = old.get(prefix..).unwrap_or_default();
-    let new_rest = new.get(prefix..).unwrap_or_default();
-    let suffix = common_suffix(old_rest, new_rest);
-    let old_middle = old_rest.get(..old_rest.len() - suffix).unwrap_or_default();
-    let new_middle = new_rest.get(..new_rest.len() - suffix).unwrap_or_default();
-    let start = base + prefix;
-    for (index, (was, page)) in old_middle.iter().zip(new_middle).enumerate() {
-        if was != page {
-            doc.put(list, start + index, ScalarValue::Bytes(page.clone()))?;
-        }
-    }
-    let common = old_middle.len().min(new_middle.len());
-    for _ in common..old_middle.len() {
-        doc.delete(list, start + common)?;
-    }
-    for (index, page) in new_middle.iter().enumerate().skip(common) {
-        doc.insert(list, start + index, ScalarValue::Bytes(page.clone()))?;
-    }
-    Ok(())
-}
-
-/// Write `new` over the pages `old` that start at page `base`, creating the
-/// pages list when the record has none yet.
-fn replace_pages(
-    doc: &mut Doc,
-    base: usize,
-    old: &[Vec<u8>],
-    new: &[Vec<u8>],
-) -> Result<(), ActionError> {
-    let list = pages_list_or_new(doc)?;
-    write_pages(doc, &list, base, old, new)
-}
-
-/// The pages that hold any byte of `from..to`, and the offset the first of
-/// them starts at.
-fn pages_over(lengths: &[usize], from: usize, to: usize) -> (std::ops::Range<usize>, usize) {
-    let mut start = 0;
-    let mut first = None;
-    let mut first_start = 0;
-    let mut last = 0;
-    for (index, length) in lengths.iter().enumerate() {
-        let end = start + length;
-        if end > from && start < to {
-            if first.is_none() {
-                first = Some(index);
-                first_start = start;
-            }
-            last = index + 1;
-        }
-        start = end;
-    }
-    match first {
-        Some(first) => (first..last, first_start),
-        None => (0..0, 0),
-    }
-}
-
-#[allow(
-    clippy::needless_pass_by_value,
-    reason = "the shape `map_err` hands an error to"
-)]
-fn refused(error: ModelError) -> ActionError {
-    ActionError::Refused(error.to_string())
-}
-
-fn paginate(bytes: &[u8]) -> Vec<Vec<u8>> {
-    bytes.chunks(PAGE).map(<[u8]>::to_vec).collect()
-}
-
-/// The page holding `offset` and where in it; the end of the buffer is the
-/// end of its last page.
-fn locate(lengths: &[usize], offset: usize) -> Option<(usize, usize)> {
-    let mut start = 0;
-    for (index, length) in lengths.iter().enumerate() {
-        if offset < start + length {
-            return Some((index, offset - start));
-        }
-        start += length;
-    }
-    let (last, length) = lengths.iter().enumerate().next_back()?;
-    (offset == start).then_some((last, *length))
-}
-
-/// Apply `action` to the record. An edit reads and writes only the pages
-/// it touches, so typing into a large file copies one page, not the file.
-pub(crate) fn apply(action: &HexEditorAction, doc: &mut Doc) -> Result<(), ActionError> {
-    let existing = pages_list(doc).map_err(refused)?;
-    let lengths = match &existing {
-        Some(list) => page_lengths(doc, list).map_err(refused)?,
-        None => Vec::new(),
-    };
-    let len: usize = lengths.iter().sum();
-    let read = |doc: &Doc, range: std::ops::Range<usize>| match &existing {
-        Some(list) => read_page_range(doc, list, range).map_err(refused),
-        None => Ok(Vec::new()),
-    };
-    match action {
-        HexEditorAction::Open { name, bytes } => {
-            let state = HexEditor::read(doc).map_err(refused)?;
-            if state.name.as_deref() == Some(name.as_str()) && state.bytes == *bytes {
-                return Ok(());
-            }
-            if state.name.as_deref() != Some(name.as_str()) {
-                doc.put(ROOT, "name", name.as_str())?;
-            }
-            doc.put(
-                ROOT,
-                "opened",
-                ScalarValue::Uint(state.opened.saturating_add(1)),
-            )?;
-            let old = read(doc, 0..lengths.len())?;
-            replace_pages(doc, 0, &old, &paginate(bytes))
-        }
-        HexEditorAction::InsertBytes { offset, bytes } => {
-            if *offset > len {
-                return Err(beyond(*offset, len));
-            }
-            if bytes.is_empty() {
-                return Ok(());
-            }
-            let Some((index, at)) = locate(&lengths, *offset) else {
-                return replace_pages(doc, 0, &[], &paginate(bytes));
-            };
-            let old = read(doc, index..index + 1)?;
-            let mut page = old.concat();
-            page.splice(at..at, bytes.iter().copied());
-            let new = if page.len() > MAX_PAGE {
-                paginate(&page)
-            } else {
-                vec![page]
-            };
-            replace_pages(doc, index, &old, &new)
-        }
-        HexEditorAction::DeleteBytes { offset, len: count } => {
-            if *count == 0 {
-                return Ok(());
-            }
-            if *offset >= len {
-                return Err(beyond(*offset, len));
-            }
-            let end = offset.saturating_add(*count).min(len);
-            let (range, first_start) = pages_over(&lengths, *offset, end);
-            let base = range.start;
-            let old = read(doc, range)?;
-            let mut new = old.clone();
-            let mut start = first_start;
-            for page in &mut new {
-                let (from, to) = (start, start + page.len());
-                start = to;
-                let cut_from = (*offset).max(from);
-                let cut_to = end.min(to);
-                if cut_from < cut_to {
-                    page.drain(cut_from - from..cut_to - from);
-                }
-            }
-            new.retain(|page| !page.is_empty());
-            replace_pages(doc, base, &old, &new)
-        }
-        HexEditorAction::OverwriteBytes { offset, bytes } => {
-            if bytes.is_empty() {
-                return Ok(());
-            }
-            if *offset >= len {
-                return Err(beyond(*offset, len));
-            }
-            let end = offset.saturating_add(bytes.len()).min(len);
-            let (range, first_start) = pages_over(&lengths, *offset, end);
-            let base = range.start;
-            let old = read(doc, range)?;
-            let mut new = old.clone();
-            let mut start = first_start;
-            for page in &mut new {
-                let page_start = start;
-                start += page.len();
-                for (index, slot) in page.iter_mut().enumerate() {
-                    if let Some(byte) = (page_start + index)
-                        .checked_sub(*offset)
-                        .and_then(|at| bytes.get(at))
-                    {
-                        *slot = *byte;
-                    }
-                }
-            }
-            replace_pages(doc, base, &old, &new)
-        }
-    }
-}
-
-fn beyond(offset: usize, len: usize) -> ActionError {
-    ActionError::Refused(format!(
-        "offset {offset} is beyond the end of the {len}-byte buffer"
-    ))
 }
 
 /// The hex editor app: one buffer per file, edited through [`HexView`].
@@ -372,11 +171,15 @@ impl ResourceApp for HexEditorShell {
         Box::new(ui::widget::Stack::new().push(cx.surface(HexView::empty().with_path(path))))
     }
 
-    fn label(state: &HexState) -> String {
-        state
-            .name
-            .clone()
-            .unwrap_or_else(|| HexEditor::LABEL.to_owned())
+    fn label(state: &HexEditor) -> String {
+        state.name().map_or_else(
+            || <HexEditor as tilo_resource::Resource>::LABEL.to_owned(),
+            str::to_owned,
+        )
+    }
+
+    fn catalog() -> Option<&'static EmbeddedCatalog> {
+        Some(&CATALOG)
     }
 
     /// The buffer of a file is a record of its own, derived from the
@@ -392,13 +195,7 @@ impl ResourceApp for HexEditorShell {
     fn launch(input: &LaunchInput<'_>, _created: bool) -> Vec<Invoke<HexEditor>> {
         input
             .file()
-            .and_then(|file| {
-                Invoke::apply(&HexEditorAction::Open {
-                    name: file.name().to_owned(),
-                    bytes: file.bytes().to_vec(),
-                })
-                .ok()
-            })
+            .map(|file| HexEditor::loading(file.name(), file.bytes().to_vec()))
             .into_iter()
             .collect()
     }
@@ -427,88 +224,102 @@ impl ResourceApp for HexEditorShell {
         if name == Some("empty") {
             return Vec::new();
         }
-        Invoke::apply(&HexEditorAction::Open {
-            name: SAMPLE_NAME.into(),
-            bytes: crate::sample::png_image(),
-        })
-        .into_iter()
-        .collect()
+        vec![HexEditor::loading(SAMPLE_NAME, crate::sample::png_image())]
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::buffer::{MAX_PAGE, PAGE};
+    use automerge::{ROOT, ReadDoc as _};
     use ui::tilo_resource::Replica;
 
-    fn open(bytes: &[u8]) -> HexEditorAction {
-        HexEditorAction::Open {
-            name: "buf.bin".into(),
-            bytes: bytes.to_vec(),
+    fn load(replica: &mut Replica<HexEditor>, bytes: &[u8]) {
+        replica
+            .apply(HexEditor::loading("buf.bin", bytes.to_vec()))
+            .unwrap();
+    }
+
+    /// Make `edit` at the bytes' path, as a keystroke does.
+    fn edit(replica: &mut Replica<HexEditor>, edit: &BufferEdit) -> Result<(), String> {
+        let edit = HexEditor::paths().bytes.perform(edit).unwrap();
+        replica
+            .apply(Invoke::edit(&edit).unwrap())
+            .map(drop)
+            .map_err(|error| error.to_string())
+    }
+
+    fn insert(offset: usize, bytes: &[u8]) -> BufferEdit {
+        BufferEdit::Insert {
+            offset,
+            bytes: Hex(bytes.to_vec()),
         }
     }
 
-    fn apply(
-        replica: &mut Replica<HexEditor>,
-        action: &HexEditorAction,
-    ) -> Result<(), ActionError> {
-        replica.apply_action(action, "edit").map(|_| ())
+    fn overwrite(offset: usize, bytes: &[u8]) -> BufferEdit {
+        BufferEdit::Overwrite {
+            offset,
+            bytes: Hex(bytes.to_vec()),
+        }
     }
 
-    fn state(replica: &Replica<HexEditor>) -> HexState {
+    fn state(replica: &Replica<HexEditor>) -> HexEditor {
         replica.state().unwrap()
     }
 
+    /// The stored pages' lengths, read from the document.
     fn pages(replica: &Replica<HexEditor>) -> Vec<usize> {
-        read_pages(replica.doc())
-            .unwrap()
-            .iter()
-            .map(Vec::len)
+        let doc = replica.doc();
+        let Some((_, list)) = doc.get(ROOT, "bytes").unwrap() else {
+            return Vec::new();
+        };
+        (0..doc.length(&list))
+            .map(|index| match doc.get(&list, index).unwrap() {
+                Some((automerge::Value::Scalar(value), _)) => match value.as_ref() {
+                    automerge::ScalarValue::Bytes(page) => page.len(),
+                    other => panic!("a page is bytes, not {other:?}"),
+                },
+                other => panic!("a page is bytes, not {other:?}"),
+            })
             .collect()
+    }
+
+    fn ops_since(replica: &mut Replica<HexEditor>, heads: &[automerge::ChangeHash]) -> usize {
+        let changes = replica.doc_mut().get_changes(heads);
+        changes.iter().map(automerge::Change::len).sum()
     }
 
     #[test]
     fn edits_change_the_bytes_and_rewrite_only_the_pages_they_touch() {
         let file: Vec<u8> = (0..3 * PAGE + 10).map(|i| (i % 251) as u8).collect();
         let mut replica = Replica::<HexEditor>::new();
-        apply(&mut replica, &open(&file)).unwrap();
+        load(&mut replica, &file);
         assert_eq!(state(&replica).bytes, file);
-        assert_eq!(state(&replica).name.as_deref(), Some("buf.bin"));
+        assert_eq!(state(&replica).name(), Some("buf.bin"));
         assert_eq!(state(&replica).opened, 1);
         assert_eq!(pages(&replica), [PAGE, PAGE, PAGE, 10]);
 
         let mut expected = file;
-        apply(
-            &mut replica,
-            &HexEditorAction::OverwriteBytes {
-                offset: PAGE - 1,
-                bytes: vec![0xAA, 0xBB],
-            },
-        )
-        .unwrap();
+        edit(&mut replica, &overwrite(PAGE - 1, &[0xAA, 0xBB])).unwrap();
         expected[PAGE - 1] = 0xAA;
         expected[PAGE] = 0xBB;
         assert_eq!(state(&replica).bytes, expected);
 
         let before = replica.heads();
-        apply(
-            &mut replica,
-            &HexEditorAction::InsertBytes {
-                offset: 5,
-                bytes: vec![1, 2, 3],
-            },
-        )
-        .unwrap();
+        edit(&mut replica, &insert(5, &[1, 2, 3])).unwrap();
         expected.splice(5..5, [1, 2, 3]);
         assert_eq!(state(&replica).bytes, expected);
         assert_eq!(pages(&replica), [PAGE + 3, PAGE, PAGE, 10]);
-        let changes = replica.doc_mut().get_changes(&before);
-        let ops: usize = changes.iter().map(automerge::Change::len).sum();
-        assert_eq!(ops, 1, "an insert rewrites the one page it lands in");
+        assert_eq!(
+            ops_since(&mut replica, &before),
+            1,
+            "an insert rewrites the one page it lands in"
+        );
 
-        apply(
+        edit(
             &mut replica,
-            &HexEditorAction::DeleteBytes {
+            &BufferEdit::Delete {
                 offset: PAGE,
                 len: PAGE + 10,
             },
@@ -520,14 +331,7 @@ mod tests {
         // Appending at the end grows the last page; a long page splits.
         let end = expected.len();
         let tail = vec![7; MAX_PAGE];
-        apply(
-            &mut replica,
-            &HexEditorAction::InsertBytes {
-                offset: end,
-                bytes: tail.clone(),
-            },
-        )
-        .unwrap();
+        edit(&mut replica, &insert(end, &tail)).unwrap();
         expected.extend(&tail);
         assert_eq!(state(&replica).bytes, expected);
         assert!(
@@ -538,78 +342,83 @@ mod tests {
     }
 
     #[test]
+    fn verbs_make_the_same_edits_and_write_only_the_pages_they_change() {
+        let file: Vec<u8> = (0..3 * PAGE).map(|i| (i % 251) as u8).collect();
+        let mut replica = Replica::<HexEditor>::new();
+        load(&mut replica, &file);
+        let before = replica.heads();
+        replica
+            .apply(HexEditor::OVERWRITE_BYTES.with(hex_editor::OverwriteBytes {
+                offset: PAGE + 1,
+                bytes: Hex(vec![0xEE]),
+            }))
+            .unwrap();
+        assert_eq!(
+            ops_since(&mut replica, &before),
+            1,
+            "a verb that changes one byte writes one page"
+        );
+        replica
+            .apply(HexEditor::INSERT_BYTES.with(hex_editor::InsertBytes {
+                offset: 0,
+                bytes: Hex(vec![1, 2]),
+            }))
+            .unwrap();
+        let mut expected = file;
+        expected[PAGE + 1] = 0xEE;
+        expected.splice(0..0, [1, 2]);
+        assert_eq!(state(&replica).bytes, expected);
+        assert_eq!(pages(&replica), [PAGE + 2, PAGE, PAGE]);
+        assert!(
+            replica
+                .apply_confirmed(HexEditor::DELETE_BYTES.with(hex_editor::DeleteBytes {
+                    offset: expected.len(),
+                    len: 1,
+                }))
+                .is_err(),
+            "an offset past the end is refused"
+        );
+    }
+
+    #[test]
     fn offsets_beyond_the_buffer_are_refused_and_empty_edits_change_nothing() {
         let mut replica = Replica::<HexEditor>::new();
-        apply(&mut replica, &open(&[1, 2, 3])).unwrap();
+        load(&mut replica, &[1, 2, 3]);
         for action in [
-            HexEditorAction::InsertBytes {
-                offset: 4,
-                bytes: vec![9],
-            },
-            HexEditorAction::OverwriteBytes {
-                offset: 3,
-                bytes: vec![9],
-            },
-            HexEditorAction::DeleteBytes { offset: 3, len: 1 },
+            insert(4, &[9]),
+            overwrite(3, &[9]),
+            BufferEdit::Delete { offset: 3, len: 1 },
         ] {
-            assert!(apply(&mut replica, &action).is_err(), "{action:?}");
+            assert!(edit(&mut replica, &action).is_err(), "{action:?}");
         }
         // Overwriting across the end keeps the length; deleting past it
         // stops at the end; appending at the end is allowed.
-        apply(
-            &mut replica,
-            &HexEditorAction::OverwriteBytes {
-                offset: 2,
-                bytes: vec![8, 9],
-            },
-        )
-        .unwrap();
+        edit(&mut replica, &overwrite(2, &[8, 9])).unwrap();
         assert_eq!(state(&replica).bytes, [1, 2, 8]);
-        apply(
-            &mut replica,
-            &HexEditorAction::DeleteBytes { offset: 1, len: 9 },
-        )
-        .unwrap();
+        edit(&mut replica, &BufferEdit::Delete { offset: 1, len: 9 }).unwrap();
         assert_eq!(state(&replica).bytes, [1]);
-        apply(
-            &mut replica,
-            &HexEditorAction::InsertBytes {
-                offset: 1,
-                bytes: vec![5],
-            },
-        )
-        .unwrap();
+        edit(&mut replica, &insert(1, &[5])).unwrap();
         assert_eq!(state(&replica).bytes, [1, 5]);
 
         let heads = replica.heads();
-        apply(
-            &mut replica,
-            &HexEditorAction::DeleteBytes { offset: 0, len: 0 },
-        )
-        .unwrap();
-        apply(&mut replica, &open(&[1, 5])).unwrap();
+        edit(&mut replica, &BufferEdit::Delete { offset: 0, len: 0 }).unwrap();
+        load(&mut replica, &[1, 5]);
         assert_eq!(
             replica.heads(),
             heads,
-            "reopening unchanged bytes and an empty delete write nothing"
+            "reloading unchanged bytes and an empty delete write nothing"
         );
+        assert_eq!(state(&replica).opened, 1);
     }
 
     #[test]
     fn an_empty_record_has_no_file_and_typing_starts_its_first_page() {
         let mut replica = Replica::<HexEditor>::new();
         assert!(!state(&replica).has_file());
-        apply(&mut replica, &open(&[])).unwrap();
+        load(&mut replica, &[]);
         assert!(state(&replica).has_file());
         assert!(state(&replica).bytes.is_empty());
-        apply(
-            &mut replica,
-            &HexEditorAction::InsertBytes {
-                offset: 0,
-                bytes: vec![0xAB],
-            },
-        )
-        .unwrap();
+        edit(&mut replica, &insert(0, &[0xAB])).unwrap();
         assert_eq!(state(&replica).bytes, [0xAB]);
     }
 
@@ -617,29 +426,32 @@ mod tests {
     fn collaborators_editing_different_pages_merge() {
         let file = vec![0u8; 2 * PAGE];
         let mut ours = Replica::<HexEditor>::new();
-        apply(&mut ours, &open(&file)).unwrap();
+        load(&mut ours, &file);
         let mut theirs = ours.fork();
-        apply(
-            &mut ours,
-            &HexEditorAction::OverwriteBytes {
-                offset: 1,
-                bytes: vec![1],
-            },
-        )
-        .unwrap();
-        apply(
-            &mut theirs,
-            &HexEditorAction::InsertBytes {
-                offset: PAGE + 1,
-                bytes: vec![2],
-            },
-        )
-        .unwrap();
+        edit(&mut ours, &overwrite(1, &[1])).unwrap();
+        edit(&mut theirs, &insert(PAGE + 1, &[2])).unwrap();
         ours.sync_with(&mut theirs).unwrap();
-        let bytes = state(&ours).bytes;
+        let bytes = state(&ours).bytes.to_vec();
         assert_eq!(bytes.len(), 2 * PAGE + 1);
         assert_eq!(bytes[1], 1);
         assert_eq!(bytes[PAGE + 1], 2);
         assert_eq!(state(&theirs).bytes, bytes);
+    }
+
+    /// A reader kept up to date page by page shows what a fresh read shows.
+    #[test]
+    fn a_refreshed_state_matches_a_fresh_read() {
+        let file: Vec<u8> = (0..3 * PAGE).map(|i| (i % 7) as u8).collect();
+        let mut replica = Replica::<HexEditor>::new();
+        load(&mut replica, &file);
+        let mut reader = ui::tilo_resource::Reader::<HexEditor>::read(replica.doc()).unwrap();
+        edit(&mut replica, &insert(PAGE + 3, &vec![4; MAX_PAGE])).unwrap();
+        edit(&mut replica, &BufferEdit::Delete { offset: 2, len: 3 }).unwrap();
+        assert!(reader.sync(replica.doc()).unwrap());
+        assert!(
+            !reader.last_delta().is_everything(),
+            "the change is read in part"
+        );
+        assert_eq!(reader.state().bytes, state(&replica).bytes);
     }
 }

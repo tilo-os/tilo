@@ -16,14 +16,6 @@
 //! Frames are never read through a buffer, so a descriptor message is always
 //! the next thing on the stream when it is expected.
 
-#![cfg_attr(
-    not(unix),
-    allow(
-        dead_code,
-        reason = "only the Unix helper speaks the protocol; the types are shared"
-    )
-)]
-
 #[cfg(unix)]
 use std::io;
 #[cfg(unix)]
@@ -35,8 +27,11 @@ use serde::{Deserialize, Serialize};
 #[cfg(unix)]
 use wire_frame::{FrameError, Framing};
 
+#[cfg(unix)]
 use crate::edits::Edits;
+#[cfg(unix)]
 use crate::model::{AnnotationInfo, DocumentInfo, FormField, Link, OutlineEntry, RenderOptions};
+#[cfg(unix)]
 use crate::text::RawChar;
 
 /// Framing of every message between client and helper. Pixels and exported
@@ -46,6 +41,7 @@ pub const FRAMING: Framing = Framing::little_endian(16 * 1024 * 1024);
 
 /// Bumped on any incompatible message change; the helper refuses a client
 /// speaking another version.
+#[cfg(unix)]
 pub const PROTOCOL_VERSION: u32 = 3;
 
 #[cfg(unix)]
@@ -59,6 +55,7 @@ pub enum OpenKind {
     Image,
 }
 
+#[cfg(unix)]
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Request {
     /// Followed by one descriptor holding the bytes: its first `len` bytes
@@ -119,6 +116,7 @@ pub enum Request {
 }
 
 /// Why a request failed inside the helper.
+#[cfg(unix)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FailureKind {
     /// The bytes are not a readable document.
@@ -154,6 +152,7 @@ pub struct ProbeReport {
     pub exec: bool,
 }
 
+#[cfg(unix)]
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Response {
     /// Sent once after start-up, once the sandbox is in force.

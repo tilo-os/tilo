@@ -13,7 +13,7 @@
 //! cannot provide ([`check`]), macOS packaging derives entitlements and
 //! usage strings from the list, and the docs are generated from the same
 //! rows. Where a platform crate implements a capability, its row is that
-//! crate's own `CAPABILITIES` table, not a copy.
+//! crate's own `Feature`, not a copy.
 
 use std::fmt;
 
@@ -202,15 +202,15 @@ impl Capability {
     pub fn availability(self, target: Target) -> Availability {
         use Availability::{Available, Planned, Prompt, Unsupported};
         let row: [Availability; 3] = match self {
-            Self::FilesPaths => files_row(tilo_files::Feature::NativePaths),
-            Self::Trash => files_row(tilo_files::Feature::Trash),
+            Self::FilesPaths => platform_row(tilo_files::Feature::NativePaths),
+            Self::Trash => platform_row(tilo_files::Feature::Trash),
             Self::AppFiles => both(
-                paths_row(tilo_paths::Feature::AppStorage),
-                files_row(tilo_files::Feature::Files),
+                platform_row(tilo_paths::Feature::AppStorage),
+                platform_row(tilo_files::Feature::Files),
             ),
-            Self::Threads => rt_row(tilo_rt::Feature::Threads),
+            Self::Threads => platform_row(tilo_rt::Feature::Threads),
             Self::Processes => {
-                let process = process_row(tilo_process::Feature::ProcessId);
+                let process = platform_row(tilo_process::Feature::ProcessId);
                 [process[0], process[1], Unsupported(WEB_PROCESSES)]
             }
             Self::Clipboard
@@ -286,57 +286,12 @@ impl fmt::Display for Capability {
     }
 }
 
-fn files_row(feature: tilo_files::Feature) -> [Availability; 3] {
-    let row = tilo_files::CAPABILITIES
-        .iter()
-        .find(|(listed, _)| *listed == feature)
-        .map(|(_, row)| *row);
-    row.map_or([Availability::Planned; 3], |row| {
-        row.map(|availability| match availability {
-            tilo_files::Availability::Available => Availability::Available,
-            tilo_files::Availability::Prompt => Availability::Prompt,
-            tilo_files::Availability::Unsupported(reason) => unsupported_or_planned(reason),
-        })
-    })
-}
-
-fn paths_row(feature: tilo_paths::Feature) -> [Availability; 3] {
-    let row = tilo_paths::CAPABILITIES
-        .iter()
-        .find(|(listed, _)| *listed == feature)
-        .map(|(_, row)| *row);
-    row.map_or([Availability::Planned; 3], |row| {
-        row.map(|availability| match availability {
-            tilo_paths::Availability::Available => Availability::Available,
-            tilo_paths::Availability::Prompt => Availability::Prompt,
-            tilo_paths::Availability::Unsupported(reason) => unsupported_or_planned(reason),
-        })
-    })
-}
-
-fn rt_row(feature: tilo_rt::Feature) -> [Availability; 3] {
-    let row = tilo_rt::CAPABILITIES
-        .iter()
-        .find(|(listed, _)| *listed == feature)
-        .map(|(_, row)| *row);
-    row.map_or([Availability::Planned; 3], |row| {
-        row.map(|availability| match availability {
-            tilo_rt::Availability::Available => Availability::Available,
-            tilo_rt::Availability::Unsupported(reason) => unsupported_or_planned(reason),
-        })
-    })
-}
-
-fn process_row(feature: tilo_process::Feature) -> [Availability; 3] {
-    let row = tilo_process::CAPABILITIES
-        .iter()
-        .find(|(listed, _)| *listed == feature)
-        .map(|(_, row)| *row);
-    row.map_or([Availability::Planned; 3], |row| {
-        row.map(|availability| match availability {
-            tilo_process::Availability::Available => Availability::Available,
-            tilo_process::Availability::Unsupported(reason) => unsupported_or_planned(reason),
-        })
+/// `feature`'s row in its platform crate.
+fn platform_row(feature: impl tilo_platform_caps::Feature) -> [Availability; 3] {
+    feature.targets().map(|availability| match availability {
+        tilo_platform_caps::Availability::Available => Availability::Available,
+        tilo_platform_caps::Availability::Prompt => Availability::Prompt,
+        tilo_platform_caps::Availability::Unsupported(reason) => unsupported_or_planned(reason),
     })
 }
 
@@ -484,7 +439,7 @@ mod tests {
     fn platform_crate_rows_are_read_from_the_crates() {
         assert_eq!(
             Capability::FilesPaths.availability(Target::Web),
-            files_row(tilo_files::Feature::NativePaths)[2]
+            platform_row(tilo_files::Feature::NativePaths)[2]
         );
         assert!(matches!(
             Capability::Threads.availability(Target::Web),

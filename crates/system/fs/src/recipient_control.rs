@@ -7,7 +7,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use collab_types::{
+use fs_protocol::{
     MAX_RECIPIENT_CONTROL_CONNECTIONS, MAX_RECIPIENT_CONTROL_REQUESTS_PER_CONNECTION,
     MAX_RECIPIENT_MOUNT_PATH_BYTES, RECIPIENT_CONTROL_FRAMING, RECIPIENT_CONTROL_VERSION,
     RecipientControlErrorCode, RecipientControlOperationV1, RecipientControlRequestV1,
@@ -400,7 +400,7 @@ pub enum RecipientControlServerError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use collab_types::{
+    use fs_protocol::{
         FileInviteSpec, FileInviteSubject, FilePermission, FileRecordId,
         MAX_RECIPIENT_CONTROL_FRAME_BYTES, mint_bearer_file_invite,
     };

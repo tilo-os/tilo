@@ -68,22 +68,8 @@ impl Widget for Owner {
     ) -> taffy::NodeId {
         t.new_leaf(taffy::Style::default()).unwrap()
     }
-    fn apply_layout(&mut self, _: &taffy::TaffyTree<()>, _: taffy::NodeId, _: vello::kurbo::Point) {
-    }
-    fn draw(
-        &mut self,
-        _: &mut vello::Scene,
-        _: vello::kurbo::Affine,
-        _: &mut crate::TextRenderer,
-        _: &crate::Theme,
-        _: &crate::presence::PresenceCtx,
-    ) {
-    }
     fn name(&self) -> &str {
         "Acknowledgment owner"
-    }
-    fn get_rect(&self) -> vello::kurbo::Rect {
-        vello::kurbo::Rect::ZERO
     }
     fn children_mut(&mut self) -> Vec<&mut dyn Widget> {
         self.sibling
@@ -182,6 +168,7 @@ fn execute_mode(
         &registry,
         &mut Host,
         ResourceOperation {
+            target_route: None,
             address: &tilo_actions::ActionAddress::new("ack.owner", "write"),
             resource: &resource,
             spec: &spec,
@@ -338,6 +325,7 @@ fn document_actions_acknowledge_only_locally_applied_exact_owner_frontiers() {
                 &registry,
                 &mut Host,
                 ResourceOperation {
+                    target_route: None,
                     address: &tilo_actions::ActionAddress::new("owner", "run"),
                     resource: &resource,
                     spec: &spec,

@@ -52,8 +52,7 @@ segmentation, chat, vision or face recognition. Installation still verifies
 the exact object receipt and license acceptance, and never opens a microphone
 or starts a process. The native consumer must check the graph's actual language
 capabilities and recheck its receipt before inference. This format support
-alone installs no speech release or recognizer, and does not change the
-existing protected publisher's U²-Net-only guard.
+alone installs no speech release or recognizer, and requires exact protected release inputs; it grants no microphone permission.
 
 The catalog signature covers:
 
@@ -197,6 +196,39 @@ receipts, signs with `TILO_MODEL_CATALOG_SIGNING_KEY`, compares both outputs wit
 the checked-in image inputs, and verifies anonymous downloads after publication.
 It never changes the catalog carried by an already-installed OS; normal image
 releases deliver that trust and catalog update.
+
+
+## Speech candidate review and publication
+
+The protected publisher also accepts `mode=review-speech`. It prepares exactly
+U²-Net and multilingual Whisper tiny, base and small-q5_1 from
+`catalog-source-speech-candidate.json`, checks upstream receipts and complete MIT
+notices, then signs a review artifact with the existing production key. The
+resulting public key must equal the checked-in key. The uploaded artifact
+contains only catalog/key/source/review hashes; the signing seed and weights
+are excluded. This phase neither publishes objects nor activates an image.
+
+After reviewing the signed artifact, commit its exact source and catalog bytes
+through the normal protected PR path. Dispatch the default `publish` mode to
+reproduce those reviewed image bytes. Speech weights and notices use pinned
+immutable Forgejo package URLs; `publish_speech_artifacts.py` verifies anonymous
+readback before signing and refuses existing receipt conflicts or unexpected
+redirects. Only an actual 404 permits upload, using the existing release token.
+The final catalog/key comparison against the image inputs remains mandatory.
+U²-Net-only reproduction remains supported until speech image inputs land.
+
+Model installation through Settings requires license acceptance and never
+opens a microphone. Dictation's local one-session recording consent is separate
+from model publication, installation, or the chosen language.
+
+The speech preparer, publisher extension, format/capability support and pinned
+licence/weight receipts are source work; they can be reviewed without release
+credentials. The workflow extension must first land on protected main because
+both review and publication refuse task refs. The remaining protected operations
+use the existing `TILO_MODEL_CATALOG_SIGNING_KEY` and `RELEASE_TOKEN`; no new key,
+account or persistent trust grant is needed for in-process Whisper. Approval for
+source work or prerecorded qualification does not authorize either dispatch,
+image activation, licence acceptance on someone's behalf, or installation.
 
 ## Typed runtime execution
 

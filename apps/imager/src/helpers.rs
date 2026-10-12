@@ -7,13 +7,16 @@
 use ui::framework::Helper;
 
 /// Every helper, in the order they are asked.
-pub(crate) const HELPERS: [Helper; 8] = [
+pub(crate) const HELPERS: [Helper; 9] = [
     Helper { run: native_copy },
     Helper {
         run: |args| crate::setup::desktop_worker::maybe_run_desktop_helper(args),
     },
     Helper {
         run: |args| crate::write::maybe_run_write_helper(args).map_err(|error| error.to_string()),
+    },
+    Helper {
+        run: |args| crate::customize_image::maybe_run(args).map_err(|error| error.to_string()),
     },
     Helper {
         run: |args| crate::setup::staging::helper::maybe_run_staging_helper(args),
@@ -91,6 +94,11 @@ mod tests {
             ui::framework::run_helper::<ImagerShell>(&args(&["--tilo-final-bootnext"])),
             Some(1),
             "a helper's refused command line ends the process with 1"
+        );
+        assert_eq!(
+            ui::framework::run_helper::<ImagerShell>(&args(&["--customize-image"])),
+            Some(1),
+            "an incomplete customization is refused before GUI startup"
         );
         for app in [&[][..], &["--setup"], &["--import-folders"]] {
             assert_eq!(

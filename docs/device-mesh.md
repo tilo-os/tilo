@@ -55,12 +55,11 @@ same target-side authorization path.
 
 ## Multiple servers
 
-`mesh::place` filters offline, saturated, uncertified/ineligible, wrong-workspace
-and wrong-app servers, then uses stable weighted rendezvous placement. The same
-request stays on the same server while it remains healthy; different clients,
-workspaces and apps distribute naturally; requesting multiple replicas yields
-distinct hosts. Capacity, latency and operator priority are bounded routing
-signals rather than authorization.
+Hosts are chosen by configuration, not ranked: a relay serves the workspaces
+bound in its `relay.toml`, and a client reaches the home peers it registered.
+There is no placement function choosing among candidate servers yet; one should
+arrive together with a producer of live load and latency advertisements, not
+ahead of it.
 
 The first workloads are workspace replication, content residency, inbound
 collaboration/chat relay and remote-control relay. Sandboxed compute uses a
@@ -81,12 +80,16 @@ digest that the requester cannot retrieve.
   runtimes consume the resolved resource set.
 - Reachability discovery produces `ServerAdvertisement` values only after the
   peer's device certificate and same-identity/workspace relationship verify.
-- The remote-control client first tries the target directly, then requests a
-  `RemoteControl` placement and tunnels the existing encrypted session through
-  the selected relay.
-- The compute worker consumes `Compute` placements, executes only verified tapp
-  catalogue entrypoints, and retains exact requester/worker/workspace binding,
-  bounded diagnostics, cancellation and monotonic result attribution.
+- Remote control needs an exact-target route, which today means a direct path.
+  A workspace relay fans out to every member, so it is reported as the reason
+  control is unavailable and never carries input. Relayed exact-target control
+  is future work.
+- The requester names the compute worker. `admit_compute_job` checks that
+  worker's `ServerAdvertisement` (service, workspace, app, accelerator,
+  capacity, energy saver and `PowerAvailability::is_critically_constrained`).
+  The worker executes only verified tapp catalogue entrypoints, and retains
+  exact requester/worker/workspace binding, bounded diagnostics, cancellation
+  and monotonic result attribution.
 
 No new wire message was added to `tilo-relay/1`: adding an enum variant to the
 postcard protocol would make old peers reject the stream. Compute uses its own

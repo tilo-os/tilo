@@ -72,11 +72,16 @@ impl SetupView {
                 .map(|private| private.attempt.clone()),
             pending: state.pending,
             completed: state.completed,
-            state: self
-                .current(state.selected.as_ref())
-                .map_or(AccountState::Unavailable, |client| client.state()),
+            state: self.account_state(state.selected.as_ref()),
             first: self.first.key(),
         })
+    }
+    fn account_state(&self, account: Option<&ServiceAccount>) -> AccountState {
+        account
+            .zip(self.client.as_ref())
+            .map_or(AccountState::Unavailable, |(account, client)| {
+                client.account_state(account)
+            })
     }
     fn current(&self, account: Option<&ServiceAccount>) -> Option<SetupClient> {
         self.client.as_ref()?.setup(account?)
@@ -156,7 +161,7 @@ impl SetupView {
                     id.as_str() == account
                         && row.type_id == service
                         && row.enabled
-                        && matches!(service.as_str(), "signal" | "whatsapp" | "sms")
+                        && matches!(service.as_str(), "tilo" | "signal" | "whatsapp" | "sms")
                 }) {
                     return Err(CATALOG.t("messages-no-account"));
                 }
@@ -276,7 +281,7 @@ impl SetupView {
             .with_intrinsic_height()
             .push(Box::new(Text::new(&CATALOG.t("messages-setup-select"))));
         for (id, account) in sources.accounts().accounts.iter().filter(|(_, row)| {
-            row.enabled && matches!(row.type_id.as_str(), "signal" | "whatsapp" | "sms")
+            row.enabled && matches!(row.type_id.as_str(), "tilo" | "signal" | "whatsapp" | "sms")
         }) {
             let label = CATALOG.t_args(
                 "messages-account-label",
@@ -338,9 +343,7 @@ impl SetupView {
             ],
         ))));
         let native = self.current(Some(account));
-        let lifecycle = native
-            .as_ref()
-            .map_or(AccountState::Unavailable, SetupClient::state);
+        let lifecycle = self.account_state(Some(account));
         if state.completed {
             return content.push(Box::new(Text::new(&CATALOG.t("messages-setup-linked"))));
         }
@@ -369,6 +372,9 @@ impl SetupView {
         content = content.push(Box::new(Text::new(
             &CATALOG.t(&format!("messages-account-{}", lifecycle.as_str())),
         )));
+        if account.service == "tilo" {
+            return content;
+        }
         let begin = actions.bind_effect_invocation(
             Button::new("messages.setup-start", "messages-start-link").with_enabled(
                 native.is_some()

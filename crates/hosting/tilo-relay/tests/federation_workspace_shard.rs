@@ -78,18 +78,19 @@ async fn sharded_topology_isolates_per_workspace() {
         signature: [1u8; 64],
     })
     .unwrap();
-    // Wait until the host that *should* record the delta has done so —
+    // Wait until the host that *should* record the delta has committed it —
     // then the isolation check is about the production write path, not a
-    // guess that 300 ms was enough for a leak to show up.
-    let log20 = relay1
-        .state_root
-        .join("workspaces")
-        .join("20")
-        .join("log.jsonl");
-    wait_until("relay1 persisted the delta for workspace 20", || {
-        std::fs::read(&log20).is_ok_and(|b| !b.is_empty())
+    // guess that 300 ms was enough for a leak to show up. Each relay hosts
+    // one workspace, so its accepted-delta count is that workspace's.
+    wait_until("relay1 committed the delta for workspace 20", || {
+        metrics_1.snapshot().deltas_received == 1
     })
     .await;
+    assert_eq!(
+        metrics_2.snapshot().deltas_received,
+        0,
+        "relay2 must not accept a delta for a workspace it doesn't host",
+    );
 
     // Assertion: relay2 must not have persisted anything for ws20.
     // Its state root has no `workspaces/20/` dir at all.
@@ -122,15 +123,15 @@ async fn sharded_topology_isolates_per_workspace() {
         signature: [1u8; 64],
     })
     .unwrap();
-    let log21 = relay2
-        .state_root
-        .join("workspaces")
-        .join("21")
-        .join("log.jsonl");
-    wait_until("relay2 persisted the delta for workspace 21", || {
-        std::fs::read(&log21).is_ok_and(|b| !b.is_empty())
+    wait_until("relay2 committed the delta for workspace 21", || {
+        metrics_2.snapshot().deltas_received == 1
     })
     .await;
+    assert_eq!(
+        metrics_1.snapshot().deltas_received,
+        1,
+        "relay1 must not accept a delta for a workspace it doesn't host",
+    );
 
     let ws21_on_r1 = relay1.state_root.join("workspaces").join("21");
     assert!(

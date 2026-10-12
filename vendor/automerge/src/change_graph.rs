@@ -7,16 +7,16 @@ use std::ops::RangeBounds;
 
 use crate::storage::BundleMetadata;
 use crate::{
+    Change, ChangeHash,
     author::Authors,
     clock::{Clock, SeqClock},
     error::AutomergeError,
-    op_set2::{change::BuildChangeMetadata, ActorIdx, ValueMeta},
-    storage::columns::compression::Uncompressed,
+    op_set2::{ActorIdx, ValueMeta, change::BuildChangeMetadata},
     storage::columns::BadColumnLayout,
+    storage::columns::compression::Uncompressed,
     storage::document::ReconstructError as LoadError,
     storage::{Columns, Document, RawColumn, RawColumns},
     types::OpId,
-    Change, ChangeHash,
 };
 
 /// The graph of changes
@@ -201,6 +201,11 @@ impl ChangeGraph {
         self.hashes.get(index)
     }
 
+    /// Every change's hash, by node index: the order the changes were added.
+    pub(crate) fn hashes(&self) -> &[ChangeHash] {
+        &self.hashes
+    }
+
     pub(crate) fn max_op(&self) -> u64 {
         self.max_op as u64
     }
@@ -211,6 +216,13 @@ impl ChangeGraph {
             .and_then(|s| s.last())
             .and_then(|index| self.max_ops.get(index.0 as usize).cloned())
             .unwrap_or(0) as u64
+    }
+
+    // TILO(peer-change-check): the highest op counter of a change in the
+    // graph (vendor/automerge/TILO-PATCH.md).
+    pub(crate) fn max_op_for_hash(&self, hash: &ChangeHash) -> Option<u64> {
+        let node = self.nodes_by_hash.get(hash)?;
+        self.max_ops.get(node.0 as usize).map(|max| u64::from(*max))
     }
 
     pub(crate) fn seq_for_actor(&self, actor: usize) -> u64 {
@@ -857,11 +869,18 @@ impl ChangeGraph {
         changes: &mut BTreeSet<ChangeHash>,
         heads: &[ChangeHash],
     ) {
+        // Tilo patch: stop once nothing is left to remove. Every received
+        // sync message calls this with the hashes sent so far, which an
+        // idle exchange leaves empty; walking all of `heads`' ancestry for
+        // nothing made every such message O(history).
+        if changes.is_empty() {
+            return;
+        }
         let nodes = self.heads_to_nodes(heads);
         self.traverse_ancestors(nodes.collect(), |idx| {
             let hash = &self.hashes[idx.0 as usize];
             changes.remove(hash);
-            true
+            !changes.is_empty()
         });
     }
 
@@ -908,6 +927,95 @@ impl ChangeGraphCols {
             graph.nodes_by_hash.insert(hash, node_idx);
             graph.hashes.push(hash);
             if let Some(author) = c.author() {
+                authors.assign_author(author.into_owned(), graph.actors[idx].into());
+            }
+        }
+
+        for n in 0..(graph.len() as u32) {
+            if (n + 1) % CACHE_STEP == 0 {
+                graph.cache_clock(NodeIdx(n));
+            }
+        }
+
+        graph.cache_fragments();
+
+        graph
+    }
+
+    /// Tilo patch (TILO-PATCH.md): whether `hashes` can stand for the hashes
+    /// rebuilding every change would compute: one per change, no two alike,
+    /// and the ones no change depends on are exactly the document's `heads`.
+    /// Only a change without dependencies after its actor's first can't take
+    /// them (its op count is not known without rebuilding it).
+    pub(crate) fn takes_known_hashes(&self, hashes: &[ChangeHash], heads: &[ChangeHash]) -> bool {
+        let graph = &self.0;
+        if hashes.len() != graph.len() {
+            return false;
+        }
+        let mut depended = vec![false; hashes.len()];
+        // `node_ids` counts hashes, which a graph read from columns has none of yet.
+        for node in (0..graph.len() as u32).map(NodeIdx) {
+            let mut deps = graph.parents(node).peekable();
+            if deps.peek().is_none() && graph.seq[node.0 as usize] != 1 {
+                return false;
+            }
+            for dep in deps {
+                depended[dep.0 as usize] = true;
+            }
+        }
+        let distinct = hashes.iter().collect::<HashSet<_>>().len() == hashes.len();
+        let derived: BTreeSet<_> = hashes
+            .iter()
+            .zip(depended)
+            .filter_map(|(hash, depended)| (!depended).then_some(*hash))
+            .collect();
+        distinct && derived == heads.iter().copied().collect()
+    }
+
+    /// Tilo patch (TILO-PATCH.md): [`Self::finalize`] with each change's
+    /// hash already known (see [`Self::takes_known_hashes`]) instead of
+    /// rebuilt. `first_counter[actor]` is the lowest counter of any op id
+    /// the document holds for that actor: where an actor's first change
+    /// starts when no dependency says so.
+    pub(crate) fn finalize_known(
+        self,
+        hashes: &[ChangeHash],
+        first_counter: &[u64],
+        authors: &mut Authors,
+    ) -> ChangeGraph {
+        let mut graph = self.0;
+        debug_assert_eq!(hashes.len(), graph.len());
+        debug_assert!(graph.hashes.is_empty());
+
+        // `load()` takes a change's op count from its dependencies' maximum
+        // op, which is where Automerge starts every change that has some.
+        // A first change without any starts at its actor's lowest counter.
+        let mut num_ops: Vec<u64> = graph.num_ops.iter().collect();
+        for i in 0..graph.len() {
+            if graph.parents[i].is_none() {
+                let max_op = graph.max_ops[i] as u64;
+                let start = first_counter
+                    .get(usize::from(graph.actors[i]))
+                    .copied()
+                    .unwrap_or(u64::MAX);
+                num_ops[i] = if start <= max_op {
+                    max_op - start + 1
+                } else {
+                    0
+                };
+            }
+        }
+        graph.num_ops = num_ops.into_iter().collect();
+
+        for (idx, hash) in hashes.iter().enumerate() {
+            graph.nodes_by_hash.insert(*hash, NodeIdx(idx as u32));
+            graph.hashes.push(*hash);
+            let extra = graph.extra_bytes_meta.get(idx).and_then(|meta| {
+                graph
+                    .extra_bytes_raw
+                    .get(meta.prefix() as usize..meta.total() as usize)
+            });
+            if let Some(author) = extra.and_then(crate::change::decode_author_footer) {
                 authors.assign_author(author.into_owned(), graph.actors[idx].into());
             }
         }
@@ -1059,11 +1167,10 @@ mod tests {
     use std::collections::BTreeMap;
 
     use crate::{
-        make_rng,
-        op_set2::{change::build_change, op_set::ResolvedAction, OpSet, TxOp},
+        ActorId, AutoCommit, Automerge, ROOT, TextEncoding, make_rng,
+        op_set2::{OpSet, TxOp, change::build_change, op_set::ResolvedAction},
         transaction::Transactable,
         types::{ObjMeta, OpId, OpType},
-        ActorId, AutoCommit, Automerge, TextEncoding, ROOT,
     };
     use rand::RngExt;
 
@@ -1595,8 +1702,8 @@ mod tests {
     /// order).
     #[test]
     fn bundle_size_is_independent_of_input_hash_order() {
-        use crate::transaction::Transactable;
         use crate::ROOT;
+        use crate::transaction::Transactable;
 
         let mut doc = Automerge::new();
         doc.set_actor(crate::ActorId::from(b"alice" as &[u8]));

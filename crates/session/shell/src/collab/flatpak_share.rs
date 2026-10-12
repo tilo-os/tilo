@@ -762,6 +762,12 @@ impl SharedFlatpakSession {
     /// allocation-free; a mismatch surfaces as
     /// `EncodeError::BufferSizeMismatch` on the next pump.
     pub fn deposit_captured_rgba(&self, rgba: Vec<u8>) {
+        self.stage(StagedKind::Rgba(rgba));
+    }
+
+    /// Replace any undrained deposit with `kind`, stamped now. A paint
+    /// share never takes captured frames.
+    fn stage(&self, kind: StagedKind) {
         if self.paint {
             return;
         }
@@ -771,7 +777,7 @@ impl SharedFlatpakSession {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         *slot = Some(StagedFrame {
-            kind: StagedKind::Rgba(rgba),
+            kind,
             capture_ts_ns,
         });
     }
@@ -783,18 +789,7 @@ impl SharedFlatpakSession {
     /// fallback picks up on the next commit.
     #[cfg(target_os = "linux")]
     pub fn deposit_captured_dmabuf(&self, dmabuf: Dmabuf) {
-        if self.paint {
-            return;
-        }
-        let capture_ts_ns = self.monotonic_ns_now();
-        let mut slot = self
-            .staged_frame
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        *slot = Some(StagedFrame {
-            kind: StagedKind::Dmabuf(dmabuf),
-            capture_ts_ns,
-        });
+        self.stage(StagedKind::Dmabuf(dmabuf));
     }
 
     /// Pump one iteration of the encode loop. `None` covers throttled,

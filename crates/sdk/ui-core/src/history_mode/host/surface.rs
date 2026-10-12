@@ -142,15 +142,10 @@ impl HistoryHost {
         !self.toolbar.children().is_empty()
     }
     fn body_origin(&self, tree: &TaffyTree<()>) -> Point {
-        let layout = self
-            .body_node
-            .and_then(|node| tree.layout(node).ok())
-            .copied()
-            .unwrap_or_default();
-        Point::new(
-            self.rect.x0 + f64::from(layout.location.x),
-            self.rect.y0 + f64::from(layout.location.y),
-        )
+        let origin = self.rect.origin();
+        self.body_node.map_or(origin, |node| {
+            crate::widget::layout_rect(tree, node, origin).origin()
+        })
     }
     pub(crate) fn apply_composition(
         &mut self,
@@ -219,15 +214,8 @@ impl Widget for HistoryHost {
         self.build_presentation(None, tree, theme, nodes)
     }
     fn apply_layout(&mut self, tree: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = tree.layout(node).copied().unwrap_or_default();
-        let origin = Point::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-        );
-        self.rect = Rect::from_origin_size(
-            origin,
-            (f64::from(layout.size.width), f64::from(layout.size.height)),
-        );
+        self.rect = crate::widget::layout_rect(tree, node, origin);
+        let origin = self.rect.origin();
         if let Some(toolbar) = self.toolbar_node {
             self.toolbar.apply_layout(tree, toolbar, origin);
         }

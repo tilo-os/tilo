@@ -437,6 +437,24 @@ pub fn shadow(scene: &mut Scene, transform: Affine, rect: Rect, radius: f64, tok
     );
 }
 
+/// Every pixel [`shadow`] can paint under `rect`, antialiasing included, in
+/// `rect`'s coordinates; `None` when it paints nothing.
+pub fn shadow_bounds(rect: Rect, token: &Shadow) -> Option<Rect> {
+    if token.blur <= 0.0
+        || rect.width() <= 0.0
+        || rect.height() <= 0.0
+        || token.color.components[3] <= 0.0
+    {
+        return None;
+    }
+    // Vello paints the blur inside the rect grown by its kernel, 2.5
+    // standard deviations; one more pixel covers the shape's antialiasing.
+    let reach = 2.5 * std_dev_for(token.blur) + 1.0;
+    let offset = f64::from(token.offset_y);
+    let shadow_rect = Rect::new(rect.x0, rect.y0 + offset, rect.x1, rect.y1 + offset);
+    Some(shadow_rect.inflate(reach, reach))
+}
+
 /// The Gaussian standard deviation a CSS-style `blur` radius means.
 ///
 /// Halving is the conventional mapping, and vello cuts its kernel at
@@ -816,7 +834,7 @@ pub enum ContentEdge {
 
 /// How far a [`content_edge_fade`] reaches into the viewport, at most a
 /// third of it.
-const CONTENT_FADE_PX: f64 = 24.0;
+pub(crate) const CONTENT_FADE_PX: f64 = 24.0;
 
 /// Fade content out toward `edge` of the viewport `rect`: the `ground` the
 /// content is drawn on, opaque at the edge and clear a short way in, eased

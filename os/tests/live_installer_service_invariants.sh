@@ -17,6 +17,8 @@ units=(
   os/usr/lib/systemd/system/tilo-store-volume.service
   os/usr/lib/systemd/system/tilo-windows-vm-egress-reaper.service
   os/usr/lib/systemd/system/tilo-windows-vm-egress-reaper.timer
+  os/usr/lib/systemd/system/tilo-windows-vm-egress-reaper.path
+  os/usr/lib/systemd/system/tilo-windows-vm-egress-lease.path
   os/usr/lib/systemd/system/systemd-tpm2-setup.service.d/10-tilo-live-installer.conf
   os/usr/lib/systemd/system/systemd-tpm2-setup-early.service.d/10-tilo-live-installer.conf
 )

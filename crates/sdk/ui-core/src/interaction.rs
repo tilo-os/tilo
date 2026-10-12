@@ -228,11 +228,6 @@ impl InteractionEnvironment {
         )
     }
 
-    pub fn horizontal_target_rect(self, visual: Rect) -> Rect {
-        let height = visual.height().max(f64::from(self.minimum_target()));
-        Rect::from_center_size(visual.center(), (visual.width(), height))
-    }
-
     /// Hover affordances have no meaning for a coarse direct pointer.
     pub const fn supports_hover(self) -> bool {
         matches!(self.pointer_precision, PointerPrecision::Fine)
@@ -317,16 +312,6 @@ impl InteractionEnvironment {
             ..self
         }
     }
-
-    /// Override the legends without changing the current modality. Hardware
-    /// discovery uses this for Apple USB/Bluetooth keyboards on non-Mac hosts.
-    #[must_use]
-    pub const fn with_keyboard_family(self, family: KeyboardFamily) -> Self {
-        Self {
-            keyboard_family: family,
-            ..self
-        }
-    }
 }
 
 /// The navigation a mouse side button asks for: Back and Forward go back and
@@ -363,7 +348,7 @@ pub(crate) fn back_key_as_escape(
         winit::event::WindowEvent::KeyboardInput { event: key, .. }
             if key.logical_key == Key::Named(NamedKey::BrowserBack) =>
         {
-            Some(crate::synthetic_input::key_event(
+            Some(crate::synthetic_input::key_input(
                 &Key::Named(NamedKey::Escape),
                 key.state,
             ))
@@ -1063,7 +1048,7 @@ mod tests {
         use winit::event::{ElementState, WindowEvent};
         use winit::keyboard::{Key, NamedKey};
         for state in [ElementState::Pressed, ElementState::Released] {
-            let back = crate::synthetic_input::key_event(&Key::Named(NamedKey::BrowserBack), state);
+            let back = crate::synthetic_input::key_input(&Key::Named(NamedKey::BrowserBack), state);
             let Some(WindowEvent::KeyboardInput { event, .. }) = back_key_as_escape(&back) else {
                 panic!("Back must become a key event");
             };
@@ -1071,7 +1056,7 @@ mod tests {
             assert_eq!(event.state, state);
         }
         let escape =
-            crate::synthetic_input::key_event(&Key::Named(NamedKey::Escape), ElementState::Pressed);
+            crate::synthetic_input::key_input(&Key::Named(NamedKey::Escape), ElementState::Pressed);
         assert!(back_key_as_escape(&escape).is_none());
     }
 }

@@ -99,16 +99,14 @@
     test,
     allow(
         clippy::string_slice,
-        clippy::panic,
         clippy::float_cmp,
         reason = "in a test these are the assertion, not a hazard"
     )
 )]
 
-pub mod actions;
 pub mod app;
 pub mod customize;
-pub mod doc;
+pub mod customize_image;
 pub mod handoff;
 mod helpers;
 mod host;
@@ -125,8 +123,7 @@ pub mod write_setup;
 
 pub use app::ImagerApp;
 pub use model::{
-    Action, Filesystem, InstallMode, InstallProfile, Source, SourceKind, Step, TargetDrive,
-    TargetKind,
+    Action, Filesystem, InstallProfile, Source, SourceKind, Step, TargetDrive, TargetKind,
 };
 
 pub use resource::{Imager, ImagerShell};

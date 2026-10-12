@@ -20,7 +20,7 @@ impl NotificationHistoryStore {
     /// `$XDG_STATE_HOME/tilo/notification-history.json`, or `None` when the
     /// session has no user state directory (tests, offscreen renders).
     pub fn for_user() -> Option<Self> {
-        xdg_paths::state_dir().map(|root| Self::at(root.join("tilo/notification-history.json")))
+        tilo_paths::state_dir().map(|root| Self::at(root.join("tilo/notification-history.json")))
     }
 
     pub fn path(&self) -> &Path {

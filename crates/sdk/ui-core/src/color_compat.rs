@@ -31,11 +31,6 @@ impl ColorCompat for Color {
     }
 }
 
-#[inline]
-pub fn rgba8(r: u8, g: u8, b: u8, a: u8) -> Color {
-    Color::from_rgba8(r, g, b, a)
-}
-
 /// Accepts `f64` components so callers do not need repeated narrowing casts.
 #[inline]
 #[allow(

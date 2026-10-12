@@ -15,6 +15,10 @@ pub(super) enum Operation {
     Observe,
     Cancel,
 }
+#[cfg_attr(
+    not(feature = "broker-transport"),
+    expect(dead_code, reason = "only the broker transport delivers an attempt")
+)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum AttemptFailure {
     Deadline,
@@ -27,6 +31,10 @@ pub(super) struct Ticket {
     pub invocation: [u8; 16],
 }
 
+#[cfg_attr(
+    not(feature = "broker-transport"),
+    expect(dead_code, reason = "only the broker transport delivers an attempt")
+)]
 struct Inner {
     route: RouteSpec,
     binding: PublishedInvocationBinding,
@@ -41,10 +49,7 @@ struct Inner {
     claimed: AtomicBool,
     completed: AtomicBool,
     retired: AtomicBool,
-    #[cfg_attr(
-        not(feature = "broker-transport"),
-        allow(dead_code, reason = "only the broker transport meters attempts")
-    )]
+    #[cfg(feature = "broker-transport")]
     queued_bytes: usize,
 }
 /// Opaque request custody. Clone shares the original backing.
@@ -109,6 +114,7 @@ impl Drop for AttemptOwner {
     }
 }
 
+#[cfg(feature = "broker-transport")]
 pub(crate) enum RequestView<'a> {
     Invoke {
         invocation: &'a [u8; 16],
@@ -188,7 +194,10 @@ impl AttemptOwner {
         confirmation: &str,
         deadline: Instant,
     ) -> Result<(Self, ManagedAttempt), OutboxFailure> {
+        #[cfg(feature = "broker-transport")]
         let queued_bytes = Self::queued_bytes(row, confirmation)?;
+        #[cfg(not(feature = "broker-transport"))]
+        Self::queued_bytes(row, confirmation)?;
         if instance == [0; 16] || room.is_nil() {
             return Err(OutboxFailure::Invalid);
         }
@@ -226,6 +235,7 @@ impl AttemptOwner {
             claimed: AtomicBool::new(false),
             completed: AtomicBool::new(false),
             retired: AtomicBool::new(false),
+            #[cfg(feature = "broker-transport")]
             queued_bytes,
         };
         let attempt = ManagedAttempt {
@@ -253,16 +263,15 @@ impl ManagedAttempt {
     fn shared(&self) -> &Arc<Inner> {
         self.inner.as_ref().expect("live managed attempt")
     }
-    #[cfg_attr(
-        not(feature = "broker-transport"),
-        allow(dead_code, reason = "only the broker transport meters attempts")
-    )]
+    #[cfg(feature = "broker-transport")]
     pub(crate) fn meter_bytes(&self) -> usize {
         self.shared().queued_bytes
     }
+    #[cfg(feature = "broker-transport")]
     pub(crate) fn deadline(&self) -> Instant {
         self.shared().deadline
     }
+    #[cfg(feature = "broker-transport")]
     pub(crate) fn claim(
         &self,
         route: &RouteSpec,
@@ -298,6 +307,7 @@ impl ManagedAttempt {
             },
         }))
     }
+    #[cfg(feature = "broker-transport")]
     pub(crate) fn finish(
         self,
         result: Result<PublishedInvocationObservation, AttemptFailure>,
@@ -331,85 +341,6 @@ impl ManagedAttempt {
         })
     }
 }
-/// Host-local request view, for a sender whose receiver runs in the same
-/// process (a Cloud host and its own broker). It is the same original row the
-/// SDK transport would send; it confers no authority.
-pub enum LocalRequest<'a> {
-    Invoke {
-        invocation: &'a [u8; 16],
-        binding: &'a PublishedInvocationBinding,
-        revision: &'a str,
-        resource: &'a str,
-        action: &'a str,
-        argument: Option<&'a str>,
-        confirmation_json: &'a str,
-    },
-    Observe {
-        host: &'a [u8; 16],
-        invocation: &'a [u8; 16],
-    },
-    Cancel {
-        host: &'a [u8; 16],
-        invocation: &'a [u8; 16],
-    },
-}
-/// Host-local transport outcome; neither proves that execution did not occur.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum LocalFailure {
-    Deadline,
-    Unavailable,
-}
-impl ManagedAttempt {
-    /// Deliver this attempt to the host's in-process receiver. Same custody as
-    /// the SDK transport: it is claimed once for `route` (a clone or replay
-    /// returns `None`), never retried and never given a new identity; the
-    /// reply is correlated and bounded exactly as a wire reply by `finish`.
-    pub fn deliver_local(
-        self,
-        route: &RouteSpec,
-        send: impl FnOnce(LocalRequest<'_>) -> Result<PublishedInvocationObservation, LocalFailure>,
-    ) -> Option<ManagedAttemptResult> {
-        let result = {
-            let deadline = self.deadline();
-            match self.claim(route)? {
-                Err(error) => Err(error),
-                Ok(_) if crate::time::now() >= deadline => Err(AttemptFailure::Deadline),
-                Ok(view) => {
-                    let request = match view {
-                        RequestView::Invoke {
-                            invocation,
-                            binding,
-                            revision,
-                            resource,
-                            action,
-                            argument,
-                            confirmation_json,
-                        } => LocalRequest::Invoke {
-                            invocation,
-                            binding,
-                            revision,
-                            resource,
-                            action,
-                            argument,
-                            confirmation_json,
-                        },
-                        RequestView::Observe { host, invocation } => {
-                            LocalRequest::Observe { host, invocation }
-                        }
-                        RequestView::Cancel { host, invocation } => {
-                            LocalRequest::Cancel { host, invocation }
-                        }
-                    };
-                    send(request).map_err(|failure| match failure {
-                        LocalFailure::Deadline => AttemptFailure::Deadline,
-                        LocalFailure::Unavailable => AttemptFailure::Unavailable,
-                    })
-                }
-            }
-        };
-        self.finish(result)
-    }
-}
 impl ManagedAttemptResult {
     #[expect(
         clippy::expect_used,
@@ -418,10 +349,7 @@ impl ManagedAttemptResult {
     fn shared(&self) -> &Arc<ResultInner> {
         self.inner.as_ref().expect("live managed attempt result")
     }
-    #[cfg_attr(
-        not(feature = "broker-transport"),
-        allow(dead_code, reason = "only the broker transport meters attempts")
-    )]
+    #[cfg(feature = "broker-transport")]
     pub(crate) fn meter_bytes(&self) -> usize {
         self.shared().attempt.meter_bytes()
     }

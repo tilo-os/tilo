@@ -1,16 +1,12 @@
-//! What Video Player offers the palette, agents and scripts: the effects of
-//! the player on this device, the shared library's edits and rows, and the
-//! live rows of what the player shows (the open video's tracks and
-//! chapters, this device's queue and recent videos).
+//! What Video Player offers the palette, agents and scripts beyond the
+//! shared library's own verbs and field edits: the effects of the player on
+//! this device, and the live rows of what the player shows (the open
+//! video's tracks and chapters, this device's queue and recent videos).
 
-use tilo_actions::{ActionParam, ActionSpec, ExecutionLocus, ParamType, Resource};
 use ui::framework::LiveRow;
 // `#[derive(Effect)]` names the crate as `tilo_resource`.
 use ui::tilo_resource;
-use ui::tilo_resource::{ActionDecl, Effect};
-
-use crate::resource::VideoPlayer;
-use crate::shared::{SharedAction, SharedLibrary};
+use ui::tilo_resource::Effect;
 
 /// The published tree stays responsive even for containers with an unusually
 /// large number of streams or chapters, or a long library. Stable ids still
@@ -25,12 +21,16 @@ pub const CONTEXTUAL_CHILD_LIMIT: usize = 32;
 #[derive(Clone, Debug, PartialEq, Effect)]
 #[effect(operation = "video-player.effect")]
 pub enum VideoEffect {
+    /// Play more video and audio formats.
+    /// Opens Settings at Updates, where this device's owner can install formats.
+    #[effect(view)]
+    OpenFormats,
     /// Open video.
     ///
     /// Opens a video file or stream on this device and answers once its
     /// first picture has decoded.
-    #[effect(job, permission = "read", device_only)]
-    Open {
+    #[effect(job, kind = "read", device_only)]
+    OpenVideo {
         #[param(
             "A video's path or stream URL on this device; omit to choose with the file picker"
         )]
@@ -40,7 +40,7 @@ pub enum VideoEffect {
     ///
     /// Opens a video of this device's queue or recent videos and answers
     /// once its first picture has decoded.
-    #[effect(row, job, permission = "read", device_only)]
+    #[effect(row, job, kind = "read", device_only)]
     PlayQueued {
         #[param("The queue or recent video's item id")]
         item: String,
@@ -48,7 +48,7 @@ pub enum VideoEffect {
     /// Remove from queue.
     ///
     /// Removes the entry from this device's queue; the video file stays.
-    #[effect(row, permission = "read")]
+    #[effect(row, kind = "read")]
     RemoveQueued {
         #[param("The queued video's item id")]
         item: String,
@@ -56,7 +56,7 @@ pub enum VideoEffect {
     /// Clear recent videos.
     ///
     /// Forgets the videos played on this device; no file is deleted.
-    #[effect(destructive, permission = "read")]
+    #[effect(destructive, kind = "read")]
     ClearRecent,
     /// Show library.
     #[effect(view)]
@@ -270,330 +270,6 @@ pub fn recent_item_resource_id(item_id: &str) -> String {
         "video-player.history.item.{}",
         identity_token_for_action(item_id)
     )
-}
-
-pub fn playlist_resource_id(id: &str) -> String {
-    format!("video-player.playlist.{}", identity_token_for_action(id))
-}
-
-pub fn playlist_item_resource_id(id: &str) -> String {
-    format!(
-        "video-player.playlist-item.{}",
-        identity_token_for_action(id)
-    )
-}
-
-pub fn annotation_resource_id(id: &str) -> String {
-    format!("video-player.annotation.{}", identity_token_for_action(id))
-}
-
-/// The shared library's named edits. Ids are minted from the origin's clock
-/// when the edit is built, so a replay keeps them.
-pub(crate) fn declarations() -> Vec<ActionDecl<VideoPlayer>> {
-    let text =
-        |name: &'static str, what: &'static str| ActionParam::required(name, ParamType::Text, what);
-    vec![
-        ActionDecl::new(
-            "create-playlist",
-            "Create shared playlist",
-            vec![text("name", "Playlist name")],
-            |args, now_ms| {
-                Ok(SharedAction::CreatePlaylist {
-                    id: format!("playlist-{now_ms}"),
-                    name: required_text(args, "name")?,
-                })
-            },
-        )
-        .describe("Create a playlist everyone in the room sees."),
-        ActionDecl::new(
-            "create-annotation",
-            "Add timestamp annotation",
-            vec![
-                text(
-                    "media_ref",
-                    "Opaque shareable media identity; never a device path",
-                ),
-                ActionParam::required(
-                    "time_ms",
-                    ParamType::Integer,
-                    "Absolute timestamp in milliseconds",
-                ),
-                ActionParam::optional(
-                    "text",
-                    ParamType::Text,
-                    "Annotation text; omit for a bookmark",
-                ),
-            ],
-            |args, now_ms| {
-                Ok(SharedAction::CreateAnnotation {
-                    id: format!("annotation-{now_ms}"),
-                    media_ref: required_text(args, "media_ref")?,
-                    time_ms: args.number("time_ms").unwrap_or_default().max(0.0) as u64,
-                    text: args.text("text").unwrap_or_default().to_owned(),
-                })
-            },
-        )
-        .describe("Add a review note at a time in a shared video."),
-    ]
-}
-
-fn required_text(args: &tilo_actions::ActionArgs, name: &str) -> Result<String, String> {
-    args.text(name)
-        .filter(|value| !value.trim().is_empty())
-        .map(str::to_owned)
-        .ok_or_else(|| format!("`{name}` is required"))
-}
-
-fn shared_spec(
-    id: &str,
-    label: &str,
-    params: Vec<ActionParam>,
-    build: impl Fn(&tilo_actions::ActionArgs) -> SharedAction + Send + Sync + 'static,
-) -> ActionSpec {
-    ActionSpec::typed(
-        id,
-        label,
-        "",
-        ExecutionLocus::ClientLocal,
-        params,
-        move |args| {
-            tilo_actions::EncodedAction::encode(crate::shared::ACTION_TYPE, &build(args))
-                .unwrap_or_else(|_| tilo_actions::EncodedAction {
-                    type_id: crate::shared::ACTION_TYPE.into(),
-                    payload: Vec::new(),
-                })
-        },
-    )
-    .reversible()
-}
-
-fn immediate_spec(id: &str, label: &str, action: &SharedAction) -> Option<ActionSpec> {
-    ActionSpec::immediate(id, label, crate::shared::ACTION_TYPE, action)
-        .ok()
-        .map(|spec| spec.destructive().reversible())
-}
-
-/// The shared library beneath the resource: every playlist with its items
-/// and every timestamp annotation, each with the edits it takes and the
-/// effects bound to it (show it, jump to it).
-pub(crate) fn document_children(state: &SharedLibrary) -> Vec<Resource> {
-    vec![shared_library(state, CONTEXTUAL_CHILD_LIMIT)]
-}
-
-/// The shared row `id`, when the bounded children leave it out.
-pub(crate) fn document_child(state: &SharedLibrary, id: &str) -> Option<Resource> {
-    find(&[shared_library(state, crate::shared::MAX_SHARED_ROWS)], id)
-}
-
-fn find(resources: &[Resource], id: &str) -> Option<Resource> {
-    resources.iter().find_map(|resource| {
-        if resource.id.as_str() == id {
-            Some(resource.clone())
-        } else {
-            find(&resource.children, id)
-        }
-    })
-}
-
-fn show_shared() -> ActionSpec {
-    VideoEffect::ShowLibrary {
-        tab: "shared".into(),
-    }
-    .bound()
-}
-
-#[allow(
-    clippy::too_many_lines,
-    reason = "playlist and annotation rows stay adjacent to the edits they take"
-)]
-fn shared_library(state: &SharedLibrary, limit: usize) -> Resource {
-    let mut playlists = Resource::new(
-        "video-player.playlists.shared",
-        "media.playlists",
-        format!("{} shared playlists", state.playlists.len()),
-    )
-    .with_action(show_shared());
-    for playlist in state.playlists.iter().take(limit) {
-        let id = playlist.id.clone();
-        let before = playlist.name.clone();
-        let mut resource = Resource::new(
-            playlist_resource_id(&playlist.id),
-            "media.playlist",
-            playlist.name.clone(),
-        )
-        .with_action(show_shared())
-        .with_action(shared_spec(
-            "rename",
-            "Rename playlist",
-            vec![ActionParam::required_owned(
-                "name",
-                ParamType::Text,
-                "New playlist name",
-            )],
-            move |args| SharedAction::RenamePlaylist {
-                id: id.clone(),
-                before: before.clone(),
-                after: args.text("name").unwrap_or_default().into(),
-            },
-        ));
-        if let Some(delete) = immediate_spec(
-            "delete",
-            "Delete playlist",
-            &SharedAction::DeletePlaylist {
-                id: playlist.id.clone(),
-                observed_item_ids: state
-                    .items
-                    .iter()
-                    .filter(|item| item.playlist_id == playlist.id)
-                    .map(|item| item.id.clone())
-                    .collect(),
-            },
-        ) {
-            resource = resource.with_action(delete);
-        }
-        let playlist_id = playlist.id.clone();
-        resource = resource.with_action(shared_spec(
-            "add-item",
-            "Add media to playlist",
-            vec![
-                ActionParam::required_owned(
-                    "media_ref",
-                    ParamType::Text,
-                    "Opaque shareable media identity; never a device path",
-                ),
-                ActionParam::required_owned("title", ParamType::Text, "Media title"),
-                ActionParam::required_owned(
-                    "position",
-                    ParamType::Number,
-                    "Absolute sortable position",
-                ),
-            ],
-            move |args| {
-                let media_ref = args.text("media_ref").unwrap_or_default();
-                let position = args.number("position").unwrap_or_default() as i64;
-                SharedAction::AddPlaylistItem {
-                    id: format!("item-{}-{position}", identity_token_for_action(media_ref)),
-                    playlist_id: playlist_id.clone(),
-                    media_ref: media_ref.into(),
-                    title: args.text("title").unwrap_or_default().into(),
-                    position,
-                }
-            },
-        ));
-        for item in state
-            .items
-            .iter()
-            .filter(|item| item.playlist_id == playlist.id)
-            .take(limit)
-        {
-            let id = item.id.clone();
-            let before = item.position;
-            let mut child = Resource::new(
-                playlist_item_resource_id(&item.id),
-                "media.playlist-item",
-                item.title.clone(),
-            )
-            .with_action(shared_spec(
-                "move",
-                "Move playlist item",
-                vec![ActionParam::required_owned(
-                    "position",
-                    ParamType::Number,
-                    "New absolute sortable position",
-                )],
-                move |args| SharedAction::MovePlaylistItem {
-                    id: id.clone(),
-                    before,
-                    after: args.number("position").unwrap_or(before as f64) as i64,
-                },
-            ));
-            if let Some(remove) = immediate_spec(
-                "remove",
-                "Remove from playlist",
-                &SharedAction::RemovePlaylistItem {
-                    id: item.id.clone(),
-                },
-            ) {
-                child = child.with_action(remove);
-            }
-            resource = resource.with_child(child);
-        }
-        playlists = playlists.with_child(resource);
-    }
-    let mut annotations = Resource::new(
-        "video-player.annotations.shared",
-        "media.annotations",
-        format!("{} timestamp annotations", state.annotations.len()),
-    )
-    .with_action(show_shared());
-    for annotation in state.annotations.iter().take(limit) {
-        let label = if annotation.text.is_empty() {
-            format!("Bookmark ({}ms)", annotation.time_ms)
-        } else {
-            format!("{} ({}ms)", annotation.text, annotation.time_ms)
-        };
-        let id = annotation.id.clone();
-        let before = annotation.text.clone();
-        let move_id = annotation.id.clone();
-        let before_ms = annotation.time_ms;
-        let mut resource = Resource::new(
-            annotation_resource_id(&annotation.id),
-            "media.annotation",
-            label,
-        )
-        .with_action(show_shared())
-        .with_action(
-            VideoEffect::JumpToAnnotation {
-                annotation: annotation.id.clone(),
-            }
-            .bound(),
-        )
-        .with_action(shared_spec(
-            "edit",
-            "Edit annotation",
-            vec![ActionParam::required_owned(
-                "text",
-                ParamType::Text,
-                "New annotation text; empty is a bookmark",
-            )],
-            move |args| SharedAction::EditAnnotation {
-                id: id.clone(),
-                before: before.clone(),
-                after: args.text("text").unwrap_or_default().into(),
-            },
-        ))
-        .with_action(shared_spec(
-            "move",
-            "Move annotation",
-            vec![ActionParam::required_owned(
-                "time_ms",
-                ParamType::Number,
-                "New absolute timestamp in milliseconds",
-            )],
-            move |args| SharedAction::MoveAnnotation {
-                id: move_id.clone(),
-                before_ms,
-                after_ms: args.number("time_ms").unwrap_or(before_ms as f64).max(0.0) as u64,
-            },
-        ));
-        if let Some(delete) = immediate_spec(
-            "delete",
-            "Delete annotation",
-            &SharedAction::DeleteAnnotation {
-                id: annotation.id.clone(),
-            },
-        ) {
-            resource = resource.with_action(delete);
-        }
-        annotations = annotations.with_child(resource);
-    }
-    Resource::new(
-        "video-player.shared-library",
-        "media.shared-library",
-        "Shared library",
-    )
-    .with_child(playlists)
-    .with_child(annotations)
 }
 
 /// The live rows of what the player shows: the open video with its audio

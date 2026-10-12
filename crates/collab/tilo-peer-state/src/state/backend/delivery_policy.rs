@@ -6,7 +6,6 @@ pub enum PeerDeliveryPolicyError {
     Peer(BoundedPeerError),
     Unavailable,
     CurrentDenied,
-    UnsupportedPolicy,
     Capacity,
 }
 impl std::fmt::Display for PeerDeliveryPolicyError {
@@ -54,7 +53,6 @@ fn map_error(error: crate::room::delivery_policy::Error) -> PeerDeliveryPolicyEr
         Error::Decode(error) => PeerDeliveryPolicyError::Peer(BoundedPeerError::Decode(error)),
         Error::Unavailable => PeerDeliveryPolicyError::Unavailable,
         Error::CurrentDenied => PeerDeliveryPolicyError::CurrentDenied,
-        Error::UnsupportedPolicy => PeerDeliveryPolicyError::UnsupportedPolicy,
     }
 }
 pub(in crate::state) fn bounded<'peer>(

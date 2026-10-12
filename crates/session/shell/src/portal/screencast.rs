@@ -84,93 +84,23 @@ pub const SCREENCAST_VERSION: u32 = 4;
 /// Per-session negotiated selection, keyed by the frontend's `session_handle` object path.
 #[derive(Clone, Debug, Default)]
 struct ScreenCastSession {
-    #[cfg_attr(
-        not(target_os = "linux"),
-        expect(
-            dead_code,
-            reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
-        )
-    )]
     owner: String,
-    #[cfg_attr(
-        not(target_os = "linux"),
-        expect(
-            dead_code,
-            reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
-        )
-    )]
     app_id: String,
-    #[cfg_attr(
-        not(target_os = "linux"),
-        expect(
-            dead_code,
-            reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
-        )
-    )]
     caller: Option<PortalCaller>,
     /// Bitmask of requested source types (`SelectSources` `types`).
-    #[cfg_attr(
-        not(target_os = "linux"),
-        expect(
-            dead_code,
-            reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
-        )
-    )]
     source_types: u32,
     /// Requested cursor mode.
-    #[cfg_attr(
-        not(target_os = "linux"),
-        expect(
-            dead_code,
-            reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
-        )
-    )]
     cursor_mode: u32,
     /// Whether the app allowed selecting multiple sources.
-    #[cfg_attr(
-        not(target_os = "linux"),
-        expect(
-            dead_code,
-            reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
-        )
-    )]
     multiple: bool,
     /// Requested persistence: 0 none, 1 while-running, 2 until-revoked.
-    #[cfg_attr(
-        not(target_os = "linux"),
-        expect(
-            dead_code,
-            reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
-        )
-    )]
     persist_mode: u32,
     /// True once valid standard `restore_data` pre-approved this session, so
     /// `Start` skips the consent prompt (persisted-share fast path).
-    #[cfg_attr(
-        not(target_os = "linux"),
-        expect(
-            dead_code,
-            reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
-        )
-    )]
     restored: bool,
     /// Consent is requested exactly once, at Start (unless restored).
-    #[cfg_attr(
-        not(target_os = "linux"),
-        expect(
-            dead_code,
-            reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
-        )
-    )]
     consented: bool,
     /// Serializes concurrent Start calls across the async prompt.
-    #[cfg_attr(
-        not(target_os = "linux"),
-        expect(
-            dead_code,
-            reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
-        )
-    )]
     starting: bool,
     /// PipeWire nodes owned by this session, released on lifecycle close.
     streams: Vec<u32>,
@@ -283,19 +213,11 @@ impl RestoreStore {
         tilo_files::native::atomic::write_with_mode(path, &bytes, 0o600)
             .map_err(|error| format!("write restore records: {error}"))
     }
-
-    /// Revoke every restore authority for an app.  Package removal and the
-    /// shell's privacy controls call this rather than trying to guess tokens.
-    fn revoke_app(&mut self, app_id: &str) -> Result<(), String> {
-        self.memory.retain(|_, record| record.app_id != app_id);
-        self.durable.retain(|_, record| record.app_id != app_id);
-        self.persist_durable()
-    }
 }
 
 #[cfg(target_os = "linux")]
 fn restore_path() -> Option<PathBuf> {
-    let root = xdg_paths::state_dir()?;
+    let root = tilo_paths::state_dir()?;
     Some(root.join("tilo/portal/screencast-restore.json"))
 }
 
@@ -383,16 +305,6 @@ impl ScreenCastBackend {
             sessions: self.sessions.clone(),
             provisioner: self.ctx.screencast_provisioner.clone(),
         }
-    }
-
-    /// Remove durable and session restore records when an app is uninstalled,
-    /// its capture permission is revoked, or Tilo privacy controls disable
-    /// screen sharing.  Tokens remain app-bound even before this is called.
-    pub fn revoke_restore_tokens_for_app(&self, app_id: &str) -> Result<(), String> {
-        self.restore
-            .lock()
-            .map_err(|_| "restore-data store is unavailable".to_string())?
-            .revoke_app(app_id)
     }
 
     fn reset_starting(&self, key: &str) {
@@ -1064,20 +976,6 @@ mod tests {
                         .starts_with("restore.corrupt-")),
                 "corrupt artifact is retained for diagnosis rather than overwritten"
             );
-            let _ = std::fs::remove_dir_all(root);
-        }
-        // Phase `revocation_removes_durable_restore_authority`.
-        {
-            let root = std::env::temp_dir().join(format!("tilo-sc-{}", uuid::Uuid::new_v4()));
-            let path = root.join("restore.json");
-            let token = uuid::Uuid::new_v4().to_string();
-            let mut store = RestoreStore::load_at(Some(path.clone()));
-            store
-                .insert(token.clone(), durable_record("org.example.share"))
-                .expect("durable write");
-            store.revoke_app("org.example.share").expect("revoke");
-            drop(store);
-            assert!(RestoreStore::load_at(Some(path)).get(&token).is_none());
             let _ = std::fs::remove_dir_all(root);
         }
     }

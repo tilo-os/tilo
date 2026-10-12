@@ -12,8 +12,25 @@ let encoder;
 let nextEncodeTimestamp = 0;
 let playbackConfig;
 let stopped = false;
-const pendingEncodes = new Map();
+// Capture metadata of the frames handed to the encoder, in encode order.
+const pendingEncodes = [];
+// The capture metadata of the last encoder output.
+let lastEncoded;
 const decoders = new Map();
+// Opus DTX (usedtx): a silent frame that needs no transmission produces no
+// output at all (Chromium) or a packet of at most two bytes (libopus), and
+// Chromium's output timestamps then count only emitted frames. Outputs still
+// follow encode order, and an encoder finishes a 20 ms frame within
+// milliseconds of receiving it, so when an output arrives every pending frame
+// that waited longer than this, with a newer one behind it, was a DTX frame.
+// A slower encoder (a loaded machine) only shifts capture timestamps by a
+// frame: emitted timestamps always advance by at least one frame.
+const DTX_SETTLED_MS = 15;
+// Bounds the metadata of frames the encoder silently consumed: 20 DTX
+// frames per comfort-noise update, plus a short backlog.
+const MAX_PENDING_ENCODES = 64;
+const DTX_MAX_BYTES = 2;
+const now = () => (self.performance ?? globalThis.performance).now();
 
 function mediaTimestamp(sampleTimestamp) {
   return Number(sampleTimestamp * MICROSECONDS_PER_SECOND / SAMPLE_RATE);
@@ -44,10 +61,23 @@ function postCaptureConsumed() {
 
 function encoderError(error) {
   self.postMessage({type: 'error', stage: 'encoder', error: error?.message ?? String(error)});
-  let count = 0;
-  for (const pending of pendingEncodes.values()) count += pending.length;
-  pendingEncodes.clear();
-  for (let index = 0; index < count; index++) postCaptureConsumed();
+  // Capture credits went back when each frame reached the encoder.
+  pendingEncodes.length = 0;
+}
+
+/** The capture metadata of the frame an encoder output belongs to. */
+function takeEncoded() {
+  const at = now();
+  while (pendingEncodes.length > 1 && at - pendingEncodes[0].submittedAt > DTX_SETTLED_MS) pendingEncodes.shift();
+  // With no frame left (a slow encoder's frame was taken for a DTX frame),
+  // the output still follows the last one.
+  let metadata = pendingEncodes.shift() ?? lastEncoded;
+  if (metadata && lastEncoded) {
+    const next = lastEncoded.timestamp + BigInt(lastEncoded.duration);
+    if (metadata.timestamp < next) metadata = {...metadata, timestamp: next};
+  }
+  lastEncoded = metadata;
+  return metadata;
 }
 
 function postPlaybackRelease(state, samples) {
@@ -136,13 +166,16 @@ function initialize({encoderConfig, decoderConfig}) {
   try {
     encoder = new self.AudioEncoder({
       output(chunk) {
-        // Correlate by encode order: one 960-sample input produces one Opus
-        // packet, in order; output timestamps are implementation-derived.
-        const metadata = takeOldest(pendingEncodes);
+        // Correlate by encode order: one 960-sample input produces at most
+        // one Opus packet, in order; output timestamps are
+        // implementation-derived (and skip DTX frames).
+        const metadata = takeEncoded();
         if (!metadata) {
           self.postMessage({type: 'error', stage: 'encoder-output', error: 'Encoded frame has no capture metadata'});
           return;
         }
+        // A DTX frame: nothing to transmit.
+        if (chunk.byteLength <= DTX_MAX_BYTES) return;
         const payload = new Uint8Array(chunk.byteLength);
         chunk.copyTo(payload);
         self.postMessage({
@@ -152,7 +185,6 @@ function initialize({encoderConfig, decoderConfig}) {
           duration: metadata.duration,
           ...(metadata.generation === undefined ? {} : {generation: metadata.generation}),
         }, [payload.buffer]);
-        postCaptureConsumed();
       },
       error(error) { encoderError(error); },
     });
@@ -181,16 +213,22 @@ function encode(message) {
     timestamp,
     data: new Float32Array(message.samples),
   });
-  appendPending(pendingEncodes, timestamp, {timestamp: message.timestamp, duration: message.duration, generation: message.generation});
+  const metadata = {timestamp: message.timestamp, duration: message.duration, generation: message.generation, submittedAt: now()};
+  pendingEncodes.push(metadata);
+  while (pendingEncodes.length > MAX_PENDING_ENCODES) pendingEncodes.shift();
   try {
     encoder.encode(frame);
   } catch (error) {
-    takePending(pendingEncodes, timestamp);
+    const index = pendingEncodes.indexOf(metadata);
+    if (index >= 0) pendingEncodes.splice(index, 1);
     self.postMessage({type: 'error', stage: 'encoder', error: error?.message ?? String(error)});
-    postCaptureConsumed();
   } finally {
     frame.close();
   }
+  // The frame left the capture path: the encoder's own queue is bounded by
+  // the admission check above, and a DTX frame may never produce an output
+  // to return its credit with.
+  postCaptureConsumed();
 }
 
 function decode(message) {
@@ -242,7 +280,7 @@ function stop() {
     try { state.decoder.close(); } catch {}
   }
   decoders.clear();
-  pendingEncodes.clear();
+  pendingEncodes.length = 0;
   self.close?.();
 }
 
