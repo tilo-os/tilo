@@ -23,10 +23,6 @@ use vello::kurbo::{Affine, Point, Rect};
 
 const WIDTH: u32 = 1280;
 const HEIGHT: u32 = 900;
-/// Every pixel of the app.
-const PIXELS: u64 = WIDTH as u64 * HEIGHT as u64;
-/// One row of the app's RGBA pixels.
-const ROW_BYTES: usize = WIDTH as usize * 4;
 
 /// A theme to check in, by name.
 type ThemeCase = (&'static str, fn() -> Theme);
@@ -60,9 +56,12 @@ type Presented = (Scene, Result<Vec<Rect>, String>);
 
 /// The host's side of the app, as `EmbeddedApp` and the shell run it: the
 /// app paints into a scene of its own with its damage parts, the host
-/// appends that as a part hinted with the app's damage, and compares each
-/// host frame with the one before it.
+/// appends that as a part hinted with the app's damage, magnified by the
+/// display's scale, and compares each host frame with the one before it.
 struct Host {
+    /// The display's scale: the host's scene pixels per app pixel, as the
+    /// shell magnifies a tile on a dense display.
+    scale: f64,
     damage: SurfaceDamage,
     painted: Scene,
     painted_parts: Option<ui::scene_parts::SectionParts>,
@@ -75,7 +74,12 @@ struct Host {
 
 impl Host {
     fn new() -> Self {
+        Self::at_scale(1.0)
+    }
+
+    fn at_scale(scale: f64) -> Self {
         Self {
+            scale,
             damage: SurfaceDamage::default(),
             painted: Scene::new(),
             painted_parts: None,
@@ -103,12 +107,18 @@ impl Host {
         }
         let from = self.generation;
         self.generation = from.wrapping_add(1);
+        // Where the app sits in the host's scene, and its damage there, as
+        // `EmbeddedApp::draw` places them.
+        let placement = Affine::scale(self.scale);
         let hint = self.damage.take().map(|rects| ui::scene_parts::DamageHint {
             source: 1,
             from,
             to: self.generation,
-            placement: Affine::IDENTITY,
-            rects: rects.iter().map(|rect| rect.inflate(1.0, 1.0)).collect(),
+            placement,
+            rects: rects
+                .iter()
+                .map(|rect| placement.transform_rect_bbox(*rect).inflate(1.0, 1.0))
+                .collect(),
             copies: Vec::new(),
         });
         let mut scene = Scene::new();
@@ -119,7 +129,7 @@ impl Host {
                     scene,
                     &self.painted,
                     self.painted_parts.as_ref(),
-                    Some(Affine::IDENTITY),
+                    Some(placement),
                 );
             });
         });
@@ -186,19 +196,40 @@ fn shows_saved(app: &App) -> bool {
     })
 }
 
-/// The pixels of the app `rects` cover, each counted once: what a host
-/// repaints for them.
+/// The app's size in the host's scene pixels at `scale`.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "the test's scales (1 and 2) keep the 1280x900 app a few megapixels"
+)]
+fn scene_size(scale: f64) -> (u32, u32) {
+    (
+        (f64::from(WIDTH) * scale).round() as u32,
+        (f64::from(HEIGHT) * scale).round() as u32,
+    )
+}
+
+/// The pixels of the host's scene at `scale` that `rects` (in scene
+/// pixels) cover within the app, each counted once: what a host repaints
+/// for them.
 #[allow(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
     clippy::cast_precision_loss,
-    reason = "rects are clamped to the 1280x900 app before becoming pixel indices"
+    reason = "rects are clamped to the app's scene pixels before becoming pixel indices"
 )]
-fn area(rects: &[Rect]) -> f64 {
-    let app = Rect::new(0.0, 0.0, f64::from(WIDTH), f64::from(HEIGHT));
-    let mut covered = vec![vec![false; WIDTH as usize]; HEIGHT as usize];
+fn area(rects: &[Rect], scale: f64) -> f64 {
+    let (width, height) = scene_size(scale);
+    let app = Rect::new(0.0, 0.0, f64::from(width), f64::from(height));
+    let mut covered = vec![vec![false; width as usize]; height as usize];
     for rect in rects {
-        let rect = rect.intersect(app).expand();
+        let rect = rect.intersect(app);
+        // A rect wholly outside the app (or the region a test watches)
+        // intersects to nothing, which covers no pixel.
+        if rect.width() <= 0.0 || rect.height() <= 0.0 {
+            continue;
+        }
+        let rect = rect.expand();
         for row in &mut covered[rect.y0 as usize..rect.y1 as usize] {
             row[rect.x0 as usize..rect.x1 as usize].fill(true);
         }
@@ -206,8 +237,15 @@ fn area(rects: &[Rect]) -> f64 {
     covered.iter().flatten().filter(|cell| **cell).count() as f64
 }
 
+/// Every pixel of the app at scale 1.
 fn app_area() -> f64 {
-    f64::from(WIDTH) * f64::from(HEIGHT)
+    app_area_at(1.0)
+}
+
+/// Every pixel of the app in the host's scene at `scale`.
+fn app_area_at(scale: f64) -> f64 {
+    let (width, height) = scene_size(scale);
+    f64::from(width) * f64::from(height)
 }
 
 /// What a change cost the host: the pixels its frames repainted, summed,
@@ -223,18 +261,23 @@ struct Repainted {
     largest_within: f64,
 }
 
-/// Present `frames` over `before` as the host does, each only where its
-/// damage says, and require the pixels of a full render of the last one.
+/// Present `frames` over `before` as the host does at `scale`, each only
+/// where its damage says, and require the pixels of a full render of the
+/// last one. Pixels are the host's scene pixels; `within` is in the app's.
 fn present_and_compare(
     before: &Scene,
     frames: &[Presented],
-    theme: &Theme,
+    (theme, scale): (&Theme, f64),
     label: &str,
     within: Option<Rect>,
 ) -> Repainted {
     let background = theme.tokens.colors.surfaces.content;
-    let mut retained = ui::offscreen::OffscreenRenderer::new(WIDTH, HEIGHT);
-    let mut full = ui::offscreen::OffscreenRenderer::new(WIDTH, HEIGHT);
+    let (width, height) = scene_size(scale);
+    let pixels_in_app = u64::from(width).saturating_mul(u64::from(height));
+    let within = within.map(|region| Affine::scale(scale).transform_rect_bbox(region));
+    let app_area = app_area_at(scale);
+    let mut retained = ui::offscreen::OffscreenRenderer::new(width, height);
+    let mut full = ui::offscreen::OffscreenRenderer::new(width, height);
     let _ = retained.render(before, background);
     let mut repainted = Repainted::default();
     for (scene, damage) in frames {
@@ -245,9 +288,9 @@ fn present_and_compare(
             Err(why) => {
                 eprintln!("{label}: a frame repainted the app whole: {why}");
                 let _ = retained.render(scene, background);
-                repainted.total += app_area();
-                repainted.largest = app_area();
-                repainted.largest_within = within.map_or_else(app_area, |region| region.area());
+                repainted.total += app_area;
+                repainted.largest = app_area;
+                repainted.largest_within = within.map_or(app_area, |region| region.area());
                 repainted.whole = true;
                 continue;
             }
@@ -256,18 +299,18 @@ fn present_and_compare(
             continue;
         }
         let rasterized = retained.render_damage_regions_gpu_wait(scene, background, damage);
-        let pixels = area(damage);
+        let pixels = area(damage, scale);
         // Damage over half the app renders whole, as a host does (a header
         // that grew moves the page under it); less must render sparsely.
         assert!(
-            rasterized < PIXELS || pixels >= app_area() / 2.0,
+            rasterized < pixels_in_app || pixels >= app_area / 2.0,
             "{label}: the damage must exercise a sparse render: {damage:?}"
         );
         repainted.total += pixels;
         repainted.largest = repainted.largest.max(pixels);
         if let Some(region) = within {
             let inside: Vec<_> = damage.iter().map(|rect| rect.intersect(region)).collect();
-            repainted.largest_within = repainted.largest_within.max(area(&inside));
+            repainted.largest_within = repainted.largest_within.max(area(&inside, scale));
         }
     }
     let Some((last, _)) = frames.last() else {
@@ -277,7 +320,7 @@ fn present_and_compare(
     let actual = retained.readback_current();
     let mut differing = 0_usize;
     let mut spread: Option<Rect> = None;
-    let stride = ROW_BYTES;
+    let stride = (width as usize).saturating_mul(4);
     for (y, (actual, expected)) in actual
         .chunks_exact(stride)
         .zip(expected.chunks_exact(stride))
@@ -323,7 +366,7 @@ fn measure(
     let elapsed = started.elapsed();
     let frames = std::mem::take(&mut host.presented);
     (
-        present_and_compare(&before, &frames, theme, label, None),
+        present_and_compare(&before, &frames, (theme, host.scale), label, None),
         elapsed,
     )
 }
@@ -342,7 +385,7 @@ fn measure_within(
     change(app, host);
     let elapsed = started.elapsed();
     let frames = std::mem::take(&mut host.presented);
-    let repainted = present_and_compare(&before, &frames, theme, label, Some(region));
+    let repainted = present_and_compare(&before, &frames, (theme, host.scale), label, Some(region));
     (repainted, elapsed)
 }
 
@@ -1046,6 +1089,75 @@ fn backspace_that_removes_a_block_damages_the_blocks_below_not_the_window() {
     }
 }
 
+/// The bounds of the note's block showing `value`.
+fn bounds_of_block(app: &App, value: &str) -> Rect {
+    app.semantic_tree()
+        .iter()
+        .find(|node| {
+            node.name.as_deref() == Some("Block text") && node.value.as_deref() == Some(value)
+        })
+        .and_then(|node| node.bounds)
+        .unwrap_or_else(|| panic!("no block showing {value:?} on screen"))
+}
+
+/// The caret is a part of its own: a caret entering an empty paragraph
+/// repaints the caret where it was and is (and the drag handle that follows
+/// it), not the paragraph's line across the editor. Checked against a full
+/// render in every theme, at 100 % and at 200 %, where the host magnifies
+/// the app as the shell does on a dense display.
+#[test]
+fn the_caret_entering_an_empty_paragraph_damages_the_caret_not_the_line() {
+    let _serial = start();
+    for scale in [1.0, 2.0] {
+        for (name, theme) in THEMES {
+            let theme = theme();
+            drive_live_window::<NotesShell, _>(|app| {
+                let mut host = Host::at_scale(scale);
+                open_a_new_note(app, &mut host, theme.clone());
+                write_paragraphs(app, &mut host, &["Alpha line", "", "Charlie line"]);
+                caret_in(app, &mut host, "Alpha line", 0);
+                let empty = bounds_of_block(app, "");
+                let line = empty.area() * scale * scale;
+                let_the_save_land(app, &mut host);
+                let_it_rest(app, &mut host);
+                let label = format!("{name} at {scale}x: the caret entering an empty paragraph");
+                let (entered, elapsed) =
+                    measure_within(app, &mut host, (&theme, &label), empty, |app, host| {
+                        host.key(app, &Key::Named(NamedKey::ArrowDown));
+                    });
+                eprintln!(
+                    "notes-damage {name} scale={scale} caret-into-empty frame_px={:.0} line_px={:.0} of line {line:.0} and app {:.0} whole={} keystroke_to_frame={elapsed:?}",
+                    entered.largest,
+                    entered.largest_within,
+                    app_area_at(scale),
+                    entered.whole,
+                );
+                // The caret landed in the empty paragraph.
+                type_text(app, &mut host, "b");
+                host.frames(app, 3);
+                assert_eq!(
+                    values_of(app, "Block text"),
+                    ["Alpha line", "b", "Charlie line"],
+                    "{label}: the caret went into the empty paragraph"
+                );
+                assert!(!entered.whole, "{label}: repainted the app whole");
+                // The caret's few pixels, not the 942 px line.
+                assert!(
+                    entered.largest_within < line * 0.05,
+                    "{label}: repainted {:.0} px of the empty paragraph's {line:.0} px line",
+                    entered.largest_within
+                );
+                assert!(
+                    entered.largest < line,
+                    "{label}: repainted {:.0} px in all, over the {line:.0} px of the line",
+                    entered.largest
+                );
+            })
+            .unwrap();
+        }
+    }
+}
+
 #[test]
 fn renaming_a_note_damages_its_row_not_the_page_tree() {
     let _serial = start();
@@ -1124,12 +1236,14 @@ fn renaming_a_note_damages_its_row_not_the_page_tree() {
                 field < app_area() * 0.015,
                 "{name}: a key in the rename field repainted {field:.0} px of the page tree, over 1.5 % of the app"
             );
-            // The title, the row, the line the caret goes back to and the
-            // save bubble: not the page tree.
-            for (case, repainted) in [("naming", named), ("renaming", renamed)] {
+            // The title, the row, the caret going back to the body and the
+            // save bubble: not the page tree, nor the body's line (87,157 px
+            // where the line repainted 109,410).
+            for (case, repainted, percent) in [("naming", named, 8.0), ("renaming", renamed, 10.0)]
+            {
                 assert!(
-                    repainted.largest < app_area() * 0.1,
-                    "{name}: {case} the note repainted {:.0} px, over 10 % of the app",
+                    repainted.largest < app_area() * percent / 100.0,
+                    "{name}: {case} the note repainted {:.0} px, over {percent} % of the app",
                     repainted.largest
                 );
             }
