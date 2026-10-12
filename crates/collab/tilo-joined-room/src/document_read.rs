@@ -239,7 +239,10 @@ impl NativeCommittedView {
         if revision == revision_of_sorted(heads) {
             return Ok(ChangesRead::Unchanged(revision));
         }
-        if !heads.windows(2).all(|pair| pair[0] < pair[1]) {
+        if !heads
+            .windows(2)
+            .all(|pair| matches!(pair, [first, second] if first < second))
+        {
             return Ok(ChangesRead::Whole);
         }
         let base = heads
