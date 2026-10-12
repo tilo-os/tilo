@@ -346,6 +346,16 @@ pub struct ListingRequest {
     /// including `params`, stays, so a compact row can still be invoked.
     #[serde(default, skip_serializing_if = "ListingDetail::is_full")]
     pub detail: ListingDetail,
+    /// Only rows of these kinds (`application`, `action`, `note`, `file`, …;
+    /// singular or plural, any case). Absent: every kind but files and
+    /// folders.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub kinds: Vec<String>,
+    /// Also list files and folders. They stay out of a listing unless asked
+    /// (here or by naming their kind): a search for an app's action is
+    /// answered by hundreds of same-named files otherwise, ahead of it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub files: bool,
 }
 
 /// How much of each row a listing carries; see [`ListingRequest::detail`].
@@ -3338,6 +3348,30 @@ mod tests {
         .window(5, 7)
         .unwrap();
         assert_eq!(window.rows, 0..1);
+    }
+
+    /// A listing narrows by kind and lists files only when asked, on the wire
+    /// as the CLI sends it; a request that says neither keeps its old shape.
+    #[test]
+    fn a_listing_narrows_by_kind_and_lists_files_only_when_asked() {
+        let page = |line: &str| {
+            let Command::ActionsEnumerate { page, .. } = serde_json::from_str(line).unwrap() else {
+                panic!("not an enumerate: {line}");
+            };
+            page
+        };
+        let asked = page(
+            r#"{"op":"actions_enumerate","query":"x","kinds":["application","note"],"files":true}"#,
+        );
+        assert_eq!(asked.kinds, ["application", "note"]);
+        assert!(asked.files);
+        let plain = page(r#"{"op":"actions_enumerate","query":"x"}"#);
+        assert_eq!(plain, ListingRequest::default());
+        assert_eq!(
+            serde_json::to_value(&plain).unwrap(),
+            serde_json::json!({}),
+            "the defaults add nothing to the wire"
+        );
     }
 
     const MOCK_INSERT_PARAMS: &[crate::shell::search::action_api::ActionParam] = &[
