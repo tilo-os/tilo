@@ -2488,6 +2488,7 @@ dependencies = [
  "hex",
  "launcher",
  "libc",
+ "rustix 1.1.4",
  "serde",
  "serde_json",
  "sha2 0.11.0",
