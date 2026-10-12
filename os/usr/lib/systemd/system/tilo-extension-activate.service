@@ -13,12 +13,19 @@ Documentation=file:///usr/share/tilo/system-extensions/README.md
 # It runs offline, before the greeter and the graphical target.
 # A part needing a new download for an updated base waits for
 # tilo-extension-refresh.timer.
-# Without anything turned on it returns at once; it has no start condition,
-# because a removal relies on it to unmerge.
 # Before the greeter, so the first session already finds the hardware video
 # driver merged (the compositor probes it once, at start).
 After=local-fs.target
 Before=graphical.target display-manager.service greetd.service
+# With nothing turned on and no part of ours left in the sysext search path,
+# `tilo-extension activate` returns at once and changes nothing; starting its
+# Python alone held the greeter 0.4-1.4 s on every boot (TIL-767). These are the
+# helper's own early-return conditions, so the unit runs exactly when the helper
+# has work: an extension is turned on, or parts are still present for it to
+# rebuild or unmerge (a removal deletes the opt-in first and then starts this
+# unit, which still finds the parts and unmerges them).
+ConditionPathExistsGlob=|/var/lib/tilo/extensions/*/enabled
+ConditionDirectoryNotEmpty=|/var/lib/extensions
 
 [Service]
 Type=oneshot

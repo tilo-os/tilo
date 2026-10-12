@@ -146,13 +146,7 @@ impl GraphCanvas {
 }
 
 fn find(widget: &dyn Widget, id: &str) -> Option<Rect> {
-    if widget.test_id() == Some(id) {
-        return Some(widget.get_rect());
-    }
-    widget
-        .children()
-        .into_iter()
-        .find_map(|child| find(child, id))
+    super::find_test_id(widget, id).map(Widget::get_rect)
 }
 
 impl Widget for GraphCanvas {

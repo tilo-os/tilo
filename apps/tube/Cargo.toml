@@ -27,10 +27,6 @@ ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 # same `media::MediaEngine` as the local player and editor preview.
 media = { package = "tilo-media", path = "../../crates/platform/tilo-media" }
 automerge.workspace = true
-# The Tilo ACTION model: Tube's `actions` module exports its collaborative
-# operations (likes, queue, comment replies) as replayable actions the host's
-# Ctrl+K palette dispatches.
-tilo-actions = { path = "../../crates/collab/actions" }
 serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
@@ -43,6 +39,8 @@ anyhow.workspace = true
 # Live fetch (Invidious / SponsorBlock / DeArrow), driven by a background
 # worker and excluded from the shots path.
 tilo-net = { path = "../../crates/platform/tilo-net", features = ["http", "json"] }
+# Fully-rangeable playback URLs through Invidious media proxies.
+tilo-invidious = { path = "../../crates/platform/tilo-invidious" }
 # Grayjay device-sync peers file.
 tilo-files = { path = "../../crates/platform/tilo-files" }
 bounded-command = { path = "../../crates/system/bounded-command", optional = true }

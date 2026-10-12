@@ -48,3 +48,51 @@ raw-channel admission rejection test passed. SDK all-targets and shell tests
 compiled, and strict Clippy passed for those same targets. All compilation and
 tests ran on the native remote builder. No installed playback, physical-device
 latency or hardware throughput result is claimed.
+
+## Admission checks and the host output registry
+
+Installed acceptance on the matching source/runtime/host cohort at
+`eaf2baa270a124d24b0158bfd32fe68a39df8b96` still failed: roughly 20 seconds
+of audible output were followed by a governed-output timeout and a separate
+six-second silent capture. The adjacent compositor iteration spent 4.143 seconds
+after its pump. This is a timing correlation, not evidence that paint caused the
+RPC timeout. The broker already runs on a separate thread.
+
+Source investigation found another concrete blocking boundary: the host kept
+its output-registry mutex while revalidating the retained caller. An admission
+callback can wait on membership or identity state. While it waits, the same
+mutex prevents the lock-screen callback from fencing playback and prevents
+other commands or a replacement generation from accessing the registry.
+
+The host now clones the retained caller under the mutex, revalidates outside
+it, then reacquires it and checks the exact generation, local-session permit
+and disabled state before applying the command. A late failure for an old
+caller cannot fence a replacement generation. Admission is still checked for
+every command; there is no authorization cache or longer deadline.
+
+The causal regression blocks the production service's retained-admission
+callback. It requires the production lock-screen fence to complete within a
+300 ms observation window, before releasing that callback, and requires the
+waiting PCM write to fail and its source to render silence. A companion test
+replaces the generation during the wait, rejects the old command and verifies
+that the new source still renders its own PCM. These are controlled admission
+and synthetic-device tests, not measured compositor or installed-device tests.
+
+Timeout diagnostics retain the existing user-facing error and log only the
+operation, request/reply/retry counts and last queue/progress flags. They do
+not log samples, paths, identities or route identifiers. Admission waits of at
+least 50 ms also report their phase and duration. A real Cap'n Proto fixture
+checks that stalled RPC replies and repeated full-queue replies produce distinct
+transport evidence. Matching installed acceptance must collect that evidence
+before attributing the remaining timeout to rendering, admission or device
+backpressure.
+
+The follow-up focused run passed 12 SDK/host audio tests in 4.184 seconds.
+The separate raw-channel admission rejection test passed, and SDK all-targets
+plus shell tests compiled. Strict Clippy passed for the same targets in
+2 minutes 39 seconds. Its initial invocation had failed before Clippy started:
+the remote session's JSON parser received a disk-triggered garbage-collection
+status line while disk usage was 95.6%. A read-only observation subsequently
+showed 93.17% usage, below the 95% critical watermark, and justified the retry.
+No manual/shared cleanup, local build fallback or device operation was used.
+Required PR CI and matching installed acceptance remain separate qualifications.

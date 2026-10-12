@@ -527,7 +527,8 @@ pub fn spawn_sweeper(viewer: std::sync::Arc<Viewer>) -> io::Result<()> {
         loop {
             interval.tick().await;
             let viewer = std::sync::Arc::clone(&viewer);
-            match tokio::task::spawn_blocking(move || viewer.sweep(now_ms())).await {
+            match tokio::task::spawn_blocking(move || viewer.sweep(tilo_clock::unix_now_ms())).await
+            {
                 Ok(Ok(0)) => {}
                 Ok(Ok(removed)) => tracing::info!(removed, "expired viewers removed"),
                 Ok(Err(error)) => tracing::warn!(error = %error.message, "viewer sweep failed"),
@@ -536,12 +537,6 @@ pub fn spawn_sweeper(viewer: std::sync::Arc<Viewer>) -> io::Result<()> {
         }
     });
     Ok(())
-}
-
-/// Milliseconds since the epoch.
-#[must_use]
-pub fn now_ms() -> u64 {
-    tilo_clock::unix_now_ms()
 }
 
 /// `YYYY-MM-DDTHH:MM:SSZ` for milliseconds since the epoch.

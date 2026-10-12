@@ -25,10 +25,10 @@ fn drafts_use_system_undo_redo_and_readable_history_without_replaying_decisions(
 -> anyhow::Result<()> {
     let (_directory, storage, mut app, publisher) = setup()?;
     inspect(&mut app, &publisher)?;
-    app.invoke(Draft::SET_FEEDBACK.with("First feedback".into()))?;
+    app.invoke(Draft::paths().feedback.replace("First feedback").into())?;
     let version = app.versions().pop().context("attributed draft history")?;
     ensure!(version.context.is_some());
-    app.invoke(Draft::SET_FEEDBACK.with("Second feedback".into()))?;
+    app.invoke(Draft::paths().feedback.replace("Second feedback").into())?;
     ensure!(app.undo());
     ensure!(app.state().feedback == "First feedback");
     ensure!(app.redo());
@@ -174,9 +174,9 @@ fn private_review_rejects_with_exact_feedback_and_requires_confirmation() -> any
         !format!("{:?}", app.state()).contains("ada@example.com"),
         "queue metadata stays out of the resource"
     );
-    app.invoke(Draft::SET_REVIEWER.with("Registry owner".into()))?;
+    app.invoke(Draft::paths().reviewer.replace("Registry owner").into())?;
     let feedback = "Please provide screenshots; keep the \"notes\" app accessible.";
-    app.invoke(Draft::SET_FEEDBACK.with(feedback.into()))?;
+    app.invoke(Draft::paths().feedback.replace(feedback).into())?;
     app.effect(&Review::Inspect {
         publisher: publisher.clone(),
     })?;

@@ -16,7 +16,7 @@ Tilo (codename **tilo**) is a collaborative Linux OS built on Fedora Bootc. See 
 │       │              │             │              │       │
 │  ┌────┴──────────────┴─────────────┴──────────────┴────┐ │
 │  │  Per-workspace Bubblewrap sandbox (seccomp + ns)    │ │
-│  │  Per-workspace Wayland bridge socket (filtered)     │ │
+│  │  Wayland clients attributed by peer credentials     │ │
 │  │  xdg-desktop-portal D-Bus backend (grant-gated)     │ │
 │  └─────────────────────┬───────────────────────────────┘ │
 │                        │ Wayland Protocol                 │
@@ -63,7 +63,7 @@ Tilo (codename **tilo**) is a collaborative Linux OS built on Fedora Bootc. See 
 ### 3. Collaboration + Sandbox Layer
 - **Collaboration:** Iroh gossip carries direct workspace traffic; the authenticated Iroh workspace host persists and store-and-forwards durable changes. CRDT changes ride on top via `automerge`'s incremental change protocol.
 - **Surface streaming:** owners encode foreign-client surfaces through the media stack's real-time encoder (AV1/VP9 when every viewer decodes it in hardware, else H.264; hardware first) and publish them on the topic of the room the window's tab is in. Peers decode in a `peer_view` widget mounted in that exact tab; their input events are serialised and replayed into the owner's smithay seat. Between a person's own devices only legacy app windows are streamed, each to the devices currently showing its tab (see `docs/device-mesh.md`); no device streams its desktop.
-- **Sandbox:** the compositor execs `tilo-launcher`, which builds each app's `bwrap` argv from its manifest and the workspace's grants, with a seccomp-bpf blocklist, Landlock, a private DBus session bus, and a per-workspace Wayland bridge socket. The portal D-Bus backend (`org.freedesktop.impl.portal.*`) gates capability requests through the compositor's prompt UI.
+- **Sandbox:** the compositor execs `tilo-launcher`, which builds each app's `bwrap` argv from its manifest and the workspace's grants, with a seccomp-bpf blocklist, Landlock, a private DBus session bus, and the compositor's public Wayland socket, whose connections are attributed to package and workspace from the launch record. The portal D-Bus backend (`org.freedesktop.impl.portal.*`) gates capability requests through the compositor's prompt UI.
 - See `docs/architecture/collaboration.md`, `docs/architecture/security.md`.
 
 ## Data flow
@@ -87,7 +87,8 @@ xdg_toplevel maps → app-id present
 ### CRDT replication
 ```
 Local mutation → WorkspaceTree write (cache + automerge AutoCommit)
-  → SyncReq heartbeat (every 2 s) or immediate Publish
+  → immediate Publish (SyncResp); SyncReq repair pull 2 s after activity settles,
+    on a peer joining, and every 5 min while idle
   → Iroh gossip workspace topic and optional persistent workspace host
   → remote peer: NeighbourMsg::SyncResp { changes }
   → WorkspaceTree::apply_changes → rebuild_cache_from_doc → re-render
@@ -101,6 +102,14 @@ Owner: surface commit → damage hint → media real-time encode (cap; a held fr
   on the tab's room topic → direct per-window fanout
   → peer: decoder → peer_view widget draws decoded frames into that tab
 ```
+
+Raw captures may be coalesced before encoding. Encoded video units preserve
+reference order within the existing 64 MiB pending storage budget, including
+payload and queue allocations. A fresh keyframe replaces the older pending
+chain. After overflow or a failed direct send, dependent units wait for the
+next codec-specific keyframe; share encoders already emit periodic keyframes.
+Independent pictures keep newest-picture coalescing. Fanout completion carries
+a generation, so an old send cannot change a restarted stream's task or queue.
 
 ### Remote input replay
 ```
@@ -132,7 +141,7 @@ WorkspaceTree
 ├── active_strip: HashMap<WorkspaceId, StripId>
 ├── active_group: HashMap<StripId, GroupId>
 ├── collaborators: Vec<Collaborator>
-└── doc: automerge::AutoCommit          # backing CRDT; not in state.json, saved beside it as state.automerge
+└── doc: automerge::AutoCommit          # backing CRDT; not in state.json, saved beside it as state.automerge + a .log of later changes
 ```
 
 `TileContent` variants with payload encode the discriminant as a string scalar plus a serde-JSON blob in a sibling `Bytes` field — payload merges are last-write-wins for v1.

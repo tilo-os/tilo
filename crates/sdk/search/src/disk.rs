@@ -6,6 +6,12 @@
 //! over their folded ICU words. The index lives in an mmap'ed directory;
 //! the owner writes through one [`DiskWriter`] and searches read the last
 //! commit.
+//!
+//! The reader never polls: tantivy's `OnCommitWithDelay` policy would CRC
+//! `meta.json` on a thread of its own every 500 ms for as long as the index
+//! is open, which on an idle desktop is two wakeups a second for an index
+//! nothing writes. The owner's own [`DiskWriter::commit`] reloads it
+//! instead, and [`DiskIndex::reload`] covers a commit made elsewhere.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -84,7 +90,7 @@ impl DiskIndex {
         index.tokenizers().register(WORDS, WordTokenizer::default());
         let reader = index
             .reader_builder()
-            .reload_policy(ReloadPolicy::OnCommitWithDelay)
+            .reload_policy(ReloadPolicy::Manual)
             .try_into()?;
         // A new reader may start at generation zero and make an existing
         // index look empty.
@@ -128,9 +134,13 @@ impl DiskIndex {
     /// A writer with one indexing thread and `heap_bytes` of memory, whose
     /// merges keep segments below `max_docs_per_segment` documents.
     ///
+    /// The writer's lock is an advisory lock on `.tantivy-writer.lock`,
+    /// which the system releases with the process holding it: the file a
+    /// crashed process leaves behind does not refuse the next writer.
+    ///
     /// # Errors
     ///
-    /// Tantivy's error when another writer holds the index.
+    /// Tantivy's error when another live writer holds the index.
     pub fn writer(
         &self,
         heap_bytes: usize,
@@ -142,11 +152,13 @@ impl DiskIndex {
         writer.set_merge_policy(Box::new(policy));
         Ok(DiskWriter {
             writer,
+            reader: self.reader.clone(),
             fields: self.fields,
         })
     }
 
-    /// Read the last commit now instead of on the reader's own schedule.
+    /// Read the last commit now: for a commit this index's own
+    /// [`DiskWriter`] did not make, since the reader does not poll.
     ///
     /// # Errors
     ///
@@ -205,6 +217,8 @@ impl DiskIndex {
 /// [`commit`](Self::commit).
 pub struct DiskWriter {
     writer: IndexWriter,
+    /// The index's reader, reloaded by each commit.
+    reader: IndexReader,
     fields: Fields,
 }
 
@@ -236,13 +250,28 @@ impl DiskWriter {
             .delete_term(Term::from_field_text(self.fields.key, key));
     }
 
-    /// Make every change searchable.
+    /// Make every change searchable: commit, then move the index's reader
+    /// onto the new commit, on the writer's thread rather than a search's.
     ///
     /// # Errors
     ///
-    /// Tantivy's error when the commit cannot be written.
+    /// Tantivy's error when the commit cannot be written or read back.
     pub fn commit(&mut self) -> tantivy::Result<()> {
-        self.writer.commit().map(|_| ())
+        self.writer.commit()?;
+        self.reader.reload()
+    }
+
+    /// Commit, let the merges that commit started finish, and release the
+    /// writer. Dropping a writer instead discards what it has not committed
+    /// and abandons its merges half done, to be redone by the next writer.
+    ///
+    /// # Errors
+    ///
+    /// Tantivy's error when the commit, a merge or the reload fails.
+    pub fn close(mut self) -> tantivy::Result<()> {
+        self.writer.commit()?;
+        self.writer.wait_merging_threads()?;
+        self.reader.reload()
     }
 }
 
@@ -279,5 +308,75 @@ mod tests {
         assert_eq!(hits.len(), 2);
         assert_eq!(hits[0].key, "/a/shopping.md", "a title word counts more");
         assert!(index.search("retired", 5).is_empty());
+    }
+
+    #[test]
+    fn a_commit_is_searchable_without_a_reload() {
+        let dir = tempfile::tempdir().unwrap();
+        let index = DiskIndex::open_or_create(dir.path()).unwrap();
+        let mut writer = index.writer(15_000_000, 2_000).unwrap();
+        writer.upsert("/a/one.md", 1, "one", "first").unwrap();
+        writer.commit().unwrap();
+        assert_eq!(index.search("first", 5).len(), 1, "the first commit");
+        let seen = index.generation();
+        writer.upsert("/a/two.md", 1, "two", "second").unwrap();
+        writer.commit().unwrap();
+        assert_ne!(index.generation(), seen, "a commit moves the generation");
+        assert_eq!(index.search("second", 5).len(), 1, "a later commit");
+    }
+
+    #[test]
+    fn a_writer_a_crash_left_behind_does_not_lock_the_index() {
+        let dir = tempfile::tempdir().unwrap();
+        let index = DiskIndex::open_or_create(dir.path()).unwrap();
+        // The lock file of a process that died holding the writer.
+        std::fs::write(dir.path().join(".tantivy-writer.lock"), b"").unwrap();
+        let mut writer = index.writer(15_000_000, 2_000).unwrap();
+        writer.upsert("/a/one.md", 1, "one", "first").unwrap();
+        assert!(
+            index.writer(15_000_000, 2_000).is_err(),
+            "a live writer still holds the index"
+        );
+        // A writer whose thread panicked releases the index as it unwinds.
+        std::thread::scope(|scope| {
+            let held = scope.spawn(move || {
+                let _writer = writer;
+                panic!("indexing failed");
+            });
+            assert!(held.join().is_err());
+        });
+        let mut writer = index.writer(15_000_000, 2_000).unwrap();
+        writer.upsert("/a/two.md", 1, "two", "second").unwrap();
+        writer.close().unwrap();
+        assert_eq!(index.search("second", 5).len(), 1, "close commits");
+        assert!(
+            index.search("first", 5).is_empty(),
+            "the panicked writer's change was never committed"
+        );
+        assert!(index.writer(15_000_000, 2_000).is_ok(), "close releases");
+    }
+
+    /// tantivy names its `meta.json` poller `thread-tantivy-meta-file-watcher`;
+    /// the kernel keeps its first 15 bytes.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn an_open_index_starts_no_meta_file_poller() {
+        let dir = tempfile::tempdir().unwrap();
+        let index = DiskIndex::open_or_create(dir.path()).unwrap();
+        let mut writer = index.writer(15_000_000, 2_000).unwrap();
+        writer.upsert("/a/one.md", 1, "one", "first").unwrap();
+        writer.commit().unwrap();
+        let pollers: Vec<String> = std::fs::read_dir("/proc/self/task")
+            .unwrap()
+            .filter_map(|task| {
+                let comm = task.ok()?.path().join("comm");
+                let name = std::fs::read_to_string(comm).ok()?;
+                (name.trim() == "thread-tantivy-").then(|| name.trim().to_owned())
+            })
+            .collect();
+        assert!(
+            pollers.is_empty(),
+            "an open index polls meta.json: {pollers:?}"
+        );
     }
 }

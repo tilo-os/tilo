@@ -106,7 +106,7 @@ fn hex_digest(raw: &str) -> String {
 /// The user's data home, as the *launcher's* own environment describes
 /// it. Mirrors `cli::data_home` so host and in-sandbox sides agree.
 pub fn host_data_home() -> Option<PathBuf> {
-    xdg_paths::xdg::data_home()
+    tilo_paths::xdg::data_home()
 }
 
 /// Host location of one package's directory in one room.

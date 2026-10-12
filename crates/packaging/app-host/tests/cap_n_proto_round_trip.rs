@@ -19,9 +19,8 @@ use std::time::Duration;
 
 use app_host::app_host_capnp::{Pinning as WirePinning, app_host as capnp_app_host};
 use app_host::transport;
-use capnp_rpc::{RpcSystem, rpc_twoparty_capnp, twoparty};
+use capnp_rpc::rpc_twoparty_capnp;
 use package_store::{Catalog, PackageStore, SystemStore};
-use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
 /// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
 const HANG_BOUND: Duration = Duration::from_secs(30);
@@ -90,19 +89,8 @@ impl Harness {
 }
 
 fn client_for(stream: tokio::net::UnixStream) -> capnp_app_host::Client {
-    let (reader, writer) = stream.into_split();
-    let reader = reader.compat();
-    let writer = writer.compat_write();
-    let network = Box::new(twoparty::VatNetwork::new(
-        futures_util::io::BufReader::new(reader),
-        futures_util::io::BufWriter::new(writer),
-        rpc_twoparty_capnp::Side::Client,
-        capnp::message::ReaderOptions::default(),
-    ));
-    let mut rpc_system = RpcSystem::new(network, None);
-    let client: capnp_app_host::Client = rpc_system.bootstrap(rpc_twoparty_capnp::Side::Server);
-    tokio::task::spawn_local(rpc_system);
-    client
+    runtime_portal::CapnpClient::from_connected_io(stream, rpc_twoparty_capnp::Side::Client)
+        .bootstrap()
 }
 
 #[test]

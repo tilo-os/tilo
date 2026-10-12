@@ -22,11 +22,7 @@
 #![cfg_attr(
     test,
     allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
         clippy::string_slice,
-        clippy::panic,
         clippy::unreachable,
         reason = "in a test these are the assertion, not a hazard"
     )
@@ -48,11 +44,15 @@ use automerge::{ActorId, AutoCommit, ChangeHash, LoadOptions, OnPartialLoad, ROO
 
 mod doc_writer;
 mod fs_store;
+pub mod load_hint;
 pub use doc_writer::{DEFAULT_DEBOUNCE, DocOwner, DocWriter, DurabilitySnapshot, StoredLoad};
 pub use fs_store::{FsStore, INSTANCE_VIEWS_DIR};
 
 pub const DOCUMENT_FILE: &str = "state.automerge";
 pub const ACTOR_FILE: &str = "actor";
+/// Beside a large record's document: the change hashes its last full save
+/// listed, so the next load need not rebuild every change (`load_hint`).
+pub const LOAD_HINT_FILE: &str = "state.hashes";
 pub const CANONICAL_GATE: &str = "canonical.lock";
 pub const LOCK_FILE: &str = "writer.lock";
 /// Subdirectory holding one directory per record. See [`DocStore::open_room_record`].
@@ -433,16 +433,6 @@ impl DocStore {
         Ok(opened)
     }
 
-    /// The package-global document path under the standalone state root.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when `package_id` is invalid.
-    pub fn legacy_package_document_path(package_id: &str) -> Result<PathBuf, StoreError> {
-        validate_package_id(package_id)?;
-        Ok(cli::standalone_state_dir(package_id).join(DOCUMENT_FILE))
-    }
-
     /// The existing room-scoped package-primary directory, with explicit custody.
     ///
     /// # Errors
@@ -548,17 +538,27 @@ impl DocStore {
                 Ok(None)
             };
         }
-        let mut doc = AutoCommit::load_with_options(
-            &bytes,
-            LoadOptions::new().on_partial_load(if complete {
-                OnPartialLoad::Error
-            } else {
-                OnPartialLoad::Ignore
-            }),
-        )
-        .map_err(|source| StoreError::Automerge {
-            path: self.document_path().to_path_buf(),
-            source: Box::new(source),
+        // The hashes the last full save listed for these exact bytes, if this
+        // device kept them (`load_hint`); never anything a peer sent.
+        let known = self
+            .owner
+            .store()
+            .read_hint(self.owner.key())
+            .and_then(|hint| load_hint::hashes_for(&hint, &bytes));
+        let options = LoadOptions::new().on_partial_load(if complete {
+            OnPartialLoad::Error
+        } else {
+            OnPartialLoad::Ignore
+        });
+        let options = match known.as_deref() {
+            Some(hashes) => options.known_change_hashes(hashes),
+            None => options,
+        };
+        let mut doc = AutoCommit::load_with_options(&bytes, options).map_err(|source| {
+            StoreError::Automerge {
+                path: self.document_path().to_path_buf(),
+                source: Box::new(source),
+            }
         })?;
         // Check before reading any value: a newer layout may reuse a key with a
         // different meaning, and the writer above saves the whole document back.
@@ -679,10 +679,27 @@ impl DocStore {
         self.refuse_to_write()?;
         ensure_schema_version(doc, self.schema_version);
         let bytes = doc.save();
+        let hint = load_hint::encode(&bytes, doc.committed_document().change_hashes());
         self.commit(WriteOp::Replace(bytes))?;
+        self.keep_load_hint(hint.as_deref());
         self.has_base = Some(true);
         self.persisted = doc.get_heads();
         Ok(())
+    }
+
+    /// Keep `hint` (the change hashes of the replacement just committed)
+    /// beside the document for the next load. Only the primary writer keeps
+    /// one: shared writers' hints would race for one file. A document saved
+    /// without one leaves the previous hint, which names other bytes and is
+    /// ignored.
+    fn keep_load_hint(&self, hint: Option<&[u8]>) {
+        let Some(hint) = hint.filter(|_| self.owner.is_primary()) else {
+            return;
+        };
+        if let Err(error) = self.owner.store().write_hint(self.owner.key(), hint) {
+            // Only the next load's speed depends on it.
+            tracing::debug!(document = %self.document_path().display(), %error, "load hint not kept");
+        }
     }
 
     /// The guard both write paths share; returns the original refusal so a
@@ -836,6 +853,19 @@ pub fn decode_canonical(
     recover_partial: bool,
     label: &Path,
 ) -> Result<(AutoCommit, Option<Vec<u8>>), StoreError> {
+    decode_canonical_with(bytes, recover_partial, label, None)
+}
+
+/// [`decode_canonical`] given the hashes of the changes in the document
+/// chunk `bytes` starts with, as its writer listed them (`load_hint`), so
+/// they are not rebuilt and hashed again. Only for bytes this device's own
+/// store wrote and a hint it kept for exactly them; peer input never.
+fn decode_canonical_with(
+    bytes: &[u8],
+    recover_partial: bool,
+    label: &Path,
+    known_hashes: Option<&[ChangeHash]>,
+) -> Result<(AutoCommit, Option<Vec<u8>>), StoreError> {
     if bytes.is_empty() {
         return Err(StoreError::EmptyExistingDocument {
             path: label.to_path_buf(),
@@ -845,21 +875,23 @@ pub fn decode_canonical(
         path: label.to_path_buf(),
         source: Box::new(source),
     };
-    let (mut doc, repair) = match AutoCommit::load_with_options(
-        bytes,
-        LoadOptions::new().on_partial_load(OnPartialLoad::Error),
-    ) {
-        Ok(doc) => (doc, false),
-        Err(error) if !recover_partial => return Err(automerge_error(error)),
-        Err(_) => (
-            AutoCommit::load_with_options(
-                bytes,
-                LoadOptions::new().on_partial_load(OnPartialLoad::Ignore),
-            )
-            .map_err(automerge_error)?,
-            true,
-        ),
+    let options = |partial| {
+        let options = LoadOptions::new().on_partial_load(partial);
+        match known_hashes {
+            Some(hashes) => options.known_change_hashes(hashes),
+            None => options,
+        }
     };
+    let (mut doc, repair) =
+        match AutoCommit::load_with_options(bytes, options(OnPartialLoad::Error)) {
+            Ok(doc) => (doc, false),
+            Err(error) if !recover_partial => return Err(automerge_error(error)),
+            Err(_) => (
+                AutoCommit::load_with_options(bytes, options(OnPartialLoad::Ignore))
+                    .map_err(automerge_error)?,
+                true,
+            ),
+        };
     validate_canonical_schema_of(&doc, label)?;
     let repair = repair.then(|| doc.save());
     Ok((doc, repair))
@@ -1992,5 +2024,81 @@ mod tests {
                 .unwrap();
             autosave2.flush();
         }
+    }
+
+    #[test]
+    fn a_docstore_save_keeps_a_load_hint_its_next_load_takes() {
+        let tmp = TempDir::new().unwrap();
+        let store: Rc<dyn DurableStore> = Rc::new(FsStore::new(tmp.path()));
+        let key = StorageKey::room_index("so.tilo.test", "room");
+        let mut primary = DocStore::shared(Rc::clone(&store), key.clone()).unwrap();
+        assert!(primary.is_exclusive_writer());
+        // The desktop document's shape: many small changes, few bytes.
+        let mut doc = primary.new_document();
+        for i in 0..load_hint::MIN_HINTED_CHANGES {
+            doc.put(&ROOT, "active", u64::try_from(i % 6).unwrap())
+                .unwrap();
+            doc.commit();
+        }
+        primary.save(&mut doc).unwrap();
+        let saved = store.read(&key).unwrap().unwrap().bytes;
+        assert!(saved.len() < load_hint::MIN_HINTED_BYTES);
+        let hashes = doc.committed_document().change_hashes().to_vec();
+        let hint = store.read_hint(&key).expect("a save keeps a hint");
+        assert_eq!(load_hint::hashes_for(&hint, &saved), Some(hashes.clone()));
+
+        let loaded_hashes = |store: &mut DocStore| {
+            store
+                .load()
+                .unwrap()
+                .expect("stored document")
+                .committed_document()
+                .change_hashes()
+                .to_vec()
+        };
+        assert_eq!(loaded_hashes(&mut primary), hashes);
+
+        // Phase `the_load_takes_the_hint_as_given`: two changes listed in
+        // swapped order (heads unchanged) come back swapped, which a rebuild
+        // never produces.
+        let mut swapped = hashes.clone();
+        swapped.swap(1, 2);
+        store
+            .write_hint(&key, &load_hint::encode(&saved, &swapped).unwrap())
+            .unwrap();
+        assert_eq!(loaded_hashes(&mut primary), swapped);
+
+        // Phase `a_hint_for_other_bytes_is_ignored`.
+        let mut other = doc.fork();
+        other.put(&ROOT, "other", 1).unwrap();
+        other.commit();
+        let mut other_swapped = other.committed_document().change_hashes().to_vec();
+        other_swapped.swap(1, 2);
+        store
+            .write_hint(
+                &key,
+                &load_hint::encode(&other.save(), &other_swapped).unwrap(),
+            )
+            .unwrap();
+        assert_eq!(loaded_hashes(&mut primary), hashes);
+
+        // Phase `a_shared_secondary_writer_keeps_none`.
+        let mut secondary = DocStore::shared(Rc::clone(&store), key.clone()).unwrap();
+        assert!(!secondary.is_exclusive_writer());
+        let before = store.read_hint(&key);
+        let mut copy = secondary.load().unwrap().unwrap();
+        copy.put(&ROOT, "secondary", 1).unwrap();
+        copy.commit();
+        secondary.save(&mut copy).unwrap();
+        assert_eq!(
+            store.read_hint(&key),
+            before,
+            "the secondary's save kept no hint"
+        );
+        assert_eq!(
+            loaded_hashes(&mut secondary),
+            copy.committed_document().change_hashes(),
+            "its bytes load in full past the primary's stale hint"
+        );
     }
 }

@@ -77,7 +77,8 @@ path = "src/relay_offers_cli.rs"
 #   iroh endpoint so the integration tests spin up two relays + N
 #   peers without any external service.
 [dependencies]
-tilo-xdg-paths = { path = "../../system/xdg-paths" }
+tilo-action-policy = { path = "../../collab/action-policy" }
+tilo-paths.workspace = true
 tilo-clock = { path = "../../platform/tilo-clock" }
 web-time = { version = "1", features = ["serde"] }
 tilo-peer-state = { path = "../../collab/tilo-peer-state" }
@@ -175,8 +176,8 @@ tilo-environment = { path = "../../runtime/environment" }
 # Members' tool builds: built as the member, signed here.
 env-tools = { path = "../../runtime/env-tools" }
 tilo-app-package = { path = "../../packaging/tilo-app-package" }
-# Exclusive, owner-only publication of the relay's node secret.
-private-fs = { path = "../../system/private-fs" }
+# App surfaces, fetched by hash from the registry's reviewed payload blobs.
+app-registry = { path = "../../packaging/app-registry" }
 clap.workspace = true
 toml.workspace = true
 anyhow.workspace = true
@@ -243,6 +244,13 @@ path = "tests/held_memory.rs"
 # and the CI test jobs run those tests.
 [[example]]
 name = "inspect-peer-archive"
+test = true
+
+# What an active collaborator costs a relay in CPU, memory and egress (TIL-592):
+# the scheduled lane's `hosting` group (.forgejo/workflows/perf-scheduled.yml).
+# An example, not a binary, so relay images that build `--bins` leave it out.
+[[example]]
+name = "relay_load"
 test = true
 
 [lints]

@@ -88,7 +88,11 @@ impl SelectionComposer {
         edits: &mut ui::widget::Edits<'_>,
         root: &ui::automerge::ObjId,
     ) -> bool {
-        self.rect != Rect::ZERO && self.host.widget_mut().perform_action(action, edits, root)
+        self.rect != Rect::ZERO
+            && self
+                .host
+                .widget_mut()
+                .perform_action(action, &[], edits, root)
     }
 
     pub(crate) fn handle_event(&mut self, ctx: &mut InputEventCtx<'_>) -> Option<FieldOutcome> {

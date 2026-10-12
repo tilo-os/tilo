@@ -19,6 +19,7 @@
 
 use std::collections::HashMap;
 use ui::widget::ModelPath;
+use ui::widget::TaffyTreeExt;
 
 use taffy::style_helpers::length;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -201,27 +202,12 @@ impl ActionButton {
     reason = "the tests exercise both the inherent constructor above and Widget implementation below"
 )]
 mod tests {
+
     use automerge::{AutoCommit, ROOT, ReadDoc};
-    use winit::keyboard::{KeyLocation, NativeKeyCode, PhysicalKey};
 
     use super::*;
 
-    fn press(key: NamedKey) -> WindowEvent {
-        // SAFETY: ActionButton reads only the initialized KeyEvent fields.
-        let mut event: KeyEvent = unsafe { std::mem::zeroed() };
-        event.logical_key = Key::Named(key);
-        event.physical_key = PhysicalKey::Unidentified(NativeKeyCode::Unidentified);
-        event.location = KeyLocation::Standard;
-        event.state = ElementState::Pressed;
-        event.repeat = false;
-        event.text = None;
-        WindowEvent::KeyboardInput {
-            // SAFETY: ActionButton does not inspect the device id.
-            device_id: unsafe { std::mem::zeroed() },
-            event,
-            is_synthetic: false,
-        }
-    }
+    use ui::synthetic_input::named_key;
 
     fn assert_key_fires(key: NamedKey) {
         let (control, presses) = Control::detached("installer", "back", serde_json::Value::Null);
@@ -231,21 +217,11 @@ mod tests {
         let mut taffy = TaffyTree::new();
         let mut node_map = HashMap::new();
         let node = button.build_layout(&mut taffy, &Theme::dark(), &mut node_map);
-        let mut handled = false;
-        let mut focus_target = None;
-        button.handle_event(
-            &press(key),
-            &mut ui::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &winit::event::Modifiers::default(),
-                state: ui::widget::Edits::lend(&mut doc),
-                path: &ROOT,
-                handled: &mut handled,
-                focus_target: &mut focus_target,
-                node_id: node,
-                taffy: &taffy,
-            },
-        );
+        let handled = ui::testing::Dispatch::new()
+            .doc(&mut doc)
+            .layout(&taffy, node)
+            .send(&mut button, &named_key(key))
+            .handled;
         assert!(handled);
         let fired = presses.take().expect("the button fires its action");
         assert_eq!(
@@ -279,6 +255,7 @@ mod tests {
             let mut doc = AutoCommit::new();
             assert!(button.perform_action(
                 &ui::a11y::Action::Activate,
+                &[],
                 &mut ui::widget::Edits::lend(&mut doc),
                 &ROOT
             ));
@@ -292,6 +269,7 @@ mod tests {
             let mut disabled = button.disabled(true);
             assert!(!disabled.perform_action(
                 &ui::a11y::Action::Activate,
+                &[],
                 &mut ui::widget::Edits::lend(&mut doc),
                 &ROOT
             ));
@@ -357,24 +335,11 @@ impl Widget for ActionButton {
                 ..Default::default()
             },
         };
-        #[allow(clippy::unwrap_used, reason = "new_leaf on a fresh style cannot fail")]
-        let node = taffy.new_leaf(style).unwrap();
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        // `layout` only errors for a `NodeId` from a different tree, which
-        // never happens here since `node` is always the id this same widget
-        // received from its own `build_layout` call.
-        #[allow(clippy::unwrap_used, reason = "node always belongs to this tree")]
-        let l = taffy.layout(node).unwrap();
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
+        self.rect = ui::widget::layout_rect(taffy, node, origin);
     }
 
     fn draw(
@@ -557,6 +522,7 @@ impl Widget for ActionButton {
     fn perform_action(
         &mut self,
         action: &ui::a11y::Action,
+        _key_path: &[u64],
         _state: &mut ui::widget::Edits<'_>,
         _root: &ModelPath,
     ) -> bool {

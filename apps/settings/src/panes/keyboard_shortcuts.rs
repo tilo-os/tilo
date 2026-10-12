@@ -16,7 +16,7 @@ use ui::LocalState;
 use ui::framework::{EffectAnswer, EffectCx, Effected};
 use ui::theme::Theme;
 use ui::tilo_resource;
-use ui::widget::{AppModel, ModelPath, ShortcutRecorder, Toggle, Widget};
+use ui::widget::{AppModel, ModelPath, ShortcutRecorder, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::WindowEvent;
@@ -30,7 +30,9 @@ use crate::widgets::{caption, card, rows, setting_row};
 
 /// The shell's desktop navigation preferences, as the person's settings
 /// hold them.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, ui::tilo_resource::Model,
+)]
 pub struct DesktopControls {
     #[serde(default)]
     pub vim_mode: bool,
@@ -39,6 +41,9 @@ pub struct DesktopControls {
 impl ui::storage::SettingsSchema for DesktopControls {
     const SCOPE: ui::storage::Scope = ui::storage::Scope::Shared("desktop_controls");
 }
+
+#[ui::tilo_resource::resource(kind = "settings.desktop-controls", label = "Desktop controls")]
+impl DesktopControls {}
 
 /// The section holding the person's shortcut bindings.
 const SHORTCUTS_SECTION: &str = "shortcuts";
@@ -60,9 +65,6 @@ pub enum ShortcutEffect {
         #[param("The chord, such as `Super+K` or `Ctrl+Alt+T`")]
         chord: String,
     },
-    /// Add Vim-style keys for moving around the desktop, or stop.
-    #[effect(idempotent, label = "Set Vim-style desktop navigation")]
-    SetVimMode { on: bool },
 }
 
 /// Answer `effect`: a chord the catalogue refuses changes nothing and the
@@ -88,9 +90,6 @@ pub(crate) fn answer(
                 .update_section(SHORTCUTS_SECTION, section)
                 .map_err(|error| format!("the shortcut could not be saved: {error}"))?;
             Ok(Effected::done())
-        }
-        ShortcutEffect::SetVimMode { on } => {
-            host.update(|controls: &mut DesktopControls| controls.vim_mode = on)
         }
     }
 }
@@ -152,8 +151,7 @@ pub struct ShortcutPane {
     refused: LocalState<Option<ui::framework::Refused>>,
     refusal_shown: Option<String>,
     structure_dirty: bool,
-    composed: Option<Box<dyn Widget>>,
-    rect: Rect,
+    composed: ui::widget::Composed,
 }
 
 impl ShortcutPane {
@@ -176,8 +174,7 @@ impl ShortcutPane {
             chords,
             refusal_shown: None,
             structure_dirty: false,
-            composed: None,
-            rect: Rect::ZERO,
+            composed: ui::widget::Composed::default(),
         };
         pane.show();
         pane
@@ -233,13 +230,12 @@ impl ShortcutPane {
             .map(|category| {
                 let mut body: Vec<Box<dyn Widget>> = Vec::new();
                 if category == ShortcutCategory::Navigation {
-                    body.push(setting_row(
-                        &t("settings-shortcuts-vim"),
-                        Box::new(self.cx.bind(
-                            Toggle::from_state(&self.vim_mode).with_id("shortcuts.vim_mode"),
-                            effect(ShortcutEffect::SET_VIM_MODE),
-                        )),
-                    ));
+                    body.push(
+                        self.cx
+                            .row(t("settings-shortcuts-vim"))
+                            .id("shortcuts.vim_mode")
+                            .toggle(&self.vim_mode, DesktopControls::paths().vim_mode),
+                    );
                     if let Some(reason) = &self.refusal_shown {
                         body.push(caption(reason));
                     }
@@ -296,9 +292,7 @@ impl Widget for ShortcutPane {
         if self.controls.refresh() {
             self.vim_mode.set(self.controls.get().vim_mode);
         }
-        if let Some(c) = &mut self.composed {
-            c.sync(state, root);
-        }
+        self.composed.sync(state, root);
     }
 
     fn build_layout(
@@ -309,38 +303,11 @@ impl Widget for ShortcutPane {
     ) -> NodeId {
         let mut c = self.composition();
         let child = c.build_layout(taffy, theme, node_map);
-        self.composed = Some(c);
-        let node = taffy
-            .new_with_children(
-                taffy::Style {
-                    display: taffy::Display::Flex,
-                    flex_direction: taffy::FlexDirection::Column,
-                    size: taffy::Size {
-                        width: taffy::Dimension::percent(1.0),
-                        height: taffy::Dimension::auto(),
-                    },
-                    ..Default::default()
-                },
-                &[child],
-            )
-            .unwrap_or(child);
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        self.composed.replace(c);
+        crate::panes::pane_node(taffy, child, node_map, self)
     }
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x + l.size.width),
-            origin.y + f64::from(l.location.y + l.size.height),
-        );
-        if let Some(c) = &mut self.composed
-            && let Ok(children) = taffy.children(node)
-            && let Some(&cn) = children.first()
-        {
-            c.apply_layout(taffy, cn, Point::new(self.rect.x0, self.rect.y0));
-        }
+        self.composed.apply_layout(taffy, node, origin);
     }
     fn draw(
         &mut self,
@@ -350,44 +317,28 @@ impl Widget for ShortcutPane {
         theme: &Theme,
         presence: &ui::presence::PresenceCtx,
     ) {
-        if let Some(c) = &mut self.composed {
+        if let Some(c) = self.composed.element_mut() {
             c.draw(scene, transform, text, theme, presence);
         }
     }
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
-        if let Some(c) = &mut self.composed
-            && let Ok(children) = ctx.taffy.children(ctx.node_id)
-            && let Some(&cn) = children.first()
-        {
-            c.handle_event(event, &mut ctx.reborrow(ctx.path, cn));
-        }
+        self.composed.handle_event(event, ctx);
     }
     fn children(&self) -> Vec<&dyn Widget> {
-        self.composed
-            .as_ref()
-            .map(|c| c.as_ref() as &dyn Widget)
-            .into_iter()
-            .collect()
+        self.composed.children()
     }
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        self.composed
-            .as_mut()
-            .map(|c| c.as_mut() as &mut (dyn Widget + '_))
-            .into_iter()
-            .collect()
+        self.composed.children_mut()
     }
     fn name(&self) -> &'static str {
         "ShortcutPane"
     }
     fn get_rect(&self) -> Rect {
-        self.rect
+        self.composed.rect()
     }
     fn take_structure_dirty(&mut self) -> bool {
         let own = std::mem::take(&mut self.structure_dirty);
-        let child = self
-            .composed
-            .as_mut()
-            .is_some_and(|c| c.take_structure_dirty());
+        let child = self.composed.take_structure_dirty();
         own || child
     }
 }
@@ -459,10 +410,8 @@ mod tests {
             "Super+Shift+l"
         );
 
-        app.effect(&SettingsEffect::from(ShortcutEffect::SetVimMode {
-            on: true,
-        }))
-        .unwrap();
+        crate::host::testing::edit_field(&mut app, "settings.desktop-controls", "vim_mode", true)
+            .unwrap();
         assert!(app.settings::<DesktopControls>().get().vim_mode);
     }
 

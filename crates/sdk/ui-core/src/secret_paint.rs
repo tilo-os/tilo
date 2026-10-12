@@ -59,12 +59,7 @@ mod tests {
     struct SettledSecret;
 
     impl Widget for SettledSecret {
-        crate::testing::inert_widget_methods!(
-            apply_layout,
-            get_rect,
-            leaf_layout,
-            name = "settled-secret"
-        );
+        crate::testing::inert_widget_methods!(leaf_layout, name = "settled-secret");
         fn draw(
             &mut self,
             _: &mut Scene,
@@ -82,16 +77,14 @@ mod tests {
 
     fn frame_shows_secret(widget: &mut dyn Widget) -> bool {
         let presence = crate::presence::PresenceCtx::empty();
-        let permissions = crate::permissions::PermissionContext::permissive();
         let mut text = TextRenderer::new();
         let secrets = SecretPaint::begin();
-        widget.draw_with_presence(
+        widget.draw(
             &mut Scene::new(),
             Affine::IDENTITY,
             &mut text,
             &Theme::dark(),
             &presence,
-            &permissions,
         );
         secrets.finish()
     }

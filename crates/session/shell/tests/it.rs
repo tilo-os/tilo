@@ -27,6 +27,8 @@ mod support;
 mod active_group_wireup_test;
 #[path = "advertised_globals.rs"]
 mod advertised_globals;
+#[path = "argb_opaque_region.rs"]
+mod argb_opaque_region;
 #[path = "blend_layer_cost.rs"]
 mod blend_layer_cost;
 #[path = "bluetooth_pairing.rs"]
@@ -75,10 +77,10 @@ mod dmabuf_commit_barrier;
 mod dmabuf_direct_capture_path;
 #[path = "dmabuf_feedback_protocol.rs"]
 mod dmabuf_feedback_protocol;
+#[path = "dmabuf_scanout_feedback.rs"]
+mod dmabuf_scanout_feedback;
 #[path = "document_open_e2e.rs"]
 mod document_open_e2e;
-#[path = "drm_backend_boot.rs"]
-mod drm_backend_boot;
 #[path = "e2e_shell_flows.rs"]
 mod e2e_shell_flows;
 #[path = "emoji_picker_commit.rs"]
@@ -119,8 +121,12 @@ mod headless_examples_smoke;
 mod identity_startup;
 #[path = "idle_inhibit_protocol.rs"]
 mod idle_inhibit_protocol;
+#[path = "idle_memory.rs"]
+mod idle_memory;
 #[path = "idle_settles.rs"]
 mod idle_settles;
+#[path = "idle_wakeups.rs"]
+mod idle_wakeups;
 #[path = "input_device_settings.rs"]
 mod input_device_settings;
 #[path = "input_method_wire.rs"]
@@ -191,6 +197,8 @@ mod reopen_closed_tab;
 mod runtime_daemon_process;
 #[path = "sandbox_check.rs"]
 mod sandbox_check;
+#[path = "scale_precedes_configure.rs"]
+mod scale_precedes_configure;
 #[path = "server_side_decorations.rs"]
 mod server_side_decorations;
 #[path = "session_lock_e2e.rs"]
@@ -239,8 +247,14 @@ mod window_switcher;
 mod window_transfer_flow;
 #[path = "workspace_settings_state_test.rs"]
 mod workspace_settings_state_test;
+#[path = "workspace_switch_cost.rs"]
+mod workspace_switch_cost;
 #[path = "xdg_activation.rs"]
 mod xdg_activation;
 
 #[path = "vulkan_present_damage.rs"]
 mod vulkan_present_damage;
+
+#[cfg(feature = "test-support")]
+#[path = "network_cost_boundary.rs"]
+mod network_cost_boundary;

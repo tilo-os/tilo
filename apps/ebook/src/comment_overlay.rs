@@ -206,10 +206,11 @@ fn gather_content(
 
 /// Text shown for a note row when its shared editor is not active.
 fn comment_display(a: &Annotation) -> String {
-    if a.note.trim().is_empty() {
+    let note = a.note.clone();
+    if note.trim().is_empty() {
         "Empty comment".to_string()
     } else {
-        a.note.clone()
+        note
     }
 }
 
@@ -684,28 +685,8 @@ mod tests {
     use ui::theme::Theme;
     use vello::Scene;
     use vello::kurbo::Affine;
-    use winit::event::{ElementState, KeyEvent, Modifiers, WindowEvent};
-    use winit::keyboard::{Key, NamedKey, PhysicalKey};
-
-    fn key(logical_key: Key) -> WindowEvent {
-        let text = match &logical_key {
-            Key::Character(text) => Some(text.clone()),
-            _ => None,
-        };
-        let mut event: KeyEvent = unsafe { std::mem::zeroed() };
-        event.physical_key =
-            PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
-        event.logical_key = logical_key;
-        event.location = winit::keyboard::KeyLocation::Standard;
-        event.state = ElementState::Pressed;
-        event.repeat = false;
-        event.text = text;
-        WindowEvent::KeyboardInput {
-            device_id: winit::event::DeviceId::dummy(),
-            event,
-            is_synthetic: false,
-        }
-    }
+    use winit::event::{Modifiers, WindowEvent};
+    use winit::keyboard::NamedKey;
 
     fn annotation(kind: AnnoKind, group: Uuid, note: &str) -> Annotation {
         let mut a = Annotation::new("book", kind, 0, 0).with_group(group);
@@ -782,11 +763,9 @@ mod tests {
 
         // --- phase: comment_editor_writes_the_comment_as_typed_and_enter_finishes ---
         {
-            let mut doc = AutoCommit::new();
             let comment = annotation(AnnoKind::Note, Uuid::new_v4(), "");
             let id = comment.id;
-            crate::doc::BooksDoc::upsert_annotation(&mut doc, &comment);
-            doc.commit();
+            let mut doc = crate::resource::doc_with(&[], std::slice::from_ref(&comment));
             let library = crate::resource::library_dispatcher_for_test();
             let mut overlay = CommentOverlay::default();
             overlay.begin_editing(id, Some(&library));
@@ -810,18 +789,20 @@ mod tests {
                 assert!(!press(
                     &mut overlay,
                     &mut doc,
-                    key(Key::Character(ch.into()))
+                    ui::synthetic_input::char_key(ch)
                 ));
             }
-            let stored = crate::doc::BooksDoc::list_annotations(&doc)
-                .into_iter()
-                .find(|annotation| annotation.id == id)
+            let stored = crate::resource::read_doc(&doc)
+                .annotations
+                .values()
+                .find(|mark| mark.id == id)
+                .map(crate::model::Mark::annotation)
                 .unwrap();
             assert_eq!(stored.note, "ok", "written as typed");
             assert!(press(
                 &mut overlay,
                 &mut doc,
-                key(Key::Named(NamedKey::Enter))
+                ui::synthetic_input::named_key(NamedKey::Enter)
             ));
             assert_eq!(overlay.editing_id(), None);
         }
@@ -837,19 +818,19 @@ mod compact_comment_tests {
 
     #[test]
     fn long_comment_threads_scroll_inside_a_bounded_card_with_reachable_colors_and_footer() {
-        let mut doc = AutoCommit::new();
         let highlight = Annotation::new("book:comments", AnnoKind::Highlight, 0, 0);
         let group = highlight.group;
-        crate::doc::BooksDoc::upsert_annotation(&mut doc, &highlight);
+        let mut marks = vec![highlight];
         for _ in 0..12 {
             let note = Annotation::new("book:comments", AnnoKind::Note, 0, 0)
                 .with_group(group)
                 .with_note(
                     "A long comment that wraps onto several lines in a compact window. ".repeat(4),
                 );
-            crate::doc::BooksDoc::upsert_annotation(&mut doc, &note);
+            marks.push(note);
         }
-        let annotations = crate::doc::BooksDoc::list_annotations(&doc);
+        let mut doc = crate::resource::doc_with(&[], &marks);
+        let annotations = crate::resource::read_doc(&doc).marks();
         let mut overlay = CommentOverlay::default();
         overlay.open(group);
         overlay.set_anchor(Some((20.0, 260.0, 300.0, 290.0)));

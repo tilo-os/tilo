@@ -5,42 +5,23 @@
 //! render, a unit test and a live session resolve the same copy. The locale
 //! follows the usual POSIX variables and falls back per message to `en-US`.
 
-use ui::i18n::{ArgValue, EmbeddedCatalog};
+ui::embedded_catalog!(pub fn, ["en-US", "de-DE"]);
 
-const SOURCE_FTL: &str = include_str!("../locales/en-US.ftl");
-const DE_FTL: &str = include_str!("../locales/de-DE.ftl");
-
-/// Loaded per thread on first use; a host's manager is joined, never replaced.
-static CATALOG: EmbeddedCatalog = catalog();
-
-const fn catalog() -> EmbeddedCatalog {
-    let catalog = EmbeddedCatalog::new(
-        "en-US",
-        &[("en-US", SOURCE_FTL), ("de-DE", DE_FTL)],
-        "display-arrangement-title",
-    )
-    .with_system_locale();
-    // Unit tests assert source copy; keep them independent of the locale of
-    // whichever machine runs them.
-    #[cfg(test)]
-    let catalog = catalog.with_pinned_locale("en-US");
-    catalog
-}
-
-/// Resolve a Settings string key.
-pub fn t(key: &str) -> String {
-    CATALOG.t(key)
-}
-
-/// Resolve a Settings string key with named arguments.
-pub fn t_args(key: &str, args: &[(&str, ArgValue)]) -> String {
-    CATALOG.t_args(key, args)
+/// The English names of a `(label, value)` table, as an effect's or verb's
+/// choices.
+pub(crate) fn english<T>(
+    table: &'static [(&'static str, T)],
+) -> impl Iterator<Item = &'static str> {
+    table.iter().map(|(label, _)| *label)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::collections::BTreeMap;
+
+    const SOURCE_FTL: &str = include_str!("../locales/en-US.ftl");
+    const DE_FTL: &str = include_str!("../locales/de-DE.ftl");
 
     /// `key -> pattern` for every message in a catalogue.
     fn messages(source: &str) -> BTreeMap<&str, &str> {

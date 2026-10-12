@@ -33,7 +33,6 @@ struct Session {
     publish: bool,
     subscribe: bool,
     active: Arc<AtomicBool>,
-    busy: Arc<AtomicBool>,
 }
 impl LiveSession for Session {
     fn room(&self) -> &str {
@@ -49,15 +48,10 @@ impl LiveSession for Session {
         self.subscribe
     }
     fn status(&self) -> AuthorizationStatus {
-        if !self.active.load(Ordering::SeqCst) {
-            AuthorizationStatus::Denied
-        } else if self.busy.load(Ordering::SeqCst) {
-            // Owner commit in progress: unobservable, bounded by the lease.
-            AuthorizationStatus::Unavailable {
-                expires_at: Instant::now() + Duration::from_secs(60),
-            }
-        } else {
+        if self.active.load(Ordering::SeqCst) {
             AuthorizationStatus::Current
+        } else {
+            AuthorizationStatus::Denied
         }
     }
 }
@@ -67,22 +61,20 @@ impl LiveSession for Session {
 struct Authority {
     a: Arc<AtomicBool>,
     b: Arc<AtomicBool>,
-    busy: Arc<AtomicBool>,
 }
 impl LiveAuthority for Authority {
-    fn try_admit(&self, token: &[u8]) -> Result<Arc<dyn LiveSession>, Admission> {
+    fn try_admit(&self, token: &[u8]) -> Result<Arc<dyn LiveSession>, Denied> {
         let (publisher, publish, subscribe, active) = match token {
             b"grant-a" => (A, true, true, self.a.clone()),
             b"grant-b" => (B, true, true, self.b.clone()),
             b"grant-viewer" => (C, false, true, Arc::new(AtomicBool::new(true))),
-            _ => return Err(Admission::Denied),
+            _ => return Err(Denied),
         };
         Ok(Arc::new(Session {
             publisher,
             publish,
             subscribe,
             active,
-            busy: self.busy.clone(),
         }))
     }
     fn presence_seq(&self, frame: &[u8]) -> Option<u64> {
@@ -98,26 +90,17 @@ struct Fixture {
     trust: carrier::Trust,
     a: Arc<AtomicBool>,
     b: Arc<AtomicBool>,
-    busy: Arc<AtomicBool>,
 }
 fn fixture() -> Fixture {
     let a = Arc::new(AtomicBool::new(true));
     let b = Arc::new(AtomicBool::new(true));
-    let busy = Arc::new(AtomicBool::new(false));
     let live = LoopbackLive::start(Arc::new(Authority {
         a: a.clone(),
         b: b.clone(),
-        busy: busy.clone(),
     }))
     .unwrap();
     let trust = carrier::Trust::Fingerprints(live.fingerprints.clone());
-    Fixture {
-        live,
-        trust,
-        a,
-        b,
-        busy,
-    }
+    Fixture { live, trust, a, b }
 }
 fn path(publisher: &str) -> String {
     namespace_path(ROOM, publisher).unwrap()
@@ -772,50 +755,6 @@ async fn inject_and_read(
     })
     .await
     .expect("injected frame delivered")
-}
-
-/// Regression: sustained owner commits make every authority
-/// observation Unavailable for seconds. That is contention, not revocation:
-/// the author's session must stay admitted and host injections for it must
-/// keep flowing throughout.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn sustained_owner_contention_never_revokes_and_injection_keeps_flowing() {
-    let f = fixture();
-    let mut a = connect(&f, b"grant-a", A).await;
-    let b = connect(&f, b"grant-b", B).await;
-    let mut from_a = ops_subscriber(&b, A).await;
-    let mut presence_a = presence_subscriber(&b, A).await;
-    let mut seq = 0;
-    first_presence(&mut a, &mut presence_a, &mut seq).await;
-    f.busy.store(true, Ordering::SeqCst);
-    // Far longer than the former 900 ms outage fence.
-    let started = Instant::now();
-    let mut delivered = 0;
-    while started.elapsed() < Duration::from_millis(2500) {
-        let frame = format!("ok-{delivered}");
-        assert_eq!(
-            inject_and_read(&f, &mut from_a, A, frame.as_bytes()).await,
-            frame.as_bytes()
-        );
-        delivered += 1;
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
-    f.busy.store(false, Ordering::SeqCst);
-    assert!(delivered > 50, "{delivered}");
-    let counters = f.live.relay.counters();
-    assert_eq!(
-        counters.revoked, 0,
-        "busy owner revoked a session: {counters:?}"
-    );
-    assert_eq!(counters.injected_dropped, 0, "{counters:?}");
-    assert!(
-        tokio::time::timeout(Duration::from_millis(50), a.session().closed())
-            .await
-            .is_err()
-    );
-    first_presence(&mut a, &mut presence_a, &mut seq).await;
-    drop(a);
-    drop(b);
 }
 
 /// After an actual revocation the namespace is withdrawn; host injection must

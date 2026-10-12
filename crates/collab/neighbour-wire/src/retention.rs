@@ -4,11 +4,18 @@
 //! else is live session traffic; persisting input, presence, media,
 //! permission prompts or request/response control frames would make them
 //! execute late.
+//!
+//! This is the one host-retention classifier: native publication, the relay
+//! and browser peers all call it, so a host keeps the same history whichever
+//! client wrote it.
 
 use crate::NeighbourMsg;
 
 /// How a retained message relates to the others on its channel.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+///
+/// The variant order is wire format: delivery handoffs serialize it
+/// (postcard variant index `Checkpoint = 0`, `Delta = 1`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Retention {
     /// A complete, idempotent state baseline: the host replaces the previous
     /// checkpoint and its older tail on the same channel.
@@ -40,8 +47,7 @@ pub fn retention(msg: &NeighbourMsg, shell_checkpoint: bool) -> Option<([u8; 32]
             envelope,
             ..
         } => {
-            let route = format!("app\0{app_id}\0{record_id}");
-            let channel = *blake3::hash(route.as_bytes()).as_bytes();
+            let channel = app_document_channel(app_id, record_id);
             // Content-key ciphertext carries its storage class in the signed
             // encryption metadata, so a host retains encrypted history
             // without reading it. A single-use MLS application message is
@@ -135,6 +141,13 @@ pub fn retention(msg: &NeighbourMsg, shell_checkpoint: bool) -> Option<([u8; 32]
     Some((*blake3::hash(route).as_bytes(), kind))
 }
 
+/// The retained channel of an app record. Room isolation is supplied by the
+/// enclosing authenticated workspace, not by this digest.
+#[must_use]
+pub fn app_document_channel(app: &str, record: &str) -> [u8; 32] {
+    *blake3::hash(format!("app\0{app}\0{record}").as_bytes()).as_bytes()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -145,7 +158,7 @@ mod tests {
             collab_types::ArtifactId::new(),
             collab_types::Ed25519PublicKey::from_bytes([1; 32]),
             collab_types::AttestationId::new(),
-            collab_types::OpClass::Splice,
+            collab_types::OpKind::Change,
             std::time::SystemTime::UNIX_EPOCH,
             1,
         );
@@ -177,6 +190,7 @@ mod tests {
         host_retains_channel_governance_per_channel_and_device();
         host_persists_state_but_never_late_session_actions();
         channel_digests_are_stable();
+        retention_wire_bytes_are_frozen();
     }
 
     /// The host replays a checkpoint followed by its tail. A snapshot too
@@ -411,5 +425,19 @@ mod tests {
         )
         .expect("documents are retained");
         assert_eq!(channel, *blake3::hash(b"app\0app\0doc").as_bytes());
+        assert_eq!(channel, app_document_channel("app", "doc"));
+    }
+
+    /// Delivery handoffs serialize the class beside each governance item;
+    /// reordering the variants would silently swap checkpoints and deltas.
+    fn retention_wire_bytes_are_frozen() {
+        for (class, byte) in [(Retention::Checkpoint, 0u8), (Retention::Delta, 1)] {
+            let bytes = postcard::to_allocvec(&class).expect("retention encodes");
+            assert_eq!(bytes, [byte]);
+            assert_eq!(
+                postcard::from_bytes::<Retention>(&bytes).expect("retention decodes"),
+                class
+            );
+        }
     }
 }

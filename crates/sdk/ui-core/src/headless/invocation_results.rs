@@ -1,5 +1,5 @@
 //! Opt-in retention of the actual semantic door outcomes, never its input secrets.
-use super::{FrameHarness, Invocation};
+use super::FrameHarness;
 use crate::widget::ResourceOperationStart;
 use serde::Serialize;
 use std::io::{self, Write};
@@ -151,11 +151,11 @@ impl FrameHarness {
     }
     pub(super) fn retain_invocation_outcome(
         &mut self,
-        invocation: &Invocation,
+        address: &ActionAddress,
         result: &Result<ResourceOperationStart, DoorError>,
     ) -> Result<(), String> {
         if let Some(results) = &mut self.invocation_results {
-            results.record(&invocation.address, result)?;
+            results.record(address, result)?;
         }
         Ok(())
     }
@@ -164,7 +164,7 @@ impl FrameHarness {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::headless::Action;
+    use crate::headless::{Action, Invocation};
     use serde_json::{Value, json};
 
     fn frame() -> FrameHarness {
@@ -179,8 +179,9 @@ mod tests {
     }
     fn invoke(address: ActionAddress, arguments: Value, expected: Option<&str>) -> Action {
         Action::Invoke(Invocation {
-            address,
-            arguments: arguments.as_object().unwrap().clone(),
+            resource: address.resource,
+            action: address.action,
+            args: arguments.as_object().unwrap().clone(),
             confirm: false,
             confirmation_phrase: Some("private confirmation".into()),
             expect_error: expected.map(str::to_owned),
@@ -294,7 +295,7 @@ mod startup_tests {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("results.json");
         let spec = crate::headless::Spec {
-            results: Some(path.clone()),
+            results: Some(path.to_str().unwrap().to_owned()),
             ..Default::default()
         };
         let failure = crate::headless::drive_spec_actions(&spec, &mut frame, |_| {});

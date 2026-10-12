@@ -49,6 +49,10 @@ const COMMANDS: &[(&str, &str)] = &[
         "RecordEffectReceipt",
         "082430303030303030302d303030302d303030302d303030302d3030303030303030303030311000112233445566778899aabbccddeeff03090807",
     ),
+    (
+        "ClaimTopologyNamespace",
+        "092430303030303030302d303030302d303030302d303030302d3030303030303030303030312a",
+    ),
 ];
 
 const REPLIES: &[(&str, &str)] = &[
@@ -209,6 +213,13 @@ fn commands() -> Vec<(&'static str, RoomCommand)> {
                 redacted: vec![9, 8, 7],
             },
         ),
+        (
+            "ClaimTopologyNamespace",
+            RoomCommand::ClaimTopologyNamespace {
+                room: room(),
+                salt: 42,
+            },
+        ),
     ]
 }
 
@@ -339,14 +350,6 @@ fn join_responses() -> Vec<(&'static str, JoinTransportResponse)> {
     ]
 }
 
-fn hex(bytes: &[u8]) -> String {
-    use std::fmt::Write as _;
-    bytes.iter().fold(String::new(), |mut out, byte| {
-        let _ = write!(out, "{byte:02x}");
-        out
-    })
-}
-
 fn assert_stable<T>(what: &str, values: Vec<(&'static str, T)>, expected: &[(&str, &str)])
 where
     T: serde::Serialize + serde::de::DeserializeOwned + PartialEq + std::fmt::Debug,
@@ -359,7 +362,11 @@ where
     );
     for ((name, value), (_, bytes)) in values.into_iter().zip(expected) {
         let encoded = postcard::to_stdvec(&value).unwrap();
-        assert_eq!(hex(&encoded), *bytes, "{what} {name} changed on the wire");
+        assert_eq!(
+            hex::encode(&encoded),
+            *bytes,
+            "{what} {name} changed on the wire"
+        );
         let decoded: T = postcard::from_bytes(&encoded).unwrap();
         assert_eq!(decoded, value, "{what} {name} round-trips");
     }
@@ -402,7 +409,8 @@ fn room_admin_wire_cases_cover_every_variant() {
             | RoomCommand::Pending { .. }
             | RoomCommand::SetRole { .. }
             | RoomCommand::Remove { .. }
-            | RoomCommand::RecordEffectReceipt { .. } => {}
+            | RoomCommand::RecordEffectReceipt { .. }
+            | RoomCommand::ClaimTopologyNamespace { .. } => {}
         }
     }
     for (_, reply) in replies() {
@@ -417,6 +425,6 @@ fn room_admin_wire_cases_cover_every_variant() {
             | RoomReply::Refused(_) => {}
         }
     }
-    assert_eq!(commands().len(), 9);
+    assert_eq!(commands().len(), 10);
     assert_eq!(replies().len(), 8);
 }

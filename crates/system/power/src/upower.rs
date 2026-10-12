@@ -4,7 +4,13 @@
 //! state from the running `upowerd`. As with [`super::logind`], this is pure
 //! I/O — the threshold decisions live in [`super::battery`], which this
 //! module feeds with [`BatterySnapshot`]s.
+//!
+//! The lid and the battery are watched, not polled: `UPower` announces their
+//! changes with `PropertiesChanged`, which [`UPowerMonitor::receive_lid_changes`]
+//! and [`UPowerMonitor::receive_battery_changes`] turn into streams.
 
+use futures_util::StreamExt;
+use futures_util::stream::BoxStream;
 use zbus::Connection;
 
 use crate::battery::{BatterySnapshot, BatteryState};
@@ -74,6 +80,35 @@ impl UPowerMonitor {
     /// Returns an error if the `LidIsClosed` property cannot be read.
     pub async fn lid_is_closed(&self) -> zbus::Result<bool> {
         self.manager.get_property("LidIsClosed").await
+    }
+
+    /// Every change of `LidIsClosed`, then [`Self::lid_is_closed`] reads the
+    /// new value from the proxy's cache. Yields once at once when the value
+    /// is already cached.
+    pub async fn receive_lid_changes(&self) -> zbus::proxy::PropertyStream<'static, bool> {
+        self.manager.receive_property_changed("LidIsClosed").await
+    }
+
+    /// One item per change of the display device's charge, charging state
+    /// or presence — everything [`Self::battery_snapshot`] reads.
+    pub async fn receive_battery_changes(&self) -> BoxStream<'static, ()> {
+        let percentage = self
+            .display
+            .receive_property_changed::<f64>("Percentage")
+            .await
+            .map(|_| ());
+        let state = self
+            .display
+            .receive_property_changed::<u32>("State")
+            .await
+            .map(|_| ());
+        let present = self
+            .display
+            .receive_property_changed::<bool>("IsPresent")
+            .await
+            .map(|_| ());
+        futures_util::stream::select(futures_util::stream::select(percentage, state), present)
+            .boxed()
     }
 
     /// Whether the machine has a lid at all.

@@ -26,11 +26,7 @@
 #![cfg_attr(
     test,
     allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
         clippy::string_slice,
-        clippy::panic,
         clippy::unreachable,
         reason = "in a test these are the assertion, not a hazard"
     )
@@ -751,10 +747,7 @@ mod tests {
         let directory = std::env::temp_dir().join(format!(
             "tilo-deployment-diagnostics-{}-{}",
             std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
+            tilo_clock::try_unix_now_ns().unwrap()
         ));
         std::fs::create_dir(&directory).unwrap();
         let stderr_path = directory.join("job.stderr");

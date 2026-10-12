@@ -210,12 +210,11 @@ mod tests {
     /// A perfectly valid package manifest — the refusal being tested has
     /// to come from the launch *mode*, not from anything wrong with the
     /// package.
-    fn example_manifest() -> crate::manifest::MinimalManifest {
-        toml::from_str(
-            "[package]\nid = \"so.tilo.example\"\nversion = \"1.0.0\"\n\
-             [entrypoint]\nbin = \"bin/example\"\n",
+    fn example_manifest() -> crate::manifest::ManifestView {
+        crate::manifest::test_manifest(
+            "id = \"so.tilo.example\"\nversion = \"1.0.0\"\nkind = \"app\"",
+            "[entrypoint]\nbin = \"bin/example\"\n",
         )
-        .expect("the fixture manifest parses")
     }
 
     #[test]

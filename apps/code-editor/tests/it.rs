@@ -3,6 +3,8 @@
 // in as modules (`pub`, so what each file exported stays exported). nextest
 // still runs each test in its own process.
 
+#[path = "history_and_agents.rs"]
+pub mod history_and_agents;
 #[path = "language_server.rs"]
 pub mod language_server;
 #[path = "windows_terminal.rs"]

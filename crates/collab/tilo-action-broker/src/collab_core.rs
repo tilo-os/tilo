@@ -12,16 +12,6 @@ use collab_types::{
     ValidationError, parse_redact_payload,
 };
 
-/// Native vault adapter; no identity or Secret Service discovery occurs here.
-pub trait SnapshotReceiptVault: Send + Sync {
-    /// Mints the snapshot receipt for `envelope` on `channel`.
-    ///
-    /// # Errors
-    ///
-    /// Returns a message when the vault cannot mint the receipt.
-    fn mint_snapshot_receipt(&self, channel: ChannelId, envelope: &SignedOp) -> Result<(), String>;
-}
-
 const AUDIT_LOG_RING_CAPACITY: usize = 256;
 
 #[derive(Clone, Debug)]
@@ -98,9 +88,6 @@ pub struct BrokerChannels {
     /// a channel is accepted and refreshed on every membership change; the
     /// broker holds the gate, never a key.
     pub gates: HashMap<ChannelId, channel_crypto::ChannelGate>,
-    /// Production Secret Service provider installed by shell startup. Kept
-    /// behind the broker boundary; applications see only opaque receipts.
-    pub mls_vault: Option<Arc<dyn SnapshotReceiptVault>>,
     /// Durable history of content-key ciphertext, so members (including
     /// ones added later) can page back past the in-memory window.
     pub history: Option<super::collab_history::CollabHistoryStore>,
@@ -125,14 +112,6 @@ impl BrokerChannels {
 
     pub fn register_channel_state(&mut self, artifact: ArtifactId, state: ChannelState) {
         self.states.insert(artifact, state);
-    }
-
-    pub fn register_governance_journal(
-        &mut self,
-        channel: ChannelId,
-        journal: channel_crypto::GovernanceJournal,
-    ) {
-        self.governance.insert(channel, journal);
     }
 
     /// Install or refresh a channel's ingress gate.
@@ -228,7 +207,7 @@ impl BrokerChannels {
         {
             for op in &mut page {
                 if state.is_redacted(OpId::from_op(op))
-                    && op.op_class != collab_types::OpClass::Redact
+                    && op.kind != collab_types::OpKind::Redaction
                 {
                     op.payload.clone_from(&marker);
                 }
@@ -308,10 +287,6 @@ impl BrokerChannels {
                 0
             })
     }
-
-    pub fn install_mls_vault(&mut self, vault: Arc<dyn SnapshotReceiptVault>) {
-        self.mls_vault = Some(vault);
-    }
 }
 
 /// Apply a validated Redact envelope to the shared state and durable audit
@@ -357,7 +332,7 @@ pub fn apply_redaction_from_envelope(
 mod tests {
     use std::time::SystemTime;
 
-    use collab_types::{AttestationId, Ed25519PublicKey, OpClass, SignedOp};
+    use collab_types::{AttestationId, Ed25519PublicKey, OpKind, SignedOp};
 
     use super::*;
 
@@ -369,7 +344,7 @@ mod tests {
             artifact,
             Ed25519PublicKey([7; 32]),
             AttestationId::default(),
-            OpClass::Splice,
+            OpKind::Change,
             SystemTime::UNIX_EPOCH,
             seq,
         )

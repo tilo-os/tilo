@@ -192,7 +192,7 @@ fn start(cert: &DeviceCert, surface: u64) -> NeighbourMsg {
 async fn live_observation_preserves_grants_issued_after_its_snapshot() {
     use std::future::{Future as _, poll_fn};
     use std::task::Poll;
-    use tilo_moq::live::{Admission, AuthorizationStatus, LiveAuthority as _};
+    use tilo_moq::live::{AuthorizationStatus, Denied, LiveAuthority as _};
 
     let root = SigningKey::from_bytes(&[71; 32]);
     let (host_key, host) = device(&root, 72, DeviceCapabilities::host());
@@ -246,16 +246,13 @@ async fn live_observation_preserves_grants_issued_after_its_snapshot() {
         .unwrap();
     let grants = live::LiveGrants::new();
     let authority = live::Authority(grants.clone());
-    let issue = |id| {
-        grants.issue(
-            &sessions,
-            session.token,
-            cert.device_public_key,
-            cert.user_public_key,
-            id,
-            None,
-        )
+    let peer = crate::auth::AuthenticatedPeer {
+        user_public_key: cert.user_public_key,
+        device_public_key: cert.device_public_key,
+        cert: cert.clone(),
+        role: crate::auth::PeerRole::Device,
     };
+    let issue = |id| grants.issue(&sessions, session.token, &peer, id, None);
     assert!(issue(73).await.is_none());
     let first = issue(71).await.unwrap();
     let first_live = authority.try_admit(&first.token).unwrap();
@@ -301,10 +298,7 @@ async fn live_observation_preserves_grants_issued_after_its_snapshot() {
         matches!(second_live.status(), AuthorizationStatus::Denied),
         "second_live must remain Denied"
     );
-    assert!(matches!(
-        authority.try_admit(&second.token),
-        Err(Admission::Denied)
-    ));
+    assert!(matches!(authority.try_admit(&second.token), Err(Denied)));
     assert!(issue(72).await.is_none());
     assert!(
         matches!(first_live.status(), AuthorizationStatus::Current),
@@ -321,6 +315,7 @@ async fn live_observation_preserves_grants_issued_after_its_snapshot() {
     sessions
         .context()
         .relay
+        .identity
         .revocations
         .write()
         .unwrap()
@@ -328,11 +323,168 @@ async fn live_observation_preserves_grants_issued_after_its_snapshot() {
         .unwrap();
     grants.observe(&sessions).await;
     assert!(matches!(first_live.status(), AuthorizationStatus::Denied));
-    assert!(matches!(
-        authority.try_admit(&first.token),
-        Err(Admission::Denied)
-    ));
+    assert!(matches!(authority.try_admit(&first.token), Err(Denied)));
     assert!(issue(71).await.is_none());
+    drop(sessions);
+    crate::daemon::Relay::shutdown(relay).await;
+}
+
+/// The grant observer runs when an authority change is announced, not on a
+/// clock: a member removed from a room loses its live grant at once.
+#[tokio::test]
+async fn live_grants_follow_announced_changes() {
+    use tilo_moq::live::{AuthorizationStatus, LiveAuthority as _};
+
+    let root = SigningKey::from_bytes(&[81; 32]);
+    let (host_key, host) = device(&root, 82, DeviceCapabilities::host());
+    let (key, cert) = device(&root, 83, DeviceCapabilities::member());
+    let state = tempfile::tempdir().unwrap();
+    let (relay, sessions) = {
+        let relay = Relay::start_with_relay_mode(
+            RelayConfig {
+                state_root: state.path().into(),
+                ..Default::default()
+            },
+            crate::daemon::RelayIdentity {
+                user_public_key: host.user_public_key,
+                device_signing_key: host_key,
+                device_cert: host,
+                revocations: RevocationList::new(),
+            },
+            iroh::RelayMode::Disabled,
+        )
+        .await
+        .unwrap();
+        for id in [81, 82] {
+            relay
+                .set_workspace_membership(
+                    id,
+                    true,
+                    vec![cert.device_public_key],
+                    state.path().into(),
+                )
+                .await
+                .unwrap();
+        }
+        let sessions = Sessions::new(relay.web_context().clone());
+        (relay, sessions)
+    };
+    let challenge = sessions
+        .hello(&crate::auth::Hello {
+            cert: cert.clone(),
+            client_nonce: [84; 32],
+        })
+        .unwrap();
+    let session = sessions
+        .finish(
+            &challenge.handshake,
+            &crate::auth::HelloAck2 {
+                sig_over_server_nonce: key
+                    .sign(&crate::auth::challenge_digest(&challenge.ack.server_nonce))
+                    .to_bytes(),
+            },
+        )
+        .unwrap();
+    let grants = live::LiveGrants::new();
+    let authority = live::Authority(grants.clone());
+    let observer = tokio::spawn(grants.clone().follow(sessions.clone()));
+    let peer = crate::auth::AuthenticatedPeer {
+        user_public_key: cert.user_public_key,
+        device_public_key: cert.device_public_key,
+        cert: cert.clone(),
+        role: crate::auth::PeerRole::Device,
+    };
+    let mut held = Vec::new();
+    for id in [81, 82] {
+        let grant = grants
+            .issue(&sessions, session.token, &peer, id, None)
+            .await
+            .unwrap();
+        held.push(authority.try_admit(&grant.token).unwrap());
+    }
+    // Removal announces itself; the observer runs well before its old 50 ms
+    // tick plus the carrier's 100 ms recheck.
+    relay
+        .set_workspace_membership(81, true, vec![], state.path().into())
+        .await
+        .unwrap();
+    let denied = tokio::time::timeout(Duration::from_millis(150), async {
+        while matches!(held[0].status(), AuthorizationStatus::Current) {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await;
+    assert!(
+        denied.is_ok(),
+        "a removed member's live grant is withdrawn on the announcement"
+    );
+    assert!(
+        matches!(held[1].status(), AuthorizationStatus::Current),
+        "the other room's grant is untouched"
+    );
+
+    observer.abort();
+    drop(sessions);
+    crate::daemon::Relay::shutdown(relay).await;
+}
+
+#[tokio::test]
+async fn expired_cert_gets_no_live_grant() {
+    let root = SigningKey::from_bytes(&[91; 32]);
+    let (host_key, host) = device(&root, 92, DeviceCapabilities::host());
+    let (_, cert) = device(&root, 93, DeviceCapabilities::member());
+    let state = tempfile::tempdir().unwrap();
+    let (relay, sessions) = {
+        let relay = Relay::start_with_relay_mode(
+            RelayConfig {
+                state_root: state.path().into(),
+                ..Default::default()
+            },
+            crate::daemon::RelayIdentity {
+                user_public_key: host.user_public_key,
+                device_signing_key: host_key,
+                device_cert: host,
+                revocations: RevocationList::new(),
+            },
+            iroh::RelayMode::Disabled,
+        )
+        .await
+        .unwrap();
+        relay
+            .set_workspace_membership(91, true, vec![cert.device_public_key], state.path().into())
+            .await
+            .unwrap();
+        let sessions = Sessions::new(relay.web_context().clone());
+        (relay, sessions)
+    };
+    let grants = live::LiveGrants::new();
+    let peer = |expires_at_ns| crate::auth::AuthenticatedPeer {
+        user_public_key: cert.user_public_key,
+        device_public_key: cert.device_public_key,
+        cert: DeviceCert {
+            expires_at_ns,
+            ..cert.clone()
+        },
+        role: crate::auth::PeerRole::Device,
+    };
+    let current = peer(Some(tilo_clock::unix_now_ns() + 600_000_000_000));
+    assert!(
+        grants
+            .issue(&sessions, [94; 32], &current, 91, None)
+            .await
+            .is_some(),
+        "a current member device gets a live grant"
+    );
+    // Not revoked, still listed: only the certificate's expiry has passed.
+    let expired = peer(Some(1));
+    assert!(
+        grants
+            .issue(&sessions, [95; 32], &expired, 91, None)
+            .await
+            .is_none(),
+        "an expired certificate got a live grant"
+    );
+    assert!(!live::admitted(&sessions, &expired, 91).await);
     drop(sessions);
     crate::daemon::Relay::shutdown(relay).await;
 }

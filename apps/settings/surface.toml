@@ -1,0 +1,422 @@
+# Written by `tilo-app surface`; review changes like an API change.
+
+[[resources]]
+kind = "settings.root"
+label = "Settings"
+version = 1
+
+[[resources]]
+kind = "settings.appearance"
+label = "Appearance"
+version = 1
+person = true
+fields = [
+  { path = "mode", type = "String" },
+  { path = "dark_theme", type = "String" },
+  { path = "light_theme", type = "String" },
+  { path = "custom_themes", type = "Vec<CustomTheme>", readonly = true },
+  { path = "density", type = "f64" },
+  { path = "high_contrast", type = "bool" },
+  { path = "reduce_motion", type = "bool" },
+  { path = "reduce_transparency", type = "bool" },
+  { path = "text_scale", type = "f64" },
+  { path = "ui_scale", type = "f64" },
+  { path = "schedule", type = "String" },
+  { path = "sunrise", type = "String" },
+  { path = "sunset", type = "String" },
+  { path = "wallpaper_scope", type = "String" },
+  { path = "wallpaper_target", type = "String" },
+  { path = "distribution_defaults", type = "Option<ui::theme::DistributionDefaults>", readonly = true },
+  { path = "forced_colors", type = "bool" },
+  { path = "distinct_letters", type = "Option<bool>" },
+]
+
+[[resources.verbs]]
+id = "choose-theme"
+kind = "undoable"
+params = [
+  { name = "theme", required = true, schema = { type = "string" } },
+]
+
+[[resources]]
+kind = "settings.accessibility"
+label = "Accessibility"
+version = 1
+person = true
+fields = [
+  { path = "large_cursor", type = "bool" },
+  { path = "cursor_size", type = "u32" },
+  { path = "screen_reader", type = "bool", readonly = true },
+  { path = "on_screen_keyboard", type = "OnScreenKeyboard" },
+  { path = "sticky_keys", type = "bool" },
+  { path = "slow_keys", type = "bool" },
+  { path = "bounce_keys", type = "bool" },
+  { path = "bounce_keys_delay_ms", type = "u32" },
+  { path = "bounce_keys_alert", type = "bool" },
+  { path = "mouse_keys", type = "bool" },
+  { path = "visual_alerts", type = "bool" },
+  { path = "color_filter", type = "ColorFilter" },
+  { path = "magnifier_zoom", type = "u8" },
+  { path = "magnifier_view", type = "MagnifierView" },
+  { path = "cursor_crosshair", type = "bool" },
+  { path = "thick_text_caret", type = "bool" },
+  { path = "switch_control", type = "bool" },
+  { path = "switch_key_pair", type = "SwitchKeyPair" },
+  { path = "switch_scan_ms", type = "u16" },
+  { path = "screen_reader_rate", type = "u16", readonly = true },
+  { path = "screen_reader_voice", type = "ScreenReaderVoice", readonly = true },
+  { path = "dictation_language", type = "DictationLanguage" },
+  { path = "dictation_literal", type = "bool" },
+]
+
+[[resources]]
+kind = "settings.input"
+label = "Input"
+version = 1
+person = true
+fields = [
+  { path = "touchpad_natural_scroll", type = "bool" },
+  { path = "mouse_natural_scroll", type = "bool" },
+  { path = "tap_to_click", type = "bool" },
+  { path = "pointer_speed", type = "f64" },
+  { path = "touchpad_pointer_speed", type = "Option<f64>" },
+  { path = "mouse_pointer_speed", type = "Option<f64>" },
+  { path = "key_repeat", type = "f64" },
+  { path = "key_repeat_delay_ms", type = "Option<u32>", readonly = true },
+  { path = "key_repeat_rate_hz", type = "Option<u32>", readonly = true },
+  { path = "keyboard_layout", type = "String", readonly = true },
+  { path = "tap_drag", type = "bool" },
+  { path = "tap_drag_lock", type = "bool" },
+  { path = "disable_while_typing", type = "bool" },
+  { path = "middle_emulation", type = "bool" },
+  { path = "left_handed", type = "bool" },
+  { path = "accel_profile", type = "String" },
+  { path = "touchpad_gestures", type = "bool" },
+  { path = "touchpad_enabled", type = "bool" },
+  { path = "touchpad_disabled_on_external_mouse", type = "bool" },
+  { path = "touchpad_click_method", type = "settings_store::hardware::TouchpadClickMethod" },
+  { path = "touchpad_scroll_method", type = "settings_store::hardware::TouchpadScrollMethod" },
+  { path = "scroll_speed", type = "f64" },
+  { path = "compose_key", type = "Option<String>", readonly = true },
+  { path = "caps_lock", type = "Option<String>", readonly = true },
+  { path = "keyboard_layouts", type = "Vec<String>", readonly = true },
+  { path = "keyboard_model", type = "String", readonly = true },
+  { path = "keyboard_assignments", type = "std::collections::BTreeMap<String, settings_store::keyboard_sources ::\nKeyboardProfile>", readonly = true },
+  { path = "keyboard_preview", type = "Option<String>", readonly = true },
+  { path = "keyboard_preview_extra_levels", type = "bool", readonly = true },
+  { path = "keyboard_preview_level", type = "usize", readonly = true },
+  { path = "keyboard_inspected_key", type = "String", readonly = true },
+  { path = "tablets", type = "std::collections::BTreeMap<String, settings_store::hardware ::\nTabletConfig>", readonly = true },
+]
+
+[[resources.verbs]]
+id = "set-key-repeat"
+kind = "undoable"
+params = [
+  { name = "rate", required = true, schema = { type = "number" } },
+]
+
+[[resources]]
+kind = "settings.text-assistance"
+label = "Spelling and text"
+version = 1
+person = true
+fields = [
+  { path = "check_spelling", type = "bool" },
+  { path = "auto_correct", type = "bool" },
+  { path = "spelling_language", type = "String" },
+]
+
+[[resources]]
+kind = "settings.power"
+label = "Power"
+version = 1
+person = true
+fields = [
+  { path = "auto_suspend", type = "bool" },
+  { path = "suspend_minutes", type = "u32" },
+  { path = "saver_suspend_minutes", type = "u32" },
+  { path = "balanced_suspend_minutes", type = "u32" },
+  { path = "performance_suspend_minutes", type = "u32" },
+  { path = "blank_minutes", type = "u32" },
+  { path = "lock_minutes", type = "u32" },
+  { path = "lid_close_action", type = "PowerActionPref" },
+  { path = "power_key_action", type = "PowerActionPref" },
+  { path = "low_battery_percent", type = "u32" },
+  { path = "critical_battery_percent", type = "u32" },
+  { path = "critical_action", type = "PowerActionPref" },
+]
+
+[[resources]]
+kind = "settings.updates"
+label = "Updates"
+version = 2
+person = true
+fields = [
+  { path = "auto", type = "bool", readonly = true },
+  { path = "last_checked", type = "String", readonly = true },
+]
+
+[[resources]]
+kind = "settings.notifications"
+label = "Notifications"
+version = 1
+person = true
+fields = [
+  { path = "do_not_disturb", type = "bool" },
+  { path = "show_banners", type = "bool" },
+  { path = "show_previews", type = "bool" },
+  { path = "play_sounds", type = "bool" },
+  { path = "show_on_lock_screen", type = "bool" },
+  { path = "show_badges", type = "bool" },
+  { path = "focus", type = "settings_store::notification_policy::FocusSchedule", stored = "record" },
+  { path = "focus.enabled", type = "bool" },
+  { path = "focus.start_minute", type = "u16" },
+  { path = "focus.end_minute", type = "u16" },
+  { path = "focus.weekdays", type = "u8" },
+  { path = "focus.allow_priority", type = "bool" },
+  { path = "per_app", type = "std::collections::BTreeMap<String, settings_store::notification_policy\n::AppNotificationRule,>" },
+]
+
+[[resources.verbs]]
+id = "mute-app"
+kind = "undoable"
+params = [
+  { name = "app", required = true, schema = { type = "string" } },
+  { name = "duration", required = true, schema = { type = "string" } },
+]
+
+[[resources]]
+kind = "settings.audio"
+label = "Sound"
+version = 1
+person = true
+fields = [
+  { path = "system_sounds", type = "settings_store::system_sounds::SystemSoundPrefs", stored = "record" },
+  { path = "system_sounds.enabled", type = "bool" },
+  { path = "system_sounds.volume", type = "f64" },
+  { path = "system_sounds.theme", type = "Option<String>" },
+  { path = "system_sounds.events", type = "SystemSoundEvents", stored = "record" },
+  { path = "system_sounds.events.notification", type = "bool" },
+  { path = "system_sounds.events.message", type = "bool" },
+  { path = "system_sounds.events.volume_change", type = "bool" },
+  { path = "system_sounds.events.screenshot", type = "bool" },
+  { path = "system_sounds.events.device_connected", type = "bool" },
+  { path = "system_sounds.events.device_disconnected", type = "bool" },
+  { path = "system_sounds.events.low_battery", type = "bool" },
+  { path = "system_sounds.events.error", type = "bool" },
+  { path = "output_device", type = "Option<String>", readonly = true },
+  { path = "input_device", type = "Option<String>", readonly = true },
+  { path = "balance", type = "f32" },
+  { path = "mono_output", type = "bool", readonly = true },
+  { path = "echo_cancellation", type = "bool", readonly = true },
+]
+
+[[resources]]
+kind = "settings.display"
+label = "Displays"
+version = 1
+person = true
+fields = [
+  { path = "auto_brightness", type = "bool", readonly = true },
+  { path = "night_light", type = "bool" },
+  { path = "night_light_temperature", type = "u32" },
+  { path = "night_light_schedule", type = "bool" },
+  { path = "scale", type = "f64" },
+]
+
+[[resources]]
+kind = "settings.locale"
+label = "Region and language"
+version = 1
+person = true
+fields = [
+  { path = "currency", type = "Currency" },
+  { path = "date_format", type = "DateStyle" },
+  { path = "time_format", type = "TimeStyle" },
+  { path = "measurement", type = "Measurement" },
+  { path = "number_style", type = "NumberStyle" },
+  { path = "first_day_of_week", type = "FirstDayOfWeek" },
+]
+
+[[resources]]
+kind = "settings.continuity"
+label = "Continuity"
+version = 1
+person = true
+fields = [
+  { path = "enabled", type = "bool", readonly = true },
+  { path = "clipboard", type = "bool", readonly = true },
+  { path = "notifications", type = "bool", readonly = true },
+  { path = "wifi_settings", type = "bool", readonly = true },
+  { path = "media", type = "bool", readonly = true },
+  { path = "display_input", type = "bool", readonly = true },
+  { path = "file_transfer", type = "bool", readonly = true },
+  { path = "realtime_sessions", type = "bool", readonly = true },
+  { path = "typed_gamepad", type = "bool", readonly = true },
+  { path = "app_continuations", type = "bool", readonly = true },
+  { path = "audit", type = "Vec<AuditEntry>", readonly = true },
+]
+
+[[resources.verbs]]
+id = "allow-continuity"
+kind = "undoable"
+params = [
+  { name = "on", required = true, schema = { type = "boolean" } },
+]
+
+[[resources.verbs]]
+id = "allow-capability"
+kind = "undoable"
+params = [
+  { name = "capability", required = true, schema = { type = "string" } },
+  { name = "on", required = true, schema = { type = "boolean" } },
+]
+
+[[resources]]
+kind = "settings.desktop-controls"
+label = "Desktop controls"
+version = 1
+person = true
+fields = [
+  { path = "vim_mode", type = "bool" },
+]
+
+[[resources]]
+kind = "settings.agent-providers"
+label = "Agent model providers"
+version = 1
+person = true
+fields = [
+  { path = "config", type = "ProviderConfig", readonly = true, stored = "record" },
+  { path = "config.profiles", type = "Vec<ProviderProfile>" },
+  { path = "config.default_profile", type = "Option<String>" },
+]
+
+[[resources]]
+kind = "settings.default-apps"
+label = "Default apps"
+version = 1
+person = true
+fields = [
+  { path = "handlers", type = "BTreeMap<String, String>", readonly = true },
+]
+
+[[resources]]
+kind = "settings.display-arrangement"
+label = "Display arrangement"
+version = 1
+person = true
+fields = [
+  { path = "arrangement", type = "Arrangement", readonly = true },
+]
+
+[[resources]]
+kind = "settings.automatic-display"
+label = "Automatic display input"
+version = 1
+person = true
+fields = [
+  { path = "automatic_display_input", type = "bool", readonly = true },
+]
+
+[[resources]]
+kind = "settings.osk-sources"
+label = "On-screen keyboard layouts"
+version = 1
+person = true
+fields = [
+  { path = "layout", type = "String", readonly = true },
+  { path = "layouts", type = "Vec<String>", readonly = true },
+]
+
+[[resources]]
+kind = "tilo.accounts"
+label = "Accounts"
+version = 1
+person = true
+fields = [
+  { path = "accounts", type = "Collection<PersonAccount>", stored = "collection" },
+  { path = "accounts.*.type_id", type = "String" },
+  { path = "accounts.*.display_name", type = "String" },
+  { path = "accounts.*.config", type = "Json<serde_json::Value>" },
+  { path = "accounts.*.enabled", type = "bool" },
+  { path = "accounts.*.tint", type = "u8" },
+  { path = "active", type = "BTreeMap<String, String>" },
+]
+
+[[resources.verbs]]
+id = "publish-browser-identity"
+kind = "undoable"
+params = [
+  { name = "root", required = true, schema = { type = "string" } },
+  { name = "origin", required = true, schema = { type = "string" } },
+  { name = "display_name", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "save-account"
+kind = "undoable"
+params = [
+  { name = "id", required = true, schema = { type = "string" } },
+  { name = "type_id", required = true, schema = { type = "string" } },
+  { name = "display_name", required = true, schema = { type = "string" } },
+  { name = "config", required = true, schema = {} },
+  { name = "enabled", required = true, schema = { type = "boolean" } },
+  { name = "tint", required = true, schema = { type = "integer", maximum = 255, minimum = 0 } },
+]
+
+[[resources.verbs]]
+id = "publish-signal-account"
+kind = "undoable"
+params = [
+  { name = "id", required = true, schema = { type = "string" } },
+  { name = "display_name", required = true, schema = { type = "string" } },
+  { name = "aci", required = true, schema = { type = "string" } },
+  { name = "generation", required = true, schema = { type = "integer", minimum = 0 } },
+]
+
+[[resources.verbs]]
+id = "publish-sms-account"
+kind = "undoable"
+params = [
+  { name = "id", required = true, schema = { type = "string" } },
+  { name = "display_name", required = true, schema = { type = "string" } },
+  { name = "scope", required = true, schema = { type = "string" } },
+  { name = "generation", required = true, schema = { type = "integer", minimum = 0 } },
+]
+
+[[resources.verbs]]
+id = "publish-whatsapp-account"
+kind = "undoable"
+params = [
+  { name = "id", required = true, schema = { type = "string" } },
+  { name = "display_name", required = true, schema = { type = "string" } },
+  { name = "jid", required = true, schema = { type = "string" } },
+  { name = "generation", required = true, schema = { type = "integer", minimum = 0 } },
+]
+
+[[resources.verbs]]
+id = "publish-tilo-account"
+kind = "undoable"
+params = [
+  { name = "id", required = true, schema = { type = "string" } },
+  { name = "display_name", required = true, schema = { type = "string" } },
+  { name = "scope", required = true, schema = { type = "string" } },
+  { name = "generation", required = true, schema = { type = "integer", minimum = 0 } },
+]
+
+[[resources.verbs]]
+id = "remove-account"
+kind = "undoable"
+params = [
+  { name = "account", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "set-active-account"
+kind = "undoable"
+params = [
+  { name = "account", required = true, schema = { type = "string" } },
+]
+

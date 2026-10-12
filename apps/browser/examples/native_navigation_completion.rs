@@ -4,7 +4,6 @@
 //! `--host PATH` instead exercises an existing runtime's exact host bytes.
 
 use sha2::{Digest, Sha256};
-use std::fmt::Write as _;
 use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::sync::Arc;
@@ -188,13 +187,7 @@ fn history_roundtrip(
         .person::<browser::history::BrowsingHistory>()
         .ok_or("missing ordinary Browser history record")?;
     let visits = |url: &str| {
-        history.with(|state| {
-            state
-                .entries()
-                .iter()
-                .find(|entry| entry.url == url)
-                .map_or(0, |entry| entry.visit_count)
-        })
+        history.with(|state| state.visits.get(url).map_or(0, |visit| visit.count.get()))
     };
     let before = visits(url);
     let fragment = format!("{url}#second");
@@ -499,10 +492,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             Err("native fixture failed".into())
         };
     }
-    let mut host_hash = String::with_capacity(64);
-    for byte in Sha256::digest(std::fs::read(&host)?) {
-        write!(&mut host_hash, "{byte:02x}")?;
-    }
+    let host_hash = hex::encode(Sha256::digest(std::fs::read(&host)?));
     println!("native fixture host SHA256: {host_hash}");
     let mut environment = tilo_test_env::ScopedEnv::new();
     environment.set(ui::webview::chromium::runtime::HOST_OVERRIDE_ENV, &host);

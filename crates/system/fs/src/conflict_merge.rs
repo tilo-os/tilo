@@ -6,7 +6,7 @@
 //! the selected codec and every input version in a signed transaction before
 //! publishing the returned bytes.
 
-use collab_types::{FileVersionId, FileVersionV1};
+use fs_protocol::{FileVersionId, FileVersionV1};
 use std::collections::{BTreeMap, BTreeSet};
 use thiserror::Error;
 use tilo_automerge_isolate::{Applied, Dependencies};
@@ -326,7 +326,7 @@ pub enum DeterministicMergeError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use collab_types::{ContentHash, FileActor, FileProvenance, FileRecordId};
+    use fs_protocol::{ContentHash, FileActor, FileProvenance, FileRecordId};
     use tilo_doc::Document;
 
     fn version(value: u128) -> FileVersionId {

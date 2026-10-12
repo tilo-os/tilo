@@ -317,14 +317,15 @@ so dependency resolution, ELF linkage, package metadata, installation, and
 `ldd` verification all exercise the target ABI. The runner must expose Docker
 and allow ordinary Docker create/copy/export/start operations. The deferred
 cross-architecture path additionally needs unprivileged `ptrace`. RPM tag
-publication additionally requires protected `TILO_RPM_SIGNING_KEY_B64` and
-`TILO_RPM_SIGNING_KEY_ID` secrets plus the protected
-`TILO_RPM_SIGNING_FINGERPRINT` variable. The key must be an unencrypted armored
-private key because non-interactive `rpmsign` cannot prompt for a passphrase;
-the signing workflow imports it only into a mode-0700 temporary keyring and
-never publishes it. If policy requires a passphrase-protected key, add an
-approved RPM-signing credential-broker implementation before enabling release
-publication. The existing `REGISTRY_TOKEN` remains the package-upload
+publication additionally requires an approved isolated broker and a protected
+`TILO_RPM_SIGNING_FINGERPRINT` variable. The separate protected-tag signing job
+uses native Forgejo OIDC; package build/install-test userspaces receive neither
+OIDC nor a private key. Only the isolated service holds a dedicated compatible
+OpenPGP authority. The runner receives signed copies and public provenance,
+verifies their signatures and identical immutable headers/payloads, and retains
+both signing and host-session gates. See [the broker protocol and exact separate
+live approval boundary](desktop-rpm-broker.md). No private key belongs in a
+repository-wide Actions secret. The existing `REGISTRY_TOKEN` remains the package-upload
 credential and must have repository and package write permission for tag
 releases.
 

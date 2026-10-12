@@ -8,7 +8,7 @@
 //! whole versions just to classify them.
 
 use crate::namespace::Namespace;
-use collab_types::FileNameV1;
+use fs_protocol::FileNameV1;
 
 /// The schema of a document serialized into a record's bytes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
