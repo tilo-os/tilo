@@ -30,11 +30,12 @@
 use crate::time::{Duration, UNIX_EPOCH};
 
 use automerge::transaction::Transactable;
-use automerge::{AutoCommit, ObjId, ObjType, PatchAction, Prop, ReadDoc, ScalarValue, Value};
+use automerge::{AutoCommit, ObjType, PatchAction, Prop, ReadDoc, Value};
 
 use crate::history_source::authors::AuthorDirectory;
 use crate::widget::history::HistoryEntryId;
 use crate::widget::history_group::{NamedRange, from_hex16, hex16};
+use tilo_automerge::read::{int_at, str_at};
 
 /// Namespaced so it cannot collide with an app's own schema: `qdoc` uses
 /// `content` / `comments` / `props`, and the shell's room document uses
@@ -292,27 +293,6 @@ pub fn is_group_marker(patches: &[automerge::Patch]) -> bool {
                 _ => false,
             },
         })
-}
-
-pub(super) fn str_at(doc: &AutoCommit, obj: &ObjId, key: &str) -> Option<String> {
-    match doc.get(obj, key) {
-        Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
-            ScalarValue::Str(t) => Some(t.to_string()),
-            _ => None,
-        },
-        _ => None,
-    }
-}
-
-pub(super) fn int_at(doc: &AutoCommit, obj: &ObjId, key: &str) -> Option<i64> {
-    match doc.get(obj, key) {
-        Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
-            ScalarValue::Int(n) => Some(*n),
-            ScalarValue::Uint(n) => Some(i64::try_from(*n).unwrap_or(i64::MAX)),
-            _ => None,
-        },
-        _ => None,
-    }
 }
 
 #[cfg(test)]

@@ -26,6 +26,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::ops::Bound;
 use std::sync::Arc;
 use tilo_automerge::ApplyIncoming;
+use tilo_automerge::read::{map_at, str_at, str_entries};
 use tilo_content::{ContentInputs, ContentMeta, ContentSource};
 
 mod bulk;
@@ -1445,29 +1446,6 @@ pub fn doc_prop(doc: &AutoCommit, c: &Containers, name: &str) -> Option<String> 
 /// All document properties (`name → value`) as a sorted map, empty if none are set.
 pub fn doc_props(doc: &AutoCommit, c: &Containers) -> BTreeMap<String, String> {
     props_obj(doc, c).map_or_else(BTreeMap::new, |props| str_entries(doc, &props))
-}
-
-/// The string at `obj[key]`, `None` when absent or not a string.
-pub(crate) fn str_at(doc: &impl ReadDoc, obj: &ObjId, key: &str) -> Option<String> {
-    match doc.get(obj, key) {
-        Ok(Some((v, _))) => v.as_str().map(str::to_string),
-        _ => None,
-    }
-}
-
-/// The map object at `obj[key]`, `None` when absent or not a map.
-pub(crate) fn map_at(doc: &impl ReadDoc, obj: &ObjId, key: &str) -> Option<ObjId> {
-    match doc.get(obj, key) {
-        Ok(Some((Value::Object(ObjType::Map), id))) => Some(id),
-        _ => None,
-    }
-}
-
-/// Every string entry of the map `obj`, sorted by key; non-string values are skipped.
-pub(crate) fn str_entries(doc: &impl ReadDoc, obj: &ObjId) -> BTreeMap<String, String> {
-    doc.keys(obj)
-        .filter_map(|k| str_at(doc, obj, &k).map(|v| (k, v)))
-        .collect()
 }
 
 pub fn block_kind(doc: &AutoCommit, c: &Containers, id: &str) -> Option<String> {
