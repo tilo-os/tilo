@@ -14261,6 +14261,7 @@ dependencies = [
  "emoji",
  "file-explorer",
  "fnv",
+ "fs-protocol",
  "futures-util",
  "gbm",
  "getrandom 0.4.3",

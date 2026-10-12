@@ -232,7 +232,7 @@ pub enum ShareManagementError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::share_authority::{ShareGrantStatus, ShareSubjectProjection};
+    use fs_protocol::{ShareGrantStatus, ShareSubjectProjection};
     use iroh::SecretKey;
 
     const NOW: u64 = 10_000;
