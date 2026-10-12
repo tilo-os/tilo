@@ -270,15 +270,61 @@ pub fn agent_default(scope: &[TreePath]) -> Preset {
     )
 }
 
+/// What an agent is in a room, decided in one place.
+///
+/// An agent is an ordinary collaborator acting for one person: it never holds
+/// more than that person's role, never more than what its room admission
+/// grants it, and never more than [`ROLE_CAP`]. Every host — the relay
+/// governing a room, every member admitting its ops, the desktop broker
+/// hosting a room itself — asks [`role`] rather than deciding on its own.
+///
+/// Four questions about agents are still open. Until they are decided each
+/// keeps the answer the first agent-collaborator release gave it, and each
+/// is changed here:
+///
+/// 1. Is an agent's role capped at Editor? [`ROLE_CAP`]: yes.
+/// 2. May another person's agent join a room? [`OTHER_PEOPLES_AGENTS_JOIN`]:
+///    no; a room's governor admits only its own person's agents.
+/// 3. What does withdrawing an agent mean? [`WITHDRAWAL_IS_FINAL`]: a
+///    withdrawn agent device is never admitted again; granting it anew
+///    needs a new agent key.
+/// 4. Do members enforce the app scope of an agent's delegation? Not yet:
+///    the agent's host does, and members enforce the delegation's rooms and
+///    expiry only. Enforcing it at members needs the app on every op, which
+///    the room's ops do not carry.
+pub mod agent_policy {
+    use crate::Role;
+
+    /// The most an agent ever acts as, whoever it acts for. An agent never
+    /// governs a room.
+    pub const ROLE_CAP: Role = Role::Editor;
+
+    /// Whether a room's governor admits an agent of a person other than its
+    /// own (open question 2; see the module documentation).
+    pub const OTHER_PEOPLES_AGENTS_JOIN: bool = false;
+
+    /// Whether withdrawing an agent from a room is final for its device
+    /// (open question 3; see the module documentation).
+    pub const WITHDRAWAL_IS_FINAL: bool = true;
+
+    /// The role an agent acts with when its person holds `person` and its
+    /// room admission (its preset, or its delegation) grants it `granted`:
+    /// the least of the two and [`ROLE_CAP`]. Never more than either.
+    #[must_use]
+    pub fn role(person: Role, granted: Role) -> Role {
+        person.min(granted).min(ROLE_CAP)
+    }
+}
+
 /// The delegation a delegated agent `agent` of `person` carries in `room`:
-/// the Editor preset. The agent acts with its person's grants bounded by it,
-/// so it changes what its person may change, never more than an Editor, and
-/// never the room's governance.
+/// the preset of [`agent_policy::ROLE_CAP`]. The agent acts with its person's
+/// grants bounded by it, so it changes what its person may change, never more
+/// than the cap allows, and never the room's governance.
 #[must_use]
 pub fn agent_delegation(room: &str, agent: &str, person: &str) -> crate::Bound {
     crate::Bound::delegation(
         Subject::Agent(agent.to_owned()),
-        &role_preset(Role::Editor, room),
+        &role_preset(agent_policy::ROLE_CAP, room),
         person,
     )
 }
