@@ -346,16 +346,41 @@ impl BrokerTransport {
     }
 
     fn park(&mut self, command: SdkCommand) {
-        if let SdkCommand::Primary(CollabRequest::PublishActions { app_id, .. }) = &command
-            && let Some(older) = self.spill.iter_mut().find(|parked| {
-                matches!(parked, SdkCommand::Primary(CollabRequest::PublishActions { app_id: parked_app, .. })
-                    if parked_app == app_id)
-            })
-        {
-            // The surface is level-triggered: only the latest matters.
-            *older = command;
-        } else {
-            self.spill.push_back(command);
+        match command {
+            // A surface delta waiting for room folds into the one already
+            // waiting for this app, so a burst of republications is one
+            // delta however long the shovel stalls.
+            SdkCommand::Primary(CollabRequest::PublishActionSurface { app_id, delta }) => {
+                let waiting = self.spill.iter_mut().find_map(|parked| match parked {
+                    SdkCommand::Primary(CollabRequest::PublishActionSurface {
+                        app_id: parked_app,
+                        delta: older,
+                    }) if *parked_app == app_id => Some(older),
+                    _ => None,
+                });
+                if let Some(older) = waiting {
+                    *older = std::mem::take(older).then(delta);
+                } else {
+                    self.spill.push_back(SdkCommand::Primary(
+                        CollabRequest::PublishActionSurface { app_id, delta },
+                    ));
+                }
+            }
+            // A whole surface supersedes an older one still waiting.
+            SdkCommand::Primary(CollabRequest::PublishActions { app_id, actions }) => {
+                let waiting = self.spill.iter_mut().find(|parked| {
+                    matches!(parked, SdkCommand::Primary(CollabRequest::PublishActions {
+                        app_id: parked_app, ..
+                    }) if *parked_app == app_id)
+                });
+                let whole = SdkCommand::Primary(CollabRequest::PublishActions { app_id, actions });
+                if let Some(older) = waiting {
+                    *older = whole;
+                } else {
+                    self.spill.push_back(whole);
+                }
+            }
+            command => self.spill.push_back(command),
         }
         // Arm before the retry so a release racing it is never missed.
         self.state.command_bytes.arm_room_wake();
@@ -965,6 +990,37 @@ fn request_bytes(request: &CollabRequest) -> Option<usize> {
             meter.add_product(actions.capacity(), std::mem::size_of::<ExportedAction>());
             for action in actions {
                 exported_action_bytes(action, &mut meter);
+            }
+        }
+        CollabRequest::PublishActionSurface { app_id, delta } => {
+            meter.string_capacity(app_id);
+            meter.add_product(
+                delta.shapes.capacity(),
+                std::mem::size_of::<(runtime_collab::ShapeId, ExportedAction)>(),
+            );
+            for (_, shape) in &delta.shapes {
+                exported_action_bytes(shape, &mut meter);
+            }
+            meter.add_product(
+                delta.templates.capacity(),
+                std::mem::size_of::<(runtime_collab::ShapeId, Vec<runtime_collab::ShapeId>)>(),
+            );
+            for (_, members) in &delta.templates {
+                meter.add_product(members.capacity(), runtime_collab::SHAPE_ID_BYTES);
+            }
+            meter.add_product(
+                delta.resources.capacity(),
+                std::mem::size_of::<runtime_collab::SurfaceResource>(),
+            );
+            for resource in &delta.resources {
+                meter.string_capacity(&resource.resource);
+                meter.string_capacity(&resource.fields.resource_kind);
+                meter.string_capacity(&resource.fields.resource_label);
+                serialized_bytes(&resource.fields.semantic_identity, &mut meter);
+            }
+            meter.add_product(delta.removed.capacity(), std::mem::size_of::<String>());
+            for resource in &delta.removed {
+                meter.string_capacity(resource);
             }
         }
         CollabRequest::ReportContinuation {
@@ -2014,13 +2070,21 @@ fn admit_sdk_command(
         };
     }
     let transient = command.is_transient_presence();
-    let bytes = command_bytes(&command);
-    // A command alone above the budget is admitted into an empty one, so it
-    // can always make progress; a metering overflow is treated as that.
-    let Some(reservation) = state.command_bytes.reserve_sole(
-        bytes.unwrap_or(SDK_COMMAND_QUEUE_BYTES),
-        SDK_COMMAND_QUEUE_BYTES,
-    ) else {
+    let bytes = command_bytes(&command).unwrap_or(usize::MAX);
+    if bytes > SDK_COMMAND_QUEUE_BYTES && !transient {
+        // It can never fit, however long it waits: refuse this command to its
+        // sender, and leave the bridge, which did nothing wrong, up.
+        tracing::error!(
+            bytes,
+            limit = SDK_COMMAND_QUEUE_BYTES,
+            "collab: command exceeds the outbound budget; not sent"
+        );
+        return Err(Refused::error(TransportError::TooLarge {
+            actual: bytes,
+            max: SDK_COMMAND_QUEUE_BYTES,
+        }));
+    }
+    let Some(reservation) = state.command_bytes.reserve(bytes, SDK_COMMAND_QUEUE_BYTES) else {
         if transient {
             return Err(Refused::error(TransportError::Shed));
         }
@@ -6292,6 +6356,16 @@ async fn dispatch_sdk_request(
                 inbound_tx.state.notify_events();
             }
         }
+        CollabRequest::PublishActionSurface { app_id, delta } => {
+            if let Err(error) = route.channel.publish_action_surface(&app_id, &delta).await {
+                tracing::warn!(%error, "collab: publishing resource/action surface failed; republishing");
+                inbound_tx
+                    .state
+                    .action_surface_failed
+                    .store(true, Ordering::Release);
+                inbound_tx.state.notify_events();
+            }
+        }
         CollabRequest::ReportContinuation {
             app_id,
             schema_version,
@@ -7041,6 +7115,7 @@ mod tests {
     )]
 
     use super::*;
+    use runtime_collab::SurfaceDelta;
 
     /// The concrete broker transport's bridge state behind a test manager.
     fn broker_state(manager: &CollaborationManager) -> BridgeState {
@@ -7168,6 +7243,9 @@ mod tests {
         left: Vec<Vec<u8>>,
         scrollback_requests: Vec<(Vec<u8>, u64, u32)>,
         action_publications: Vec<(String, Vec<(String, String)>)>,
+        /// The connection's surface as its deltas built it, and each delta.
+        surface_table: runtime_collab::SurfaceTable,
+        surface_deltas: Vec<runtime_collab::SurfaceDelta>,
         /// Refuse this many action-surface publications, as a broker whose
         /// admission is momentarily unavailable does.
         refuse_action_publications: usize,
@@ -7677,6 +7755,36 @@ mod tests {
                     "current host worker authority unavailable".into(),
                 ));
             }
+            captures.action_publications.push((app_id, actions));
+            Promise::ok(())
+        }
+
+        fn publish_action_surface(
+            self: Rc<Self>,
+            params: channel_handle::PublishActionSurfaceParams,
+            _results: channel_handle::PublishActionSurfaceResults,
+        ) -> Promise<(), capnp::Error> {
+            let request = params.get().unwrap();
+            let app_id = request.get_app_id().unwrap().to_str().unwrap().to_owned();
+            let delta = runtime_collab::decode_surface_delta(request).unwrap();
+            let mut captures = self.captures.lock().unwrap();
+            if captures.refuse_action_publications > 0 {
+                captures.refuse_action_publications -= 1;
+                captures.refused_action_publications += 1;
+                return Promise::err(capnp::Error::failed(
+                    "current host worker authority unavailable".into(),
+                ));
+            }
+            if let Err(reason) = captures.surface_table.apply(&delta) {
+                return Promise::err(capnp::Error::failed(reason));
+            }
+            let actions = captures
+                .surface_table
+                .actions()
+                .into_iter()
+                .map(|action| (action.resource_label, action.action))
+                .collect();
+            captures.surface_deltas.push(delta);
             captures.action_publications.push((app_id, actions));
             Promise::ok(())
         }
@@ -8993,29 +9101,30 @@ mod tests {
         assert!(transport.state.is_healthy());
     }
 
-    /// A single command larger than the whole outbound byte budget (a merged
-    /// notebook's action surface is megabytes) is admitted when the budget is
-    /// empty and the commands behind it wait, rather than being refused as an
-    /// overload that disables collaboration.
+    /// A single command larger than the whole outbound byte budget can never
+    /// fit, so it is refused to its sender, and the bridge stays up for
+    /// everything else.
     #[test]
-    fn a_command_larger_than_the_whole_budget_is_admitted_alone() {
+    fn a_command_larger_than_the_whole_budget_is_refused_without_closing_the_bridge() {
         let (mut transport, mut shovel) = parking_transport(8);
-        let huge = || {
-            TransportCommand::Primary(CollabRequest::ReportHandoff {
-                app_id: "notes".into(),
-                message: vec![0; SDK_COMMAND_QUEUE_BYTES + 1024 * 1024],
-            })
-        };
-        assert_eq!(transport.submit(huge()), Ok(()));
-        assert_eq!(transport.submit(huge()), Ok(()), "the next one waits");
-        assert_eq!(transport.spill.len(), 1);
+        let huge = TransportCommand::Primary(CollabRequest::ReportHandoff {
+            app_id: "notes".into(),
+            message: vec![0; SDK_COMMAND_QUEUE_BYTES + 1024 * 1024],
+        });
+        assert!(matches!(
+            transport.submit(huge),
+            Err(TransportError::TooLarge { .. })
+        ));
         assert!(transport.state.is_healthy());
+        assert_eq!(
+            transport.submit(TransportCommand::Primary(
+                CollabRequest::ClearContinuation {
+                    app_id: "notes".into()
+                }
+            )),
+            Ok(())
+        );
         assert!(shovel.try_recv().is_ok());
-        let mut events = Vec::new();
-        transport.drain(&mut events);
-        assert!(transport.spill.is_empty());
-        assert!(shovel.try_recv().is_ok());
-        assert!(transport.state.is_healthy());
     }
 
     /// Commands behind a parked one stay behind it, and a newer action surface
@@ -9024,17 +9133,26 @@ mod tests {
     #[test]
     fn parked_surfaces_coalesce_and_document_changes_wait_behind_parked_commands() {
         let (mut transport, mut shovel) = parking_transport(1);
-        let surface = || {
-            TransportCommand::Primary(CollabRequest::PublishActions {
+        let surface = |n: usize| {
+            TransportCommand::Primary(CollabRequest::PublishActionSurface {
                 app_id: "notes".into(),
-                actions: Vec::new(),
+                delta: SurfaceDelta {
+                    removed: vec![format!("page-{n}")],
+                    ..SurfaceDelta::default()
+                },
             })
         };
-        assert_eq!(transport.submit(surface()), Ok(()));
-        for _ in 0..500 {
-            assert_eq!(transport.submit(surface()), Ok(()));
+        assert_eq!(transport.submit(surface(0)), Ok(()));
+        for n in 1..=500 {
+            assert_eq!(transport.submit(surface(n)), Ok(()));
         }
         assert_eq!(transport.spill.len(), 1, "surfaces coalesce while parked");
+        let Some(SdkCommand::Primary(CollabRequest::PublishActionSurface { delta, .. })) =
+            transport.spill.front()
+        else {
+            panic!("the parked command is the surface");
+        };
+        assert_eq!(delta.removed.len(), 500, "no change is lost in the merge");
         assert_eq!(
             transport.submit(TransportCommand::Primary(
                 CollabRequest::document_incremental(b"edit".to_vec())
@@ -9880,16 +9998,16 @@ mod tests {
             _thread: None,
         }));
         let earlier = manager.begin_document_publication_barrier().unwrap();
-        assert!(matches!(
-            manager.begin_document_publication_barrier(),
-            Err(DocumentPublicationError::Failed(_))
-        ));
-        assert!(!manager.is_connected());
+        // A full queue is backpressure: the second barrier waits behind the
+        // first rather than failing, and the bridge stays up.
+        let _later = manager
+            .begin_document_publication_barrier()
+            .expect("a barrier waits behind a full queue");
         drop(outbound_rx.try_recv().unwrap());
-        assert!(matches!(
-            earlier.wait(None),
-            Err(DocumentPublicationError::Failed(_))
-        ));
+        assert!(
+            earlier.wait(None).is_err(),
+            "a barrier whose command was dropped is never reported as sent"
+        );
     }
 
     /// A receipt wired to the bridge's latched failure, as the transport builds it.

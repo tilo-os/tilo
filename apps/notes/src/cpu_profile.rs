@@ -12,7 +12,7 @@ fn observe(operation: impl FnOnce()) -> (u128, Vec<Sample>) {
     })
 }
 
-fn fixture(
+pub(super) fn fixture(
     pages: usize,
 ) -> (
     ui::framework::testing::TestApp<crate::NotesShell>,

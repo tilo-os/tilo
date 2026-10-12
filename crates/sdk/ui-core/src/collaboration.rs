@@ -51,6 +51,9 @@ pub mod handoff;
 mod history;
 pub mod owner_view;
 pub mod participants;
+mod surface_publication;
+pub use runtime_collab::{SurfaceDelta, SurfaceTable};
+pub use surface_publication::SurfacePublication;
 pub mod record_content;
 #[cfg(feature = "broker-transport")]
 mod route_keys;
@@ -291,10 +294,19 @@ pub enum CollabRequest {
         /// Page size cap; chrome UX bounds pages to ~50 ops.
         max: u16,
     },
-    /// Replace this application's complete exported resource/action surface.
+    /// Replace this application's complete exported resource/action surface,
+    /// whole. For small surfaces a caller builds directly; the toolkit's own
+    /// publication sends [`Self::PublishActionSurface`].
     PublishActions {
         app_id: String,
         actions: Vec<ExportedAction>,
+    },
+    /// Change this application's exported resource/action surface: the
+    /// delta from what the broker holds (or, when it resets, a whole new
+    /// surface). See [`SurfacePublication`].
+    PublishActionSurface {
+        app_id: String,
+        delta: SurfaceDelta,
     },
     /// App-owned CRDT state projected for same-identity continuation. The
     /// local broker authenticates the route and stores this only for shell
