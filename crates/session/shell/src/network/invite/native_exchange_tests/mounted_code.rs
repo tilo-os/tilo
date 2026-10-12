@@ -71,6 +71,7 @@ pub(super) enum Journey {
     Run,
     AcknowledgementRecovery,
     IdleReads,
+    IdleReadsAnnounced,
     ActiveReads,
 }
 
@@ -333,8 +334,15 @@ async fn finish_journey(
         read_recovery::run(first, &mut mounted[0]).await;
     } else if matches!(context.journey, Journey::Run) {
         run_and_settle(&mut mounted[0]).await;
-    } else if matches!(context.journey, Journey::IdleReads) {
-        idle_reads::run(&mounted[0]).await;
+    } else if matches!(
+        context.journey,
+        Journey::IdleReads | Journey::IdleReadsAnnounced
+    ) {
+        idle_reads::run(
+            &mounted[0],
+            matches!(context.journey, Journey::IdleReadsAnnounced),
+        )
+        .await;
     } else if matches!(context.journey, Journey::ActiveReads) {
         active_reads::run(context, authority, owner, refreshes, mounted).await;
     } else {
@@ -372,7 +380,11 @@ pub(super) async fn run(
             &first,
             &context.directory.path().join("mounted-first-profile"),
             None,
-            matches!(context.journey, Journey::IdleReads).then(idle_reads::Counter::new),
+            matches!(
+                context.journey,
+                Journey::IdleReads | Journey::IdleReadsAnnounced
+            )
+            .then(idle_reads::Counter::new),
             matches!(context.journey, Journey::ActiveReads).then(active_reads::Meter::new),
         )
         .await,
