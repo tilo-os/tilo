@@ -13,6 +13,7 @@
 //! through [`drain_events`], drained once per frame.
 
 pub(crate) mod diagnostics;
+pub(crate) mod launch_history;
 
 use crate::shell::state::WorkspaceAuthority as _;
 pub(crate) mod action_authority;
@@ -1171,6 +1172,7 @@ pub(crate) struct LaunchSession(std::sync::Arc<SessionLaunches>);
 pub(crate) struct SessionLaunches {
     events: Mutex<Vec<LaunchEvent>>,
     pub(crate) diagnostics: Mutex<Option<diagnostics::Options>>,
+    pub(crate) launch_history: Mutex<launch_history::History>,
     pub(super) startup: super::launch_readiness::StartupObservations,
     /// `package_id` -> where its next window should land; claimed (not
     /// consumed) by [`placement_for_toplevel`] since the compositor tracks
@@ -1220,6 +1222,7 @@ impl Default for SessionLaunches {
         Self {
             events: Mutex::default(),
             diagnostics: Mutex::default(),
+            launch_history: Mutex::default(),
             startup: super::launch_readiness::StartupObservations::default(),
             pending: Mutex::default(),
             launched: Mutex::default(),
@@ -1392,6 +1395,8 @@ struct PendingPlacement {
     /// authoritative FIFO; metrics never guesses by app id during failures.
     launch_metric_id: u64,
     metric_spawned: bool,
+    /// One supervisor owns the diagnostic join even before its child spawns.
+    diagnostic_reserved: bool,
 }
 
 impl PendingPlacement {
@@ -3676,6 +3681,10 @@ fn start_launch(
     );
     let worker_events = events.clone();
     let startup_token = super::launch_readiness::command_token(&command);
+    let diagnostic_attempt = diagnostic_attempt_for(&app.package_id, &command);
+    if let Some(id) = diagnostic_attempt {
+        lock(&events.launch_history).prepared(id, &command);
+    }
     let spawn_result = builder.spawn(move || {
         let mut authority_lease = authority;
         let events = worker_events;
@@ -3685,6 +3694,7 @@ fn start_launch(
             &command,
             std::time::Duration::from_secs(30),
         ) {
+            record_launch_phase(diagnostic_attempt, launch_history::Phase::SpawnFailed);
             events.startup.fail(startup_token, detail.clone());
             events.push(LaunchEvent {
                 package_id: app.package_id.clone(),
@@ -3717,6 +3727,7 @@ fn start_launch(
         let launch_gate = match launcher::registration_gate::install(&mut cmd) {
             Ok(gate) => gate,
             Err(error) => {
+                record_launch_phase(diagnostic_attempt, launch_history::Phase::SpawnFailed);
                 events.startup.fail(startup_token, error.to_string());
                 events.push(LaunchEvent {
                     package_id: app.package_id.clone(),
@@ -3734,6 +3745,7 @@ fn start_launch(
         let mut child = match cmd.spawn() {
             Ok(c) => c,
             Err(e) => {
+                record_launch_phase(diagnostic_attempt, launch_history::Phase::SpawnFailed);
                 events.startup.fail(startup_token, e.to_string());
                 events.push(LaunchEvent {
                     package_id: app.package_id.clone(),
@@ -3750,6 +3762,9 @@ fn start_launch(
         // The command still holds the launcher's end of the gate.
         drop(cmd);
         tilo_startup_metrics::launch_phase(&app.package_id, "spawned");
+        if let Some(id) = diagnostic_attempt {
+            lock(&events.launch_history).spawned(id, child.id());
+        }
         if let Some(identity) = command.service_identity.clone() {
             // Capture compositor-authored launch input before releasing the
             // child gate. Never read window authority back from the sandbox.
@@ -3775,10 +3790,14 @@ fn start_launch(
         if let Some(lease) = authority_lease.as_mut()
             && let Err(error) = lease.register_sandbox(child.id())
         {
+            record_launch_phase(diagnostic_attempt, launch_history::Phase::SpawnFailed);
             // The child is still behind the launch gate and has no sandbox
             // descriptors. Do not release a stale accepted-policy snapshot.
             let _ = child.kill();
-            let _ = child.wait();
+            let status = child.wait();
+            if let Some(id) = diagnostic_attempt {
+                lock(&events.launch_history).exited(id, launch_exit_status(&status));
+            }
             unregister_launched_process(child.id());
             events.startup.fail(startup_token, error.to_string());
             events.push(LaunchEvent {
@@ -3792,7 +3811,13 @@ fn start_launch(
             });
             return;
         }
-        mark_launch_spawned(&app.package_id, child.id());
+        let launch_metric_id = mark_launch_spawned(&app.package_id, child.id(), diagnostic_attempt);
+        let launch_generation = tilo_startup_metrics::launch_generation();
+        eprintln!(
+            "app-spawn: package={} launcher_pid={} launch_id={launch_metric_id:?} launch_generation={launch_generation}",
+            app.package_id,
+            child.id(),
+        );
         events.startup.started(startup_token, child.id());
         // Recorded before the gate opens, so the session learns of the start
         // before the app can do anything a start explains.
@@ -3852,22 +3877,32 @@ fn start_launch(
         // A replacement waiting for this writer to retire may go now.
         note_running_changed();
         LAUNCH_RETIREMENT_CHANGED.notify_all();
+        let mut diagnostic_exit = launch_exit_status(&status);
+        if let Some(id) = diagnostic_attempt {
+            lock(&events.launch_history).exited(id, diagnostic_exit.clone());
+        }
         // Every end of an app, clean or not, with how it ended (a signal has
         // no exit code). The session's default log passes errors only, so a
         // clean exit would otherwise leave no trace; stderr is recorded.
         match &status {
             Ok(status) => eprintln!(
-                "app-exit: package={} launcher_pid={launcher_pid} status={status}",
+                "app-exit: package={} launcher_pid={launcher_pid} launch_id={launch_metric_id:?} launch_generation={launch_generation} status={status}",
                 app.package_id
             ),
             Err(error) => eprintln!(
-                "app-exit: package={} launcher_pid={launcher_pid} wait_failed={error}",
+                "app-exit: package={} launcher_pid={launcher_pid} launch_id={launch_metric_id:?} launch_generation={launch_generation} wait_failed={error}",
                 app.package_id
             ),
         }
         let tail = stderr_drain
             .and_then(|drain| drain.join().ok())
             .unwrap_or_default();
+        if let Some(id) = diagnostic_attempt {
+            diagnostic_exit.reason_key = (!diagnostic_exit.success).then(|| stopped_reason_key(diagnostic_exit.code, &tail.iter().cloned().collect::<Vec<_>>().join("\n")));
+            diagnostic_exit.retained_stderr_lines = tail.len();
+            diagnostic_exit.stderr_state = launch_history::StderrState::Complete;
+            lock(&events.launch_history).exited(id, diagnostic_exit);
+        }
         unregister_launched_process(launcher_pid);
         let kind = match status {
             Ok(status) if status.success() => LaunchEventKind::Exited,
@@ -3902,6 +3937,10 @@ fn start_launch(
     match spawn_result {
         Ok(_) => Ok(()),
         Err(e) => {
+            lock(&events.launch_history).event(
+                diagnostic_attempt.unwrap_or(0),
+                launch_history::Phase::SpawnFailed,
+            );
             let detail = format!("could not start launch thread: {e}");
             events.push(LaunchEvent {
                 package_id: identity.0,
@@ -3922,16 +3961,79 @@ pub(crate) fn push_event(event: LaunchEvent) {
     LaunchSession::current().push(event);
 }
 
-fn mark_launch_spawned(package_id: &str, pid: u32) {
+fn launch_exit_status(status: &std::io::Result<std::process::ExitStatus>) -> launch_history::Exit {
+    #[cfg(unix)]
+    use std::os::unix::process::ExitStatusExt as _;
+    #[cfg(unix)]
+    let signal = status
+        .as_ref()
+        .ok()
+        .and_then(std::process::ExitStatus::signal);
+    #[cfg(not(unix))]
+    let signal = None;
+    launch_history::Exit {
+        code: status
+            .as_ref()
+            .ok()
+            .and_then(std::process::ExitStatus::code),
+        signal,
+        success: status.as_ref().is_ok_and(std::process::ExitStatus::success),
+        wait_failed: status.is_err(),
+        reason_key: None,
+        retained_stderr_lines: 0,
+        stderr_redacted: true,
+        stderr_state: launch_history::StderrState::Pending,
+    }
+}
+
+fn diagnostic_attempt_for(package_id: &str, command: &LaunchCommand) -> Option<u64> {
+    let instance = command.env.iter().find_map(|(name, value)| {
+        (name == "TILO_CONTINUITY_INSTANCE")
+            .then(|| value.parse::<u64>().ok())
+            .flatten()
+    });
     let session = LaunchSession::current();
     let mut pending = lock(&session.pending);
-    if let Some(note) = pending
+    let id = pending
         .iter_mut()
-        .find(|note| note.key == package_id && !note.metric_spawned)
-    {
-        note.metric_spawned = true;
-        tilo_startup_metrics::launch_spawned(note.launch_metric_id, pid);
+        .find(|note| {
+            note.key == package_id
+                && !note.metric_spawned
+                && !note.diagnostic_reserved
+                && note.claimed_by.is_none()
+                && instance.is_none_or(|instance| note.continuity_instance == Some(instance))
+        })
+        .map(|note| {
+            note.diagnostic_reserved = true;
+            note.launch_metric_id
+        });
+    drop(pending);
+    id
+}
+
+fn record_launch_phase(id: Option<u64>, phase: launch_history::Phase) {
+    if let Some(id) = id {
+        lock(&LaunchSession::current().launch_history).event(id, phase);
     }
+}
+
+fn mark_launch_spawned(package_id: &str, pid: u32, attempt: Option<u64>) -> Option<u64> {
+    let session = LaunchSession::current();
+    let mut pending = lock(&session.pending);
+    let id = pending
+        .iter_mut()
+        .find(|note| {
+            note.key == package_id && !note.metric_spawned && Some(note.launch_metric_id) == attempt
+        })
+        .map(|note| {
+            note.metric_spawned = true;
+            note.launch_metric_id
+        });
+    drop(pending);
+    if let Some(id) = id {
+        tilo_startup_metrics::launch_spawned(id, pid);
+    }
+    id
 }
 
 /// Finish every launch-bound surface that has captured its first frame.
@@ -3945,6 +4047,9 @@ pub(crate) fn record_presented_launches(frame_seq: impl Fn(u64) -> u64) {
 
 /// Record the first captured frame for a launch-bound surface exactly once.
 pub(crate) fn record_first_present(surface_id: u64, frame_seq: u64) {
+    if frame_seq != 0 {
+        lock(&LaunchSession::current().launch_history).presented(surface_id);
+    }
     tilo_startup_metrics::launch_first_present(surface_id, frame_seq);
 }
 
@@ -4336,6 +4441,12 @@ pub fn set_pending_placement_for_identities(
     // can still be tied to this launch and not to a session helper.
     lock(&session.awaiting_window).insert(key.to_string());
     let mut pending = lock(&session.pending);
+    let launch_metric_id = tilo_startup_metrics::launch_requested(key);
+    let saved_tab = match placement {
+        crate::shell::tab_binding::Placement::IntoTab(tab) => Some(tab),
+        _ => None,
+    };
+    lock(&session.launch_history).requested(launch_metric_id, key, saved_tab);
     pending.push(PendingPlacement {
         key: key.to_string(),
         identities: identities.to_vec(),
@@ -4344,8 +4455,9 @@ pub fn set_pending_placement_for_identities(
         claimed_by: None,
         retire_after: None,
         present_before: pending_placement_deadline(PENDING_PRESENTATION_TIMEOUT),
-        launch_metric_id: tilo_startup_metrics::launch_requested(key),
+        launch_metric_id,
         metric_spawned: false,
+        diagnostic_reserved: false,
     });
 }
 
@@ -4414,6 +4526,7 @@ pub fn placement_and_instance_for_toplevel(
                 if let Some(entry) = pending.get_mut(idx) {
                     entry.claimed_by = Some(surface_id);
                     tilo_startup_metrics::launch_mapped(entry.launch_metric_id, surface_id);
+                    lock(&session.launch_history).mapped(entry.launch_metric_id, surface_id);
                     // Both compositor trees ask for the same launch note,
                     // so keep a claimed answer briefly rather than consume
                     // it on the first lookup. Bound that duplication window
@@ -4453,6 +4566,8 @@ fn attach_continuity_instance(package_id: &str, instance: u64) {
     {
         note.continuity_instance = Some(instance);
     } else {
+        let launch_metric_id = tilo_startup_metrics::launch_requested(package_id);
+        lock(&session.launch_history).requested(launch_metric_id, package_id, None);
         pending.push(PendingPlacement {
             key: package_id.to_string(),
             identities: identities_for_package(package_id),
@@ -4461,8 +4576,9 @@ fn attach_continuity_instance(package_id: &str, instance: u64) {
             claimed_by: None,
             retire_after: None,
             present_before: pending_placement_deadline(PENDING_PRESENTATION_TIMEOUT),
-            launch_metric_id: tilo_startup_metrics::launch_requested(package_id),
+            launch_metric_id,
             metric_spawned: false,
+            diagnostic_reserved: false,
         });
     }
 }
@@ -4536,6 +4652,7 @@ pub fn clear_pending_placement(package_id: &str) {
         .map(|index| pending.remove(index));
     drop(pending);
     if let Some(note) = note {
+        lock(&session.launch_history).event(note.launch_metric_id, launch_history::Phase::Retired);
         tilo_startup_metrics::launch_failed(note.launch_metric_id);
     }
 }
@@ -4564,6 +4681,7 @@ pub(crate) fn take_sole_claimed_surface_for_failed_launch(package_id: &str) -> O
     let surface_id = pending.get(index)?.claimed_by?;
     let note = pending.remove(index);
     drop(pending);
+    lock(&session.launch_history).event(note.launch_metric_id, launch_history::Phase::Retired);
     tilo_startup_metrics::launch_failed(note.launch_metric_id);
     Some(surface_id)
 }
@@ -4617,6 +4735,8 @@ fn expire_pending_placements_at(now: Instant) -> Vec<String> {
             expired.push(note.key.clone());
         }
         if !keep {
+            lock(&LaunchSession::current().launch_history)
+                .event(note.launch_metric_id, launch_history::Phase::Retired);
             tilo_startup_metrics::launch_failed(note.launch_metric_id);
         }
         keep
@@ -4644,6 +4764,7 @@ pub fn clear_pending_placements() {
     let session = LaunchSession::current();
     let mut pending = lock(&session.pending);
     for note in pending.drain(..) {
+        lock(&session.launch_history).event(note.launch_metric_id, launch_history::Phase::Retired);
         tilo_startup_metrics::launch_failed(note.launch_metric_id);
     }
     drop(pending);
@@ -5267,6 +5388,21 @@ mod tests {
                 "so.tilo.same-app",
                 crate::shell::tab_binding::Placement::IntoTab(22),
             );
+            let command = LaunchCommand {
+                program: PathBuf::new(),
+                args: Vec::new(),
+                env: Vec::new(),
+                service_identity: None,
+                portal_workspace_id: None,
+                managed_agent_id: None,
+            };
+            let first = diagnostic_attempt_for("so.tilo.same-app", &command).unwrap();
+            let second = diagnostic_attempt_for("so.tilo.same-app", &command).unwrap();
+            assert_ne!(
+                first, second,
+                "concurrent supervisors must own distinct diagnostic attempts before either spawns"
+            );
+            assert_eq!(diagnostic_attempt_for("so.tilo.same-app", &command), None);
 
             assert_eq!(
                 placement_for_toplevel("same-app", 101),
@@ -5285,13 +5421,21 @@ mod tests {
                 "dev.tilo.timed",
                 crate::shell::tab_binding::Placement::NewGroup,
             );
-            mark_launch_spawned("dev.tilo.timed", 4242);
+            let selected = launch_metrics_of("dev.tilo.timed")[0].0;
+            let attempt = mark_launch_spawned("dev.tilo.timed", 4242, Some(selected))
+                .expect("a staged launch must expose its exact diagnostic attempt");
+            assert_eq!(
+                mark_launch_spawned("dev.tilo.timed", 4243, Some(selected)),
+                None
+            );
+            assert_eq!(mark_launch_spawned("dev.tilo.unknown", 4244, None), None);
             assert_eq!(
                 placement_for_toplevel("timed", 909),
                 Some(crate::shell::tab_binding::Placement::NewGroup)
             );
             let metrics = launch_metrics_of("dev.tilo.timed");
             assert_eq!(metrics.len(), 1);
+            assert_eq!(metrics[0].0, attempt);
             assert!(metrics[0].2);
             assert_eq!(metrics[0].3, Some(909));
             record_first_present(909, 1);
@@ -5421,6 +5565,10 @@ mod tests {
         std::fs::set_permissions(&script, permissions).unwrap();
 
         let _ = drain_events();
+        set_pending_placement(
+            PACKAGE_ID,
+            crate::shell::tab_binding::Placement::IntoTab(77),
+        );
         spawn_launch(
             PACKAGE_ID.into(),
             "Live GUI".into(),
@@ -5456,7 +5604,97 @@ mod tests {
             saw_exit,
             "the supervisor must wait for a live GUI child without synchronously blocking on its open stderr pipe"
         );
+        let history = lock(&LaunchSession::current().launch_history).value();
+        let attempt = history["attempts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|attempt| attempt["package_id"] == PACKAGE_ID)
+            .unwrap();
+        assert_eq!(attempt["saved_tab"], 77);
+        assert_eq!(attempt["exit"]["success"], true);
+        assert_eq!(attempt["exit"]["stderr_redacted"], true);
+        assert_eq!(attempt["exit"]["retained_stderr_lines"], 1);
+        assert!(attempt["process"]["kernel_start_ticks"].as_u64().unwrap() > 0);
+        assert!(
+            attempt["events"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|event| event["phase"] == "exited")
+        );
+        assert!(
+            !history
+                .to_string()
+                .contains("starting without closing stderr")
+        );
+        assert!(
+            LaunchSession::default()
+                .launch_history
+                .lock()
+                .unwrap()
+                .value()["attempts"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+        clear_pending_placements();
     }
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn failed_launch_retains_exact_record_process_and_exit_without_app_output() {
+        use std::os::unix::fs::PermissionsExt as _;
+        const PACKAGE: &str = "dev.tilo.failed-diagnostic";
+        let directory = tempfile::tempdir().unwrap();
+        let script = directory.path().join("failed-app");
+        std::fs::write(
+            &script,
+            "#!/bin/sh\nprintf 'PRIVATE_OUTPUT_MUST_STAY_REDACTED\\n' >&2\nexit 17\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        set_pending_placement(PACKAGE, crate::shell::tab_binding::Placement::IntoTab(78));
+        attach_continuity_instance(PACKAGE, 902);
+        spawn_launch(
+            PACKAGE.into(),
+            "Fixture".into(),
+            LaunchCommand {
+                program: script,
+                args: Vec::new(),
+                env: vec![("TILO_CONTINUITY_INSTANCE".into(), "902".into())],
+                service_identity: None,
+                portal_workspace_id: None,
+                managed_agent_id: None,
+            },
+        )
+        .unwrap();
+        let deadline = tilo_test_env::hang_deadline();
+        let mut finished = false;
+        while Instant::now() < deadline && !finished {
+            finished = drain_events().iter().any(|event| {
+                event.package_id == PACKAGE
+                    && matches!(event.kind, LaunchEventKind::Failed { code: Some(17), .. })
+            });
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(finished, "the real supervisor must observe the failure");
+        let history = lock(&LaunchSession::current().launch_history).value();
+        let attempt = &history["attempts"][0];
+        assert_eq!(attempt["saved_tab"], 78);
+        assert_eq!(attempt["record_instance"], 902);
+        assert_eq!(attempt["exit"]["code"], 17);
+        assert_eq!(attempt["exit"]["success"], false);
+        assert_eq!(attempt["exit"]["retained_stderr_lines"], 1);
+        assert!(attempt["process"]["pid"].as_u64().unwrap() > 0);
+        assert!(attempt["process"]["kernel_start_ticks"].as_u64().unwrap() > 0);
+        assert!(
+            !history
+                .to_string()
+                .contains("PRIVATE_OUTPUT_MUST_STAY_REDACTED")
+        );
+        clear_pending_placements();
+    }
+
     use std::io::Write;
 
     #[test]
