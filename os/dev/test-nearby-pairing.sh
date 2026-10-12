@@ -195,9 +195,8 @@ trap cleanup EXIT
 # --- boot both machines -------------------------------------------------------
 qemu-img create -f qcow2 -F qcow2 -b "$base" "$run_a/disk.qcow2" >/dev/null
 qemu-img create -f qcow2 -F qcow2 -b "$base" "$run_b/disk.qcow2" >/dev/null
-# --unlock moves B's root onto a new LUKS2 partition at least its own size;
-# the overlay stays sparse, so only the data actually copied takes host space.
-[ "$unlock" = 0 ] || qemu-img resize -q "$run_b/disk.qcow2" "+$(qemu-img info --output=json "$base" | jq -r '."virtual-size"')"
+# --unlock grows B's disk once B has booted (os/dev/nearby-unlock-phase.sh):
+# first boot grows the root partition over whatever disk it finds.
 boot_owned_vm a "$run_a" vm_a
 boot_owned_vm b "$run_b" vm_b
 vm_a wait
