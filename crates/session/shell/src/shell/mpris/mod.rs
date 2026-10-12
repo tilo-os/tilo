@@ -218,13 +218,6 @@ impl ResumeState {
         }
     }
 
-    fn take_accepted(&mut self) -> Vec<[u8; 16]> {
-        self.accepted
-            .drain(..)
-            .map(|accepted| accepted.request_id)
-            .collect()
-    }
-
     fn take_accepted_resumes(&mut self) -> Vec<AcceptedResume> {
         self.accepted.drain(..).collect()
     }
@@ -404,15 +397,6 @@ pub(crate) fn cancel_resume_after_launch(request_id: [u8; 16]) -> bool {
     RESUMES
         .lock()
         .is_ok_and(|mut resumes| resumes.cancel(request_id, Instant::now()))
-}
-
-/// Drain handoffs whose destination player demonstrably reached the requested
-/// state. The fabric runtime turns these into acknowledgements; failed or
-/// unsupported resumes never appear here.
-pub fn take_accepted_handoff_requests() -> Vec<[u8; 16]> {
-    RESUMES
-        .lock()
-        .map_or_else(|_| Vec::new(), |mut resumes| resumes.take_accepted())
 }
 
 pub(crate) fn take_accepted_handoff_resumes() -> Vec<AcceptedResume> {
@@ -1418,7 +1402,7 @@ mod tests {
 
             assert!(!resumes.cancel(request_id, now));
             assert!(resumes.begin(request_id, now).is_none());
-            assert!(resumes.take_accepted().is_empty());
+            assert!(resumes.take_accepted_resumes().is_empty());
         }
 
         fn cancellation_after_worker_launch_blocks_every_later_mutation() {
@@ -1438,7 +1422,7 @@ mod tests {
             resumes.finish(&authority, true);
 
             assert_eq!(mutations, ["open-uri"]);
-            assert!(resumes.take_accepted().is_empty());
+            assert!(resumes.take_accepted_resumes().is_empty());
         }
 
         fn cancellation_is_linearized_after_an_in_flight_mutation() {
@@ -1482,7 +1466,7 @@ mod tests {
             cancellation.join().unwrap();
             assert_eq!(mutate_now(&authority, || panic!("late mutation ran")), None);
             resumes.lock().unwrap().finish(&authority, true);
-            assert!(resumes.lock().unwrap().take_accepted().is_empty());
+            assert!(resumes.lock().unwrap().take_accepted_resumes().is_empty());
         }
 
         fn cancellation_retracts_completion_and_tombstones_are_bounded() {
@@ -1492,7 +1476,7 @@ mod tests {
             let authority = resumes.begin(request_id, now).unwrap();
             resumes.finish(&authority, true);
             assert!(resumes.cancel(request_id, now));
-            assert!(resumes.take_accepted().is_empty());
+            assert!(resumes.take_accepted_resumes().is_empty());
 
             for index in 0..=MAX_CANCELLED_RESUMES {
                 let mut id = [0; 16];

@@ -111,15 +111,6 @@ fn paint_rows(
     placed
 }
 
-/// The label of a bookmark row: what it says, or "Bookmark".
-fn bookmark_title(annotation: &crate::shared::TimestampAnnotation) -> &str {
-    if annotation.text.is_empty() {
-        "Bookmark"
-    } else {
-        &annotation.text
-    }
-}
-
 impl PlayerApp {
     /// Follow `library_visible` with the sheet. The resource action is what
     /// changes the flag; the drawer only animates it.
@@ -393,40 +384,47 @@ impl PlayerApp {
             return;
         }
         let limit = crate::actions::CONTEXTUAL_CHILD_LIMIT;
-        let playlists: Vec<_> = library.playlists.iter().take(limit).collect();
-        let annotations: Vec<_> = library.annotations.iter().take(limit).collect();
+        let mut playlists: Vec<_> = library.playlists.iter().collect();
+        playlists.sort_by(|(a_id, a), (b_id, b)| {
+            a.name
+                .cmp(&b.name)
+                .then_with(|| a_id.as_str().cmp(b_id.as_str()))
+        });
+        playlists.truncate(limit);
+        let mut annotations = library.annotations_in_order();
+        annotations.truncate(limit);
         let focus = self.library_focus_id.as_deref();
         let playlist_specs: Vec<RowSpec<'_>> = playlists
             .iter()
-            .map(|playlist| RowSpec {
+            .map(|(id, playlist)| RowSpec {
                 title: &playlist.name,
                 meta: None,
                 selected: false,
-                focused: focus == Some(format!("shared-delete-{}", playlist.id).as_str()),
+                focused: focus == Some(format!("shared-delete-{id}").as_str()),
                 actions: vec![DELETE_SHARED],
             })
             .collect();
         let jumpable: Vec<bool> = annotations
             .iter()
-            .map(|annotation| {
+            .map(|(_, annotation)| {
                 has_media
                     && self.current_media_ref.as_deref() == Some(annotation.media_ref.as_str())
             })
             .collect();
         let times: Vec<String> = annotations
             .iter()
-            .map(|annotation| ui::format::timecode(annotation.time_ms / 1000))
+            .map(|(_, annotation)| ui::format::timecode(annotation.time_ms / 1000))
             .collect();
         let annotation_specs: Vec<RowSpec<'_>> = annotations
             .iter()
             .zip(&jumpable)
             .zip(&times)
-            .map(|((annotation, jumpable), time)| RowSpec {
-                title: bookmark_title(annotation),
+            .map(|(((id, annotation), jumpable), time)| RowSpec {
+                title: annotation.title(),
                 meta: Some(time.as_str()),
                 selected: false,
-                focused: focus == Some(format!("shared-jump-{}", annotation.id).as_str())
-                    || focus == Some(format!("shared-delete-{}", annotation.id).as_str()),
+                focused: focus == Some(format!("shared-jump-{id}").as_str())
+                    || focus == Some(format!("shared-delete-{id}").as_str()),
                 actions: if *jumpable {
                     vec![JUMP_TO_BOOKMARK, DELETE_SHARED]
                 } else {
@@ -459,10 +457,10 @@ impl PlayerApp {
                 region,
                 cursor,
             );
-            for (playlist, placed) in playlists.iter().zip(placed) {
+            for ((id, _), placed) in playlists.iter().zip(placed) {
                 if let Some(remove) = placed.actions.last().copied() {
                     hits.push(SharedRowHit {
-                        id: playlist.id.clone(),
+                        id: id.to_string(),
                         jump: None,
                         remove,
                         annotation: false,
@@ -481,10 +479,10 @@ impl PlayerApp {
                 region,
                 cursor,
             );
-            for ((annotation, jumpable), placed) in annotations.iter().zip(&jumpable).zip(placed) {
+            for (((id, _), jumpable), placed) in annotations.iter().zip(&jumpable).zip(placed) {
                 if let Some(remove) = placed.actions.last().copied() {
                     hits.push(SharedRowHit {
-                        id: annotation.id.clone(),
+                        id: id.to_string(),
                         jump: jumpable.then(|| placed.actions.first().copied()).flatten(),
                         remove,
                         annotation: true,

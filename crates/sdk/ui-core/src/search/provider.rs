@@ -481,40 +481,6 @@ impl SearchCatalog {
         Ok(())
     }
 
-    /// Preflight a bounded batch of incremental mutations without changing the
-    /// retained catalogue. Providers can use this before changing companion
-    /// lookup metadata, ensuring exhausted generation or browse identities
-    /// fail closed rather than publishing a partial delta.
-    ///
-    /// # Errors
-    ///
-    /// Returns an exhaustion error when the requested mutations cannot obtain
-    /// distinct generation or browse identities.
-    pub fn preflight_mutations(
-        &self,
-        mutations: usize,
-        inserts: usize,
-    ) -> Result<(), SearchCatalogError> {
-        let mutations =
-            u64::try_from(mutations).map_err(|_| SearchCatalogError::GenerationExhausted)?;
-        let inserts =
-            u64::try_from(inserts).map_err(|_| SearchCatalogError::BrowseOrdinalExhausted)?;
-        let inner = self
-            .inner
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        inner
-            .generation
-            .checked_add(mutations)
-            .ok_or(SearchCatalogError::GenerationExhausted)?;
-        inner
-            .next_browse_ordinal
-            .checked_add(inserts)
-            .ok_or(SearchCatalogError::BrowseOrdinalExhausted)?;
-        drop(inner);
-        Ok(())
-    }
-
     /// Whether a canonical resource is currently retained by this catalogue.
     #[must_use]
     pub fn contains(&self, resource_id: &str) -> bool {

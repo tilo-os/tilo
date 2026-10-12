@@ -10,14 +10,56 @@
 #     container's headers. Presents as a cache miss, not an error.
 #   - derives job count and cache ceiling from the hardware
 #
-# Every failure path falls through to plain cargo. QCARGO_BYPASS=1 skips it,
-# QCARGO_DEBUG=1 prints the routing decision.
+# Agent compilation requires a configured remote executor before any local bypass.
+# Human development retains QCARGO_BYPASS=1; QCARGO_DEBUG=1 reports routing.
 #
 # Environment values are an API: nested builders deliberately use a disk-backed
 # TMPDIR/CARGO_TARGET_DIR and sometimes set RUSTC_WRAPPER to the empty string.
 # Defaults below must never replace those caller choices.
 
 set -uo pipefail
+
+# Agent compilation is remote-only. Configure a Cargo-compatible executable in
+# the developer's untracked environment, never a machine-specific repository path.
+# Other unattended callers can opt into the same policy explicitly.
+agent_remote_only="${QCARGO_REMOTE_ONLY:-0}"
+if [ -n "${CODEX_THREAD_ID:-}" ] || [ -n "${CODEX_SESSION_ID:-}" ] || [ -n "${CLAUDECODE:-}" ]; then
+  agent_remote_only=1
+fi
+cargo_does_not_compile() {
+  local arg
+  for arg in "$@"; do
+    case "$arg" in
+      +*|--locked|--frozen|--offline|-q|--quiet|-v|-vv|--verbose) continue ;;
+      metadata|tree|fmt|fetch|update|generate-lockfile|locate-project|pkgid|verify-project|help|version|-h|--help|-V|--version) return 0 ;;
+      *) return 1 ;;
+    esac
+  done
+  return 0
+}
+if [ "$agent_remote_only" = 1 ] && ! cargo_does_not_compile "$@"; then
+  if [ -n "${QCARGO_REMOTE_ACTIVE:-}" ]; then
+    echo "cargo: refusing a local compilation returned by the remote executor in an agent session; use remote validation and fix the builder error" >&2
+    exit 2
+  fi
+  for arg in "$@"; do
+    [ "$arg" = -- ] && break
+    if [ "$arg" = --fallback ]; then
+      echo "cargo: local fallback is disabled for agent builds" >&2
+      exit 2
+    fi
+  done
+  remote_cargo="${QCARGO_REMOTE_CARGO:-}"
+  if [ -z "$remote_cargo" ] || ! command -v "$remote_cargo" >/dev/null 2>&1; then
+    echo "cargo: QCARGO_REMOTE_CARGO must name an available remote-only executor; local compilation is refused" >&2
+    exit 127
+  fi
+  # The executor must fail on remote errors. Mark reentry so a returned local
+  # Cargo call cannot recurse into this route or fall through to compilation.
+  export QCARGO_REMOTE_ACTIVE=1
+  exec "$remote_cargo" "$@"
+fi
+
 
 real_cargo="${CARGO_HOME:-${HOME}/.cargo}/bin/cargo"
 

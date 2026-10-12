@@ -32,8 +32,6 @@ pub(crate) fn copy_string(value: &str) -> Result<String, SenderStorageCode> {
     Ok(result)
 }
 
-#[cfg(any(target_os = "macos", target_os = "linux"))]
-pub mod administration;
 mod codec;
 /// Inert fixed-layout sender identity. No constructor establishes an owner.
 #[derive(PartialEq, Eq)]
@@ -981,7 +979,8 @@ impl FinishRefusal {
     }
 }
 
-#[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
+#[cfg(test)]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 pub(crate) fn committed_test_fixture(
     payload: &[u8],
 ) -> (tempfile::TempDir, CurrentPrivateState, PortableStorage) {

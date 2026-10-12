@@ -20,11 +20,7 @@
 #![cfg_attr(
     test,
     allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
         clippy::string_slice,
-        clippy::panic,
         clippy::unreachable,
         reason = "in a test these are the assertion, not a hazard"
     )
@@ -59,6 +55,7 @@ pub use storage::{
     DroppedVersion, HistoryCompaction, HistoryCompactionReport, PendingSubmission,
     PromotionJournal, PrunePreview, PruneReport, RetentionPreview, ReviewDecision, ReviewRecord,
     ReviewSubject, ServerIdentity, StagedArtifact, StagedPromotion, Storage, StorageError,
+    TwinReport,
 };
 
 /// Bind the server to `addr` and run until the listener errors or
@@ -117,7 +114,7 @@ pub async fn run_server(addr: SocketAddr, state: AppState) -> std::io::Result<()
 /// Convenience: default XDG state dir for the registry data.
 /// Falls back to `~/.local/state/tilo-registry`.
 pub fn default_data_dir() -> std::path::PathBuf {
-    xdg_paths::xdg::state_home().map_or_else(
+    tilo_paths::xdg::state_home().map_or_else(
         || std::path::PathBuf::from("/var/lib/tilo-registry"),
         |state| state.join("tilo-registry"),
     )

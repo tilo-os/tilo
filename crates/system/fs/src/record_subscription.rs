@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
-use collab_types::{FilePermission, FileRecordId};
+use fs_protocol::{FilePermission, FileRecordId};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use uuid::Uuid;
@@ -451,7 +451,7 @@ pub enum RecordSubscriptionStoreError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use collab_types::{FileInviteSpec, FileInviteSubject, mint_bearer_file_invite};
+    use fs_protocol::{FileInviteSpec, FileInviteSubject, mint_bearer_file_invite};
     use rand::{SeedableRng, rngs::StdRng};
 
     const NOW: u64 = 50_000;

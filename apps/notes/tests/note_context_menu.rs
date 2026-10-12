@@ -1,39 +1,19 @@
 use crate::framework_support::{add_note, notes, open, surface};
 use notes::{NotesShell, PageId};
 use ui::framework::testing::TestApp;
+use ui::synthetic_input::cursor_moved;
 use vello::kurbo::Point;
-use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
+use winit::event::{Modifiers, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
-fn cursor_moved(x: f64, y: f64) -> WindowEvent {
-    WindowEvent::CursorMoved {
-        device_id: unsafe { std::mem::zeroed() },
-        position: winit::dpi::PhysicalPosition::new(x, y),
-    }
-}
 
 fn mouse_press_right() -> WindowEvent {
-    WindowEvent::MouseInput {
-        device_id: unsafe { std::mem::zeroed() },
-        state: ElementState::Pressed,
-        button: MouseButton::Right,
-    }
+    ui::synthetic_input::mouse_input(
+        ui::winit::event::ElementState::Pressed,
+        ui::winit::event::MouseButton::Right,
+    )
 }
 
-fn named_key(key: NamedKey) -> WindowEvent {
-    let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
-    ev.logical_key = Key::Named(key);
-    ev.physical_key =
-        winit::keyboard::PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
-    ev.location = winit::keyboard::KeyLocation::Standard;
-    ev.state = ElementState::Pressed;
-    ev.repeat = false;
-    ev.text = None;
-    WindowEvent::KeyboardInput {
-        device_id: unsafe { std::mem::zeroed() },
-        event: ev,
-        is_synthetic: false,
-    }
-}
+use ui::synthetic_input::named_key;
 
 /// Notes with one note (`body`) open, laid out `width` x 800.
 fn note_at(width: u16, body: &str) -> (TestApp<NotesShell>, PageId) {
@@ -140,7 +120,7 @@ fn note_context_menus_open_everywhere_and_keep_selection_and_drawer() {
                 assert!(!menu_open(&mut app));
             }
             // Keyboard activation of New child note follows the shared action path.
-            let before = app.state().pages().len();
+            let before = crate::framework_support::shown(&app).pages().len();
             let parent = surface(&mut app, |notes| notes.selected_for_test()).unwrap();
             dispatch(
                 &mut app,
@@ -155,7 +135,7 @@ fn note_context_menus_open_everywhere_and_keep_selection_and_drawer() {
             );
             dispatch(&mut app, Modifiers::default(), &named_key(NamedKey::Enter));
             assert!(!menu_open(&mut app));
-            let pages = app.state().pages().to_vec();
+            let pages = crate::framework_support::shown(&app).pages().to_vec();
             assert_eq!(pages.len(), before + 1);
             let selected = surface(&mut app, |notes| notes.selected_for_test()).unwrap();
             assert!(
@@ -170,7 +150,7 @@ fn note_context_menus_open_everywhere_and_keep_selection_and_drawer() {
     {
         let (mut app, _) = note_at(1200, "A first paragraph.\n\nAnd a second one.");
         let before = text(&mut app);
-        let pages_before = app.state().pages().len();
+        let pages_before = crate::framework_support::shown(&app).pages().len();
         let rect = editor_rect(&mut app);
         let body = Point::new(rect.x0 + 10.0, rect.y0 + 10.0);
         dispatch(
@@ -192,7 +172,7 @@ fn note_context_menus_open_everywhere_and_keep_selection_and_drawer() {
         );
         assert!(menu_open(&mut app));
         assert_eq!(
-            app.state().pages().len(),
+            crate::framework_support::shown(&app).pages().len(),
             pages_before,
             "menu captures Ctrl+N"
         );
@@ -229,7 +209,10 @@ fn note_context_menus_open_everywhere_and_keep_selection_and_drawer() {
             text(&mut app).trim().is_empty(),
             "cut survives canonical sync"
         );
-        assert_eq!(app.state().pages().len(), pages_before);
+        assert_eq!(
+            crate::framework_support::shown(&app).pages().len(),
+            pages_before
+        );
     }
 
     eprintln!("phase narrow_sidebar_context_menu_keeps_its_drawer_visible_when_selecting_a_note");
@@ -350,7 +333,7 @@ fn table_context_commands_edit_only_the_current_table() {
             }
             dispatch(&mut app, Modifiers::default(), &named_key(NamedKey::Enter));
             assert!(!menu_open(&mut app));
-            assert_eq!(app.state().pages().len(), 1);
+            assert_eq!(crate::framework_support::shown(&app).pages().len(), 1);
             let accessibility = surface(&mut app, |notes| {
                 ui::widget::Widget::accessibility(notes.main_panel_mut().editor()).unwrap()
             });
@@ -371,12 +354,10 @@ fn table_context_commands_edit_only_the_current_table() {
                     .all(|row| row.children.len() == expected_columns)
             );
             let (_, expected) = first_block(&mut app);
-            let page = app.state().pages()[0].id;
+            let page = crate::framework_support::shown(&app).pages()[0].id;
             let reopened = app.reopen().unwrap();
             assert_eq!(
-                reopened.read_document(|doc| notes::doc::NotesDoc::page_block_snapshots(doc, page))
-                    [0]
-                .1,
+                reopened.read_document(|doc| notes::read::page_block_snapshots(doc, page))[0].1,
                 expected
             );
         }

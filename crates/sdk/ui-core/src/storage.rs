@@ -14,7 +14,7 @@
 //! Code with a [`HostContext`] uses its methods, which are scoped to the app
 //! the host prepared. Code without one (a model loading its preferences
 //! before the first frame) names the app or section itself. The older
-//! entry points (`settings_store`, `xdg-paths`, `tilo_files::native::atomic`, `app-state`
+//! entry points (`settings_store`, `tilo-paths`, `tilo_files::native::atomic`, `app-state`
 //! from an app) are internals of these; apps other than Settings, which owns
 //! the settings document, have no use for them.
 //!
@@ -31,6 +31,7 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Map, Value};
 
+pub use settings_store::ChangeOrigin;
 pub use tilo_files::{Dir, FsError};
 pub use tilo_paths::{AppPaths, Location};
 
@@ -207,9 +208,28 @@ impl SettingsDocument {
     ///
     /// When there is no document to write or the write fails.
     pub fn update_section(&self, name: &str, values: Map<String, Value>) -> std::io::Result<()> {
-        let written = match self {
-            Self::Session => settings_store::update_section(name, values),
-            Self::File(path) => settings_store::update_section_at(path, name, values),
+        self.update_section_by(name, values, None)
+    }
+
+    /// [`Self::update_section`], recording who and what made the change
+    /// with every key it changes, where the document keeps a history of
+    /// its changes (the session's).
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::update_section`].
+    pub fn update_section_by(
+        &self,
+        name: &str,
+        values: Map<String, Value>,
+        origin: Option<&settings_store::ChangeOrigin>,
+    ) -> std::io::Result<()> {
+        let written = match (self, origin) {
+            (Self::Session, Some(origin)) => {
+                settings_store::update_section_by(name, values, origin)
+            }
+            (Self::Session, None) => settings_store::update_section(name, values),
+            (Self::File(path), _) => settings_store::update_section_at(path, name, values),
         };
         WRITES.fetch_add(1, Ordering::AcqRel);
         written
@@ -305,16 +325,15 @@ impl<T: SettingsSchema> Settings<T> {
         &self.document
     }
 
+    /// The app whose settings these are (empty for a shared section).
+    #[must_use]
+    pub fn app_id(&self) -> &str {
+        &self.app_id
+    }
+
     /// The stored keys of this scope's object for the app.
     fn stored(&self) -> Map<String, Value> {
-        let section = self.document.section(T::SCOPE.section());
-        match T::SCOPE {
-            Scope::Shared(_) => section,
-            Scope::Personal | Scope::DeviceLocal => match section.get(&self.app_id) {
-                Some(Value::Object(object)) => object.clone(),
-                _ => Map::new(),
-            },
-        }
+        stored_in(&self.document, &self.app_id, T::SCOPE)
     }
 
     /// The current value.
@@ -331,38 +350,22 @@ impl<T: SettingsSchema> Settings<T> {
     /// would outgrow what the device fabric carries, there is no document to
     /// write, or the write fails.
     pub fn set(&self, value: &T) -> std::io::Result<()> {
-        let Value::Object(values) = serde_json::to_value(value).map_err(std::io::Error::other)?
-        else {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "settings must serialize to an object",
-            ));
-        };
-        match T::SCOPE {
-            Scope::Shared(name) => self.document.update_section(name, values),
-            scope @ (Scope::Personal | Scope::DeviceLocal) => {
-                let mut object = self.stored();
-                object.extend(values);
-                if scope == Scope::Personal {
-                    let size = serde_json::to_vec(&object)
-                        .map_err(std::io::Error::other)?
-                        .len();
-                    if size > settings_store::continuity::MAX_PERSONAL_VALUE_BYTES {
-                        return Err(std::io::Error::new(
-                            std::io::ErrorKind::InvalidInput,
-                            format!(
-                                "{}'s personal settings would be {size} bytes, more than a \
-                                 person's devices carry",
-                                self.app_id
-                            ),
-                        ));
-                    }
-                }
-                let mut entry = Map::new();
-                entry.insert(self.app_id.clone(), Value::Object(object));
-                self.document.update_section(scope.section(), entry)
-            }
-        }
+        self.set_by(value, None)
+    }
+
+    /// [`Self::set`], recording `origin` — the action and who invoked it —
+    /// in the document's history of who changed which setting.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::set`].
+    pub fn set_by(
+        &self,
+        value: &T,
+        origin: Option<&settings_store::ChangeOrigin>,
+    ) -> std::io::Result<()> {
+        let value = serde_json::to_value(value).map_err(std::io::Error::other)?;
+        store_in(&self.document, &self.app_id, T::SCOPE, value, origin)
     }
 
     /// Change the current value with `change` and store it, returning what
@@ -390,20 +393,87 @@ impl<T: SettingsSchema> Settings<T> {
 /// does not decode (an older shape, a hand edit) reads as its default
 /// instead of discarding every other key.
 fn decode<T: SettingsSchema>(stored: Map<String, Value>) -> T {
-    let Ok(Value::Object(mut current)) = serde_json::to_value(T::default()) else {
-        return serde_json::from_value(Value::Object(stored)).unwrap_or_default();
+    let defaults = serde_json::to_value(T::default());
+    let decodes = |value: &Value| serde_json::from_value::<T>(value.clone()).is_ok();
+    serde_json::from_value(decoded(defaults.ok(), stored, &decodes)).unwrap_or_default()
+}
+
+/// The object [`decode`] reads: `stored` over `defaults`, keeping each
+/// stored key only where the result still `decodes`. Without defaults, the
+/// stored object as it is.
+fn decoded(
+    defaults: Option<Value>,
+    stored: Map<String, Value>,
+    decodes: &dyn Fn(&Value) -> bool,
+) -> Value {
+    let Some(Value::Object(mut current)) = defaults else {
+        return Value::Object(stored);
     };
-    if let Ok(value) = serde_json::from_value(Value::Object(merged(&current, &stored))) {
-        return value;
+    let whole = Value::Object(merged(&current, &stored));
+    if decodes(&whole) {
+        return whole;
     }
     for (key, value) in stored {
         let mut candidate = current.clone();
         candidate.insert(key, value);
-        if serde_json::from_value::<T>(Value::Object(candidate.clone())).is_ok() {
+        if decodes(&Value::Object(candidate.clone())) {
             current = candidate;
         }
     }
-    serde_json::from_value(Value::Object(current)).unwrap_or_default()
+    Value::Object(current)
+}
+
+/// The stored keys of `scope`'s object for the app `app_id` in `document`.
+fn stored_in(document: &SettingsDocument, app_id: &str, scope: Scope) -> Map<String, Value> {
+    let section = document.section(scope.section());
+    match scope {
+        Scope::Shared(_) => section,
+        Scope::Personal | Scope::DeviceLocal => match section.get(app_id) {
+            Some(Value::Object(object)) => object.clone(),
+            _ => Map::new(),
+        },
+    }
+}
+
+/// Store `value`, a section's value as JSON, in `scope`'s object for the app
+/// `app_id` in `document`, recording `origin`: [`Settings::set_by`].
+fn store_in(
+    document: &SettingsDocument,
+    app_id: &str,
+    scope: Scope,
+    value: Value,
+    origin: Option<&settings_store::ChangeOrigin>,
+) -> std::io::Result<()> {
+    let Value::Object(values) = value else {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "settings must serialize to an object",
+        ));
+    };
+    match scope {
+        Scope::Shared(name) => document.update_section_by(name, values, origin),
+        scope @ (Scope::Personal | Scope::DeviceLocal) => {
+            let mut object = stored_in(document, app_id, scope);
+            object.extend(values);
+            if scope == Scope::Personal {
+                let size = serde_json::to_vec(&object)
+                    .map_err(std::io::Error::other)?
+                    .len();
+                if size > settings_store::continuity::MAX_PERSONAL_VALUE_BYTES {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        format!(
+                            "{app_id}'s personal settings would be {size} bytes, more than a \
+                             person's devices carry"
+                        ),
+                    ));
+                }
+            }
+            let mut entry = Map::new();
+            entry.insert(app_id.to_owned(), Value::Object(object));
+            document.update_section_by(scope.section(), entry, origin)
+        }
+    }
 }
 
 fn merged(base: &Map<String, Value>, over: &Map<String, Value>) -> Map<String, Value> {

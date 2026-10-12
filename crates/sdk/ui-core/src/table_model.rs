@@ -268,13 +268,6 @@ pub(crate) fn col_width(doc: &AutoCommit, t: &ObjId, cid: &str) -> f64 {
     }
 }
 
-/// Lossless `usize -> f64` widening for grid dimensions. Row/column counts
-/// are bounded far below `u32::MAX`, so routing through `u32` (which `f64`
-/// represents exactly) avoids the precision loss a direct cast risks.
-pub(crate) fn usize_to_f64(n: usize) -> f64 {
-    f64::from(u32::try_from(n).unwrap_or(u32::MAX))
-}
-
 fn set_col_width(doc: &mut AutoCommit, t: &ObjId, cid: &str, w: f64) {
     ensure(doc, t);
     if let Some(m) = widths_map(doc, t) {

@@ -71,6 +71,25 @@ class CiMeasureTests(unittest.TestCase):
         self.assertIn("cgroup_cpu_stat_before=usage_usec 100 nr_throttled 1", result.stdout)
         self.assertIn("cgroup_cpu_stat_after=usage_usec 200 nr_throttled 3", result.stdout)
 
+    def test_pressure_snapshots_observe_the_command_and_preserve_its_status(self):
+        with tempfile.TemporaryDirectory() as directory:
+            cgroup = Path(directory)
+            for resource in ("cpu", "memory", "io"):
+                (cgroup / f"{resource}.pressure").write_text("some avg10=0.00 total=10\n")
+            result = subprocess.run(
+                ["bash", str(MEASURE), "pressure", "--", "bash", "-c",
+                 'printf "some avg10=0.00 total=30\\n" > "$1/cpu.pressure"; '
+                 'rm "$1/io.pressure"; exit 7', "--", str(cgroup)],
+                cwd=ROOT, env=os.environ | {"TILO_CGROUP_ROOT": str(cgroup)},
+                text=True, capture_output=True, check=False,
+            )
+        self.assertEqual(result.returncode, 7, result.stdout + result.stderr)
+        self.assertIn("cgroup_cpu_pressure_before=some avg10=0.00 total=10", result.stdout)
+        self.assertIn("cgroup_cpu_pressure_after=some avg10=0.00 total=30", result.stdout)
+        self.assertIn("cgroup_memory_pressure_after=some avg10=0.00 total=10", result.stdout)
+        self.assertIn("cgroup_io_pressure_after=unavailable", result.stdout)
+        self.assertNotIn("No such file", result.stderr)
+
     def test_cpu_read_failures_preserve_measured_failure_status(self):
         with tempfile.TemporaryDirectory() as directory:
             cgroup = Path(directory)

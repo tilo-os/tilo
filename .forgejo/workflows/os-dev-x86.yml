@@ -1,19 +1,13 @@
 name: Build / OS dev (x86_64)
 
-# Main's x86_64 dev image: Build / OS dev's build (build-image.yml) for main
-# pushes. Main merges faster than an x86 build finishes, so main builds one
-# commit at a time, newest first, like Build / OS dev (aarch64)
-# (os-dev-arm.yml): a run that waited behind the one before skips its build
-# when main has moved past its commit, and the newer commit's run builds
-# instead. tilo-ci:main-<sha7>-x86_64 exists for the commits that built; the
-# moving tags follow the newest (os/dev/move-tag-forward.sh). Pull requests
-# stay in os-dev.yml, one run per pull request.
+# Explicit main dev-image request. Keep one build per architecture and skip
+# requests for a superseded main commit. Use os-dev.yml to target another ref
+# or select multiple architectures.
 on:
-  push:
-    branches: [main]
+  workflow_dispatch:
 
 concurrency:
-  group: os-dev-x86_64-main
+  group: os-dev-x86-native
   cancel-in-progress: false
 
 jobs:

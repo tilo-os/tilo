@@ -7,6 +7,7 @@
 
 use automerge::AutoCommit;
 
+use crate::published::SharedResource;
 use crate::widget::capability::capability;
 use crate::widget::{ActionDirectoryInvocationDomain, ActionDirectoryResourcePage, Widget};
 
@@ -74,6 +75,20 @@ pub trait PublishesResources: Widget {
         self.resources(doc)
     }
 
+    /// [`Self::resources_for`] as a [`SharedResource`] forest whose
+    /// unchanged subtrees are the very nodes of the last one, so consumers
+    /// skip what they have seen (TIL-766). `None`, the default, has callers
+    /// wrap [`Self::resources_for`]. An answer must equal it exactly once
+    /// materialised ([`SharedResource::to_resource`]).
+    fn shared_resources_for(
+        &self,
+        participant: Option<&tilo_actions::ParticipantId>,
+        doc: &AutoCommit,
+    ) -> Option<Vec<SharedResource>> {
+        let _ = (participant, doc);
+        None
+    }
+
     /// [`Self::resource`] in `participant`'s tree.
     fn resource_for(
         &self,
@@ -137,6 +152,23 @@ pub fn document_action_result(
 /// The resources `widget` has open.
 pub fn resources(widget: &(impl Widget + ?Sized), doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
     capability::<dyn PublishesResources>(widget).map_or_else(Vec::new, |w| w.resources(doc))
+}
+
+/// The resources `widget` has open, as a shared forest
+/// ([`PublishesResources::shared_resources_for`]).
+pub fn shared_resources(widget: &(impl Widget + ?Sized), doc: &AutoCommit) -> Vec<SharedResource> {
+    let Some(publisher) = capability::<dyn PublishesResources>(widget) else {
+        return Vec::new();
+    };
+    publisher
+        .shared_resources_for(None, doc)
+        .unwrap_or_else(|| {
+            publisher
+                .resources(doc)
+                .into_iter()
+                .map(SharedResource::from_resource)
+                .collect()
+        })
 }
 
 /// `widget`'s caller-palette view resources.

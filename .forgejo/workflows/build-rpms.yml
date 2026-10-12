@@ -37,6 +37,7 @@ on:
       - os/dev/composefs/Containerfile
       - os/containers/tilo-relay/Containerfile
       - os/Containerfile.env-runtime
+      - os/dev/uki-tools.packages
       - .forgejo/workflows/build-rpms.yml
 
 concurrency:

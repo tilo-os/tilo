@@ -5,16 +5,14 @@
 //! [`TileContent::PeerWindow`] tab arriving in the room document is news
 //! that the room has one open, and the honest local answer is to open
 //! one too — with the app id and peer name it carries, checked against
-//! the room owner's `Write` grant on `ResourceRef::App(id)` via
+//! whether the room's policy lets its owner change the app,
 //! `admits`, and launched through [`crate::shell::launcher`], binding
 //! into the existing tab. `PeerWindow::note` labels the card and marks
 //! the decision made, so a refusal or launch is not re-run on every sync.
 
 use crate::shell::launcher;
 use crate::shell::state::WorkspaceAuthority as _;
-use crate::shell::state::{
-    GroupId, ResourceRef, RoomId, StripId, TabId, TileContent, Verb, Workspace, WorkspaceTree,
-};
+use crate::shell::state::{GroupId, RoomId, StripId, TabId, TileContent, Workspace, WorkspaceTree};
 use crate::shell::tab_binding::Placement;
 use tilo_desktop_model::MissingApp;
 
@@ -38,7 +36,30 @@ impl From<String> for Refusal {
 }
 
 /// Tabs whose card's install button was pressed, drained by [`examine`].
+#[cfg(not(test))]
 static INSTALL_REQUESTS: std::sync::Mutex<Vec<TabId>> = std::sync::Mutex::new(Vec::new());
+
+#[cfg(test)]
+thread_local! {
+    // Each test owns its card requests, just like the retry queue below.
+    static TEST_INSTALL_REQUESTS: std::cell::RefCell<Vec<TabId>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+fn with_install_requests<R>(apply: impl FnOnce(&mut Vec<TabId>) -> R) -> R {
+    #[cfg(test)]
+    {
+        TEST_INSTALL_REQUESTS.with(|requests| apply(&mut requests.borrow_mut()))
+    }
+    #[cfg(not(test))]
+    {
+        apply(
+            &mut INSTALL_REQUESTS
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        )
+    }
+}
+
 #[derive(PartialEq, Eq)]
 struct RetryRequest {
     tab: TabId,
@@ -176,10 +197,17 @@ static MISSING_READ_AT: std::sync::atomic::AtomicU64 = std::sync::atomic::Atomic
 /// The person pressed "Install" on `tab`'s card: install its app and open it
 /// in that tab, on the next [`examine`].
 pub(crate) fn request_install(tab: TabId) {
-    INSTALL_REQUESTS
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .push(tab);
+    with_install_requests(|requests| {
+        if !requests.contains(&tab) {
+            requests.push(tab);
+        }
+    });
+}
+
+/// Whether a card's Install press waits for the next [`examine`]. Queued
+/// outside the tree, so no tree revision announces it.
+pub(crate) fn install_requested() -> bool {
+    with_install_requests(|requests| !requests.is_empty())
 }
 
 /// Whether `catalogue` offers `app_id` to this device.
@@ -211,6 +239,8 @@ struct Pending {
 /// the launcher correlates each arriving window with its app's FIFO placement.
 /// Wait for that claim, failure or expiry before starting a saved sibling.
 pub fn examine(tree: &mut WorkspaceTree) -> bool {
+    #[cfg(test)]
+    EXAMINE_PASSES.with(|passes| passes.set(passes.get().saturating_add(1)));
     let released = release_brought_over(tree);
     let installing = start_requested_installs(tree);
     let reread = reread_missing_apps(tree);
@@ -234,7 +264,7 @@ pub fn examine(tree: &mut WorkspaceTree) -> bool {
         // A same-identity continuation can discover the room before its
         // signed membership document arrives. Keep it pending so the next
         // reconciliation pass opens it as soon as authority is available.
-        if !item.local && workspace.owner.is_none() {
+        if !item.local && workspace.owner().is_none() {
             continue;
         }
         // A governed room's window opens the record its owner created for
@@ -316,11 +346,7 @@ fn reread_missing_apps(tree: &mut WorkspaceTree) -> bool {
 /// Install and open the app of every card whose install button was
 /// pressed. The click is the consent; nothing installs without one.
 fn start_requested_installs(tree: &mut WorkspaceTree) -> bool {
-    let requests = std::mem::take(
-        &mut *INSTALL_REQUESTS
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner),
-    );
+    let requests = with_install_requests(std::mem::take);
     let mut changed = false;
     for tab in requests {
         changed |= install_for(tree, tab);
@@ -366,7 +392,7 @@ fn install_for(tree: &mut WorkspaceTree, tab: TabId) -> bool {
     if let Err(refusal) = admits(ws, &item.app_id) {
         return set_state(tree, tab, refusal, None);
     }
-    let (room, capabilities) = (ws.room, ws.capabilities.clone());
+    let (room, capabilities) = (ws.room, ws.launch_grants(tilo_clock::unix_now()));
     // Placement and any continued record are staged before the install
     // starts, so the window that finally maps lands in this tab.
     stage_continuation_for_tab(tree, &item);
@@ -403,19 +429,39 @@ fn prepare_hosted_record(tree: &WorkspaceTree, item: &Pending) -> Result<bool, S
         return Err("That workspace is gone".to_string());
     };
     let room = ws.room;
-    let Some(record) = tree
-        .room_tab_record(room, item.tab)
-        .and_then(|record| ui::record::RecordId::parse(&record))
-    else {
-        return Ok(false);
+    let record = if let Some(record) = tree.room_tab_record(room, item.tab) {
+        let Some(record) = ui::record::RecordId::parse(&record) else {
+            return Ok(false);
+        };
+        record
+    } else {
+        // Reuse the SDK's existing component identity rule. A primary
+        // document belongs to (room, app), not to a minted window record.
+        // Other unbound apps keep waiting for their exact record binding.
+        let checkout = ui::record::RecordCheckout::for_component_tab(
+            &item.app_id,
+            item.tab,
+            ui::record::RecordKind::new("primary"),
+        );
+        if !checkout.id.is_package_primary() {
+            return Ok(false);
+        }
+        checkout.id
     };
-    let (Some(reader), Some(data_home)) =
-        (HOSTED_RECORDS.get(), ::launcher::appdir::host_data_home())
-    else {
+    let Some(reader) = HOSTED_RECORDS.get() else {
         return Err("This workspace's records are not reachable here".to_string());
     };
     let Ok(bytes) = reader(room, &item.app_id, &record) else {
         return Ok(false);
+    };
+    if record.is_package_primary() {
+        // The native SDK opens this existing admitted document through its
+        // normal broker/channel. Never copy it into a minted-record profile
+        // or turn a peer window into a new primary document.
+        return Ok(true);
+    }
+    let Some(data_home) = ::launcher::appdir::host_data_home() else {
+        return Err("This workspace's records are not reachable here".to_string());
     };
     let address = RecordAddress {
         room,
@@ -427,18 +473,56 @@ fn prepare_hosted_record(tree: &WorkspaceTree, item: &Pending) -> Result<bool, S
     Ok(true)
 }
 
-/// Whether any peer window is still waiting to be examined.
+/// Whether any peer window is still waiting to be examined: an unanswered
+/// window, a saved window still opening, or a queued retry. One pass over the
+/// tabs that stops at the first hit and allocates nothing; the frame loop
+/// calls it only after the tree may have changed.
 pub fn any_pending(tree: &WorkspaceTree) -> bool {
-    !pending(tree).is_empty()
-        || tree
-            .desktop
-            .workspaces
-            .iter()
-            .flat_map(|workspace| &workspace.strips)
-            .flat_map(|strip| &strip.window_groups)
-            .flat_map(|group| &group.tabs)
-            .any(|tab| matches!(&tab.tile, TileContent::LocalApp { note, .. } if note == OPENING))
-        || with_retry_requests(|requests| !requests.is_empty())
+    #[cfg(test)]
+    PENDING_WALKS.with(|walks| walks.set(walks.get().saturating_add(1)));
+    tree.desktop
+        .workspaces
+        .iter()
+        .flat_map(|workspace| &workspace.strips)
+        .flat_map(|strip| &strip.window_groups)
+        .flat_map(|group| &group.tabs)
+        .any(|tab| {
+            awaits_examination(&tab.tile)
+                || matches!(&tab.tile, TileContent::LocalApp { note, .. } if note == OPENING)
+        })
+        || retry_requested()
+}
+
+/// Whether a card's explicit retry waits for the next [`examine`]. Queued
+/// outside the tree, so no tree revision announces it.
+pub(crate) fn retry_requested() -> bool {
+    with_retry_requests(|requests| !requests.is_empty())
+}
+
+/// A window no decision has been made for yet: [`examine`]'s work list.
+fn awaits_examination(tile: &TileContent) -> bool {
+    matches!(
+        tile,
+        TileContent::PeerWindow { app_id, note, .. } | TileContent::LocalApp { app_id, note, .. }
+            if note.is_empty() && !app_id.trim().is_empty()
+    )
+}
+
+#[cfg(test)]
+thread_local! {
+    /// How many times this thread walked the tree for [`any_pending`].
+    static PENDING_WALKS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    /// How many [`examine`] passes this thread ran.
+    static EXAMINE_PASSES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Walks and examination passes this thread has made so far.
+#[cfg(test)]
+pub(crate) fn work_counts() -> (u64, u64) {
+    (
+        PENDING_WALKS.with(std::cell::Cell::get),
+        EXAMINE_PASSES.with(std::cell::Cell::get),
+    )
 }
 
 /// Settle a persisted app card whose process started but never produced
@@ -498,19 +582,18 @@ fn pending(tree: &WorkspaceTree) -> Vec<Pending> {
         for strip in &ws.strips {
             for group in &strip.window_groups {
                 for tab in &group.tabs {
-                    match &tab.tile {
-                        TileContent::PeerWindow { app_id, note, .. }
-                        | TileContent::LocalApp { app_id, note, .. }
-                            if note.is_empty() && !app_id.trim().is_empty() =>
-                        {
-                            out.push(Pending {
-                                tab: tab.id,
-                                app_id: app_id.clone(),
-                                workspace: idx,
-                                local: matches!(&tab.tile, TileContent::LocalApp { .. }),
-                            });
-                        }
-                        _ => {}
+                    if !awaits_examination(&tab.tile) {
+                        continue;
+                    }
+                    if let TileContent::PeerWindow { app_id, .. }
+                    | TileContent::LocalApp { app_id, .. } = &tab.tile
+                    {
+                        out.push(Pending {
+                            tab: tab.id,
+                            app_id: app_id.clone(),
+                            workspace: idx,
+                            local: matches!(&tab.tile, TileContent::LocalApp { .. }),
+                        });
                     }
                 }
             }
@@ -780,11 +863,14 @@ fn release_brought_over(tree: &mut WorkspaceTree) -> bool {
 /// Whether `ws`'s room authorises starting `app_id` here. See the module
 /// docs for why this is asked of the room's owner and with this verb.
 fn admits(ws: &Workspace, app_id: &str) -> Result<(), String> {
-    let Some(owner) = ws.owner.clone() else {
+    let Some(owner) = ws.owner().cloned() else {
         return Err("This workspace has no owner yet".to_string());
     };
-    let actor = ws.actor_for_person(&owner);
-    if ws.allows(&actor, &ResourceRef::App(app_id.to_string()), Verb::Write) {
+    if ws.person_allowed(
+        &owner,
+        &tilo_action_policy::TreePath::root().app(app_id),
+        tilo_action_policy::ActionKind::Undoable,
+    ) {
         return Ok(());
     }
     Err("This workspace does not permit opening it here".to_string())
@@ -919,15 +1005,15 @@ pub(crate) fn opened_locally_in_workspace(
 mod tests {
     use super::*;
     use crate::shell::state::{
-        CapOverride, Effect, Principal, Scope, Strip, StripId, Tab, TileContent, WindowGroup,
-        WindowWidth, Workspace, WorkspaceId, WorkspaceTree, next_id,
+        Access, ResourceRef, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace,
+        WorkspaceId, WorkspaceTree, next_id,
     };
 
     const APP: &str = "so.tilo.word-processor";
 
     fn room_owned_by(owner: &str) -> Workspace {
         let mut ws = Workspace::new(WorkspaceId::from(next_id()), "shared");
-        ws.owner = Some(owner.to_string());
+        ws.set_owner(owner.to_string());
         ws
     }
 
@@ -1153,21 +1239,11 @@ mod tests {
                 "Saved window",
                 "The launch was interrupted.",
             );
-            let theme = std::env::var("TILO_SHOTS_THEME")
-                .ok()
-                .and_then(|name| ui::Theme::named(&name))
-                .unwrap_or_else(ui::Theme::dark)
-                .with_text_scale(
-                    std::env::var("TILO_SHOTS_TEXT_SCALE")
-                        .ok()
-                        .and_then(|scale| scale.parse().ok())
-                        .unwrap_or(1.0),
-                );
             let mut harness = ui::headless::FrameHarness::new_with_theme(
                 ui::State::new(),
                 Box::new(card),
                 (456, 500),
-                theme,
+                ui::launch::shot_theme_from_env().unwrap(),
             );
             harness.key("Tab");
             if input == "keyboard"
@@ -1291,6 +1367,58 @@ mod tests {
         launcher::clear_pending_placements();
     }
 
+    #[test]
+    fn peer_windows_any_pending_matches_pending_is_empty() {
+        with_retry_requests(std::mem::take);
+        let empty = WorkspaceTree::default();
+        let (mut answered, answered_tab) = tree_with_local_app("dev.tilo.answered-card");
+        set_note(&mut answered, answered_tab, NOT_INSTALLED.into());
+        let (blank_app, _) = tree_with_local_app("  ");
+        let (one_local, _) = tree_with_local_app("dev.tilo.one-local");
+        let (one_peer, _) = tree_with_peer_window(room_owned_by("quinten"));
+        let (mut many, _) = tree_with_peer_window_for(room_owned_by("quinten"), APP);
+        for app in ["dev.tilo.second", "dev.tilo.third"] {
+            let (other, _) = tree_with_local_app(app);
+            many.desktop.workspaces.extend(other.desktop.workspaces);
+        }
+        let (mut late, _) = tree_with_local_app("dev.tilo.answered-first");
+        let first = late.desktop.workspaces[0].strips[0].window_groups[0].tabs[0].id;
+        set_note(&mut late, first, NOT_INSTALLED.into());
+        let (pending_last, _) = tree_with_local_app("dev.tilo.pending-last");
+        late.desktop
+            .workspaces
+            .extend(pending_last.desktop.workspaces);
+
+        for (name, tree, expected) in [
+            ("an empty desktop", &empty, 0),
+            ("an answered card", &answered, 0),
+            ("a card without an app id", &blank_app, 0),
+            ("one saved window", &one_local, 1),
+            ("one peer window", &one_peer, 1),
+            ("several windows", &many, 3),
+            ("a pending window after an answered one", &late, 1),
+        ] {
+            assert_eq!(pending(tree).len(), expected, "{name}: fixture shape");
+            assert_eq!(
+                any_pending(tree),
+                !pending(tree).is_empty(),
+                "{name}: the early-exit walk agrees with examine's work list"
+            );
+        }
+
+        // A saved window still opening is owed another look, though it is
+        // not on the work list: its launch may still fail.
+        let (mut opening, tab) = tree_with_local_app("dev.tilo.still-opening");
+        set_note(&mut opening, tab, OPENING.into());
+        assert!(pending(&opening).is_empty());
+        assert!(any_pending(&opening));
+        // So is an explicit retry queued outside the tree.
+        request_retry(tab, "dev.tilo.still-opening");
+        assert!(any_pending(&empty), "a queued retry is owed a look");
+        with_retry_requests(std::mem::take);
+        assert!(!any_pending(&empty));
+    }
+
     fn tree_with_peer_window(ws: Workspace) -> (WorkspaceTree, u64) {
         tree_with_peer_window_for(ws, APP)
     }
@@ -1341,7 +1469,7 @@ mod tests {
         ws.allows(
             &ws.actor_for_app(app),
             &ResourceRef::FsPath(path.to_string_lossy().into_owned()),
-            Verb::Read,
+            Access::Read,
         )
     }
 
@@ -1419,7 +1547,7 @@ mod tests {
     #[serial_test::serial(process_env)]
     fn room_file_managers_alone_see_the_users_home() {
         fn a_file_manager_opened_for_the_room_can_see_the_users_home() {
-            let home = xdg_paths::home().expect("the test machine has a home directory");
+            let home = tilo_paths::home().expect("the test machine has a home directory");
             let (mut tree, _tab) = tree_with_peer_window_for(room_owned_by("quinten"), FILES);
 
             assert!(
@@ -1439,7 +1567,7 @@ mod tests {
         }
 
         fn opening_another_app_for_the_room_grants_it_no_home() {
-            let home = xdg_paths::home().expect("the test machine has a home directory");
+            let home = tilo_paths::home().expect("the test machine has a home directory");
             let (mut tree, _tab) = tree_with_peer_window_for(room_owned_by("quinten"), APP);
 
             let _ = examine(&mut tree);
@@ -1451,9 +1579,9 @@ mod tests {
         }
 
         fn a_refused_file_manager_is_granted_nothing() {
-            let home = xdg_paths::home().expect("the test machine has a home directory");
+            let home = tilo_paths::home().expect("the test machine has a home directory");
             let mut ws = room_owned_by("quinten");
-            ws.owner = None;
+            ws.policy.owner = None;
             let (mut tree, _tab) = tree_with_peer_window_for(ws, FILES);
 
             let _ = examine(&mut tree);
@@ -1576,37 +1704,14 @@ mod tests {
         /// on a peer's say-so.
         fn a_room_with_no_owner_admits_nothing() {
             let mut ws = room_owned_by("quinten");
-            ws.owner = None;
+            ws.policy.owner = None;
             let refusal = admits(&ws, APP).expect_err("an ownerless room must authorise nothing");
             assert_eq!(refusal, "This workspace has no owner yet");
         }
 
-        /// Goes *through* the capability model rather than around it —
-        /// asserted against `Workspace::decide`, the same call every other
-        /// enforcement point bottoms out in.
-        fn a_restriction_on_the_app_stops_it_opening_here() {
-            let mut ws = room_owned_by("quinten");
-            let _ = ws.grant_capability(CapOverride {
-                effect: Effect::Restrict,
-                ..CapOverride::grant(
-                    crate::shell::state::Subject::Principal(Principal::Person("quinten".into())),
-                    Scope::App(APP.to_string()),
-                    Verb::Read,
-                )
-            });
-            let refusal = admits(&ws, APP).expect_err("a restricted app must not be opened here");
-            assert!(
-                refusal.contains("does not permit"),
-                "the card has to say why; got {refusal:?}"
-            );
-            // The restriction is about this app, not about the room: another
-            // app in the same room is still admitted.
-            assert_eq!(admits(&ws, "so.tilo.terminal"), Ok(()));
-        }
-
         fn an_ownerless_window_stays_pending_until_room_authority_arrives() {
             let mut ws = room_owned_by("quinten");
-            ws.owner = None;
+            ws.policy.owner = None;
             let (mut tree, tab) = tree_with_peer_window(ws);
             assert!(
                 !examine(&mut tree),
@@ -1630,7 +1735,6 @@ mod tests {
 
         a_room_with_an_owner_admits_its_apps();
         a_room_with_no_owner_admits_nothing();
-        a_restriction_on_the_app_stops_it_opening_here();
         an_ownerless_window_stays_pending_until_room_authority_arrives();
     }
 
@@ -1716,11 +1820,7 @@ mod tests {
             "Word Processor",
         );
         card.press_for_test();
-        let queued = std::mem::take(
-            &mut *INSTALL_REQUESTS
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner),
-        );
+        let queued = with_install_requests(std::mem::take);
         assert_eq!(queued, vec![tab]);
     }
 

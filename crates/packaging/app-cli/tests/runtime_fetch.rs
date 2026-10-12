@@ -302,6 +302,12 @@ fn a_registry_build_for_another_runtime_fetches_that_runtime_or_is_refused() {
     let runtimes = root.join("runtimes");
     std::fs::create_dir_all(&runtimes).unwrap();
     std::fs::rename(&device_bundle, runtimes.join(&device_version)).unwrap();
+    // The image's apps keep it installed. This fixture has no image store,
+    // so a pin stands in for them; without one, collection after the
+    // install would rightly take a build nothing runs on.
+    runtime_bundle::gc::BundleRoot::new(&runtimes)
+        .pin(&device_version)
+        .unwrap();
 
     // The registry's runtime: another build, large enough to travel chunked.
     let mut toolkit =

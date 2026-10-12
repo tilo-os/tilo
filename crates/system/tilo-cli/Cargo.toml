@@ -23,6 +23,7 @@ serde_json.workspace = true
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
+tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 
 [lints]
 workspace = true

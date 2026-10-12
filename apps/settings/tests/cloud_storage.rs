@@ -313,6 +313,8 @@ fn run(case: &Case, root_dir: &Path, root: &AccountRoot) {
             mounts_root: home.path().join("Remote"),
             state_root: home.path().join("state"),
             refresher: Arc::new(case.custodian.clone()),
+            control_socket: None,
+            file_socket: None,
         },
         Box::new(launcher.clone()),
     );

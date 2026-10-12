@@ -112,14 +112,6 @@ impl RealtimeBridge {
     }
 }
 
-fn realtime_unix_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .ok()
-        .and_then(|duration| u64::try_from(duration.as_millis()).ok())
-        .unwrap_or(0)
-}
-
 fn broker_realtime_controls(
     controls: ui::realtime_continuity::RealtimeControlIntent,
 ) -> crate::shell::realtime_session::RealtimeControlState {
@@ -464,7 +456,7 @@ impl RealtimeFabricAppBridge {
         if let Err(error) =
             realtime
                 .fabric
-                .offer_to(id, target, realtime_unix_ms().saturating_add(30_000))
+                .offer_to(id, target, tilo_clock::unix_now_ms().saturating_add(30_000))
         {
             let _ = realtime.broker.lock().map(|mut broker| {
                 let _ = broker.target_failed(&app, id, &source, target, std::time::Instant::now());
@@ -847,10 +839,6 @@ impl NativeRealtimeState {
 impl NativeRealtimeState {
     /// Shared target-local capture broker used by the portal consent path and
     /// realtime IPC. Local handles and lease IDs never leave the shell.
-    #[allow(
-        dead_code,
-        reason = "the portal host consumes this narrow handle when presenting target-local capture consent"
-    )]
     pub(crate) fn realtime_capture_broker(
         &self,
     ) -> Option<Arc<Mutex<crate::portal::CaptureBroker>>> {
@@ -858,58 +846,6 @@ impl NativeRealtimeState {
             .lock()
             .ok()
             .map(|realtime| Arc::clone(&realtime.capture))
-    }
-
-    /// Mint one target-local consent capability after trusted shell UI has
-    /// selected a concrete local source. The session/app/workspace/target and
-    /// requested kind are all re-derived from broker state before minting.
-    #[allow(
-        dead_code,
-        reason = "called by the target capture-consent host once that host is attached to the collaboration service lifecycle"
-    )]
-    pub(crate) fn authorize_realtime_capture(
-        &self,
-        app: &crate::shell::realtime_session::VerifiedAppRegistration,
-        session: &str,
-        target: &crate::shell::personal_continuity::DeviceId,
-        source_id: &str,
-        kind: crate::portal::CaptureKind,
-        now: std::time::Instant,
-    ) -> Result<String, String> {
-        let realtime = self
-            .realtime
-            .lock()
-            .map_err(|_| "realtime broker is unavailable".to_string())?;
-        let binding = realtime
-            .sessions
-            .get(session)
-            .ok_or_else(|| "unknown realtime session".to_string())?;
-        let view = realtime
-            .broker
-            .lock()
-            .map_err(|_| "realtime broker is unavailable".to_string())?
-            .session(binding.id)
-            .ok_or_else(|| "unknown realtime session".to_string())?;
-        if &binding.app != app || view.target.as_ref() != Some(target) {
-            return Err("realtime capture binding mismatch".into());
-        }
-        let required = realtime
-            .required_capture_kinds(binding.id)
-            .ok_or_else(|| "unknown realtime session".to_string())?;
-        if !required.contains(&kind) {
-            return Err("capture kind is not active for this realtime session".into());
-        }
-        let capture_binding =
-            crate::portal::CaptureSessionBinding::from_verified(app, session, target.as_str())
-                .map_err(|error| error.to_string())?;
-        let capture = Arc::clone(&realtime.capture);
-        drop(realtime);
-        capture
-            .lock()
-            .map_err(|_| "target capture broker is unavailable".to_string())?
-            .authorize(&capture_binding, source_id, kind, now)
-            .map(crate::portal::CaptureAuthorizationId::to_opaque)
-            .map_err(|error| error.to_string())
     }
 
     fn authorize_realtime_capture_batch(

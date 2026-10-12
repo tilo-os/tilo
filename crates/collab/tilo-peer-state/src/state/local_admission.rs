@@ -36,7 +36,11 @@ impl StatePeer {
     /// # Errors
     ///
     /// Returns a message when the write is refused, deferred, incomplete or
-    /// a duplicate, or leaves no exact admission evidence.
+    /// rejected (`not newly admitted`), when its signed sequence is at or
+    /// below the author's replay floor on the route (`signed sequence is
+    /// stale`), or when it leaves no exact admission evidence. None of these
+    /// waits for an asynchronous receipt: the evidence is the exact admission
+    /// index entry written by this same synchronous call.
     pub fn admit_new_local_document(
         &mut self,
         app: &str,
@@ -82,12 +86,14 @@ impl StatePeer {
         let author = *envelope.author.as_bytes();
         let before = self.clone();
         let outcome = self.admit_local(app, record, envelope, write, now)?;
-        if outcome.deferred
-            || outcome.incomplete.is_some()
-            || outcome.rejected != 0
-            || outcome.duplicate
-        {
-            return Err("native local document lacks a newly admitted exact receipt".into());
+        if outcome.duplicate {
+            return Err("native local document signed sequence is stale".into());
+        }
+        if outcome.deferred || outcome.incomplete.is_some() || outcome.rejected != 0 {
+            return Err(
+                "native local document was deferred, incomplete or rejected, not newly admitted"
+                    .into(),
+            );
         }
         let admissions = self.admissions_since(&before).map_err(|e| e.to_string())?;
         if !admissions.iter().any(|entry| {
@@ -201,5 +207,64 @@ mod tests {
                 .unwrap(),
             None
         );
+    }
+
+    #[test]
+    fn replay_floor_without_exact_entry_requires_a_fresh_signed_successor() {
+        use automerge::transaction::Transactable as _;
+        let (mut peer, key, _, _, now) = crate::admission_tests::seeded();
+        let original = peer.document("test.app", "tab:1").unwrap();
+        let NeighbourMsg::AppDocument {
+            envelope: first, ..
+        } = peer
+            .clone()
+            .publish_document("test.app", "tab:1", original.clone(), &key, now)
+            .unwrap()
+        else {
+            panic!("first signed snapshot")
+        };
+        let mut changed = automerge::AutoCommit::load(&original).unwrap();
+        changed
+            .put(automerge::ROOT, "diagnostic", "different")
+            .unwrap();
+        let NeighbourMsg::AppDocument {
+            envelope: stale, ..
+        } = peer
+            .clone()
+            .publish_document("test.app", "tab:1", changed.save(), &key, now)
+            .unwrap()
+        else {
+            panic!("stale signed snapshot")
+        };
+        assert_eq!(first.seq, stale.seq);
+        let first_seq = first.seq;
+        peer.admit_local_app_document("test.app", "tab:1", *first, now)
+            .unwrap();
+        peer.select_admission_v5().unwrap();
+        assert!(
+            peer.lookup_exact_local_document("test.app", "tab:1", &stale, now)
+                .unwrap()
+                .is_none()
+        );
+        let before = peer.durable().unwrap();
+        assert_eq!(
+            peer.admit_new_local_document("test.app", "tab:1", *stale, now)
+                .unwrap_err(),
+            "native local document signed sequence is stale"
+        );
+        assert_eq!(peer.durable().unwrap(), before);
+
+        let NeighbourMsg::AppDocument {
+            envelope: fresh, ..
+        } = peer
+            .clone()
+            .publish_document("test.app", "tab:1", changed.save(), &key, now)
+            .unwrap()
+        else {
+            panic!("fresh signed snapshot")
+        };
+        assert_eq!(fresh.seq, first_seq + 1);
+        peer.admit_new_local_document("test.app", "tab:1", *fresh, now)
+            .unwrap();
     }
 }

@@ -8,7 +8,15 @@
  #include "third_party/blink/public/common/features.h"
  #include "third_party/blink/public/mojom/input/focus_type.mojom-blink.h"
  #include "third_party/blink/public/web/web_frame_widget.h"
-@@ -74,6 +75,7 @@
+@@ -43,6 +44,7 @@
+ #include "third_party/blink/renderer/core/dom/range.h"
+ #include "third_party/blink/renderer/core/dom/text.h"
+ #include "third_party/blink/renderer/core/editing/commands/delete_selection_command.h"
++#include "third_party/blink/renderer/core/editing/commands/editing_state.h"
+ #include "third_party/blink/renderer/core/editing/commands/undo_stack.h"
+ #include "third_party/blink/renderer/core/editing/editing_utilities.h"
+ #include "third_party/blink/renderer/core/editing/editor.h"
+@@ -74,6 +76,7 @@
  #include "third_party/blink/renderer/core/page/focus_controller.h"
  #include "third_party/blink/renderer/core/page/page.h"
  #include "third_party/blink/renderer/platform/runtime_enabled_features.h"
@@ -16,7 +24,7 @@
  
  namespace blink {
  
-@@ -350,6 +352,88 @@
+@@ -350,6 +353,88 @@
  
  enum class InputMethodController::TypingContinuation { kContinue, kEnd };
  
@@ -105,7 +113,7 @@
  InputMethodController::InputMethodController(LocalDOMWindow& window,
                                               LocalFrame& frame)
      : ExecutionContextLifecycleObserver(&window),
-@@ -397,14 +481,17 @@
+@@ -397,14 +482,17 @@
    target->DispatchEvent(*event);
  }
  
@@ -126,7 +134,7 @@
    if (!target)
      return;
  
-@@ -437,7 +524,7 @@
+@@ -437,7 +525,7 @@
  //   2. Fire 'compositionupdate' event
  //   3. Fire TextEvent and modify DOM
  //   4. Fire 'input' event; dispatched by Editor::AppliedEditing()
@@ -135,7 +143,7 @@
      LocalFrame& frame,
      const String& text,
      TypingCommand::Options options,
-@@ -456,24 +543,30 @@
+@@ -456,24 +544,30 @@
           "TextCompositionConfirm  or TextCompositionCancel, but got "
        << static_cast<int>(composition_type);
    if (!frame.GetDocument())
@@ -173,7 +181,43 @@
  
    // TODO(editing-dev): The use of UpdateStyleAndLayout
    // needs to be audited. see http://crbug.com/590369 for more details.
-@@ -499,15 +592,32 @@
+@@ -490,24 +584,64 @@
+       if (text.empty())
+         TypingCommand::DeleteSelection(*frame.GetDocument(), 0);
+       frame.GetDocument()->UpdateStyleAndLayout(DocumentUpdateReason::kEditing);
+-      TypingCommand::InsertText(
+-          *frame.GetDocument(), text, options,
+-          EditCommand::PasswordEchoBehavior::kEchoIfPasswordEchoTouchEnabled,
+-          composition_type, is_incremental_insertion);
++      {
++        // Empty commits delete their original selection above. Snapshot that
++        // sanctioned change before validating TypingCommand's script events.
++        const CompositionEditState command_state(*this);
++        bool refused = false;
++        auto validate = [&] {
++          if (command_state.IsUnchanged()) {
++            return true;
++          }
++          refused = true;
++          return false;
++        };
++        const base::FunctionRef<bool()> validation(validate);
++        EditingState editing_state;
++        TypingCommand::InsertText(
++            *frame.GetDocument(), text, Selection().GetSelectionInDomTree(),
++            options, &editing_state,
++            EditCommand::PasswordEchoBehavior::kEchoIfPasswordEchoTouchEnabled,
++            composition_type, is_incremental_insertion,
++            InputEvent::InputType::kInsertText, nullptr, &validation);
++        if (refused) {
++          return command_state.RefuseEdit();
++        }
++        if (editing_state.IsAborted()) {
++          return command_state.RefuseEdit();
++        }
++      }
+       break;
+     case TypingCommand::TextCompositionType::kTextCompositionCancel:
        // TODO(editing-dev): Use TypingCommand::insertText after TextEvent was
        // removed. (Removed from spec since 2012)
        // See text_event.idl.
@@ -208,7 +252,7 @@
    RemoveSuggestionMarkerInCompositionRange();
  
    has_composition_ = false;
-@@ -644,7 +754,8 @@
+@@ -644,7 +778,8 @@
      RevealSelectionScope reveal_selection_scope(GetFrame());
  
      if (is_too_long) {
@@ -218,7 +262,7 @@
      } else {
        Clear();
        DispatchCompositionEndEvent(GetFrame(), composing);
-@@ -699,6 +810,8 @@
+@@ -699,6 +834,8 @@
      const String& text,
      const Vector<ImeTextSpan>& ime_text_spans,
      int relative_caret_position) {
@@ -227,7 +271,7 @@
    bool result;
    if (HasComposition()) {
      result = ReplaceCompositionAndMoveCaret(text, relative_caret_position,
-@@ -787,9 +900,11 @@
+@@ -787,9 +924,11 @@
    if (!IsAvailable())
      return false;
  
@@ -241,7 +285,7 @@
        GetFrame(), text, 0,
        TypingCommand::TextCompositionType::kTextCompositionConfirm);
  
-@@ -798,10 +913,14 @@
+@@ -798,10 +937,14 @@
    if (!IsAvailable())
      return false;
  
@@ -259,7 +303,7 @@
  }
  
  // relativeCaretPosition is relative to the end of the text.
-@@ -926,13 +1045,41 @@
+@@ -926,13 +1069,41 @@
  }
  
  bool InputMethodController::InsertText(const String& text) {
@@ -308,7 +352,7 @@
  }
  
  bool InputMethodController::InsertTextAndMoveCaret(
-@@ -981,13 +1128,15 @@
+@@ -981,13 +1152,15 @@
      return;
    }
  
@@ -327,7 +371,7 @@
      return;
  
    // An open typing command that disagrees about current selection would cause
-@@ -995,7 +1144,21 @@
+@@ -995,7 +1168,21 @@
    TypingCommand::CloseTyping(&GetFrame());
  
    // No DOM update after 'compositionend'.
@@ -350,7 +394,7 @@
  }
  
  bool InputMethodController::DispatchCompositionStartEvent(const String& text) {
-@@ -1003,11 +1166,22 @@
+@@ -1003,11 +1190,22 @@
    if (!target)
      return IsAvailable();
  
@@ -375,7 +419,7 @@
  }
  
  void InputMethodController::SetComposition(
-@@ -1016,6 +1190,12 @@
+@@ -1016,6 +1214,12 @@
      int selection_start,
      int selection_end,
      mojom::blink::ImeState ime_state) {
@@ -388,7 +432,7 @@
    RevealSelectionScope reveal_selection_scope(GetFrame());
  
    // Updates styles before setting selection for composition to prevent
-@@ -1095,9 +1275,16 @@
+@@ -1095,9 +1299,16 @@
  
    // Suppress input event until after we move the caret to the new position.
    EventQueueScope scope;
@@ -408,7 +452,7 @@
    // Event handlers might destroy document.
    if (!IsAvailable())
      return;
-@@ -1423,15 +1610,16 @@
+@@ -1423,15 +1634,16 @@
      return true;
    }
  
@@ -483,32 +527,24 @@
  
 --- a/third_party/blink/renderer/core/editing/ime/input_method_controller_test.cc
 +++ b/third_party/blink/renderer/core/editing/ime/input_method_controller_test.cc
-@@ -3,6 +3,8 @@
- // found in the LICENSE file.
- 
- #include "third_party/blink/renderer/core/editing/ime/input_method_controller.h"
-+
-+#include "third_party/blink/renderer/core/dom/events/scoped_event_queue.h"
- 
- #include <memory>
- 
-@@ -10,6 +12,7 @@
+@@ -10,6 +10,8 @@
  #include "third_party/blink/public/common/features.h"
  #include "third_party/blink/renderer/core/dom/document.h"
  #include "third_party/blink/renderer/core/dom/element.h"
 +#include "third_party/blink/renderer/core/dom/events/native_event_listener.h"
++#include "third_party/blink/renderer/core/dom/events/scoped_event_queue.h"
  #include "third_party/blink/renderer/core/dom/node_list.h"
  #include "third_party/blink/renderer/core/dom/range.h"
  #include "third_party/blink/renderer/core/editing/editor.h"
-@@ -19,6 +22,7 @@
+@@ -18,6 +20,7 @@
+ #include "third_party/blink/renderer/core/editing/markers/document_marker_controller.h"
  #include "third_party/blink/renderer/core/editing/selection_template.h"
  #include "third_party/blink/renderer/core/editing/testing/editing_test_base.h"
- #include "third_party/blink/renderer/core/events/mouse_event.h"
 +#include "third_party/blink/renderer/core/event_type_names.h"
+ #include "third_party/blink/renderer/core/events/mouse_event.h"
  #include "third_party/blink/renderer/core/frame/local_frame.h"
  #include "third_party/blink/renderer/core/frame/local_frame_view.h"
- #include "third_party/blink/renderer/core/frame/settings.h"
-@@ -27,6 +31,7 @@
+@@ -27,6 +30,7 @@
  #include "third_party/blink/renderer/core/html/forms/html_text_area_element.h"
  #include "third_party/blink/renderer/core/layout/layout_theme.h"
  #include "third_party/blink/renderer/platform/testing/runtime_enabled_features_test_helpers.h"
@@ -516,17 +552,18 @@
  
  using ui::mojom::ImeTextSpanThickness;
  using ui::mojom::ImeTextSpanUnderlineStyle;
-@@ -53,6 +58,9 @@
+@@ -53,6 +57,10 @@
    void CreateHtmlWithCompositionInputEventListeners();
    void CreateHtmlWithCompositionEndEventListener(const SelectionType);
    int TextInputFlags(const char* html);
-+  HTMLInputElement* PrepareCompositionMutationTest(const char* event_type,
-+                                                   const char* mutation,
-+                                                   bool start_composition = true);
++  HTMLInputElement* PrepareCompositionMutationTest(
++      const char* event_type,
++      const char* mutation,
++      bool start_composition = true);
  };
  
  Element* InputMethodControllerTest::InsertHtmlElement(const char* element_code,
-@@ -1559,6 +1567,366 @@
+@@ -1559,6 +1567,423 @@
              GetDocument().title());
  }
  
@@ -651,8 +688,9 @@
 +      : controller_(&controller) {}
 +
 +  void Invoke(ExecutionContext*, Event*) override {
-+    if (invoked_)
++    if (invoked_) {
 +      return;
++    }
 +    invoked_ = true;
 +    controller_->SetCompositionFromExistingText(Vector<ImeTextSpan>(), 0, 5);
 +  }
@@ -726,8 +764,9 @@
 +
 +TEST_F(InputMethodControllerTest, CompositionMutationLegacyCancelValue) {
 +  auto* input = PrepareCompositionMutationTest(
-+      "textInput", "document.title='seen';sample.value='newer';"
-+                   "sample.setSelectionRange(0,5);");
++      "textInput",
++      "document.title='seen';sample.value='newer';"
++      "sample.setSelectionRange(0,5);");
 +  EventQueueScope scope;
 +  Controller().CancelComposition();
 +  EXPECT_EQ("seen", GetDocument().title());
@@ -748,9 +787,10 @@
 +}
 +
 +TEST_F(InputMethodControllerTest, CompositionMutationLegacyCancelFocus) {
-+  auto* input = PrepareCompositionMutationTest(
-+      "textInput", "document.title='seen';other.focus();"
-+                   "other.setSelectionRange(0,6);");
++  auto* input =
++      PrepareCompositionMutationTest("textInput",
++                                     "document.title='seen';other.focus();"
++                                     "other.setSelectionRange(0,6);");
 +  EventQueueScope scope;
 +  Controller().CancelComposition();
 +  auto* other = To<HTMLInputElement>(GetElementById("other"));
@@ -762,11 +802,13 @@
 +  EXPECT_EQ(6u, other->selectionEnd());
 +}
 +
-+TEST_F(InputMethodControllerTest, CompositionMutationLegacyCancelKeepsPageEdit) {
++TEST_F(InputMethodControllerTest,
++       CompositionMutationLegacyCancelKeepsPageEdit) {
 +  auto* input = PrepareCompositionMutationTest(
-+      "textInput", "document.title='seen';sample.setSelectionRange(0,5);"
-+                   "document.execCommand('insertText',false,'page');"
-+                   "sample.setSelectionRange(0,4);");
++      "textInput",
++      "document.title='seen';sample.setSelectionRange(0,5);"
++      "document.execCommand('insertText',false,'page');"
++      "sample.setSelectionRange(0,4);");
 +  EventQueueScope scope;
 +  Controller().CancelComposition();
 +  EXPECT_EQ("seen", GetDocument().title());
@@ -775,9 +817,57 @@
 +  EXPECT_EQ(4u, input->selectionEnd());
 +}
 +
-+TEST_F(InputMethodControllerTest, CompositionMutationTextInputRefusesCaretMove) {
++TEST_F(InputMethodControllerTest, CompositionMutationLegacyConfirmValue) {
 +  auto* input = PrepareCompositionMutationTest(
-+      "textInput", "sample.value='newer';sample.setSelectionRange(0,5);", false);
++      "textInput", "sample.value='newer';sample.setSelectionRange(0,5);");
++  EXPECT_FALSE(Controller().CommitText("final", Vector<ImeTextSpan>(), 0));
++  EXPECT_EQ("newer", input->Value());
++  EXPECT_EQ(0u, input->selectionStart());
++  EXPECT_EQ(5u, input->selectionEnd());
++}
++
++TEST_F(InputMethodControllerTest, CompositionMutationLegacyConfirmSelection) {
++  auto* input = PrepareCompositionMutationTest(
++      "textInput", "sample.setSelectionRange(0,5);");
++  EXPECT_FALSE(Controller().CommitText("final", Vector<ImeTextSpan>(), 0));
++  EXPECT_EQ("alpha preedit gamma", input->Value());
++  EXPECT_EQ(0u, input->selectionStart());
++  EXPECT_EQ(5u, input->selectionEnd());
++}
++
++TEST_F(InputMethodControllerTest, CompositionMutationLegacyConfirmFocus) {
++  auto* input = PrepareCompositionMutationTest(
++      "textInput", "other.focus();other.setSelectionRange(0,6);");
++  EXPECT_FALSE(Controller().CommitText("final", Vector<ImeTextSpan>(), 0));
++  auto* other = To<HTMLInputElement>(GetElementById("other"));
++  EXPECT_EQ("alpha preedit gamma", input->Value());
++  EXPECT_EQ(other, GetDocument().FocusedElement());
++  EXPECT_EQ("second", other->Value());
++  EXPECT_EQ(0u, other->selectionStart());
++  EXPECT_EQ(6u, other->selectionEnd());
++}
++
++TEST_F(InputMethodControllerTest, CompositionMutationLegacyConfirmPrevented) {
++  auto* input =
++      PrepareCompositionMutationTest("textInput", "event.preventDefault();");
++  EXPECT_FALSE(Controller().CommitText("final", Vector<ImeTextSpan>(), 0));
++  EXPECT_EQ("alpha preedit gamma", input->Value());
++  EXPECT_EQ(6u, input->selectionStart());
++  EXPECT_EQ(13u, input->selectionEnd());
++  // A prevented confirmation ends the old composition without inserting.
++  // Its empty cleanup retries cannot delete the retained user text.
++  EXPECT_FALSE(Controller().CommitText(g_empty_string, Vector<ImeTextSpan>(), 0));
++  Controller().SetComposition(g_empty_string, Vector<ImeTextSpan>(), 0, 0);
++  EXPECT_EQ("alpha preedit gamma", input->Value());
++  EXPECT_EQ(6u, input->selectionStart());
++  EXPECT_EQ(13u, input->selectionEnd());
++}
++
++TEST_F(InputMethodControllerTest,
++       CompositionMutationTextInputRefusesCaretMove) {
++  auto* input = PrepareCompositionMutationTest(
++      "textInput", "sample.value='newer';sample.setSelectionRange(0,5);",
++      false);
 +  EXPECT_FALSE(Controller().CommitText("final", Vector<ImeTextSpan>(), 0));
 +  EXPECT_EQ("newer", input->Value());
 +  EXPECT_EQ(0u, input->selectionStart());
@@ -795,7 +885,8 @@
 +
 +TEST_F(InputMethodControllerTest, CompositionMutationIdleEmptyPreservesValue) {
 +  auto* input = PrepareCompositionMutationTest(
-+      "beforeinput", "sample.value='newer';sample.setSelectionRange(0,5);", false);
++      "beforeinput", "sample.value='newer';sample.setSelectionRange(0,5);",
++      false);
 +  Controller().SetComposition("", Vector<ImeTextSpan>(), 0, 0);
 +  EXPECT_EQ("newer", input->Value());
 +  EXPECT_EQ(0u, input->selectionStart());
@@ -807,8 +898,8 @@
 +}
 +
 +TEST_F(InputMethodControllerTest, CompositionMutationUndoEndsOldComposition) {
-+  auto* input = PrepareCompositionMutationTest(
-+      "compositionend", "document.title='ended';");
++  auto* input = PrepareCompositionMutationTest("compositionend",
++                                               "document.title='ended';");
 +  GetFrame().GetEditor().Undo();
 +  EXPECT_EQ("alpha beta gamma", input->Value());
 +  EXPECT_EQ("ended", GetDocument().title());
@@ -868,15 +959,18 @@
 +
 +TEST_F(InputMethodControllerTest, CompositionMutationEmptyCommitRetry) {
 +  auto* input = PrepareCompositionMutationTest(
-+      "beforeinput", "sample.value='newer';sample.setSelectionRange(0,5);", false);
++      "beforeinput", "sample.value='newer';sample.setSelectionRange(0,5);",
++      false);
 +  EXPECT_FALSE(Controller().CommitText("final", Vector<ImeTextSpan>(), 0));
 +  EXPECT_EQ("newer", input->Value());
-+  EXPECT_FALSE(Controller().CommitText(g_empty_string, Vector<ImeTextSpan>(), 0));
++  EXPECT_FALSE(
++      Controller().CommitText(g_empty_string, Vector<ImeTextSpan>(), 0));
 +  EXPECT_EQ("newer", input->Value());
 +  EXPECT_EQ(0u, input->selectionStart());
 +  EXPECT_EQ(5u, input->selectionEnd());
 +  Controller().SetEditableSelectionOffsets(PlainTextRange(5, 5));
-+  EXPECT_FALSE(Controller().CommitText(g_empty_string, Vector<ImeTextSpan>(), -5));
++  EXPECT_FALSE(
++      Controller().CommitText(g_empty_string, Vector<ImeTextSpan>(), -5));
 +  EXPECT_EQ("newer", input->Value());
 +  EXPECT_EQ(5u, input->selectionStart());
 +  EXPECT_EQ(5u, input->selectionEnd());
@@ -893,7 +987,7 @@
  TEST_F(InputMethodControllerTest, CompositionInputEventForReplace) {
    CreateHtmlWithCompositionInputEventListeners();
  
-@@ -2753,7 +3121,7 @@
+@@ -2753,7 +3178,7 @@
    ime_text_spans.push_back(ImeTextSpan(
        ImeTextSpan::Type::kMisspellingSuggestion, 0, 5, Color::kTransparent,
        ImeTextSpanThickness::kNone, ImeTextSpanUnderlineStyle::kNone,
@@ -902,7 +996,7 @@
        /* remove_on_finish_composing */ true));
  
    // Case 1: SetComposition() -> FinishComposingText() removes the suggestion
-@@ -2796,7 +3164,7 @@
+@@ -2796,7 +3221,7 @@
    ime_text_spans.push_back(ImeTextSpan(
        type, start, end, Color::kTransparent, ImeTextSpanThickness::kNone,
        ImeTextSpanUnderlineStyle::kNone, Color::kTransparent,
@@ -1016,3 +1110,66 @@
  }
  
  bool Editor::CanRedo() {
+--- a/third_party/blink/renderer/core/editing/commands/typing_command.cc
++++ b/third_party/blink/renderer/core/editing/commands/typing_command.cc
+@@ -411,7 +411,8 @@
+     TextCompositionType composition_type,
+     const bool is_incremental_insertion,
+     InputEvent::InputType input_type,
+-    DataTransfer* data_transfer) {
++    DataTransfer* data_transfer,
++    const base::FunctionRef<bool()>* validate_edit) {
+   TRACE_EVENT0("blink", "TypingCommand::InsertText");
+   DCHECK(!document.NeedsLayoutTreeUpdate());
+   LocalFrame* frame = document.GetFrame();
+@@ -428,17 +429,26 @@
+         text, passed_selection_for_insertion, editing_state);
+     if (editing_state->IsAborted())
+       return;
++    ABORT_EDITING_COMMAND_IF(validate_edit && !(*validate_edit)());
+     ABORT_EDITING_COMMAND_IF(
+         !passed_selection_for_insertion_as_undo_step.IsValidFor(document));
+   }
+ 
+   if (composition_type == kTextCompositionConfirm) {
+-    if (DispatchTextInputEvent(frame, new_text, editing_state) !=
+-        DispatchEventResult::kNotCanceled)
+-      return;
+-    // event handler might destroy document.
++    const DispatchEventResult result =
++        DispatchTextInputEvent(frame, new_text, editing_state);
++    // The original selection may still be valid after script changes the
++    // focused control or its value. Validate before restoring that selection.
+     if (editing_state->IsAborted())
+       return;
++    ABORT_EDITING_COMMAND_IF(validate_edit && !(*validate_edit)());
++    if (result != DispatchEventResult::kNotCanceled) {
++      // Let the IME caller refuse its following caret move as well.
++      if (validate_edit) {
++        editing_state->Abort();
++      }
++      return;
++    }
+     // editing/inserting/insert-text-nodes-disconnect-on-textinput-event.html
+     // hits true for ABORT_EDITING_COMMAND_IF macro.
+     ABORT_EDITING_COMMAND_IF(
+--- a/third_party/blink/renderer/core/editing/commands/typing_command.h
++++ b/third_party/blink/renderer/core/editing/commands/typing_command.h
+@@ -26,6 +26,7 @@
+ #ifndef THIRD_PARTY_BLINK_RENDERER_CORE_EDITING_COMMANDS_TYPING_COMMAND_H_
+ #define THIRD_PARTY_BLINK_RENDERER_CORE_EDITING_COMMANDS_TYPING_COMMAND_H_
+ 
++#include "base/functional/function_ref.h"
+ #include "third_party/blink/renderer/core/core_export.h"
+ #include "third_party/blink/renderer/core/editing/commands/composite_edit_command.h"
+ #include "third_party/blink/renderer/core/editing/text_granularity.h"
+@@ -86,7 +87,8 @@
+       TextCompositionType = kTextCompositionNone,
+       const bool is_incremental_insertion = false,
+       InputEvent::InputType = InputEvent::InputType::kInsertText,
+-      DataTransfer* = nullptr);
++      DataTransfer* = nullptr,
++      const base::FunctionRef<bool()>* validate_edit = nullptr);
+   static bool InsertLineBreak(Document&);
+   static bool InsertParagraphSeparator(Document&);
+   static bool InsertParagraphSeparatorInQuotedContent(Document&);

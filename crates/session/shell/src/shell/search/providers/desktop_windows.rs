@@ -21,7 +21,7 @@ use crate::shell::state::{GroupId, StripId, TabId, WorkspaceId};
 
 fn close_contract() -> tilo_actions::ActionContract {
     tilo_actions::ActionContract {
-        permission: tilo_actions::PermissionRequirement::Write,
+        kind: tilo_actions::ActionKind::Undoable,
         risk: tilo_actions::RiskLevel::Low,
         retry: tilo_actions::RetryPolicy::Idempotent,
         tags: vec!["desktop".into(), "window".into(), "close".into()],
@@ -31,7 +31,7 @@ fn close_contract() -> tilo_actions::ActionContract {
 
 fn move_contract() -> tilo_actions::ActionContract {
     tilo_actions::ActionContract {
-        permission: tilo_actions::PermissionRequirement::Write,
+        kind: tilo_actions::ActionKind::Undoable,
         risk: tilo_actions::RiskLevel::Low,
         retry: tilo_actions::RetryPolicy::AtMostOnce,
         tags: vec!["desktop".into(), "window".into(), "move".into()],

@@ -6,6 +6,7 @@ native build container. It never links, registers, sends, or accesses a personal
 The Rust launcher verifies the signed bundle before selecting the probe step.
 """
 import argparse
+import errno
 import importlib.util
 import json
 import os
@@ -60,21 +61,31 @@ def probe(work, prefix=()):
     version = subprocess.run(base + ["--version"], env=environment,
                              capture_output=True, timeout=20, check=True)
     staging.require(version.stdout.strip() == b"signal-cli 0.14.8", "fixture Signal version differs")
-    with tempfile.TemporaryDirectory(prefix="tilo-signal-fixture-", dir="/tmp") as socket_directory:
+    with tempfile.TemporaryDirectory(prefix="tilo-signal-fixture-", dir="/tmp") as socket_directory, \
+            tempfile.TemporaryFile() as stderr:
         endpoint = Path(socket_directory) / "fixture.sock"
         daemon = subprocess.Popen(base + ["daemon", "--socket", str(endpoint), "--receive-mode", "manual"],
                                   env=environment, stdin=subprocess.DEVNULL,
-                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                  stdout=subprocess.DEVNULL, stderr=stderr,
                                   start_new_session=True)
         try:
             deadline = time.monotonic() + 20
-            while not endpoint.exists():
-                staging.require(daemon.poll() is None, "empty fixture daemon exited before binding")
-                staging.require(time.monotonic() < deadline, "empty fixture daemon did not bind")
-                time.sleep(0.02)
-            with socket.socket(socket.AF_UNIX) as stream:
+            # bind() publishes the pathname before listen() accepts clients.
+            # Observe readiness through the same connection used for the RPC.
+            while True:
+                staging.require(daemon.poll() is None, "empty fixture daemon exited before accepting RPC")
+                staging.require(time.monotonic() < deadline, "empty fixture daemon did not accept RPC")
+                stream = socket.socket(socket.AF_UNIX)
                 stream.settimeout(5)
-                stream.connect(str(endpoint))
+                try:
+                    stream.connect(str(endpoint))
+                    break
+                except OSError as error:
+                    stream.close()
+                    if error.errno not in (errno.ENOENT, errno.ECONNREFUSED):
+                        raise
+                    time.sleep(0.02)
+            with stream:
                 stream.sendall(b'{"jsonrpc":"2.0","id":"fixture-empty","method":"listAccounts","params":{}}\n')
                 with stream.makefile("rb") as reader:
                     reply = reader.readline(65537)
@@ -82,6 +93,11 @@ def probe(work, prefix=()):
                 decoded = json.loads(reply)
                 staging.require(decoded.get("id") == "fixture-empty" and decoded.get("result") == [],
                                 "fixture must contain no authenticated accounts")
+        except Exception as error:
+            stderr.seek(0, os.SEEK_END)
+            stderr.seek(max(0, stderr.tell() - 4096))
+            detail = stderr.read().decode("utf-8", errors="replace").strip()
+            raise RuntimeError(f"empty fixture probe failed (daemon status {daemon.poll()}): {error}; {detail}") from error
         finally:
             if daemon.poll() is None:
                 os.killpg(daemon.pid, signal.SIGTERM)

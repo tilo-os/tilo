@@ -171,6 +171,14 @@ pub enum RoomCommand {
         /// Canonical redacted public receipt; never action arguments or results.
         redacted: Vec<u8>,
     },
+    /// Claim only the authenticated member's own topology namespace.
+    /// Membership and current workspace Write remain independently required.
+    ClaimTopologyNamespace {
+        /// The governed room.
+        room: String,
+        /// Nonzero namespace; existing ownership can never be rebound.
+        salt: u16,
+    },
 }
 
 /// One room administration request on the wire: the caller's certificate and
@@ -286,12 +294,12 @@ impl RoomAdminClient {
             .open_bi()
             .await
             .map_err(|error| RoomAdminError::Transport(error.to_string()))?;
-        crate::framing::write_frame(&mut send, &bytes)
+        tilo_relay_client::frame::write_frame(&mut send, &bytes)
             .await
             .map_err(|error| RoomAdminError::Transport(error.to_string()))?;
         send.finish()
             .map_err(|error| RoomAdminError::Transport(error.to_string()))?;
-        let reply = crate::framing::read_frame(&mut recv, ROOM_ADMIN_MAX_REPLY_BYTES)
+        let reply = tilo_relay_client::frame::read_frame(&mut recv, ROOM_ADMIN_MAX_REPLY_BYTES)
             .await
             .map_err(|error| RoomAdminError::Transport(error.to_string()))?;
         connection.close(0u32.into(), b"done");

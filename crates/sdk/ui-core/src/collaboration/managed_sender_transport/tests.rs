@@ -6,7 +6,7 @@
 use super::*;
 use crate::collaboration::RouteSpec;
 use capnp::capability::Promise;
-use capnp_rpc::{RpcSystem, rpc_twoparty_capnp, twoparty};
+use capnp_rpc::rpc_twoparty_capnp;
 use runtime_collab::collab_capnp::{
     channel_handle, collab_service, published_invocation_observation,
 };
@@ -15,7 +15,6 @@ use std::{
     rc::Rc,
     time::Duration,
 };
-use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
 const HOST: [u8; 16] = [2; 16];
 const ID: [u8; 16] = [1; 16];
@@ -23,13 +22,7 @@ const UPDATE: &str = r#"{"state":"accepted","invocation":"01010101-0101-0101-010
 #[derive(Clone, Copy)]
 enum Mode {
     Good,
-    #[cfg_attr(
-        not(target_os = "macos"),
-        expect(
-            dead_code,
-            reason = "only the macOS cancellation fixture completes a call"
-        )
-    )]
+    #[cfg(target_os = "macos")]
     Succeeded,
     Absent,
     WrongHost,
@@ -85,7 +78,11 @@ fn reply(
     out.set_found(true);
     out.set_id(99);
     let invocation = uuid::Uuid::from_bytes(*invocation);
-    let update = if matches!(mode, Mode::Succeeded) {
+    #[cfg(target_os = "macos")]
+    let succeeded = matches!(mode, Mode::Succeeded);
+    #[cfg(not(target_os = "macos"))]
+    let succeeded = false;
+    let update = if succeeded {
         format!(r#"{{"state":"succeeded","invocation":"{invocation}","output":{{}}}}"#)
     } else {
         format!(r#"{{"state":"accepted","invocation":"{invocation}"}}"#)
@@ -245,15 +242,10 @@ where
             });
             let broker: collab_service::Client = capnp_rpc::new_client(Broker { channel });
             let (server_io, client_io) = tokio::io::duplex(512);
-            let (read, write) = tokio::io::split(server_io);
-            let network = twoparty::VatNetwork::new(
-                read.compat(),
-                write.compat_write(),
-                rpc_twoparty_capnp::Side::Server,
-                capnp::message::ReaderOptions::default(),
-            );
-            let task =
-                tokio::task::spawn_local(RpcSystem::new(Box::new(network), Some(broker.client)));
+            let task = tokio::task::spawn_local(runtime_portal::serve_connected_io(
+                server_io,
+                broker.client,
+            ));
             let connection = runtime_portal::CapnpClient::from_connected_io(
                 client_io,
                 rpc_twoparty_capnp::Side::Client,
@@ -263,6 +255,7 @@ where
                 .await
                 .unwrap();
             let route = SdkRoute {
+                _checks: None,
                 spec: RouteSpec {
                     app_id: "notes".into(),
                     cluster_id: uuid::Uuid::from_u128(7),

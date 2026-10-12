@@ -20,15 +20,12 @@ thin = ["dep:runtime-dylib"]
 quick-xml.workspace = true
 fnv.workspace = true
 tilo-files = { path = "../../crates/platform/tilo-files" }
-hex.workspace = true
+blake3.workspace = true
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
-tilo-actions = { path = "../../crates/collab/actions" }
 automerge.workspace = true
-tilo-automerge.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-uuid.workspace = true
 vello.workspace = true
 winit.workspace = true
 taffy.workspace = true
@@ -48,6 +45,7 @@ chrono = { workspace = true, features = ["clock", "std", "alloc"] }
 
 [dev-dependencies]
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
+tilo-history = { path = "../../crates/sdk/tilo-history" }
 
 [lints]
 workspace = true

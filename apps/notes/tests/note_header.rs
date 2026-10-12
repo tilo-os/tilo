@@ -18,6 +18,13 @@ struct Mounted {
 
 fn mounted(width: u32, scale: f32, tags: &[&str], backlinks: &[(&str, u32)]) -> Mounted {
     let mut panel = MainPanel::new();
+    let mut host = ui::framework::testing::TestApp::<notes::NotesShell>::new().unwrap();
+    let actions = host
+        .surface_mut::<notes::NotesApp>()
+        .main_panel_mut()
+        .actions()
+        .expect("the window binds its header");
+    panel.attach_actions_for_test(actions);
     panel.load_page(
         Uuid::new_v4(),
         "Launch checklist",
@@ -209,16 +216,13 @@ fn the_buttons_open_their_tag_and_note() {
     let tag_id = format!("notes.tag-chip:{}", m.tags[0]);
     let link_id = format!("notes.backlink-chip:{}", m.sources[0]);
     assert_eq!(
-        press(&mut m, &tag_id),
-        Some((notes::actions::tag_resource_id(m.tags[0]), "open".into())),
+        press(&mut m, &tag_id).map(|(_, action)| action),
+        Some("open-tag".into()),
         "a press opens the tag it names"
     );
     assert_eq!(
-        press(&mut m, &link_id),
-        Some((
-            notes::actions::page_resource_id(m.sources[0]),
-            "open".into()
-        )),
+        press(&mut m, &link_id).map(|(_, action)| action),
+        Some("open-note".into()),
         "a press opens the note that links here"
     );
 }

@@ -1,0 +1,81 @@
+{
+  "schema": 1,
+  "frozen_at_utc": "2026-10-08 01:24:28 UTC",
+  "source_base_head": "b49626f15b4f0c2483c544a3844981d5786666a3",
+  "suite_sha256": "9995db50a190bcd818373886e06c404c9d9009cbb85a76cf166dd65daf8ef8fd",
+  "status": "Frozen before any reserved clip decoding/scoring; validation only, no tuning on these references",
+  "profiles": {
+    "context160": 1,
+    "context320": 3
+  },
+  "selection": "All 32 predeclared holdout cases in fixed suite order. For even indices run context160 then context320; reverse for odd indices. Fresh worker and fresh bounded scope per case/profile; no result-based selection.",
+  "worker_sha256": "e7ca811af9a86ad78384ef5f46554ed5d1ee0e2b0e42c068f9b154ceeafd9e1d",
+  "library_sha256": "a53325d43938b17f460c8d8321282d06dba90a8902889d448a5e6daad613fa9e",
+  "scope_sha256": "c27720cb36fa77ee9a7716f450051d645d566f1bed7756b2819c5964b5770f85",
+  "model_sha256": "3fc991d3badad7277c11030a7519832cddaf2057aafed6d4b25147e953a070b1",
+  "model_revision": "ea30d66debe3740a08b573244286791d423d6b3e",
+  "model_bytes": 742090464,
+  "model_verity_sha256": "76850de5f80310fa2e909a33ba93958c97b0437984c44ec0b90f7170b0dbdf73",
+  "configuration": {
+    "threads": 2,
+    "right_contexts": [
+      1,
+      3
+    ],
+    "draft_policy": "incremental",
+    "first_draft_ms": 500,
+    "draft_interval_ms": 500,
+    "vocabulary": "Empty in every held-out case; no reference-derived prompts",
+    "verbatim_transcripts": true,
+    "punctuation": true,
+    "audio_transport": "continuous20ms",
+    "transcript_normalization": "NFKC/casefold/punctuation-to-space only; no numeric/diacritic/script/word-order correction",
+    "model_authentication": "Exact pinned fs-verity digest, regular file size, same descriptor. The materializer established the raw SHA/Merkle association after immutability. Arbitrary verity files are rejected."
+  },
+  "bounds": {
+    "worker_address_space_bytes": 1073741824,
+    "observer_guard_bytes": 1006632960,
+    "observer_deadline_seconds": 180,
+    "scope_memory_max_bytes": 1342177280,
+    "scope_memory_high_bytes": 1207959552,
+    "scope_swap_bytes": 0,
+    "scope_cpu_max": "200000 100000",
+    "scope_cpu_weight": 20,
+    "scope_tasks_max": 64,
+    "scope_runtime_seconds": 240
+  },
+  "predeclared_review_decision": {
+    "all_64_actual_guarded_runs_required": true,
+    "total_cpu_context320_max_ratio_to_context160": 0.85,
+    "clean_WER_and_CER_pooled_errors_must_not_increase": true,
+    "synthetic_noise_WER_and_CER_pooled_errors_must_not_increase": true,
+    "per_language_clean_max_error_fraction_increase": 0.05,
+    "median_paired_meaningful_stable_preview_max_delay_ms": 500,
+    "missing_meaningful_preview_is_failure": true,
+    "failed_or_missing_case_cannot_be_dropped": true,
+    "failure_means_reject_profile_not_retune_on_holdout": true,
+    "release_qualified_even_if_pass": false
+  },
+  "preexposure_development_evidence": [
+    "voice-nemo-context-development-summary.json",
+    "voice-nemo-verity-development-summary.json",
+    "voice-nemo-warm-summary.json",
+    "voice-nemo-verity-identity-correct-filesystem.log"
+  ],
+  "source_sha256": {
+    "crates/agent/local-model-service/examples/nemo_speech_worker.rs": "50297edefa7725716d721ebeacd878a553f36069728ee5bc67806c286cbf81b0",
+    "tools/release/fixtures/nemo_worker_bridge.cpp": "865c84b8276fb4ecf9bd8eb9ac9e9e092988235013f79a1c3c0a7aab431297d4",
+    "tools/release/probe_speech_stream.py": "418de3d03298e7553be930f3bc1ed7a3bd4f8e2c2dbcf810116e0c00d0cf3c5c",
+    "tools/release/probe_speech_worker_lifecycle.py": "bc80924f660e8c46f7b07433bf82b43586cf95553f7a716b8da4eaa2e725fad2",
+    "tools/release/qualify_sealed_speech_scope.py": "c27720cb36fa77ee9a7716f450051d645d566f1bed7756b2819c5964b5770f85"
+  },
+  "required_unobserved_coverage": [
+    "natural_noise",
+    "natural_code_switch",
+    "spoken_numeric_self_correction",
+    "unseen_spoken_names",
+    "physical_older_device",
+    "physical_microphone_and_installed_app_journeys"
+  ],
+  "holds": "Review only. No catalogue or production 256MiB admission change, signing, installation, deployment or microphone grant. PR3374 remains draft and held."
+}

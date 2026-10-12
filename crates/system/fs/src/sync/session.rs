@@ -364,7 +364,7 @@ impl SessionProtocol {
                     .await?;
             }
             SessionOperationV1::NamespaceSync => {
-                self.serve_namespace_sync(peer, &mut send, &mut recv)
+                self.serve_namespace_sync(peer, remote, &mut send, &mut recv)
                     .await?;
             }
             SessionOperationV1::NamespaceSince { heads } => {
@@ -504,7 +504,7 @@ impl SessionProtocol {
         let mut batches = Vec::new();
         let mut size = 0_usize;
         // The content each pulled record ends at, per record.
-        let mut current: BTreeMap<collab_types::FileRecordId, [u8; 32]> = BTreeMap::new();
+        let mut current: BTreeMap<fs_protocol::FileRecordId, [u8; 32]> = BTreeMap::new();
         for pull in streams {
             let stream = pull.stream;
             let key = RecordRepositoryKey {
@@ -601,7 +601,7 @@ impl SessionProtocol {
     /// The bytes of the small files `current` names, in frames.
     async fn send_inline(
         &self,
-        current: BTreeMap<collab_types::FileRecordId, [u8; 32]>,
+        current: BTreeMap<fs_protocol::FileRecordId, [u8; 32]>,
         inline_limit: u64,
         send: &mut SendStream,
     ) -> Result<()> {
@@ -703,7 +703,7 @@ impl SessionProtocol {
             .await;
         };
         // The content each sent record ends at, per record.
-        let mut current: BTreeMap<collab_types::FileRecordId, [u8; 32]> = BTreeMap::new();
+        let mut current: BTreeMap<fs_protocol::FileRecordId, [u8; 32]> = BTreeMap::new();
         let mut note = |envelope: &RecordEnvelopeV1| {
             if let RecordOperationV1::SetContentRevision(revision) = &envelope.operation {
                 match revision.content_hash {
@@ -867,6 +867,7 @@ impl SessionProtocol {
     async fn serve_namespace_sync(
         &self,
         peer: &AuthenticatedFsPeer,
+        remote: iroh_base::PublicKey,
         send: &mut SendStream,
         recv: &mut RecvStream,
     ) -> Result<()> {
@@ -874,13 +875,25 @@ impl SessionProtocol {
             return write_frame(send, &SessionFrameV1::Denied).await;
         }
         write_frame(send, &SessionFrameV1::Done).await?;
-        let before = self
-            .namespace
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .heads();
-        let mut state = automerge::sync::State::new();
+        let (before, mut state) = {
+            let mut namespace = self
+                .namespace
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            (
+                namespace.heads(),
+                namespace.begin_sync_with(&peer.device_public_key),
+            )
+        };
         let exchanged = self.namespace_rounds(peer, &mut state, send, recv).await;
+        // Only a completed exchange is resumed from: one cut off midway
+        // may not have agreed on what both sides hold.
+        if matches!(exchanged, Ok(true)) {
+            self.namespace
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .finish_sync_with(peer.device_public_key, &state);
+        }
         // Records that arrived before the placements this exchange brought
         // are projected now, not at this device's next pass.
         let changed = self
@@ -901,16 +914,23 @@ impl SessionProtocol {
             }
             drop(gate);
         }
-        exchanged
+        // The peer's own pass brought changes: it published something, and
+        // its records are pulled now rather than at this device's next
+        // timer pass, which backs off while nothing happens.
+        if changed {
+            let _ = self.announcements.send(remote);
+        }
+        exchanged.map(|_| ())
     }
 
+    /// Whether the exchange completed: both sides had nothing more to send.
     async fn namespace_rounds(
         &self,
         peer: &AuthenticatedFsPeer,
         state: &mut automerge::sync::State,
         send: &mut SendStream,
         recv: &mut RecvStream,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         for _ in 0..MAX_SYNC_ROUNDS {
             // The authority handle is live: a revocation cuts a connected
             // writer off at the next round.
@@ -965,10 +985,10 @@ impl SessionProtocol {
                 .transpose()?;
             write_frame(send, &SessionFrameV1::Sync(reply)).await?;
             if done {
-                break;
+                return Ok(true);
             }
         }
-        Ok(())
+        Ok(false)
     }
 
     async fn serve_namespace_since(
@@ -1360,8 +1380,14 @@ pub(super) async fn sync_namespace(
     if session.frames(&mut recv, MAX_FRAME_BYTES).await?.is_some() {
         anyhow::bail!("unexpected namespace sync response");
     }
-    let mut state = automerge::sync::State::new();
-    let mut received = false;
+    let peer = session.peer.device_public_key;
+    let (before, mut state) = {
+        let mut namespace = namespace
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        (namespace.heads(), namespace.begin_sync_with(&peer))
+    };
+    let mut completed = false;
     for _ in 0..MAX_SYNC_ROUNDS {
         // Only namespace state between changesets leaves this device.
         let gate = match repository {
@@ -1403,18 +1429,26 @@ pub(super) async fn sync_namespace(
             None => Vec::new(),
         };
         if !reply.is_empty() {
-            received = true;
             let _ = namespace
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .sync_receive(&mut state, &reply);
         }
         if sent_nothing && reply.is_empty() {
+            completed = true;
             break;
         }
     }
     let _ = send.finish();
-    Ok(received)
+    let mut namespace = namespace
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if completed {
+        namespace.finish_sync_with(peer, &state);
+    }
+    // Every reply of an idle exchange carries the peer's heads; only
+    // changes that moved this document's heads count as received.
+    Ok(namespace.heads() != before)
 }
 
 /// The namespace changes a peer holds beyond this device's heads, for a

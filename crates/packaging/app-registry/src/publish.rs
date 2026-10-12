@@ -17,7 +17,7 @@ use tilo_app_package::PackageId;
 use tilo_app_package::manifest::Arch;
 use tilo_app_package::pack::SigningIdentity;
 
-use crate::index::{IndexEntry, RegistryIndex};
+use crate::index::IndexEntry;
 use crate::registry_dir;
 use crate::tapp;
 use crate::transport::BlobNode;
@@ -194,18 +194,6 @@ pub async fn publish_to_dir(
         tapp_hash,
         registry_id: registry_id.to_string(),
     })
-}
-
-/// Convenience for a signed index built off a fresh (non-directory)
-/// context — used by CI / tooling that assembles an index in memory.
-///
-/// # Errors
-///
-/// Returns an error if signing the index fails.
-pub fn sign_index(index: &mut RegistryIndex, registry_key: &SigningIdentity) -> Result<()> {
-    index
-        .sign(registry_key)
-        .map_err(|e| anyhow!("sign index: {e}"))
 }
 
 #[cfg(test)]

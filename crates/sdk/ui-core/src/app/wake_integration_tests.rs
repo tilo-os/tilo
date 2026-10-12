@@ -1,6 +1,7 @@
 use super::*;
 use crate::view::{FreezeThaw, ViewContribution};
 use crate::wake::{WakeEvent, WakeHandle, WakeScope};
+use crate::widget::TaffyTreeExt;
 use crate::widget::{AppModel, ModelPath};
 use crate::{LatestRequest, LocalState};
 use std::cell::RefCell;
@@ -52,21 +53,7 @@ impl Widget for CaptureRoot {
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.capture("layout");
-        let node = taffy.new_leaf(taffy::Style::default()).unwrap();
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
-    }
-
-    fn apply_layout(&mut self, _: &TaffyTree<()>, _: NodeId, _: Point) {}
-
-    fn draw(
-        &mut self,
-        _: &mut vello::Scene,
-        _: vello::kurbo::Affine,
-        _: &mut TextRenderer,
-        _: &Theme,
-        _: &PresenceCtx,
-    ) {
+        taffy.widget_leaf(taffy::Style::default(), node_map, self)
     }
 
     fn handle_event(&mut self, _: &WindowEvent, _ctx: &mut crate::widget::EventCtx<'_>) {
@@ -75,10 +62,6 @@ impl Widget for CaptureRoot {
 
     fn name(&self) -> &'static str {
         "capture-root"
-    }
-
-    fn get_rect(&self) -> vello::kurbo::Rect {
-        vello::kurbo::Rect::ZERO
     }
 }
 

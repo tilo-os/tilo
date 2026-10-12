@@ -31,6 +31,36 @@ pub trait PersistedRecordHistory {
     /// no longer at the validated location; all are reported as unavailable by
     /// [`FeedCoverage`] rather than silently disappearing.
     fn load_record(&self, id: &RecordId) -> Option<AutoCommit>;
+
+    /// A cheap witness of the persisted bytes [`Self::load_record`] would
+    /// read now, such as the file's length and modification time. Equal
+    /// witnesses promise an unchanged document, so what was derived from the
+    /// last load is reused instead of reading and decoding it again. `None`
+    /// promises nothing: the document is loaded on every read.
+    fn revision(&self, _id: &RecordId) -> Option<u64> {
+        None
+    }
+}
+
+/// The most frontiers whose unread changes are remembered per persisted
+/// record: the passive, catch-up and away readers, and one spare.
+const COLD_FRONTIERS_PER_RECORD: usize = 4;
+
+/// What the index derived from one persisted record at one revision, so an
+/// unchanged document on disk is not read and decoded again.
+struct ColdRecordState {
+    revision: u64,
+    heads: Vec<ChangeHash>,
+    /// The change ids after each frontier's heads; `None` when the document
+    /// lacks a dependency of those heads.
+    after: Vec<(Vec<ChangeHash>, Option<HashSet<HistoryEntryId>>)>,
+}
+
+fn change_ids(changes: &[automerge::Change]) -> HashSet<HistoryEntryId> {
+    changes
+        .iter()
+        .map(|change| ui::history_source::entry_id_from_hash(&change.hash().to_string()))
+        .collect()
 }
 
 /// Which collaborative document produced a history row.
@@ -285,13 +315,16 @@ struct Fingerprint {
     query: WorkspaceHistoryQuery,
     documents: Vec<(String, Vec<ChangeHash>)>,
     references: Vec<RecordCheckout>,
-    supplied_tree_rows: Option<Vec<(HistoryEntryId, ui::clock::SystemTime)>>,
+    supplied_tree_rows: Option<Vec<(HistoryEntryId, ui::time::SystemTime)>>,
 }
 
 struct IndexedRecords {
     referenced: Vec<RecordCheckout>,
     included: Vec<RecordCheckout>,
     cold: BTreeMap<RecordId, AutoCommit>,
+    /// Committed heads of persisted records unchanged since they were last
+    /// loaded. Their documents are read again only to rebuild the feed.
+    cold_heads: BTreeMap<RecordId, Vec<ChangeHash>>,
     capped_records: usize,
 }
 
@@ -304,6 +337,8 @@ pub struct WorkspaceHistoryIndex {
     query: Option<WorkspaceHistoryQuery>,
     document_heads: BTreeMap<String, Vec<ChangeHash>>,
     generation: u64,
+    /// Persisted records' derived state by revision; see [`ColdRecordState`].
+    cold: std::cell::RefCell<BTreeMap<RecordId, ColdRecordState>>,
 }
 
 impl Default for WorkspaceHistoryIndex {
@@ -322,6 +357,7 @@ impl WorkspaceHistoryIndex {
             query: None,
             document_heads: BTreeMap::new(),
             generation: 0,
+            cold: std::cell::RefCell::new(BTreeMap::new()),
         }
     }
 
@@ -437,7 +473,7 @@ impl WorkspaceHistoryIndex {
                 if !doc.get_missing_deps(&heads).is_empty() {
                     continue;
                 }
-                doc.get_changes(&heads)
+                change_ids(&doc.get_changes(&heads))
             } else {
                 let Some(record) = origin.strip_prefix("record:").and_then(RecordId::parse) else {
                     continue;
@@ -446,33 +482,20 @@ impl WorkspaceHistoryIndex {
                     let mut doc = committed_snapshot(doc);
                     doc.get_missing_deps(&heads)
                         .is_empty()
-                        .then(|| doc.get_changes(&heads))
+                        .then(|| change_ids(&doc.get_changes(&heads)))
                 });
                 let changes = match changes {
-                    Some(Some(changes)) => Some(changes),
-                    Some(None) => None,
-                    None => local.and_then(|source| {
-                        let mut doc = source.load_record(&record)?;
-                        doc.rollback();
-                        doc.get_missing_deps(&heads)
-                            .is_empty()
-                            .then(|| doc.get_changes(&heads))
-                    }),
+                    Some(changes) => changes,
+                    None => {
+                        local.and_then(|source| self.cold_changes_after(source, &record, &heads))
+                    }
                 };
                 let Some(changes) = changes else {
                     continue;
                 };
                 changes
             };
-            after.insert(
-                origin.clone(),
-                changes
-                    .iter()
-                    .map(|change| {
-                        ui::history_source::entry_id_from_hash(&change.hash().to_string())
-                    })
-                    .collect(),
-            );
+            after.insert(origin.clone(), changes);
         }
         self.entries
             .iter()
@@ -692,33 +715,99 @@ impl WorkspaceHistoryIndex {
         local: Option<&dyn PersistedRecordHistory>,
     ) -> bool {
         let limit = query.bounded_limit();
-        let mut indexed = Self::index_records(tree, records, &query, local);
-        let fingerprint = Self::build_fingerprint(
-            tree,
-            records,
-            &query,
-            supplied,
-            &indexed.referenced,
-            &indexed.included,
-            &indexed.cold,
-        );
+        let mut indexed = self.index_records(tree, records, &query, local);
+        let fingerprint = Self::build_fingerprint(tree, records, &query, supplied, &indexed);
         if self.fingerprint.as_ref() == Some(&fingerprint) {
             return false;
         }
 
-        let entries = self.collect_entries(
-            tree,
-            records,
-            supplied,
-            &indexed.included,
-            &mut indexed.cold,
-            limit,
-        );
+        let entries = self.collect_entries(tree, records, supplied, &mut indexed, local, limit);
         self.finish_refresh(query, &indexed, fingerprint, entries);
         true
     }
 
+    /// The committed heads of persisted record `id` if `source` still holds
+    /// the revision they were derived from.
+    fn cold_heads(
+        &self,
+        source: &dyn PersistedRecordHistory,
+        id: &RecordId,
+    ) -> Option<Vec<ChangeHash>> {
+        let revision = source.revision(id)?;
+        self.cold
+            .borrow()
+            .get(id)
+            .filter(|state| state.revision == revision)
+            .map(|state| state.heads.clone())
+    }
+
+    /// Load persisted record `id` from `source`, committed changes only, and
+    /// remember its heads under the revision it was read at.
+    fn load_cold(&self, source: &dyn PersistedRecordHistory, id: &RecordId) -> Option<AutoCommit> {
+        let revision = source.revision(id);
+        let mut doc = source.load_record(id)?;
+        // A persisted source contributes committed changes only.
+        doc.rollback();
+        let mut cold = self.cold.borrow_mut();
+        match revision {
+            Some(revision) => {
+                let heads = committed_heads(&doc);
+                let unchanged = cold
+                    .get(id)
+                    .is_some_and(|state| state.revision == revision && state.heads == heads);
+                if !unchanged {
+                    cold.insert(
+                        id.clone(),
+                        ColdRecordState {
+                            revision,
+                            heads,
+                            after: Vec::new(),
+                        },
+                    );
+                }
+            }
+            None => {
+                cold.remove(id);
+            }
+        }
+        Some(doc)
+    }
+
+    /// The change ids persisted record `id` holds after `heads`, read from
+    /// `source` only when its revision moved since the last answer.
+    fn cold_changes_after(
+        &self,
+        source: &dyn PersistedRecordHistory,
+        id: &RecordId,
+        heads: &[ChangeHash],
+    ) -> Option<HashSet<HistoryEntryId>> {
+        let remembered = self.cold_heads(source, id).and_then(|_| {
+            let cold = self.cold.borrow();
+            cold.get(id)?
+                .after
+                .iter()
+                .find(|(frontier, _)| frontier.as_slice() == heads)
+                .map(|(_, after)| after.clone())
+        });
+        if let Some(after) = remembered {
+            return after;
+        }
+        let mut doc = self.load_cold(source, id)?;
+        let after = doc
+            .get_missing_deps(heads)
+            .is_empty()
+            .then(|| change_ids(&doc.get_changes(heads)));
+        if let Some(state) = self.cold.borrow_mut().get_mut(id) {
+            if state.after.len() >= COLD_FRONTIERS_PER_RECORD {
+                state.after.remove(0);
+            }
+            state.after.push((heads.to_vec(), after.clone()));
+        }
+        after
+    }
+
     fn index_records(
+        &self,
         tree: &impl ActivityTree,
         records: &RecordStore,
         query: &WorkspaceHistoryQuery,
@@ -752,22 +841,26 @@ impl WorkspaceHistoryIndex {
         let capped_records = candidates.len().saturating_sub(MAX_INDEXED_RECORDS);
         candidates.truncate(MAX_INDEXED_RECORDS);
         let mut cold = BTreeMap::new();
+        let mut cold_heads = BTreeMap::new();
         let mut included = Vec::new();
         for checkout in candidates {
             if records.read(&checkout.id, |_| ()).is_some() {
                 included.push(checkout);
-            } else if let Some(mut doc) = local.and_then(|source| source.load_record(&checkout.id))
-            {
-                // A persisted source contributes committed changes only.
-                doc.rollback();
-                cold.insert(checkout.id.clone(), doc);
-                included.push(checkout);
+            } else if let Some(source) = local {
+                if let Some(heads) = self.cold_heads(source, &checkout.id) {
+                    cold_heads.insert(checkout.id.clone(), heads);
+                    included.push(checkout);
+                } else if let Some(doc) = self.load_cold(source, &checkout.id) {
+                    cold.insert(checkout.id.clone(), doc);
+                    included.push(checkout);
+                }
             }
         }
         IndexedRecords {
             referenced,
             included,
             cold,
+            cold_heads,
             capped_records,
         }
     }
@@ -800,18 +893,17 @@ impl WorkspaceHistoryIndex {
         records: &RecordStore,
         query: &WorkspaceHistoryQuery,
         supplied: Option<&[HistoryEntry]>,
-        referenced: &[RecordCheckout],
-        included: &[RecordCheckout],
-        cold: &BTreeMap<RecordId, AutoCommit>,
+        indexed: &IndexedRecords,
     ) -> Fingerprint {
         let mut documents = vec![(
             "workspace-tree".to_string(),
             committed_heads(tree.document()),
         )];
-        for record in included {
+        for record in &indexed.included {
             if let Some(heads) = records
                 .read(&record.id, committed_heads)
-                .or_else(|| cold.get(&record.id).map(committed_heads))
+                .or_else(|| indexed.cold.get(&record.id).map(committed_heads))
+                .or_else(|| indexed.cold_heads.get(&record.id).cloned())
             {
                 documents.push((format!("record:{}", record.id), heads));
             }
@@ -824,7 +916,7 @@ impl WorkspaceHistoryIndex {
         Fingerprint {
             query: query.clone(),
             documents,
-            references: referenced.to_vec(),
+            references: indexed.referenced.clone(),
             supplied_tree_rows,
         }
     }
@@ -834,10 +926,12 @@ impl WorkspaceHistoryIndex {
         tree: &impl ActivityTree,
         records: &RecordStore,
         supplied: Option<&[HistoryEntry]>,
-        included: &[RecordCheckout],
-        cold: &mut BTreeMap<RecordId, AutoCommit>,
+        indexed: &mut IndexedRecords,
+        local: Option<&dyn PersistedRecordHistory>,
         limit: usize,
     ) -> Vec<WorkspaceHistoryEntry> {
+        let included = &indexed.included;
+        let cold = &mut indexed.cold;
         let mut by_id: BTreeMap<WorkspaceHistoryId, WorkspaceHistoryEntry> = BTreeMap::new();
         let tree_rows = supplied.map_or_else(
             || {
@@ -870,9 +964,16 @@ impl WorkspaceHistoryIndex {
                     .entries(&mut doc);
                 insert_rows(&mut by_id, &origin, rows);
             });
-            if inserted_live.is_none()
-                && let Some(doc) = cold.get_mut(&record.id)
+            if inserted_live.is_some() {
+                continue;
+            }
+            if !cold.contains_key(&record.id)
+                && indexed.cold_heads.contains_key(&record.id)
+                && let Some(doc) = local.and_then(|source| self.load_cold(source, &record.id))
             {
+                cold.insert(record.id.clone(), doc);
+            }
+            if let Some(doc) = cold.get_mut(&record.id) {
                 let rows = HistorySource::new()
                     .without_field_paths()
                     .with_authors(self.authors.clone())
@@ -942,18 +1043,19 @@ fn committed_snapshot(doc: &AutoCommit) -> AutoCommit {
 }
 
 /// The feed lists what people did to the workspace: housekeeping about a
-/// document (a read marker, a reading position) stays in that document's own
-/// history.
+/// document (a read marker, a reading position) and content that came from
+/// outside (a refresh's articles, a process's output) stay in that document's
+/// own history.
 fn insert_rows(
     target: &mut BTreeMap<WorkspaceHistoryId, WorkspaceHistoryEntry>,
     origin: &HistoryOrigin,
     rows: Vec<HistoryEntry>,
 ) {
     for entry in rows {
-        if entry
+        if !entry
             .context
             .as_ref()
-            .is_some_and(ui::tilo_actions::ActionContext::is_housekeeping)
+            .is_none_or(ui::tilo_actions::ActionContext::is_activity)
         {
             continue;
         }

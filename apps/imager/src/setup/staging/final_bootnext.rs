@@ -236,7 +236,7 @@ pub(crate) fn hash_esp_file(
             at += chunk.len() as u64;
         }
     }
-    Ok(efi::hex(&hasher.finalize()))
+    Ok(hex::encode(hasher.finalize()))
 }
 
 pub fn arm<P: FinalBootPlatform>(platform: &mut P, receipt: &FinalReadback) -> IoResult<ArmedBoot> {
@@ -512,7 +512,7 @@ mod tests {
                     .collect(),
                 final_esp_partuuid: ESP_GUID.into(),
                 loader_path: path.into(),
-                loader_sha256: efi::hex(&Sha256::digest(loader)),
+                loader_sha256: hex::encode(Sha256::digest(loader)),
                 ci_index_digest: format!("sha256:{}", "a".repeat(64)),
                 ci_child_digest: format!("sha256:{}", "b".repeat(64)),
                 installed_uki_sha256: "c".repeat(64),

@@ -211,7 +211,7 @@ fn undo_of_an_outside_consequence_applies_the_inverse_action() {
     );
     let summaries = version_summaries(&app);
     assert!(
-        summaries.iter().any(|summary| summary.contains("Remove")),
+        summaries.iter().any(|summary| summary.starts_with("Undid")),
         "undo is a named history entry, not an anonymous patch: {summaries:?}"
     );
 
@@ -221,6 +221,34 @@ fn undo_of_an_outside_consequence_applies_the_inverse_action() {
         app.read_document(|doc| list(doc, OUTBOX)),
         ["evt".to_string(), "evt".to_string()]
     );
+}
+
+#[test]
+fn undoing_a_redo_of_an_outside_consequence_applies_the_inverse_again() {
+    let mut app = TestApp::<JobApp>::new().unwrap();
+    app.invoke(create("evt")).unwrap();
+    assert!(app.undo());
+    assert!(app.redo());
+    assert_eq!(app.state(), ["evt"]);
+
+    assert!(app.undo(), "the redo is the step Ctrl+Z takes back");
+    assert!(app.state().is_empty());
+    assert_eq!(
+        app.read_document(|doc| list(doc, DEL_OUTBOX)),
+        ["evt".to_string(), "evt".to_string()],
+        "undoing the redo queues the outside delete again"
+    );
+    let summaries = version_summaries(&app);
+    assert!(
+        !summaries
+            .iter()
+            .any(|summary| summary.contains("Redid") && summary.starts_with("Undid")),
+        "the undo names the step, not the redo: {summaries:?}"
+    );
+
+    assert!(app.redo());
+    assert_eq!(app.state(), ["evt"]);
+    assert_eq!(app.read_document(|doc| list(doc, OUTBOX)).len(), 3);
 }
 
 #[test]
@@ -261,9 +289,10 @@ fn a_second_replica_applying_the_same_action_converges() {
 }
 
 fn version_summaries(app: &TestApp<JobApp>) -> Vec<String> {
-    app.versions()
-        .into_iter()
-        .filter_map(|version| version.summary())
+    let reader = tilo_history::Reader::new("en-US");
+    app.history()
+        .iter()
+        .map(|context| reader.sentence(context))
         .collect()
 }
 
@@ -285,7 +314,7 @@ fn collaboration_and_history_survive_a_move_into_another_room() {
         &remote,
         encoded,
         Some(b"peer-author"),
-        tilo_actions::ActionContext::for_action(ACTION_TYPE, "Job", &remote),
+        tilo_actions::ActionContext::for_app(ACTION_TYPE, "Job"),
     )
     .unwrap();
     app.merge_peer(&mut peer).unwrap();
