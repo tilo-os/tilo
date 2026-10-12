@@ -17,35 +17,13 @@
 //! export is [`crate::export_html::render_html`], which needs a `DocSnapshot`,
 //! not the `DocRef` a `FormatProvider` gets.
 
-use crate::format::{CodecError, Confidence, FormatProvider};
+use crate::format::{CodecError, FormatProvider};
 use tilo_content::{ContentInputs, ContentSource};
 use tilo_doc::model::{DocMut, DocRef};
 
 pub struct HtmlCodec;
 
 impl FormatProvider for HtmlCodec {
-    fn schema_id(&self) -> &str {
-        tilo_doc::schema::SCHEMA_ID
-    }
-
-    fn detect(&self, head: &[u8]) -> Confidence {
-        // A leading doctype/html/head tag, or a `<` before a known block tag, is a strong HTML signal.
-        let n = head.len().min(512);
-        let s = String::from_utf8_lossy(head.get(..n).unwrap_or(head)).to_ascii_lowercase();
-        let t = s.trim_start();
-        if t.starts_with("<!doctype html") || t.starts_with("<html") || t.starts_with("<head") {
-            Confidence::High
-        } else if t.starts_with("<h1")
-            || t.starts_with("<p>")
-            || t.starts_with("<body")
-            || t.starts_with("<div")
-        {
-            Confidence::Medium
-        } else {
-            Confidence::None
-        }
-    }
-
     fn import(
         &self,
         bytes: &[u8],
@@ -1115,16 +1093,6 @@ mod tests {
         reason = "each phase keeps one former test's body verbatim"
     )]
     fn html_import_block_structure_and_tolerance() {
-        // Phase `detect_recognizes_html_signature`.
-        {
-            assert_eq!(
-                HtmlCodec.detect(b"<!doctype html>\n<html>"),
-                Confidence::High
-            );
-            assert_eq!(HtmlCodec.detect(b"  <html lang=\"en\">"), Confidence::High);
-            assert_eq!(HtmlCodec.detect(b"<p>hi</p>"), Confidence::Medium);
-            assert_eq!(HtmlCodec.detect(b"plain text"), Confidence::None);
-        }
         // Phase `headings_and_paragraph`.
         {
             let snap = import("<h1>Title</h1><h2>Sub</h2><p>Body text</p>");

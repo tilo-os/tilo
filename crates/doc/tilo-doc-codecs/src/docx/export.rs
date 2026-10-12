@@ -249,7 +249,7 @@ fn build_content_types(
             for img in &images.images {
                 let probe = format!(r#"Extension="{}""#, img.ext);
                 if !s.contains(&probe) {
-                    let (_, media) = image_ext_and_media(&img.bytes);
+                    let (_, media) = crate::office_image_part(&img.bytes);
                     let def = format!(
                         r#"<Default Extension="{}" ContentType="{}"/>"#,
                         img.ext, media
@@ -945,35 +945,27 @@ fn run_props(marks: &[&tilo_doc::document::MarkSpan]) -> String {
     s
 }
 
-/// Emit run content, turning `\t` → `<w:tab/>` and `\n` → `<w:br/>`.
-fn run_content(text: &str) -> String {
-    let mut out = String::new();
-    let mut buf = String::new();
-    let flush = |out: &mut String, buf: &mut String| {
-        if !buf.is_empty() {
-            out.push_str(r#"<w:t xml:space="preserve">"#);
-            for c in buf.chars() {
+/// Emit run content as `text_elem` text (`w:t`, or `w:delText` for a deleted
+/// run as OOXML requires), turning `\t` → `<w:tab/>` and `\n` → `<w:br/>`.
+fn push_run_content(out: &mut String, text: &str, text_elem: &str) {
+    let mut rest = text;
+    loop {
+        let (chunk, tail) = rest.split_at(rest.find(['\t', '\n']).unwrap_or(rest.len()));
+        if !chunk.is_empty() {
+            let _ = write!(out, r#"<{text_elem} xml:space="preserve">"#);
+            for c in chunk.chars() {
                 push_text(out, c);
             }
-            out.push_str("</w:t>");
-            buf.clear();
+            let _ = write!(out, "</{text_elem}>");
         }
-    };
-    for c in text.chars() {
-        match c {
-            '\t' => {
-                flush(&mut out, &mut buf);
-                out.push_str("<w:tab/>");
-            }
-            '\n' => {
-                flush(&mut out, &mut buf);
-                out.push_str("<w:br/>");
-            }
-            _ => buf.push(c),
+        let mut tail = tail.chars();
+        match tail.next() {
+            Some('\t') => out.push_str("<w:tab/>"),
+            Some(_) => out.push_str("<w:br/>"),
+            None => break,
         }
+        rest = tail.as_str();
     }
-    flush(&mut out, &mut buf);
-    out
 }
 
 /// The footnote/endnote reference run, carrying the FootnoteReference/EndnoteReference character style so Word superscripts it.
@@ -1018,37 +1010,6 @@ fn change_open_tag(change: &tilo_doc::snapshot::ChangeView, docx_id: i64) -> Str
         r#"<{elem} w:id="{docx_id}" w:author="{}"{date}>"#,
         escape_attr(&change.author)
     )
-}
-
-/// Emit a *deleted* run's content as `<w:delText>` (OOXML requires it, not `w:t`); `\t`/`\n` still map as usual.
-fn del_run_content(text: &str) -> String {
-    let mut out = String::new();
-    let mut buf = String::new();
-    let flush = |out: &mut String, buf: &mut String| {
-        if !buf.is_empty() {
-            out.push_str(r#"<w:delText xml:space="preserve">"#);
-            for c in buf.chars() {
-                push_text(out, c);
-            }
-            out.push_str("</w:delText>");
-            buf.clear();
-        }
-    };
-    for c in text.chars() {
-        match c {
-            '\t' => {
-                flush(&mut out, &mut buf);
-                out.push_str("<w:tab/>");
-            }
-            '\n' => {
-                flush(&mut out, &mut buf);
-                out.push_str("<w:br/>");
-            }
-            _ => buf.push(c),
-        }
-    }
-    flush(&mut out, &mut buf);
-    out
 }
 
 /// The id-lookup tables `render_runs` needs to resolve marks into DOCX-side numeric/ref ids;
@@ -1205,11 +1166,7 @@ fn push_run(out: &mut String, text: &str, rpr: &str, is_del: bool) {
     if !rpr.is_empty() {
         let _ = write!(out, "<w:rPr>{rpr}</w:rPr>");
     }
-    if is_del {
-        out.push_str(&del_run_content(text));
-    } else {
-        out.push_str(&run_content(text));
-    }
+    push_run_content(out, text, if is_del { "w:delText" } else { "w:t" });
     out.push_str("</w:r>");
 }
 
@@ -1493,7 +1450,7 @@ impl ImageExport {
         let mut out = Vec::new();
         for img in &self.images {
             if seen.insert(img.ext) {
-                let (_, media) = image_ext_and_media(&img.bytes);
+                let (_, media) = crate::office_image_part(&img.bytes);
                 out.push(format!(
                     r#"<Default Extension="{}" ContentType="{}"/>"#,
                     img.ext, media
@@ -1521,7 +1478,7 @@ impl ImageExport {
     /// package carries through (a text box's picture, say) under a name of the `imageN` kind.
     fn add(&mut self, bytes: &[u8]) -> String {
         let n = self.images.len().saturating_add(1);
-        let (ext, _) = image_ext_and_media(bytes);
+        let (ext, _) = crate::office_image_part(bytes);
         let rel_id = format!("rIdImg{n}");
         let hash = tilo_content::hash_bytes(bytes);
         let short = hash.get(..16).unwrap_or(&hash);
@@ -1535,15 +1492,6 @@ impl ImageExport {
         });
         rel_id
     }
-}
-
-/// Sniff an image's extension + media type from its magic bytes.
-fn image_ext_and_media(bytes: &[u8]) -> (&'static str, &'static str) {
-    tilo_doc::export::detect_image_media(bytes)
-        .filter(|media| matches!(media.extension, "png" | "jpg" | "gif"))
-        .map_or(("bin", "application/octet-stream"), |media| {
-            (media.extension, media.mime)
-        })
 }
 
 /// The model `anchor` value of an image block (default `inline`).

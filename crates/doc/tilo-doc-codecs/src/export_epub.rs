@@ -4,7 +4,7 @@ use std::fmt;
 use std::fmt::Write as _;
 use std::io::{Cursor, Write};
 use tilo_content::ContentSource;
-use tilo_doc::export::{BlockKind, ExportBlock, detect_image_media, walk_blocks};
+use tilo_doc::export::{BlockKind, ExportBlock, walk_blocks};
 use tilo_doc::snapshot::AttrVal;
 use tilo_doc::{BlockView, DocSnapshot};
 use zip::write::SimpleFileOptions;
@@ -160,7 +160,7 @@ fn image_item_for(b: &BlockView, snap: &Resolved<'_>, existing_count: usize) -> 
         return None;
     };
     let bytes = snap.image(hash)?;
-    let media = detect_image_media(bytes).unwrap_or(tilo_doc::export::ImageMedia {
+    let media = tilo_content::image_format(bytes).unwrap_or(tilo_content::ImageFormat {
         extension: "png",
         mime: "image/png",
     });

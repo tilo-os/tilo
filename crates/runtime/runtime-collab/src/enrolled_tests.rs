@@ -38,6 +38,9 @@ fn enrolled_recipient_retains_exact_acceptance_and_never_reexecutes_duplicate() 
     changed.task.title = "Different private instruction".into();
     assert!(custody.accept(&changed).is_err());
     changed = first.clone();
+    changed.task.instruction = Some("Different full private instruction".into());
+    assert!(custody.accept(&changed).is_err());
+    changed = first.clone();
     changed.channel_lease = "other-channel".into();
     assert!(custody.accept(&changed).is_err());
     changed = first.clone();
@@ -82,6 +85,16 @@ fn enrolled_full_private_input_and_retention_bounds_fail_closed() {
     assert!(first.validate().is_ok());
     first.task.title.push('x');
     assert!(first.validate().is_err());
+    first = envelope();
+    first.task.instruction = Some("𐐀".repeat(8000));
+    assert!(first.validate().is_ok());
+    assert_eq!(first.task.instruction().chars().count(), 8000);
+    first.task.instruction.as_mut().unwrap().push('x');
+    assert!(first.validate().is_ok());
+    first.task.instruction = Some("x".repeat(32 * 1024 + 1));
+    assert!(first.validate().is_err());
+    first.task.instruction = Some(" \n\t".into());
+    assert!(first.validate().is_err());
     let mut custody =
         EnrolledRecipientCustody::new("agent-1", "launch-1", "epoch-1", "channel-1").unwrap();
     let original = envelope();
@@ -107,25 +120,29 @@ fn enrolled_full_private_input_and_retention_bounds_fail_closed() {
 }
 #[cfg(feature = "client")]
 #[tokio::test(flavor = "current_thread")]
-async fn enrolled_old_peer_cannot_acknowledge_delivery_from_queue_success() {
+async fn task_run_old_peer_cannot_acknowledge_delivery_from_queue_success() {
     struct OldPeer;
     impl collab_capnp::channel_handle::Server for OldPeer {}
     let channel = ChannelHandle {
         inner: Rc::new(capnp_rpc::new_client(OldPeer)),
     };
     let first = envelope();
-    assert!(channel.subscribe_enrolled_tasks().await.is_err());
+    assert!(channel.subscribe_task_runs().await.is_err());
     assert!(
         channel
-            .accept_enrolled_task(&first.acceptance(1))
+            .report_task_run(
+                first.task.run_id,
+                &first.task.lease,
+                &TaskRunUpdate::Accepted
+            )
             .await
             .is_err()
     );
     assert!(
         channel
-            .report_enrolled_task(
-                &first.acceptance(1),
-                1,
+            .report_task_run(
+                first.task.run_id,
+                &first.task.lease,
                 &TaskRunUpdate::Succeeded {
                     message: "done".into()
                 }
@@ -136,16 +153,18 @@ async fn enrolled_old_peer_cannot_acknowledge_delivery_from_queue_success() {
 }
 #[cfg(feature = "client")]
 #[tokio::test(flavor = "current_thread")]
-async fn enrolled_report_preserves_full_private_result_and_bounds_encoded_frame() {
+async fn task_run_report_preserves_full_private_result_and_bounds_encoded_frame() {
     struct Recipient(Rc<std::cell::Cell<usize>>);
     impl collab_capnp::channel_handle::Server for Recipient {
-        fn report_enrolled_task(
+        fn report_task_run(
             self: Rc<Self>,
-            params: collab_capnp::channel_handle::ReportEnrolledTaskParams,
-            _results: collab_capnp::channel_handle::ReportEnrolledTaskResults,
+            params: collab_capnp::channel_handle::ReportTaskRunParams,
+            _results: collab_capnp::channel_handle::ReportTaskRunResults,
         ) -> impl std::future::Future<Output = Result<(), capnp::Error>> + 'static {
             let result = (|| {
                 let request = params.get()?;
+                assert_eq!(request.get_run_id(), 9);
+                assert_eq!(request.get_lease()?.to_str()?, "lease-1");
                 let update: TaskRunUpdate =
                     serde_json::from_str(request.get_update_json()?.to_str()?)
                         .map_err(|error| capnp::Error::failed(error.to_string()))?;
@@ -165,19 +184,23 @@ async fn enrolled_report_preserves_full_private_result_and_bounds_encoded_frame(
     let channel = ChannelHandle {
         inner: Rc::new(capnp_rpc::new_client(Recipient(calls.clone()))),
     };
-    let acceptance = envelope().acceptance(1);
+    let task = envelope().task;
     for message in ["𐐀".repeat(8000), "\u{0001}".repeat(8000)] {
         channel
-            .report_enrolled_task(&acceptance, 1, &TaskRunUpdate::Succeeded { message })
+            .report_task_run(
+                task.run_id,
+                &task.lease,
+                &TaskRunUpdate::Succeeded { message },
+            )
             .await
             .unwrap();
     }
     assert_eq!(calls.get(), 2);
     assert!(
         channel
-            .report_enrolled_task(
-                &acceptance,
-                2,
+            .report_task_run(
+                task.run_id,
+                &task.lease,
                 &TaskRunUpdate::Succeeded {
                     message: "x".repeat(64 * 1024)
                 }
@@ -197,6 +220,16 @@ fn enrolled_protocol_rejects_unknown_fields_and_preserves_legacy_literal() {
     let task: TaskRunEnvelope = serde_json::from_str(legacy).unwrap();
     assert_eq!(task, envelope().task);
     assert_eq!(serde_json::to_string(&task).unwrap(), legacy);
+    assert_eq!(task.instruction(), "Private instruction");
+    let mut private = envelope();
+    private.task.title = "Public summary".into();
+    private.task.instruction = Some("Full private instruction".into());
+    let encoded = serde_json::to_string(&private).unwrap();
+    let decoded: EnrolledTaskEnvelope = serde_json::from_str(&encoded).unwrap();
+    assert_eq!(decoded, private);
+    assert_eq!(decoded.task.title, "Public summary");
+    assert_eq!(decoded.task.instruction(), "Full private instruction");
+    assert!(decoded.validate().is_ok());
     let mut value = serde_json::to_value(envelope()).unwrap();
     value["credential"] = serde_json::json!("not permitted");
     assert!(serde_json::from_value::<EnrolledTaskEnvelope>(value).is_err());
