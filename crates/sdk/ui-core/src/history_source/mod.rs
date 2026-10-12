@@ -48,9 +48,9 @@ pub mod seen;
 pub mod sentence;
 pub mod steps;
 pub use authors::{
-    AuthorDirectory, UNKNOWN_AUTHOR_NAME, actor_handle, agent_display_label, agent_principal_name,
-    author_coloured, author_for_identity, local_identity_author, participant_display_label,
-    short_id, stable_hue,
+    AuthorDirectory, HistoryAgent, UNKNOWN_AUTHOR_NAME, actor_handle, agent_display_label,
+    agent_principal_name, author_coloured, author_for_identity, local_identity_author,
+    participant_display_label, short_id, stable_hue,
 };
 pub use compare::{CompareError, HistoryComparison, compare_entries};
 pub use detail::{HistoryResourceTarget, HistorySelectionDetail};

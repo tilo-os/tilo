@@ -146,6 +146,10 @@ impl ResourceApp for WindowsShell {
     /// An installer to add (`windows setup.exe`).
     const ARGUMENTS: usize = 1;
 
+    fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {
+        Some(&crate::strings::CATALOG)
+    }
+
     fn view(cx: &mut ViewCx<Windows>) -> Element {
         let app = WindowsApp::new();
         // A search hit, or an agent's `open`, shows the application it names.
@@ -396,7 +400,8 @@ mod tests {
         }
         assert_eq!(app.state().route("adobe-reader"), None);
 
-        let catalogue = tilo_history::Catalogue::new("en-US", &[crate::strings::EN_US]);
+        let catalogue =
+            tilo_history::Catalogue::new("en-US", &[include_str!("../locales/en-US.ftl")]);
         let reader = tilo_history::Reader::new("en-US").with_app(&catalogue);
         let entries: Vec<_> = app
             .versions()

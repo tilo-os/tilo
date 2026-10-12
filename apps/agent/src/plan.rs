@@ -315,26 +315,6 @@ impl Plan {
         }
     }
 
-    /// Deterministic fallback over only the live resource/action surface.
-    /// Unlike the legacy recipe floor, this cannot select an operation that
-    /// was compiled into the agent but not published by an application.
-    pub fn from_surface(rest: &str, offers: &[Offer]) -> Plan {
-        let steps = clauses(rest)
-            .into_iter()
-            .map(|clause| {
-                let instruction = match surface::from_verbs(&clause, offers) {
-                    Ok((offer, arguments)) => {
-                        Instruction::from_answer(&offer.id(), &clause, Some(&arguments), offers)
-                            .unwrap_or_else(|why| Instruction::Unknown(format!("{why:?}")))
-                    }
-                    Err(why) => Instruction::Unknown(unmatched(&clause, &why)),
-                };
-                Step::bound(instruction, offers)
-            })
-            .collect();
-        Plan { steps }
-    }
-
     pub fn len(&self) -> usize {
         self.steps.len()
     }

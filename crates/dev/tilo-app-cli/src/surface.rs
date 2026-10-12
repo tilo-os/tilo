@@ -10,6 +10,13 @@
 //! a difference, an incompatible storage change without a version bump, or a
 //! control bound to nothing fails; a field or verb without a history message
 //! in `locales/en-US.ftl` is reported.
+//!
+//! The file is the bytes a package ships and a change names by hash, so it
+//! keeps only what deciding a change and checking storage need ([`filed`]):
+//! kinds, verb ids, kinds, footprints and parameters, field paths, layouts
+//! and types. Labels, descriptions, field titles and owners stay in the
+//! code; a field type's own operation vocabulary is kept as its digest. One
+//! line per field keeps the file small and its diffs readable.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
@@ -28,7 +35,7 @@ pub const FILE: &str = "surface.toml";
 /// The flag that makes a framework app's binary print its report.
 pub const FLAG: &str = "--surface";
 
-const HEADER: &str = "# The app's public surface, written by `tilo-app surface`: its resources' verbs\n# and stored fields. Review changes to it like an API change; `tilo-app check`\n# fails when the code and this file disagree.\n\n";
+const HEADER: &str = "# Written by `tilo-app surface`; review changes like an API change.\n\n";
 
 /// What an app's binary reports about its surface.
 #[derive(Debug, Default)]
@@ -156,16 +163,251 @@ fn normalized(value: &Value) -> Value {
     }
 }
 
-/// The surface file's text for `resources`.
+/// What the surface file keeps of a resource the code reports: see the
+/// module docs. Applying it twice changes nothing, so a committed file
+/// compares with the code through it too.
+#[must_use]
+pub fn filed(resource: &Value) -> Value {
+    let mut resource = normalized(resource);
+    let Some(map) = resource.as_object_mut() else {
+        return resource;
+    };
+    for list in ["verbs", "fields"] {
+        if map
+            .get(list)
+            .and_then(Value::as_array)
+            .is_some_and(Vec::is_empty)
+        {
+            map.remove(list);
+        }
+    }
+    for verb in map
+        .get_mut("verbs")
+        .and_then(Value::as_array_mut)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_object_mut)
+    {
+        verb.remove("label");
+        verb.remove("description");
+        if verb
+            .get("params")
+            .and_then(Value::as_array)
+            .is_some_and(Vec::is_empty)
+        {
+            verb.remove("params");
+        }
+        for schema in verb
+            .get_mut("params")
+            .and_then(Value::as_array_mut)
+            .into_iter()
+            .flatten()
+            .filter_map(|param| param.get_mut("schema"))
+        {
+            without_prose(schema);
+        }
+    }
+    for field in map
+        .get_mut("fields")
+        .and_then(Value::as_array_mut)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_object_mut)
+    {
+        field.remove("title");
+        field.remove("owner");
+        if field.get("stored").and_then(Value::as_str) == Some("value") {
+            field.remove("stored");
+        }
+        if let Some(ops) = field.get_mut("ops")
+            && !ops.is_string()
+        {
+            *ops = Value::String(digest(ops));
+        }
+    }
+    resource
+}
+
+/// `schema` without the prose its types' doc comments put in it
+/// (`description`, `examples`): what a parameter accepts stays.
+fn without_prose(schema: &mut Value) {
+    match schema {
+        Value::Object(node) => {
+            node.remove("description");
+            node.remove("examples");
+            for (key, value) in node.iter_mut() {
+                match key.as_str() {
+                    // Maps from names to schemas: the names are not keywords.
+                    "properties" | "$defs" | "definitions" => {
+                        for item in value
+                            .as_object_mut()
+                            .into_iter()
+                            .flat_map(|map| map.values_mut())
+                        {
+                            without_prose(item);
+                        }
+                    }
+                    "const" | "enum" | "default" => {}
+                    _ => without_prose(value),
+                }
+            }
+        }
+        Value::Array(items) => items.iter_mut().for_each(without_prose),
+        _ => {}
+    }
+}
+
+/// A short, stable digest of `value`'s canonical JSON.
+fn digest(value: &Value) -> String {
+    use sha2::Digest as _;
+    let canonical = serde_json::to_vec(&canonical(value)).unwrap_or_default();
+    let hash = sha2::Sha256::digest(&canonical);
+    format!("sha256:{}", hex::encode(hash.get(..8).unwrap_or_default()))
+}
+
+/// `value` with every object's keys in order.
+fn canonical(value: &Value) -> Value {
+    match value {
+        Value::Object(map) => {
+            let sorted: BTreeMap<&String, Value> = map
+                .iter()
+                .map(|(key, item)| (key, canonical(item)))
+                .collect();
+            Value::Object(
+                sorted
+                    .into_iter()
+                    .map(|(key, item)| (key.clone(), item))
+                    .collect(),
+            )
+        }
+        Value::Array(items) => Value::Array(items.iter().map(canonical).collect()),
+        other => other.clone(),
+    }
+}
+
+/// `key` as a TOML key: bare when it can be, else quoted.
+fn toml_key(key: &str) -> String {
+    let bare = !key.is_empty()
+        && key
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
+    if bare {
+        key.to_owned()
+    } else {
+        Value::String(key.to_owned()).to_string()
+    }
+}
+
+/// `value` as one line of TOML: strings in JSON's escapes (which TOML's
+/// basic strings share), objects as inline tables.
+fn inline(value: &Value, out: &mut String) -> Result<()> {
+    match value {
+        Value::Null => bail!("TOML holds no null"),
+        Value::Bool(_) | Value::Number(_) | Value::String(_) => {
+            out.push_str(&value.to_string());
+        }
+        Value::Array(items) => {
+            out.push('[');
+            for (index, item) in items.iter().enumerate() {
+                if index > 0 {
+                    out.push_str(", ");
+                }
+                inline(item, out)?;
+            }
+            out.push(']');
+        }
+        Value::Object(map) if map.is_empty() => out.push_str("{}"),
+        Value::Object(map) => {
+            out.push_str("{ ");
+            for (index, (key, item)) in leading(map, &["path", "name", "type"]).enumerate() {
+                if index > 0 {
+                    out.push_str(", ");
+                }
+                let _ = write!(out, "{} = ", toml_key(key));
+                inline(item, out)?;
+            }
+            out.push_str(" }");
+        }
+    }
+    Ok(())
+}
+
+/// `map`'s entries in the file's order, whatever order they were read in:
+/// those named in `first` in that order, then the rest by key.
+fn leading<'a>(
+    map: &'a serde_json::Map<String, Value>,
+    first: &[&str],
+) -> impl Iterator<Item = (&'a String, &'a Value)> {
+    let mut entries: Vec<(&'a String, &'a Value)> = map.iter().collect();
+    entries.sort_by_key(|(key, _)| {
+        let rank = first
+            .iter()
+            .position(|lead| *lead == key.as_str())
+            .unwrap_or(first.len());
+        (rank, key.as_str())
+    });
+    entries.into_iter()
+}
+
+/// The surface file's text for `resources`: each resource's scalars, its
+/// fields one per line, then its verbs, their parameters one per line.
 ///
 /// # Errors
 /// Returns why the surface cannot be written as TOML.
 pub fn render(resources: &[Value]) -> Result<String> {
-    let document =
-        serde_json::json!({ "resources": resources.iter().map(normalized).collect::<Vec<_>>() });
-    let toml = toml::Value::try_from(&document).context("the surface does not fit TOML")?;
     let mut text = String::from(HEADER);
-    text.push_str(&toml::to_string_pretty(&toml).context("writing the surface as TOML")?);
+    for resource in resources.iter().map(filed) {
+        let Value::Object(map) = &resource else {
+            bail!("a resource of the surface is not a table");
+        };
+        text.push_str("[[resources]]\n");
+        for (key, value) in leading(map, &["kind", "label", "version", "person"])
+            .filter(|(key, _)| !matches!(key.as_str(), "verbs" | "fields"))
+        {
+            let _ = write!(text, "{} = ", toml_key(key));
+            inline(value, &mut text)?;
+            text.push('\n');
+        }
+        if let Some(fields) = map.get("fields").and_then(Value::as_array) {
+            text.push_str("fields = [\n");
+            for field in fields {
+                text.push_str("  ");
+                inline(field, &mut text)?;
+                text.push_str(",\n");
+            }
+            text.push_str("]\n");
+        }
+        for verb in map
+            .get("verbs")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            let Value::Object(verb) = verb else {
+                bail!("a verb of the surface is not a table");
+            };
+            text.push_str("\n[[resources.verbs]]\n");
+            let params = verb.iter().filter(|(key, _)| key.as_str() == "params");
+            let rest = leading(verb, &["id"]).filter(|(key, _)| key.as_str() != "params");
+            for (key, value) in rest.chain(params) {
+                let _ = write!(text, "{} = ", toml_key(key));
+                match value.as_array() {
+                    Some(items) if key == "params" && !items.is_empty() => {
+                        text.push_str("[\n");
+                        for item in items {
+                            text.push_str("  ");
+                            inline(item, &mut text)?;
+                            text.push_str(",\n");
+                        }
+                        text.push(']');
+                    }
+                    _ => inline(value, &mut text)?,
+                }
+                text.push('\n');
+            }
+        }
+        text.push('\n');
+    }
     Ok(text)
 }
 
@@ -378,8 +620,10 @@ pub fn findings(
             format!("there is no committed {FILE}; write it with `tilo-app surface`"),
         )),
         Some(committed) => {
-            let old = keyed(committed, "kind");
-            let new = keyed(&report.resources, "kind");
+            let committed: Vec<Value> = committed.iter().map(filed).collect();
+            let reported: Vec<Value> = report.resources.iter().map(filed).collect();
+            let old = keyed(&committed, "kind");
+            let new = keyed(&reported, "kind");
             let mut changes = Vec::new();
             for (kind, now) in &new {
                 let Some(before) = old.get(kind) else {
@@ -577,7 +821,10 @@ mod tests {
         let now = report(&[resource(1, "String", &["rename"])]);
         write(temp.path(), &now.resources).unwrap();
         let committed = committed(temp.path()).unwrap().unwrap();
-        assert_eq!(committed, now.resources);
+        let filed_now: Vec<Value> = now.resources.iter().map(filed).collect();
+        assert_eq!(committed, filed_now);
+        // What the file leaves out is not drift.
+        assert!(committed[0]["fields"][0].get("title").is_none());
         let catalog: BTreeSet<String> = ["notes-rename", "notes-book-title"]
             .into_iter()
             .map(str::to_owned)
@@ -590,6 +837,36 @@ mod tests {
             Level::Error,
         );
         assert!(found.findings.is_empty(), "{}", found.render());
+    }
+
+    /// The file a receiver reads holds what it decides with: verb kinds and
+    /// footprints, field layouts and read-only marks, without the text that
+    /// stays in the code.
+    #[test]
+    fn a_written_surface_reads_as_what_receivers_decide_with() {
+        let mut book = resource(1, "String", &["rename"]);
+        book["fields"][1]["ops"] = serde_json::json!({"type": "object", "title": "Text ops"});
+        book["verbs"][0]["params"][0]["schema"]["description"] = "The new title".into();
+        let text = render(&[book.clone()]).unwrap();
+        assert!(!text.contains("title = \"Title\""), "{text}");
+        assert!(!text.contains("label = \"rename\""), "{text}");
+        assert!(!text.contains("The new title"), "{text}");
+        let value: Value =
+            serde_json::to_value(toml::from_str::<toml::Value>(&text).unwrap()).unwrap();
+        let surface: tilo_actions::surface::Surface =
+            serde_json::from_value(value["resources"][0].clone()).unwrap();
+        assert_eq!(surface.verbs[0].id, "rename");
+        assert!(surface.verbs[0].label.is_empty());
+        assert_eq!(surface.fields[0].stored, "value");
+        assert_eq!(surface.fields[1].stored, "collection");
+        assert!(surface.fields[2].readonly);
+        // A changed operation vocabulary still shows as drift.
+        let ops = surface.fields[1].ops.clone().unwrap();
+        assert!(ops.as_str().unwrap().starts_with("sha256:"));
+        book["fields"][1]["ops"]["title"] = "Other ops".into();
+        assert_ne!(filed(&book)["fields"][1]["ops"], ops);
+        // Writing what was read writes the same bytes.
+        assert_eq!(render(&[value["resources"][0].clone()]).unwrap(), text);
     }
 
     #[test]

@@ -240,6 +240,11 @@ impl ResourceApp for DisksShell {
     type Resource = Disks;
     const ID: &'static str = "so.tilo.disks";
     const TITLE: &'static str = "Disks";
+
+    fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {
+        Some(&crate::locales::CATALOG)
+    }
+
     const ICON: Option<&'static str> = Some("disks");
 
     fn scenarios() -> &'static [&'static str] {
@@ -275,7 +280,6 @@ impl ResourceApp for DisksShell {
     }
 
     fn view(cx: &mut ViewCx<Disks>) -> Element {
-        crate::locales::install();
         cx.surface(DisksApp::new())
     }
 }

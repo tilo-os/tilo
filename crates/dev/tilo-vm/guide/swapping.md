@@ -262,6 +262,15 @@ runtime checks. A standalone package whose authored runtime is absent is refused
 use the paired component above for an unpublished worktree toolkit rather than
 relabeling it as the VM's existing ABI.
 
+Without a remote builder (CI, or a host whose architecture has none) the same
+cohort comes from CI: dispatch vm-acceptance with `ref=<branch>
+swap=apps+runtime prebuilt_cohort=true`. CI builds the branch's launcher,
+install, shell and apps+runtime as signed layers, and `tilo-vm swap-artifact`
+installs them in that order through the daemon's normal signed-cohort checks,
+from a checkout at exactly the producing commit
+(`scripts/vm-acceptance/README.md`, `docs/layer-artifacts.md`). `--builder host`
+stays refused for apps+runtime: it cannot assemble the paired, signed cohort.
+
 ### Shell startup companions
 
 A source shell swap installs both `/usr/bin/shell` and the matching

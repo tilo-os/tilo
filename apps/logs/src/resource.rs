@@ -67,10 +67,14 @@ impl ResourceApp for LogsShell {
     type Resource = Logs;
     const ID: &'static str = "so.tilo.logs";
     const TITLE: &'static str = "Logs";
+
+    fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {
+        Some(&crate::locales::CATALOG)
+    }
+
     const ICON: Option<&'static str> = Some("logs");
 
     fn view(cx: &mut ViewCx<Logs>) -> Element {
-        crate::locales::install();
         cx.surface(LogsApp::new())
     }
 

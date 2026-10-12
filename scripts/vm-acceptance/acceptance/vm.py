@@ -16,6 +16,11 @@ import subprocess
 import time
 from pathlib import Path
 
+# `actions list` pages: rows asked for per page (the desktop's most), and how often a
+# listing that changed under the cursor is read again from its start.
+LISTING_PAGE = 2000
+LISTING_ATTEMPTS = 3
+
 
 class VmError(RuntimeError):
     """A tilo-vm command failed; carries its output for the report."""
@@ -108,8 +113,28 @@ class TiloVm:
         return self.control_json("state-dump")
 
     def actions(self, query: str = "") -> list[dict]:
-        args = ["actions", "list", *([query] if query else []), "--json"]
-        return self.control_json(*args)["actions"]
+        """Every row the desktop lists for `query`, page after page. A page holds 200 rows
+        unless asked for more, and an open app's own actions can push the window closers
+        past it: a caller reading one page saw a window with no close action and left it
+        open (A15). A listing that changes while paged is read again from its start."""
+        for _ in range(LISTING_ATTEMPTS):
+            rows, cursor = [], None
+            while True:
+                args = ["actions", "list", *([query] if query else []), "--json",
+                        "--limit", str(LISTING_PAGE)]
+                try:
+                    page = self.control_json(*args, *(["--cursor", cursor] if cursor else []))
+                except VmError as exc:
+                    if "stale_cursor" in str(exc):
+                        break
+                    raise
+                rows += page["actions"]
+                if not page.get("truncated"):
+                    return rows
+                cursor = page.get("next_cursor")
+                if not cursor:
+                    raise VmError("the action listing is truncated but names no next page")
+        raise VmError(f"the action listing changed on each of {LISTING_ATTEMPTS} reads while it was paged")
 
     def invoke(self, provider: str, action_id: str, args: dict | None = None) -> dict:
         cmd = ["actions", "invoke", provider, action_id]

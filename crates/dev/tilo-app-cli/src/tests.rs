@@ -1803,7 +1803,7 @@ fn add_artifact_protects_work_and_stays_inside_the_app() {
 /// add locale registers immediately and protects app-owned setup; the Fluent contract reports
 /// missing and stale entries; an invalid source is rejected before publishing; locale sync
 /// preserves translations and can resolve drift, validates every catalog before publishing any;
-/// only the previous generated setup is migrated.
+/// an app-owned registry is never rewritten.
 #[test]
 #[allow(
     clippy::too_many_lines,
@@ -1847,8 +1847,9 @@ fn locales_are_registered_validated_and_synced_without_losing_translations() {
             parse_locale_registry(&registry).unwrap(),
             ["de-DE", "en-US"]
         );
-        assert!(registry.contains("include_str!(\"../locales/de-DE.ftl\")"));
-        assert!(registry.contains("(\"de-DE\", CATALOG_0)"));
+        assert!(
+            registry.contains(r#"ui::embedded_catalog!(pub static CATALOG, ["de-DE", "en-US"]);"#)
+        );
         syn::parse_file(&registry).expect("generated locale registry is Rust");
 
         let repeated = add_app_artifact(AddRequest {
@@ -2518,10 +2519,12 @@ fn new_apps_are_created_whole_with_their_workspace_registration() {
         assert!(!library.contains("LocalState::new"));
         assert!(!library.contains("ActionForm"));
         assert!(library.contains("pub mod locales;"));
-        assert!(library.contains("locales::install()"));
+        assert!(library.contains("Some(&crate::locales::CATALOG)"));
         let locale_registry =
             std::fs::read_to_string(destination.join("src/locales.rs")).expect("locale registry");
-        assert!(locale_registry.contains("I18nManager::install_system"));
+        assert!(
+            locale_registry.contains(r#"ui::embedded_catalog!(pub static CATALOG, ["en-US"]);"#)
+        );
         assert_eq!(parse_locale_registry(&locale_registry).unwrap(), ["en-US"]);
         let manifest =
             std::fs::read_to_string(destination.join("tilo-app.toml")).expect("manifest");

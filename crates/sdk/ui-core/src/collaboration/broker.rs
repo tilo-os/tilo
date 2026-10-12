@@ -829,32 +829,44 @@ fn json_map_bytes(values: &serde_json::Map<String, serde_json::Value>, meter: &m
     }
 }
 
-/// Count a serializable opaque nested value without constructing a second
-/// payload copy. Direct `String`/`Vec` owners still use capacities above;
-/// this covers nested action/context representations whose concrete shape is
-/// intentionally owned by `tilo-actions`.
+/// Count a serializable opaque nested value: the length of its JSON text,
+/// written into one reused buffer. Direct `String`/`Vec` owners still use
+/// capacities above; this covers nested action/context representations
+/// whose concrete shape is intentionally owned by `tilo-actions`. Writing
+/// to a `Vec<u8>` reuses the serializer every value is already sent with,
+/// instead of compiling a second one per type for a counting writer.
 fn serialized_bytes<T: serde::Serialize>(value: &T, meter: &mut ByteMeter) {
-    struct Counter(usize);
-    impl std::io::Write for Counter {
-        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-            self.0 = self
-                .0
-                .checked_add(bytes.len())
-                .ok_or_else(|| std::io::Error::other("serialized size overflow"))?;
-            Ok(bytes.len())
-        }
-
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
-        }
+    thread_local! {
+        static TEXT: std::cell::RefCell<Vec<u8>> = const { std::cell::RefCell::new(Vec::new()) };
     }
-    let mut counter = Counter(0);
-    if serde_json::to_writer(&mut counter, value).is_ok() {
-        meter.add(counter.0);
-    } else {
-        meter.0 = None;
+    let written = TEXT.with(|text| {
+        let Ok(mut text) = text.try_borrow_mut() else {
+            return written_len(&mut Vec::new(), value);
+        };
+        text.clear();
+        let written = written_len(&mut text, value);
+        // Keep the buffer for the next value, but not the peak of a large one.
+        if text.capacity() > SERIALIZED_TEXT_KEPT {
+            *text = Vec::new();
+        }
+        written
+    });
+    match written {
+        Some(bytes) => meter.add(bytes),
+        None => meter.0 = None,
     }
 }
+
+/// The length of `value`'s JSON text, written after what `text` holds.
+fn written_len<T: serde::Serialize>(text: &mut Vec<u8>, value: &T) -> Option<usize> {
+    value
+        .serialize(&mut serde_json::Serializer::new(&mut *text))
+        .ok()
+        .map(|()| text.len())
+}
+
+/// The most text [`serialized_bytes`] keeps allocated between values.
+const SERIALIZED_TEXT_KEPT: usize = 64 * 1024;
 
 fn exported_action_bytes(action: &ExportedAction, meter: &mut ByteMeter) {
     meter.string_capacity(&action.resource);
@@ -7059,6 +7071,7 @@ mod tests {
     include!("directory_client_tests.rs");
     #[cfg(unix)]
     include!("committed_read_deadline_tests.rs");
+    include!("committed_changes_tests.rs");
     use crate::collaboration::{CollaborationState, SignedSendError, SigningIdentity};
 
     fn plain_route_keys() -> SharedRouteKeys {
@@ -7092,6 +7105,14 @@ mod tests {
         scrollback_batch, stream,
     };
 
+    /// Changes the fake broker hands a reader holding `from`.
+    #[derive(Clone)]
+    struct FixtureChanges {
+        from: [u8; 32],
+        base: Vec<[u8; 32]>,
+        bytes: Vec<u8>,
+    }
+
     #[derive(Default)]
     struct Captures {
         /// How long after it is asked for the op stream hands out each op.
@@ -7123,6 +7144,11 @@ mod tests {
         /// broker does when an announced change leaves the reader's Open to
         /// decide.
         committed_await_stale: bool,
+        /// Answer `OpenChanges` as a current broker does: these changes for
+        /// a reader holding their `from` revision, the whole document for
+        /// any other. Without it `OpenChanges` is refused, as an older
+        /// broker refuses a request it does not know.
+        committed_changes: Option<FixtureChanges>,
         /// Hold each next `join_channel` reply until its gate opens, as a
         /// starved broker does.
         join_gates: std::collections::VecDeque<tokio::sync::oneshot::Receiver<()>>,
@@ -7740,7 +7766,9 @@ mod tests {
                 let request = decoded?;
                 let mut captures = self.captures.lock().unwrap();
                 captures.committed_reads.push(request.clone());
-                if matches!(request, Request::Open { .. })
+                let changes = captures.committed_changes.clone();
+                if (matches!(request, Request::Open { .. })
+                    || (changes.is_some() && matches!(request, Request::OpenChanges { .. })))
                     && let Some(error) = captures.committed_open_failure.clone()
                 {
                     return Err(capnp::Error::failed(error));
@@ -7755,6 +7783,29 @@ mod tests {
                         Request::Open {
                             known_revision: Some(revision),
                         } if revision == current_revision => Reply::Unchanged { revision },
+                        Request::OpenChanges { known_revision } if changes.is_some() => {
+                            match changes {
+                                _ if known_revision == current_revision => Reply::Unchanged {
+                                    revision: known_revision,
+                                },
+                                Some(changes) if changes.from == known_revision => Reply::Changes {
+                                    capture: 1,
+                                    revision: current_revision,
+                                    base: changes.base,
+                                    total: changes.bytes.len() as u32,
+                                    bytes: changes.bytes,
+                                    token: [3; 16],
+                                },
+                                _ => Reply::Chunk {
+                                    capture: 1,
+                                    revision: current_revision,
+                                    total: bytes.len() as u32,
+                                    offset: 0,
+                                    bytes: bytes.clone(),
+                                    token: [3; 16],
+                                },
+                            }
+                        }
                         Request::Open { .. } => Reply::Chunk {
                             capture: 1,
                             revision: current_revision,

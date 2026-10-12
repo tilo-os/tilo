@@ -354,6 +354,27 @@ fn a_granted_action_writing_another_unit_is_refused() {
     assert!(refused.contains("do not name exactly"), "{refused}");
 }
 
+/// An item kept as its order key alone (a list of plain ids, rows of a
+/// grid) is the scalar under its id: writing it writes that item's unit,
+/// exactly as writing an entry map does.
+#[test]
+fn an_item_stored_as_its_order_key_writes_its_own_unit() {
+    let order_key = |id: &'static str| {
+        move |doc: &mut AutoCommit| {
+            let Some((_, comments)) = doc.get(ROOT, "comments").unwrap() else {
+                panic!("the record keeps comments")
+            };
+            doc.put(&comments, id, "a0").unwrap();
+        }
+    };
+    let (mut peer, key, guest) = room_with(MemberRole::Commenter);
+    let own = guest_write(&peer, &key, order_key("c1"), comment(), Some("c1"));
+    receive(&mut peer, &guest, own).expect("commenting on c1 may write c1");
+    let other = guest_write(&peer, &key, order_key("c2"), comment(), Some("c1"));
+    let refused = receive(&mut peer, &guest, other).unwrap_err();
+    assert!(refused.contains("may not write"), "{refused}");
+}
+
 /// Without the app's surface a change is held, never merged on trust, and
 /// decided once the surface is here.
 #[test]

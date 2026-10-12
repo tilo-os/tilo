@@ -1171,26 +1171,6 @@ impl Relay {
             .await
     }
 
-    /// Replace the standing of each member device of `workspace_id`'s room,
-    /// as its governor projects them: the relay then decides each change it
-    /// receives against its author's grants for the action it claims.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`RelayError::GovernedAccess`] outside this relay's mutation
-    /// scope, and [`RelayError::Store`] when the workspace cannot be opened.
-    pub async fn replace_governed_workspace_standings(
-        &self,
-        workspace_id: u64,
-        pinned: bool,
-        standings: crate::workspace::Standings,
-    ) -> Result<(), RelayError> {
-        self.ensure_workspace_mutation_scope(workspace_id)?;
-        self.governed_access_writer()
-            .replace_standings(workspace_id, pinned, standings)
-            .await
-    }
-
     fn governed_access_writer(&self) -> GovernedAccessWriter {
         GovernedAccessWriter {
             workspaces: self.workspaces.clone(),

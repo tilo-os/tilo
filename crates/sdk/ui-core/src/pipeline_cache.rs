@@ -222,9 +222,114 @@ impl AppPipelineCache {
     }
 }
 
+/// Whether this app's first frame draws a backdrop blur, as its last launch
+/// found, kept beside its pipeline cache under the same rules (its own cache
+/// directory, written only by this app, mode 0600).
+///
+/// On a software adapter every frame is rasterized on the CPU except a
+/// backdrop blur, which vello draws, so only an app whose first frame blurs
+/// a backdrop waits on vello's pipelines. Such an app starts building them as
+/// soon as it has a device; any other app leaves that build until after its
+/// first present, so its startup does not share the CPU with LLVM compiling
+/// pipelines it is not about to use. A wrong or missing hint costs time,
+/// never a pipeline: a frame that needs one still builds or waits for it.
+pub(crate) mod first_frame_backdrop {
+    use std::path::{Path, PathBuf};
+
+    const FILE: &str = "first-frame-backdrop";
+
+    fn dir() -> Option<PathBuf> {
+        Some(
+            crate::host::environment()
+                .paths
+                .cache_dir()?
+                .join("tilo")
+                .join("pipelines"),
+        )
+    }
+
+    /// What the last launch recorded; `false` when it recorded nothing.
+    pub(crate) fn expected() -> bool {
+        dir().is_some_and(|dir| expected_in(&dir))
+    }
+
+    pub(crate) fn expected_in(dir: &Path) -> bool {
+        recorded(dir) == Some(true)
+    }
+
+    /// What the file says, `None` when there is none.
+    fn recorded(dir: &Path) -> Option<bool> {
+        tilo_files::file_at(&dir.join(FILE))
+            .and_then(|(dir, name)| tilo_files::blocking::read_prefix(&dir, &name, 1))
+            .ok()
+            .map(|bytes| bytes == b"1")
+    }
+
+    /// Record what this launch's first frame did, on a background thread and
+    /// only when it differs from what the last launch recorded.
+    pub(crate) fn record(drew: bool) {
+        let Some(dir) = dir() else {
+            return;
+        };
+        let spawned = crate::background::Background::current().spawn(
+            "first-frame-backdrop-save",
+            move || {
+                if let Err(error) = record_in(&dir, drew) {
+                    tracing::debug!(%error, "could not keep the first-frame backdrop hint");
+                }
+            },
+        );
+        if spawned.is_err() {
+            tracing::debug!("no background executor to keep the first-frame backdrop hint");
+        }
+    }
+
+    /// `Ok(true)` when the file was written.
+    pub(crate) fn record_in(dir: &Path, drew: bool) -> std::io::Result<bool> {
+        if recorded(dir) == Some(drew) {
+            return Ok(false);
+        }
+        tilo_files::native::atomic::write_private(&dir.join(FILE), if drew { b"1" } else { b"0" })?;
+        Ok(true)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_first_frame_backdrop_hint_is_kept_and_rewritten_only_on_change() {
+        let scratch = tempfile::tempdir().unwrap();
+        let dir = scratch.path().join("tilo").join("pipelines");
+        assert!(
+            !first_frame_backdrop::expected_in(&dir),
+            "a first launch expects no backdrop"
+        );
+        assert!(first_frame_backdrop::record_in(&dir, true).unwrap());
+        assert!(first_frame_backdrop::expected_in(&dir));
+        assert!(
+            !first_frame_backdrop::record_in(&dir, true).unwrap(),
+            "an unchanged hint is not rewritten"
+        );
+        assert!(first_frame_backdrop::record_in(&dir, false).unwrap());
+        assert!(!first_frame_backdrop::expected_in(&dir));
+        assert!(!first_frame_backdrop::record_in(&dir, false).unwrap());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let mode = std::fs::metadata(dir.join("first-frame-backdrop"))
+                .unwrap()
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o777, 0o600, "the hint is private to the app");
+        }
+        std::fs::write(dir.join("first-frame-backdrop"), b"garbage").unwrap();
+        assert!(
+            !first_frame_backdrop::expected_in(&dir),
+            "anything but the app's own record expects no backdrop"
+        );
+    }
 
     fn adapter(driver_info: &str) -> wgpu::AdapterInfo {
         wgpu::AdapterInfo {
