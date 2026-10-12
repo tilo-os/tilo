@@ -1,6 +1,7 @@
 use super::*;
 use automerge::transaction::Transactable as _;
 use automerge::{ActorId, AutoCommit, ROOT};
+use tilo_automerge::ApplyIncoming as _;
 
 /// The dependency walk as it was written: every round asks the history what
 /// it misses and rebuilds each missing change from the admitted record. Its
@@ -50,7 +51,8 @@ impl Draw {
             .0
             .wrapping_mul(6_364_136_223_846_793_005)
             .wrapping_add(1_442_695_040_888_963_407);
-        usize::try_from((self.0 >> 33) % below as u64).unwrap_or(0)
+        let below = u64::try_from(below).unwrap_or(u64::MAX);
+        usize::try_from((self.0 >> 33).checked_rem(below).unwrap_or(0)).unwrap_or(0)
     }
 }
 
@@ -66,7 +68,11 @@ fn record_from(seed: u64, writers: usize, edits: usize, second_root: bool) -> Au
     let mut replicas = (0..writers)
         .map(|writer| {
             let mut replica = AutoCommit::new();
-            replica.set_actor(ActorId::from(vec![u8::try_from(writer + 1).unwrap(); 16]));
+            replica.set_actor(ActorId::from(vec![
+                u8::try_from(writer.saturating_add(1))
+                    .unwrap();
+                16
+            ]));
             replica
         })
         .collect::<Vec<_>>();
@@ -75,9 +81,13 @@ fn record_from(seed: u64, writers: usize, edits: usize, second_root: bool) -> Au
     replicas[0].put(ROOT, "title", "start").unwrap();
     replicas[0].commit();
     let first = replicas[0].save();
-    let joined = if second_root { writers - 1 } else { writers };
+    let joined = if second_root {
+        writers.saturating_sub(1)
+    } else {
+        writers
+    };
     for replica in replicas.iter_mut().take(joined).skip(1) {
-        replica.load_incremental(&first).unwrap();
+        replica.load_incoming(&first).unwrap();
     }
     for edit in 0..edits {
         let writer = draw.next(writers);
@@ -94,13 +104,13 @@ fn record_from(seed: u64, writers: usize, edits: usize, second_root: bool) -> Au
                     let (low, high) = replicas.split_at_mut(other);
                     (&mut low[writer], &mut high[0])
                 };
-                to.merge(from).unwrap();
+                to.merge_incoming(from).unwrap();
             }
         }
     }
     let mut admitted = AutoCommit::new();
     for replica in &mut replicas {
-        admitted.merge(replica).unwrap();
+        admitted.merge_incoming(replica).unwrap();
     }
     admitted
 }
@@ -113,7 +123,7 @@ fn publications(admitted: &mut AutoCommit, seed: u64) -> Vec<DocumentMutation> {
     let mut publications = Vec::new();
     for _ in 0..12 {
         let start = draw.next(changes.len());
-        let length = 1 + draw.next(4);
+        let length = draw.next(4).saturating_add(1);
         let bytes = changes
             .iter()
             .skip(start)
@@ -129,8 +139,9 @@ fn publications(admitted: &mut AutoCommit, seed: u64) -> Vec<DocumentMutation> {
 #[test]
 fn the_history_is_the_walked_history_byte_for_byte() {
     for seed in 0..24_u64 {
-        let writers = 2 + usize::try_from(seed % 3).unwrap();
-        let mut admitted = record(seed, writers, 30 + usize::try_from(seed).unwrap());
+        let writers = usize::try_from(seed % 3).unwrap().saturating_add(2);
+        let edits = usize::try_from(seed).unwrap().saturating_add(30);
+        let mut admitted = record(seed, writers, edits);
         for mutation in publications(&mut admitted, seed) {
             let record = admitted.committed_document();
             let expected = walked(&mutation, record).map(|history| history.save());
@@ -148,7 +159,7 @@ fn the_history_is_the_walked_history_byte_for_byte() {
 fn an_extended_history_is_the_walked_history_byte_for_byte() {
     let mut extended_any = false;
     for seed in 0..16_u64 {
-        let writers = 1 + usize::try_from(seed % 3).unwrap();
+        let writers = usize::try_from(seed % 3).unwrap().saturating_add(1);
         let mut admitted = if writers == 1 {
             let mut alone = AutoCommit::new();
             alone.set_actor(ActorId::from(vec![9; 16]));
@@ -170,7 +181,7 @@ fn an_extended_history_is_the_walked_history_byte_for_byte() {
             let built = of(key(&mutation), &mutation, record).map(|history| history.save());
             assert_eq!(built, expected, "seed {seed}");
         }
-        let rebuilt = rebuilds() - before;
+        let rebuilt = rebuilds().saturating_sub(before);
         extended_any |= rebuilt < changes.len();
         if writers == 1 {
             // A single writer's history is a chain: after the first change,

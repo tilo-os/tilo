@@ -742,7 +742,7 @@ fn local_outbox_builds_each_pending_publication_history_once() {
             reserved
         );
         assert_eq!(
-            super::history::builds() - before,
+            super::history::builds().saturating_sub(before),
             1,
             "edit {edit}: only the new publication's history is built"
         );
