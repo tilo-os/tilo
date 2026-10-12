@@ -63,44 +63,15 @@ impl FrameHarness {
     }
 
     fn capture_history_target(&self) -> Result<HistoryTarget, HistoryError> {
-        let mut binding = self
-            .focused
-            .and_then(|node| self.bindings.binding_for(node))
-            .or_else(|| self.root.callback_binding());
-        if binding.is_none() {
-            for node in self.node_map.keys() {
-                let Some(candidate) = self.bindings.binding_for(*node) else {
-                    continue;
-                };
-                if binding
-                    .as_ref()
-                    .is_some_and(|current| current.lifetime_id != candidate.lifetime_id)
-                {
-                    return Err(HistoryError::Unavailable);
-                }
-                binding = Some(candidate);
-            }
-        }
-        if binding.is_none()
-            && self
-                .records
-                .as_ref()
-                .is_some_and(|records| records.active().is_none())
-        {
-            return Err(HistoryError::Unavailable);
-        }
-        Ok(binding.map_or_else(
-            || HistoryTarget::Legacy {
-                app_id: crate::collaboration::local_app_id(),
-                record: self
-                    .records
-                    .as_ref()
-                    .and_then(|records| records.active())
-                    .cloned(),
-                document_identity: self.state.document_identity(),
-            },
-            |binding| HistoryTarget::Bound(Box::new(binding)),
-        ))
+        crate::standalone_history_host::capture_history_target(
+            self.focused
+                .and_then(|node| self.bindings.binding_for(node))
+                .or_else(|| self.root.callback_binding()),
+            &self.bindings,
+            self.node_map.keys().copied(),
+            self.records.as_ref(),
+            self.state.document_identity(),
+        )
     }
 
     pub(super) fn remember_history_content(&mut self) {
@@ -115,21 +86,8 @@ impl FrameHarness {
     }
 
     pub(super) fn is_history_node(&self, node: NodeId) -> bool {
-        let Some(layout) = self.history_layout else {
-            return false;
-        };
-        let mut pending: Vec<_> = layout.toolbar.into_iter().collect();
-        pending.extend(layout.pane);
-        pending.extend(layout.preview);
-        while let Some(next) = pending.pop() {
-            if next == node {
-                return true;
-            }
-            if let Ok(children) = self.taffy.children(next) {
-                pending.extend(children);
-            }
-        }
-        false
+        self.history_layout
+            .is_some_and(|layout| layout.contains(&self.taffy, node))
     }
 
     pub(super) fn try_presentation<R>(
@@ -482,18 +440,7 @@ impl FrameHarness {
     }
 
     pub(super) fn history_tick(&mut self) -> Result<(), String> {
-        let mut pending = Vec::new();
-        for button in self.document_history.in_window_controls_mut() {
-            while let Some(intent) = crate::widget::controls::take_control_invocation(button) {
-                pending.push(intent);
-            }
-        }
-        if let Some(pane) = self.document_history.pane_mut() {
-            while let Some(intent) = crate::widget::controls::take_control_invocation(pane) {
-                pending.push(intent);
-            }
-        }
-        for intent in pending {
+        for intent in self.document_history.take_control_invocations() {
             let result = (|| {
                 let resources = self
                     .refresh_history_resources()
@@ -510,20 +457,8 @@ impl FrameHarness {
                     tilo_actions::ActionOutput::default(),
                 ))
             })();
-            for button in self.document_history.in_window_controls_mut() {
-                crate::widget::controls::on_control_invocation_result(
-                    button,
-                    &intent.address,
-                    &result,
-                );
-            }
-            if let Some(pane) = self.document_history.pane_mut() {
-                crate::widget::controls::on_control_invocation_result(
-                    pane,
-                    &intent.address,
-                    &result,
-                );
-            }
+            self.document_history
+                .report_control_result(&intent.address, &result);
             result.map_err(|error| error.to_string())?;
         }
         let result = self
@@ -559,12 +494,7 @@ impl FrameHarness {
                 })
             })
             .collect();
-        for button in self.document_history.in_window_controls_mut() {
-            crate::widget::controls::refresh_control_action_availability(button, &allowed);
-        }
-        if let Some(pane) = self.document_history.pane_mut() {
-            crate::widget::controls::refresh_control_action_availability(pane, &allowed);
-        }
+        self.document_history.refresh_control_availability(&allowed);
         self.document_history
             .sync(&self.state.doc, &self.state.root);
         let reshaped = self.document_history.take_structure_dirty();
@@ -747,12 +677,8 @@ impl FrameHarness {
             let point = Point::new(position.x / self.input_scale, position.y / self.input_scale);
             self.history_pointer_owned = self
                 .document_history
-                .in_window_controls_mut()
-                .any(|button| button.get_rect().contains(point))
-                || self
-                    .document_history
-                    .pane_mut()
-                    .is_some_and(|pane| pane.get_rect().contains(point));
+                .controls_mut()
+                .any(|control| control.get_rect().contains(point));
         }
         let keyboard = matches!(
             event,
