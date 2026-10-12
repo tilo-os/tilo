@@ -8,7 +8,7 @@
 //! chart from theme values. Interaction leaves as an [`Intent`] the app
 //! applies to the shared document and the machine.
 
-use std::cell::{Cell, RefCell};
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -74,23 +74,7 @@ pub(crate) enum Intent {
 }
 
 /// The queue controls write to and the app drains.
-#[derive(Clone, Default)]
-pub(crate) struct Intents(Rc<RefCell<Vec<Intent>>>);
-
-impl Intents {
-    pub(crate) fn push(&self, intent: Intent) {
-        self.0.borrow_mut().push(intent);
-    }
-
-    pub(crate) fn take(&self) -> Vec<Intent> {
-        std::mem::take(&mut *self.0.borrow_mut())
-    }
-
-    pub(crate) fn sender(&self, intent: Intent) -> impl FnMut() + 'static {
-        let intents = self.clone();
-        move || intents.push(intent)
-    }
-}
+pub(crate) type Intents = ui::Intents<Intent>;
 
 /// What the main action of a connection is, given where it stands on this
 /// device.

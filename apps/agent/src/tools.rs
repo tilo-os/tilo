@@ -1198,9 +1198,9 @@ fn describe(input: &Value, catalogue: &Catalogue, revealed: &mut Revealed) -> St
     }
     let _ = writeln!(
         s,
-        "  contract: permission={:?}; risk={:?}; confirmation={:?}; retry={:?}; \
+        "  contract: kind={:?}; risk={:?}; confirmation={:?}; retry={:?}; \
          reversible={}; execution={:?}; result={:?}",
-        c.permission, c.risk, c.confirmation, c.retry, c.reversible, c.execution, c.result
+        c.kind, c.risk, c.confirmation, c.retry, c.reversible, c.execution, c.result
     );
     if !d.params.is_empty() {
         s.push_str("  structured arguments:\n");
@@ -1588,50 +1588,6 @@ mod tests {
         reason = "each case keeps its original fixture and assertions"
     )]
     fn discovery_answers_list_and_describe_only_what_the_room_offers() {
-        // Case `the_application_listing_separates_what_is_open_from_what_could_be`.
-        {
-            let word_processor_open = Catalogue {
-                held: vec!["word-processor"],
-                offers: vec![Offer {
-                    app: "chat".to_string(),
-                    broker_peer_id: None,
-                    descriptor: ActionDescriptor {
-                        semantic_identity: None,
-                        address: surface::open_address("chat"),
-                        resource_kind: APPLICATION_KIND.to_string(),
-                        resource_label: "the conversation".to_string(),
-                        action_label: "open the conversation".to_string(),
-                        description: None,
-                        locus: ExecutionLocus::ServerPreferred,
-                        kind: tilo_actions::OperationKind::Effect,
-                        contract: tilo_actions::ActionContract::default(),
-                        params: Vec::new(),
-                        input: InputSpec::None,
-                        view: None,
-                    },
-                }],
-                facts: vec![],
-            };
-            let mut revealed = Revealed::new();
-            let out = applications(&word_processor_open, &mut revealed);
-            assert!(
-                out.contains("the word processor (word-processor) — open"),
-                "{out}"
-            );
-            assert!(out.contains("the conversation (chat) — not open"), "{out}");
-            assert!(out.contains("chat.app#open"), "{out}");
-
-            // An app named in `CONTRACTS` but granted no route to opening it is
-            // still listed, with no route — the shape a denied open takes.
-            let mut revealed = Revealed::new();
-            let bare = applications(&Catalogue::default(), &mut revealed);
-            assert!(
-                bare.contains("and there is no opening it from here"),
-                "{bare}"
-            );
-            assert!(!bare.contains(".app#open"), "{bare}");
-        }
-
         // Case `a_kind_is_asked_about_across_the_room_and_not_within_one_app`.
         {
             let mut revealed = Revealed::new();

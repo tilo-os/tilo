@@ -22,7 +22,7 @@ and the web. Apps do not build HTTP clients, open sockets or pick TLS roots them
 - The request timeout covers the body too. On the web it is a `setTimeout` that aborts the
   fetch.
 - Bodies are decompressed (gzip, brotli) as a browser does.
-- `availability(Feature)` and `CAPABILITIES` answer what a target provides. `CrossOriginHttp`
+- `availability(Feature)` and `Feature::targets` answer what a target provides. `CrossOriginHttp`
   and `Sockets` are unsupported on the web, and `Metered` is known only there.
 - TLS: one provider (ring). `client_config()` uses the platform verifier, as reqwest does:
   the Tilo bundle on Linux, the Keychain on macOS. WebTransport can pin a server certificate

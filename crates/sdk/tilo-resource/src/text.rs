@@ -310,9 +310,8 @@ mod tests {
         use automerge::marks::Mark;
         let typed_by = |doc: &mut Doc, who: &str, edit: TextEdit| {
             let encoded = tilo_actions::EncodedAction::encode(TEXT_ACTION_TYPE, &edit).unwrap();
-            let context =
-                tilo_actions::ActionContext::for_resource("Type", "text", "tilo.text", "Text")
-                    .with_invoker(tilo_actions::ActionInvoker::actor(who));
+            let context = tilo_actions::ActionContext::for_resource("text", "tilo.text", "Text")
+                .with_invoker(tilo_actions::ActionInvoker::actor(who));
             tilo_actions::apply_local_with_context(doc, &edit, encoded, None, context).unwrap();
         };
         let mut doc = Doc::new();

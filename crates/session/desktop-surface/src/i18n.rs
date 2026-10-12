@@ -21,12 +21,18 @@ const CATALOGS: &[(&str, &str)] = &[
 static CATALOG: EmbeddedCatalog = catalog();
 
 const fn catalog() -> EmbeddedCatalog {
-    let catalog = EmbeddedCatalog::new("en-US", CATALOGS, "topbar-control").with_system_locale();
+    let catalog = EmbeddedCatalog::new("en-US", CATALOGS).with_system_locale();
     // Unit tests assert source copy throughout the desktop; keep them
     // deterministic on any developer or CI host locale.
     #[cfg(test)]
     let catalog = catalog.with_pinned_locale("en-US");
     catalog
+}
+
+/// Load the desktop's catalogue on this thread, so history entries the
+/// desktop records read in its words.
+pub fn ensure() {
+    CATALOG.ensure();
 }
 
 /// Resolve a desktop string key.

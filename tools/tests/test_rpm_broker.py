@@ -63,6 +63,19 @@ class RpmBrokerTest(unittest.TestCase):
         self.assertNotIn('not-logged', self.request_path.read_text())
         self.assertNotIn('ACTIONS_ID_TOKEN', self.request_path.read_text())
 
+    def test_rpm6_full_fingerprint_output_is_verified(self):
+        output = f'Header OpenPGP V4 RSA/SHA256 signature, key fingerprint: {PIN.lower()}: OK\nHeader SHA256 digest: OK\nPayload SHA256 digest: OK\n'
+        self.assertEqual(self.qualify(signature=output), self.receipt)
+
+    def test_rpm6_substituted_or_truncated_fingerprint_is_rejected(self):
+        for fingerprint in ('B' * 40, PIN[-16:], 'B' * 24 + PIN[-16:]):
+            with self.subTest(fingerprint=fingerprint), self.assertRaisesRegex(ValueError, 'full fingerprint'):
+                self.qualify(signature=f'Header OpenPGP V4 RSA/SHA256 signature, key fingerprint: {fingerprint}: OK\n')
+            for name in ('gnupg', 'rpmdb'):
+                directory = self.root / name
+                if directory.exists():
+                    directory.rmdir()
+
     def test_immutable_hash_allows_signature_change_but_detects_payload_change(self):
         file = next(self.response.glob('*.rpm'))
         original = next(self.input.glob('*.rpm'))
@@ -168,6 +181,24 @@ class RpmBrokerTest(unittest.TestCase):
         self.assertEqual({f.name: f.read_bytes() for f in self.input.glob('*.rpm')}, before)
         self.assertFalse(list(self.input.glob('*.asc')))
 
+    def test_published_artifact_cannot_supply_its_own_authority(self):
+        (self.response / 'tilo-rpm-signing-request-amd64.json').write_bytes(self.request_path.read_bytes())
+        (self.response / 'tilo-rpm-signing-receipt-amd64.json').write_text(json.dumps(self.receipt))
+        (self.response / 'tilo-rpm-signing-key.fingerprint').write_text(PIN + '\n')
+        # All artifact-owned pins and receipts agree. They still cannot establish
+        # authority when the caller has no independently configured release pin.
+        for value in (None, '', 'not-a-fingerprint'):
+            env = dict(self.env)
+            if value is None:
+                env.pop('TILO_RPM_SIGNING_FINGERPRINT')
+            else:
+                env['TILO_RPM_SIGNING_FINGERPRINT'] = value
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, 'independently pinned'):
+                CLIENT.verify_published(self.response, 'amd64', '0.1.13', env)
+        with self.assertRaisesRegex(ValueError, 'protected pin'):
+            CLIENT.verify_published(self.response, 'amd64', '0.1.13',
+                                    self.env | {'TILO_RPM_SIGNING_FINGERPRINT': 'B' * 40})
+
     def test_workflow_keeps_main_session_gate_and_isolates_oidc_from_builds(self):
         workflow = (ROOT / '.forgejo/workflows/release-desktop.yml').read_text()
         package = workflow.split('  package:\n')[1].split('  sign-rpm:\n')[0]
@@ -180,6 +211,8 @@ class RpmBrokerTest(unittest.TestCase):
         self.assertIn("!startsWith(github.ref, 'refs/tags/desktop-v')", workflow)
         self.assertIn('needs: [validate, package, sign-rpm, host-session-e2e]', workflow)
         self.assertIn("'signed-fedora-44-amd64' || 'fedora-44-amd64'", workflow)
+        verifier_step = workflow.split('- name: Check release version and create checksums', 1)[1].split('- name:', 1)[0]
+        self.assertIn('TILO_RPM_SIGNING_FINGERPRINT: ${{ vars.TILO_RPM_SIGNING_FINGERPRINT }}', verifier_step)
         build = (ROOT / 'dist/ci/run-package-job.sh').read_text()
         self.assertNotIn('--env TILO_RPM_SIGNING', build)
         self.assertNotIn('dist/rpm/sign-rpms.sh', build)

@@ -23,6 +23,11 @@ libraries every app loads with it, or in the closure of a built app that
 through `tools/ci/runtime-dylib-lazy-link.py`, which loads them on first use
 and records them in the `.tilo.lazy_needed` section; the gate reports those.
 
+Engines one app uses live in libraries of their own beside the runtime
+(crates/runtime/engines/). `measure --engine FILE` reports each one's
+numbers, fails when one does not link the runtime, and fails when an app of
+`apps_without_media` loads one at exec: an engine is loaded only by its app.
+
 Three gates, as for the per-app tapp budgets (tapp_size_ratchet.py):
 
 - **The build.** `measure FILE --arch ARCH` reads the dylib Release / apps has
@@ -356,15 +361,21 @@ def closure(path: pathlib.Path, stats: ElfStats,
 
 
 def closure_lines(path: pathlib.Path, stats: ElfStats, budget: Budget,
-                  directories: list[pathlib.Path]) -> tuple[int, list[str]]:
-    """Fail when any object loaded with `path` is a library of `needed_absent`."""
+                  directories: list[pathlib.Path],
+                  engines: frozenset[str] = frozenset()) -> tuple[int, list[str]]:
+    """Fail when any object loaded with `path` is a library of `needed_absent` or of `engines`."""
     found, errors = closure(path, stats, [path.parent, *directories])
     for name, (_, parent) in found.items():
-        if media(name, budget):
-            chain = [name]
-            while parent:
-                chain.append(parent)
-                parent = found[parent][1]
+        if not media(name, budget) and name not in engines:
+            continue
+        chain = [name]
+        while parent:
+            chain.append(parent)
+            parent = found[parent][1]
+        if name in engines:
+            errors.append(f"error: {path.name} loads the engine {name} at exec ({' <- '.join(chain)}); "
+                          "an engine library is loaded only by the app that uses it")
+        else:
             errors.append(f"error: {path.name} loads {name} at exec ({' <- '.join(chain)}); none of "
                           f"{', '.join(budget.needed_absent)} may be (TIL-713)")
     pages = sum(entry[0].relocated_bytes for entry in found.values()) // PAGE
@@ -373,13 +384,39 @@ def closure_lines(path: pathlib.Path, stats: ElfStats, budget: Budget,
     return (1 if errors else 0), [*errors, summary]
 
 
+def engine_lines(path: pathlib.Path, runtime: ElfStats, runtime_name: str) -> tuple[int, list[str]]:
+    """One engine library's numbers, reported only, and whether it links the runtime."""
+    try:
+        stats = read_elf(path)
+    except (ValueError, struct.error) as error:
+        return 1, [f"error: engine {path}: {error}"]
+    name = path.name
+    if stats.arch != runtime.arch:
+        return 1, [f"error: engine {name} is built for {stats.arch}, not {runtime.arch}"]
+    lines = [f"engine {name} {stats.arch}: {stats.bytes} bytes, {stats.relocations} dynamic relocations "
+             f"({stats.symbol_relocations} with a symbol lookup) in {stats.relocation_bytes} bytes, "
+             f"writing {stats.relocated_bytes // PAGE} pages ({stats.relocated_bytes} bytes) in its app's process",
+             f"engine {name} {stats.arch}: DT_NEEDED " + " ".join(stats.needed)]
+    if runtime_name not in stats.needed:
+        return 1, [*lines, f"error: engine {name} does not link {runtime_name}, so it carries its own "
+                           "copy of what the runtime shares"]
+    return 0, lines
+
+
 def measure(path: pathlib.Path, budget: Budget, arch: str | None = None, apps: list[pathlib.Path] = (),
-            directories: list[pathlib.Path] | None = None) -> tuple[int, list[str], ElfStats]:
-    """The dylib against its budgets; with `directories`, also what it and `apps` load at exec."""
+            directories: list[pathlib.Path] | None = None,
+            engines: list[pathlib.Path] = ()) -> tuple[int, list[str], ElfStats]:
+    """The dylib against its budgets; with `directories`, also what it and `apps` load at exec.
+
+    Each of `engines` is reported, and must link the runtime and stay out of what `apps` load."""
     stats = read_elf(path)
     if arch is not None and stats.arch != arch:
         return 1, [f"error: {path} is built for {stats.arch}, not {arch}"], stats
     status, lines = judge(stats, budget)
+    for engine in engines:
+        checked, more = engine_lines(engine, stats, path.name)
+        status |= checked
+        lines += more
     if directories is None:
         return status, lines, stats
     # What every app loads with the runtime, built or not.
@@ -395,7 +432,8 @@ def measure(path: pathlib.Path, budget: Budget, arch: str | None = None, apps: l
             status = 1
             lines.append(f"error: {app}: {error}")
             continue
-        checked, more = closure_lines(app, app_stats, budget, [path.parent, *directories])
+        checked, more = closure_lines(app, app_stats, budget, [path.parent, *directories],
+                                      frozenset(engine.name for engine in engines))
         status |= checked
         lines += more
     return status, lines, stats
@@ -606,6 +644,9 @@ def main(argv: list[str] | None = None) -> int:
                                "apps_without_media load at exec")
     measured.add_argument("--library-dir", type=pathlib.Path, action="append", default=[],
                           help="a directory the loader searches (the Rust libstd's); repeatable")
+    measured.add_argument("--engine", type=pathlib.Path, action="append", default=[],
+                          help="a runtime engine library built with it: reported, and kept out "
+                               "of what apps_without_media load; repeatable")
     published_parser = commands.add_parser("published", help="the newest published runtimes against their budgets")
     published_parser.add_argument("entries", type=pathlib.Path)
     published_parser.add_argument("--registry", default=REGISTRY)
@@ -624,7 +665,7 @@ def main(argv: list[str] | None = None) -> int:
                 directories = [*args.library_dir, *SYSTEM_DIRECTORIES]
                 apps = [args.apps_dir / name for name in current.apps_without_media
                         if (args.apps_dir / name).is_file()]
-            status, lines, _ = measure(args.dylib, current, args.arch, apps, directories)
+            status, lines, _ = measure(args.dylib, current, args.arch, apps, directories, args.engine)
             return emit(status, lines, args.summary)
         if args.command == "apps-without-media":
             print("\n".join(current.apps_without_media))

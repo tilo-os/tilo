@@ -281,11 +281,6 @@ impl FileView {
         self.scale = scale.clamp(0.5, 3.0);
         self
     }
-    #[must_use]
-    pub fn with_text_scale(mut self, scale: f32) -> Self {
-        self.text_scale = f64::from(scale.clamp(0.5, 4.0));
-        self
-    }
     /// Read the view's metrics from `theme`'s tokens (also done at layout).
     #[must_use]
     pub fn with_theme(mut self, theme: &Theme) -> Self {
@@ -954,14 +949,7 @@ impl Widget for FileView {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        // `node` was created by `build_layout` in this same tree, so a lookup
-        // miss would mean the frame cycle called these out of order.
-        #[allow(
-            clippy::unwrap_used,
-            reason = "node was built in this tree by build_layout; a miss means the frame cycle called these out of order"
-        )]
-        let l = taffy.layout(node).unwrap();
-        self.rect = ui::widget::placed(l, origin);
+        self.rect = ui::widget::layout_rect(taffy, node, origin);
         if self.mode == ViewMode::Grid {
             self.columns = self.columns_for_width(self.rect.width());
             return;

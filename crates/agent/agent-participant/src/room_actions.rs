@@ -54,15 +54,14 @@ use ed25519_dalek::SigningKey;
 use crate::apps::{AppCatalogue, Seed};
 use crate::host::{CatalogueFactory, HostEndpoint};
 use crate::participant::SharedDesktop;
-use crate::participant::actions::{RECORD_PROVIDER, record_provider};
+use crate::participant::actions::{Outcome, door_outcome, open_row, record_of, record_provider};
 use crate::worker::{ConfinedReplica, ConfinedViews};
 use collab_types::DocumentMutation;
 use tilo_actions::remote::{
     APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_PREFIX, ActionHostError, Caller, CallerPrincipal,
-    CataloguePage, CatalogueProvider, CatalogueQuery, CatalogueResource, CatalogueRow, Completer,
-    Confirmation, InvocationReceipt, InvocationState, InvokeArgument, InvokeRequest, Pending,
-    ReceiptStatus, RemoteActionMessage, application_open_target, pending, workspace_provider,
-    workspace_provider_room,
+    CataloguePage, CatalogueProvider, CatalogueQuery, CatalogueRow, Completer, Confirmation,
+    InvocationReceipt, InvocationState, InvokeArgument, InvokeRequest, Pending, ReceiptStatus,
+    RemoteActionMessage, pending, workspace_provider, workspace_provider_room,
 };
 use tilo_actions::{
     ActionFailure, ActionOutput, ConfirmationPolicy, InvocationId, InvocationUpdate, PROMPTED_PARAM,
@@ -104,22 +103,21 @@ pub struct RoomMember {
 pub struct ViewReadPolicy {
     /// Governed room whose current policy authorized the exact source record.
     pub room: String,
-    /// Current role of the certified caller, supplied by the host.
-    pub role: collab_types::Role,
-    /// Current capability overrides, including device restrictions.
-    pub caps: Vec<collab_types::caps::CapOverride>,
-    /// Root identity authenticated on the connection.
-    pub person: String,
+    /// The certified caller's current standing in the room, including the
+    /// bound of a device that is not theirs.
+    pub standing: ui::permissions::Standing,
+    /// The room's current sandbox capabilities.
+    pub sandbox: Vec<collab_types::caps::CapOverride>,
     /// Host time used to evaluate capability expiry.
     pub unix_time: u64,
 }
 
 impl ViewReadPolicy {
     pub(crate) fn permissions(&self) -> ui::permissions::PermissionContext {
-        ui::permissions::PermissionContext::from_capabilities(
-            ui::permissions::Actor::person(Some(self.role), self.person.clone())
-                .in_room(self.room.clone()),
-            self.caps.clone(),
+        ui::permissions::PermissionContext::new(
+            ui::permissions::Actor::person(self.standing.person.clone()).in_room(self.room.clone()),
+            self.sandbox.clone(),
+            self.standing.clone(),
         )
         .at_unix_time(self.unix_time)
     }
@@ -916,57 +914,9 @@ struct Worker {
     clock: u64,
 }
 
-fn record_of(provider: &str, room: &str) -> Option<DocumentRoute> {
-    let rest = provider.strip_prefix(RECORD_PROVIDER)?.strip_prefix(':')?;
-    let (app_id, record) = rest.split_once(':')?;
-    Some(DocumentRoute {
-        app_id: app_id.to_owned(),
-        cluster_id: room.to_owned(),
-        record: record.to_owned(),
-    })
-}
-
-/// What a held record publishes that its door runs now. A `Launchable`
-/// action is delivered by launching the app, not by a record already open,
-/// so it is not offered here.
+/// What a held record publishes that its door runs now.
 fn live_actions(app: &ConfinedReplica) -> Vec<tilo_actions::ActionDescriptor> {
     app.survey()
-        .into_iter()
-        .filter(|descriptor| {
-            descriptor.contract.discovery != tilo_actions::DiscoveryScope::Launchable
-        })
-        .collect()
-}
-
-/// How an invocation that did not succeed ended.
-enum Outcome {
-    /// Nothing ran; the id is forgotten.
-    Rejected(ActionHostError),
-    Failed(ActionFailure),
-}
-
-fn door_outcome(error: &tilo_actions::door::DoorError) -> Outcome {
-    use tilo_actions::door::DoorError;
-    match error {
-        DoorError::Unknown(_) | DoorError::UnregisteredType(_) => {
-            Outcome::Rejected(ActionHostError::UnknownAction)
-        }
-        DoorError::ConfirmationRequired => Outcome::Rejected(ActionHostError::ConfirmationRequired),
-        DoorError::MissingArgument(_)
-        | DoorError::UnexpectedArgument(_)
-        | DoorError::InvalidArguments(_) => Outcome::Rejected(ActionHostError::InvalidRequest {
-            reason: error.to_string(),
-        }),
-        DoorError::Unavailable { reason, .. } => Outcome::Rejected(ActionHostError::Unavailable {
-            reason: reason.clone(),
-        }),
-        DoorError::Failed(message) => Outcome::Failed(ActionFailure {
-            code: error.code().to_owned(),
-            message: message.clone(),
-            details: None,
-            retryable: false,
-        }),
-    }
 }
 
 impl Worker {
@@ -1186,9 +1136,8 @@ impl Worker {
             .view_read_policy(workspace, caller, &route.app_id, &route.record)
             .ok_or_else(refuse)?;
         if fresh.room != first.room
-            || fresh.role != first.role
-            || fresh.caps != first.caps
-            || fresh.person != first.person
+            || fresh.standing != first.standing
+            || fresh.sandbox != first.sandbox
         {
             return Err(refuse());
         }
@@ -1196,19 +1145,8 @@ impl Worker {
         let rows = descriptors
             .into_iter()
             .filter(|descriptor| current.contains(descriptor))
-            .map(|descriptor| CatalogueRow {
-                provider: provider.to_owned(),
-                app_id: route.app_id.clone(),
-                parent_resource: String::new(),
-                resource: CatalogueResource {
-                    id: descriptor.address.resource.clone(),
-                    kind: descriptor.resource_kind.clone(),
-                    label: descriptor.resource_label.clone(),
-                    presentation: None,
-                },
-                action: Some(descriptor),
-                has_children: false,
-                visibility: None,
+            .map(|descriptor| {
+                CatalogueRow::for_action(provider.to_owned(), route.app_id.clone(), descriptor)
             })
             .collect();
         let mut page = CataloguePage::from_rows(source.revision, rows, query);
@@ -1281,19 +1219,8 @@ impl Worker {
             {
                 descriptors.extend(read.operations());
             }
-            rows.extend(descriptors.into_iter().map(|descriptor| CatalogueRow {
-                provider: provider.clone(),
-                app_id: route.app_id.clone(),
-                parent_resource: String::new(),
-                resource: CatalogueResource {
-                    id: descriptor.address.resource.clone(),
-                    kind: descriptor.resource_kind.clone(),
-                    label: descriptor.resource_label.clone(),
-                    presentation: None,
-                },
-                action: Some(descriptor),
-                has_children: false,
-                visibility: None,
+            rows.extend(descriptors.into_iter().map(|descriptor| {
+                CatalogueRow::for_action(provider.clone(), route.app_id.clone(), descriptor)
             }));
         }
         if query
@@ -1357,20 +1284,7 @@ impl Worker {
             .ok()?;
         let rows = descriptors
             .into_iter()
-            .map(|descriptor| CatalogueRow {
-                provider: provider.into(),
-                app_id: route.app_id.clone(),
-                parent_resource: String::new(),
-                resource: CatalogueResource {
-                    id: descriptor.address.resource.clone(),
-                    kind: descriptor.resource_kind.clone(),
-                    label: descriptor.resource_label.clone(),
-                    presentation: None,
-                },
-                action: Some(descriptor),
-                has_children: false,
-                visibility: None,
-            })
+            .map(|descriptor| CatalogueRow::for_action(provider, route.app_id.clone(), descriptor))
             .collect();
         Some(CataloguePage::from_rows(
             read.revision().to_owned(),
@@ -1382,37 +1296,7 @@ impl Worker {
     fn open_rows(&self, room: &str) -> Vec<CatalogueRow> {
         self.catalogue
             .iter()
-            .map(|definition| {
-                let app = definition.app_id;
-                let target = application_open_target(room, app);
-                CatalogueRow {
-                    provider: target.provider.clone(),
-                    app_id: app.to_owned(),
-                    parent_resource: String::new(),
-                    resource: CatalogueResource {
-                        id: target.address.resource.clone(),
-                        kind: "applications.app".into(),
-                        label: app.to_owned(),
-                        presentation: None,
-                    },
-                    action: Some(tilo_actions::door::ActionDescriptor {
-                        semantic_identity: None,
-                        address: target.address,
-                        resource_kind: "applications.app".into(),
-                        resource_label: app.to_owned(),
-                        action_label: format!("Open {app}"),
-                        description: Some(format!("Open {app} on a new record in this room.")),
-                        locus: tilo_actions::ExecutionLocus::ServerPreferred,
-                        kind: tilo_actions::OperationKind::Effect,
-                        contract: tilo_actions::ActionContract::default(),
-                        params: Vec::new(),
-                        input: tilo_actions::InputSpec::None,
-                        view: None,
-                    }),
-                    has_children: false,
-                    visibility: None,
-                }
-            })
+            .map(|definition| open_row(room, definition.app_id))
             .collect()
     }
 

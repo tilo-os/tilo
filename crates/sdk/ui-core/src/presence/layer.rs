@@ -91,6 +91,17 @@ impl PresenceCtx {
     }
 }
 
+/// Where a [`PresenceLayer`] paints, on screen and this frame
+/// ([`PresenceLayer::marks`]), in the layer's scene coordinates.
+#[cfg(feature = "native")]
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct LayerMarks {
+    /// Where the layer on screen painted.
+    pub shown: Vec<Rect>,
+    /// Where this frame's layer paints.
+    pub painted: Vec<Rect>,
+}
+
 /// The presence a window paints over its widgets, kept from frame to frame
 /// so the next frame damages only what changed. Retains draw caches only.
 ///
@@ -150,6 +161,12 @@ impl PresenceLayer {
         &self.next
     }
 
+    /// Whether the layer on screen or this frame's paints anything over the
+    /// widgets.
+    pub fn paints(&self) -> bool {
+        !self.shown.encoding().draw_tags.is_empty() || !self.next.encoding().draw_tags.is_empty()
+    }
+
     /// Damage, in the layer's scene coordinates, between the layer on
     /// screen and this frame's: the old and new bounds of every part that
     /// changed. `None` when that cannot be proven (no frame shown yet, a
@@ -163,6 +180,28 @@ impl PresenceLayer {
             self.next_parts.as_ref()?,
         )
         .ok()
+    }
+
+    /// Where the layer on screen and this frame's paint, in the layer's
+    /// scene coordinates: what a scroll copy must not carry with the
+    /// content beneath ([`crate::scroll_copy::marks_over_copies`]). `None`
+    /// when either cannot be bounded (a part without bounds, commands
+    /// outside every part that `bounds` cannot bound), and the content
+    /// beneath must repaint instead of copying.
+    #[cfg(feature = "native")]
+    pub fn marks(&self, bounds: &mut crate::scene_parts::DrawBounds) -> Option<LayerMarks> {
+        Some(LayerMarks {
+            shown: crate::scene_parts::drawn_bounds(
+                &self.shown,
+                self.shown_parts.as_ref(),
+                bounds,
+            )?,
+            painted: crate::scene_parts::drawn_bounds(
+                &self.next,
+                self.next_parts.as_ref(),
+                bounds,
+            )?,
+        })
     }
 
     /// The frame recorded since the last call was submitted: it is what the

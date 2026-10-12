@@ -13,7 +13,6 @@ use winit::keyboard::{Key, NamedKey};
 use super::SlidesApp;
 use crate::SlidesShell;
 use crate::actions::replace_deck_action;
-use crate::doc::SlidesDoc;
 use crate::model::{Deck, PaletteKind, Slide};
 
 /// The window most tests use.
@@ -134,8 +133,7 @@ impl Bench {
 
     /// The deck the document holds.
     pub(super) fn deck(&self) -> Deck {
-        self.app
-            .read_document(|doc| SlidesDoc::load(doc).expect("the document holds a deck"))
+        crate::deck::mirror(&self.app.state())
     }
 
     pub(super) fn undo(&mut self) -> bool {

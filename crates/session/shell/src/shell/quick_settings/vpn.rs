@@ -4,6 +4,7 @@
 //! local state and the OS dispatch. The overlay host only supplies the panel
 //! bounds and maps `Back`/`Changed` into navigation and chrome invalidation.
 
+use ui::num::f32_of_f64;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::keyboard::Key;
@@ -27,14 +28,6 @@ pub enum VpnPaneOutcome {
     DrillIn(DrillInOutcome),
     Reconcile,
     ActionFailed { profile: String, error: String },
-}
-
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "bounded screen-space widths retain sufficient f32 precision"
-)]
-fn f64_to_f32_lossy(value: f64) -> f32 {
-    value as f32
 }
 
 #[derive(Default)]
@@ -340,7 +333,7 @@ impl QuickSettingsVpnPane {
             let text_x = glyph.x1 + CONTROL_INSET;
             let text_width = (toggle.x0 - RELATED_GAP - text_x).max(1.0);
             let name =
-                text.elide_to_width_style(&profile.name, f64_to_f32_lossy(text_width), &name_style);
+                text.elide_to_width_style(&profile.name, f32_of_f64(text_width), &name_style);
             let status = t(if profile.active {
                 "qs-connected"
             } else {
@@ -372,7 +365,7 @@ impl QuickSettingsVpnPane {
                     colors.text_dim
                 },
                 transform.pre_translate((text_x, block_top + f64::from(name_h)).into()),
-                Some(f64_to_f32_lossy(text_width)),
+                Some(f32_of_f64(text_width)),
                 &status_style,
             );
         }

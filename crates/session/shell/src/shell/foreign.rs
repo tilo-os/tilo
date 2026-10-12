@@ -3312,6 +3312,37 @@ impl ForeignFrameStore {
         }
     }
 
+    /// Surfaces whose frame counter moved since `seen` last recorded it, as
+    /// the surface that owns the tile: a subsurface or popup reports its
+    /// parent. `seen` is updated and pruned to live surfaces. Frame-trace
+    /// attribution only (which app made an idle desktop repaint), so it runs
+    /// only while a trace is recording.
+    pub fn surfaces_advanced(&self, seen: &mut HashMap<SurfaceId, u64>) -> Vec<SurfaceId> {
+        let parents: HashMap<SurfaceId, SurfaceId> = self
+            .children
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .flat_map(|(parent, children)| children.iter().map(|child| (child.surface, *parent)))
+            .collect();
+        let entries = self
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        seen.retain(|id, _| entries.contains_key(id));
+        let mut moved = Vec::new();
+        for (id, entry) in &*entries {
+            if seen.insert(*id, entry.seq) != Some(entry.seq) {
+                let owner = parents.get(id).copied().unwrap_or(*id);
+                if !moved.contains(&owner) {
+                    moved.push(owner);
+                }
+            }
+        }
+        drop(entries);
+        moved
+    }
+
     /// Current frame counter for `id`, its subsurfaces and the sheets on
     /// its tile; `0` when nothing has landed.
     pub fn frame_seq(&self, id: SurfaceId) -> u64 {
@@ -4397,17 +4428,7 @@ impl Widget for ForeignSurfaceWidget {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let Ok(l) = taffy.layout(node) else {
-            return;
-        };
-        let x = origin.x + f64::from(l.location.x);
-        let y = origin.y + f64::from(l.location.y);
-        let next_rect = Rect::new(
-            x,
-            y,
-            x + f64::from(l.size.width),
-            y + f64::from(l.size.height),
-        );
+        let next_rect = ui::widget::layout_rect(taffy, node, origin);
         if self.rect != next_rect {
             self.rect = next_rect;
             self.placement_dirty = true;
@@ -6726,6 +6747,48 @@ mod tests {
             "the next SHM commit copies whole"
         );
         store().forget(id);
+    }
+
+    #[test]
+    fn surfaces_advanced_names_each_committing_tile_once_and_only_after_a_new_frame() {
+        let (tile, popup, quiet) = (sid(71), sid(72), sid(73));
+        for id in [tile, popup, quiet] {
+            store().forget(id);
+        }
+        store().publish_rgba(tile, &[1; 4], 1, 1);
+        store().publish_rgba(quiet, &[1; 4], 1, 1);
+        store().set_children(
+            tile,
+            vec![ChildFrame {
+                surface: popup,
+                x: 0,
+                y: 0,
+            }],
+        );
+        let mut seen = HashMap::new();
+        let first = store().surfaces_advanced(&mut seen);
+        assert!(first.contains(&tile) && first.contains(&quiet));
+        let again = store().surfaces_advanced(&mut seen);
+        assert!(
+            !again.contains(&tile) && !again.contains(&quiet),
+            "no new frame, nothing to attribute: {again:?}"
+        );
+        store().publish_rgba(popup, &[2; 4], 1, 1);
+        let moved = store().surfaces_advanced(&mut seen);
+        assert!(
+            moved.contains(&tile),
+            "a popup's frame is its tile's: {moved:?}"
+        );
+        assert!(!moved.contains(&popup) && !moved.contains(&quiet));
+        store().set_children(tile, Vec::new());
+        for id in [tile, popup, quiet] {
+            store().forget(id);
+        }
+        let _ = store().surfaces_advanced(&mut seen);
+        assert!(
+            !seen.contains_key(&tile) && !seen.contains_key(&quiet),
+            "forgotten surfaces are pruned"
+        );
     }
 
     #[test]

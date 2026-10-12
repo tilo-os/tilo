@@ -22,6 +22,7 @@ use crate::journal::Owner;
 
 mod app_state;
 mod device;
+pub(crate) mod groups;
 mod protocol;
 mod signal_state;
 #[cfg(test)]

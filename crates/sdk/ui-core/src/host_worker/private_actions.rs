@@ -32,8 +32,6 @@ pub(crate) fn copy_string(value: &str) -> Result<String, SenderStorageCode> {
     Ok(result)
 }
 
-#[cfg(any(target_os = "macos", target_os = "linux"))]
-pub mod administration;
 mod codec;
 /// Inert fixed-layout sender identity. No constructor establishes an owner.
 #[derive(PartialEq, Eq)]

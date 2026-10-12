@@ -603,13 +603,12 @@ fn plan(
     }
     // The person carrying the window must be allowed to open this app in
     // the destination; the destination's own authority governs it there.
-    if destination_ws.owner.is_some() {
+    if destination_ws.owner().is_some() {
         let me = crate::shell::state::local_user_id_for_room(&destination_ws.room);
-        let actor = destination_ws.actor_for_person(&me);
-        if !destination_ws.allows(
-            &actor,
-            &crate::shell::state::ResourceRef::App(app_id.clone()),
-            crate::shell::state::Verb::Write,
+        if !destination_ws.person_allowed(
+            &me,
+            &tilo_action_policy::TreePath::root().app(app_id.clone()),
+            tilo_action_policy::ActionKind::Undoable,
         ) {
             return Err(MoveTabError::NotPermitted);
         }
@@ -1730,12 +1729,9 @@ fn opened(
                 &plan.app_id,
                 &plan.title,
                 &carried.target,
-                t_args(
-                    "window-transfer-receipt-copied",
-                    &[
-                        ("window", plan.title.as_str().into()),
-                        ("from", plan.source.name.as_str().into()),
-                    ],
+                transferred(
+                    COPY_WINDOW_IN,
+                    &[("window", &plan.title), ("from", &plan.source.name)],
                 ),
             );
             None
@@ -2005,12 +2001,9 @@ fn finish_move(
         &plan.app_id,
         &plan.title,
         carried.left(),
-        t_args(
-            "window-transfer-receipt-moved-out",
-            &[
-                ("window", window.into()),
-                ("to", plan.destination.name.as_str().into()),
-            ],
+        transferred(
+            MOVE_WINDOW_OUT,
+            &[("window", window), ("to", &plan.destination.name)],
         ),
     );
     receipt(
@@ -2019,12 +2012,9 @@ fn finish_move(
         &plan.app_id,
         &plan.title,
         &carried.target,
-        t_args(
-            "window-transfer-receipt-moved-in",
-            &[
-                ("window", window.into()),
-                ("from", plan.source.name.as_str().into()),
-            ],
+        transferred(
+            MOVE_WINDOW_IN,
+            &[("window", window), ("from", &plan.source.name)],
         ),
     );
     if source_lost {
@@ -2052,6 +2042,24 @@ fn finish_move(
     }
 }
 
+/// The shell's id in history entries: its messages are `shell-<action>`.
+const SHELL_APP: &str = "tilo.shell";
+/// A window copied into a workspace (`$window`, `$from`).
+const COPY_WINDOW_IN: &str = "copy-window-in";
+/// A window moved out of a workspace (`$window`, `$to`).
+const MOVE_WINDOW_OUT: &str = "move-window-out";
+/// A window moved into a workspace (`$window`, `$from`).
+const MOVE_WINDOW_IN: &str = "move-window-in";
+
+/// What a workspace's history records a transfer did.
+fn transferred(action: &str, args: &[(&str, &str)]) -> ui::tilo_actions::Did {
+    ui::tilo_actions::Did::verb(
+        ui::tilo_actions::ActionKey::new(SHELL_APP, "window", action),
+        args.iter()
+            .map(|(name, value)| ((*name).to_owned(), ui::tilo_actions::Scalar::text(value))),
+    )
+}
+
 /// Record a transfer in `workspace`'s activity, where consequential effects are kept.
 fn receipt(
     st: &ChromeState,
@@ -2059,10 +2067,11 @@ fn receipt(
     app_id: &str,
     title: &str,
     record: &RecordCheckout,
-    label: String,
+    what: ui::tilo_actions::Did,
 ) {
-    let mut context = ui::tilo_actions::ActionContext::default().with_app(app_id, title);
-    context.action_label = label;
+    let mut context = ui::tilo_actions::ActionContext::default()
+        .with_app(app_id, title)
+        .with_described(ui::tilo_actions::Described::new(what));
     context.resource = Some(ui::tilo_actions::ActionResource {
         id: record.id.as_str().to_owned(),
         kind: record.kind.as_str().to_owned(),

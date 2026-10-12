@@ -659,13 +659,6 @@ mod tests {
 
         // Phase `site_panel_has_a_visible_scroll_viewport_and_actionable_children`.
         {
-            fn find(w: &dyn Widget, id: &str) -> Option<vello::kurbo::Rect> {
-                if w.test_id() == Some(id) {
-                    return Some(w.get_rect());
-                }
-                w.children().iter().find_map(|c| find(*c, id))
-            }
-
             let mut controls = SiteControls::default();
             controls.open = true;
             controls.committed = Some("https://example.test".into());
@@ -695,7 +688,9 @@ mod tests {
                 "scroll viewport: {:?}",
                 scroll.get_rect()
             );
-            let done = find(panel.as_ref(), "browser.site.close").unwrap();
+            let done = ui::widget::find_test_id(panel.as_ref(), "browser.site.close")
+                .unwrap()
+                .get_rect();
             assert!(done.height() > 0.0);
             assert!(scroll.get_rect().contains(done.center()));
             let mut doc = automerge::AutoCommit::new();

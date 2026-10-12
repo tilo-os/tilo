@@ -381,6 +381,8 @@ portal-grant-once = Allow once
 portal-grant-session = Allow for this session
 portal-grant-always = Always allow in this workspace
 portal-grant-deny = Deny
+portal-confirm-title = { $who } wants to act for you
+portal-confirm-detail = { $risk } · only this once; nothing is remembered
 portal-risk-none = Only shows information
 portal-risk-low = Low risk: an ordinary, reversible change
 portal-risk-destructive = Destructive: can delete or overwrite
@@ -1342,6 +1344,8 @@ search-action-quick-settings-devices = Open devices and media
 search-action-quick-settings-devices-subtitle = Certified devices, media routes, remote input, and handoffs
 search-action-projection-open = Choose where the desktop appears
 search-action-projection-open-subtitle = Extend, mirror, one screen, or a Miracast, Google Cast, AirPlay or FCast receiver
+search-action-projection-close = Close the display sheet
+search-action-projection-close-subtitle = Put away the layout and receiver choices; displays stay as they are
 search-action-display-layout-extend = Extend displays
 search-action-display-layout-extend-subtitle = Use every connected display as one larger desktop
 search-action-display-layout-mirror = Mirror displays
@@ -1532,13 +1536,6 @@ search-action-device-revoked = Device revoked
 search-action-device-revoked-body = The revocation was root-signed and recorded in this identity's device list.
 
 # Search: applications
-search-apps-group-start-here = Start here
-search-apps-group-everyday = Everyday
-search-apps-group-work = Work
-search-apps-group-media = Media
-search-apps-group-system-tools = System tools
-search-apps-group-more-apps = More apps
-search-apps-group-developer-tools = Developer tools
 search-apps-detail-grouped = { $group } · { $detail }
 search-apps-open = Open { $app }
 search-apps-open-subtitle = { $target } · { $detail }
@@ -1795,6 +1792,8 @@ onboarding-done-backup-verified = Backup verified
 onboarding-done-backup-verified-body = Keep the encrypted backup file and its passphrase in separate places.
 onboarding-done-backup-recommended = Backup still recommended
 onboarding-done-backup-recommended-body = Create an encrypted portable backup from Settings before relying on this identity.
+onboarding-done-joined-key-elsewhere = Nothing to back up here
+onboarding-done-joined-key-elsewhere-body = This device joined your identity from another device, which keeps its key. Losing this device loses no identity; keep the backup of the device that approved it.
 onboarding-done-system-care-title = System care
 onboarding-done-system-care-body = Tilo checks signed system updates automatically after setup when the machine is online. You can check, stage, and roll back releases in Settings.
 onboarding-tour-take = Take a quick tour
@@ -2063,9 +2062,14 @@ window-transfer-failed-timeout = The app didn't open a window in the other works
 window-transfer-failed-closed = The new window was closed before it opened.
 window-transfer-reopen-failed = The document is here, but the app didn't open a window. Open it again to continue.
 window-transfer-bringing-edits = Bringing over your last edits…
-window-transfer-receipt-copied = Copied “{ $window }” here from { $from }
-window-transfer-receipt-moved-out = Moved “{ $window }” to { $to }
-window-transfer-receipt-moved-in = Moved “{ $window }” here from { $from }
+workspace-allow-app-action = { $lifetime ->
+    [once] Allowed { $app } to use { $target }: { $action }, once
+    [session] Allowed { $app } to use { $target }: { $action }, for this session
+   *[workspace] Allowed { $app } to use { $target }: { $action }, in this workspace
+}
+shell-copy-window-in = Copied “{ $window }” here from { $from }
+shell-move-window-out = Moved “{ $window }” to { $to }
+shell-move-window-in = Moved “{ $window }” here from { $from }
 window-transfer-lost-title = “{ $window }” closed while it was moving
 window-transfer-lost-detail = The app closed unexpectedly, so edits from its last few seconds may be missing. Everything it had saved is now in { $to }.
 window-transfer-late-edits-title = Your last edits in “{ $window }” came along
@@ -2527,10 +2531,47 @@ device-fabric-error-input-sequence-exhausted = Input sequencing is exhausted. Re
 
 device-fabric-error-input-cleanup-pending = Previous input is still being released. Try again.
 
+display-remote-heading = Your other screens
+display-remote-title = { $number } · { $name } · { $device }
+display-remote-row = { $status } · { $title }
+display-remote-row-description = Include this screen in your shared display layout
+display-remote-offline = Offline
+display-remote-offline-excluded = Offline · Not in layout
+display-remote-switched-off = Switched off on its device
+display-remote-in-layout = In layout
+display-remote-out-of-layout = Not in layout
+display-remote-unavailable = This shared display is no longer available.
+display-remote-permission = Your workspace role does not allow changing the shared display layout.
+display-remote-stale = This display arrangement changed. Refresh before editing.
+search-action-shared-display-inspect = Inspect shared displays
+search-action-shared-display-inspect-subtitle = Certified outputs, display numbers, inclusion and current arrangement revisions
+search-action-shared-display-include = Set shared display inclusion
+search-action-shared-display-include-subtitle = Include or exclude one certified output without granting input access
 activity-morning-choose = Choose for morning
 activity-morning-remove = Remove morning source
 activity-morning-empty = Morning sources: choose a resource in Explore → Details. Up to eight sources; no sources connected automatically.
-activity-morning-description = Chosen morning sources · links to existing workspace resources. No external refresh is performed.
+activity-morning-description = Chosen morning sources · provider previews from authorized workspace resources. Refresh or draft a schedule explicitly.
 activity-morning-unavailable = Source unavailable in this workspace · no current evidence
 activity-morning-source = { $source } · last recorded workspace activity: { $time } · external freshness unknown
 activity-morning-open = Open morning source
+
+# Canonical first-use action admission; never includes private identity material.
+onboarding-semantic-unavailable = This setup action is no longer available at this step.
+onboarding-semantic-failed = Setup could not complete this action. The desktop remains protected.
+activity-morning-payload-unavailable = Provider summary unavailable. Open the source to inspect or refresh it.
+
+activity-morning-refresh = Refresh source
+activity-morning-draft = Draft scheduled refresh…
+activity-morning-draft-description = Opens a draft in Shortcuts. Choose a schedule and review its permissions before saving; nothing is armed yet.
+activity-morning-command-unavailable = Source command unavailable
+activity-morning-command-pending = Request pending
+activity-morning-command-accepted = Request accepted; inspect its result in Actions
+activity-morning-command-refused = Request refused
+activity-morning-recorded = { $source } · last recorded workspace activity: { $time }
+
+activity-morning-next = Next chosen source
+
+qs-network-details = Wi-Fi networks
+qs-bluetooth-details = Bluetooth devices
+search-action-quick-settings-network-subtitle = Browse available Wi-Fi networks
+search-action-quick-settings-bluetooth-subtitle = Browse paired Bluetooth devices

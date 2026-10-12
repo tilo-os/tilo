@@ -21,6 +21,7 @@ throwaway-test-identity = []
 tilo-advisory-lock = { path = "../../system/advisory-lock" }
 tilo-files = { path = "../../platform/tilo-files", features = ["json"] }
 collab-types = { path = "../../collab/collab-types" }
+tilo-action-policy = { path = "../../collab/action-policy" }
 ed25519-dalek = { workspace = true, features = ["rand_core"] }
 getrandom.workspace = true
 hex.workspace = true
@@ -46,6 +47,10 @@ workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 tempfile.workspace = true
+# A commenter's comment, as the change a notes window makes.
+automerge.workspace = true
+blake3.workspace = true
+tilo-actions = { path = "../../collab/actions" }
 tilo-test-env = { path = "../../dev/test-env" }
 
 [lints]

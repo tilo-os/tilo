@@ -237,17 +237,42 @@ def runtime_idle(sample: dict, procs: list[dict], seconds: float, comm: str) -> 
     }
 
 
-def measure(ctx, seconds: int) -> dict:
+def painters(painted: list[dict]) -> dict[str, int]:
+    """Painted ticks by what made them paint: the compositor's paint reasons and, when
+    client surfaces committed, the apps whose commits the frame carried. A trace from a
+    compositor that predates the columns counts them as unattributed."""
+    out: dict[str, int] = {}
+    for r in painted:
+        if "paint_reasons" not in r:
+            label = "unattributed"
+        else:
+            label = str(r.get("paint_reasons") or "") or "no reason"
+            if r.get("paint_clients"):
+                label += f" by {r['paint_clients']}"
+        out[label] = out.get(label, 0) + 1
+    return dict(sorted(out.items(), key=lambda kv: (-kv[1], kv[0])))
+
+
+def describe_painters(by: dict[str, int]) -> str:
+    return ", ".join(f"{label} {n}" for label, n in by.items())
+
+
+def measure(ctx, seconds: int, name: str | None = None) -> dict:
+    """The idle window. With `name`, its frame trace is kept as `<name>-frames.csv`, so a
+    window that painted says which tick painted, why, and for which app."""
     script = SAMPLE.replace("__SECS__", str(seconds)).replace("__UID__", str(ctx.vm.slot_uid()))
     mark = core.trace_mark(ctx)
     text = ctx.vm.root_exec(script, timeout=seconds + 90)
     rows = core.trace_after(ctx, mark)
+    if name:
+        ctx.write(f"{name}-frames.csv", core.trace_csv(rows))
     painted = [r for r in rows if r.get("painted") == 1]
     return {
         "seconds": seconds,
         **summarize(_parse_sample(text), seconds),
         "shell_loop_ticks_per_s": round(len(rows) / seconds, 2),
         "frames_painted": len(painted),
+        "painted_by": painters(painted),
     }
 
 
@@ -668,7 +693,9 @@ def _budget_problems(m, budgets, prefix, software=False):
         problems.append(f"software rasteriser CPU {raster}% with no frame painted > "
                         f"{budgets['idle_software_raster_cpu_pct']}%")
     if m["frames_painted"] > budgets[f"{prefix}_frames"]:
-        problems.append(f"{m['frames_painted']} frames painted while idle > {budgets[f'{prefix}_frames']}")
+        why = describe_painters(m.get("painted_by") or {})
+        problems.append(f"{m['frames_painted']} frames painted while idle > {budgets[f'{prefix}_frames']}"
+                        + (f" ({why})" if why else ""))
     if m["shell_loop_ticks_per_s"] > budgets["idle_loop_ticks_per_s"]:
         problems.append(f"compositor loop woke {m['shell_loop_ticks_per_s']}/s > {budgets['idle_loop_ticks_per_s']}/s")
     if m["user_cpu_pct_total"] > budgets[f"{prefix}_user_cpu_pct"]:
@@ -713,7 +740,7 @@ def _ush_idle(ctx, res, m: dict, budgets: dict) -> list[str]:
 def idle_empty(ctx, res):
     ctx.reset()
     time.sleep(5)
-    m = measure(ctx, ctx.config["idle_seconds"])
+    m = measure(ctx, ctx.config["idle_seconds"], "R01")
     m["guest_ram_used_mib"] = guest_ram_used_mib(ctx)
     res.metrics.update(m, renderer=ctx.facts.get("renderer"))
     ctx.write("R01-idle-empty.json", json.dumps(m, indent=1))
@@ -776,7 +803,7 @@ def _footprint_summary(fp: dict, ram_mib: float) -> dict:
 def idle_apps(ctx, res):
     opened = _open_several(ctx)
     res.metrics["opened"] = opened
-    m = measure(ctx, ctx.config["idle_seconds"])
+    m = measure(ctx, ctx.config["idle_seconds"], "R02")
     m["guest_ram_used_mib"] = guest_ram_used_mib(ctx)
     # Seconds from opening Terminal to its shell running: the window opened after it.
     m["terminal_shell_s"] = ctx.facts.get("terminal_shell_s")

@@ -27,7 +27,7 @@
 )]
 
 pub mod app;
-pub mod doc;
+pub mod locales;
 pub mod map;
 pub mod model;
 pub mod ops;

@@ -23,6 +23,9 @@ thiserror.workspace = true
 zeroize.workspace = true
 wire-frame = { path = "../../system/wire-frame" }
 libc.workspace = true
+tilo-files = { path = "../../platform/tilo-files" }
+# Loopback admission of device-local models is shared with apps discovering them.
+url.workspace = true
 # The provider protocol names travel in the client's requests too.
 agent-provider-config = { path = "../provider-config" }
 
@@ -38,7 +41,6 @@ tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "sync"
 wire-frame = { path = "../../system/wire-frame", features = ["tokio"] }
 clap.workspace = true
 base64.workspace = true
-url.workspace = true
 workspace-hack = { version = "0.1" }
 # The subject of a picture is found here, with the segmentation model the
 # person installed, so no app holds the model or its runtime.

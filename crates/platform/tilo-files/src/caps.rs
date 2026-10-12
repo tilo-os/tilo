@@ -1,6 +1,6 @@
 //! What this crate provides on each target, as data an app can query.
 
-pub use tilo_platform_caps::Availability;
+pub use tilo_platform_caps::{Availability, availability};
 
 /// A feature this target, or this particular host, cannot provide.
 pub type Unsupported = tilo_platform_caps::Unsupported<Feature>;
@@ -52,99 +52,36 @@ pub(crate) const MEMORY_NATIVE_PATHS: &str = "Storage kept in memory has no file
 pub(crate) const WEB_MODES: &str = "Browser storage has no permission bits or links.";
 pub(crate) const NOT_YET: &str = "Tilo cannot do this yet.";
 
-/// Every feature with its availability on Linux, macOS and the web, in that
-/// order. A [`Dir`](crate::Dir) kept in memory provides less than its
-/// target's column: no native paths, modes or links. On the web, blocking
-/// calls work on the app locations the host mirrored
-/// ([`web::mirror`](crate::web)), except for locks.
-pub const CAPABILITIES: &[(Feature, [Availability; 3])] = {
-    use Availability::{Available, Unsupported};
-    &[
-        (Feature::Files, [Available, Available, Available]),
-        (Feature::RenameNoReplace, [Available, Available, Available]),
-        (Feature::Locks, [Available, Available, Available]),
-        (Feature::Blocking, [Available, Available, Available]),
-        (
-            Feature::NativePaths,
-            [Available, Available, Unsupported(WEB_NATIVE_PATHS)],
-        ),
-        (
-            Feature::ModesAndLinks,
-            [Available, Available, Unsupported(WEB_MODES)],
-        ),
-        (Feature::Watch, [DISK_WATCH, DISK_WATCH, Available]),
-        (
-            Feature::Trash,
-            [
-                Unsupported(NOT_YET),
-                Unsupported(NOT_YET),
-                Unsupported(NOT_YET),
-            ],
-        ),
-        (
-            Feature::Private,
-            [
-                Unsupported(NOT_YET),
-                Unsupported(NOT_YET),
-                Unsupported(NOT_YET),
-            ],
-        ),
-        (
-            Feature::Attributes,
-            [
-                Unsupported(NOT_YET),
-                Unsupported(NOT_YET),
-                Unsupported(NOT_YET),
-            ],
-        ),
-    ]
-};
-
-/// Whether `feature` can be used on this target.
-pub fn availability(feature: Feature) -> Availability {
-    tilo_platform_caps::availability(CAPABILITIES, feature)
-}
-
-/// The error for `feature` on this target, when its column says it is
-/// unsupported.
-pub(crate) fn unsupported(feature: Feature) -> Unsupported {
-    Unsupported::of(CAPABILITIES, feature)
+impl tilo_platform_caps::Feature for Feature {
+    /// The feature's availability on Linux, macOS and the web, in that
+    /// order. A [`Dir`](crate::Dir) kept in memory provides less than its
+    /// target's column: no native paths, modes or links. On the web, blocking
+    /// calls work on the app locations the host mirrored
+    /// ([`web::mirror`](crate::web)), except for locks.
+    fn targets(self) -> [Availability; 3] {
+        use Availability::{Available, Unsupported};
+        match self {
+            Self::Files | Self::RenameNoReplace | Self::Locks | Self::Blocking => {
+                [Available, Available, Available]
+            }
+            Self::NativePaths => [Available, Available, Unsupported(WEB_NATIVE_PATHS)],
+            Self::ModesAndLinks => [Available, Available, Unsupported(WEB_MODES)],
+            Self::Watch => [DISK_WATCH, DISK_WATCH, Available],
+            Self::Trash | Self::Private | Self::Attributes => [Unsupported(NOT_YET); 3],
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    const ALL: [Feature; 10] = [
-        Feature::Files,
-        Feature::RenameNoReplace,
-        Feature::Locks,
-        Feature::Blocking,
-        Feature::NativePaths,
-        Feature::ModesAndLinks,
-        Feature::Watch,
-        Feature::Trash,
-        Feature::Private,
-        Feature::Attributes,
-    ];
-
-    #[test]
-    fn every_feature_is_listed_once() {
-        for feature in ALL {
-            let rows = CAPABILITIES.iter().filter(|(listed, _)| *listed == feature);
-            assert_eq!(rows.count(), 1, "{feature:?}");
-        }
-        assert_eq!(CAPABILITIES.len(), ALL.len());
-    }
+    use tilo_platform_caps::Feature as _;
 
     #[test]
     fn this_target_reads_its_own_column() {
         assert_eq!(availability(Feature::Blocking), Availability::Available);
         assert_eq!(availability(Feature::Watch), DISK_WATCH);
-        let web = CAPABILITIES
-            .iter()
-            .find(|(feature, _)| *feature == Feature::NativePaths)
-            .map(|(_, targets)| targets[2]);
-        assert_eq!(web, Some(Availability::Unsupported(WEB_NATIVE_PATHS)));
+        let web = Feature::NativePaths.targets()[2];
+        assert_eq!(web, Availability::Unsupported(WEB_NATIVE_PATHS));
     }
 }

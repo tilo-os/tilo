@@ -1377,7 +1377,7 @@ mod tests {
                     .desktop
                     .active_workspace()
                     .unwrap()
-                    .capabilities
+                    .sandbox
                     .is_empty(),
                 "a refused open must not leave a grant behind"
             );
@@ -1756,7 +1756,7 @@ mod tests {
                 let ws = tree.desktop.active_workspace().unwrap();
                 let want = Subject::app("so.tilo.word-processor");
                 let scopes: Vec<Scope> = ws
-                    .capabilities
+                    .sandbox
                     .iter()
                     .filter(|c| c.subject == want && c.effect == Effect::Grant)
                     .map(|c| c.scope.clone())
@@ -1845,7 +1845,7 @@ mod tests {
                     .desktop
                     .active_workspace()
                     .unwrap()
-                    .capabilities
+                    .sandbox
                     .is_empty(),
                 "fixture precondition: the workspace starts with no grants"
             );
@@ -1857,7 +1857,7 @@ mod tests {
             let ws = tree.desktop.active_workspace().unwrap();
             let want_subject = Subject::app("so.tilo.word-processor");
             let granted: Vec<_> = ws
-                .capabilities
+                .sandbox
                 .iter()
                 .filter(|c| c.subject == want_subject && c.effect == Effect::Grant)
                 .collect();
@@ -1865,7 +1865,7 @@ mod tests {
                 granted.len(),
                 1,
                 "exactly one grant for the opening app: {:?}",
-                ws.capabilities
+                ws.sandbox
             );
             assert_eq!(
                 granted[0].scope,
@@ -1878,11 +1878,11 @@ mod tests {
             // would hand the app every other file beside it.
             let parent = doc_path.parent().unwrap().display().to_string();
             assert!(
-                !ws.capabilities
+                !ws.sandbox
                     .iter()
                     .any(|c| c.scope == Scope::FsPath(parent.clone())),
                 "the open widened the grant to {parent}: {:?}",
-                ws.capabilities
+                ws.sandbox
             );
             drop(tree);
             drop(st);

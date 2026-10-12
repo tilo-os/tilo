@@ -2666,12 +2666,7 @@ impl Widget for EditorView {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        #[allow(
-            clippy::unwrap_used,
-            reason = "node was just created by this widget's own build_layout in the same tree; a lookup failure means the taffy tree is already corrupted and there is no meaningful layout to fall back to"
-        )]
-        let layout = taffy.layout(node).unwrap();
-        self.rect = ui::widget::placed(layout, origin);
+        self.rect = ui::widget::layout_rect(taffy, node, origin);
     }
 
     fn draw(
@@ -3324,7 +3319,6 @@ mod tests {
 
     #[test]
     fn dictation_target_tracks_code_selection_content_and_pending_edits() {
-        use automerge::transaction::Transactable;
         let (mut view, mut doc) = bound_editor("same source");
         view.set_focus(true);
         assert_eq!(view.ime_purpose(), Some(winit::window::ImePurpose::Normal));
@@ -3336,7 +3330,7 @@ mod tests {
         assert_ne!(view.ime_edit_fingerprint(&key), Some(stamp));
         let selected = view.ime_edit_fingerprint(&key).unwrap();
         let object = view.text_obj.clone().unwrap();
-        doc.splice_text(&object, 0, 11, "same change").unwrap();
+        EditorDoc::splice(&mut doc, &object, 0, 11, "same change");
         view.sync(&doc, &automerge::ROOT);
         assert_eq!(view.ime_cursor_rect(), caret);
         assert_ne!(view.ime_edit_fingerprint(&key), Some(selected));

@@ -20,6 +20,19 @@ use tilo_desktop_model::{
 /// The local user every [`TestHost`] answers for.
 pub(crate) const LOCAL_USER: &str = "local";
 
+/// A verb named after `label` (`Rewrite opening` → `rewrite-opening`), as a
+/// test's entry records it.
+pub(crate) fn verb(label: &str) -> tilo_actions::Described {
+    tilo_actions::Described::new(tilo_actions::Did::verb(
+        tilo_actions::ActionKey::new(
+            "org.tilo.Writer",
+            "document",
+            tilo_actions::entry::kebab(label),
+        ),
+        [],
+    ))
+}
+
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
 /// A fresh id for a workspace, strip, group or tab in a fixture.
@@ -29,7 +42,7 @@ pub(crate) fn next_id() -> u64 {
 
 fn empty_workspace(id: WorkspaceId, name: &str, strips: Vec<Strip>) -> Workspace {
     let mut workspace = Workspace::new(id, name);
-    workspace.room = RoomId::new();
+    workspace.set_room(RoomId::new());
     workspace.strips = strips;
     workspace
 }
@@ -186,12 +199,14 @@ impl TestTree {
         )
     }
 
-    fn doc_insert_capability(&mut self, workspace_id: WorkspaceId, cap: &CapOverride) {
-        if tilo_desktop_model::desktop_doc::insert_capability(&mut self.doc, workspace_id, cap) {
+    fn doc_insert_sandbox(&mut self, workspace_id: WorkspaceId, cap: &CapOverride) {
+        if tilo_desktop_model::desktop_doc::insert_sandbox(&mut self.doc, workspace_id, cap) {
             self.commit_room_change();
         }
     }
 
+    /// Let an app reach a sandboxed resource, as `grantor`, who must be
+    /// allowed to grant in the room.
     pub fn grant_in_workspace(
         &mut self,
         workspace_id: WorkspaceId,
@@ -203,13 +218,17 @@ impl TestTree {
             .workspaces
             .iter_mut()
             .find(|w| w.id == workspace_id)?;
-        let id = workspace.grant_as_at(grantor, cap, tilo_clock::unix_now())?;
-        let stored = workspace
-            .capabilities
-            .iter()
-            .find(|c| c.id == id)
-            .cloned()?;
-        self.doc_insert_capability(workspace_id, &stored);
+        if !workspace.may_govern_at(
+            grantor,
+            tilo_action_policy::roles::governance::GRANT,
+            tilo_clock::unix_now(),
+        ) {
+            return None;
+        }
+        let id = workspace
+            .grant_sandbox(cap.granted_by(collab_types::caps::Principal::Person(grantor.clone())));
+        let stored = workspace.sandbox.iter().find(|c| c.id == id).cloned()?;
+        self.doc_insert_sandbox(workspace_id, &stored);
         Some(id)
     }
 
@@ -227,10 +246,15 @@ impl TestTree {
         else {
             return false;
         };
-        if !workspace.revoke_as_at(revoker, cap_id, tilo_clock::unix_now()) {
+        if !workspace.may_govern_at(
+            revoker,
+            tilo_action_policy::roles::governance::REVOKE,
+            tilo_clock::unix_now(),
+        ) || !workspace.revoke_sandbox(cap_id)
+        {
             return false;
         }
-        if tilo_desktop_model::desktop_doc::revoke_capability(&mut self.doc, workspace_id, cap_id) {
+        if tilo_desktop_model::desktop_doc::revoke_sandbox(&mut self.doc, workspace_id, cap_id) {
             self.commit_room_change();
         }
         true
@@ -239,7 +263,7 @@ impl TestTree {
     pub fn adopt_ownerless_workspaces(&mut self, user: &UserId) -> Vec<WorkspaceId> {
         let mut adopted = Vec::new();
         for workspace in &mut self.desktop.workspaces {
-            if workspace.owner.is_none() {
+            if workspace.owner().is_none() {
                 workspace.set_owner(user.clone());
                 adopted.push(workspace.id);
             }
@@ -253,10 +277,10 @@ impl TestTree {
                 .workspaces
                 .iter()
                 .find(|w| w.id == *id)
-                .map(|w| w.capabilities.clone())
+                .map(|w| w.sandbox.clone())
                 .unwrap_or_default();
             for cap in caps {
-                self.doc_insert_capability(*id, &cap);
+                self.doc_insert_sandbox(*id, &cap);
             }
         }
         adopted
@@ -285,11 +309,6 @@ impl TestTree {
         {
             return false;
         }
-        context.action_label = if context.action_label.is_empty() {
-            status.label().to_string()
-        } else {
-            format!("{} · {}", status.label(), context.action_label)
-        };
         context
             .facets
             .push(tilo_actions::ActionFacet::new("tilo.receipt", "effect"));
@@ -341,11 +360,12 @@ impl TestTree {
             resource,
             created_at: now,
             updated_at: now,
-            audit: vec![WorkspaceTaskAuditEvent {
-                at: now,
+            audit: vec![WorkspaceTaskAuditEvent::new(
+                now,
                 actor,
-                summary: format!("Created task · {title}"),
-            }],
+                "create-task",
+                [("title", tilo_actions::Scalar::text(&title))],
+            )],
         };
         self.desktop
             .workspaces
@@ -381,11 +401,12 @@ impl TestTree {
         }
         task.status = status;
         task.updated_at = now;
-        task.audit.push(WorkspaceTaskAuditEvent {
-            at: now,
-            actor: actor.to_string(),
-            summary: format!("Status · {}", task.status.label()),
-        });
+        task.audit.push(WorkspaceTaskAuditEvent::new(
+            now,
+            actor,
+            "set-status",
+            [("status", tilo_actions::Scalar::from(status.key()))],
+        ));
         let task = task.clone();
         if tilo_desktop_model::desktop_doc::upsert_task(&mut self.doc, workspace_id, &task) {
             self.commit_room_change();
@@ -484,7 +505,7 @@ impl ActivityHost for TestHost {
     fn all_workspaces_available(&self) -> bool {
         true
     }
-    fn agent_members(&self, workspace: &Workspace) -> Vec<(String, collab_types::role::Role)> {
+    fn agent_members(&self, workspace: &Workspace) -> Vec<(String, tilo_action_policy::KindSet)> {
         workspace.agent_members_at(tilo_clock::unix_now())
     }
     fn launch_agent(&self, _agent: &str, _workspace: &Workspace) -> Result<(), String> {

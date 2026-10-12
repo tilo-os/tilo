@@ -129,6 +129,31 @@ pub fn resolve_general_ref(reference: &quick_xml::events::BytesRef<'_>) -> Optio
     }
 }
 
+#[cfg(any(
+    feature = "markdown",
+    feature = "html",
+    feature = "docx",
+    feature = "odt"
+))]
+/// The canonical `fontFamily` mark for a named font: `"mono"`, `"serif"` or `"sans"`. Documents
+/// carry the font's class, not a face the reader may not have installed, so every importer
+/// classifies a face the same way.
+pub(crate) fn generic_font_family(name: &str) -> &'static str {
+    let n = name.to_ascii_lowercase();
+    if n.contains("mono") || n.contains("courier") || n.contains("consol") {
+        "mono"
+    } else if (n.contains("serif") && !n.contains("sans"))
+        || n.contains("times")
+        || n.contains("georgia")
+        || n.contains("garamond")
+        || n.contains("roman")
+    {
+        "serif"
+    } else {
+        "sans"
+    }
+}
+
 /// Spreadsheet formats the platform opens as a workbook resource, whatever this build compiles.
 pub const SHEET_EXTENSIONS: &[&str] = &["xlsx", "ods"];
 

@@ -190,10 +190,45 @@ pub fn rect_to_scene(outputs: &[OutputGeometry], rect: Rect) -> Option<Rect> {
 /// Append a scene drawn in logical coordinates to `target`, once per
 /// display: magnified by that display's scale and clipped to its scene
 /// rectangle.
+///
+/// A draw in `logical` that opened a layer and never closed it is closed
+/// inside each display's pass, so it cannot swallow that display's clip and
+/// blank every display after it. The leak is still a bug in that draw: it
+/// is logged and, in a debug build, fails an assertion.
 pub fn compose(outputs: &[OutputGeometry], logical: &Scene, target: &mut Scene) {
+    let leaked = compose_closing_leaks(outputs, logical, target);
+    if leaked > 0 {
+        tracing::error!(
+            leaked,
+            "a draw in the desktop scene left {leaked} layer(s) open; closed within each display's pass"
+        );
+    }
+    debug_assert_eq!(
+        leaked, 0,
+        "a draw in the desktop scene left {leaked} layer(s) open (push_layer without pop_layer)"
+    );
+}
+
+/// [`compose`] without the report: returns how many layers `logical` left
+/// open, each of which every display's pass closed before its own clip. For
+/// a scene that may stop inside layers by design (what a floating surface is
+/// drawn over, cut where the surface begins) as well as for [`compose`].
+#[must_use]
+pub fn compose_closing_leaks(
+    outputs: &[OutputGeometry],
+    logical: &Scene,
+    target: &mut Scene,
+) -> u32 {
+    let leaked = logical.encoding().n_open_clips;
+    let append = |target: &mut Scene, transform: Option<Affine>| {
+        target.append(logical, transform);
+        for _ in 0..leaked {
+            target.pop_layer();
+        }
+    };
     if is_identity(outputs) {
-        target.append(logical, None);
-        return;
+        append(target, None);
+        return leaked;
     }
     for o in outputs {
         if o.scene.width() <= 0.0 || o.scene.height() <= 0.0 {
@@ -206,9 +241,10 @@ pub fn compose(outputs: &[OutputGeometry], logical: &Scene, target: &mut Scene) 
             Affine::IDENTITY,
             &o.scene,
         );
-        target.append(logical, Some(o.to_scene()));
+        append(target, Some(o.to_scene()));
         target.pop_layer();
     }
+    leaked
 }
 
 #[cfg(test)]
@@ -293,6 +329,153 @@ mod tests {
         ];
         assert!(is_identity(&outputs));
         assert!(!is_identity(&mixed()));
+    }
+
+    /// The logical desktop of [`mixed`] painted opaque, by a draw that
+    /// opens a layer over the panel and never closes it.
+    fn leaking_desktop() -> Scene {
+        let mut logical = Scene::new();
+        logical.fill(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            vello::peniko::Color::WHITE,
+            None,
+            &Rect::new(0.0, 0.0, 3200.0, 1280.0),
+        );
+        logical.push_layer(
+            Fill::NonZero,
+            BlendMode::default(),
+            0.5,
+            Affine::IDENTITY,
+            &Rect::new(0.0, 0.0, 400.0, 300.0),
+        );
+        logical.fill(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            vello::peniko::Color::BLACK,
+            None,
+            &Rect::new(0.0, 0.0, 400.0, 300.0),
+        );
+        logical
+    }
+
+    /// The alpha of every pixel of `area` in `scene`, rasterized on the CPU
+    /// into a target of `size` scene pixels.
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "pixel offsets into a few-megapixel test target cannot overflow usize"
+    )]
+    fn alphas(scene: &Scene, size: (u32, u32), area: tilo_cpu_raster::Region) -> Vec<u8> {
+        use tilo_cpu_raster::{CpuRasterizer, Options, Target};
+        let (width, height) = size;
+        let stride = width as usize * 4;
+        let mut pixels = vec![0u8; stride * height as usize];
+        {
+            let mut target = Target::new(&mut pixels, width, height, stride).expect("target");
+            CpuRasterizer::new(Options::default()).render(
+                scene.encoding(),
+                &mut target,
+                Some(&[area]),
+                vello::peniko::Color::TRANSPARENT,
+            );
+        }
+        (area.y..area.y + area.height)
+            .flat_map(|y| (area.x..area.x + area.width).map(move |x| (x, y)))
+            .map(|(x, y)| {
+                let at = y as usize * stride + x as usize * 4 + 3;
+                pixels.get(at).copied().expect("inside the target")
+            })
+            .collect()
+    }
+
+    /// A draw that leaks a layer on the dense panel no longer swallows the
+    /// panel's clip: the 1x monitor after it still draws, and the leak is
+    /// counted for the report.
+    #[test]
+    fn a_layer_a_draw_leaves_open_cannot_blank_the_next_display() {
+        let outputs = mixed();
+        let logical = leaking_desktop();
+        assert_eq!(logical.encoding().n_open_clips, 1, "the fixture leaks");
+
+        let mut scene = Scene::new();
+        let leaked = compose_closing_leaks(&outputs, &logical, &mut scene);
+        assert_eq!(leaked, 1, "the leak is reported");
+        assert_eq!(
+            scene.encoding().n_open_clips,
+            0,
+            "every display's pass closes what it opened"
+        );
+
+        let size = (4480, 1600);
+        // The monitor drawn after the panel: opaque white across.
+        let monitor = alphas(
+            &scene,
+            size,
+            tilo_cpu_raster::Region::new(3500, 700, 16, 16),
+        );
+        assert!(
+            monitor.iter().all(|alpha| *alpha == 255),
+            "the 1x monitor after the leak still draws: {monitor:?}"
+        );
+        // And the panel itself, both inside and outside the leaked layer.
+        for (x, y) in [(100, 100), (1500, 1000)] {
+            let panel = alphas(&scene, size, tilo_cpu_raster::Region::new(x, y, 8, 8));
+            assert!(
+                panel.iter().all(|alpha| *alpha == 255),
+                "the 2x panel draws at ({x}, {y}): {panel:?}"
+            );
+        }
+    }
+
+    /// Without the per-display close, the same leak blanks the monitor, so
+    /// the test above observes the hardening rather than a scene that never
+    /// needed it.
+    #[test]
+    fn without_closing_the_leak_the_next_display_is_blank() {
+        let outputs = mixed();
+        let logical = leaking_desktop();
+        let mut scene = Scene::new();
+        for o in &outputs {
+            scene.push_layer(
+                Fill::NonZero,
+                BlendMode::default(),
+                1.0,
+                Affine::IDENTITY,
+                &o.scene,
+            );
+            scene.append(&logical, Some(o.to_scene()));
+            scene.pop_layer();
+        }
+        let monitor = alphas(
+            &scene,
+            (4480, 1600),
+            tilo_cpu_raster::Region::new(3500, 700, 16, 16),
+        );
+        assert!(
+            monitor.iter().all(|alpha| *alpha == 0),
+            "a leaked layer swallows the panel's clip and blanks the monitor: {monitor:?}"
+        );
+    }
+
+    /// Composing at scale 1 everywhere closes the leak too.
+    #[test]
+    fn an_unscaled_desktop_closes_a_leaked_layer() {
+        let outputs = [OutputGeometry::unscaled(0.0, 0.0, 3200.0, 1280.0)];
+        let mut scene = Scene::new();
+        assert_eq!(
+            compose_closing_leaks(&outputs, &leaking_desktop(), &mut scene),
+            1
+        );
+        assert_eq!(scene.encoding().n_open_clips, 0);
+    }
+
+    /// A debug build fails on the leak instead of hiding it.
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "left 1 layer(s) open")]
+    fn a_leaked_layer_fails_a_debug_build() {
+        let mut scene = Scene::new();
+        compose(&mixed(), &leaking_desktop(), &mut scene);
     }
 
     #[test]

@@ -64,8 +64,8 @@ const IDLE_CPU_BUDGET: f64 = 1.0;
 
 /// How long a lone desktop runs after it starts before it is measured, so
 /// its endpoint and its room's topic are up, and how long it is measured.
-const LONE_SETTLE: Duration = Duration::from_secs(15);
-const LONE_IDLE: Duration = Duration::from_secs(20);
+pub(super) const LONE_SETTLE: Duration = Duration::from_secs(15);
+pub(super) const LONE_IDLE: Duration = Duration::from_secs(20);
 /// Most times per second a lone desktop's own threads may wake while idle:
 /// one room of its own, no peer, and no frame loop driving it, as on a
 /// desktop nobody touches, whose compositor never ticks the network
@@ -78,28 +78,35 @@ const LONE_IDLE: Duration = Duration::from_secs(20);
 /// desktop's three topics, neither of which runs now while there is no peer
 /// (TIL-752): 0.30 to 0.45/s (runs 92724, 92787-92796, 92833), 0.25 to
 /// 0.40/s of it `tilo-net-rt`. A tracing probe (run 92833) names what is
-/// left: two iroh timers that run whatever Tilo does, netwatch's 15 s
+/// left: two iroh timers that ran whatever Tilo did, netwatch's 15 s
 /// wall-clock check and the socket's 20-26 s re-STUN tick, which with no
 /// relays does nothing. In that run the two cost a worker eight switches;
 /// tokio's timer wheel, which wakes at each level a far timer cascades
-/// through, would account for most of them (not verified). The test
-/// thread's own `/proc` read is 0.05/s. The p95, 0.45/s, plus a quarter.
+/// through, would account for most of them (not verified). The vendored
+/// iroh and netwatch no longer run either (`vendor/iroh/TILO-PATCH.md`,
+/// `vendor/netwatch/TILO-PATCH.md`): 0.35 to 0.40/s on main `7180919b15`
+/// (runs 96742-96744), 0.20/s in all six runs after (96812, 96954-96958),
+/// 0.15/s of it `tilo-net-rt` and 0.05/s the test thread's own `/proc`
+/// read. What `tilo-net-rt` still does in this window, 15 to 35 s after
+/// the desktop starts, is not periodic: the desktop whose collaborator left,
+/// measured two minutes after it started, shows none (not attributed
+/// further). The p95, 0.20/s, plus a quarter.
 ///
 /// Counted as voluntary switches, one per wakeup, because preemptions
 /// measure the runner: a loaded pull-request shard (run 92351, its cgroup at
 /// `memory.max` 2832 times) preempted the same two `tilo-net-rt` workers
 /// 1.35 times a second on top of the 0.95 times they blocked, and failed the
 /// gate at 2.30/s with nothing in the session changed (TIL-749).
-const LONE_WAKEUP_BUDGET: f64 = 0.6;
+pub(super) const LONE_WAKEUP_BUDGET: f64 = 0.25;
 /// Most CPU a lone idle desktop's threads may use, in percent of one core:
 /// 100 ms over [`LONE_IDLE`]. The wakeup count leaves out preemptions, so
 /// this is what still catches a thread that spins without blocking. Measured
 /// 0.0 % (under one 10 ms tick in the window).
-const LONE_CPU_BUDGET: f64 = 0.5;
+pub(super) const LONE_CPU_BUDGET: f64 = 0.5;
 
 /// Every thread of this process except the one driving the desktops'
 /// frame loops, whose 10 Hz is the simulation's and not the session's.
-fn session_threads(driver: Option<u32>) -> Vec<tilo_test_env::idle::ThreadSample> {
+pub(super) fn session_threads(driver: Option<u32>) -> Vec<tilo_test_env::idle::ThreadSample> {
     let mut threads = tilo_test_env::idle::sample_process(std::process::id())
         .expect("sample this process's threads");
     threads.retain(|thread| Some(thread.tid) != driver);

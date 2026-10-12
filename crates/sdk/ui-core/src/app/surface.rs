@@ -60,11 +60,30 @@ impl App {
     /// app's own origin. `synthesized_touch` marks pointer events the host
     /// made from a touch, which keep touch modality. Returns whether
     /// anything handled the event.
+    pub fn surface_input(
+        &mut self,
+        window: &dyn AppSurface,
+        event: WindowEvent,
+        synthesized_touch: bool,
+    ) -> bool {
+        // Controls swapped in or moved under a still pointer learn it is
+        // there before the press or release that follows.
+        if let Some(moved) = self.input.pointer_replay.before(&event) {
+            self.dispatch_surface_input(window, moved, synthesized_touch);
+        }
+        let ends_press = crate::pointer_replay::PointerReplay::ends_press(&event);
+        let handled = self.dispatch_surface_input(window, event, synthesized_touch);
+        if ends_press {
+            self.input.pointer_replay.end_press();
+        }
+        handled
+    }
+
     #[allow(
         clippy::too_many_lines,
         reason = "input routing shares mutable state and must retain fixed precedence"
     )]
-    pub fn surface_input(
+    fn dispatch_surface_input(
         &mut self,
         window: &dyn AppSurface,
         event: WindowEvent,
@@ -462,6 +481,14 @@ impl App {
                 &mut handled,
                 &mut focus_target,
             );
+            // The event may have replaced widgets (a dialog closing on its
+            // own button): forget their nodes before the fallbacks below look
+            // the focused node up. A focus target named by the old map is
+            // gone with it; the next frame lays the new widgets out.
+            if app.forget_replaced_widgets() {
+                focus_target = None;
+                window.request_redraw();
+            }
             let presentation_is_floating =
                 !app.root_widget.floating_surface_presentations().is_empty();
             // Even a document-free interaction may switch which resources a
@@ -575,7 +602,12 @@ impl App {
                 for _ in 0..times {
                     any |= app
                         .dispatch_node(fid, |widget, doc, root| {
-                            widget.perform_action(&act, &mut crate::widget::Edits::lend(doc), root)
+                            widget.perform_action(
+                                &act,
+                                &[],
+                                &mut crate::widget::Edits::lend(doc),
+                                root,
+                            )
                         })
                         .unwrap_or(false);
                 }
@@ -763,6 +795,9 @@ impl App {
         damage: &mut SurfaceDamage,
     ) -> bool {
         let _entry = self.enter_wake_scope();
+        // Armed for this frame: each rebuild it does clears it unless every
+        // request behind it was a change the widgets describe.
+        self.layout.frame_rebuilds_described = true;
         let replaced = self.swap_requested_component();
         // The model's own work, as a hosted worker's pump runs it:
         // collaboration (inbound edits, directory requests, publication),
@@ -779,8 +814,19 @@ impl App {
         )]
         let scale_factor = surface.scale_factor() as f32;
         self.layout.last_frame_size = Some(size);
-        self.layout.structure_dirty |= self.root_widget.take_structure_dirty() || replaced;
+        // A rebuild the widgets describe (only the reporting widget replaced
+        // children, and its damage covers them) keeps the frame's damage: the
+        // widgets' own, and every widget box that came, went or moved. Any
+        // other reason to rebuild this frame disarms it.
+        let changed = self.take_root_structure_dirty();
+        if replaced {
+            self.layout.request_rebuild();
+        }
+        self.layout.structure_dirty |= changed;
         let structure_rebuilt = self.layout.structure_dirty;
+        // Every widget and its box as the last frame left them, before
+        // anything is rebuilt: compared by identity only, never reached.
+        let boxes_before = widget_boxes(self.root_widget.as_ref());
         if structure_rebuilt {
             self.rebuild_structure();
         }
@@ -788,7 +834,6 @@ impl App {
             damage.repaint("no layout");
             return true;
         };
-        let boxes_before = widget_boxes(self.root_widget.as_ref());
         let rebuilds = self.layout.rebuilds;
         let Some((geometry_changed, _, _)) = run_layout_pass(
             self,
@@ -802,6 +847,9 @@ impl App {
             damage.repaint("no layout");
             return true;
         };
+        if geometry_changed {
+            self.input.pointer_replay.mark_unsettled();
+        }
         let search_pending = self
             .actions
             .action_palette
@@ -822,17 +870,19 @@ impl App {
         // move, and their own damage covers any change to them.
         // A layout pass that recomposed the tree may have replaced widgets.
         let recomposed = self.layout.rebuilds != rebuilds;
-        let moved = if recomposed {
-            None
-        } else if geometry_changed && !structure_rebuilt {
-            moved_boxes(&boxes_before, &widget_boxes(self.root_widget.as_ref()))
-        } else {
-            Some(Vec::new())
+        let described = (structure_rebuilt || recomposed) && self.layout.frame_rebuilds_described;
+        let relaid = !described && !recomposed && geometry_changed && !structure_rebuilt;
+        let boxes_after = (described || relaid).then(|| widget_boxes(self.root_widget.as_ref()));
+        let moved = match &boxes_after {
+            Some(after) if described => Some(changed_boxes(&boxes_before, after)),
+            Some(after) => moved_boxes(&boxes_before, after),
+            None if recomposed => None,
+            None => Some(Vec::new()),
         };
         let full = [
             (replaced, "another component"),
             (record_changed, "another record"),
-            (structure_rebuilt, "a rebuilt tree"),
+            (structure_rebuilt && !described, "a rebuilt tree"),
             (moved.is_none(), "moved geometry"),
             (self.debug_mode, "debug outlines"),
             (self.actions.action_palette.is_some(), "the action palette"),
@@ -842,10 +892,124 @@ impl App {
         .into_iter()
         .find_map(|(repaint, why)| repaint.then_some(why));
         let drawn = draw_frame_content(self, scene, size.width, size.height, scale_factor, None);
-        damage.frame(full, &drawn, f64::from(scale_factor), |regions| {
-            collect_submitted_widget_damage(self.root_widget.as_ref(), regions);
-            regions.extend(moved.into_iter().flatten());
+        // Collaborators' marks over the widgets, for a host that shows the
+        // app as a window of its own does ([`SurfaceDamage::painting_peers`]).
+        let surface_rect = KurboRect::new(0.0, 0.0, f64::from(size.width), f64::from(size.height));
+        let mut peer_layer = damage.peers.take();
+        let peers = peer_layer.as_deref_mut().map(|peers| {
+            let changed = draw_presence_layer(
+                self,
+                &mut peers.layer,
+                drawn.transform,
+                drawn.window_rect,
+                crate::time::now(),
+            );
+            scene.append(peers.layer.scene(), None);
+            PeerFrame {
+                changed,
+                marks: peer_marks(&peers.layer, &mut peers.bounds, surface_rect),
+            }
         });
+        let marks_unbounded = peers.as_ref().is_some_and(|peers| peers.marks.is_none());
+        // A widget whose own damage this draw covers where its box was and is
+        // (a block editor that grew by a paragraph) leaves its box to that
+        // damage; its children's boxes still count.
+        let covered = match (&moved, &boxes_after) {
+            (Some(moved), Some(_)) if !moved.is_empty() => {
+                boxes_covered_by_own_damage(self.root_widget.as_ref())
+            }
+            _ => std::collections::HashSet::new(),
+        };
+        let uncovered = |boxes: &[(WidgetIdentity, KurboRect)]| -> Vec<_> {
+            boxes
+                .iter()
+                .filter(|(widget, _)| !covered.contains(widget))
+                .copied()
+                .collect()
+        };
+        let moved = match (moved, &boxes_after) {
+            (Some(moved), Some(after)) if !moved.is_empty() => {
+                let (before, after) = (uncovered(&boxes_before), uncovered(after));
+                if covered.is_empty() {
+                    Some(moved)
+                } else if described {
+                    Some(changed_boxes(&before, &after))
+                } else {
+                    moved_boxes(&before, &after).or(Some(moved))
+                }
+            }
+            (moved, _) => moved,
+        };
+        // What moved besides what scrolls copy, and what came or went in a
+        // scrolled content; `None` when a rebuild no widget described moved
+        // what cannot be said.
+        let moved_besides = |offers: &[crate::scroll_copy::ScrollOffer]| match &boxes_after {
+            Some(after) if described || relaid => {
+                let moves = crate::scroll_copy::moves_besides(
+                    &uncovered(&boxes_before),
+                    &uncovered(after),
+                    offers,
+                );
+                Some([moves.besides, moves.carried].concat())
+            }
+            _ if recomposed || structure_rebuilt => None,
+            _ => Some(Vec::new()),
+        };
+        let copying = damage.copying;
+        let scale = f64::from(scale_factor);
+        let full = full.or_else(|| {
+            peers
+                .as_ref()
+                .is_some_and(|peers| peers.changed.is_none())
+                .then_some("presence marks")
+        });
+        let plan_scale = (scale, damage.copy_scale);
+        let plan_size = (
+            device_extent(size.width, damage.copy_scale),
+            device_extent(size.height, damage.copy_scale),
+        );
+        damage.frame(full, &drawn, scale, peers.as_ref(), |regions| {
+            let root = self.root_widget.as_ref();
+            if !copying {
+                collect_submitted_widget_damage(root, regions);
+                regions.extend(moved.into_iter().flatten());
+                return crate::scroll_copy::CopyPlan::default();
+            }
+            let offers =
+                crate::scroll_copy::accepting(|| collect_submitted_widget_damage(root, regions));
+            if offers.is_empty() {
+                regions.extend(moved.into_iter().flatten());
+                return crate::scroll_copy::CopyPlan::default();
+            }
+            // What is painted over the widgets (a menu, the palette, a
+            // tooltip, peer marks that cannot be bounded) does not move with
+            // a scroll: the scrollers repaint.
+            if drawn.painted_over || marks_unbounded {
+                regions.extend(moved.into_iter().flatten());
+                regions.extend(offers.iter().map(crate::scroll_copy::ScrollOffer::viewport));
+                return crate::scroll_copy::CopyPlan::default();
+            }
+            let Some(besides) = moved_besides(&offers) else {
+                regions.extend(moved.into_iter().flatten());
+                regions.extend(offers.iter().map(crate::scroll_copy::ScrollOffer::viewport));
+                return crate::scroll_copy::CopyPlan::default();
+            };
+            regions.extend(besides);
+            let history = self
+                .history
+                .as_deref()
+                .map(|history| history as &dyn Widget);
+            crate::scroll_copy::plan_scaled(
+                &offers,
+                &std::iter::once(root).chain(history).collect::<Vec<_>>(),
+                plan_scale,
+                plan_size,
+            )
+        });
+        if let Some(mut peers) = peer_layer {
+            peers.layer.presented();
+            damage.peers = Some(peers);
+        }
         complete_native_frame_content(self, |_| {});
         search_pending
             || self.needs_sync
@@ -858,14 +1022,39 @@ impl App {
     }
 }
 
+/// A widget's identity within one tree walk: its address and its depth (a
+/// widget held at the start of its parent shares the parent's address).
+type WidgetIdentity = (*const (), usize);
+
 /// Every widget in tree order, by identity, with its layout box.
-fn widget_boxes(root: &dyn Widget) -> Vec<(*const (), KurboRect)> {
-    fn walk(widget: &dyn Widget, out: &mut Vec<(*const (), KurboRect)>) {
-        out.push((std::ptr::from_ref(widget).cast::<()>(), widget.get_rect()));
-        widget.for_each_child(&mut |child| walk(child, out));
+fn widget_boxes(root: &dyn Widget) -> Vec<(WidgetIdentity, KurboRect)> {
+    fn walk(widget: &dyn Widget, depth: usize, out: &mut Vec<(WidgetIdentity, KurboRect)>) {
+        out.push((
+            (std::ptr::from_ref(widget).cast::<()>(), depth),
+            widget.get_rect(),
+        ));
+        widget.for_each_child(&mut |child| walk(child, depth.saturating_add(1), out));
     }
     let mut out = Vec::new();
-    walk(root, &mut out);
+    walk(root, 0, &mut out);
+    out
+}
+
+/// Every widget whose own damage covers a change to its box this frame
+/// ([`Widget::damage_covers_own_box`]), by identity as [`widget_boxes`] has it.
+fn boxes_covered_by_own_damage(root: &dyn Widget) -> std::collections::HashSet<WidgetIdentity> {
+    fn walk(
+        widget: &dyn Widget,
+        depth: usize,
+        out: &mut std::collections::HashSet<WidgetIdentity>,
+    ) {
+        if widget.damage_covers_own_box() {
+            out.insert((std::ptr::from_ref(widget).cast::<()>(), depth));
+        }
+        widget.for_each_child(&mut |child| walk(child, depth.saturating_add(1), out));
+    }
+    let mut out = std::collections::HashSet::new();
+    walk(root, 0, &mut out);
     out
 }
 
@@ -873,8 +1062,8 @@ fn widget_boxes(root: &dyn Widget) -> Vec<(*const (), KurboRect)> {
 /// `before` and `after` list the same widgets in the same order; `None`
 /// when they do not, and which pixels moved cannot be said.
 fn moved_boxes(
-    before: &[(*const (), KurboRect)],
-    after: &[(*const (), KurboRect)],
+    before: &[(WidgetIdentity, KurboRect)],
+    after: &[(WidgetIdentity, KurboRect)],
 ) -> Option<Vec<KurboRect>> {
     if before.len() != after.len() {
         return None;
@@ -891,11 +1080,61 @@ fn moved_boxes(
     Some(moved)
 }
 
+/// The old and new box of every widget that a rebuild and relayout moved,
+/// and the box of every widget that came or went, matched by identity.
+fn changed_boxes(
+    before: &[(WidgetIdentity, KurboRect)],
+    after: &[(WidgetIdentity, KurboRect)],
+) -> Vec<KurboRect> {
+    let old: std::collections::HashMap<_, _> = before.iter().copied().collect();
+    let new: std::collections::HashMap<_, _> = after.iter().copied().collect();
+    let mut changed = Vec::new();
+    for (widget, rect) in after {
+        match old.get(widget) {
+            Some(was) if was == rect => {}
+            Some(was) => changed.extend([*was, *rect]),
+            None => changed.push(*rect),
+        }
+    }
+    changed.extend(
+        before
+            .iter()
+            .filter(|(widget, _)| !new.contains_key(widget))
+            .map(|(_, rect)| *rect),
+    );
+    changed
+}
+
+/// `extent` scene pixels in device pixels at `scale` per scene pixel.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "a surface's extent at a display's scale is a small non-negative pixel count"
+)]
+fn device_extent(extent: u32, scale: f64) -> u32 {
+    (f64::from(extent) * scale).round().max(0.0) as u32
+}
+
+/// The collaborators' layer a surface paints over the widgets as a window
+/// of its own does ([`SurfaceDamage::painting_peers`]).
+#[derive(Default)]
+struct PeerLayer {
+    layer: crate::presence::PresenceLayer,
+    bounds: crate::scene_parts::DrawBounds,
+}
+
+/// What the collaborators' layer did in one frame: its damage against the
+/// frame before (`None` when it cannot be proven), and where it paints, on
+/// screen and now (`None` when that cannot be bounded), in scene pixels.
+struct PeerFrame {
+    changed: Option<Vec<KurboRect>>,
+    marks: Option<crate::presence::LayerMarks>,
+}
+
 /// Where an app's frames on a surface changed since its host last looked
 /// ([`Self::take`]), decided as a window of its own decides what to submit:
 /// the widgets' damage and the tooltip's bounds, unless something no damage
 /// describes changed, which repaints the surface.
-#[derive(Default)]
 pub struct SurfaceDamage {
     /// In the surface's scene coordinates. `None` once a frame since the
     /// last take could not describe its change, and before the first frame.
@@ -909,13 +1148,119 @@ pub struct SurfaceDamage {
     widgets: Option<crate::presence::WidgetPresence>,
     /// Why the last frame repainted the surface whole, if it did.
     repainted: Option<&'static str>,
+    /// Whether the host copies what a scroll keeps on screen
+    /// ([`Self::copying`]).
+    copying: bool,
+    /// The copies of the frames since the last take, in device pixels at
+    /// [`Self::copy_scale`] per scene pixel, to make before repainting the
+    /// damage.
+    copies: Vec<crate::scroll_copy::DeviceCopy>,
+    /// How many pixels of the host's target one pixel of the surface's
+    /// scene is ([`Self::set_copy_scale`]).
+    copy_scale: f64,
+    /// The collaborators' layer, when the surface paints it.
+    peers: Option<Box<PeerLayer>>,
+}
+
+impl Default for SurfaceDamage {
+    fn default() -> Self {
+        Self {
+            pending: None,
+            top_layer_drawn: false,
+            tooltip: None,
+            widgets: None,
+            repainted: None,
+            copying: false,
+            copies: Vec::new(),
+            copy_scale: 1.0,
+            peers: None,
+        }
+    }
 }
 
 impl SurfaceDamage {
+    /// For a host that presents each frame over the pixels of the last one
+    /// and makes the copies [`Self::take_copying`] returns before it repaints
+    /// the damage: a scroll then copies what stays on screen instead of
+    /// damaging its viewport ([`crate::scroll_copy`]).
+    pub fn copying() -> Self {
+        Self {
+            copying: true,
+            ..Self::default()
+        }
+    }
+
+    /// Whether this is for a host that copies ([`Self::copying`]).
+    pub fn is_copying(&self) -> bool {
+        self.copying
+    }
+
+    /// Paint collaborators' pointers, names and activity over the widgets,
+    /// as a window of its own does, and damage only the marks that changed;
+    /// a scroll beneath them still copies, repainting the marks where they
+    /// are and where its copy took them. For a host that does not paint
+    /// them itself (an embedded app's host does).
+    #[must_use]
+    pub fn painting_peers(mut self) -> Self {
+        self.peers = Some(Box::default());
+        self
+    }
+
+    /// The host's target has `device_per_unit` pixels per pixel of the
+    /// surface's scene (an app drawn into a desktop's logical scene shown at
+    /// 200 % has 2): copies are planned in those pixels, so a step of half a
+    /// scene pixel there is a whole pixel and copies. The copies
+    /// [`Self::take_copying`] returns are in them.
+    pub fn set_copy_scale(&mut self, device_per_unit: f64) {
+        let scale = if device_per_unit.is_finite() && device_per_unit > 0.0 {
+            device_per_unit
+        } else {
+            1.0
+        };
+        if scale.to_bits() == self.copy_scale.to_bits() {
+            return;
+        }
+        // Copies not yet taken were planned at the old scale: they land as
+        // damage instead.
+        let copies = std::mem::take(&mut self.copies);
+        let unit = self.copy_scale;
+        if let Some(pending) = self.pending.as_mut() {
+            pending.extend(copies.iter().map(|copy| {
+                let to = copy.destination_rect();
+                KurboRect::new(to.x0 / unit, to.y0 / unit, to.x1 / unit, to.y1 / unit)
+            }));
+        }
+        self.copy_scale = scale;
+    }
+
+    /// How many pixels of the host's target one pixel of the surface's
+    /// scene is ([`Self::set_copy_scale`]).
+    pub fn copy_scale(&self) -> f64 {
+        self.copy_scale
+    }
+
     /// Where the frames since the last take changed, or `None` when they
-    /// must be repainted whole.
+    /// must be repainted whole. A copy is damage here: where it would land.
     pub fn take(&mut self) -> Option<Vec<KurboRect>> {
-        self.pending.replace(Vec::new())
+        let copies = std::mem::take(&mut self.copies);
+        let mut pending = self.pending.replace(Vec::new())?;
+        let unit = self.copy_scale;
+        pending.extend(copies.iter().map(|copy| {
+            let to = copy.destination_rect();
+            KurboRect::new(to.x0 / unit, to.y0 / unit, to.x1 / unit, to.y1 / unit)
+        }));
+        Some(pending)
+    }
+
+    /// The copies to make, in order, and then where the frames since the
+    /// last take changed; `None` when they must be repainted whole.
+    pub fn take_copying(
+        &mut self,
+    ) -> Option<(Vec<crate::scroll_copy::DeviceCopy>, Vec<KurboRect>)> {
+        let copies = std::mem::take(&mut self.copies);
+        self.pending
+            .replace(Vec::new())
+            .map(|pending| (copies, pending))
     }
 
     /// Why the last frame repainted the surface whole, or `None` when its
@@ -926,6 +1271,7 @@ impl SurfaceDamage {
 
     fn repaint(&mut self, why: &'static str) {
         self.pending = None;
+        self.copies.clear();
         self.repainted = Some(why);
     }
 
@@ -941,13 +1287,15 @@ impl SurfaceDamage {
     /// Add one drawn frame: repainted whole for the reason `full` gives,
     /// when a layer is painted over the widgets or was last frame, and
     /// otherwise the widget damage `collect` reports (logical, scaled by
-    /// `scale` to the scene) with the tooltip where it was and where it is.
+    /// `scale` to the scene) with the tooltip where it was and where it is,
+    /// and the copies and damage of the scrolls it planned (in the scene).
     fn frame(
         &mut self,
         full: Option<&'static str>,
         drawn: &DrawnFrame,
         scale: f64,
-        collect: impl FnOnce(&mut Vec<KurboRect>),
+        peers: Option<&PeerFrame>,
+        collect: impl FnOnce(&mut Vec<KurboRect>) -> crate::scroll_copy::CopyPlan,
     ) {
         let layer_shown = std::mem::replace(&mut self.top_layer_drawn, drawn.top_layer.is_some());
         let tooltip_shown = std::mem::replace(&mut self.tooltip, drawn.tooltip);
@@ -963,16 +1311,66 @@ impl SurfaceDamage {
             return;
         };
         let mut regions = Vec::new();
-        collect(&mut regions);
-        pending.extend(
-            regions
-                .into_iter()
-                .map(|rect| Affine::scale(scale).transform_rect_bbox(rect)),
-        );
+        let planned = collect(&mut regions);
+        // Planned, carried and kept in the host's device pixels; pending in
+        // the scene's.
+        let unit = self.copy_scale;
+        let to_device = Affine::scale(unit);
+        let mut changed: Vec<KurboRect> = regions
+            .into_iter()
+            .map(|rect| Affine::scale(scale * unit).transform_rect_bbox(rect))
+            .collect();
         // The tooltip paints over the widgets: a label that changes in
-        // place has no other damage.
-        pending.extend(tooltip_shown);
-        pending.extend(drawn.tooltip);
+        // place has no other damage. Nor do the collaborators' marks.
+        let peer_changed = peers
+            .and_then(|peers| peers.changed.as_deref())
+            .unwrap_or_default()
+            .iter()
+            .map(|rect| rect.expand().inflate(1.0, 1.0));
+        changed.extend(
+            tooltip_shown
+                .into_iter()
+                .chain(drawn.tooltip)
+                .chain(peer_changed)
+                .map(|rect| to_device.transform_rect_bbox(rect)),
+        );
+        changed.extend(planned.damage);
+        // A copy reads the pixels the last take left. After another frame
+        // since, those are not all there: that frame's damage is repainted
+        // only once the host takes, so the copy lands as damage instead.
+        if pending.is_empty() && self.copies.is_empty() {
+            crate::scroll_copy::carry(&planned.copies, &mut changed);
+            if let Some(marks) = peers.and_then(|peers| peers.marks.as_ref()) {
+                let device = |rects: &[KurboRect]| -> Vec<KurboRect> {
+                    rects
+                        .iter()
+                        .map(|rect| to_device.transform_rect_bbox(*rect))
+                        .collect()
+                };
+                crate::scroll_copy::marks_over_copies(
+                    &planned.copies,
+                    &device(&marks.shown),
+                    &device(&marks.painted),
+                    &mut changed,
+                );
+            }
+            changed.extend(planned.exposed);
+            self.copies.extend(planned.copies);
+        } else {
+            changed.extend(planned.exposed);
+            changed.extend(
+                planned
+                    .copies
+                    .iter()
+                    .map(crate::scroll_copy::DeviceCopy::destination_rect),
+            );
+        }
+        let to_scene = Affine::scale(unit.recip());
+        pending.extend(
+            changed
+                .into_iter()
+                .map(|rect| to_scene.transform_rect_bbox(rect)),
+        );
     }
 }
 
@@ -996,8 +1394,8 @@ mod tests {
     fn a_relayout_repaints_where_moved_widgets_were_and_are() {
         let (a, b) = (1_u8, 2_u8);
         let (a, b) = (
-            std::ptr::from_ref(&a).cast::<()>(),
-            std::ptr::from_ref(&b).cast::<()>(),
+            (std::ptr::from_ref(&a).cast::<()>(), 1),
+            (std::ptr::from_ref(&b).cast::<()>(), 1),
         );
         let field = KurboRect::new(0.0, 0.0, 100.0, 20.0);
         let label = KurboRect::new(0.0, 30.0, 50.0, 40.0);
@@ -1016,6 +1414,39 @@ mod tests {
             None
         );
         assert_eq!(moved_boxes(&[(a, field)], &[(a, field), (b, label)]), None);
+    }
+
+    #[test]
+    fn a_described_rebuild_repaints_the_widgets_that_came_went_or_moved() {
+        let (a, b, c) = (1_u8, 2_u8, 3_u8);
+        let [a, b, c] = [&a, &b, &c].map(|widget| (std::ptr::from_ref(widget).cast::<()>(), 1));
+        let header = KurboRect::new(0.0, 0.0, 100.0, 20.0);
+        let chip = KurboRect::new(0.0, 0.0, 40.0, 20.0);
+        let body = KurboRect::new(0.0, 30.0, 100.0, 90.0);
+        let lower = KurboRect::new(0.0, 40.0, 100.0, 100.0);
+        // A chip came, the body moved down under it; the header kept its box.
+        assert_eq!(
+            changed_boxes(
+                &[(a, header), (b, body)],
+                &[(a, header), (c, chip), (b, lower)]
+            ),
+            vec![chip, body, lower]
+        );
+        // The chip went again.
+        assert_eq!(
+            changed_boxes(
+                &[(a, header), (c, chip), (b, body)],
+                &[(a, header), (b, body)]
+            ),
+            vec![chip]
+        );
+        // A widget held at the start of its parent shares the parent's
+        // address, not its depth: neither is mistaken for the other.
+        let child = (a.0, 2);
+        assert_eq!(
+            changed_boxes(&[(a, header), (child, chip)], &[(a, header), (child, chip)]),
+            Vec::<KurboRect>::new()
+        );
     }
 
     /// Records where it is clicked, in its own logical coordinates.
@@ -1045,8 +1476,7 @@ mod tests {
             taffy.widget_leaf(style, nodes, self)
         }
         fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-            let layout = taffy.layout(node).unwrap();
-            self.rect = crate::widget::placed(layout, origin);
+            self.rect = crate::widget::layout_rect(taffy, node, origin);
         }
         fn draw(
             &mut self,
@@ -1282,7 +1712,7 @@ mod tests {
             &[crate::close_admission::Choice::KeepEditing],
             app.input.platform,
         );
-        app.layout.structure_dirty = true;
+        app.layout.request_rebuild();
         app.layout.layout_dirty = true;
         app.surface_frame(&region, &mut Scene::new());
         PHYSICAL.with_borrow_mut(Vec::clear);

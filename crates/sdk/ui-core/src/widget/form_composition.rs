@@ -628,7 +628,7 @@ impl Widget for Form {
     }
     /// One label column for the whole form: every section lines its
     /// controls up on the widest label of any of them.
-    fn adjust_layout_with_measure(
+    fn adjust_layout_style(
         &mut self,
         tree: &mut TaffyTree<()>,
         _node: NodeId,
@@ -783,7 +783,7 @@ impl Widget for FormSection {
         map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
-    fn adjust_layout_with_measure(
+    fn adjust_layout_style(
         &mut self,
         tree: &mut TaffyTree<()>,
         node: NodeId,
@@ -907,7 +907,7 @@ impl Widget for Field {
         map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
-    fn adjust_layout_with_measure(
+    fn adjust_layout_style(
         &mut self,
         tree: &mut TaffyTree<()>,
         node: NodeId,

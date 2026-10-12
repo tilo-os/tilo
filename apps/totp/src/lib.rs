@@ -50,10 +50,8 @@
     )
 )]
 
-pub mod actions;
 pub mod add_panel;
 pub mod app;
-pub mod doc;
 pub mod i18n;
 pub mod list;
 pub mod model;
@@ -72,5 +70,5 @@ pub use resource::{Totp, TotpEffect, TotpShell};
 
 /// The app as every host mounts it.
 pub fn definition() -> &'static ui::application::ApplicationDefinition {
-    ui::framework::definition::<TotpShell>()
+    ui::built_in_definition!(TotpShell)
 }

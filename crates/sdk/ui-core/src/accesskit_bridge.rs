@@ -47,7 +47,7 @@
 //! * **Actions.** [`resolve_node_id`] inverts a synthetic id back to
 //!   `(owning widget, key path)` so an incoming `ActionRequest` reaches the
 //!   clip the user was on, via
-//!   [`Widget::perform_action_at`].
+//!   [`Widget::perform_action`].
 //!   Inversion re-walks the live tree rather than caching an index, so a stale
 //!   id from a previous frame resolves to `None` instead of to the wrong clip.
 
@@ -354,7 +354,7 @@ pub fn widget_ak_id<S: BuildHasher>(
 /// [`build_tree_update`] uses the same rule to aim the exported focus. This is
 /// the other half: the host uses it to aim *keyboard* activation at the element
 /// the user is on, so a canvas widget implements
-/// [`Widget::perform_action_at`] once
+/// [`Widget::perform_action`] once
 /// and gets both the assistive-technology and the Enter/arrow paths, instead of
 /// having to implement `perform_action` again for the keyboard.
 pub fn active_descendant_path(access: &AccessNode) -> Option<Vec<u64>> {
@@ -390,7 +390,7 @@ pub enum A11yTarget {
         owner: TaffyNodeId,
         /// Keys from `owner`'s direct synthetic child down to the target.
         /// Keys, for a widget that identifies a synthetic child by identity
-        /// — `perform_action_at` matches a clip by `hash_key(uuid)`, which is
+        /// — `perform_action` matches a clip by `hash_key(uuid)`, which is
         /// nothing like a position.
         key_path: Vec<u64>,
         /// Ordinals, for a widget that identifies one by position —
@@ -1308,22 +1308,6 @@ mod tests {
                 .collect();
             taffy.widget_node(taffy::Style::default(), &child_nodes, node_map, self)
         }
-        fn apply_layout(
-            &mut self,
-            _taffy: &TaffyTree<()>,
-            _node: taffy::NodeId,
-            _origin: vello::kurbo::Point,
-        ) {
-        }
-        fn draw(
-            &mut self,
-            _scene: &mut vello::Scene,
-            _transform: vello::kurbo::Affine,
-            _text_renderer: &mut crate::text_render::TextRenderer,
-            _theme: &Theme,
-            _presence: &crate::presence::PresenceCtx,
-        ) {
-        }
         fn children(&self) -> Vec<&dyn Widget> {
             self.kids.iter().map(std::convert::AsRef::as_ref).collect()
         }
@@ -1361,22 +1345,6 @@ mod tests {
             nodes: &mut HashMap<TaffyNodeId, *mut dyn Widget>,
         ) -> TaffyNodeId {
             self.child.build_layout(tree, theme, nodes)
-        }
-        fn apply_layout(
-            &mut self,
-            _tree: &TaffyTree<()>,
-            _node: TaffyNodeId,
-            _origin: vello::kurbo::Point,
-        ) {
-        }
-        fn draw(
-            &mut self,
-            _scene: &mut vello::Scene,
-            _transform: vello::kurbo::Affine,
-            _text: &mut crate::text_render::TextRenderer,
-            _theme: &Theme,
-            _presence: &crate::presence::PresenceCtx,
-        ) {
         }
         fn children(&self) -> Vec<&dyn Widget> {
             vec![&self.child]
@@ -1642,22 +1610,6 @@ mod tests {
         ) -> taffy::NodeId {
             let kid = self.child.build_layout(taffy, theme, node_map);
             taffy.widget_node(taffy::Style::default(), &[kid], node_map, self)
-        }
-        fn apply_layout(
-            &mut self,
-            _taffy: &TaffyTree<()>,
-            _node: taffy::NodeId,
-            _origin: vello::kurbo::Point,
-        ) {
-        }
-        fn draw(
-            &mut self,
-            _scene: &mut vello::Scene,
-            _transform: vello::kurbo::Affine,
-            _text_renderer: &mut crate::text_render::TextRenderer,
-            _theme: &Theme,
-            _presence: &crate::presence::PresenceCtx,
-        ) {
         }
         fn children(&self) -> Vec<&dyn Widget> {
             vec![&self.child]

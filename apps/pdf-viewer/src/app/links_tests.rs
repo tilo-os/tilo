@@ -129,7 +129,7 @@ fn internal_links_show_a_pointer_and_navigate_through_the_page_plan() {
         // the link's own page is page 2.
         app.perform_action(
             &mut Edits::lend(&mut state.doc),
-            &move_page_plan_action("source-3", None),
+            move_page_plan_action("source-3", None),
         );
         app.sync_settled(&mut state.doc, &state.root);
         assert_eq!(app.resource_page_sources, vec![3, 1, 2, 4]);
@@ -141,7 +141,7 @@ fn internal_links_show_a_pointer_and_navigate_through_the_page_plan() {
         // Delete the appendix: the link says so instead of jumping anywhere.
         app.perform_action(
             &mut Edits::lend(&mut state.doc),
-            &delete_page_plan_action("source-3"),
+            delete_page_plan_action("source-3"),
         );
         app.sync_settled(&mut state.doc, &state.root);
         assert_eq!(app.resource_page_sources, vec![1, 2, 4]);

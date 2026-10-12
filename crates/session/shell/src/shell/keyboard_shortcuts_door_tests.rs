@@ -11,7 +11,6 @@
 
 use std::path::Path;
 
-use crate::shell::state::WorkspaceAuthority as _;
 use serde_json::{Value, json};
 use tilo_actions::remote::{
     ActionHost, ActionHostError, Caller, CatalogueQuery, InvokeArgument, InvokeRequest,
@@ -31,7 +30,7 @@ fn answer<T>(pending: Pending<T>) -> T {
 }
 
 struct Door {
-    _broker: crate::shell::collab_broker::BrokerHandle,
+    broker: crate::shell::collab_broker::BrokerHandle,
     membership: crate::shell::state::WorkspaceTreeHandle,
     host: crate::shell::remote_actions::BrokerActionHost,
     owner: Caller,
@@ -48,18 +47,25 @@ impl Door {
         .expect("owner-only socket directory");
         let mut workspace =
             crate::shell::state::Workspace::new(crate::shell::state::WorkspaceId(1), "Desk");
-        workspace.room = crate::shell::state::RoomId::parse(&ROOM.to_string()).expect("room id");
+        workspace.set_room(crate::shell::state::RoomId::parse(&ROOM.to_string()).expect("room id"));
         workspace.set_owner(OWNER.to_string());
-        workspace
-            .grant_as(
-                &OWNER.to_string(),
-                ui::permissions::CapOverride::membership(
-                    ui::permissions::Subject::agent(AGENT),
-                    workspace.room.to_string(),
-                    ui::permissions::Verb::Write,
-                ),
-            )
-            .expect("the owner admits a helper that holds no Settings grant");
+        // A helper the owner admits to the room and lets change Notes, and
+        // holds no Settings grant.
+        let owner = tilo_action_policy::Subject::person(OWNER.to_string());
+        workspace.admit_agent_preset(
+            AGENT,
+            tilo_action_policy::roles::AgentPreset::Observer,
+            &owner,
+        );
+        let notes = workspace.node().app("so.tilo.notes");
+        workspace.grant(tilo_action_policy::Grant::new(
+            "helper-notes",
+            tilo_action_policy::Subject::agent(AGENT),
+            notes,
+            tilo_action_policy::KindSet::UNDOABLE,
+            tilo_action_policy::Answer::Allow,
+            owner,
+        ));
         let mut tree = crate::shell::state::WorkspaceTree::default();
         tree.desktop.workspaces.push(workspace);
         let membership = tree.shared();
@@ -73,7 +79,7 @@ impl Door {
             broker.app_action_broker().expect("the action broker"),
         );
         Self {
-            _broker: broker,
+            broker,
             membership,
             host,
             owner: Caller::local_person(OWNER),
@@ -333,5 +339,103 @@ fn a_caller_without_the_settings_grant_cannot_rebind() {
         settings_store::hardware::ShortcutConfig::load(),
         settings_store::hardware::ShortcutConfig::default(),
         "nothing was saved"
+    );
+}
+
+/// A helper whose grant on Settings asks first is offered the rebind; it
+/// does not rebind on its own word, and does once the person confirms on
+/// their device.
+#[test]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the door owns the broker and its socket directory for the whole test"
+)]
+fn a_helper_asked_first_rebinds_on_the_persons_confirmation() {
+    use tilo_action_broker::app_actions::{
+        AppActionConsent, AppActionConsentPrompter, AppActionConsentRequest,
+    };
+    struct Person;
+    impl AppActionConsentPrompter for Person {
+        fn ask(
+            &self,
+            request: AppActionConsentRequest,
+        ) -> Option<tokio::sync::oneshot::Receiver<AppActionConsent>> {
+            assert!(
+                request.confirming,
+                "the person confirms one call: {request:?}"
+            );
+            let (answer, asked) = tokio::sync::oneshot::channel();
+            let _ = answer.send(AppActionConsent::Once);
+            Some(asked)
+        }
+    }
+    let config = tempfile::tempdir().expect("temporary config directory");
+    let mut env = tilo_test_env::ScopedEnv::new();
+    env.set("XDG_CONFIG_HOME", config.path());
+    let dir = tempfile::tempdir().expect("socket directory");
+    let socket = dir.path().join("collab.sock");
+    let door = Door::open(&socket, dir);
+    door.membership
+        .write()
+        .desktop
+        .workspaces
+        .first_mut()
+        .map(|workspace| {
+            let settings = workspace
+                .node()
+                .app(crate::shell::keyboard_shortcuts::APP_ID);
+            workspace.grant(tilo_action_policy::Grant::new(
+                "helper-settings-asks",
+                tilo_action_policy::Subject::agent(AGENT),
+                settings,
+                tilo_action_policy::KindSet::ALL,
+                tilo_action_policy::Answer::Ask,
+                tilo_action_policy::Subject::person(OWNER.to_string()),
+            ))
+        })
+        .expect("the room");
+    door.broker
+        .app_action_broker()
+        .expect("the action broker")
+        .set_app_action_consent(std::sync::Arc::new(Person));
+    let agent = Caller::local_agent(AGENT)
+        .in_room(ROOM.to_string())
+        .acting_for(OWNER);
+    assert!(
+        door.rows(&agent, Some("keyboard-shortcuts"))
+            .iter()
+            .any(|(_, _, action)| action == "rebind"),
+        "an action asking first is offered"
+    );
+    let request = || InvokeRequest {
+        on_behalf_of: None,
+        invocation: InvocationId::new(),
+        target: RemoteActionTarget {
+            provider: workspace_provider(&ROOM.to_string()),
+            address: ActionAddress::new("keyboard-shortcut:quick-settings", "rebind"),
+        },
+        argument: InvokeArgument::Json(
+            json!({"chord": "Super+J"})
+                .as_object()
+                .cloned()
+                .expect("an object"),
+        ),
+        context: None,
+        confirmation: Some(tilo_actions::remote::Confirmation::Confirmed),
+        revision: None,
+        wait_ms: None,
+    };
+    assert_eq!(
+        answer(door.host.invoke(&agent, request())).err(),
+        Some(ActionHostError::ConfirmationRequired),
+        "the helper's own word confirms nothing"
+    );
+    let mut asked = request();
+    let witnessed = answer(door.host.confirm(&agent, &asked)).expect("the person confirmed");
+    asked.confirmation = Some(witnessed);
+    let receipt = answer(door.host.invoke(&agent, asked)).expect("admitted");
+    assert!(
+        matches!(receipt.status, ReceiptStatus::Completed { .. }),
+        "{receipt:?}"
     );
 }

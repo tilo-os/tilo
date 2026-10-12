@@ -36,7 +36,7 @@
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::io::{self, BufRead, BufReader, Write};
-use std::os::unix::net::{UnixListener, UnixStream};
+use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -693,17 +693,7 @@ fn bind_control(path: &Path, kind: CloudSocket, signals: Sender<Signal>) -> io::
     if let Some(parent) = path.parent() {
         prepare_dir(parent)?;
     }
-    // A socket left by a previous run refuses connections; replace it.
-    match fs::remove_file(path) {
-        Ok(()) => {}
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-        Err(error) => return Err(error),
-    }
-    let listener = UnixListener::bind(path)?;
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
-    }
+    let listener = tilo_files::native::private::bind_socket(path)?;
     let open = Arc::new(AtomicUsize::new(0));
     std::thread::Builder::new()
         .name("cloud-control".into())

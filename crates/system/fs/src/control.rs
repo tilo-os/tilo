@@ -507,7 +507,9 @@ mod tests {
         // Phase `the_control_socket_is_not_a_way_around_the_view`.
         // A document outside the view can't be opened, and can't be told apart from one that doesn't exist (`Open` answers `NotFound` either way).
         {
-            use collab_types::{CapOverride, Ed25519PublicKey, Effect, Scope, Subject, Verb};
+            use collab_types::{
+                Access as CapAccess, CapOverride, Ed25519PublicKey, Effect, Scope, Subject,
+            };
 
             const ALICE: IdentityKey = [0xA1; 32];
 
@@ -533,7 +535,7 @@ mod tests {
                     Subject::User(Ed25519PublicKey(ALICE)),
                     Scope::FsPath("/shared".into()),
                     Effect::Grant,
-                    Verb::Read,
+                    CapAccess::Read,
                 )],
                 &[],
                 None,
@@ -617,7 +619,9 @@ mod tests {
         // Phase `a_read_participant_cannot_author_over_the_socket`.
         // A read participant sees the document but cannot author it.
         {
-            use collab_types::{CapOverride, Ed25519PublicKey, Effect, Scope, Subject, Verb};
+            use collab_types::{
+                Access as CapAccess, CapOverride, Ed25519PublicKey, Effect, Scope, Subject,
+            };
 
             const ALICE: IdentityKey = [0xA1; 32];
 
@@ -635,7 +639,7 @@ mod tests {
                 Subject::User(Ed25519PublicKey(ALICE)),
                 Scope::FsPath("/shared".into()),
                 Effect::Grant,
-                Verb::Read,
+                CapAccess::Read,
             );
             let acl = WorkspaceAcl::from_capabilities(ALICE, &[read_cap], &[], None);
 
@@ -674,7 +678,7 @@ mod tests {
                 Subject::User(Ed25519PublicKey(ALICE)),
                 Scope::FsPath("/shared".into()),
                 Effect::Grant,
-                Verb::Write,
+                CapAccess::Write,
             );
             let rw = WorkspaceAcl::from_capabilities(ALICE, &[write_cap], &[], None);
             let sock2 = dir.path().join("rw.sock");

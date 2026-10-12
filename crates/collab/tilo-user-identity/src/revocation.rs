@@ -63,7 +63,7 @@ pub struct RevocationEntry {
     /// Why the device was revoked. Advisory.
     pub reason: RevocationReason,
     /// Ed25519 signature covering everything else.
-    #[serde(with = "crate::cert::serde_bytes_64")]
+    #[serde(with = "serde_bytes")]
     pub signature: [u8; 64],
 }
 

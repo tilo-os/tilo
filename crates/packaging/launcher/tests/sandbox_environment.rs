@@ -245,6 +245,17 @@ fn the_session_environment_does_not_leak_into_the_sandbox() {
             "LD_PRELOAD".to_string(),
             "GLIBC_TUNABLES".to_string(),
         ];
+        // The loader pin, set beside the read-only bind of the manifests it
+        // names: a GPU's for a launch with a render node, lavapipe's for one
+        // without when the session pinned it (CI's environment does).
+        allowed.extend(
+            [
+                launcher::gpu::VK_DRIVER_FILES_ENV,
+                launcher::gpu::VK_ICD_FILENAMES_ENV,
+                launcher::gpu::EGL_VENDOR_ENV,
+            ]
+            .map(str::to_string),
+        );
         allowed.extend(
             launcher::sandbox::INHERITED_ENV
                 .iter()

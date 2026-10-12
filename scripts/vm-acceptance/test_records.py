@@ -44,6 +44,25 @@ class Renderer(unittest.TestCase):
         self.assertEqual(records.renderer("GPU (virgl): nodes: renderD128 | drivers: virtio-pci"), "virgl")
         self.assertEqual(records.renderer("GPU (i915): nodes: renderD128", {"hardware": True}), "gpu")
 
+    def test_a_vm_created_without_virgl_renders_in_software_without_mesas_warning(self):
+        class Vm:
+            def __init__(self, out):
+                self.out = out
+
+            def exec(self, _script, check=True):
+                return self.out
+
+        # A session pinned to lavapipe never asks Mesa's EGL for the virtio GPU,
+        # so the dri2 warning the label used to rely on is absent.
+        pinned = Vm("nodes: by-path card0 card1 renderD128\ndrivers: faux_driver virtio-pci\n")
+        label, display = run.renderer(pinned, without_3d=True)
+        self.assertEqual(records.renderer(label, display), "lavapipe")
+        label, display = run.renderer(pinned)
+        self.assertEqual(records.renderer(label, display), "virgl",
+                         "a VM someone else created may have virgl")
+        warned = Vm("nodes: renderD128\ndrivers: virtio-pci\nMESA-EGL: warning: egl: failed to create dri2 screen\n")
+        self.assertEqual(records.renderer(*run.renderer(warned)), "lavapipe")
+
     def test_an_unnamed_renderer_is_refused_rather_than_guessed(self):
         with self.assertRaises(ValueError):
             records.renderer(None)
@@ -261,6 +280,19 @@ class SoftwareRaster(unittest.TestCase):
     def test_a_gpu_renderer_counts_every_thread(self):
         [problem] = resources._budget_problems(self.window(1), self.BUDGETS, "idle")
         self.assertTrue(problem.startswith("compositor CPU 1.7% > 1.0% (tilo-gpu-driver×2 1.4%"), problem)
+
+    def test_idle_frames_over_budget_name_why_and_whose(self):
+        painted = [{"painted": 1, "paint_reasons": "revision", "paint_clients": ""},
+                   {"painted": 1, "paint_reasons": "apps", "paint_clients": "so.tilo.file-explorer"},
+                   {"painted": 1, "paint_reasons": "apps", "paint_clients": "so.tilo.file-explorer"}]
+        m = {**self.window(3), "painted_by": resources.painters(painted)}
+        [problem] = resources._budget_problems(m, self.BUDGETS, "idle", software=True)
+        self.assertEqual(problem, "3 frames painted while idle > 2 "
+                                  "(apps by so.tilo.file-explorer 2, revision 1)")
+
+    def test_frames_from_an_older_trace_are_counted_unattributed(self):
+        self.assertEqual(resources.painters([{"painted": 1}, {"painted": 1, "paint_reasons": ""}]),
+                         {"no reason": 1, "unattributed": 1})
 
     def test_a_rasteriser_busy_with_no_frame_painted_fails(self):
         [problem] = resources._budget_problems(self.window(0), self.BUDGETS, "idle", software=True)

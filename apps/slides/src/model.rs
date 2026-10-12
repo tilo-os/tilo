@@ -1,7 +1,7 @@
 //! Pure data model for a Slides deck.
 //!
-//! The on-wire source of truth lives in the Automerge document (see
-//! [`crate::doc`]); this module is the in-memory mirror plus the pure
+//! The deck is stored as the [`crate::deck::Deck`] record; this module is
+//! the deck as the window draws it, plus the pure
 //! logic the editor needs (geometry, palette resolution, the seed deck).
 //! Nothing here touches the CRDT, the renderer, or winit — it is unit
 //! testable in isolation.
@@ -16,9 +16,10 @@
 // call-by-call.
 #![allow(clippy::should_implement_trait)]
 
-use ui::ColorCompat;
+use serde::{Deserialize, Serialize};
 use ui::paint::with_alpha;
-use ui::tokens::colors::PresenceHue;
+use ui::tilo_resource::{self, JsonSchema, Model};
+use ui::tokens::colors::{PresenceHue, mix8};
 use ui::widget::BlockContent;
 use ui::widget::marks::{Mark, MarkSpan};
 use uuid::Uuid;
@@ -41,8 +42,10 @@ pub fn new_id() -> Id {
 // Elements
 // ===========================================================================
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Model, Default, Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
 pub enum ElementKind {
+    #[default]
     Text,
     Rect,
     Ellipse,
@@ -80,8 +83,10 @@ impl ElementKind {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Model, Default, Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
 pub enum TextAlign {
+    #[default]
     Left,
     Center,
     Right,
@@ -414,9 +419,11 @@ impl PartialEq for Element {
 // Slides + layouts
 // ===========================================================================
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Model, Default, Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
 pub enum Layout {
     Title,
+    #[default]
     TitleContent,
     TwoColumn,
     Section,
@@ -467,9 +474,11 @@ impl Layout {
 
 /// Per-slide background treatment, resolved against the palette at draw
 /// time. Keeps slides theme-driven while still allowing variety.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Model, Default, Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
 pub enum Background {
     /// Neutral content surface (raised panel).
+    #[default]
     Surface,
     /// Full accent wash — used for section / cover slides.
     Accent,
@@ -560,8 +569,10 @@ impl Slide {
 /// Named accent palettes a deck can adopt. Every colour is still pulled
 /// from the OS [`Theme`](ui::theme::Theme) so the deck respects the
 /// system look — the palette only chooses *which* token drives the accent.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Model, Default, Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
 pub enum PaletteKind {
+    #[default]
     Indigo,
     Emerald,
     Amber,
@@ -678,9 +689,9 @@ impl Palette {
         let mut palette = Palette {
             accent,
             accent_soft: with_alpha(accent, 56),
-            accent_deep: mix(accent, DEEP, 0.62),
+            accent_deep: mix8(accent, DEEP, 0.62),
             surface: c.surfaces.raised,
-            surface_dim: mix(c.surfaces.raised, c.surfaces.content, 0.5),
+            surface_dim: mix8(c.surfaces.raised, c.surfaces.content, 0.5),
             // A "Deep" slide is an authored dark treatment in every OS theme
             // — a theme-tracking neutral flips near-white in the light
             // palette. A fixed deep tone keeps it dramatic; its text inks
@@ -715,7 +726,7 @@ impl Palette {
             let preferred_dim = if text == c.text_primary {
                 c.text_dim
             } else {
-                mix(text, ground, 0.3)
+                mix8(text, ground, 0.3)
             };
             (text, c.readable_on(ground, preferred_dim))
         });
@@ -812,7 +823,7 @@ impl Palette {
         if text == self.text && contrast_ratio(self.text_dim, ground) >= AA {
             return self.text_dim;
         }
-        let soft = mix(text, ground, 0.3);
+        let soft = mix8(text, ground, 0.3);
         if contrast_ratio(soft, ground) >= AA {
             soft
         } else {
@@ -840,16 +851,6 @@ pub const FILL_ROLES: [&str; 8] = [
 pub const STROKE_ROLES: [&str; 7] = [
     "none", "text", "accent", "success", "warning", "danger", "info",
 ];
-
-/// Linear blend `a*(1-t) + b*t` in straight RGB.
-fn mix(a: Color, b: Color, t: f64) -> Color {
-    let l = |x: u8, y: u8| {
-        (f64::from(x) * (1.0 - t) + f64::from(y) * t)
-            .round()
-            .clamp(0.0, 255.0) as u8
-    };
-    Color::from_rgba8(l(a.r(), b.r()), l(a.g(), b.g()), l(a.b(), b.b()), 255)
-}
 
 // ===========================================================================
 // Starter deck — the minimal blank document a *live* launch opens with.

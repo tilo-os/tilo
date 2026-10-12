@@ -3,7 +3,7 @@ use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::fs::PermissionsExt;
-use std::os::unix::net::{UnixListener, UnixStream};
+use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -498,14 +498,10 @@ where
         fs::create_dir_all(parent)?;
         fs::set_permissions(parent, fs::Permissions::from_mode(0o700))?;
     }
-    if path.exists() {
-        if UnixStream::connect(&path).is_ok() {
-            return Err(SessionError::AlreadyRunning);
-        }
-        fs::remove_file(&path)?;
+    if UnixStream::connect(&path).is_ok() {
+        return Err(SessionError::AlreadyRunning);
     }
-    let listener = UnixListener::bind(&path)?;
-    fs::set_permissions(&path, fs::Permissions::from_mode(0o600))?;
+    let listener = tilo_files::native::private::bind_socket(&path)?;
     let stop = Arc::new(AtomicBool::new(false));
     let thread_stop = Arc::clone(&stop);
     let workers = Arc::new(Mutex::new(Vec::new()));

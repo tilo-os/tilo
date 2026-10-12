@@ -23,6 +23,7 @@
 use std::collections::{BTreeMap, HashMap};
 
 use serde::{Deserialize, Serialize};
+use ui::tilo_resource::{self, JsonSchema, Model};
 use vello::kurbo::{Point, Rect};
 
 use crate::layout::KeyId;
@@ -157,7 +158,7 @@ impl NextKeyDistribution {
 
 /// Where this user tends to hit one key, in key-size units from its centre
 /// (`dx = 0.1` means a tenth of a key width to the right).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize, Model, JsonSchema)]
 pub struct KeyOffset {
     pub dx: f32,
     pub dy: f32,
