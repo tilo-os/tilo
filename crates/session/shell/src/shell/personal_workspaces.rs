@@ -125,7 +125,6 @@ pub struct DeviceChoice {
 /// device's continuation is not a workspace yet, so neither is listed; nor
 /// is someone else's room whose governor this device does not know.
 pub fn member_workspaces(tree: &WorkspaceTree, person: &str) -> BTreeMap<RoomId, Listed> {
-    let now = tilo_clock::unix_now();
     let person = person.to_string();
     tree.desktop
         .workspaces
@@ -136,12 +135,10 @@ pub fn member_workspaces(tree: &WorkspaceTree, person: &str) -> BTreeMap<RoomId,
                 && !tree.continuation_rooms.contains(&workspace.room)
         })
         .filter_map(|workspace| {
-            let governor = if workspace.owner.as_deref() == Some(person.as_str()) {
+            let governor = if workspace.owner().map(String::as_str) == Some(person.as_str()) {
                 None
             } else {
-                let member = workspace
-                    .role_of_at(&person, now)
-                    .is_some_and(|role| role != crate::shell::state::CapRole::Denied);
+                let member = workspace.role_of(&person).is_some();
                 match tree.room_authority(workspace.room) {
                     RoomAuthority::Peer(governor) if member => Some(governor.as_str().to_string()),
                     _ => return None,

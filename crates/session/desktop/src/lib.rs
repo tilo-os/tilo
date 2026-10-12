@@ -7,9 +7,6 @@
 #![cfg_attr(
     test,
     allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
         clippy::float_cmp,
         reason = "test assertions; layout tests pin exact computed positions"
     )

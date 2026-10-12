@@ -1,0 +1,141 @@
+{
+  "schema": 1,
+  "installed": false,
+  "published": false,
+  "generic_gtk3_coverage_qualified": false,
+  "tilo_legacy_semantic_atspi_qualified": false,
+  "qualified_previous_patch": {
+    "patch_sha256": "7b73dd68ea20246a996dc0d9e01b7c9404e3f8209981ac9c6237d9feaddf9e7a",
+    "gtk_library_sha256": "2dd848d65757deb0eff37e44ba823a02a0ea7a2bca6dca39d22c42aa8e442c36",
+    "native_atk_gate": {
+      "complete": true,
+      "log_sha256": "6f37569339a927a71004bcd6565d98e6f7e7ad907bea3ae5533403ee5eb1a7a2",
+      "selection_restored": true,
+      "same_native_buffer": true,
+      "undo_redo": "one native AtkAction invocation each",
+      "custom_undo_handler_refused": true
+    },
+    "recorded_public_speech": {
+      "complete": true,
+      "log_sha256": "f02fe4c1c9f1c6d110e1cb7dceb49ad032438a0440dd253c70f82a8eefb6ac41",
+      "source_head": "33a2534967885791c13a432f99a270875afecc43",
+      "shell_sha256": "01225a35933a6f13522740747b8a868b1d54ecf9df8efd35bb2be1668551caf8",
+      "first_nonempty_preview_seconds": 8.562591583991889,
+      "final_seconds": 25.478654335980536,
+      "word_errors": 0,
+      "reference_words": 18,
+      "word_error_rate": 0.0,
+      "cpus": 2,
+      "memory_limit_bytes": 3221225472,
+      "swap_limit_bytes": 0,
+      "sampled_peak_memory_bytes": 1083969536,
+      "sampled_peak_anon_bytes": 672878592,
+      "sampled_peak_process_threads": 132,
+      "observed_cpu_affinity": [
+        0,
+        1
+      ],
+      "public_audio_sha256": "cc46d12f9faf44a694e709c8bcf04028e686e6b4c1deefe3ac6dbd821a970630",
+      "audio_provenance": "FLEURS de_de0, CC-BY-4.0, 17.94 seconds; recorded synthetic source only",
+      "qualified_journeys": [
+        "selected replacement",
+        "one Undo/Redo",
+        "clipboard unchanged",
+        "active cancel unchanged and worker reaped",
+        "repeat and focus retirement",
+        "password/PIN recorder and worker refusal",
+        "ordinary field recovery"
+      ],
+      "private_scope_removed": true
+    }
+  },
+  "fallback_increment": {
+    "patch_sha256": "73513ea2268a84e79f2a42c2d2a19e5801c898426a4a904a29a9b8304a160abd",
+    "preparation_receipt_sha256": "87f94ccad92ae6ca3862c774786ffefc21908a90802200f03eb1783a7ee6d7ce",
+    "signed_dependency_receipt_sha256": "49da9c17440e6da53d4450bbe5dcc6d1f55bdf40620d42a77f3016d2059aca4e",
+    "preflight_log_sha256": "28540b98a5636ca8cbd50250d05d6efdde830fc7768d5ef68d8702388b1becfc",
+    "preflight_passed": true,
+    "native_green_executed": true,
+    "recorded_speech_executed": true,
+    "red": {
+      "complete": false,
+      "expected_failure": "unregistered stock entry consumes real Ctrl+Z binding",
+      "observed_handled": true,
+      "required_handled": false,
+      "log_sha256": "27a5aff04d2b8f5aed3b214adf6dda428424eeb39c5e43205ee2af92ddc15be7",
+      "library_sha256": "2dd848d65757deb0eff37e44ba823a02a0ea7a2bca6dca39d22c42aa8e442c36",
+      "gate_binary_sha256": "6ee07e93c800c14ad164e3feb9d74803289eff8b9f5fa0b2c7f2a20d9efed6c6"
+    },
+    "native_compile": {
+      "complete": true,
+      "elapsed_seconds": 5.68373710999731,
+      "incremental_from_previous_verified_private_build": true,
+      "old_qualification_outputs_preserved": true,
+      "log_sha256": "58699ae9239409f5f91c0ef907ef3ebdad86764623c38d86415d7cbd52f28844",
+      "gtk_library_sha256": "f149394dd72b69b756c42d028119dbb54cd789f83e5df5aac7dc3bcf397579f7",
+      "native_gate_sha256": "054904786cdfcc920940d2e66a08687ebfe15b2f471fbd39de22e365eb1447a5"
+    },
+    "native_green": {
+      "complete": true,
+      "log_sha256": "1a2f0a782c34642b1ceddf9f00040be327bcb720ed41a41fdf054678ad666113",
+      "compile_receipt_sha256": "f60759a27042bb23ea251e4a86c54762c8c34b303f6a9594143400e8936f294f",
+      "shell_sha256": "41b42cb4e2b5294f94b48e619194052531fa26ef972228853a063ca786cbdcd5",
+      "real_native_shortcut_refusal": true,
+      "selection_restored": true,
+      "same_native_buffer": true,
+      "undo_redo": "one native AtkAction invocation each",
+      "custom_undo_handler_refused": true
+    },
+    "recorded_public_speech": {
+      "complete": true,
+      "log_sha256": "beb4789754403d290f6b7ac537fde60f8e4282dc0b96c9231445fd1f9e6ad0f7",
+      "source_head": "33a2534967885791c13a432f99a270875afecc43",
+      "shell_sha256": "41b42cb4e2b5294f94b48e619194052531fa26ef972228853a063ca786cbdcd5",
+      "first_nonempty_preview_seconds": 8.593853733007563,
+      "final_seconds": 25.40575429299497,
+      "word_errors": 0,
+      "reference_words": 18,
+      "word_error_rate": 0.0,
+      "cpus": 2,
+      "memory_limit_bytes": 3221225472,
+      "swap_limit_bytes": 0,
+      "sampled_peak_memory_bytes": 1089335296,
+      "sampled_peak_anon_bytes": 673390592,
+      "sampled_peak_process_threads": 132,
+      "observed_cpu_affinity": [
+        0,
+        1
+      ],
+      "public_audio_sha256": "cc46d12f9faf44a694e709c8bcf04028e686e6b4c1deefe3ac6dbd821a970630",
+      "audio_provenance": "FLEURS de_de0, CC-BY-4.0, 17.94 seconds; recorded synthetic source only",
+      "qualified_journeys": [
+        "selected replacement",
+        "one Undo/Redo",
+        "clipboard unchanged",
+        "active cancel unchanged and worker reaped",
+        "repeat and focus retirement",
+        "password/PIN recorder and worker refusal",
+        "ordinary field recovery"
+      ],
+      "private_scope_removed": true,
+      "elapsed_seconds": 46.835058619006304,
+      "source_head_is_builder_metadata_base": true,
+      "manifest_sha256": "4c26bcaf6f92d7b397644f2894337c2547212f54dc9f155e7afa2a967e3a5ea5"
+    }
+  },
+  "limits": [
+    "explicit stock-field owner registration required",
+    "no custom edit/reentrant callback qualification",
+    "no Flatpak or installed runtime delivery",
+    "single recording is not broad multilingual quality evidence"
+  ],
+  "historical_failures_preserved": [
+    "guessed Ninja alias",
+    "assumed Meson uninstalled pkg-config path",
+    "programmatic selected insertion does not restore original selection",
+    "initial private mount permissions",
+    "renderer thread exhaustion without actual affinity",
+    "stale protected subject identity assertion",
+    "unregistered Ctrl+Z binding consumed"
+  ]
+}

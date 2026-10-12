@@ -1,17 +1,17 @@
 //! The screenshot scenarios: the bundled demonstration document reviewed by
 //! three people, staged through the reader's own actions.
 //!
-//! The markup is ordinary [`PdfViewerAction`]s with fixed ids, dates and
-//! authors, so every capture of a scenario is the same frame. The view state
+//! The markup is written as the field edits that put each item in place,
+//! with fixed ids, dates and authors, so every capture of a scenario is the
+//! same frame. The view state
 //! a scenario shows (an open editor, a selection, a menu) is staged by the
 //! reader itself once these have applied ([`crate::PdfApp::stage`]).
 
 use ui::framework::Fixture;
-use ui::tilo_resource::Invoke;
+use ui::tilo_resource::{Collection, Edit, Id, Invoke, Json};
 
-use crate::actions::{PdfViewerAction, add_annotation_on};
-use crate::model::{AnnoKind, Annotation, GeomSpace, PtRect, Swatch};
-use crate::resource::PdfViewer;
+use crate::markup::{PdfMarkup, StoredAnnotation, StoredComment, StoredReply, StoredSignature};
+use crate::model::{AnnoKind, GeomSpace, PtRect, SignatureInk, Swatch};
 
 /// Every named scenario `--shots --scenario NAME` captures.
 pub const SCENARIOS: &[&str] = &[
@@ -56,7 +56,7 @@ pub(crate) fn shows_sample(scenario: Option<&str>) -> bool {
 
 /// What the capture of `fixture`'s scenario reads that its actions do not
 /// stage.
-pub(crate) fn fixture(fixture: &mut Fixture<PdfViewer>) {
+pub(crate) fn fixture(fixture: &mut Fixture<PdfMarkup>) {
     if shows_sample(fixture.scenario()) {
         fixture.provide(SampleDocument);
     }
@@ -64,14 +64,11 @@ pub(crate) fn fixture(fixture: &mut Fixture<PdfViewer>) {
 
 /// The actions that stage `scenario`: the demonstration review on every
 /// scenario that shows the bundled document, nothing on the others.
-pub(crate) fn scenario(scenario: Option<&str>) -> Vec<Invoke<PdfViewer>> {
+pub(crate) fn scenario(scenario: Option<&str>) -> Vec<Invoke<PdfMarkup>> {
     if !shows_sample(scenario) {
         return Vec::new();
     }
-    sample_review()
-        .iter()
-        .filter_map(|action| Invoke::apply(action).ok())
-        .collect()
+    sample_review().iter().map(Invoke::from).collect()
 }
 
 /// A plausible hand-drawn signature as normalised `[0,1]²` strokes, so a
@@ -95,38 +92,53 @@ pub(crate) fn sample_drawn_signature() -> Vec<Vec<(f64, f64)>> {
 /// The demonstration review on page 1: two highlights over the abstract, a
 /// sticky note with a thread, a comment on a highlight, a resolved page
 /// comment and a drawn signature — real review markup anchored to real text.
-pub fn sample_review() -> Vec<PdfViewerAction> {
-    let markup = |id: &str, kind: AnnoKind, color: Swatch, author: &str| {
-        add_annotation_on(
-            &Annotation {
-                id: id.into(),
-                page: 1,
-                kind,
-                color,
-                author: author.into(),
-                chars: None,
-                created_ms: 0,
-                space: GeomSpace::Page,
-            },
-            Some("source-1"),
-        )
-    };
-    let comment = |id: &str, anno: Option<&str>, author: &str, created: i64, body: &str| {
-        PdfViewerAction::AddComment {
+#[allow(
+    clippy::too_many_lines,
+    reason = "one demonstration review, item by item"
+)]
+pub fn sample_review() -> Vec<Edit<PdfMarkup>> {
+    let paths = PdfMarkup::paths();
+    let markup = |id: &str, mark: AnnoKind, color: Swatch, author: &str| {
+        paths.annotations.insert(&StoredAnnotation {
             id: id.into(),
-            anno_id: anno.map(str::to_owned),
-            page: 1,
+            page_id: "source-1".into(),
+            mark,
+            color,
             author: author.into(),
-            created,
-            body: body.into(),
-        }
+            chars: None,
+            created_ms: 0,
+            space: GeomSpace::Page,
+        })
     };
-    let reply = |id: &str, author: &str, body: &str| PdfViewerAction::AddReply {
-        comment_id: NOTE_COMMENT.into(),
-        id: id.into(),
-        author: author.into(),
-        body: body.into(),
-        rich: Vec::new(),
+    let comment = |id: &str,
+                   anno: Option<&str>,
+                   author: &str,
+                   created: i64,
+                   body: &str,
+                   resolved: bool,
+                   replies: &[(&str, &str, &str)]| {
+        let mut thread = Collection::new();
+        for (id, author, body) in replies {
+            thread.push(
+                Id::from_raw(*id),
+                StoredReply {
+                    author: (*author).into(),
+                    text: (*body).into(),
+                    rich: Json(Vec::new()),
+                },
+            );
+        }
+        paths.comments.insert(&StoredComment {
+            id: id.into(),
+            anno: anno.unwrap_or_default().into(),
+            page_id: "source-1".into(),
+            author: author.into(),
+            text: body.into(),
+            rich: Json(Vec::new()),
+            created,
+            resolved,
+            replies: thread,
+        })
     };
     vec![
         markup(
@@ -147,32 +159,41 @@ pub fn sample_review() -> Vec<PdfViewerAction> {
             Swatch::Blue,
             "Alice",
         ),
-        PdfViewerAction::AddSignature {
+        paths.signatures.insert(&StoredSignature {
             id: "sample-signature".into(),
-            page: 1,
-            x: 318.0,
-            y: 612.0,
-            w: 218.0,
-            h: 74.0,
+            page_id: "source-1".into(),
+            rect: PtRect::new(318.0, 612.0, 218.0, 74.0),
             signer: SIGNER.into(),
             date: SIGNED_ON.into(),
-            strokes: Some(sample_drawn_signature()),
-            page_id: Some("source-1".into()),
-            user_space: false,
-        },
-        comment(NOTE_COMMENT, Some(NOTE), "Alice", 1, NOTE_COMMENT_BODY),
-        reply(
-            "sample-reply-1",
-            "Bob",
-            "Good catch — folded it into section 1.2.",
+            ink: SignatureInk::Drawn {
+                strokes: sample_drawn_signature(),
+            },
+            space: GeomSpace::Page,
+        }),
+        comment(
+            NOTE_COMMENT,
+            Some(NOTE),
+            "Alice",
+            1,
+            NOTE_COMMENT_BODY,
+            false,
+            &[
+                (
+                    "sample-reply-1",
+                    "Bob",
+                    "Good catch — folded it into section 1.2.",
+                ),
+                ("sample-reply-2", "Alice", "Perfect, thanks."),
+            ],
         ),
-        reply("sample-reply-2", "Alice", "Perfect, thanks."),
         comment(
             "sample-highlight-comment",
             Some(HIGHLIGHT),
             "Bob",
             2,
             "This sentence is the thesis of the whole paper — let's keep it verbatim.",
+            false,
+            &[],
         ),
         comment(
             "sample-page-comment",
@@ -180,11 +201,9 @@ pub fn sample_review() -> Vec<PdfViewerAction> {
             "Carol",
             3,
             "Typography reads cleanly at fit-page zoom. Approved.",
+            true,
+            &[],
         ),
-        PdfViewerAction::SetCommentResolved {
-            id: "sample-page-comment".into(),
-            resolved: true,
-        },
     ]
 }
 
@@ -193,7 +212,8 @@ pub fn sample_review() -> Vec<PdfViewerAction> {
 #[cfg(test)]
 pub(crate) fn sample_state() -> ui::State {
     let mut state = ui::State::new();
-    for action in sample_review() {
+    for edit in sample_review() {
+        let action = Invoke::from(edit).build(0).expect("the review builds");
         ui::tilo_actions::Action::apply(&action, &mut state.doc).expect("the review applies");
     }
     state

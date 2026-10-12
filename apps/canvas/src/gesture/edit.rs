@@ -4,11 +4,12 @@
 #![allow(clippy::arithmetic_side_effects, reason = "kurbo's float geometry")]
 
 use std::collections::BTreeMap;
+use ui::tilo_resource::Invoke;
 
 use serde::{Deserialize, Serialize};
 use ui::vello::kurbo::{Affine, BezPath, Point, Rect, Shape as _, Vec2};
 
-use crate::actions::{CanvasAction, Draw, EditMarks, NewMark};
+use crate::actions::{Draw, EditMarks, NewMark};
 use crate::model::{Artwork, Mark, path_data, valid_id};
 
 /// Whether `mark` can be picked: its layer is shown. An eraser is picked
@@ -121,7 +122,7 @@ pub fn snap_targets(art: &Artwork, moving: &[String]) -> Vec<Rect> {
 
 /// `affine` applied to `ids` as one edit: a plain move when that is all it
 /// is, so history reads as what happened.
-pub fn transform(ids: Vec<String>, affine: Affine) -> Option<CanvasAction> {
+pub fn transform(ids: Vec<String>, affine: Affine) -> Option<Invoke<Artwork>> {
     let [sx, ky, kx, sy, ..] = affine.as_coeffs();
     let shift = affine.translation();
     let moved =
@@ -130,13 +131,13 @@ pub fn transform(ids: Vec<String>, affine: Affine) -> Option<CanvasAction> {
         if shift.hypot() < 1e-6 {
             return None;
         }
-        return Some(CanvasAction::edit(EditMarks {
+        return Some(Artwork::EDIT_MARKS.with(EditMarks {
             ids,
             move_by: Some([round(shift.x), round(shift.y)]),
             ..EditMarks::default()
         }));
     }
-    Some(CanvasAction::edit(EditMarks {
+    Some(Artwork::EDIT_MARKS.with(EditMarks {
         ids,
         transform: Some(affine.as_coeffs()),
         ..EditMarks::default()
@@ -172,9 +173,9 @@ pub fn group_id(art: &Artwork) -> String {
 }
 
 /// Put `ids` in one new group.
-pub fn group(art: &Artwork, ids: &[String]) -> Option<CanvasAction> {
+pub fn group(art: &Artwork, ids: &[String]) -> Option<Invoke<Artwork>> {
     (ids.len() >= 2).then(|| {
-        CanvasAction::edit(EditMarks {
+        Artwork::EDIT_MARKS.with(EditMarks {
             ids: ids.to_vec(),
             group: Some(group_id(art)),
             ..EditMarks::default()
@@ -183,14 +184,14 @@ pub fn group(art: &Artwork, ids: &[String]) -> Option<CanvasAction> {
 }
 
 /// Take `ids` out of their groups.
-pub fn ungroup(art: &Artwork, ids: &[String]) -> Option<CanvasAction> {
+pub fn ungroup(art: &Artwork, ids: &[String]) -> Option<Invoke<Artwork>> {
     let grouped: Vec<String> = ids
         .iter()
         .filter(|id| art.mark(id).is_some_and(|mark| !mark.group.is_empty()))
         .cloned()
         .collect();
     (!grouped.is_empty()).then(|| {
-        CanvasAction::edit(EditMarks {
+        Artwork::EDIT_MARKS.with(EditMarks {
             ids: grouped,
             group: Some(String::new()),
             ..EditMarks::default()
@@ -259,7 +260,7 @@ pub fn place(
     marks: Vec<(String, NewMark)>,
     offset: Vec2,
     fallback: Option<&str>,
-) -> (Vec<CanvasAction>, Vec<String>) {
+) -> (Vec<Invoke<Artwork>>, Vec<String>) {
     let mut ids: BTreeMap<String, String> = BTreeMap::new();
     let mut groups: BTreeMap<String, String> = BTreeMap::new();
     let mut taken: Vec<String> = Vec::new();
@@ -320,13 +321,17 @@ pub fn place(
     }
     let actions = draws
         .into_iter()
-        .map(|(layer, marks)| CanvasAction::Draw(Draw { layer, marks }))
+        .map(|(layer, marks)| Artwork::DRAW.with(Draw { layer, marks }))
         .collect();
     (actions, placed)
 }
 
 /// Copies of `ids` beside them.
-pub fn duplicate(art: &Artwork, ids: &[String], offset: Vec2) -> (Vec<CanvasAction>, Vec<String>) {
+pub fn duplicate(
+    art: &Artwork,
+    ids: &[String],
+    offset: Vec2,
+) -> (Vec<Invoke<Artwork>>, Vec<String>) {
     let marks = art
         .marks
         .iter()
@@ -342,7 +347,7 @@ pub fn paste(
     text: &str,
     offset: Vec2,
     layer: Option<&str>,
-) -> Option<(Vec<CanvasAction>, Vec<String>)> {
+) -> Option<(Vec<Invoke<Artwork>>, Vec<String>)> {
     if let Ok(clip) = serde_json::from_str::<Clip>(text) {
         return Some(place(art, clip.marks, offset, layer));
     }
@@ -405,12 +410,14 @@ mod tests {
                 texture: 0.0,
                 locked: false,
                 ..Layer::default()
-            }],
+            }]
+            .into(),
             marks: vec![
                 mark("a", 0.0, "pair"),
                 mark("b", 20.0, "pair"),
                 mark("c", 40.0, ""),
-            ],
+            ]
+            .into(),
             ..Artwork::default()
         }
     }
@@ -429,16 +436,26 @@ mod tests {
 
     #[test]
     fn a_pure_move_reads_as_a_move() {
-        let Some(CanvasAction::EditMarks(edit)) =
-            transform(vec!["a".into()], Affine::translate((3.0, 4.0)))
+        let Some(edit) =
+            (transform(vec!["a".into()], Affine::translate((3.0, 4.0)))).and_then(|invoke| {
+                crate::actions::read_as::<crate::actions::EditMarks>(
+                    &invoke,
+                    Artwork::EDIT_MARKS.id,
+                )
+            })
         else {
             panic!("an edit")
         };
         assert_eq!(edit.move_by, Some([3.0, 4.0]));
         assert!(edit.transform.is_none());
         assert!(transform(vec!["a".into()], Affine::IDENTITY).is_none());
-        let Some(CanvasAction::EditMarks(edit)) =
-            transform(vec!["a".into()], Affine::scale_non_uniform(2.0, 1.0))
+        let Some(edit) = (transform(vec!["a".into()], Affine::scale_non_uniform(2.0, 1.0)))
+            .and_then(|invoke| {
+                crate::actions::read_as::<crate::actions::EditMarks>(
+                    &invoke,
+                    Artwork::EDIT_MARKS.id,
+                )
+            })
         else {
             panic!("an edit")
         };
@@ -452,9 +469,11 @@ mod tests {
         let (actions, ids) = paste(&art, &text, Vec2::new(10.0, 10.0), None).unwrap();
         assert_eq!(ids.len(), 2);
         assert!(ids.iter().all(|id| art.mark(id).is_none()));
-        let [CanvasAction::Draw(draw)] = actions.as_slice() else {
+        let [invoke] = actions.as_slice() else {
             panic!("one draw: {actions:?}")
         };
+        let draw: crate::actions::Draw =
+            crate::actions::read_as(invoke, Artwork::DRAW.id).expect("a draw");
         assert_eq!(draw.layer.as_deref(), Some("ink"));
         let group = draw.marks[0].group.clone().unwrap();
         assert_ne!(group, "pair");
@@ -475,11 +494,15 @@ mod tests {
     #[test]
     fn grouping_names_a_free_group() {
         let art = art();
-        let Some(CanvasAction::EditMarks(edit)) = group(&art, &["c".into(), "a".into()]) else {
+        let Some(edit) = (group(&art, &["c".into(), "a".into()])).and_then(|invoke| {
+            crate::actions::read_as::<crate::actions::EditMarks>(&invoke, Artwork::EDIT_MARKS.id)
+        }) else {
             panic!("a group edit")
         };
         assert_eq!(edit.group.as_deref(), Some("group-1"));
-        let Some(CanvasAction::EditMarks(edit)) = ungroup(&art, &["a".into(), "c".into()]) else {
+        let Some(edit) = (ungroup(&art, &["a".into(), "c".into()])).and_then(|invoke| {
+            crate::actions::read_as::<crate::actions::EditMarks>(&invoke, Artwork::EDIT_MARKS.id)
+        }) else {
             panic!("an ungroup edit")
         };
         assert_eq!(edit.ids, ["a"]);

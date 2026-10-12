@@ -19,8 +19,8 @@ use ui::theme::Theme;
 use ui::widget::Widget;
 use vello::kurbo::Point;
 use winit::dpi::PhysicalPosition;
-use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, WindowEvent};
-use winit::keyboard::{Key, KeyLocation, ModifiersState, NamedKey, PhysicalKey};
+use winit::event::{ElementState, MouseButton, WindowEvent};
+use winit::keyboard::{Key, ModifiersState, NamedKey};
 
 /// Tabs 1..=4 in single-tab groups 10..=40 along one strip. 1 and 3 are
 /// both terminals; 2 is a browser and 4 a file manager.
@@ -85,39 +85,20 @@ impl Harness {
     }
 
     fn event(&mut self, event: &WindowEvent, mods: ModifiersState) -> bool {
-        let mut doc = automerge::AutoCommit::new();
-        let mut handled = false;
-        let mut focus = None;
-        self.host.handle_event(
-            event,
-            &mut ui::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &Modifiers::from(mods),
-                state: ui::widget::Edits::lend(&mut doc),
-                path: &automerge::ROOT,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: self.node,
-                taffy: &self.taffy,
-            },
-        );
-        handled
+        ui::testing::Dispatch::new()
+            .modifiers(mods)
+            .layout(&self.taffy, self.node)
+            .send(&mut self.host, event)
+            .handled
     }
 
     /// `mods` is the modifier state with this key applied, as the
     /// compositor hands it on: Alt's own release arrives with Alt up.
     fn key(&mut self, key: Key, state: ElementState, mods: ModifiersState) -> bool {
-        let mut key_event: KeyEvent = unsafe { std::mem::zeroed() };
-        key_event.logical_key = key;
-        key_event.physical_key =
-            PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
-        key_event.location = KeyLocation::Standard;
-        key_event.state = state;
-        key_event.repeat = false;
-        key_event.text = None;
+        let key_event = ui::synthetic_input::key_event(key, None, state);
         self.event(
             &WindowEvent::KeyboardInput {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 event: key_event,
                 is_synthetic: false,
             },
@@ -403,7 +384,7 @@ fn clicking_a_window_in_the_switcher_goes_there() {
     let at = card.center();
     h.event(
         &WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             position: PhysicalPosition::new(at.x, at.y),
         },
         ModifiersState::ALT,
@@ -418,7 +399,7 @@ fn clicking_a_window_in_the_switcher_goes_there() {
     );
     assert!(h.event(
         &WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             state: ElementState::Pressed,
             button: MouseButton::Left,
         },
@@ -428,7 +409,7 @@ fn clicking_a_window_in_the_switcher_goes_there() {
     let active = h.host.window_switcher_active();
     let release_absorbed = h.event(
         &WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             state: ElementState::Released,
             button: MouseButton::Left,
         },

@@ -5,6 +5,9 @@
 //! `status` combines configuration, workspace state, and the daemon's
 //! periodically persisted metrics snapshot.
 
+mod files_probe;
+mod files_setup;
+
 use std::path::PathBuf;
 
 use anyhow::Context;
@@ -30,6 +33,42 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
+    /// Prepare an exact enrolled Files binding using existing identity and explicit filesystem permission.
+    FilesWorkspaceJoin {
+        #[command(flatten)]
+        options: files_setup::JoinOptions,
+    },
+    /// Explicitly prepare an empty primary Files namespace for the existing device; never recover or replace saved data.
+    FilesWorkspaceInitialize {
+        #[command(flatten)]
+        options: files_setup::InitializeOptions,
+    },
+    /// Validate existing primary Files state and its signed filesystem permission before service launch.
+    FilesWorkspaceCheck {
+        #[arg(long)]
+        identity_root: PathBuf,
+        #[arg(long)]
+        cache_dir: PathBuf,
+    },
+    /// Sign an existing Files authority revision through the existing protected person identity.
+    PublishAuthority {
+        #[arg(long)]
+        acl: PathBuf,
+    },
+    /// Query an already-enrolled home peer for public Files binding metadata, without updating local state.
+    HomePeerFilesStatus {
+        #[arg(long)]
+        identity_root: PathBuf,
+        #[arg(long)]
+        device: String,
+        #[arg(long)]
+        service: String,
+        #[arg(long)]
+        workspace_id: u64,
+        /// Inspect an existing legacy registry without migrating or copying it.
+        #[arg(long)]
+        registry: Option<PathBuf>,
+    },
     /// Retry durable removals queued while a home peer was offline.
     HomePeerRetryRemovals {
         #[arg(long)]
@@ -163,6 +202,26 @@ fn main() -> anyhow::Result<std::process::ExitCode> {
 fn run() -> anyhow::Result<()> {
     let cli = Cli::parse();
     match cli.cmd {
+        Cmd::FilesWorkspaceJoin { options } => files_setup::join(&options),
+        Cmd::FilesWorkspaceInitialize { options } => files_setup::initialize(&options),
+        Cmd::FilesWorkspaceCheck {
+            identity_root,
+            cache_dir,
+        } => files_setup::check(&identity_root, &cache_dir),
+        Cmd::PublishAuthority { acl } => files_setup::publish(&acl),
+        Cmd::HomePeerFilesStatus {
+            identity_root,
+            device,
+            service,
+            workspace_id,
+            registry,
+        } => files_probe::run(
+            &identity_root,
+            &device,
+            &service,
+            workspace_id,
+            registry.as_deref(),
+        ),
         Cmd::HomePeerRetryRemovals { identity_root } => retry_pending_removals(&identity_root),
         Cmd::HomePeerStatus {
             identity_root,
@@ -519,7 +578,7 @@ fn persist_canonical_revocation(
 fn persist_fleet_revocation(
     revocation: &tilo_user_identity::RevocationEntry,
 ) -> anyhow::Result<()> {
-    let config = xdg_paths::xdg::config_home()
+    let config = tilo_paths::xdg::config_home()
         .ok_or_else(|| anyhow::anyhow!("user configuration directory is unavailable"))?;
     let path = config
         .join("tilo/identities/fleets")
@@ -715,6 +774,14 @@ fn cmd_status(config: &std::path::Path) -> anyhow::Result<()> {
         println!("  deltas received:      {}", metrics.deltas_received);
         println!("  deltas fanned out:    {}", metrics.deltas_fanned_out);
         println!("  bytes queued:         {}", metrics.bytes_queued);
+        println!("  bytes sent:           {}", metrics.bytes_sent);
+        println!("  bytes sent live:      {}", metrics.bytes_sent_live);
+        for (workspace_id, egress) in &metrics.rooms {
+            println!(
+                "  {workspace_id}\tbytes sent={}\tlive={}",
+                egress.bytes_sent, egress.bytes_sent_live
+            );
+        }
     }
     Ok(())
 }

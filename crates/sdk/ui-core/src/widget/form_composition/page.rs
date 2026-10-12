@@ -260,7 +260,12 @@ impl Widget for PinnedActions {
         map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
-    fn adjust_layout_style(&mut self, tree: &mut TaffyTree<()>, node: NodeId) -> bool {
+    fn adjust_layout_style(
+        &mut self,
+        tree: &mut TaffyTree<()>,
+        node: NodeId,
+        _text: &mut crate::text_render::TextRenderer,
+    ) -> bool {
         let right = length(self.gutter + self.gutter_probe.get());
         match tree.style(node) {
             Ok(current) if current.padding.right != right => {

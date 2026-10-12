@@ -1,0 +1,18 @@
+# Written by `tilo-app surface`; review changes like an API change.
+
+[[resources]]
+kind = "disks.system"
+label = "Storage devices"
+version = 1
+fields = [
+  { path = "names", type = "BTreeMap<String, Atom>" },
+]
+
+[[resources.verbs]]
+id = "name-drive"
+kind = "undoable"
+params = [
+  { name = "serial", required = true, schema = { type = "string" } },
+  { name = "name", required = false, schema = { type = ["string", "null"] } },
+]
+

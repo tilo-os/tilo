@@ -9,7 +9,7 @@ mod files_clipboard_tests {
     use tilo_actions::remote::{Pending, PendingPoll};
 
     struct RetiredOwner {
-        tree: std::sync::Weak<parking_lot::RwLock<crate::shell::state::WorkspaceTree>>,
+        tree: crate::shell::state::WeakWorkspaceTreeHandle,
         runtime: crate::shell::native_workspace_owner::NativeStateWitness,
         broker: std::sync::Weak<tilo_action_broker::collab_broker_capnp::CapnpBrokerState>,
     }
@@ -421,6 +421,7 @@ mod files_clipboard_tests {
                 context: None,
                 confirmation: None,
                 revision: None,
+                wait_ms: None,
             });
             let (job, receipt) = self.wait(pending).unwrap();
             assert_eq!(receipt.invocation, invocation);
@@ -479,6 +480,7 @@ mod files_clipboard_tests {
                 context: None,
                 confirmation: None,
                 revision: None,
+                wait_ms: None,
             }));
             let Message::Receipt(result) = self.wait(pending).unwrap() else {
                 panic!("the actual agent must receive its invocation receipt");
@@ -495,7 +497,7 @@ mod files_clipboard_tests {
                 .checked_add(std::time::Duration::from_secs(5))
                 .expect("bounded test deadline");
             loop {
-                let pending = agent.request(Message::Observe { invocation });
+                let pending = agent.request(Message::observe(invocation));
                 let Message::Update { state, .. } = self.wait(pending).unwrap() else {
                     panic!("the actual agent must observe its own invocation");
                 };
@@ -564,7 +566,7 @@ mod files_clipboard_tests {
             loop {
                 let history = self.succeeds(1, "history");
                 if history["versions"].as_array().unwrap().iter().any(|entry| {
-                    entry["action"] == "Paste files"
+                    entry["what"]["action"]["action"] == "record-clipboard-transfer"
                         && undone.is_none_or(|undone| entry["undone"] == undone)
                 }) {
                     break;
@@ -659,7 +661,7 @@ mod files_clipboard_tests {
             let tree = fixture.session.workspace_tree();
             let mut tree = tree.write();
             for grant in &fixture.source_grants {
-                assert!(tree.workspaces[0].revoke_capability(grant));
+                assert!(tree.workspaces[0].revoke_sandbox(grant));
             }
             drop(tree);
         }
@@ -697,16 +699,16 @@ mod files_clipboard_tests {
             .as_array()
             .unwrap()
             .iter()
-            .find(|entry| entry["action"] == "Paste files")
+            .find(|entry| entry["what"]["action"]["action"] == "record-clipboard-transfer")
             .unwrap_or_else(|| panic!("native Paste's actual shared history: {history}"));
-        let args = entry["args"].as_str().unwrap();
-        assert!(
-            args.contains("completed:1"),
-            "the production history summarizes the receipted count: {history}"
+        let args = &entry["what"]["args"];
+        assert_eq!(
+            args["receipt.completed"], 1,
+            "the production history records the receipted count: {history}"
         );
-        assert!(
-            args.contains("cut:false"),
-            "the production history summarizes Copy mode: {history}"
+        assert_eq!(
+            args["receipt.cut"], false,
+            "the production history records Copy mode: {history}"
         );
         drop(fixture);
     }
@@ -742,7 +744,7 @@ mod files_clipboard_tests {
                 .as_array()
                 .unwrap()
                 .iter()
-                .find(|entry| entry["action"] == "Paste files")
+                .find(|entry| entry["what"]["action"]["action"] == "record-clipboard-transfer")
                 .unwrap();
             assert_eq!(
                 paste["undone"], true,
@@ -764,7 +766,7 @@ mod files_clipboard_tests {
                 .as_array()
                 .unwrap()
                 .iter()
-                .find(|entry| entry["action"] == "Paste files")
+                .find(|entry| entry["what"]["action"]["action"] == "record-clipboard-transfer")
                 .unwrap();
             // The production history API emits `undone` only when true.
             assert!(
@@ -823,7 +825,7 @@ mod files_clipboard_tests {
                     .as_array()
                     .unwrap()
                     .iter()
-                    .any(|entry| entry["action"] == "Paste files"),
+                    .any(|entry| entry["what"]["action"]["action"] == "record-clipboard-transfer"),
                 "interruption must precede document receipt: {history}"
             );
             let result = fixture.succeeds(1, "recover-clipboard-transfers");
@@ -909,7 +911,7 @@ mod files_clipboard_tests {
                 .as_array()
                 .unwrap()
                 .iter()
-                .any(|entry| entry["action"] == "Paste files"),
+                .any(|entry| entry["what"]["action"]["action"] == "record-clipboard-transfer"),
             "cancelled unpublished Paste has no successful transfer history: {history}"
         );
     }
@@ -957,7 +959,7 @@ mod files_clipboard_tests {
             let tree = fixture.session.workspace_tree();
             let mut tree = tree.write();
             for grant in &fixture.source_grants {
-                assert!(tree.workspaces[0].revoke_capability(grant));
+                assert!(tree.workspaces[0].revoke_sandbox(grant));
             }
             drop(tree);
         }
@@ -979,7 +981,7 @@ mod files_clipboard_tests {
                 .as_array()
                 .unwrap()
                 .iter()
-                .any(|entry| entry["action"] == "Paste files"),
+                .any(|entry| entry["what"]["action"]["action"] == "record-clipboard-transfer"),
             "the physically published subset must remain undoable: {history}"
         );
         fixture.succeeds(1, "undo");
@@ -1114,11 +1116,10 @@ mod files_clipboard_tests {
         );
         let history = fixture.succeeds(1, "history");
         assert!(
-            history["versions"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|entry| entry["action"] == "Paste files" && entry["undone"] == true),
+            history["versions"].as_array().unwrap().iter().any(
+                |entry| entry["what"]["action"]["action"] == "record-clipboard-transfer"
+                    && entry["undone"] == true
+            ),
             "cold recovery must settle the actual saved Undo: {history}"
         );
         let result = fixture.invoke(1, "undo");
@@ -1218,13 +1219,10 @@ mod files_clipboard_tests {
         fixture.succeeds(1, "undo");
         let history = fixture.succeeds(1, "history");
         drop(fixture);
-        assert!(
-            history["versions"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|entry| entry["action"] == "Paste files" && entry["undone"] == true)
-        );
+        assert!(history["versions"].as_array().unwrap().iter().any(
+            |entry| entry["what"]["action"]["action"] == "record-clipboard-transfer"
+                && entry["undone"] == true
+        ));
     }
 
     #[test]
@@ -1305,7 +1303,7 @@ mod files_clipboard_tests {
             .unwrap();
         let tree = fixture.session.workspace_tree();
         let probe = RetiredOwner {
-            tree: std::sync::Arc::downgrade(&tree),
+            tree: tree.downgrade(),
             runtime: tree.read().native_runtime.authority_witness(),
             broker: std::sync::Arc::downgrade(fixture.broker.state()),
         };
@@ -1323,14 +1321,14 @@ mod files_clipboard_tests {
                 .as_array()
                 .unwrap()
                 .iter()
-                .any(|entry| entry["action"] == "Paste files"),
+                .any(|entry| entry["what"]["action"]["action"] == "record-clipboard-transfer"),
             "persisted Paste history must reopen: {history}"
         );
         {
             let tree = fixture.session.workspace_tree();
             let mut tree = tree.write();
             for grant in &fixture.source_grants {
-                assert!(tree.workspaces[0].revoke_capability(grant));
+                assert!(tree.workspaces[0].revoke_sandbox(grant));
             }
             drop(tree);
         }
@@ -1367,7 +1365,7 @@ mod files_clipboard_tests {
             .as_array()
             .unwrap()
             .iter()
-            .find(|entry| entry["action"] == "Paste files")
+            .find(|entry| entry["what"]["action"]["action"] == "record-clipboard-transfer")
             .unwrap();
         assert_eq!(
             paste["undone"], true,
@@ -1454,7 +1452,7 @@ mod files_clipboard_tests {
         fixture.session.workspace_tree().write().workspaces[0].grant_app(
             APP,
             &Capability::Filesystem {
-                path: xdg_paths::data_dir().expect("isolated user data root"),
+                path: tilo_paths::data_dir().expect("isolated user data root"),
                 mode: FsMode::ReadWrite,
                 scope: GRANT_SESSION,
             },
@@ -1483,7 +1481,7 @@ mod files_clipboard_tests {
         )
         .unwrap();
         fixture.succeeds(1, "undo");
-        let root = xdg_paths::data_dir().unwrap().join("Trash/files");
+        let root = tilo_paths::data_dir().unwrap().join("Trash/files");
         let entries = std::fs::read_dir(root)
             .unwrap()
             .map(|entry| entry.unwrap().path())
@@ -1546,7 +1544,7 @@ mod files_clipboard_tests {
                 .as_array()
                 .unwrap()
                 .iter()
-                .any(|entry| entry["action"] == "Restore file"),
+                .any(|entry| entry["what"]["action"]["action"] == "record-trash-restore"),
             "{history}"
         );
         fixture
@@ -1740,9 +1738,7 @@ mod files_clipboard_tests {
         assert_eq!(std::fs::read(&info).unwrap(), metadata);
         std::fs::remove_file(&destination).unwrap();
         for grant in grants {
-            assert!(
-                fixture.session.workspace_tree().write().workspaces[0].revoke_capability(&grant)
-            );
+            assert!(fixture.session.workspace_tree().write().workspaces[0].revoke_sandbox(&grant));
         }
         assert!(matches!(
             restore_native_entry(&mut fixture, &trash),
@@ -1793,7 +1789,7 @@ mod files_clipboard_tests {
                 for grant in grants {
                     assert!(
                         fixture.session.workspace_tree().write().workspaces[0]
-                            .revoke_capability(&grant)
+                            .revoke_sandbox(&grant)
                     );
                 }
             }
@@ -1997,15 +1993,20 @@ mod files_clipboard_tests {
         {
             let tree = fixture.session.workspace_tree();
             let mut tree = tree.write();
-            tree.workspaces[0].grant_capability(crate::shell::state::CapOverride::membership(
-                crate::shell::state::Subject::agent("clipboard-helper"),
-                fixture.session.room.clone(),
-                crate::shell::state::Verb::Write,
-            ));
-            tree.workspaces[0].grant_capability(crate::shell::state::CapOverride::grant(
-                crate::shell::state::Subject::agent("clipboard-helper"),
-                crate::shell::state::Scope::App(APP.into()),
-                crate::shell::state::Verb::Write,
+            let owner = tilo_action_policy::Subject::Role(tilo_action_policy::Role::Owner);
+            tree.workspaces[0].admit_agent_preset(
+                "clipboard-helper",
+                tilo_action_policy::roles::AgentPreset::Operator,
+                &owner,
+            );
+            let app = tree.workspaces[0].node().app(APP);
+            tree.workspaces[0].grant(tilo_action_policy::Grant::new(
+                "clipboard-helper-files",
+                tilo_action_policy::Subject::agent("clipboard-helper"),
+                app,
+                tilo_action_policy::KindSet::ALL,
+                tilo_action_policy::Answer::Allow,
+                owner,
             ));
             drop(tree);
         }
@@ -2027,7 +2028,7 @@ mod files_clipboard_tests {
             .as_array()
             .unwrap()
             .iter()
-            .find(|entry| entry["action"] == "Paste files")
+            .find(|entry| entry["what"]["action"]["action"] == "record-clipboard-transfer")
             .expect("the actual agent paste is recorded");
         assert_eq!(receipt["by"], "agent:clipboard-helper", "{receipt}");
         let author = receipt["by"].as_str().unwrap();
@@ -2065,7 +2066,7 @@ mod files_clipboard_tests {
             let tree = fixture.session.workspace_tree();
             let mut tree = tree.write();
             for grant in &fixture.source_grants {
-                assert!(tree.workspaces[0].revoke_capability(grant));
+                assert!(tree.workspaces[0].revoke_sandbox(grant));
             }
             drop(tree);
         }
@@ -2084,7 +2085,7 @@ mod files_clipboard_tests {
             .as_array()
             .unwrap()
             .iter()
-            .find(|entry| entry["action"] == "Paste files")
+            .find(|entry| entry["what"]["action"]["action"] == "record-clipboard-transfer")
             .expect("the failed compensation retains its original Paste history");
         assert_ne!(
             paste["undone"], true,
@@ -2113,7 +2114,7 @@ mod files_clipboard_tests {
             .as_array()
             .unwrap()
             .iter()
-            .find(|entry| entry["action"] == "Paste files")
+            .find(|entry| entry["what"]["action"]["action"] == "record-clipboard-transfer")
             .unwrap();
         assert_eq!(
             paste["undone"], true,
@@ -2130,7 +2131,7 @@ mod files_clipboard_tests {
     ) {
         grant_native_trash(fixture);
         fixture.succeeds(1, "open-trash");
-        let retained = std::fs::read_dir(xdg_paths::data_dir().unwrap().join("Trash/files"))
+        let retained = std::fs::read_dir(tilo_paths::data_dir().unwrap().join("Trash/files"))
             .unwrap()
             .map(|entry| entry.unwrap().path())
             .collect::<Vec<_>>();
@@ -2173,7 +2174,7 @@ mod files_clipboard_tests {
                 .as_array()
                 .unwrap()
                 .iter()
-                .any(|entry| entry["action"] == "Restore file"),
+                .any(|entry| entry["what"]["action"]["action"] == "record-trash-restore"),
             "actual Restore must be in shared history: {history}"
         );
     }

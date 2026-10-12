@@ -11,9 +11,6 @@ pub(crate) enum PublicationDecision {
 
 pub(crate) struct PublicationSchedule {
     window: Duration,
-    /// Configured window; `window` is shorter while [`Self::set_live_window`]
-    /// applies (live collaborators receive each publication at once).
-    configured: Duration,
     last: Option<Instant>,
     due: Option<Instant>,
 }
@@ -22,21 +19,8 @@ impl PublicationSchedule {
     pub(crate) fn new(window: Duration) -> Self {
         Self {
             window,
-            configured: window,
             last: None,
             due: None,
-        }
-    }
-
-    /// LIVE_V1: while other members are present, shorten the publication
-    /// window (never lengthen it); `None` restores the configured window.
-    /// A pending deadline moves with the window.
-    pub(crate) fn set_live_window(&mut self, window: Option<Duration>) {
-        self.window = window.map_or(self.configured, |window| window.min(self.configured));
-        if self.due.is_some()
-            && let Some(last) = self.last
-        {
-            self.due = last.checked_add(self.window);
         }
     }
 

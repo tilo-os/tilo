@@ -8,9 +8,16 @@
  * host re-checks each against the call's current roster, so a participant
  * who joins after admission is heard in place. Objects are tilo-voice/1
  * (web/voice-profile.mjs), as the native client (tilo-moq `client`) sends
- * and expects: each 20 ms object leaves as one datagram carrying it and up to
- * two earlier objects, so an isolated loss is repaired 20 ms later; without
- * datagrams, groups of five objects. Both forms are received.
+ * and expects: each 20 ms object leaves as one datagram; without datagrams,
+ * groups of five objects. Both forms are received.
+ *
+ * Redundancy follows measured loss, hop by hop (TIL-624). A datagram carries
+ * up to two earlier objects as well only while this carrier's own QUIC
+ * connection reports loss (one at 1%, repairing an isolated loss 20 ms
+ * later; two at 5%, repairing a 40 ms burst), and the relay re-bundles each
+ * subscriber's downlink by that subscriber's loss the same way (tilo-moq
+ * `voice::Redundancy`). With the encoder in DTX, a silent participant sends
+ * one comfort-noise update per 400 ms.
  */
 import {createMediaQueue} from './voice-buffers.mjs';
 import {MOQ_PROTOCOL, MediaAdmissionError, openCarrier} from './moq-carrier.mjs';
@@ -22,7 +29,18 @@ const FRAMES_PER_GROUP = 5;
 const FRAME_DURATION_MS = 20;
 const MAX_REMOTE_PUBLISHERS = 7;
 const DATAGRAM_BUNDLE_BYTES = 1000;
-const REDUNDANCY = 2;
+const FRAME_SAMPLES = 960n;
+const MAX_REDUNDANCY = 2;
+// The loss policy of tilo-moq `voice::Redundancy`; keep the two identical.
+const REDUNDANCY_ONE_PERMILLE = 10;
+const REDUNDANCY_TWO_PERMILLE = 50;
+const LOSS_WINDOW_MS = 1000;
+const LOSS_MIN_PACKETS = 20;
+const REDUNDANCY_HOLD_MS = 5000;
+// A browser whose WebTransport reports no loss counters protects isolated
+// losses on its uplink blind; the relay still strips the copy for every
+// subscriber whose own downlink is clean.
+const UNMEASURED_REDUNDANCY = 1;
 const HEX64 = /^[0-9a-f]{64}$/;
 const LOOPBACK = new Set(['localhost', '127.0.0.1', '[::1]']);
 
@@ -52,6 +70,40 @@ export function certificateHashes(grant) {
   const pins = (grant.fingerprints ?? []).filter(value => HEX64.test(value));
   if (!pins.length) return undefined;
   return pins.map(value => ({algorithm: 'sha-256', value: hexBytes(value)}));
+}
+
+/**
+ * Earlier objects to add to each datagram, from one hop's cumulative sent
+ * and lost packet counts: up within one loss window, down one level after
+ * `REDUNDANCY_HOLD_MS` of lower loss.
+ */
+export function createRedundancy() {
+  let level = 0;
+  let window;
+  let calmSince;
+  return {
+    get level() { return level; },
+    observe(now, sent, lost) {
+      if (!window) { window = {start: now, sent, lost}; return level; }
+      const packets = sent - window.sent;
+      if (now - window.start < LOSS_WINDOW_MS || packets < LOSS_MIN_PACKETS) return level;
+      const permille = Math.floor(Math.max(0, lost - window.lost) * 1000 / packets);
+      const start = window.start;
+      window = {start: now, sent, lost};
+      const target = permille >= REDUNDANCY_TWO_PERMILLE ? 2 : permille >= REDUNDANCY_ONE_PERMILLE ? 1 : 0;
+      if (target >= level) {
+        level = target;
+        calmSince = undefined;
+      } else {
+        calmSince ??= start;
+        if (now - calmSince >= REDUNDANCY_HOLD_MS) {
+          level--;
+          calmSince = level > target ? now : undefined;
+        }
+      }
+      return level;
+    },
+  };
 }
 
 /** Whether `grant` points at a loopback carrier (tests and local relays). */
@@ -121,7 +173,26 @@ export function createVoiceTransport({library, carrier = openCarrier, clock = {}
     let sequence = 0n;
     const recent = [];
     const cleanups = new Set();
-    const stats = {mode: 'streams', sent: 0, received: 0, recovered: 0, duplicates: 0};
+    const stats = {mode: 'streams', sent: 0, received: 0, recovered: 0, duplicates: 0, redundancy: 0};
+    // Uplink loss, from this carrier's own QUIC connection.
+    const uplink = createRedundancy();
+    let measured = typeof opened.transport?.getStats === 'function';
+    let sampledAt;
+    let sampling = false;
+    const sampleLoss = () => {
+      const at = monotonicNow();
+      if (!measured || sampling || (sampledAt !== undefined && at - sampledAt < LOSS_WINDOW_MS)) return;
+      sampling = true;
+      sampledAt = at;
+      Promise.resolve().then(() => opened.transport.getStats()).then(connection => {
+        const {packetsSent, packetsLost} = connection ?? {};
+        if (!Number.isFinite(packetsSent) || !Number.isFinite(packetsLost)) { measured = false; return; }
+        const before = uplink.level;
+        uplink.observe(monotonicNow(), packetsSent, packetsLost);
+        if (uplink.level !== before) report({type: 'voice-redundancy', level: uplink.level});
+      }, () => { measured = false; }).finally(() => { sampling = false; });
+    };
+    const redundancy = () => Math.min(MAX_REDUNDANCY, measured ? uplink.level : UNMEASURED_REDUNDANCY);
     const safeClose = resource => { try { resource?.close?.(); } catch {} };
     const finishGroup = () => {
       if (groupTimer !== undefined) clearTimer(groupTimer);
@@ -168,15 +239,22 @@ export function createVoiceTransport({library, carrier = openCarrier, clock = {}
       const bytes = encodeVoiceObject({sequence, timestamp: frame.timestamp, duration: frame.duration, payload: frame.payload});
       const at = new moq.Time.Timestamp(Number(frame.timestamp * 1_000_000n / 48_000n), moq.Time.Timescale.MICRO);
       if (useDatagrams) {
+        sampleLoss();
+        const level = redundancy();
+        stats.redundancy = level;
         const objects = [bytes];
         let size = bytes.byteLength;
-        for (let index = recent.length - 1; index >= 0 && objects.length <= REDUNDANCY; index--) {
-          if (size + recent[index].byteLength > DATAGRAM_BUNDLE_BYTES) break;
-          objects.push(recent[index]);
-          size += recent[index].byteLength;
+        for (let index = recent.length - 1; index >= 0 && objects.length <= level; index--) {
+          const earlier = recent[index];
+          // Only the frames just before: one from before a DTX pause would
+          // arrive long after its playout.
+          if (frame.timestamp - earlier.timestamp > BigInt(MAX_REDUNDANCY + 1) * FRAME_SAMPLES) break;
+          if (size + earlier.bytes.byteLength > DATAGRAM_BUNDLE_BYTES) break;
+          objects.push(earlier.bytes);
+          size += earlier.bytes.byteLength;
         }
-        recent.push(bytes);
-        if (recent.length > REDUNDANCY) recent.shift();
+        recent.push({bytes, timestamp: frame.timestamp});
+        if (recent.length > MAX_REDUNDANCY) recent.shift();
         audioTrack.appendDatagram(at, encodeVoiceBundle(objects));
       } else {
         // Group n carries objects 5n..5n+4, as the native client sends them.

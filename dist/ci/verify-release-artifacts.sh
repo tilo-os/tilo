@@ -17,11 +17,12 @@ done
 
 case $arches in
     # Ten package artifacts plus the native OS payload pair, four public
-    # RPM-key trust artifacts, and the maintained verified repo definition.
+    # RPM-key trust artifacts, the maintained verified repo definition, and
+    # a public broker request/receipt pair per architecture.
     # ARM adds its package/payload set, but only the x86 lane publishes the
     # duplicate-free key and repo trust bundle.
-    amd64) expected_count=18 ;;
-    amd64,arm64) expected_count=26 ;;
+    amd64) expected_count=20 ;;
+    amd64,arm64) expected_count=30 ;;
     *) echo "unsupported release architecture set: $arches" >&2; exit 2 ;;
 esac
 
@@ -139,6 +140,14 @@ for rpm_file in "${release_rpms[@]}"; do
             exit 1
         }
     done
+done
+
+# Preserve the broker's same-run/source binding as public release provenance.
+for arch in ${arches//,/ }; do
+    expect_one "tilo-rpm-signing-request-$arch.json"
+    expect_one "tilo-rpm-signing-receipt-$arch.json"
+    python3 "$(dirname -- "$0")/../rpm/sign-rpms-broker.py" \
+        --verify-published "$release_dir" "$arch" "$version"
 done
 
 if find "$release_dir" -mindepth 1 -maxdepth 1 ! -type f -print -quit | grep -q .; then

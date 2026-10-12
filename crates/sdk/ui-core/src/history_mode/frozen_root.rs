@@ -27,26 +27,6 @@ pub(crate) fn document_at(live: &AutoCommit, heads: &[ChangeHash]) -> AutoCommit
     frozen
 }
 
-/// Every name and value `root` exposes to assistive technology, depth first.
-pub(crate) fn root_texts(root: &dyn Widget) -> Vec<String> {
-    fn node(access: &crate::a11y::AccessNode, out: &mut Vec<String>) {
-        out.extend(access.name.clone());
-        out.extend(access.value.clone());
-        for child in &access.children {
-            node(child, out);
-        }
-    }
-    fn visit(widget: &dyn Widget, out: &mut Vec<String>) {
-        if let Some(access) = widget.accessibility() {
-            node(&access, out);
-        }
-        widget.for_each_child(&mut |child| visit(child, out));
-    }
-    let mut out = Vec::new();
-    visit(root, &mut out);
-    out
-}
-
 pub(crate) struct FrozenRootPreview {
     root: Box<dyn Widget>,
     doc: Option<AutoCommit>,
@@ -133,7 +113,7 @@ impl HistoryPreview for FrozenRootPreview {
         );
         PreviewAccessibility {
             description: std::iter::once(heading)
-                .chain(root_texts(self.root.as_ref()))
+                .chain(crate::a11y::texts(self.root.as_ref()))
                 .collect::<Vec<_>>()
                 .join("\n"),
             pages: Vec::new(),

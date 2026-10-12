@@ -280,17 +280,6 @@ pub fn load_option_attributes(bytes: &[u8]) -> Option<u32> {
     Some(u32::from_le_bytes(bytes.get(..4)?.try_into().ok()?))
 }
 
-/// Lowercase hex, as stored in records.
-pub fn hex(bytes: &[u8]) -> String {
-    use std::fmt::Write;
-    bytes
-        .iter()
-        .fold(String::with_capacity(bytes.len() * 2), |mut out, b| {
-            let _ = write!(out, "{b:02x}");
-            out
-        })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -353,7 +342,7 @@ mod tests {
         {
             assert_eq!(FIXTURE.len(), 4 + 2 + 30 + 94);
             let bytes = encode_load_option(&fixture_option()).unwrap();
-            assert_eq!(hex(&bytes), hex(FIXTURE));
+            assert_eq!(hex::encode(&bytes), hex::encode(FIXTURE));
         }
 
         // Phase `decoder_round_trips_the_fixture`.
@@ -432,7 +421,7 @@ mod tests {
             let g = "8be4df61-93ca-11d2-aa0d-00e098032b8c";
             let bytes = guid_bytes(g).unwrap();
             assert_eq!(
-                hex(&bytes),
+                hex::encode(bytes),
                 "61dfe48bca93d211aa0d00e098032b8c",
                 "EFI_GLOBAL_VARIABLE as stored in memory"
             );

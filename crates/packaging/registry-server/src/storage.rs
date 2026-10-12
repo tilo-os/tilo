@@ -34,10 +34,13 @@
 //!                                    # content
 //!         <blake3>.chunks            # chunk list of a reviewed blob kept as
 //!                                    # chunks (see `payload_objects`)
+//!         <blake3>.zst               # compressed twin of a blob or chunk
+//!                                    # (see `twins`)
 //!     thin-packages/
 //!         <package-root>.tapp        # reviewed thin tapps, by package root
 //!     artifacts/
 //!         <blake3>.tapp              # operator-imported full tapps, by content
+//!         <blake3>.tapp.zst          # its compressed twin
 //!     uploads/
 //!         <blake3>.tapp              # publisher uploads awaiting review; private
 //! ```
@@ -66,7 +69,9 @@ use registry_types::{
 use crate::allowlist::PublisherAllowlist;
 
 mod payload_objects;
+mod twins;
 pub use payload_objects::IncomingObject;
+pub use twins::TwinReport;
 
 /// Signed snapshots kept on disk, newest first. Older members are pruned
 /// behind a [`HistoryCompaction`] record; the oldest retained member's signed
@@ -350,6 +355,7 @@ impl Storage {
             if !path.exists() {
                 atomic_write(&path, bytes)?;
             }
+            self.write_payload_twin(hash, bytes)?;
         }
         let thin = tilo_app_package::tapp::to_bytes(&decoded.meta, None)
             .map_err(|error| StorageError::Encode(format!("thin package: {error}")))?;
@@ -407,6 +413,7 @@ impl Storage {
         if !path.exists() {
             atomic_write(&path, tapp_bytes)?;
         }
+        self.write_artifact_twin(&digest, tapp_bytes)?;
         Ok(digest)
     }
 
@@ -1562,6 +1569,7 @@ impl<'a> SnapshotLock<'a> {
             .iter()
             .chain(&plan.thin_packages)
             .chain(&plan.payload_blobs)
+            .chain(&plan.payload_twins)
             .map(|(path, _)| path)
         {
             remove_file(path)?;
@@ -1727,6 +1735,14 @@ impl<'a> SnapshotLock<'a> {
         for blob in list_digests(&blob_dir, "")? {
             if !blobs.contains(&blob) && !chunks.contains(&blob) {
                 plan.payload_blobs.push(sized(blob_dir.join(&blob))?);
+            }
+        }
+        // A twin goes with its object.
+        for object in list_digests(&blob_dir, payload_objects::TWIN_SUFFIX)? {
+            if !blobs.contains(&object) && !chunks.contains(&object) {
+                plan.payload_twins.push(sized(
+                    blob_dir.join(format!("{object}{}", payload_objects::TWIN_SUFFIX)),
+                )?);
             }
         }
         for suffix in [
@@ -1973,6 +1989,8 @@ pub struct PruneReport {
     pub staged_artifacts: usize,
     pub thin_packages: usize,
     pub payload_blobs: usize,
+    /// Compressed twins of the payload blobs removed.
+    pub payload_twins: usize,
     /// Apparent size of everything removed.
     pub bytes: u64,
 }
@@ -1983,6 +2001,7 @@ struct PrunePlan {
     staged_artifacts: Vec<(PathBuf, u64)>,
     thin_packages: Vec<(PathBuf, u64)>,
     payload_blobs: Vec<(PathBuf, u64)>,
+    payload_twins: Vec<(PathBuf, u64)>,
 }
 
 impl PrunePlan {
@@ -1992,11 +2011,13 @@ impl PrunePlan {
                 .iter()
                 .chain(&self.thin_packages)
                 .chain(&self.payload_blobs)
+                .chain(&self.payload_twins)
         };
         PruneReport {
             staged_artifacts: self.staged_artifacts.len(),
             thin_packages: self.thin_packages.len(),
             payload_blobs: self.payload_blobs.len(),
+            payload_twins: self.payload_twins.len(),
             bytes: all().map(|(_, len)| *len).sum(),
         }
     }
@@ -2487,13 +2508,21 @@ mod tests {
                 (
                     report.staged_artifacts,
                     report.thin_packages,
-                    report.payload_blobs
+                    report.payload_blobs,
+                    report.payload_twins
                 ),
-                (2, 2, 1)
+                (2, 2, 1, 1)
             );
             assert!(report.bytes > 0);
             assert_eq!(storage.find_staged_artifact(&digest).unwrap(), None);
             assert_eq!(storage.load_payload_blob(&blob).unwrap(), None);
+            assert!(
+                !dir.path()
+                    .join("payload-blobs")
+                    .join(format!("{blob}.zst"))
+                    .exists(),
+                "a twin goes with its blob"
+            );
             assert_eq!(storage.load_thin_package(&root).unwrap(), None);
         }
         // phase: targetless_single_architecture_staging_remains_readable

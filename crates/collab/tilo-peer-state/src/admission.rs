@@ -103,6 +103,9 @@ pub enum MissingPrerequisite {
     CausalDependencies,
     PersistedMls,
     ExactHistoricalEvidence,
+    /// The app surface the op names is not here yet: the op is decided
+    /// once it is.
+    AppSurface,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum InputDisposition {

@@ -9,8 +9,7 @@
 use std::io;
 
 use crate::peripheral_forwarding::{
-    ForwardedGamepadEvent, GamepadAxis, GamepadButton, VirtualGamepad, VirtualGamepadFactory,
-    VirtualGamepadPlan,
+    ForwardedGamepadEvent, VirtualGamepad, VirtualGamepadFactory, VirtualGamepadPlan,
 };
 
 /// USB vendor of the fixed virtual gamepad a granted lease creates. Local
@@ -136,45 +135,16 @@ mod uinput {
     use rustix::ioctl::{IntegerSetter, NoArg, Opcode, ioctl, opcode};
 
     use super::{
-        ForwardedGamepadEvent, GamepadAxis, GamepadButton, LinuxGamepadDevice,
-        LinuxGamepadDeviceProvider, UinputGamepadDeviceProvider,
+        ForwardedGamepadEvent, LinuxGamepadDevice, LinuxGamepadDeviceProvider,
+        UinputGamepadDeviceProvider,
+    };
+    use crate::linux_gamepad_evdev::{
+        ABS_HAT0X, ABS_HAT0Y, AXES, BUTTONS, EV_ABS, EV_KEY, EV_SYN, axis_code, button_code,
     };
 
     const UINPUT_IOCTL_BASE: u8 = b'U';
-    const EV_SYN: u16 = 0x00;
-    const EV_KEY: u16 = 0x01;
-    const EV_ABS: u16 = 0x03;
     const SYN_REPORT: u16 = 0;
-
-    const ABS_X: u16 = 0x00;
-    const ABS_Y: u16 = 0x01;
-    const ABS_Z: u16 = 0x02;
-    const ABS_RX: u16 = 0x03;
-    const ABS_RY: u16 = 0x04;
-    const ABS_RZ: u16 = 0x05;
-    const ABS_HAT0X: u16 = 0x10;
-    const ABS_HAT0Y: u16 = 0x11;
-
-    const BTN_SOUTH: u16 = 0x130;
-    const BTN_EAST: u16 = 0x131;
-    const BTN_NORTH: u16 = 0x133;
-    const BTN_WEST: u16 = 0x134;
-    const BTN_TL: u16 = 0x136;
-    const BTN_TR: u16 = 0x137;
-    const BTN_SELECT: u16 = 0x13a;
-    const BTN_START: u16 = 0x13b;
-    const BTN_MODE: u16 = 0x13c;
-    const BTN_THUMBL: u16 = 0x13d;
-    const BTN_THUMBR: u16 = 0x13e;
     const BUS_VIRTUAL: u16 = 0x06;
-
-    const AXIS_CODES: [u16; 8] = [
-        ABS_X, ABS_Y, ABS_RX, ABS_RY, ABS_Z, ABS_RZ, ABS_HAT0X, ABS_HAT0Y,
-    ];
-    const BUTTON_CODES: [u16; 11] = [
-        BTN_SOUTH, BTN_EAST, BTN_WEST, BTN_NORTH, BTN_TL, BTN_TR, BTN_THUMBL, BTN_THUMBR,
-        BTN_START, BTN_SELECT, BTN_MODE,
-    ];
 
     const UI_SET_EVBIT: Opcode = opcode::write::<libc::c_int>(UINPUT_IOCTL_BASE, 100);
     const UI_SET_KEYBIT: Opcode = opcode::write::<libc::c_int>(UINPUT_IOCTL_BASE, 101);
@@ -205,10 +175,10 @@ mod uinput {
 
             set_capability::<UI_SET_EVBIT>(fd, EV_KEY)?;
             set_capability::<UI_SET_EVBIT>(fd, EV_ABS)?;
-            for code in BUTTON_CODES {
-                set_capability::<UI_SET_KEYBIT>(fd, code)?;
+            for button in BUTTONS {
+                set_capability::<UI_SET_KEYBIT>(fd, button_code(button))?;
             }
-            for code in AXIS_CODES {
+            for code in axis_codes() {
                 set_capability::<UI_SET_ABSBIT>(fd, code)?;
             }
 
@@ -297,13 +267,11 @@ mod uinput {
         }
 
         fn release_all(&mut self) -> io::Result<()> {
-            for code in [
-                ABS_X, ABS_Y, ABS_RX, ABS_RY, ABS_Z, ABS_RZ, ABS_HAT0X, ABS_HAT0Y,
-            ] {
+            for code in axis_codes() {
                 self.write_event(EV_ABS, code, 0)?;
             }
-            for code in BUTTON_CODES {
-                self.write_event(EV_KEY, code, 0)?;
+            for button in BUTTONS {
+                self.write_event(EV_KEY, button_code(button), 0)?;
             }
             self.synchronize()
         }
@@ -335,13 +303,8 @@ mod uinput {
     }
 
     fn configure_axes(setup: &mut libc::uinput_user_dev) -> io::Result<()> {
-        for code in [ABS_X, ABS_Y, ABS_RX, ABS_RY] {
-            let index = usize::from(code);
-            *setup.absmin.get_mut(index).ok_or_else(invalid_axis)? = i32::from(i16::MIN);
-            *setup.absmax.get_mut(index).ok_or_else(invalid_axis)? = i32::from(i16::MAX);
-        }
-        for code in [ABS_Z, ABS_RZ] {
-            let index = usize::from(code);
+        for axis in AXES {
+            let index = usize::from(axis_code(axis));
             *setup.absmin.get_mut(index).ok_or_else(invalid_axis)? = i32::from(i16::MIN);
             *setup.absmax.get_mut(index).ok_or_else(invalid_axis)? = i32::from(i16::MAX);
         }
@@ -353,35 +316,15 @@ mod uinput {
         Ok(())
     }
 
+    /// Every absolute axis the device declares: the forwarded axes and the hat.
+    fn axis_codes() -> impl Iterator<Item = u16> {
+        AXES.into_iter()
+            .map(axis_code)
+            .chain([ABS_HAT0X, ABS_HAT0Y])
+    }
+
     fn invalid_axis() -> io::Error {
         io::Error::new(io::ErrorKind::InvalidData, "fixed axis outside uinput ABI")
-    }
-
-    const fn axis_code(axis: GamepadAxis) -> u16 {
-        match axis {
-            GamepadAxis::LeftX => ABS_X,
-            GamepadAxis::LeftY => ABS_Y,
-            GamepadAxis::RightX => ABS_RX,
-            GamepadAxis::RightY => ABS_RY,
-            GamepadAxis::LeftTrigger => ABS_Z,
-            GamepadAxis::RightTrigger => ABS_RZ,
-        }
-    }
-
-    const fn button_code(button: GamepadButton) -> u16 {
-        match button {
-            GamepadButton::South => BTN_SOUTH,
-            GamepadButton::East => BTN_EAST,
-            GamepadButton::West => BTN_WEST,
-            GamepadButton::North => BTN_NORTH,
-            GamepadButton::LeftBumper => BTN_TL,
-            GamepadButton::RightBumper => BTN_TR,
-            GamepadButton::LeftStick => BTN_THUMBL,
-            GamepadButton::RightStick => BTN_THUMBR,
-            GamepadButton::Start => BTN_START,
-            GamepadButton::Select => BTN_SELECT,
-            GamepadButton::Guide => BTN_MODE,
-        }
     }
 }
 
@@ -418,6 +361,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use super::*;
+    use crate::peripheral_forwarding::GamepadAxis;
 
     #[derive(Clone, Debug, PartialEq, Eq)]
     enum Call {

@@ -6,6 +6,12 @@ use serde::{Deserialize, Serialize};
 use tilo_actions::{InvocationId, InvocationUpdate};
 use uuid::Uuid;
 
+mod signed;
+pub use signed::{
+    ACTION_SIGNATURE_DOMAIN, ACTION_SIGNATURE_TOLERANCE_NS, ActionReplayWindow,
+    ActionSignatureError, SignedDirectedAction,
+};
+
 pub const MAX_PRIVATE_BYTES: usize = 256 * 1024;
 // Catalogues aggregate descriptors for every record. Their structural budget
 // must be larger than a single effect's argument while remaining bounded by
@@ -178,6 +184,13 @@ impl UnavailableReason {
 }
 
 impl ActionMessage {
+    /// Whether a target may only serve this message as a request its source
+    /// device signed ([`SignedDirectedAction`]). Only effect-free reads are
+    /// exempt; every other message, including any added later, requires it.
+    pub const fn requires_signature(&self) -> bool {
+        !matches!(self, Self::CatalogueRefresh { .. } | Self::Status { .. })
+    }
+
     pub fn invocation(&self) -> Option<InvocationId> {
         match self {
             Self::RecordEffectReceipt { invocation, .. }

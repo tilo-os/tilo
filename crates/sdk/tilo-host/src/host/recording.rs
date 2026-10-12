@@ -118,11 +118,6 @@ impl HostRecorder {
         self.log().location_requests
     }
 
-    /// Answer the next screen-capture request with `outcome`.
-    pub fn respond_to_screen_capture(&self, outcome: ScreenCaptureOutcome) {
-        self.log().screen_capture_outcomes.push_back(outcome);
-    }
-
     /// Every screen-capture request, in order.
     pub fn screen_capture_requests(&self) -> Vec<ScreenCaptureRequest> {
         self.log().screen_capture_requests.clone()

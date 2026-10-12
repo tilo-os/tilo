@@ -7,9 +7,14 @@
 
 use vello::wgpu;
 
+use settings_store::hardware::OutputTransform;
+
+use super::fullscreen_pass;
+use super::orientation::shader_code;
 use crate::shell::color_pipeline::{OUTPUT_ENCODE_SHADER_SOURCE, sanitize_sdr_white_nits};
 
-/// Bytes of the shader's `EncodeParams` uniform: one `f32` padded to 16.
+/// Bytes of the shader's `EncodeParams` uniform: SDR white (`f32`) and the output's
+/// orientation (`u32`), padded to 16.
 const PARAMS_BYTES: u64 = 16;
 
 pub struct HdrEncodePipeline {
@@ -28,64 +33,14 @@ impl HdrEncodePipeline {
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("tilo-hdr-output-encode"),
             entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: wgpu::BufferSize::new(PARAMS_BYTES),
-                    },
-                    count: None,
-                },
+                fullscreen_pass::texture_entry(0, wgpu::TextureViewDimension::D2, false),
+                fullscreen_pass::uniform_entry(1, PARAMS_BYTES),
             ],
         });
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("tilo-hdr-output-encode"),
-            bind_group_layouts: &[Some(&layout)],
-            immediate_size: 0,
-        });
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("tilo-hdr-output-encode"),
-            layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &module,
-                entry_point: Some("vs_main"),
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-                buffers: &[],
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &module,
-                entry_point: Some("fs_main"),
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format,
-                    blend: None,
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            primitive: wgpu::PrimitiveState::default(),
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            multiview_mask: None,
-            cache: None,
-        });
-        let params = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("tilo-hdr-output-encode-params"),
-            size: PARAMS_BYTES,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
+        let pipeline =
+            fullscreen_pass::pipeline(device, "tilo-hdr-output-encode", &module, &layout, format);
+        let params =
+            fullscreen_pass::uniform_buffer(device, "tilo-hdr-output-encode-params", PARAMS_BYTES);
         Self {
             format,
             pipeline,
@@ -98,18 +53,22 @@ impl HdrEncodePipeline {
         self.format
     }
 
-    /// Where SDR white lands, in cd/m². Takes effect with the next
-    /// submission on `queue`.
-    pub fn set_sdr_white(&self, queue: &wgpu::Queue, nits: f32) {
+    /// Where SDR white lands, in cd/m², and how the output is turned against its surface.
+    /// Takes effect with the next submission on `queue`.
+    pub fn set_params(&self, queue: &wgpu::Queue, nits: f32, orientation: OutputTransform) {
         let mut bytes = [0_u8; 16];
         let white = sanitize_sdr_white_nits(nits).to_le_bytes();
         if let Some(slot) = bytes.get_mut(..4) {
             slot.copy_from_slice(&white);
         }
+        if let Some(slot) = bytes.get_mut(4..8) {
+            slot.copy_from_slice(&shader_code(orientation).to_le_bytes());
+        }
         queue.write_buffer(&self.params, 0, &bytes);
     }
 
-    /// Encode all of `source` (the vello target) into `target`.
+    /// Encode all of `source` (the vello target, in scene orientation) into `target`, turned
+    /// by the orientation of [`Self::set_params`].
     pub fn encode(
         &self,
         device: &wgpu::Device,
@@ -131,31 +90,20 @@ impl HdrEncodePipeline {
                 },
             ],
         });
-        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("tilo-hdr-output-encode"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: target,
-                depth_slice: None,
-                resolve_target: None,
-                ops: wgpu::Operations {
-                    // PQ black; the triangle then covers every pixel.
-                    load: wgpu::LoadOp::Clear(wgpu::Color {
-                        r: 0.0,
-                        g: 0.0,
-                        b: 0.0,
-                        a: 1.0,
-                    }),
-                    store: wgpu::StoreOp::Store,
-                },
-            })],
-            depth_stencil_attachment: None,
-            timestamp_writes: None,
-            occlusion_query_set: None,
-            multiview_mask: None,
-        });
-        pass.set_pipeline(&self.pipeline);
-        pass.set_bind_group(0, &bind_group, &[]);
-        pass.draw(0..3, 0..1);
+        fullscreen_pass::draw(
+            encoder,
+            "tilo-hdr-output-encode",
+            target,
+            // PQ black; the triangle then covers every pixel.
+            wgpu::LoadOp::Clear(wgpu::Color {
+                r: 0.0,
+                g: 0.0,
+                b: 0.0,
+                a: 1.0,
+            }),
+            &self.pipeline,
+            &bind_group,
+        );
     }
 }
 
@@ -227,7 +175,7 @@ mod tests {
         });
         let pipeline = HdrEncodePipeline::new(device, wgpu::TextureFormat::Rgb10a2Unorm);
         assert_eq!(pipeline.format(), wgpu::TextureFormat::Rgb10a2Unorm);
-        pipeline.set_sdr_white(queue, sdr_white);
+        pipeline.set_params(queue, sdr_white, OutputTransform::Normal);
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
         pipeline.encode(
             device,

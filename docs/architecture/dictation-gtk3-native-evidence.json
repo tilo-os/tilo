@@ -1,0 +1,323 @@
+{
+  "component": "GTK 3 native dictation qualification and clipboard-manager token compatibility",
+  "source_head": "b632d82ddb4b8e4402932f61715d289e8ba0c9fc",
+  "qualified_application": "standard GtkSourceView 4.8.4 on signed Fedora GTK 3.24.52, builtin Wayland input method, no editing/undo override or adapter",
+  "source_change": "Exclude SAVE_TARGETS from asynchronous selection payload pulls; retain other offered formats and existing bounds.",
+  "causal_evidence": "The first native GTK 3 copy succeeds. After Tilo requests SAVE_TARGETS, subsequent transfers stop completing. The native Wayland regression fails before the filter because SAVE_TARGETS is requested; the same regression and full GtkSourceView journey pass with the filter.",
+  "privacy_scope": {
+    "physical_microphone": false,
+    "production_model_activation": false,
+    "new_persistent_grants": false,
+    "runtime_installation": false,
+    "deployment": false,
+    "audio": "same public FLEURS de_de-0 recorded clip, private virtual PipeWire source, hardware disabled",
+    "model": "same approved Small Q5_1 digest, ephemeral witness removed after each run"
+  },
+  "result": {
+    "text": "F\u00fcr die besten Aussichten auf Hongkong sollten sie die Insel verlassen und zum gegen\u00fcberliegenden Ufer von Kowloon fahren.",
+    "buffer": "alpha F\u00fcr die besten Aussichten auf Hongkong sollten sie die Insel verlassen und zum gegen\u00fcberliegenden Ufer von Kowloon fahren. gamma",
+    "word_errors": 0,
+    "reference_words": 18,
+    "wer": 0.0,
+    "seconds": 27.912175470002694,
+    "first_nonempty_preview_seconds": 9.702023641002597,
+    "full_elapsed_seconds": 50.84143298800336,
+    "sampled_peak_memory_bytes": 1225060352,
+    "sampled_peak_anon_bytes": 645042176,
+    "sampled_peak_file_cache_bytes": 758484992,
+    "limits": {
+      "cpus": 2,
+      "memory_bytes": 3221225472,
+      "pids": 256,
+      "runtime_seconds": 240
+    },
+    "observed_scope_controls": {
+      "memory.max": "3221225472",
+      "cpu.max": "200000 100000",
+      "pids.max": "256",
+      "memory.swap.max": "0"
+    }
+  },
+  "assertions": [
+    "public native buffer and beta selection observed through compositor clipboard service",
+    "nonempty production recognition preview appears during recorded playback",
+    "selected range replaced once without dictation changing clipboard",
+    "ONE native undo restores original and ONE redo restores result",
+    "canceled active speech leaves field unchanged and reaps recorder/worker",
+    "focus-away/back permanently retires repeated session without late insertion",
+    "password and PIN native focus/purpose and matching seat surfaces observed; no capture consent, recorder or worker",
+    "ordinary field remains eligible after protected refusals, canceled recovery preserves buffer"
+  ],
+  "tests": {
+    "regression_before_fix": "1 run, 1 failed on SAVE_TARGETS send event",
+    "regression_after_fix": "1 run, 1 passed",
+    "existing_native_text_and_png_clipboard_journey": "1 run, 1 passed",
+    "shell_all_test_targets_compile": "passed",
+    "full_ci_checkpoint": "All four workflows succeeded on b57ad8be64c0cd8605b4506cd8abe681fbeaba4f. This older checkpoint does not qualify the new clipboard source change."
+  },
+  "qualification_limits": [
+    "one recorded German sample; normalized scoring casefolds and is not a capitalization benchmark",
+    "first nonempty preview at 9.7 seconds and final insertion at 27.9 seconds on two cores do not establish low-latency fluency",
+    "standard GtkSourceView is not every GTK 3 application, single-line field or custom editor",
+    "inactive text-input before dictation preparation is expected without a seat input-method owner; no late-bind/input-focus patch was made",
+    "Wayland debug diagnostic r4/r5 contains a bounded GTK client log excerpt; archived stdout itself is complete"
+  ],
+  "primary_sources": {
+    "gtk_wayland_selection_queue": "https://github.com/GNOME/gtk/blob/3.24.52/gdk/wayland/gdkselection-wayland.c",
+    "gtk_save_targets_operation": "https://github.com/GNOME/gtk/blob/3.24.52/gtk/gtkclipboard.c",
+    "gtk_wayland_text_input": "https://github.com/GNOME/gtk/blob/3.24.52/modules/input/imwayland.c"
+  },
+  "cleanup": {
+    "five_exact_owned_containers_verified_absent": [
+      "5636405be1c757c47452debd253ed517ab0440be7ac3ee2f51295d7880625a8a",
+      "68d60a775ca5208b1b0536e46631436621b5c99c939d555a9c60e50686d3956e",
+      "aa5a094e4d8ae74b1f9e5c7aebe65b3df948e0e4bb1d94085502b8b72121f758",
+      "6e30b0365907e2bb7b4c76d7869cae990c4457ff3bdd4900f99326f8ecbb9fd4",
+      "ddb7b0b65dca3357c45a136fddde6cc69e591b595b41d6e24a7b96f0e97eef65"
+    ],
+    "identity_custody": "CgroupPath in each actual run receipt",
+    "workers_recorders_witnesses_namespace_keepers": "retirement/reaping assertions in complete run logs"
+  },
+  "archives": {
+    "diagnostic-r2-compile-receipt.json": {
+      "canonical_file": "tools/release/fixtures/gtk3_dictation_20261010/diagnostic-r2-compile-receipt.json",
+      "original_sha256": "d839ad07c5e9efb34edd40c1ddb30ee19b5b838c6dbe1e3bff286928164a6b57",
+      "portable_file_sha256": "920dece2636b7449014776b16b8dace4350e3a80efc6adeb5228abe734ba8e0e",
+      "portable_reconstructed_stdout_sha256": null
+    },
+    "diagnostic-r2-compile.log.json": {
+      "canonical_file": "tools/release/fixtures/gtk3_dictation_20261010/diagnostic-r2-compile.log.json",
+      "original_sha256": "053d50d5fe24607a6908d0faf9cf5ba6365d16acd36f8c9c0ddb27ef8bce72db",
+      "portable_file_sha256": "07acc36fdb1048ea2521f541c58e66a1e6fb903c4ae177e3af717dae4f7c294a",
+      "portable_reconstructed_stdout_sha256": "053d50d5fe24607a6908d0faf9cf5ba6365d16acd36f8c9c0ddb27ef8bce72db"
+    },
+    "diagnostic-r2-gtk3-editor.c": {
+      "canonical_file": "tools/release/fixtures/gtk3_dictation_20261010/diagnostic-r2-gtk3-editor.c",
+      "original_sha256": "ae7b855e8343c41322221a153981147fe9a5a7fcd5f992204850834d2e0682de",
+      "portable_file_sha256": "ae7b855e8343c41322221a153981147fe9a5a7fcd5f992204850834d2e0682de",
+      "portable_reconstructed_stdout_sha256": null
+    },
+    "diagnostic-r2-manifest.json": {
+      "canonical_file": "tools/release/fixtures/gtk3_dictation_20261010/diagnostic-r2-manifest.json",
+      "original_sha256": "cdc127f79697f35bac476b1d30fc300366f1387f65e535b5834310ed533cec98",
+      "portable_file_sha256": "bc17cd64f8a9692ce4d451cfaab8e711b543e5ecfdc9d0e6e188b82f5032e5bf",
+      "portable_reconstructed_stdout_sha256": null
+    },
+    "diagnostic-r2-recorded-inner.py": {
+      "canonical_file": "tools/release/fixtures/gtk3_dictation_20261010/diagnostic-r2-recorded-inner.py",
+      "original_sha256": "2cc8382cf581b9e321865cb872b3ba0334879f635524695d16ce8ef84b26b5b6",
+      "portable_file_sha256": "2cc8382cf581b9e321865cb872b3ba0334879f635524695d16ce8ef84b26b5b6",
+      "portable_reconstructed_stdout_sha256": null
+    },
+    "diagnostic-r2-recorded-outer.py": {
+      "canonical_file": "tools/release/fixtures/gtk3_dictation_20261010/diagnostic-r2-recorded-outer.py",
+      "original_sha256": "bcd73617c18ed2c5a99bd8d2e05c74a979a00797d2234e98ccb236d7d2829426",
+      "portable_file_sha256": "bcd73617c18ed2c5a99bd8d2e05c74a979a00797d2234e98ccb236d7d2829426",
+      "portable_reconstructed_stdout_sha256": null
+    },
+    "diagnostic-r2-recorded-run.py": {
+      "canonical_file": "tools/release/fixtures/gtk3_dictation_20261010/diagnostic-r2-recorded-run.py",
+      "original_sha256": "d7dda2d774ef014e1172c65431521593e1b8d0914b177af4096874c7c21f01c4",
+      "portable_file_sha256": "d7dda2d774ef014e1172c65431521593e1b8d0914b177af4096874c7c21f01c4",
+      "portable_reconstructed_stdout_sha256": null
+    },
+    "diagnostic-r2-run-de_de-0-r1-receipt.json": {
+      "canonical_file": "tools/release/fixtures/gtk3_dictation_20261010/diagnostic-r2-run-de_de-0-r1-receipt.json",
+      "original_sha256": "a14d36904caf841b65effd8b4bbbafb9f4304e38f76773d860459664dccc1c65",
+      "portable_file_sha256": "e2a31eb49b631b302a3adf985f30b1fc9b762313d2762c008b040390d28b4187",
+      "portable_reconstructed_stdout_sha256": null
+    },
+    "diagnostic-r2-run-de_de-0-r1.log.json": {
+      "canonical_file": "tools/release/fixtures/gtk3_dictation_20261010/diagnostic-r2-run-de_de-0-r1.log.json",
+      "original_sha256": "344c5c72e0ae15c478fc10fb71bd6b6d781583a55abc46a457c78af74bf92414",
+      "portable_file_sha256": "91b91b4403fc4a2cef8bfdb8b498b775651c4710e22190a57a844d7cedace6d6",
+      "portable_reconstructed_stdout_sha256": "5261aad7390c0367ff041a44f6b74f8ed26d19926269dc3e4ca32a16e49b9f38"
+    },
+    "diagnostic-r3-manifest.json": {
+      "canonical_file": "tools/release/fixtures/gtk3_dictation_20261010/diagnostic-r3-manifest.json",
+      "original_sha256": "fa53145328814b0fc4fd96699c99031e6044cc128866aa16d8422498f8b24a03",
+      "portable_file_sha256": "f44f316632f931ed8a73df3d6efca9545b0bc9726ac801b9274e5fc970017856",
+      "portable_reconstructed_stdout_sha256": null
+    },
+    "diagnostic-r3-recorded-inner.py": {
+      "canonical_file": "tools/release/fixtures/gtk3_dictation_20261010/diagnostic-r3-recorded-inner.py",
+      "original_sha256": "b60d21a731705879eb10baa8c9d634cb5e403cba92d862cb59acdd64d0b37397",
+      "portable_file_sha256": "b60d21a731705879eb10baa8c9d634cb5e403cba92d862cb59acdd64d0b37397",
+      "portable_reconstructed_stdout_sha256": null
+    },
+    "diagnostic-r3-recorded-outer.py": {
+      "canonical_file": "tools/release/fixtures/gtk3_dictation_20261010/diagnostic-r2-recorded-outer.py",
+      "original_sha256": "bcd73617c18ed2c5a99bd8d2e05c74a979a00797d2234e98ccb236d7d2829426",
+      "portable_file_sha256": "bcd73617c18ed2c5a99bd8d2e05c74a979a00797d2234e98ccb236d7d2829426",
+      "portable_reconstructed_stdout_sha256": null
+    },
+    "diagnostic-r3-recorded-run.py": {
+      "canonical_file": "tools/release/fixtures/gtk3_dictation_20261010/diagnostic-r2-recorded-run.py",
+      "original_sha256": "d7dda2d774ef014e1172c65431521593e1b8d0914b177af4096874c7c21f01c4",
+      "portable_file_sha256": "d7dda2d774ef014e1172c65431521593e1b8d0914b177af4096874c7c21f01c4",
+      "portable_reconstructed_stdout_sha256": null
+    },
+    "diagnostic-r3-run-de_de-0-r1-receipt.json": {
+      "canonical_file": "tools/release/fixtures/gtk3_dictation_20261010/diagnostic-r3-run-de_de-0-r1-receipt.json",
+      "original_sha256": "742d12120b29b68d95ebaab7c978fee59ef6ee70df8b0d4a9881bad55ae34dd8",
+      "portable_file_sha256": "087d881a35ccb4dd6b431c960e189b86108d38081a2fe3d6c889a52404cb8ebd",
+      "portable_reconstructed_stdout_sha256": null
+    },
+    "diagnostic-r3-run-de_de-0-r1.log.json": {
+      "canonical_file": "tools/release/fixtures/gtk3_dictation_20261010/diagnostic-r3-run-de_de-0-r1.log.json",
+      "original_sha256": "86d1556ea9ddad353dcb79c87dae5ddb3f5184defe51a477ae62626204a3b6c4",
+      "portable_file_sha256": "26bd8d01aa98e5fa78601180a41ee4c320fb1bf584d0f3a7da47a2b3695f54fc",
+      "portable_reconstructed_stdout_sha256": "f967af17c8d379328c9555a3de9e2aef44ba72ec316e9bb8e8318a15dfd1a90e"
+    },
+    "diagnostic-r4-manifest.json": {
+      "canonical_file": "tools/release/fixtures/gtk3_dictation_20261010/diagnostic-r3-manifest.json",
+      "original_sha256": "fa53145328814b0fc4fd96699c99031e6044cc128866aa16d8422498f8b24a03",
+      "portable_file_sha256": "f44f316632f931ed8a73df3d6efca9545b0bc9726ac801b9274e5fc970017856",
+      "portable_reconstructed_stdout_sha256": null
+    },
+    "diagnostic-r4-recorded-inner.py": {
+      "canonical_file": "tools/release/fixtures/gtk3_dictation_20261010/diagnostic-r4-recorded-inner.py",
+      "original_sha256": "c01b2e9317138aca9a46d4eb0c5dc20787cfd705a8a71262ecaa7740ac1973ef",
+      "portable_file_sha256": "c01b2e9317138aca9a46d4eb0c5dc20787cfd705a8a71262ecaa7740ac1973ef",
+      "portable_reconstructed_stdout_sha256": null
+    },
+    "diagnostic-r4-recorded-outer.py": {
+      "canonical_file": "tools/release/fixtures/gtk3_dictation_20261010/diagnostic-r2-recorded-outer.py",
+      "original_sha256": "bcd73617c18ed2c5a99bd8d2e05c74a979a00797d2234e98ccb236d7d2829426",
+      "portable_file_sha256": "bcd73617c18ed2c5a99bd8d2e05c74a979a00797d2234e98ccb236d7d2829426",
+      "portable_reconstructed_stdout_sha256": null
+    },
+    "diagnostic-r4-recorded-run.py": {
+      "canonical_file": "tools/release/fixtures/gtk3_dictation_20261010/diagnostic-r2-recorded-run.py",
+      "original_sha256": "d7dda2d774ef014e1172c65431521593e1b8d0914b177af4096874c7c21f01c4",
+      "portable_file_sha256": "d7dda2d774ef014e1172c65431521593e1b8d0914b177af4096874c7c21f01c4",
+      "portable_reconstructed_stdout_sha256": null
+    },
+    "diagnostic-r4-run-de_de-0-r1-receipt.json": {
+      "canonical_file": "tools/release/fixtures/gtk3_dictation_20261010/diagnostic-r4-run-de_de-0-r1-receipt.json",
+      "original_sha256": "3c92aafc7a0a43dee2a546ce65a9254d40297260a61cf444d27ff06ee9d75441",
+      "portable_file_sha256": "4c93ffe3e89953b40d7e4609ae4e0a08d589c9eb5208453056f1cd01b6e38163",
+      "portable_reconstructed_stdout_sha256": null
+    },
+    "diagnostic-r4-run-de_de-0-r1.log.json": {
+      "canonical_file": "tools/release/fixtures/gtk3_dictation_20261010/diagnostic-r4-run-de_de-0-r1.log.json",
+      "original_sha256": "9f23c2ef3d82fc4689e8faaa323082af79bbc75f4d014dd57988307a3a542617",
+      "portable_file_sha256": "c0887ce4ead76aa85d68c8e995dc61300e2948b8046ce5083ef9ef1cbd9b1bca",
+      "portable_reconstructed_stdout_sha256": "0313317f364285b2dc51f35364043915e8cdeee4d9153bcc7c64606fa4c08d94"
+    },
+    "diagnostic-r5-manifest.json": {
+      "canonical_file": "tools/release/fixtures/gtk3_dictation_20261010/diagnostic-r3-manifest.json",
+      "original_sha256": "fa53145328814b0fc4fd96699c99031e6044cc128866aa16d8422498f8b24a03",
+      "portable_file_sha256": "f44f316632f931ed8a73df3d6efca9545b0bc9726ac801b9274e5fc970017856",
+      "portable_reconstructed_stdout_sha256": null
+    },
+    "diagnostic-r5-recorded-inner.py": {
+      "canonical_file": "tools/release/fixtures/gtk3_dictation_20261010/diagnostic-r5-recorded-inner.py",
+      "original_sha256": "cbee856e1fc5e489e3baebffff3199b9fbec02a7ae7ce078eec9a55128cf233f",
+      "portable_file_sha256": "cbee856e1fc5e489e3baebffff3199b9fbec02a7ae7ce078eec9a55128cf233f",
+      "portable_reconstructed_stdout_sha256": null
+    },
+    "diagnostic-r5-recorded-outer.py": {
+      "canonical_file": "tools/release/fixtures/gtk3_dictation_20261010/diagnostic-r2-recorded-outer.py",
+      "original_sha256": "bcd73617c18ed2c5a99bd8d2e05c74a979a00797d2234e98ccb236d7d2829426",
+      "portable_file_sha256": "bcd73617c18ed2c5a99bd8d2e05c74a979a00797d2234e98ccb236d7d2829426",
+      "portable_reconstructed_stdout_sha256": null
+    },
+    "diagnostic-r5-recorded-run.py": {
+      "canonical_file": "tools/release/fixtures/gtk3_dictation_20261010/diagnostic-r2-recorded-run.py",
+      "original_sha256": "d7dda2d774ef014e1172c65431521593e1b8d0914b177af4096874c7c21f01c4",
+      "portable_file_sha256": "d7dda2d774ef014e1172c65431521593e1b8d0914b177af4096874c7c21f01c4",
+      "portable_reconstructed_stdout_sha256": null
+    },
+    "diagnostic-r5-run-de_de-0-r1-receipt.json": {
+      "canonical_file": "tools/release/fixtures/gtk3_dictation_20261010/diagnostic-r5-run-de_de-0-r1-receipt.json",
+      "original_sha256": "a724124c5bcd8f47a6662cdfdbf181d793a800af4c579e13cf7fd309d2194ed4",
+      "portable_file_sha256": "7348b27857e1d925473b2f03ae8c3032c9ef8415e51cab828ecb58f025caa03d",
+      "portable_reconstructed_stdout_sha256": null
+    },
+    "diagnostic-r5-run-de_de-0-r1.log.json": {
+      "canonical_file": "tools/release/fixtures/gtk3_dictation_20261010/diagnostic-r5-run-de_de-0-r1.log.json",
+      "original_sha256": "3822401ac49cf2cb6c6a587316588c81a2d824b2bb44452ac6ca3bffc659fa89",
+      "portable_file_sha256": "467842b92ed5faa34731c4d587dcd1846685665d5510d6f59d08037537df94f8",
+      "portable_reconstructed_stdout_sha256": "a954850ed97414d34ef1f9928350aed3437428339eeb9e22926dc22517473bf3"
+    },
+    "fixed-r6-manifest.json": {
+      "canonical_file": "tools/release/fixtures/gtk3_dictation_20261010/fixed-r6-manifest.json",
+      "original_sha256": "2c669840df2810dd3851f2a79fe896456467552b1fcab7ad57d30f071eeb5c68",
+      "portable_file_sha256": "edcda28e8fed017039d2775ae98286572dada27d6eacf3c0f47489457e223ead",
+      "portable_reconstructed_stdout_sha256": null
+    },
+    "fixed-r6-recorded-inner.py": {
+      "canonical_file": "tools/release/fixtures/gtk3_dictation_20261010/fixed-r6-recorded-inner.py",
+      "original_sha256": "fd3956b6a1c10c489835867390b83d10ba696d29f90aee8bb56f1dbcd33f1e52",
+      "portable_file_sha256": "fd3956b6a1c10c489835867390b83d10ba696d29f90aee8bb56f1dbcd33f1e52",
+      "portable_reconstructed_stdout_sha256": null
+    },
+    "fixed-r6-recorded-outer.py": {
+      "canonical_file": "tools/release/fixtures/gtk3_dictation_20261010/diagnostic-r2-recorded-outer.py",
+      "original_sha256": "bcd73617c18ed2c5a99bd8d2e05c74a979a00797d2234e98ccb236d7d2829426",
+      "portable_file_sha256": "bcd73617c18ed2c5a99bd8d2e05c74a979a00797d2234e98ccb236d7d2829426",
+      "portable_reconstructed_stdout_sha256": null
+    },
+    "fixed-r6-recorded-run.py": {
+      "canonical_file": "tools/release/fixtures/gtk3_dictation_20261010/diagnostic-r2-recorded-run.py",
+      "original_sha256": "d7dda2d774ef014e1172c65431521593e1b8d0914b177af4096874c7c21f01c4",
+      "portable_file_sha256": "d7dda2d774ef014e1172c65431521593e1b8d0914b177af4096874c7c21f01c4",
+      "portable_reconstructed_stdout_sha256": null
+    },
+    "fixed-r6-run-de_de-0-r1-receipt.json": {
+      "canonical_file": "tools/release/fixtures/gtk3_dictation_20261010/fixed-r6-run-de_de-0-r1-receipt.json",
+      "original_sha256": "ece1b1c5cb70a4c570e11946143f5d6f33d7e2a60cae24cc234b9ab1dab4441e",
+      "portable_file_sha256": "32aa1b43e6941557b062efa4b07e9f5a7e20516199e8f951f1d7c255888f5550",
+      "portable_reconstructed_stdout_sha256": null
+    },
+    "fixed-r6-run-de_de-0-r1.log.json": {
+      "canonical_file": "tools/release/fixtures/gtk3_dictation_20261010/fixed-r6-run-de_de-0-r1.log.json",
+      "original_sha256": "6effd0408e32ae97718182c680932ef4e4a3c7040049ab3deadc9b5ac0646b3c",
+      "portable_file_sha256": "dfa42eddda2c69670c37e64356da33ff7c76947c0a1da3f2ac79c7ba0a99d5a4",
+      "portable_reconstructed_stdout_sha256": "6effd0408e32ae97718182c680932ef4e4a3c7040049ab3deadc9b5ac0646b3c"
+    },
+    "gtk3-editor.c": {
+      "canonical_file": "tools/release/fixtures/gtk3_dictation_20261010/diagnostic-r2-gtk3-editor.c",
+      "original_sha256": "ae7b855e8343c41322221a153981147fe9a5a7fcd5f992204850834d2e0682de",
+      "portable_file_sha256": "ae7b855e8343c41322221a153981147fe9a5a7fcd5f992204850834d2e0682de",
+      "portable_reconstructed_stdout_sha256": null
+    },
+    "save-targets-red.log.json": {
+      "canonical_file": "tools/release/fixtures/gtk3_dictation_20261010/save-targets-red.log.json",
+      "original_sha256": "88bca8cc4e21579d1ddc9bb778d355d600c51ca2b6e4c35bd33bab1afdc28bef",
+      "portable_file_sha256": "c9ad7bee9cc40ba1cb1a1bd31c4403e0cd2f1d53f11156bbde2401bd730aad08",
+      "portable_reconstructed_stdout_sha256": "b547bdb643dc99f2c845d91bc4ff63e3e628b063d453aac012ea32cc3f7e402c"
+    },
+    "save-targets-green.log.json": {
+      "canonical_file": "tools/release/fixtures/gtk3_dictation_20261010/save-targets-green.log.json",
+      "original_sha256": "94f8433436bdef16e4742f4dd3e7b8bd9949aa8dfa84d51ad63cab19ed519fa8",
+      "portable_file_sha256": "af528567328d4e177865723bca4e710eee302e5c0304eb9e65c6a9dc4e59707c",
+      "portable_reconstructed_stdout_sha256": "d1c7136ab3b1dc0dce7bc35ac708569b8a1cad62c12c2203ee2e24ed753a04cc"
+    },
+    "clipboard-formats-check.log.json": {
+      "canonical_file": "tools/release/fixtures/gtk3_dictation_20261010/clipboard-formats-check.log.json",
+      "original_sha256": "5fc2c22b3cd098bab7b7012c37632a1b1c083e73182f683e52109a96342a7906",
+      "portable_file_sha256": "de723b187881ba08fdb66157220c56f76aaf346f54f503df63a08ae67ab81715",
+      "portable_reconstructed_stdout_sha256": "6ec12491387eb85f3f4c5d89c07daa7342235cf87c38e8239214f1fb39345569"
+    },
+    "shell-tests-check.log.json": {
+      "canonical_file": "tools/release/fixtures/gtk3_dictation_20261010/shell-tests-check.log.json",
+      "original_sha256": "8e30a3da8cbd4bf3eb9e328b78a0573fac3e0d37d964dad650d497376320f0a2",
+      "portable_file_sha256": "f60db196ad36a6d48d6506f65d3401bf89b6609162a08397fbea9ad23a83d930",
+      "portable_reconstructed_stdout_sha256": "3442c65d493cdc321f93c91333ef71d3d98cce620f47e01bf3d01509c2dec24e"
+    },
+    "current-shell-build.log.json": {
+      "canonical_file": "tools/release/fixtures/gtk3_dictation_20261010/current-shell-build.log.json",
+      "original_sha256": "97ad4f9812e28e40c279ccc3ff3a94e79f98d6693f2541b656a2bd8d9688f92e",
+      "portable_file_sha256": "ad6b46d6b562b35da0275d7dbb1cbea3c21e170c0841a8c0ba0e787a89b4fc2d",
+      "portable_reconstructed_stdout_sha256": "e149f2a33f1b160605490ef7693acb6c08f8fc575b15553c51e0f3ce916f29ad"
+    },
+    "owned-cleanup-verify.log.json": {
+      "canonical_file": "tools/release/fixtures/gtk3_dictation_20261010/owned-cleanup-verify.log.json",
+      "original_sha256": "f4f3e49b2077d06fd8e516a9521ccf3ace0678df38c0defad98e01a422e335f8",
+      "portable_file_sha256": "2ea0361504b8042b26b31cf5320b527ac005f931100c296152f80f823a08ad86",
+      "portable_reconstructed_stdout_sha256": "f4f3e49b2077d06fd8e516a9521ccf3ace0678df38c0defad98e01a422e335f8"
+    }
+  }
+}

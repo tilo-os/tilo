@@ -157,10 +157,10 @@ pub fn stamp_retired(doc: &mut AutoCommit, why: &Retirement) -> Result<(), Trans
         doc.put(&stamp, "by", successor.by.as_str())
             .map_err(automerge)?;
     }
-    doc.commit_with(CommitOptions::default().with_message(match why {
-        Retirement::Moved(_) => "tilo.record.moved-out".to_owned(),
-        Retirement::Abandoned => "tilo.record.transfer-abandoned".to_owned(),
-    }));
+    doc.commit_with(
+        CommitOptions::default()
+            .with_message(tilo_actions::FrameworkChange::Transfer.change_message()),
+    );
     Ok(())
 }
 
@@ -453,7 +453,10 @@ pub fn rehome(
             }
         }
     }
-    doc.commit_with(CommitOptions::default().with_message("tilo.record.transfer".to_owned()));
+    doc.commit_with(
+        CommitOptions::default()
+            .with_message(tilo_actions::FrameworkChange::Transfer.change_message()),
+    );
     let arrived = RecordCheckout::new(target.clone(), origin.kind().clone());
     validate_identity(&doc, &arrived, to_room)?;
     Ok(doc)

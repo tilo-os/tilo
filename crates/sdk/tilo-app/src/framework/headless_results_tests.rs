@@ -56,6 +56,32 @@ fn invoke(action: &str, args: Map<String, Value>, expected: Option<&str>) -> Act
         expect_error: expected.map(str::to_owned),
     })
 }
+
+#[test]
+fn activation_is_a_view_action_that_preserves_the_document_and_owner() {
+    let mut app = TestApp::<DocumentApp>::new().unwrap();
+    app.settle();
+    let record = app.record().clone();
+    let heads = app.read_document(Transactable::base_heads);
+    let shown = app
+        .call(tilo_actions::remote::APPLICATION_ACTIVATE_ACTION, json!({}))
+        .unwrap()
+        .unwrap();
+    assert_eq!(shown, json!({"activation_requested": true}));
+    assert!(
+        app.harness().root_widget().needs_redraw(),
+        "the platform can observe the pending activation while the view is otherwise idle"
+    );
+    assert!(ui_core::component_lifecycle::take_window_activation_intent(
+        app.harness().root_widget()
+    ));
+    assert!(
+        !ui_core::component_lifecycle::take_window_activation_intent(app.harness().root_widget())
+    );
+    assert_eq!(app.record(), &record);
+    assert_eq!(app.state(), "visible evidence");
+    assert_eq!(app.read_document(Transactable::base_heads), heads);
+}
 #[test]
 fn semantic_read_render_and_refusal_are_retained_with_real_content() {
     let mut app = TestApp::<DocumentApp>::new().unwrap();

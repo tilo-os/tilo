@@ -28,9 +28,9 @@ use durable_store::{
 };
 
 use crate::{
-    ACTOR_FILE, CANONICAL_GATE, DEFAULT_DEBOUNCE, DOCUMENT_FILE, LOCK_FILE, RECORD_SUCCESSOR_CLAIM,
-    RECORDS_DIR, ROOMS_DIR, StoreError, acquire_gate, acquire_writer_lock, claim_marker,
-    ensure_state_dir, io_err, open_directory, same_file, sync_directory_ancestors,
+    ACTOR_FILE, CANONICAL_GATE, DEFAULT_DEBOUNCE, DOCUMENT_FILE, LOAD_HINT_FILE, LOCK_FILE,
+    RECORD_SUCCESSOR_CLAIM, RECORDS_DIR, ROOMS_DIR, StoreError, acquire_gate, acquire_writer_lock,
+    claim_marker, ensure_state_dir, io_err, open_directory, same_file, sync_directory_ancestors,
     validate_absolute_directory, validate_package_id, validate_record_key,
 };
 
@@ -581,6 +581,31 @@ impl DurableStore for FsStore {
             Target::Document(directory) => Some(directory.join(DOCUMENT_FILE)),
             Target::View(path) => Some(path),
         }
+    }
+
+    /// Kept in the record's directory, which only this device writes and
+    /// never syncs. Written at once, unsynced: a hint lost to a crash, or
+    /// written ahead of a replacement that then fails, names bytes the
+    /// document no longer holds and the reader ignores it.
+    fn write_hint(&self, key: &StorageKey, hint: &[u8]) -> Result<(), SeamError> {
+        let Target::Document(directory) = self.target(key)? else {
+            return Ok(());
+        };
+        if !lock(&self.shared.state).owners.contains_key(key) {
+            return Err(SeamError::NotLeased(key.to_string()));
+        }
+        let path = directory.join(LOAD_HINT_FILE);
+        let staged = directory.join(format!("{LOAD_HINT_FILE}.tmp"));
+        fs::write(&staged, hint)
+            .and_then(|()| fs::rename(&staged, &path))
+            .map_err(|e| io_err(format!("writing {}", path.display()), e).into())
+    }
+
+    fn read_hint(&self, key: &StorageKey) -> Option<Vec<u8>> {
+        let Target::Document(directory) = self.target(key).ok()? else {
+            return None;
+        };
+        fs::read(directory.join(LOAD_HINT_FILE)).ok()
     }
 }
 

@@ -200,7 +200,7 @@ mod tests {
             collab_types::document_artifact_id("dev.tilo.word-processor", "room", ""),
             collab_types::Ed25519PublicKey::from_bytes(key.verifying_key().to_bytes()),
             collab_types::document_attestation_id("dev.tilo.word-processor", "room", ""),
-            collab_types::OpClass::Splice,
+            collab_types::OpKind::Change,
             std::time::SystemTime::now(),
             1,
         );

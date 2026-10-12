@@ -10,9 +10,12 @@
 
 use std::io::{Read, Write};
 use std::net::{IpAddr, SocketAddr, TcpListener, TcpStream, UdpSocket};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::os::fd::{AsFd, AsRawFd, BorrowedFd};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
+
+use bounded_command::WakeFd;
 
 use crate::allowed::{AllowedAddrs, Change};
 use crate::dns::{self, Rcode};
@@ -21,8 +24,10 @@ use crate::policy::{Allowed, EgressPolicy, admissible};
 
 /// How long the upstream resolver may take.
 const UPSTREAM_TIMEOUT: Duration = Duration::from_secs(4);
-/// How often the serving threads look at the stop flag.
-const POLL: Duration = Duration::from_millis(200);
+/// The longest the UDP thread may block in `recv_from` once `poll(2)` said
+/// a datagram is ready, should that readiness turn out to be spurious. It
+/// never runs while the stub is idle: the thread blocks in `poll(2)`.
+const RECV_GUARD: Duration = Duration::from_millis(200);
 /// Queries in flight at once; more are dropped (the client retries).
 const MAX_IN_FLIGHT: usize = 64;
 /// A TCP client that sends nothing for this long is dropped.
@@ -80,10 +85,13 @@ impl Filter {
     }
 }
 
-/// The threads serving the stub's sockets.
+/// The threads serving the stub's sockets. Each blocks in `poll(2)` on its
+/// socket and on `stop`, so it runs only for DNS traffic or to end.
 #[derive(Debug)]
 pub struct Stub {
-    stop: Arc<AtomicBool>,
+    /// Rung once, by [`Drop`], and never drained: readable from then on, so
+    /// both threads see it however late they look.
+    stop: Arc<WakeFd>,
     threads: Vec<std::thread::JoinHandle<()>>,
 }
 
@@ -93,9 +101,11 @@ impl Stub {
     /// # Errors
     /// Returns the error configuring the sockets or starting a thread.
     pub fn start(udp: UdpSocket, tcp: TcpListener, shared: &Arc<Shared>) -> std::io::Result<Self> {
-        udp.set_read_timeout(Some(POLL))?;
+        // The UDP socket stays blocking: its clones send the replies, and a
+        // non-blocking send could drop one when the buffer is full.
+        udp.set_read_timeout(Some(RECV_GUARD))?;
         tcp.set_nonblocking(true)?;
-        let stop = Arc::new(AtomicBool::new(false));
+        let stop = Arc::new(WakeFd::new()?);
         let in_flight = Arc::new(AtomicUsize::new(0));
         let mut threads = Vec::new();
         {
@@ -124,7 +134,7 @@ impl Stub {
 
 impl Drop for Stub {
     fn drop(&mut self) {
-        self.stop.store(true, Ordering::Release);
+        self.stop.ring();
         for t in self.threads.drain(..) {
             let _ = t.join();
         }
@@ -151,14 +161,59 @@ impl Drop for Slot {
     }
 }
 
-fn serve_udp(
-    udp: &UdpSocket,
-    shared: &Arc<Shared>,
-    stop: &AtomicBool,
-    in_flight: &Arc<AtomicUsize>,
-) {
+/// What woke a serving thread.
+#[derive(Debug, PartialEq, Eq)]
+enum Ready {
+    /// The socket has a datagram, a connection or an error to collect.
+    Socket,
+    /// The stub is being dropped.
+    Stop,
+}
+
+/// Block, with no timeout, until `socket` is ready or `stop` is rung. Stop
+/// wins when both are.
+fn wait(socket: BorrowedFd<'_>, stop: &WakeFd) -> std::io::Result<Ready> {
+    let pollin = |fd: BorrowedFd<'_>| libc::pollfd {
+        fd: fd.as_raw_fd(),
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    let mut fds = [pollin(socket), pollin(stop.fd())];
+    loop {
+        // SAFETY: `fds` is a valid, exclusively borrowed two-element array
+        // of pollfd for the duration of the call, and both descriptors are
+        // borrowed from owners that outlive it.
+        let ready = unsafe { libc::poll(fds.as_mut_ptr(), 2, -1) };
+        if ready >= 0 {
+            break;
+        }
+        let error = std::io::Error::last_os_error();
+        if error.kind() != std::io::ErrorKind::Interrupted {
+            return Err(error);
+        }
+    }
+    let [_, stop] = fds;
+    // Unless stop was rung, poll(2) without a timeout returned for the
+    // socket: readable, or an error or hang-up the caller's `recv_from` or
+    // `accept` then reports.
+    Ok(if stop.revents == 0 {
+        Ready::Socket
+    } else {
+        Ready::Stop
+    })
+}
+
+fn serve_udp(udp: &UdpSocket, shared: &Arc<Shared>, stop: &WakeFd, in_flight: &Arc<AtomicUsize>) {
     let mut buf = [0_u8; 4096];
-    while !stop.load(Ordering::Acquire) {
+    loop {
+        match wait(udp.as_fd(), stop) {
+            Ok(Ready::Socket) => {}
+            Ok(Ready::Stop) => return,
+            Err(e) => {
+                tracing::warn!(error = %e, "egress: the DNS stub's UDP socket failed");
+                return;
+            }
+        }
         let (n, from) = match udp.recv_from(&mut buf) {
             Ok(got) => got,
             Err(e)
@@ -194,13 +249,16 @@ fn serve_udp(
     }
 }
 
-fn serve_tcp(
-    tcp: &TcpListener,
-    shared: &Arc<Shared>,
-    stop: &AtomicBool,
-    in_flight: &Arc<AtomicUsize>,
-) {
-    while !stop.load(Ordering::Acquire) {
+fn serve_tcp(tcp: &TcpListener, shared: &Arc<Shared>, stop: &WakeFd, in_flight: &Arc<AtomicUsize>) {
+    loop {
+        match wait(tcp.as_fd(), stop) {
+            Ok(Ready::Socket) => {}
+            Ok(Ready::Stop) => return,
+            Err(e) => {
+                tracing::warn!(error = %e, "egress: the DNS stub's TCP socket failed");
+                return;
+            }
+        }
         match tcp.accept() {
             Ok((stream, _)) => {
                 let Some(slot) = Slot::take(in_flight) else {
@@ -212,8 +270,12 @@ fn serve_tcp(
                     serve_tcp_client(stream, &shared);
                 });
             }
-            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => std::thread::sleep(POLL),
-            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            // The connection went away between poll(2) and accept: wait again.
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted
+                ) => {}
             Err(e) => {
                 tracing::warn!(error = %e, "egress: the DNS stub's TCP socket failed");
                 return;
@@ -372,6 +434,7 @@ pub use crate::config::nameservers;
 mod tests {
     use super::*;
     use crate::dns::tests::response;
+    use tilo_test_env::idle;
 
     fn shared(policy: EgressPolicy, upstream: Vec<SocketAddr>) -> Shared {
         Shared {
@@ -440,6 +503,142 @@ mod tests {
         )
         .unwrap();
         assert_eq!(dns::rcode(&reply), Some(0));
+    }
+
+    /// Tests that start a stub hold this, so a thread name is one stub's.
+    static STUBS: Mutex<()> = Mutex::new(());
+
+    /// A stub serving loopback sockets, as `spawn_egress` starts it on the
+    /// namespace's, with its two threads' ids.
+    struct Running {
+        stub: Stub,
+        udp: SocketAddr,
+        tcp: SocketAddr,
+        udp_thread: String,
+        tcp_thread: String,
+    }
+
+    fn start(shared: &Arc<Shared>) -> Running {
+        let udp = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let tcp = TcpListener::bind("127.0.0.1:0").unwrap();
+        let (udp_addr, tcp_addr) = (udp.local_addr().unwrap(), tcp.local_addr().unwrap());
+        let ((stub, udp_thread), tcp_thread) = idle::spawned_thread("egress-dns-tcp", || {
+            idle::spawned_thread("egress-dns-udp", || Stub::start(udp, tcp, shared).unwrap())
+        });
+        Running {
+            stub,
+            udp: udp_addr,
+            tcp: tcp_addr,
+            udp_thread,
+            tcp_thread,
+        }
+    }
+
+    fn ask_udp(stub: SocketAddr, query: &[u8]) -> Vec<u8> {
+        let client = UdpSocket::bind("127.0.0.1:0").unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        client.send_to(query, stub).unwrap();
+        let mut buf = [0_u8; 4096];
+        let (n, _) = client.recv_from(&mut buf).unwrap();
+        buf[..n].to_vec()
+    }
+
+    fn ask_tcp(client: &mut TcpStream, query: &[u8]) -> Vec<u8> {
+        write_framed(client, query).unwrap();
+        read_framed(client).unwrap()
+    }
+
+    #[test]
+    fn an_idle_stub_does_not_wake() {
+        let _one = STUBS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let shared = Arc::new(shared(
+            EgressPolicy::from_grants(["github.com"]),
+            Vec::new(),
+        ));
+        let running = start(&shared);
+        idle::assert_stays_asleep(&running.udp_thread, "egress-dns-udp");
+        idle::assert_stays_asleep(&running.tcp_thread, "egress-dns-tcp");
+        drop(running.stub);
+    }
+
+    #[test]
+    fn dropping_the_stub_ends_both_threads_promptly() {
+        let _one = STUBS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let shared = Arc::new(shared(EgressPolicy::none(), Vec::new()));
+        let running = start(&shared);
+        // Both threads parked in poll(2), as on an idle desktop.
+        std::thread::sleep(Duration::from_millis(50));
+        let stopping = Instant::now();
+        drop(running.stub);
+        let took = stopping.elapsed();
+        // Drop joins both threads, so returning at all means they ended. The
+        // stop-flag loop this replaced looked every 200 ms.
+        assert!(took < Duration::from_millis(100), "stopping took {took:?}");
+        for tid in [running.udp_thread, running.tcp_thread] {
+            let task = format!("/proc/self/task/{tid}");
+            let gone = Instant::now();
+            while std::path::Path::new(&task).exists() {
+                assert!(
+                    gone.elapsed() < Duration::from_secs(5),
+                    "{task} outlived the stub"
+                );
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        }
+    }
+
+    #[test]
+    fn queries_over_both_sockets_resolve_or_are_refused_as_before() {
+        let _one = STUBS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (resolver, asked) = fake_resolver();
+        let shared = Arc::new(shared(
+            EgressPolicy::from_grants(["github.com"]),
+            vec![resolver],
+        ));
+        let running = start(&shared);
+        let granted = "192.0.2.1".parse::<IpAddr>().unwrap();
+
+        // Over UDP: the same bytes `answer` gives, which the decision tests
+        // above pin down.
+        let denied = dns::query(11, "example.com", dns::TYPE_A);
+        let reply = ask_udp(running.udp, &denied);
+        assert_eq!(dns::rcode(&reply), Some(3), "NXDOMAIN");
+        assert_eq!(asked.load(Ordering::SeqCst), 0, "the resolver was asked");
+        assert_eq!(Some(reply), answer(&shared, &denied, Transport::Udp));
+        let allowed = dns::query(12, "github.com", dns::TYPE_A);
+        let reply = ask_udp(running.udp, &allowed);
+        assert_eq!(dns::rcode(&reply), Some(0));
+        assert_eq!(dns::answered_addresses(&reply)[0].addr, granted);
+        assert_eq!(asked.load(Ordering::SeqCst), 1);
+        assert_eq!(Some(reply), answer(&shared, &allowed, Transport::Udp));
+        assert_eq!(asked.load(Ordering::SeqCst), 2);
+
+        // Over TCP, two queries on one connection.
+        let mut client = TcpStream::connect(running.tcp).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        let denied = dns::query(13, "example.com", dns::TYPE_A);
+        let reply = ask_tcp(&mut client, &denied);
+        assert_eq!(dns::rcode(&reply), Some(3), "NXDOMAIN");
+        assert_eq!(asked.load(Ordering::SeqCst), 2, "the resolver was asked");
+        assert_eq!(Some(reply), answer(&shared, &denied, Transport::Tcp));
+        let allowed = dns::query(14, "github.com", dns::TYPE_A);
+        let reply = ask_tcp(&mut client, &allowed);
+        assert_eq!(dns::rcode(&reply), Some(0));
+        assert_eq!(dns::answered_addresses(&reply)[0].addr, granted);
+        assert_eq!(asked.load(Ordering::SeqCst), 3);
+        assert_eq!(Some(reply), answer(&shared, &allowed, Transport::Tcp));
+        drop(client);
+        drop(running.stub);
     }
 
     #[test]
