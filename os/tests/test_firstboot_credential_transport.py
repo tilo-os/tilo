@@ -29,12 +29,18 @@ class CredentialTransportTests(unittest.TestCase):
         replacements = {
             "CONF=/etc/tilo/install-user.conf": f"CONF={credential}",
             "FULL_NAME_CONF=/etc/tilo/install-user-full-name": f"FULL_NAME_CONF={name}",
+            "TRANSACTION=/etc/tilo/install-user.transaction": f"TRANSACTION={root}/install-user.transaction",
             "key=/var/lib/tilo/device-private/keypair.bin": f"key={root}/absent-device-key",
             '"/home/$user"': f'"{root}/home/$user"',
             '"/var/home/$user"': f'"{root}/var-home/$user"',
+            'FILES_HELPER="$(dirname -- "${BASH_SOURCE[0]}")/tilo-firstboot-files.py"': f'FILES_HELPER="{ROOT}/os/usr/libexec/tilo-firstboot-files.py"',
+            '/etc/skel': f'{root}/skel',
         }
+        (root / 'home').mkdir(exist_ok=True)
+        (root / 'skel').mkdir()
         for original, replacement in replacements.items():
-            self.assertEqual(source.count(original), 1, original)
+            expected_count = 2 if original in ['"/home/$user"', '"/var/home/$user"'] else 1
+            self.assertEqual(source.count(original), expected_count, original)
             source = source.replace(original, replacement)
         script = root / "firstboot"
         script.write_text(source)
@@ -46,6 +52,7 @@ class CredentialTransportTests(unittest.TestCase):
             "id": "raise SystemExit(1)",
             "stat": "print('0:600:1' if sys.argv[2] == '%u:%a:%h' else Path(sys.argv[-1]).stat().st_size)",
             "useradd": "(root / 'useradd.json').write_text(json.dumps(sys.argv[1:]))",
+            "getent": "print('fixtureuser:x:' + str(os.getuid()) + ':' + str(os.getgid()) + '::' + str(root / 'home/fixtureuser') + ':/bin/bash')",
             "chpasswd": "(root / 'chpasswd.json').write_text(json.dumps(sys.argv[1:])); (root / 'password-stdin').write_text(sys.stdin.read()); raise SystemExit(int(os.environ.get('FIXTURE_PASSWORD_FAILURE', '0')))",
             "shred": "Path(sys.argv[-1]).unlink()",
             "chown": "pass",
@@ -63,8 +70,9 @@ class CredentialTransportTests(unittest.TestCase):
         result = subprocess.run(["bash", str(script)], env=environment, capture_output=True, text=True)
         arguments = json.loads((root / "useradd.json").read_text())
         self.assertNotIn(SYNTHETIC_HASH, arguments, "password hashes must not be process arguments")
-        self.assertEqual(arguments[arguments.index("-p") + 1], "!")
-        self.assertIn("-M" if seeded_home else "-m", arguments)
+        self.assertRegex(arguments[arguments.index("-p") + 1], r"^!tilo-firstboot-[a-f0-9]{32}$")
+        self.assertIn("-M", arguments)
+        self.assertNotIn("-m", arguments)
         self.assertEqual("-c" in arguments, full_name)
         self.assertNotIn(SYNTHETIC_HASH, result.stdout + result.stderr)
         self.assertEqual(json.loads((root / "chpasswd.json").read_text()), ["--encrypted"])
