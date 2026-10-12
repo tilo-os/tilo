@@ -81,6 +81,11 @@ def parse_samples(text: str, app: str) -> list[dict]:
 
 def summarize(rows: list[dict], gpu_us: list[int]) -> dict:
     out = {stage: distribution([row[stage] for row in rows]) for stage in STAGES}
+    # The legs between the compositor's own marks, key by key.
+    out["commit_to_submit_us"] = distribution(
+        [row["key_to_submit_us"] - row["key_to_commit_us"] for row in rows])
+    out["submit_to_present_us"] = distribution(
+        [row["key_to_present_us"] - row["key_to_submit_us"] for row in rows])
     if gpu_us:
         out["gpu_frame_us"] = distribution(gpu_us)
     return out
@@ -181,22 +186,29 @@ def measure(args: argparse.Namespace) -> dict:
         sys.exit(f"only {len(rows)} of {args.keys} keys were answered and timed; see {log}")
     gpu = [int(m[1]) for m in GPU_LINE.finditer(text)]
     result = {"label": args.label, "app": app, "size": f"{args.width}x{args.height}",
-              "hz": args.hz, "keys_sent": args.keys, **summarize(rows, gpu)}
+              "hz": args.hz, "keys_sent": args.keys,
+              # Rendered frames per key sent: a key answered by one commit should cost one.
+              "frames_per_key": round(len(gpu) / (args.keys + args.warmup), 2),
+              **summarize(rows, gpu)}
     (args.out / f"{args.label}.json").write_text(json.dumps(result, indent=2))
     return result
 
 
 def table(results: list[dict]) -> str:
-    head = ("| run | n | commit p50 | submit p50 | present p50 | present p90 "
-            "| present p99 | GPU frame p50 |\n|---|---|---|---|---|---|---|---|")
-    lines = [head]
+    """One row per run and stage: p50 / p90 / p99 in milliseconds."""
+    stages = [("key_to_commit_us", "key->commit"), ("commit_to_submit_us", "commit->submit"),
+              ("submit_to_present_us", "submit->present"), ("key_to_present_us", "key->present"),
+              ("gpu_frame_us", "GPU frame")]
+    lines = ["| run | stage | n | p50 | p90 | p99 |", "|---|---|---|---|---|---|"]
     for r in results:
-        gpu = r.get("gpu_frame_us", {}).get("p50_ms")
-        lines.append(
-            f"| {r['label']} | {r['key_to_present_us']['n']} "
-            f"| {r['key_to_commit_us']['p50_ms']:.1f} | {r['key_to_submit_us']['p50_ms']:.1f} "
-            f"| {r['key_to_present_us']['p50_ms']:.1f} | {r['key_to_present_us']['p90_ms']:.1f} "
-            f"| {r['key_to_present_us']['p99_ms']:.1f} | {'' if gpu is None else f'{gpu:.1f}'} |")
+        for key, name in stages:
+            d = r.get(key)
+            if d:
+                lines.append(f"| {r['label']} | {name} | {d['n']} | {d['p50_ms']:.1f} "
+                             f"| {d['p90_ms']:.1f} | {d['p99_ms']:.1f} |")
+    lines.append("")
+    lines.extend(f"{r['label']}: {r['frames_per_key']} rendered frames per key"
+                 for r in results if "frames_per_key" in r)
     return "\n".join(lines)
 
 

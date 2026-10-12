@@ -3901,6 +3901,14 @@ struct TestControlCtx {
     /// precisely the ownership handoff DRM uses before emitting real
     /// `wl_touch` traffic to its Wayland clients.
     direct_touch: DirectTouchOwnership,
+    /// Control-socket actions the focused Wayland client took, counted so a
+    /// batch the client alone answered is told from one that changed the
+    /// chrome ([`Self::client_input_only`]).
+    client_routed_actions: usize,
+    /// The last batch of actions went to the client alone: the client's own
+    /// commit is the frame it asks for, so the loop does not repaint for it,
+    /// as it does not for a physical key.
+    client_input_only: bool,
     /// Touch the chrome or a touch-less client receives as pointer input;
     /// shared by physical and injected touch.
     touch_pointer: crate::compositor::touch_pointer::TouchPointer,
@@ -3951,6 +3959,8 @@ impl TestControlCtx {
             focus: None,
             cursor: PhysicalPosition::new(0.0, 0.0),
             direct_touch: DirectTouchOwnership::default(),
+            client_routed_actions: 0,
+            client_input_only: false,
             touch_pointer: crate::compositor::touch_pointer::TouchPointer::default(),
             gestures: crate::compositor::backend::drm::gestures::GestureTracker::default(),
             input: InputEnvironment::default(),
@@ -4317,6 +4327,7 @@ fn dispatch_synth_event(
     state: &mut Option<&mut State>,
 ) {
     if to_client(state, fb, event, ctx.modifiers) {
+        ctx.client_routed_actions = ctx.client_routed_actions.saturating_add(1);
         return;
     }
     if let Some(st) = state.as_deref_mut() {
@@ -6061,6 +6072,7 @@ fn pump_test_control_conn(
                 }
                 // A planned action that could not run replaces this command's answer.
                 // Actions execute before the reply is written; first failure wins, the rest still run.
+                let routed_before = ctx.client_routed_actions;
                 let mut failed: Option<InvokeFailure> = None;
                 let mut receipt: Option<crate::shell::search::ActionReceipt> = None;
                 let mut pending: Option<crate::shell::search::PendingInvocation> = None;
@@ -6101,7 +6113,15 @@ fn pump_test_control_conn(
                 // Re-run layout so the next command/paint sees rects post-mutation — a
                 // chrome state change can alter structural layout, leaving stale rects otherwise.
                 if !actions.is_empty() {
-                    injected_input = true;
+                    // Input only the client took changes no shell pixels: the
+                    // client's commit will ask for the frame that shows it.
+                    // Repainting here as well put a full-screen frame ahead of
+                    // it that a physical key never causes.
+                    if ctx.client_routed_actions.saturating_sub(routed_before) < actions.len() {
+                        injected_input = true;
+                    } else {
+                        ctx.client_input_only = true;
+                    }
                     frame_builder.relayout();
                     frame_builder.reconcile_native_focus(&mut ctx.focus);
                 }
@@ -13752,6 +13772,8 @@ pub fn run() {
             if injected {
                 metrics.note_input(Instant::now());
                 injected_redraw_pending = true;
+            } else if std::mem::take(&mut test_control_ctx.client_input_only) {
+                metrics.note_input(Instant::now());
             }
             // An agent at work is the person's activity on a hosted machine:
             // without this it locks under its agents after the idle timeout.
