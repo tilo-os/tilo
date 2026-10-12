@@ -124,15 +124,14 @@ fn device_number(text: &str) -> io::Result<u64> {
 }
 
 fn filesystem_name(uuid: [u8; 16]) -> String {
-    let encoded = hex::encode(uuid);
-    format!(
-        "{}-{}-{}-{}-{}",
-        &encoded[..8],
-        &encoded[8..12],
-        &encoded[12..16],
-        &encoded[16..20],
-        &encoded[20..]
-    )
+    let mut name = String::with_capacity(36);
+    for (index, byte) in uuid.into_iter().enumerate() {
+        if matches!(index, 4 | 6 | 8 | 10) {
+            name.push('-');
+        }
+        name.push_str(&hex::encode([byte]));
+    }
+    name
 }
 
 #[derive(PartialEq, Eq)]
@@ -182,9 +181,9 @@ fn member(root: &File, filesystem: &Filesystem) -> io::Result<Member> {
 /// This supports readonly mounts without requiring a writable member. It does
 /// not grant source authority: callers must match rdev to their held block FD,
 /// filesystem UUID to reviewed volume facts, and retain the actual mount ID and
-/// namespace. Full-root callers separately require subvolume_identity().id == 5.
+/// namespace. Full-root callers separately require `subvolume_identity().id == 5`.
 /// A missing or hidden kernel sysfs observation is an error, never a fallback to
-/// a UUID or DEV_INFO pathname. The membership and FS_INFO are read twice.
+/// a UUID or `DEV_INFO` pathname. The membership and `FS_INFO` are read twice.
 pub fn single_device_identity(directory: BorrowedFd<'_>) -> io::Result<SingleDeviceIdentity> {
     let held = File::from(directory.try_clone_to_owned()?);
     if !held.metadata()?.is_dir() {
@@ -220,6 +219,21 @@ pub fn single_device_identity(directory: BorrowedFd<'_>) -> io::Result<SingleDev
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn filesystem_name_matches_kernel_uuid_format() {
+        assert_eq!(
+            filesystem_name([0; 16]),
+            "00000000-0000-0000-0000-000000000000"
+        );
+        assert_eq!(
+            filesystem_name([
+                0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0xfe, 0xdc, 0xba, 0x98, 0x76, 0x54,
+                0x32, 0x10,
+            ]),
+            "01234567-89ab-cdef-fedc-ba9876543210"
+        );
+    }
 
     #[test]
     fn kernel_numbers_reject_signs_spaces_overflow_and_anonymous_devices() {

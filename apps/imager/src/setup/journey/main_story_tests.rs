@@ -155,6 +155,10 @@ fn profile(
 }
 
 pub(in crate::setup) fn fixture_source_facts() -> Option<(Vec<u8>, serde_json::Value)> {
+    // Native journeys discover the same GPT the standalone helper will resolve.
+    if std::env::var_os("TILO_NATIVE_SHARED_FILES_ACTOR_ROOT").is_some() {
+        return None;
+    }
     let root = fixture_mount_root()?;
     let mount = format!(
         "24 1 8:1 / {} rw,relatime - ext4 /dev/storydisk1 rw\n",
@@ -192,6 +196,9 @@ pub(in crate::setup) fn fixture_host_facts() -> Option<super::super::staging::pr
 fn story_accounts_and_storage(app: &mut App, home: &Path) {
     app.effect(&InstallerPreviewEffect::ContinuePreview)
         .unwrap();
+    assert_eq!(state(app)["page"], "purpose");
+    choose(app, "computer");
+    assert_eq!(state(app)["purpose"], "computer");
     wait(app, |v| {
         v["page"] == "belongings" && v["belongings_checking"] == false
     });
@@ -252,7 +259,12 @@ fn story_accounts_and_storage(app: &mut App, home: &Path) {
     let plan = serde_json::to_value(intent.source_plan()).unwrap();
     let relative: super::super::migration_store::NativePath =
         serde_json::from_value(plan["home"]["relative"].clone()).unwrap();
-    assert_eq!(relative.decode().unwrap(), Path::new("home"));
+    let source_mount =
+        std::path::PathBuf::from(std::env::var_os("TILO_ORIGINAL_SOURCE_GPT_STORE").unwrap());
+    assert_eq!(
+        relative.decode().unwrap(),
+        home.strip_prefix(source_mount).unwrap()
+    );
     assert_eq!(state(app)["accounts"]["can_continue"], false);
     let discovered = app
         .with_widget::<InstallerPreview, _>(|view| {
@@ -319,6 +331,10 @@ fn story_accounts_and_storage(app: &mut App, home: &Path) {
             && v["storage"]["checking"] == false
             && v["storage"]["plan_digest"].is_string()
     });
+    app.with_widget::<InstallerPreview, _>(|v| {
+        prepared_media::native_retained::assert_journey_registration(v);
+    })
+    .unwrap();
     paint(
         app,
         "main-story-storage",
@@ -378,8 +394,13 @@ fn story_accounts_and_storage(app: &mut App, home: &Path) {
 
 #[test]
 fn guided_new_user_migrates_recognized_home_then_reviews_shared_files_storage() {
+    if !prepared_media::native_retained::enter_owned_journey(
+        "setup::journey::main_story_tests::guided_new_user_migrates_recognized_home_then_reviews_shared_files_storage",
+    ) {
+        return;
+    }
     use std::os::unix::fs::PermissionsExt as _;
-    let temporary = tempfile::tempdir().unwrap();
+    let temporary = prepared_media::native_retained::journey_directory();
     let root = temporary.path().canonicalize().unwrap();
     let mut env = tilo_test_env::ScopedEnv::new();
     let _platform = PlatformFixture::install(&root);
@@ -668,6 +689,9 @@ fn prepare_portable_story(
     });
     app.effect(&InstallerPreviewEffect::ContinuePreview)
         .unwrap();
+    assert_eq!(state(app)["page"], "purpose");
+    choose(app, "computer");
+    assert_eq!(state(app)["purpose"], "computer");
     wait(app, |v| {
         v["page"] == "belongings" && v["belongings_checking"] == false
     });
@@ -684,9 +708,14 @@ fn prepare_portable_story(
 
 #[test]
 fn guided_existing_backup_migrates_this_home_without_creating_another_identity() {
+    if !prepared_media::native_retained::enter_owned_journey(
+        "setup::journey::main_story_tests::guided_existing_backup_migrates_this_home_without_creating_another_identity",
+    ) {
+        return;
+    }
     use super::super::prepared_identity::PreparedIdentity;
     use std::os::unix::fs::PermissionsExt as _;
-    let temporary = tempfile::tempdir().unwrap();
+    let temporary = prepared_media::native_retained::journey_directory();
     let root = temporary.path().canonicalize().unwrap();
     std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
     let _platform = PlatformFixture::install(&root);
@@ -739,7 +768,9 @@ fn guided_existing_backup_migrates_this_home_without_creating_another_identity()
     .unwrap();
     app.effect(&InstallerPreviewEffect::ContinuePreview)
         .unwrap();
-    let restored = wait(&mut app, |v| v["existing_identity"]["state"] == "ready");
+    let restored = wait(&mut app, |v| {
+        v["existing_identity"]["state"] == "ready" && v["prepared_identity"]["state"] == "prepared"
+    });
     assert_eq!(
         restored["page"], "connect",
         "restoration is reviewed before advancing"
@@ -771,6 +802,9 @@ fn guided_existing_backup_migrates_this_home_without_creating_another_identity()
     .unwrap();
     app.effect(&InstallerPreviewEffect::ContinuePreview)
         .unwrap();
+    assert_eq!(state(&mut app)["page"], "purpose");
+    choose(&mut app, "computer");
+    assert_eq!(state(&mut app)["purpose"], "computer");
     wait(&mut app, |v| {
         v["page"] == "belongings" && v["belongings_checking"] == false
     });
@@ -797,6 +831,7 @@ fn guided_existing_backup_migrates_this_home_without_creating_another_identity()
     let intent = app
         .with_widget::<InstallerPreview, _>(|v| {
             assert!(v.live, "the entire launched story remains on the live path");
+            prepared_media::native_retained::assert_journey_registration(v);
             assert_eq!(
                 v.personal.prepared_handle().unwrap().public_key(),
                 expected_key

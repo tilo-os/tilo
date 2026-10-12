@@ -35,6 +35,12 @@ aarch64 = "aarch64"
 [capabilities]
 optional = ["files.open", "files.paths", "app-files", "open-uri", "secrets", "settings", "network.http", "threads", "media.decode", "processes"]
 
+# Selected browser accounts are forgotten through the session action broker.
+# Cross-app invocation still requires the workspace's grant.
+[actions]
+query = true
+invoke = true
+
 [publisher]
 identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
 signature = ""

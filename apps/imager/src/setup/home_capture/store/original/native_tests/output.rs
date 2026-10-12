@@ -287,7 +287,10 @@ pub(in crate::setup) fn original_pipeline_with_receiver(
     )
     .unwrap();
     let output_partition = partition(&binding.partition_guid);
-    let output_points = daemon.mount_points(&output_partition).unwrap();
+    let output_points = daemon
+        .filesystem(&output_partition)
+        .and_then(|proxy| proxy.get_property::<Vec<Vec<u8>>>("MountPoints"))
+        .unwrap();
     assert_eq!(
         output_points.len(),
         1,
@@ -309,7 +312,13 @@ pub(in crate::setup) fn original_pipeline_with_receiver(
     daemon
         .unmount(&output_partition)
         .expect("retire only explicitly marked output fixture mount");
-    assert!(daemon.mount_points(&output_partition).unwrap().is_empty());
+    assert!(
+        daemon
+            .filesystem(&output_partition)
+            .and_then(|proxy| proxy.get_property::<Vec<Vec<u8>>>("MountPoints"))
+            .unwrap()
+            .is_empty()
+    );
 
     // Retain fixture files on its disposable source volume until the external
     // coordinator destroys that volume; do not unlink through a retired mount.
@@ -587,12 +596,24 @@ pub(in crate::setup) fn original_pipeline_with_receiver(
         daemon
             .unmount(partition)
             .expect("retire exact marked participant GPT source");
-        assert!(daemon.mount_points(partition).unwrap().is_empty());
+        assert!(
+            daemon
+                .filesystem(partition)
+                .and_then(|proxy| proxy.get_property::<Vec<Vec<u8>>>("MountPoints"))
+                .unwrap()
+                .is_empty()
+        );
     }
     daemon
         .unmount(&source_partition)
         .expect("retire only explicitly marked original fixture mount");
-    assert!(daemon.mount_points(&source_partition).unwrap().is_empty());
+    assert!(
+        daemon
+            .filesystem(&source_partition)
+            .and_then(|proxy| proxy.get_property::<Vec<Vec<u8>>>("MountPoints"))
+            .unwrap()
+            .is_empty()
+    );
     // Qualification consumes the same genuinely prepared pending selection.
     // No output attempt/namespace is started by this test before the installed
     // controller independently reopens the protected records and capsule.
@@ -603,11 +624,24 @@ pub(in crate::setup) fn original_pipeline_with_receiver(
         drop(setup);
         drop(scratch);
         candidate::qualify();
-        assert!(daemon.mount_points(&source_partition).unwrap().is_empty());
-        assert!(daemon.mount_points(&output_partition).unwrap().is_empty());
         assert!(
             daemon
-                .mount_points(participant_partition.as_ref().unwrap())
+                .filesystem(&source_partition)
+                .and_then(|proxy| proxy.get_property::<Vec<Vec<u8>>>("MountPoints"))
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            daemon
+                .filesystem(&output_partition)
+                .and_then(|proxy| proxy.get_property::<Vec<Vec<u8>>>("MountPoints"))
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            daemon
+                .filesystem(participant_partition.as_ref().unwrap())
+                .and_then(|proxy| proxy.get_property::<Vec<Vec<u8>>>("MountPoints"))
                 .unwrap()
                 .is_empty()
         );
@@ -746,18 +780,32 @@ pub(in crate::setup) fn original_pipeline_with_receiver(
     medium
         .finish(shutdown, key, work)
         .expect("actual owned UDisks unmount must succeed");
-    assert!(daemon.mount_points(&output_partition).unwrap().is_empty());
+    assert!(
+        daemon
+            .filesystem(&output_partition)
+            .and_then(|proxy| proxy.get_property::<Vec<Vec<u8>>>("MountPoints"))
+            .unwrap()
+            .is_empty()
+    );
     if let Some(committed) = committed {
         paired::reopen_and_receive(&target, &disk, &committed, scratch.path(), receiver);
     }
     if let Some(partition) = &participant_partition {
         assert!(
-            daemon.mount_points(partition).unwrap().is_empty(),
+            daemon
+                .filesystem(partition)
+                .and_then(|proxy| proxy.get_property::<Vec<Vec<u8>>>("MountPoints"))
+                .unwrap()
+                .is_empty(),
             "mounted participant readonly epoch must retire"
         );
     }
     assert!(
-        daemon.mount_points(&source_partition).unwrap().is_empty(),
+        daemon
+            .filesystem(&source_partition)
+            .and_then(|proxy| proxy.get_property::<Vec<Vec<u8>>>("MountPoints"))
+            .unwrap()
+            .is_empty(),
         "original readonly mount lease must retire"
     );
 }

@@ -37,7 +37,9 @@ impl ExecutingPeer {
         self.credentials.gid.as_raw()
     }
     /// Kernel socket-creator supplementary groups, never a destination NSS lookup.
-    #[must_use]
+    ///
+    /// # Errors
+    /// Returns an error if the kernel's socket-creator group evidence was unavailable.
     pub fn supplementary_groups(&self) -> io::Result<&[u32]> {
         self.supplementary_groups.as_deref().map_err(|error| {
             io::Error::new(
@@ -468,8 +470,11 @@ fn pin_sender(proof: OwnedFd, sender: UCred) -> io::Result<ExecutingPeer> {
 
 fn peer_groups(proof: &OwnedFd) -> io::Result<Vec<u32>> {
     let mut groups = vec![0u32; 65_536];
-    let mut length = libc::socklen_t::try_from(groups.len() * std::mem::size_of::<u32>())
-        .map_err(io::Error::other)?;
+    let capacity_bytes = groups
+        .len()
+        .checked_mul(std::mem::size_of::<u32>())
+        .ok_or_else(|| refused("native supplementary group capacity overflow"))?;
+    let mut length = libc::socklen_t::try_from(capacity_bytes).map_err(io::Error::other)?;
     // SAFETY: owned proof socket and live bounded buffer. SO_PEERGROUPS returns
     // the socket creator's immutable kernel credentials, not NSS or request IDs.
     let result = unsafe {
@@ -485,12 +490,13 @@ fn peer_groups(proof: &OwnedFd) -> io::Result<Vec<u32>> {
         return Err(io::Error::last_os_error());
     }
     let length = usize::try_from(length).map_err(io::Error::other)?;
-    if length > groups.len() * std::mem::size_of::<u32>()
-        || !length.is_multiple_of(std::mem::size_of::<u32>())
-    {
+    if length > capacity_bytes || !length.is_multiple_of(std::mem::size_of::<u32>()) {
         return Err(refused("native supplementary group length mismatch"));
     }
-    groups.truncate(length / std::mem::size_of::<u32>());
+    let count = length
+        .checked_div(std::mem::size_of::<u32>())
+        .ok_or_else(|| refused("native supplementary group size invalid"))?;
+    groups.truncate(count);
     if groups.contains(&u32::MAX) {
         return Err(refused("native supplementary group is invalid"));
     }

@@ -540,10 +540,11 @@ impl ImagerApp {
                 release.image_sha256 == source.expected_sha256.as_deref().unwrap_or_default()
                     && release.size == source.size
                     && format!("{} {}", release.name, release.version) == source.name
-                    && release
-                        .account_custody
-                        .as_ref()
-                        .is_some_and(|proof| proof.supports_service_session_protocol(protocol))
+                    && release.account_custody.as_ref().is_some_and(|proof| {
+                        proof.supports_service_session_protocol(protocol)
+                            || crate::setup::account_admission::source_candidate(protocol, proof)
+                                .unwrap_or(false)
+                    })
             });
         if !admitted {
             return Err(crate::setup::strings::t(

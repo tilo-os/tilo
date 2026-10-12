@@ -969,6 +969,9 @@ pub struct InstallerApp {
     disk_password: Arc<Mutex<String>>,
     wifi_password: Arc<Mutex<String>>,
     hostname: ui::LocalState<String>,
+    purpose: String,
+    device_label: String,
+    prepared_setup: Option<install_profile_model::PreparedSetupExpectation>,
     locale: ui::LocalState<String>,
     timezone: ui::LocalState<String>,
     /// Selected keyboard-layout *display name*. Resolved to xkb
@@ -1172,6 +1175,9 @@ impl InstallerApp {
             hostname: ui::LocalState::new(DEFAULT_HOSTNAME.to_string()),
             locale: ui::LocalState::new("en_US.UTF-8".to_string()),
             timezone: ui::LocalState::new(DEFAULT_TIMEZONE.to_string()),
+            purpose: install_profile_model::default_purpose(),
+            device_label: String::new(),
+            prepared_setup: None,
             keymap: ui::LocalState::new(DEFAULT_KEYMAP_NAME.to_string()),
             erase_confirmation: ui::LocalState::new(String::new()),
             erase_confirmation_seen: String::new(),
@@ -1216,6 +1222,9 @@ impl InstallerApp {
     }
 
     fn apply_media_profile(&mut self, profile: crate::media_profile::MediaProfile) {
+        self.purpose.clone_from(&profile.purpose);
+        self.device_label.clone_from(&profile.device_label);
+        self.prepared_setup = profile.prepared_setup.clone();
         let status = profile.repair_summary();
         let keyboard_display = profile.keyboard_display_name().map(str::to_string);
         let completion = ProfileCompletion {
@@ -1356,6 +1365,9 @@ impl InstallerApp {
     /// visual regression checks instead of testing it only as widget state.
     pub fn shot_locale_repair(&mut self) {
         self.apply_media_profile(crate::media_profile::MediaProfile {
+            purpose: install_profile_model::default_purpose(),
+            device_label: String::new(),
+            prepared_setup: None,
             hostname: Some("studio".into()),
             username: Some("ada".into()),
             full_name: Some("ada Example".into()),
@@ -1655,6 +1667,9 @@ impl InstallerApp {
             },
             filesystem: self.filesystem().to_string(),
             hostname: local_text(&self.hostname).trim().to_string(),
+            purpose: self.purpose.clone(),
+            device_label: self.device_label.clone(),
+            prepared_setup: self.prepared_setup.clone(),
             full_name: local_text(&self.full_name).trim().to_string(),
             locale: self.locale().trim().to_string(),
             timezone: self.timezone().trim().to_string(),
@@ -4559,6 +4574,9 @@ mod tests {
         {
             let mut app = InstallerApp::with_disks(sample());
             app.apply_media_profile(crate::media_profile::MediaProfile {
+                purpose: install_profile_model::default_purpose(),
+                device_label: String::new(),
+                prepared_setup: None,
                 hostname: Some("studio".into()),
                 username: Some("ada".into()),
                 full_name: None,
@@ -5869,10 +5887,37 @@ mod tests {
         reason = "scenario test: each labelled phase keeps one former test's fixture and assertions"
     )]
     fn media_profile_skips_configured_screens_and_routes_repairs() {
+        {
+            let expected = install_profile_model::PreparedSetupExpectation {
+                schema: 1,
+                sealed_bytes: 4096,
+                ciphertext_sha256: "a".repeat(64),
+            };
+            let mut app = InstallerApp::with_disks(sample_disks());
+            let object = serde_json::json!({
+                "schema": 1, "purpose": "server", "device_label": "Travel computer",
+                "hostname": "travel", "username": "owner", "full_name": "Owner",
+                "locale": "en_US.UTF-8", "keyboard": "us", "timezone": "UTC",
+                "filesystem": "btrfs", "prepared_setup": expected,
+            });
+            app.apply_media_profile(
+                crate::media_profile::validate_object(object.as_object().unwrap()).unwrap(),
+            );
+            for selected in [Some(0), Some(1)] {
+                app.selected_disk = selected;
+                let options = app.install_options();
+                assert_eq!(options.prepared_setup.as_ref(), Some(&expected));
+                assert_eq!(options.device_label, "Travel computer");
+                assert_eq!(options.purpose, "server");
+            }
+        }
         // Phase `validated_media_profile_skips_already_configured_screens`.
         {
             let mut app = InstallerApp::with_disks(sample_disks());
             app.apply_media_profile(crate::media_profile::MediaProfile {
+                purpose: install_profile_model::default_purpose(),
+                device_label: String::new(),
+                prepared_setup: None,
                 hostname: Some("studio".into()),
                 username: Some("ada".into()),
                 full_name: Some("ada Example".into()),
@@ -5922,6 +5967,9 @@ mod tests {
         {
             let mut app = InstallerApp::with_disks(sample_disks());
             app.apply_media_profile(crate::media_profile::MediaProfile {
+                purpose: install_profile_model::default_purpose(),
+                device_label: String::new(),
+                prepared_setup: None,
                 hostname: None,
                 username: Some("ada".into()),
                 full_name: Some("ada Example".into()),
@@ -5952,6 +6000,9 @@ mod tests {
         {
             let mut app = InstallerApp::with_disks(sample_disks());
             app.apply_media_profile(crate::media_profile::MediaProfile {
+                purpose: install_profile_model::default_purpose(),
+                device_label: String::new(),
+                prepared_setup: None,
                 hostname: Some("studio".into()),
                 username: Some("ada".into()),
                 full_name: Some("ada Example".into()),
@@ -5981,6 +6032,9 @@ mod tests {
         {
             let mut app = InstallerApp::with_disks(sample_disks());
             app.apply_media_profile(crate::media_profile::MediaProfile {
+                purpose: install_profile_model::default_purpose(),
+                device_label: String::new(),
+                prepared_setup: None,
                 hostname: Some("studio".into()),
                 username: Some("ada".into()),
                 full_name: Some("ada Example".into()),

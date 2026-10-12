@@ -193,6 +193,17 @@ impl Profile {
     /// The marker deliberately survives successful deletion: canonical custody
     /// needs a separate backend operation before this selection can reconnect.
     pub(crate) fn begin_forget(&mut self) -> io::Result<()> {
+        if marker_exists(&self.parent)? {
+            let marker = read_attestation(
+                &StorageDirectory::from_file(self.parent.try_clone()?)?,
+                FORGETTING,
+            )?
+            .ok_or_else(unavailable)?;
+            if marker.schema != 1 || marker.input != self.input || marker.attempt != self.attempt {
+                return Err(unavailable());
+            }
+            return self.parent.sync_all();
+        }
         self.verify_path()?;
         StorageDirectory::from_file(self.parent.try_clone()?)?
             .publish(
@@ -242,6 +253,7 @@ impl Profile {
             self.cancelled = true;
             self.parent.sync_all()?;
         }
+        remove_attempts(&self.parent)?;
         // Unlink only the descriptor-relative entry; a symlink is not followed.
         match fs::unlinkat(&self.parent, RECEIPT, AtFlags::empty()) {
             Ok(()) | Err(rustix::io::Errno::NOENT) => {}
@@ -250,13 +262,74 @@ impl Profile {
         self.parent.sync_all()
     }
 
-    /// Recover only a previously fenced local deletion. No custody resolution or
-    /// native engine admission is involved; the exclusive lease fences live owners.
-    pub(crate) fn retry_forget(person: [u8; 32], id: &str) -> io::Result<()> {
+    /// Fence an already-closed (or never opened) selection under its exclusive
+    /// lease. The durable marker also makes retries safe after broker failure.
+    pub(crate) fn forget_closed(person: [u8; 32], id: &str) -> io::Result<()> {
         let root = crate::storage::data_dir().ok_or_else(unavailable)?;
-        Self::retry_forget_in(&root, person, id)
+        Self::forget_closed_in(&root, person, id)
     }
 
+    fn forget_closed_in(root: &Path, person: [u8; 32], id: &str) -> io::Result<()> {
+        if id.is_empty()
+            || !matches!(
+                Path::new(id).components().collect::<Vec<_>>().as_slice(),
+                [Component::Normal(_)]
+            )
+        {
+            return Err(unavailable());
+        }
+        {
+            let root = open_root(root, true)?;
+            StorageDirectory::from_file(root.try_clone()?)?.validate_namespace_control()?;
+            let namespace = private_child(&root, OsStr::new("service-sessions"))?;
+            let identity = person
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>();
+            let identity = private_child(&namespace, OsStr::new(&identity))?;
+            let parent = private_child(&identity, OsStr::new(id))?;
+            let storage = StorageDirectory::from_file(parent.try_clone()?)?;
+            match storage.publish(
+                OsStr::new(LEASE),
+                b"tilo-browser-service-engine-v1\n",
+                PublishMode::IfAbsent,
+                Privacy::OwnerOnly,
+            ) {
+                Ok(()) => {}
+                Err(error) if error.io_error().kind() == io::ErrorKind::AlreadyExists => {}
+                Err(error) => return Err(error.into_io_error()),
+            }
+            storage.open_read(OsStr::new(LEASE), Privacy::OwnerOnly)?;
+            let _lease = storage
+                .try_acquire_lease(OsStr::new(LEASE), LeaseMode::Exclusive)
+                .map_err(|_| {
+                    io::Error::new(io::ErrorKind::WouldBlock, "Website session is already open")
+                })?;
+            if !marker_exists(&parent)? {
+                let receipt = read_receipt(&storage)?.unwrap_or_else(|| Receipt {
+                    schema: 1,
+                    input: [0; 32],
+                    attempt: format!("attempt-{}", uuid::Uuid::new_v4()),
+                });
+                if receipt.schema != 1 || !valid_attempt(&receipt.attempt) {
+                    return Err(unavailable());
+                }
+                storage
+                    .publish(
+                        OsStr::new(FORGETTING),
+                        &serde_json::to_vec(&receipt)?,
+                        PublishMode::IfAbsent,
+                        Privacy::OwnerOnly,
+                    )
+                    .map_err(|error| error.into_io_error())?;
+            }
+            parent.sync_all()?;
+        }
+        Self::retry_forget_in(root, person, id)
+    }
+
+    /// Recover only a previously fenced local deletion. No custody resolution or
+    /// native engine admission is involved; the exclusive lease fences live owners.
     fn retry_forget_in(root: &Path, person: [u8; 32], id: &str) -> io::Result<()> {
         if id.is_empty()
             || !matches!(
@@ -307,6 +380,7 @@ impl Profile {
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
             Err(error) => return Err(error),
         }
+        remove_attempts(&parent)?;
         match fs::unlinkat(&parent, RECEIPT, AtFlags::empty()) {
             Ok(()) | Err(rustix::io::Errno::NOENT) => {}
             Err(error) => return Err(error.into()),
@@ -323,6 +397,31 @@ impl Profile {
         let current = open_root(&self.path, false)?;
         same_object(&current, &self.directory)
     }
+}
+
+/// Remove orphaned imports as well as the receipted attempt, keeping only the
+/// durable fence and lease namespace. Every traversal is descriptor-relative.
+fn remove_attempts(parent: &File) -> io::Result<()> {
+    let mut entries = Dir::read_from(parent)?;
+    let mut budget = 100_000;
+    while let Some(entry) = entries.read() {
+        let entry = entry?;
+        let name = OsStr::from_bytes(entry.file_name().to_bytes());
+        if !name.to_str().is_some_and(valid_attempt) {
+            continue;
+        }
+        let stat = fs::statat(parent, name, AtFlags::SYMLINK_NOFOLLOW)?;
+        if fs::FileType::from_raw_mode(stat.st_mode) == fs::FileType::Directory {
+            let child = open_child(parent, name)?;
+            validate_private(&child)?;
+            remove_contents(&child, parent.metadata()?.dev(), 0, &mut budget)?;
+            verify_child(parent, name, &child)?;
+            fs::unlinkat(parent, name, AtFlags::REMOVEDIR)?;
+        } else {
+            fs::unlinkat(parent, name, AtFlags::empty())?;
+        }
+    }
+    parent.sync_all()
 }
 
 fn marker_exists(parent: &File) -> io::Result<bool> {
@@ -505,6 +604,77 @@ mod tests {
                 same_site: SameSite::Lax,
             }],
         }
+    }
+
+    #[test]
+    fn forget_closed_fences_reuse_cleans_orphans_and_is_retryable() {
+        let root = fixture_root();
+        let selected = selection();
+        let mut profile = Profile::prepare_in(root.path(), &selected).unwrap();
+        let path = profile.path().unwrap().to_owned();
+        std::fs::write(path.join("credentials"), b"private").unwrap();
+        profile.complete().unwrap();
+        assert_eq!(
+            Profile::forget_closed_in(
+                root.path(),
+                selected.identity_public_key,
+                &selected.session_id
+            )
+            .unwrap_err()
+            .kind(),
+            io::ErrorKind::WouldBlock
+        );
+        assert!(!marker_exists(&profile.parent).unwrap());
+        let orphan = path
+            .parent()
+            .unwrap()
+            .join(format!("attempt-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&orphan).unwrap();
+        std::fs::set_permissions(&orphan, std::fs::Permissions::from_mode(0o700)).unwrap();
+        std::fs::write(orphan.join("cookies"), b"orphan-secret").unwrap();
+        drop(profile);
+        Profile::forget_closed_in(
+            root.path(),
+            selected.identity_public_key,
+            &selected.session_id,
+        )
+        .unwrap();
+        assert!(!path.exists());
+        assert!(!orphan.exists());
+        assert!(!path.parent().unwrap().join(RECEIPT).exists());
+        assert!(path.parent().unwrap().join(FORGETTING).exists());
+        assert!(Profile::prepare_in(root.path(), &selected).is_err());
+        // A lost or failed canonical reply must not require reopening credentials.
+        Profile::forget_closed_in(
+            root.path(),
+            selected.identity_public_key,
+            &selected.session_id,
+        )
+        .unwrap();
+        assert!(Profile::prepare_in(root.path(), &selected).is_err());
+    }
+
+    #[test]
+    fn forget_never_opened_selection_persists_fence_and_rejects_alias() {
+        let root = fixture_root();
+        let selected = selection();
+        assert!(
+            Profile::forget_closed_in(root.path(), selected.identity_public_key, "../outside")
+                .is_err()
+        );
+        Profile::forget_closed_in(
+            root.path(),
+            selected.identity_public_key,
+            &selected.session_id,
+        )
+        .unwrap();
+        assert!(Profile::prepare_in(root.path(), &selected).is_err());
+        Profile::forget_closed_in(
+            root.path(),
+            selected.identity_public_key,
+            &selected.session_id,
+        )
+        .unwrap();
     }
 
     #[test]

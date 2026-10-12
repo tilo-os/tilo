@@ -57,7 +57,7 @@ pub fn stage_setup_handoff(
 ) -> Result<Option<StagedHandoff>, String> {
     let needs_wifi = !profile.wifi_ssid.trim().is_empty();
     let needs_identity = profile.enroll_local_identity;
-    if !needs_wifi && !needs_identity {
+    if !needs_wifi && !needs_identity && profile.purpose == "computer" {
         return Ok(None);
     }
     if needs_wifi && wifi_psk.is_empty() {
@@ -94,7 +94,11 @@ pub fn stage_access_handoff(
     let needs_wifi = !ssid.is_empty();
     let needs_key = !ssh_public_keys.trim().is_empty();
     let hostname = chosen_hostname(profile).filter(|_| name_target);
-    if !needs_wifi && !needs_key && hostname.is_none() {
+    if !needs_wifi
+        && !needs_key
+        && hostname.is_none()
+        && !(name_target && profile.purpose == "server")
+    {
         return Ok(None);
     }
     if needs_wifi && wifi_psk.is_empty() {
@@ -103,6 +107,9 @@ pub fn stage_access_handoff(
     validate_bringup_ssh_key(ssh_public_keys)?;
     let root = prepare_handoff_root()?;
     let staged = (|| {
+        if name_target {
+            write_install_purpose(&root, profile)?;
+        }
         if needs_wifi {
             write_wifi_connection(&root, ssid, wifi_psk)?;
         }
@@ -309,6 +316,7 @@ pub fn apply_setup_handoff(
     wifi_psk: &str,
     local: &LocalIdentity<'_>,
 ) -> Result<(), String> {
+    write_install_purpose(root, profile)?;
     let ssid = profile.wifi_ssid.trim();
     if !ssid.is_empty() {
         write_wifi_connection(root, ssid, wifi_psk)?;
@@ -339,6 +347,19 @@ pub fn apply_setup_handoff(
         .map_err(|error| error.to_string())?;
     }
     Ok(())
+}
+
+fn write_install_purpose(root: &Path, profile: &InstallProfile) -> Result<(), String> {
+    if !install_profile_model::valid_purpose(&profile.purpose) {
+        return Err("Invalid installation purpose.".into());
+    }
+    let directory = root.join("etc/tilo");
+    fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
+    fs::write(
+        directory.join("install-purpose"),
+        format!("{}\n", profile.purpose),
+    )
+    .map_err(|error| error.to_string())
 }
 
 /// Copy a staged etc/var tree onto a mounted Tilo root partition.

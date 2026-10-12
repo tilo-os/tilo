@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+from unittest.mock import patch
 SCRIPT = Path(__file__).resolve().parents[1] / 'scripts/verify-account-consumer-capability.py'
 spec = importlib.util.spec_from_file_location('account_capability', SCRIPT)
 producer = importlib.util.module_from_spec(spec)
@@ -15,6 +16,18 @@ spec.loader.exec_module(producer)
 service_spec = importlib.util.spec_from_file_location('service_capability', SCRIPT.with_name('service-consumer-capability.py'))
 service = importlib.util.module_from_spec(service_spec)
 service_spec.loader.exec_module(service)
+
+class NativeOriginPrincipal(unittest.TestCase):
+    def test_root_producer_drops_privilege_without_disabling_cef_sandbox(self):
+        command = ['/usr/bin/python3', '/usr/libexec/tilo-service-session-qualification.py', '/signed/host']
+        completed = subprocess.CompletedProcess(command, 0, stdout=b'actual origin receipt', stderr=b'')
+        with patch.object(service.os, 'geteuid', return_value=0), \
+                patch.object(service.subprocess, 'run', return_value=completed) as run:
+            self.assertEqual(service.native_qualify(command, {}), completed.stdout)
+        self.assertEqual(run.call_args.args[0], ['/usr/bin/setpriv', '--reuid=65534',
+                         '--regid=65534', '--clear-groups', '--', *command])
+        self.assertNotIn('--no-sandbox', run.call_args.args[0])
+
 
 class OptionalServiceDependency(unittest.TestCase):
     def setUp(self):
@@ -83,9 +96,11 @@ class OptionalServiceDependency(unittest.TestCase):
         self.assertEqual(self.calls[2][1:], ['capabilities'])
 
     def test_partial_optional_qualification_refuses_cloud_receipt(self):
-        tools = ('tilo-service-session-receiver-qualification', 'tilo-service-session-qualification.py')
+        tools = (service.RECEIVING_ENTRY.removeprefix('/usr/libexec/'),
+                 'tilo-service-session-qualification.py')
         for name in tools:
             path = self.root / 'usr/libexec' / name
+            path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(b'not qualification')
             path.chmod(0o755)
             with self.assertRaisesRegex(ValueError, 'incomplete optional'):
@@ -95,8 +110,10 @@ class OptionalServiceDependency(unittest.TestCase):
     def test_saved_service_claim_cannot_downgrade_to_cloud_only(self):
         with self.assertRaisesRegex(ValueError, 'qualified sandbox'):
             service.produce(self.root, self.runner, (), {}, evidence={'schema': 1, 'protocol': 1})
-        saved = {'receiving_shell_path': '/usr/bin/shell', 'receiving_shell_sha256': 'ab' * 32,
-                 'receiving_route_qualification_sha256': 'ab' * 32}
+        saved = dict(schema=service.SERVICE_SCHEMA,
+                     **{name: 'ab' * 32 for name in service.ROUTE_KEYS})
+        saved.update(receiving_shell_path='/usr/bin/shell', receiving_dependencies={},
+                     receiving_python_path='/usr/bin/python3')
         with self.assertRaisesRegex(ValueError, 'no longer installed'):
             service.produce(self.root, self.runner, (), {}, evidence=saved)
 

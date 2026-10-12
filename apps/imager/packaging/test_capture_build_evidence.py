@@ -27,11 +27,15 @@ class CaptureBuildEvidenceTests(unittest.TestCase):
             root = Path(directory)
             subprocess.run(['git', 'init', '-q', str(root)], check=True)
             for name in ('Cargo.toml', 'Cargo.lock', 'apps/imager/build.rs',
+                         'apps/imager/capture-service.json', 'apps/imager/desktop-catalog.json',
+                         'apps/imager/release-catalog.json',
                          'apps/imager/src/setup/home_capture/native_tests/signed_export.rs',
                          'apps/imager/packaging/qualify-capture-release.py',
                          'tools/ci/native-stores.sh', 'tools/ci/native-store-autoclear.py',
                          'tools/apps/pack-runtime-package.sh', 'tools/apps/stage_sdk_services.py',
-                         'scripts/headless-examples/_control.py'):
+                         'scripts/headless-examples/_control.py',
+                         'scripts/browser/cef-lock.json', 'scripts/browser/build-host.py',
+                         'tools/apps/browser_runtime_release.py', 'tools/apps/app_package_isa.py'):
                 path = root / name
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text('before\n')
@@ -62,6 +66,9 @@ print(json.dumps({'reason':'build-finished','success':True}))
             self.assertEqual(list(invocations[0].glob('producer-*.json')), [])
             before = json.loads((invocations[0] / 'source-before.json').read_text())
             self.assertIn('scripts/headless-examples/_control.py', before)
+            for name in ('capture-service.json', 'desktop-catalog.json', 'release-catalog.json'):
+                self.assertEqual(before['apps/imager/' + name],
+                                 PRODUCER.facts(root / 'apps/imager' / name))
             self.assertEqual(before['scripts/headless-examples/_control.py'],
                              PRODUCER.facts(root / 'scripts/headless-examples/_control.py'))
 

@@ -117,7 +117,7 @@ fn raced() -> io::Error {
 pub fn content_changed(error: &io::Error) -> bool {
     error
         .get_ref()
-        .is_some_and(|inner| inner.is::<ContentChanged>())
+        .is_some_and(<dyn std::error::Error + Send + Sync>::is::<ContentChanged>)
 }
 
 fn failed() -> io::Error {
@@ -146,14 +146,14 @@ fn read(
     }
     let mut bytes = Vec::new();
     let mut input = file.take(MAX_FILE_BYTES + 1);
-    let mut buffer = [0u8; 64 * 1024];
+    let mut buffer = vec![0u8; 64 * 1024];
     loop {
         check_cancel(cancel)?;
         let count = input.read(&mut buffer)?;
         if count == 0 {
             break;
         }
-        bytes.extend_from_slice(&buffer[..count]);
+        bytes.extend_from_slice(buffer.get(..count).ok_or_else(failed)?);
     }
     let current = directory
         .open_read(name.as_ref(), Privacy::Inherit)

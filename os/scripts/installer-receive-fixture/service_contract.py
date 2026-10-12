@@ -186,6 +186,86 @@ def admit_request(raw, candidate, hash_file, log, deadline):
     return {'request': request, 'subjects': subjects}
 
 
+def install_native_scope(request, phase, actor, log, *, authenticated=None):
+    """Root-only temporary door in this owner's isolated source/target namespace.
+
+    Signed artifacts are replayed here, never replaced with a capability receipt.
+    The receiving person/binding comes ONLY from native password authentication.
+    """
+    require(os.getuid() == os.geteuid() == 0, 'native scope requires owned root')
+    require(phase in ('source', 'receiver'), 'native scope phase differs')
+    initial = os.open('/owned/initial-pidns', os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:
+        require(os.fstat(initial).st_uid == 0
+                and fcntl.ioctl(initial, 0xb703) == 0x20000000
+                and os.fstat(initial).st_ino != Path('/proc/self/ns/pid').stat().st_ino,
+                'native scope is not the disposable owned PID namespace')
+        witness = Path('/run/tilo-service-initial-pidns')
+        descriptor = os.open(witness, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o444)
+        os.close(descriptor)
+        bounded_command(['/usr/bin/mount', '--bind', '/owned/initial-pidns', str(witness)],
+                        time.monotonic() + 30, log)
+        require(witness.stat().st_ino == os.fstat(initial).st_ino,
+                'native initial namespace witness changed')
+    finally:
+        os.close(initial)
+    import hashlib
+    def hash_file(path):
+        digest = hashlib.sha256()
+        with Path(path).open('rb') as stream:
+            for part in iter(lambda: stream.read(65536), b''):
+                digest.update(part)
+        return digest.hexdigest()
+    admission = admit_request(json.dumps(request, separators=(',', ':')).encode(),
+                              Path('/owned/candidate'), hash_file, log, time.monotonic() + 90)
+    actor = Path(actor)
+    expected = (Path('/run/tilo-source-public/host/bin/tilo-imager') if phase == 'source'
+                else Path('/usr/libexec/tilo-prepared-setup'))
+    require(actor == expected, 'native scope actor is not the fixed candidate role')
+    for edge in (actor, *actor.parents):
+        info = edge.lstat()
+        require(info.st_uid == 0 and not info.st_mode & 0o022
+                and not stat.S_ISLNK(info.st_mode), 'native scope actor is mutable')
+    info = actor.lstat()
+    require(stat.S_ISREG(info.st_mode) and 0 < info.st_size <= 1024 * 1024 * 1024,
+            'native scope actor is not bounded regular data')
+    ledger_path = Path('/owned/candidate/subjects.json')
+    info = ledger_path.lstat()
+    require(stat.S_ISREG(info.st_mode) and info.st_uid == 0 and not info.st_mode & 0o022
+            and 0 < info.st_size <= 16384, 'native scope ledger differs from protected candidate')
+    ledger = json.loads(ledger_path.read_bytes(), object_pairs_hook=unique)
+    role = 'host' if phase == 'source' else 'prepared_helper'
+    digest = hash_file(actor)
+    require(digest == ledger[role]['sha256'], 'native scope actor differs from admitted candidate')
+    person = binding = None
+    if phase == 'receiver':
+        require(type(authenticated) is dict, 'receiving scope lacks native authentication')
+        person, binding = authenticated.get('identity_public_key'), authenticated.get('setup_binding')
+        require(type(person) is list and len(person) == 32
+                and all(type(byte) is int and 0 <= byte <= 255 for byte in person)
+                and any(person) and type(binding) is str and 0 < len(binding.encode()) <= 256
+                and all(ord(char) >= 32 and ord(char) != 127 for char in binding), 'native person binding differs')
+    else:
+        require(authenticated is None, 'source cannot substitute receiving person authority')
+    marker = dict(schema=1, phase=phase,
+                  mount_namespace=Path('/proc/self/ns/mnt').stat().st_ino,
+                  pid_namespace=Path('/proc/self/ns/pid').stat().st_ino,
+                  actor_path=str(actor), actor_sha256=digest,
+                  scope=candidate_scope(admission), identity_public_key=person, setup_binding=binding)
+    path = Path('/run/tilo-service-candidate-admission.json')
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o444)
+    try:
+        os.fchmod(descriptor, 0o444)
+        raw = json.dumps(marker, separators=(',', ':')).encode()
+        with os.fdopen(descriptor, 'wb', closefd=False) as stream:
+            stream.write(raw)
+            stream.flush()
+            os.fsync(stream.fileno())
+    finally:
+        os.close(descriptor)
+    return path
+
+
 def candidate_scope(admission):
     """Authenticated artifact scope only; deliberately not a ConsumerCapability."""
     request = decode(json.dumps(admission['request'], separators=(',', ':')).encode())

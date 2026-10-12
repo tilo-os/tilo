@@ -201,11 +201,19 @@ pub(in crate::setup) fn run_with_home_admission(
     if review.manifest().account_custody_protocol.is_some() {
         super::account_admission::installed()?;
     }
+    let mut candidate_service = None;
     if let Some(sessions) = &review.manifest().service_sessions {
-        if !super::account_admission::installed()?
-            .supports_service_session_protocol(sessions.consumer_protocol)
-        {
-            return Err(failed());
+        let installed = super::account_admission::installed()?;
+        if !installed.supports_service_session_protocol(sessions.consumer_protocol) {
+            if !super::account_admission::receiving_candidate(
+                sessions.consumer_protocol,
+                &installed.runtime_root_hash,
+                &review.manifest().identity_public_key,
+                &review.manifest().setup_binding,
+            )? {
+                return Err(failed());
+            }
+            candidate_service = Some((sessions.consumer_protocol, installed.runtime_root_hash));
         }
     }
     if review.manifest().portable_home.is_some() || review.manifest().portable_flatpak.is_some() {
@@ -289,6 +297,16 @@ pub(in crate::setup) fn run_with_home_admission(
         current.validate()?;
     }
     review.validate()?;
+    if let Some((protocol, sdk)) = &candidate_service
+        && !super::account_admission::receiving_candidate(
+            *protocol,
+            sdk,
+            &review.manifest().identity_public_key,
+            &review.manifest().setup_binding,
+        )?
+    {
+        return Err(failed());
+    }
     let bytes = serde_json::to_vec(&receipt).map_err(|_| failed())?;
     output.write_all(&bytes)?;
     output.write_all(b"\n")?;

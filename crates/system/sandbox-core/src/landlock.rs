@@ -222,9 +222,15 @@ pub fn restrict_self(
     restrict_self_inner(spec, None, on_skip)
 }
 
-/// Add exactly ReadFile beneath an already held authenticated directory.
+/// Add exactly `ReadFile` beneath an already held authenticated directory.
 /// This only confines the calling task; filesystem/source ACLs still decide
 /// access. There is no pathname reopen or FUSE metadata operation here.
+///
+/// # Errors
+///
+/// Returns [`LandlockBuildError`] if the spec lacks complete mandatory filesystem
+/// enforcement, the kernel refuses the ruleset or held-directory rule, a rule is
+/// rejected, or an opened rule path cannot be inspected.
 pub fn restrict_self_with_readonly_directory(
     spec: &RulesetSpec,
     directory: BorrowedFd<'_>,

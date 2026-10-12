@@ -1,5 +1,8 @@
-//! Read-only, exact branded OSCrypt lookup on the original user's authenticated bus.
-use super::*;
+//! Read-only, exact branded `OSCrypt` lookup on the original user's authenticated bus.
+use super::{
+    Connection, HashMap, OwnedObjectPath, OwnedValue, Proxy, SERVICE, SERVICE_PATH, Secret,
+    SecretError, Value, WireSecret, on_bus,
+};
 use std::{
     os::{fd::AsRawFd, unix::net::UnixStream},
     time::Duration,
@@ -17,7 +20,7 @@ pub(super) fn owner_bus(uid: u32) -> Result<Connection, SecretError> {
             libc::SOL_SOCKET,
             libc::SO_PEERCRED,
             std::ptr::addr_of_mut!(peer).cast(),
-            &mut length,
+            &raw mut length,
         )
     } != 0
         || length as usize != std::mem::size_of::<libc::ucred>()

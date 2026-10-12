@@ -77,8 +77,19 @@ pub fn load_policy_for_profile(active_profile: Option<&str>) -> PowerPolicy {
 /// **enabled** (15 min), matching the Settings "suspend when idle" toggle
 /// defaulting on.
 pub fn default_policy() -> PowerPolicy {
+    default_policy_from_installation(std::path::Path::new("/etc/tilo/install-purpose"))
+}
+
+fn default_policy_from_installation(path: &std::path::Path) -> PowerPolicy {
+    default_policy_for_purpose(std::fs::read_to_string(path).ok().as_deref().map(str::trim))
+}
+
+/// Installation purpose changes only automatic idle sleep. Explicit power
+/// settings can override it; lid and critical-battery protection stay intact.
+pub fn default_policy_for_purpose(purpose: Option<&str>) -> PowerPolicy {
     PowerPolicy {
-        idle_suspend: Some(Duration::from_secs(u64::from(DEFAULT_SUSPEND_MINUTES) * 60)),
+        idle_suspend: (purpose != Some("server"))
+            .then(|| Duration::from_secs(u64::from(DEFAULT_SUSPEND_MINUTES) * 60)),
         ..PowerPolicy::default()
     }
 }
@@ -117,7 +128,7 @@ pub fn policy_from_section_for_profile(
     let auto_suspend = section
         .get("auto_suspend")
         .and_then(serde_json::Value::as_bool)
-        .unwrap_or(true);
+        .unwrap_or(defaults.idle_suspend.is_some());
     let legacy_suspend_minutes = section
         .get("suspend_minutes")
         .and_then(serde_json::Value::as_u64)
@@ -196,6 +207,28 @@ pub fn policy_from_section_for_profile(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn installed_purpose_changes_only_idle_sleep_defaults() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(file.path(), "server\n").unwrap();
+        let server = default_policy_from_installation(file.path());
+        let computer = default_policy_for_purpose(Some("computer"));
+        assert_eq!(server.idle_suspend, None);
+        assert_eq!(computer.idle_suspend, Some(Duration::from_secs(900)));
+        assert_eq!(
+            PowerPolicy {
+                idle_suspend: None,
+                ..computer
+            },
+            server
+        );
+        for legacy in [None, Some(""), Some("untrusted-purpose")] {
+            assert_eq!(default_policy_for_purpose(legacy), computer);
+        }
+        std::fs::write(file.path(), "computer\n").unwrap();
+        assert_eq!(default_policy_from_installation(file.path()), computer);
+    }
 
     #[test]
     fn settings_json_parses_power_sections_and_falls_back_to_defaults() {

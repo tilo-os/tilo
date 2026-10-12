@@ -48,6 +48,7 @@ use crate::widgets::{
     value_row,
 };
 
+mod browser_sessions;
 mod cloud_control;
 mod cloud_signin;
 pub(crate) use cloud_control::CloudMounts;
@@ -60,6 +61,9 @@ mod signin_tests;
 #[derive(Clone, Debug, PartialEq, Eq, tilo_resource::Effect)]
 #[effect(operation = "settings.effect")]
 pub enum AccountsEffect {
+    /// Forget one selected website account through the browser, including its local lease.
+    #[effect(row, job, returns, device_only, destructive)]
+    RemoveBrowserServiceSession { session_id: String },
     /// Show or hide public metadata in the browser identity picker.
     #[effect(row, device_only, idempotent)]
     SetBrowserIdentityEnabled { account: String, enabled: bool },
@@ -144,6 +148,33 @@ pub(crate) fn answer(
     cx: &mut EffectCx<Settings, SettingsApp>,
 ) -> EffectAnswer {
     match effect {
+        AccountsEffect::RemoveBrowserServiceSession { session_id } => {
+            let area = app.accounts();
+            if area.removal.borrow().is_some() {
+                return Err("An account removal is already running".into());
+            }
+            if !area
+                .model()
+                .borrow()
+                .browser_service_sessions()
+                .iter()
+                .any(|account| account.id.as_str() == session_id)
+            {
+                return Err("This selected browser account is unavailable".into());
+            }
+            {
+                let mut model = area.model().borrow_mut();
+                model.browser_removal_pending = true;
+                model.browser_removal_error = None;
+                model.changed = true;
+            }
+            *area.removal.borrow_mut() = Some(browser_sessions::Removal::new(
+                session_id,
+                cx.reply(),
+                &area.remote,
+            ));
+            return Ok(Effected::Pending);
+        }
         AccountsEffect::PublishBrowserIdentity { origin } => {
             app.publish_browser_identity(origin)?;
             return Ok(Effected::done());
@@ -161,7 +192,8 @@ pub(crate) fn answer(
     let shared = app.accounts().model();
     let mut model = shared.borrow_mut();
     match effect {
-        AccountsEffect::PublishBrowserIdentity { .. }
+        AccountsEffect::RemoveBrowserServiceSession { .. }
+        | AccountsEffect::PublishBrowserIdentity { .. }
         | AccountsEffect::SetBrowserIdentityEnabled { .. }
         | AccountsEffect::RemoveBrowserIdentity { .. } => {
             return Err("Identity publication was not handled".into());
@@ -233,6 +265,8 @@ fn cloud(
 /// when first needed.
 pub struct AccountsArea {
     cx: PaneCx,
+    pub(crate) remote: ui::RemoteActions,
+    removal: std::cell::RefCell<Option<browser_sessions::Removal>>,
     model: std::cell::OnceCell<Shared<AccountsPane>>,
     account_root: Option<AccountRoot>,
     /// The credential vault, its custody and the sync statuses, opened off
@@ -273,6 +307,8 @@ impl AccountsArea {
     pub fn new(cx: &PaneCx) -> Self {
         Self {
             cx: cx.clone(),
+            remote: ui::RemoteActions::current(),
+            removal: Default::default(),
             model: std::cell::OnceCell::new(),
             account_root: None,
             read: crate::device_read::DeviceRead::default(),
@@ -336,6 +372,19 @@ impl AccountsArea {
 
     /// Take in finished checks and sign-in steps, if the model exists.
     pub(crate) fn poll(&self) {
+        self.remote.poll();
+        let finished = self
+            .removal
+            .borrow_mut()
+            .as_mut()
+            .and_then(|removal| removal.poll(&self.remote));
+        if let Some(result) = finished {
+            self.removal.borrow_mut().take();
+            let mut model = self.model().borrow_mut();
+            model.browser_removal_pending = false;
+            model.browser_removal_error = result.err();
+            model.changed = true;
+        }
         if let Some(model) = self.model.get() {
             let _ = model.borrow_mut().poll();
         }
@@ -410,6 +459,19 @@ impl AccountsArea {
                     enabled: !account.enabled,
                 }))
                 .operation(offer(AccountsEffect::RemoveBrowserIdentity { account: id })),
+            );
+        }
+        for account in model.browser_service_sessions() {
+            let id = account.id.as_str().to_owned();
+            published.push(
+                LiveRow::new(
+                    format!("settings.browser-service-session:{id}"),
+                    "settings.browser-service-session",
+                    account.display_name,
+                )
+                .operation(offer(AccountsEffect::RemoveBrowserServiceSession {
+                    session_id: id,
+                })),
             );
         }
         published
@@ -557,6 +619,8 @@ pub struct AccountsPane {
     opener: std::sync::Arc<dyn BrowserOpener>,
     /// The file accounts the cloud service has mounted.
     cloud: CloudMounts,
+    browser_removal_error: Option<String>,
+    browser_removal_pending: bool,
     changed: bool,
 }
 
@@ -609,6 +673,8 @@ impl AccountsPane {
             custodian: read.custodian,
             opener: std::sync::Arc::new(PortalOpener),
             cloud: CloudMounts::live(),
+            browser_removal_error: None,
+            browser_removal_pending: false,
             changed: false,
             cx: None,
             account_root,
@@ -650,6 +716,8 @@ impl AccountsPane {
             custodian: account_root.custodian(),
             opener: std::sync::Arc::new(PortalOpener),
             cloud: CloudMounts::at(None),
+            browser_removal_error: None,
+            browser_removal_pending: false,
             changed: false,
             cx: None,
             account_root,
@@ -1080,6 +1148,7 @@ impl AccountsPane {
         if let Some(id) = &self.reauth_id {
             panel.push(self.reauth_form(id));
         }
+        panel.push(self.browser_service_sessions_card());
         panel.push(self.browser_identity_card());
         panel.push(self.mail_card());
         panel.push(self.kind_card(AccountKind::CalDav));
@@ -1095,6 +1164,52 @@ impl AccountsPane {
         }
 
         crate::widgets::cards(panel)
+    }
+
+    fn browser_service_sessions(&self) -> Vec<accounts::Account> {
+        // These are device-bound selections, not public identity-picker records.
+        if self.is_sample {
+            return Vec::new();
+        }
+        self.account_root
+            .path()
+            .map(|root| {
+                accounts::AccountStore::load_in(&root)
+                    .list(&browser_sessions::TYPE.into())
+                    .into_iter()
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    fn browser_service_sessions_card(&self) -> El {
+        let mut body = vec![caption(&t("accounts-browser-sessions-about"))];
+        if self.browser_removal_pending {
+            body.push(caption(&t("accounts-browser-sessions-removing")));
+        }
+        if let Some(error) = &self.browser_removal_error {
+            body.push(caption(error));
+        }
+        for account in self.browser_service_sessions() {
+            let id = account.id.as_str();
+            body.push(setting_row(
+                &account.display_name,
+                Box::new(
+                    self.bound(
+                        Button::new(
+                            &format!("settings.browser-session.remove:{id}"),
+                            &t("accounts-browser-sessions-remove"),
+                        )
+                        .with_enabled(!self.browser_removal_pending),
+                        AccountsEffect::RemoveBrowserServiceSession {
+                            session_id: id.to_owned(),
+                        },
+                    ),
+                ),
+            ));
+        }
+        card(&t("accounts-browser-sessions-title"), rows(body))
     }
 
     fn browser_identity_card(&self) -> El {
@@ -2297,6 +2412,24 @@ mod tests {
         let dir = tempfile::tempdir().expect("scratch config root");
         let root = AccountRoot::at(dir.path().join("tilo"));
         (dir, root)
+    }
+
+    #[test]
+    fn selected_browser_sessions_use_device_inventory_not_public_identity_records() {
+        let (_scratch, root) = scratch_root();
+        let mut store = accounts::AccountStore::new();
+        store.upsert(accounts::Account::new("selected", browser_sessions::TYPE));
+        store.upsert(accounts::Account::new("other", "email"));
+        store.save_in(&root.path().unwrap()).unwrap();
+        let pane = AccountsPane::from_dir_in(root.clone(), AccountDirectory::default(), false);
+        let selections = pane.browser_service_sessions();
+        assert_eq!(selections.len(), 1);
+        assert_eq!(selections[0].id.as_str(), "selected");
+        assert!(
+            AccountsPane::from_dir_in(root, AccountDirectory::default(), true)
+                .browser_service_sessions()
+                .is_empty()
+        );
     }
 
     /// Drive the host's polling until the pending account probe reports,

@@ -470,6 +470,13 @@ installer-preview-backup-title = Restore an identity backup
 
 installer-preview-backup-body = Use your encrypted backup and its passphrase.
 
+installer-preview-purpose-heading = How will this device be used?
+installer-preview-purpose-intro = The same Tilo OS, with defaults for the job it will do.
+installer-preview-purpose-computer-title = Computer
+installer-preview-purpose-computer-body = For everyday use. Sleeps after 15 minutes idle by default; your approved devices sync while it is awake.
+installer-preview-purpose-server-title = Always-available server
+installer-preview-purpose-server-body = Keeps running when idle so your approved devices can sync. Screen blanking, locking, lid and low-battery protection stay on. Use reliable power; this does not grant remote access or enable nearby-device discovery.
+
 installer-preview-devices-heading = Your devices
 
 installer-preview-devices-intro = Use this identity to manage all your Tilo devices.

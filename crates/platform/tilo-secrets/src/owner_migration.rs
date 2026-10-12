@@ -10,9 +10,9 @@ pub use goa::{GoaCredential, GoaCredentials, GoaProvider, GoaRegistration};
 
 /// One exact HTTP credential used by the native Nextcloud client.
 /// The key format is defined by Nextcloud's `AbstractCredentials::keychainKey`:
-/// https://github.com/nextcloud/desktop/blob/master/src/libsync/creds/abstractcredentials.cpp
-/// QtKeychain's libsecret attributes are `user`, `server`, and `type`:
-/// https://github.com/frankosterfeld/qtkeychain/blob/main/qtkeychain/libsecret.cpp
+/// <https://github.com/nextcloud/desktop/blob/master/src/libsync/creds/abstractcredentials.cpp>
+/// `QtKeychain`'s libsecret attributes are `user`, `server`, and `type`:
+/// <https://github.com/frankosterfeld/qtkeychain/blob/main/qtkeychain/libsecret.cpp>
 pub struct NextcloudCredential {
     key: String,
 }

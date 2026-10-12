@@ -110,6 +110,7 @@ mod tests {
             browser_domains: [false; 2],
             excluded_flatpak_apps: Default::default(),
             device_label: "Native storage fixture".into(),
+            purpose: install_profile_model::default_purpose(),
         };
         let pending = store.reserve(&choices, IdentityKind::New).unwrap();
         let prepared = Arc::new(

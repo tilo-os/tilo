@@ -5,6 +5,11 @@ use ui::webview::{
     ServiceSessionReply, ServiceSessionRequest, SharedEngine, WebViewCommand, WebViewEngine,
 };
 
+#[cfg(target_os = "linux")]
+mod forget;
+#[cfg(target_os = "linux")]
+pub(crate) use forget::PendingForget;
+
 const ANCHOR: &str = "service:";
 const CATALOG: ui::i18n::EmbeddedCatalog =
     ui::i18n::EmbeddedCatalog::new("en-US", crate::resource::LOCALES);
@@ -142,12 +147,16 @@ impl PendingView {
             if anchor != crate::service_destinations::anchor(&self.id, self.destination.as_ref()) {
                 return Some(Err("This account could not be opened".into()));
             }
-            let Some(selected) = selections.iter().find(|v| v.id == self.id) else {
-                return Some(Err("This account needs to be connected again".into()));
-            };
+            // A stale public anchor still challenges private Resolve. The
+            // non-authorizing binding cannot grant custody for an absent row.
+            let binding = selections
+                .iter()
+                .find(|v| v.id == self.id)
+                .map(|selected| selected.binding.clone())
+                .unwrap_or_else(|| "unavailable-selection".into());
             self.opening.set(None);
             match self.client.request(ui::collaboration::browser_service_sessions::BrowserServiceSessionCommand::Resolve {
-                id: self.id.clone(), setup_binding: selected.binding.clone(),
+                id: self.id.clone(), setup_binding: binding,
             }, self.waker.clone()) { Ok(request) => self.request = Some(request), Err(error) => return Some(Err(error)) }
         }
         let reply = self.request.as_mut()?.poll()?;
@@ -160,7 +169,9 @@ impl PendingView {
             ) => session,
             _ => return Some(Err("This account needs to be connected again".into())),
         };
-        let selected = selections.iter().find(|v| v.id == self.id)?.clone();
+        let Some(selected) = selections.iter().find(|v| v.id == self.id).cloned() else {
+            return Some(Err("This account needs to be connected again".into()));
+        };
         let destination = self.destination.clone();
         if destination
             .as_ref()
@@ -524,7 +535,7 @@ impl ServiceView {
         if self.selection.id != id {
             return Err(CATALOG.t("browser-service-forget-open-first"));
         }
-        if self.status == "forgetting" {
+        if matches!(self.status, "forgetting" | "forgotten") {
             return Ok(self.report());
         }
         // A restart owns the lease off-thread; never race its authority.
@@ -540,21 +551,11 @@ impl ServiceView {
         Ok(self.report())
     }
 
-    pub(crate) fn retry_forget(&mut self, id: &str) -> Result<serde_json::Value, String> {
-        if self.selection.id != id || self.status != "forgetting" {
-            return Err(CATALOG.t("browser-service-forget-retry-failed"));
-        }
-        let cleanup = self
-            .cleanup
-            .as_mut()
-            .ok_or_else(|| CATALOG.t("browser-service-forget-wait"))?;
-        // Join the original cleanup before retrying through its retained lease.
-        if cleanup.finish().is_err() {
-            cleanup
-                .finish()
-                .map_err(|_| CATALOG.t("browser-service-forget-retry-failed"))?;
-        }
-        Ok(self.report())
+    fn take_forget_cleanup(&mut self, id: &str) -> Result<NativeCleanup, String> {
+        self.forget(id)?;
+        self.cleanup
+            .take()
+            .ok_or_else(|| CATALOG.t("browser-service-forget-wait"))
     }
 
     pub fn attach_waker(&mut self, waker: ui::WakeHandle) {
@@ -603,7 +604,7 @@ impl ServiceView {
                 cleanup.handle.as_ref().is_none_or(std::thread::JoinHandle::is_finished)) {
                 "local-forget-incomplete"
             } else { self.status }, "authenticated": false,
-            "custody_revoked": false, "custody_backend_needed": self.status == "forgetting",
+            "custody_revoked": self.status == "forgotten", "custody_backend_needed": self.status == "forgetting",
             "local_only": self.status == "forgetting",
             "origin_storage_imported": self.status == "imported-unverified" && self.expected_origins > 0,
             "requires_reconnect": self.status == "needs-reconnect" || self.selection.service == Service::Discord && self.expected_origins == 0,
@@ -612,14 +613,12 @@ impl ServiceView {
     }
     pub fn notice(&self) -> Option<crate::notice::Notice> {
         match self.status {
-            "forgetting" => Some(
-                crate::notice::Notice::neutral(CATALOG.t(if self.close_complete() {
-                    "browser-service-forgotten"
-                } else {
-                    "browser-service-forgetting"
-                }))
-                .with_message(CATALOG.t("browser-service-custody-backend-needed")),
-            ),
+            "forgotten" => Some(crate::notice::Notice::neutral(
+                CATALOG.t("browser-service-forgotten"),
+            )),
+            "forgetting" => Some(crate::notice::Notice::neutral(
+                CATALOG.t("browser-service-forgetting"),
+            )),
             "waiting" | "importing" | "restarting" | "verifying" => Some(
                 crate::notice::Notice::neutral(format!("Opening {}…", self.selection.label())),
             ),
@@ -1120,15 +1119,17 @@ mod lifecycle_tests {
             binding: "private-setup-binding".into(),
         };
         let resource = selected.resource();
+        assert_eq!(resource.id.0, "browser.service.selected-account");
         let action = resource
             .actions
             .iter()
-            .find(|action| action.contract.risk == tilo_actions::RiskLevel::Destructive)
+            .find(|action| action.id == "forget-service-session")
             .unwrap();
         assert_eq!(
             action.contract.confirmation,
             tilo_actions::ConfirmationPolicy::Confirm
         );
+        assert_eq!(action.contract.kind, tilo_actions::ActionKind::Outside);
         let encoded = action.build_json(&serde_json::Map::new()).unwrap();
         let payload: serde_json::Value = serde_json::from_slice(&encoded.payload).unwrap();
         let decoded = crate::effects::BrowserEffect::decode(
@@ -1157,6 +1158,7 @@ mod lifecycle_tests {
             .iter()
             .find(|action| action.label == CATALOG.t("browser-service-forget-retry"))
             .unwrap();
+        assert_eq!(action.contract.kind, tilo_actions::ActionKind::Outside);
         assert_eq!(action.contract.risk, tilo_actions::RiskLevel::Destructive);
         assert_eq!(
             action.contract.confirmation,

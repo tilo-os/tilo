@@ -207,6 +207,44 @@ def close(observations):
         os.close(row['pidfd'])
 
 
+def hold_profile_parent(observations, selected):
+    """Hold the observed engine's selected profile parent across engine exit."""
+    matches = [row for row in observations if row['kind'] == 'cef'
+               and ('--service-session=' + selected['id']).encode() in row['arguments']]
+    require(len(matches) == 1, 'revocation engine subject is not unique')
+    row = matches[0]
+    paths = [argument[len(b'--profile='):] for argument in row['arguments']
+             if argument.startswith(b'--profile=')]
+    require(len(paths) == 1, 'revocation engine profile is not unique')
+    path = PurePosixPath(os.fsdecode(paths[0]))
+    require(path.is_absolute() and path.parent.name == selected['id']
+            and all(part not in ('.', '..') for part in path.parts),
+            'revocation profile differs from selected session')
+    descriptor = os.open('/proc/' + str(row['pid']) + '/root', os.O_PATH | os.O_DIRECTORY | os.O_CLOEXEC)
+    try:
+        for part in path.parent.parent.parts[1:]:
+            child = os.open(part, os.O_PATH | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                            dir_fd=descriptor)
+            os.close(descriptor)
+            descriptor = child
+        require(live(row['pidfd']) and row['start'] == process_start(
+                    file_bytes('/proc/' + str(row['pid']) + '/stat', 8192)),
+                'revocation engine changed before profile witness')
+        result, descriptor = descriptor, None
+        return result
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+
+
+def profile_removed(parent, selected):
+    try:
+        os.stat(selected['id'], dir_fd=parent, follow_symlinks=False)
+    except FileNotFoundError:
+        return True
+    return False
+
+
 def private_profile(observations, selected, account):
     matches = []
     for row in observations:

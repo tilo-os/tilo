@@ -209,6 +209,8 @@ fn migrated_dav_grant_default_helper_promotes_system_custody_and_mounts_real_fil
             config_root: None,
             mounts_root: mount_root,
             state_root: state_root.clone(),
+            control_socket: None,
+            file_socket: None,
             refresher: Arc::new(accounts::CommandRefresher::new(None).with_program(HELPER)),
         },
         Box::new(ProcessLauncher {

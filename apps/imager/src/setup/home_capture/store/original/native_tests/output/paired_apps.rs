@@ -205,14 +205,16 @@ pub(super) fn complete_and_restore(
     assert!(
         subjects
             .daemon
-            .mount_points(subjects.output_partition)
+            .filesystem(subjects.output_partition)
+            .and_then(|proxy| proxy.get_property::<Vec<Vec<u8>>>("MountPoints"))
             .unwrap()
             .is_empty()
     );
     assert!(
         subjects
             .daemon
-            .mount_points(subjects.source_partition)
+            .filesystem(subjects.source_partition)
+            .and_then(|proxy| proxy.get_property::<Vec<Vec<u8>>>("MountPoints"))
             .unwrap()
             .is_empty()
     );
@@ -317,14 +319,16 @@ pub(super) fn complete_and_restore(
     assert!(
         subjects
             .daemon
-            .mount_points(subjects.output_partition)
+            .filesystem(subjects.output_partition)
+            .and_then(|proxy| proxy.get_property::<Vec<Vec<u8>>>("MountPoints"))
             .unwrap()
             .is_empty()
     );
     assert!(
         subjects
             .daemon
-            .mount_points(subjects.source_partition)
+            .filesystem(subjects.source_partition)
+            .and_then(|proxy| proxy.get_property::<Vec<Vec<u8>>>("MountPoints"))
             .unwrap()
             .is_empty()
     );

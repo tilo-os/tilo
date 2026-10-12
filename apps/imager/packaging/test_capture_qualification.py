@@ -36,6 +36,7 @@ class StagedSourceClosure(unittest.TestCase):
         prerequisites = qualifier.fixed_module(qualifier.ROOT /
             'os/scripts/installer-receive-fixture/prerequisite-image.py', 'test_prerequisites')
         self.assertLessEqual(set(prerequisites.ASSETS), files)
+        self.assertLessEqual(set(qualifier.PLATFORM_SCRIPTS), files)
 
     def test_production_stage_copies_and_binds_whole_closure(self):
         sources = {name: qualifier.facts(qualifier.ROOT / name)['sha256']
@@ -81,8 +82,9 @@ class StagedSourceClosure(unittest.TestCase):
         tree = ast.parse(source_path.read_text())
         run = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == 'run')
         self.assertEqual([argument.arg for argument in run.args.kwonlyargs],
-                         ['service_qualification', 'service_candidate'])
+                         ['service_qualification', 'service_candidate', 'service_request'])
         self.assertIs(run.args.kw_defaults[0].value, False)
+        self.assertIsNone(run.args.kw_defaults[2].value)
         branch = next(node for node in ast.walk(run) if isinstance(node, ast.If)
                       and isinstance(node.test, ast.Name) and node.test.id == 'service_qualification'
                       and "context['service_qualification']" in ast.unparse(node))
@@ -99,7 +101,10 @@ class NativeQualificationBoundary(unittest.TestCase):
         return {'schema': 1, 'status': 'completed', 'shared_files_readwrite': True,
                 'writer_shared_file_edit': True, 'apps_data_and_launch': True,
                 'protected_cloud_custody': True, 'cloud_fs_and_files': True,
-                'identity_headless_lifecycle': True, 'owned_resources_retired': True}
+                'identity_headless_lifecycle': True, 'owned_resources_retired': True,
+                'service_sessions': dict(schema=2, service_session_protocol=2,
+                    receiving_route_qualification_sha256='a' * 64,
+                    **{condition: True for condition in qualifier.SERVICE_CONDITIONS})}
 
     def test_actual_command_stream_requires_whole_closed_receiving_observation(self):
         value = self.receiving_observation()
@@ -129,6 +134,17 @@ class NativeQualificationBoundary(unittest.TestCase):
                 qualifier.target_completion(json.dumps(altered).encode())
         with self.assertRaises(ValueError):
             qualifier.target_completion(b'x' * 4097)
+
+    def test_full_native_completion_requires_every_revocation_and_isolation_observation(self):
+        for condition in qualifier.SERVICE_CONDITIONS:
+            value = self.receiving_observation()
+            value['service_sessions'][condition] = False
+            with self.assertRaisesRegex(ValueError, 'import/revocation'):
+                qualifier.target_completion(json.dumps(value).encode())
+        value = self.receiving_observation()
+        del value['service_sessions']['revocation_verified']
+        with self.assertRaises(ValueError):
+            qualifier.target_completion(json.dumps(value).encode())
 
     def test_duplicate_input_field_is_rejected(self):
         with self.assertRaisesRegex(ValueError, 'duplicate'):

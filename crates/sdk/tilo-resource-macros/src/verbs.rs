@@ -215,6 +215,9 @@ fn action_options(attr: &Attribute) -> syn::Result<ActionOptions> {
     Ok(options)
 }
 
+#[cfg(test)]
+mod tests;
+
 /// `#[param("description", name = "public", example = expr)]`, each part
 /// optional.
 #[derive(Default)]
@@ -222,27 +225,22 @@ struct ParamOptions {
     description: Option<String>,
     name: Option<String>,
     example: Option<Expr>,
-    content: bool,
     secret: bool,
-    flatten: bool,
-    /// A place inside the record (`#[param(place)] at: Option<Place>`).
-    place: bool,
+    /// The parameter's role, with content taking precedence over flatten and place.
+    role: Role,
     /// The collection whose items the place names (`place = "field"`).
     place_in: Option<String>,
 }
 
 impl ParamOptions {
-    /// The part the parameter plays, as its options say.
-    fn role(&self) -> Role {
-        if self.content {
-            Role::Content
-        } else if self.flatten {
-            Role::Flatten
-        } else if self.place {
-            Role::Place
-        } else {
-            Role::Plain
-        }
+    /// Keep the established precedence regardless of attribute order.
+    fn add_role(&mut self, role: Role) {
+        self.role = match (self.role, role) {
+            (Role::Content, _) | (_, Role::Content) => Role::Content,
+            (Role::Flatten, _) | (_, Role::Flatten) => Role::Flatten,
+            (Role::Place, _) | (_, Role::Place) => Role::Place,
+            (Role::Plain, Role::Plain) => Role::Plain,
+        };
     }
 }
 
@@ -273,11 +271,11 @@ impl syn::parse::Parse for ParamOptions {
                 if key == "secret" {
                     options.secret = true;
                 } else if key == "content" {
-                    options.content = true;
+                    options.add_role(Role::Content);
                 } else if key == "place" {
-                    options.place = true;
+                    options.add_role(Role::Place);
                 } else {
-                    options.flatten = true;
+                    options.add_role(Role::Flatten);
                 }
                 if input.is_empty() {
                     break;
@@ -287,7 +285,7 @@ impl syn::parse::Parse for ParamOptions {
             }
             input.parse::<Token![=]>()?;
             if key == "place" {
-                options.place = true;
+                options.add_role(Role::Place);
                 options.place_in = Some(input.parse::<syn::LitStr>()?.value());
             } else if key == "name" {
                 options.name = Some(input.parse::<syn::LitStr>()?.value());
@@ -324,9 +322,10 @@ struct Param {
 }
 
 /// What part a verb's parameter plays.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
 enum Role {
     /// A value.
+    #[default]
     Plain,
     /// Content another action produced, carried by its callers as a hash.
     Content,
@@ -385,8 +384,8 @@ struct Verb {
 fn check_params(params: &[Param], span: Span) -> syn::Result<()> {
     for param in params.iter().filter(|param| param.secret) {
         if param.role != Role::Plain
-            || !last_ident(crate::schema_param_type(&param.ty))
-                .is_some_and(|(name, _)| name == "String")
+            || last_ident(crate::schema_param_type(&param.ty))
+                .is_none_or(|(name, _)| name != "String")
             || param.example.is_some()
         {
             return Err(syn::Error::new(
@@ -455,6 +454,14 @@ fn item_param(ident: &syn::Ident) -> Param {
     }
 }
 
+fn take_param_options(attrs: &mut Vec<Attribute>) -> syn::Result<ParamOptions> {
+    if let Some(index) = attrs.iter().position(|attr| attr.path().is_ident("param")) {
+        attrs.remove(index).parse_args()
+    } else {
+        Ok(ParamOptions::default())
+    }
+}
+
 fn read_verb(method: &mut syn::ImplItemFn, attr: &Attribute) -> syn::Result<Verb> {
     let options = action_options(attr)?;
     let method_ident = method.sig.ident.clone();
@@ -513,18 +520,10 @@ fn read_verb(method: &mut syn::ImplItemFn, attr: &Attribute) -> syn::Result<Verb
                     params.push(item_param(&pat.ident));
                     continue;
                 }
-                let mut param_options = ParamOptions::default();
-                if let Some(index) = typed
-                    .attrs
-                    .iter()
-                    .position(|attr| attr.path().is_ident("param"))
-                {
-                    let attr = typed.attrs.remove(index);
-                    param_options = attr.parse_args::<ParamOptions>()?;
-                }
+                let param_options = take_param_options(&mut typed.attrs)?;
                 let (owned, by_ref) = owned_type(&typed.ty);
                 let name = pat.ident.to_string();
-                let role = param_options.role();
+                let role = param_options.role;
                 inputs.push(Input::Param(params.len()));
                 params.push(Param {
                     ident: pat.ident.clone(),

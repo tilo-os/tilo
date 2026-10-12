@@ -9,10 +9,78 @@ import os
 from pathlib import Path, PurePosixPath
 import stat
 
-COUNTS = {'electron': 72, 'slack': 122, 'app': 2}
+GROUPS = ('electron', 'slack', 'app')
+DISTRIBUTION = {'platform': 'linux', 'architecture': 'x86_64', 'electron': '44.4.5',
+                'slack': '4.52.178', 'slack_snap_revision': 263}
+# Independent archive pins, not assertions supplied by an operator manifest.
+ARCHIVE_SHA256 = {
+    'electron_archive': '04586a0ec46c3283fbdaef85530f561f71f0b5e136ad0cb9ef63683615609780',
+    'slack_archive': '2f52f41d38d20df48fe060978cdb3c7dad662df1099705d389f0d0c3444b194f',
+}
 MAXIMUM = 512 * 1024 * 1024
 TOTAL = 1024 * 1024 * 1024
-ASSET_MANIFEST_SHA256 = '22deea1fc1bcb2ad47b553e363594bb276ef412824ad236210034c9f318f6005'
+# Canonical identity includes archives, every extracted file fact and fixed endpoints;
+# only source_root/source_path locators are excluded. The checked-in subject ledger
+# is measured public bytes, not evidence that any native runtime/session worked.
+ASSET_MANIFEST_SHA256 = 'f088c5f9dec427570879bdf6c4e1582adb7722c242a4907c6552e2c8f196cd4e'
+
+
+def subject(assets):
+    require(type(assets) is dict and set(assets) in (
+        {'schema', 'archives', 'assets', 'destinations', 'namespace_endpoints',
+         'native_executed', 'provider_authentication_verified'},
+        {'schema', 'archives', 'assets', 'destinations', 'namespace_endpoints',
+         'native_executed', 'provider_authentication_verified', 'distribution'}),
+        'official public asset manifest shape differs')
+    require(type(assets['schema']) is int and assets['schema'] == 1
+            and assets['native_executed'] is False
+            and assets['provider_authentication_verified'] is False,
+            'official public assets cannot claim native authentication')
+    require(type(assets['assets']) is dict and set(assets['assets']) == set(GROUPS)
+            and type(assets['archives']) is dict
+            and set(assets['archives']) == set(ARCHIVE_SHA256),
+            'official public asset manifest groups differ')
+    result = dict(assets, distribution=assets.get('distribution', DISTRIBUTION))
+    result['assets'] = {}
+    result['archives'] = {}
+    for group, row in assets['assets'].items():
+        require(type(row) is dict and set(row) in ({'files'}, {'source_root', 'files'})
+                and type(row['files']) is dict and 0 < len(row['files']) <= 4096,
+                'official public asset manifest file ledger differs')
+        result['assets'][group] = {'files': row['files']}
+    for key, row in assets['archives'].items():
+        require(type(row) is dict and set(row) in (
+            {'bytes', 'mode', 'sha256'}, {'source_path', 'bytes', 'mode', 'sha256'})
+                and row['sha256'] == ARCHIVE_SHA256[key],
+                'official upstream archive digest differs')
+        result['archives'][key] = {k: v for k, v in row.items() if k != 'source_path'}
+    return result
+
+
+def subject_digest(assets):
+    return hashlib.sha256(json.dumps(subject(assets), sort_keys=True,
+                                     separators=(',', ':')).encode()).hexdigest()
+
+
+def validate(assets, locators=True):
+    require(subject_digest(assets) == ASSET_MANIFEST_SHA256,
+            'official public asset manifest differs from frozen actual subjects')
+    if locators:
+        for row in assets['assets'].values():
+            require('source_root' in row, 'public asset root locator required')
+            locator(row['source_root'])
+        for row in assets['archives'].values():
+            require('source_path' in row, 'public archive locator required')
+            locator(row['source_path'])
+    return assets
+
+
+def locator(value):
+    require(type(value) is str and '\x00' not in value, 'invalid public asset locator')
+    path = Path(value)
+    require(path.is_absolute() and '..' not in path.parts and path.as_posix() == value,
+            'public asset locator must be a canonical absolute path')
+    return path
 
 
 def require(value, reason):
@@ -106,7 +174,7 @@ def enumerate_files(root, prefix='', result=None):
             else:
                 require(stat.S_ISREG(info.st_mode), 'nonregular public asset refused')
                 result.add(relative)
-                require(len(result) <= 196, 'public tree inventory exceeds bound')
+                require(len(result) <= 4096, 'public tree inventory exceeds bound')
     return result
 
 
@@ -200,10 +268,7 @@ def stage(assets, candidate):
     The canonical qualifier owns candidate cleanup on every error. This helper
     leaves failed staging to that same owner rather than deleting named paths.
     """
-    require(hashlib.sha256((json.dumps(assets, sort_keys=True, indent=2) + '\n').encode()).hexdigest()
-            == ASSET_MANIFEST_SHA256, 'official public asset manifest differs from frozen actual subjects')
-    require(type(assets) is dict and assets.get('schema') == 1
-            and set(assets['assets']) == set(COUNTS), 'fixed official asset groups required')
+    validate(assets)
     require(os.geteuid() == 0, 'public candidate staging requires its actual root owner')
     candidate = Path(candidate)
     held_candidate = directory(candidate)
@@ -225,10 +290,8 @@ def stage(assets, candidate):
         roots = []
         try:
             total = 0
-            for group, count in COUNTS.items():
+            for group in GROUPS:
                 row = assets['assets'][group]
-                require(set(row) == {'source_root', 'files'} and len(row['files']) == count,
-                        'incomplete fixed public distribution')
                 fd = directory(Path(row['source_root']))
                 roots.append((group, fd, stamp(os.fstat(fd)), row))
                 require(enumerate_files(fd) == set(row['files']), 'public tree contains missing or extra files')
@@ -261,9 +324,68 @@ def stage(assets, candidate):
                 os.close(stage_fd)
             require(stamp(candidate_info)[:5] == stamp(os.fstat(held_candidate))[:5]
                     == stamp(candidate.lstat())[:5], 'owned candidate namespace was replaced')
-            return {'schema': 1, 'files': sum(COUNTS.values()), 'native_executed': False}
+            return {'schema': 1, 'files': sum(len(row['files']) for row in assets['assets'].values()),
+                    'subject_sha256': subject_digest(assets), 'distribution': dict(DISTRIBUTION),
+                    'native_executed': False}
         finally:
             for _, fd, _, _ in roots:
                 os.close(fd)
     finally:
         os.close(held_candidate)
+
+
+def verify(assets):
+    """Measure actual supplied archives and complete trees, without native execution."""
+    validate(assets)
+    for row in assets['archives'].values():
+        path = locator(row['source_path'])
+        fd = directory(path.parent)
+        try:
+            measured_file(fd, path.name, {k: v for k, v in row.items() if k != 'source_path'})
+        finally:
+            os.close(fd)
+    total = 0
+    for row in assets['assets'].values():
+        path = locator(row['source_root'])
+        fd = directory(path)
+        try:
+            before = stamp(os.fstat(fd))
+            require(enumerate_files(fd) == set(row['files']),
+                    'public tree contains missing or extra files')
+            for relative, expected in row['files'].items():
+                measured_file(fd, relative, expected)
+                total += expected['bytes']
+            require(before == stamp(os.fstat(fd)) == stamp(path.lstat())
+                    and enumerate_files(fd) == set(row['files']), 'public inventory changed')
+        finally:
+            os.close(fd)
+    require(total <= TOTAL, 'public source closure exceeds aggregate bound')
+    return assets
+
+
+def main():
+    """Create portable operator inputs using only pinned, locally measured public bytes."""
+    import argparse
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--subjects', type=Path,
+                        default=Path(__file__).with_name('service-source-subjects.json'))
+    parser.add_argument('--electron-root', required=True)
+    parser.add_argument('--electron-archive', required=True)
+    parser.add_argument('--slack-root', required=True)
+    parser.add_argument('--slack-archive', required=True)
+    parser.add_argument('--app-root', default=str(Path(__file__).resolve().parents[3] /
+                        'os/scripts/service-session-source-fixture/app'))
+    args = parser.parse_args()
+    assets = json.loads(args.subjects.read_text())
+    validate(assets, locators=False)
+    for group in GROUPS:
+        assets['assets'][group]['source_root'] = str(locator(getattr(args, group + '_root')))
+    for group in ('electron', 'slack'):
+        assets['archives'][group + '_archive']['source_path'] = str(
+            locator(getattr(args, group + '_archive')))
+    verify(assets)
+    print(json.dumps(assets, sort_keys=True, indent=2))
+
+
+if __name__ == '__main__':
+    main()

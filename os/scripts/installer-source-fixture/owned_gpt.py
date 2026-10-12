@@ -9,7 +9,6 @@ use and observed consumer retirement. It runs only in the dedicated rootful,
 no-network native qualification namespace, never the user's desktop.
 """
 from contextlib import contextmanager
-import array
 import fcntl
 import hashlib
 import json
@@ -109,9 +108,9 @@ def check_process(pid, stamp, image):
 
 
 class Attachment:
-    def __init__(self, scratch, namespace, image, device, descriptor):
+    def __init__(self, scratch, namespace, image, device, descriptor, lease):
         self.scratch, self.namespace, self.image = scratch, namespace, image
-        self.device, self.descriptor = device, descriptor
+        self.device, self.descriptor, self.lease = device, descriptor, lease
         self.pidfd, self.pid, self.stamp = None, None, None
         self.mount = None
         self.partition_fd = None
@@ -171,11 +170,11 @@ class Attachment:
                 or not stat.S_ISBLK(device.st_mode) or device.st_rdev != self.device_rdev):
             raise RuntimeError('owned NBD process/device identity changed')
         global_pid = int(limited_read(f'/sys/class/block/{self.device.name}/pid').strip())
-        value = array.array('i', [global_pid])
         # Translate only this exact kernel NBD task through a held initial PID
-        # namespace handle. No host proc enumeration, setns or PID-host fallback.
-        fcntl.ioctl(self.namespace, NS_GET_TGID_FROM_PIDNS, value, True)
-        if value[0] != self.pid:
+        # namespace handle. This ioctl takes a scalar PID and returns the TGID,
+        # not an in/out pointer. No host proc enumeration or setns fallback.
+        translated = fcntl.ioctl(self.namespace, NS_GET_TGID_FROM_PIDNS, global_pid)
+        if translated != self.pid:
             raise RuntimeError('NBD kernel client is not the owned image server')
         current_bytes = struct.unpack('Q', fcntl.ioctl(self.descriptor, 0x80081272, bytes(8)))[0]
         if current_bytes != SIZE:
@@ -202,6 +201,7 @@ class Attachment:
         if self.partition_fd is not None:
             os.close(self.partition_fd)
             self.partition_fd = None
+        disconnected_owned = self.owned
         if self.owned:
             self.verify()
             checked(['/usr/bin/qemu-nbd', '--disconnect', str(self.device)])
@@ -214,11 +214,23 @@ class Attachment:
         if self.pidfd is not None:
             os.close(self.pidfd)
             self.pidfd = None
+        if disconnected_owned:
+            # Linux clears capacity on last block close. Preserve the exact
+            # node with O_PATH and the exclusive fixture lease while releasing
+            # our active block opener; O_PATH itself does not keep NBD configured.
+            pin = os.open(self.device, os.O_PATH | os.O_NOFOLLOW | os.O_CLOEXEC)
+            metadata = os.fstat(pin)
+            if not stat.S_ISBLK(metadata.st_mode) or metadata.st_rdev != self.device_rdev:
+                os.close(pin)
+                raise RuntimeError('owned NBD retirement node pin changed')
+            os.close(self.descriptor)
+            self.descriptor = pin
         # A daemon exit alone does not prove the kernel released its configured
         # block endpoint. Keep the image/release receipt withheld until the exact
         # still-held node is observed idle; never disconnect unproven ownership.
         verify_idle_node(self.device, self.descriptor, self.device_rdev)
         os.close(self.descriptor)
+        os.close(self.lease)
         os.close(self.backing_fd)
         _LIVE_ATTACHMENTS.pop(id(self), None)
 
@@ -249,18 +261,33 @@ def free_device():
         if (node / 'pid').exists() or limited_read(node / 'size').strip().decode() != '0':
             continue
         descriptor = os.open(device, os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC)
+        lease = None
         try:
-            if not stat.S_ISBLK(os.fstat(descriptor).st_mode):
+            metadata = os.fstat(descriptor)
+            if not stat.S_ISBLK(metadata.st_mode):
                 raise RuntimeError('NBD node is not a block device')
-            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            # A device flock prevents udev's real blkid worker from probing the
+            # disk. Keep the exclusive fixture lease on a root-controlled file
+            # keyed by the held block identity instead, through verified release.
+            lock = Path('/run/lock') / f'tilo-owned-nbd-{metadata.st_rdev}'
+            lease = os.open(lock, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+            info = os.fstat(lease)
+            if not stat.S_ISREG(info.st_mode) or info.st_uid or info.st_mode & 0o077 or info.st_nlink != 1:
+                raise RuntimeError('root-private NBD lease required')
+            fcntl.flock(lease, fcntl.LOCK_EX | fcntl.LOCK_NB)
             if (node / 'pid').exists() or limited_read(node / 'size').strip().decode() != '0':
                 os.close(descriptor)
+                os.close(lease)
                 continue
-            return device, descriptor
+            return device, descriptor, lease
         except BlockingIOError:
             os.close(descriptor)
+            if lease is not None:
+                os.close(lease)
         except BaseException:
             os.close(descriptor)
+            if lease is not None:
+                os.close(lease)
             raise
     raise RuntimeError('no already available unoccupied exclusively locked NBD device; qualification incomplete')
 
@@ -304,8 +331,8 @@ def owned_source(stage, namespace, verify_consumers_retired):
     (stage / 'tool-inventory.json').write_text(json.dumps(inventory))
     image = stage / 'source.img'
     disk, partition = create_gpt(image)
-    device, fd = free_device()
-    attachment = Attachment(stage, namespace, image, device, fd)
+    device, fd, lease = free_device()
+    attachment = Attachment(stage, namespace, image, device, fd, lease)
     try:
         attachment.connect()
         child = Path(str(device) + 'p1')
@@ -315,11 +342,15 @@ def owned_source(stage, namespace, verify_consumers_retired):
         if not child.exists():
             raise RuntimeError('native NBD partition scanning unavailable; qualification incomplete')
         attachment.verify()
+        checked(['/usr/bin/udevadm', 'trigger', '--action=change',
+                 str(Path('/sys/class/block') / device.name),
+                 str(Path('/sys/class/block') / child.name)])
+        checked(['/usr/bin/udevadm', 'settle', '--timeout=10'])
         before = json.loads(checked(['/usr/bin/lsblk', '-J', '-b', '-p', '-o',
                                      'NAME,TYPE,SIZE,PTTYPE,PTUUID,PARTUUID,START', str(device)]))
         row = before['blockdevices'][0]
         if row['type'] != 'disk' or row['pttype'] != 'gpt' or row['ptuuid'].lower() != disk:
-            raise RuntimeError('production TYPE=disk/GPT identity unavailable')
+            raise RuntimeError('production TYPE=disk/GPT identity unavailable: ' + json.dumps(row))
         if len(row.get('children', [])) != 1:
             raise RuntimeError('owned GPT partition identity changed')
         part = row['children'][0]
@@ -348,6 +379,9 @@ def owned_source(stage, namespace, verify_consumers_retired):
             raise
         attachment.partition_fd = child_fd
         attachment.verify()
+        checked(['/usr/bin/udevadm', 'trigger', '--action=change',
+                 str(Path('/sys/class/block') / child.name)])
+        checked(['/usr/bin/udevadm', 'settle', '--timeout=10'])
         # Original UID1000 peer must traverse the source mount. Backing images
         # and receipts remain in root-private stage; expose only this mount.
         mount = Path('/var/tmp') / f'tilo-installer-original-{uuid.uuid4()}'
@@ -577,10 +611,12 @@ class PlannedReceiving:
 
 def immutable_tools():
     version = checked(['/usr/bin/qemu-nbd', '--version'])
-    if not version.startswith(b'qemu-nbd 10.2.2 '):
+    # QEMU prints argv[0]; checked() deliberately invokes the absolute tool.
+    banner = version.splitlines()[0].split(b' ', 1)
+    if len(banner) != 2 or Path(os.fsdecode(banner[0])).name != 'qemu-nbd' or not banner[1].startswith(b'10.2.2 '):
         raise RuntimeError('foreground QEMU semantics require the independently reviewed installed10.2.2 tool')
     result = {'qemu_version': version.decode('utf-8', errors='strict').splitlines()[0]}
-    for name in ('qemu-nbd', 'sfdisk', 'mkfs.ext4', 'mkfs.btrfs', 'partx', 'lsblk', 'mount', 'umount', 'findmnt', 'sync'):
+    for name in ('qemu-nbd', 'sfdisk', 'mkfs.ext4', 'mkfs.btrfs', 'partx', 'lsblk', 'mount', 'umount', 'findmnt', 'sync', 'udevadm'):
         path = Path('/usr/bin') / name
         resolved = path.resolve(strict=True)
         for component in (resolved, *resolved.parents):

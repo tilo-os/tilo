@@ -118,5 +118,11 @@ for name in \
     verify_artifact "$(find_one "$name")"
 done
 
+# Current migration-enabled packages publish a canonical host-platform archive
+# too. Historical fresh-install releases remain verifiable without that asset.
+while IFS= read -r -d '' artifact; do
+  verify_artifact "$artifact"
+done < <(find "$root" -type f -name 'tilo-imager-linux-*-platform.tar.gz' -print0)
+
 printf 'verified %s Linux and installer artifacts with release key %s\n' \
   "$verified" "$expected"

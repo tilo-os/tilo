@@ -31,7 +31,7 @@ const SUBVOL_GETFLAGS: libc::Ioctl = 0x8008_9419;
 const SUBVOL_SETFLAGS: libc::Ioctl = 0x4008_941a;
 /// `BTRFS_SUBVOL_RDONLY`.
 const SUBVOL_RDONLY: u64 = 0x2;
-/// GET_SUBVOL_INFO reports root-item flags, not the CREATE/GETFLAGS flags.
+/// `GET_SUBVOL_INFO` reports root-item flags, not the CREATE/GETFLAGS flags.
 const ROOT_SUBVOL_RDONLY: u64 = 1;
 /// Inode number of every subvolume root (`BTRFS_FIRST_FREE_OBJECTID`).
 const SUBVOL_ROOT_INO: u64 = 256;

@@ -498,6 +498,10 @@ fn execute_retained(request: RetainedRequest, caller: u32, directory: &Path) -> 
     request.validate()?;
     let cancel = Arc::new(AtomicBool::new(false));
     let input = commands(cancel.clone());
+    #[cfg(debug_assertions)]
+    if std::env::var_os("TILO_NATIVE_CAPTURE_DIAGNOSTICS").is_some() {
+        eprintln!("native retained request admitted");
+    }
     let mut session = super::home_capture::RootSession::connect_retained(
         &request,
         directory,
@@ -636,6 +640,10 @@ pub(crate) fn maybe_run(args: &[String]) -> Result<Option<i32>, String> {
     let (Some(path), None) = (args.get(2), args.get(3)) else {
         return Err("usage: --tilo-home-capture-helper <private-request.json>".into());
     };
+    #[cfg(debug_assertions)]
+    if std::env::var_os("TILO_NATIVE_CAPTURE_DIAGNOSTICS").is_some() {
+        eprintln!("native capture helper entered");
+    }
     // SAFETY: reads process credentials; never changes ownership.
     if unsafe { libc::geteuid() } != 0 {
         return Err("source capture helper requires authorized elevation".into());
@@ -658,7 +666,13 @@ pub(crate) fn maybe_run(args: &[String]) -> Result<Option<i32>, String> {
         DispatchRequest::Original(request) => execute_original(request, caller, directory),
         DispatchRequest::Retained(request) => execute_retained(request, caller, directory),
     }
-    .map_err(|error| error.to_string())?;
+    .map_err(|error| {
+        #[cfg(debug_assertions)]
+        if std::env::var_os("TILO_NATIVE_CAPTURE_DIAGNOSTICS").is_some() {
+            eprintln!("native capture helper execution failed: {error}");
+        }
+        error.to_string()
+    })?;
     Ok(Some(0))
 }
 

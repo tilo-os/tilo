@@ -482,15 +482,23 @@ fn decode_program_bytes(bytes: &[u8]) -> Result<BpfProgram, SeccompError> {
             "Seccomp instruction array shape differs",
         )));
     }
-    Ok(bytes
+    bytes
         .chunks_exact(8)
-        .map(|word| seccompiler::sock_filter {
-            code: u16::from_ne_bytes([word[0], word[1]]),
-            jt: word[2],
-            jf: word[3],
-            k: u32::from_ne_bytes([word[4], word[5], word[6], word[7]]),
+        .map(|word| {
+            let &[code0, code1, jt, jf, k0, k1, k2, k3] = word else {
+                return Err(SeccompError::Io(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "Seccomp instruction is incomplete",
+                )));
+            };
+            Ok(seccompiler::sock_filter {
+                code: u16::from_ne_bytes([code0, code1]),
+                jt,
+                jf,
+                k: u32::from_ne_bytes([k0, k1, k2, k3]),
+            })
         })
-        .collect())
+        .collect()
 }
 
 #[cfg(all(test, target_os = "linux"))]

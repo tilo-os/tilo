@@ -9,6 +9,7 @@ pub enum Page {
     Password,
     Connect,
     Devices,
+    Purpose,
     Belongings,
     Accounts,
     Storage,
@@ -26,6 +27,7 @@ impl Page {
             Self::Password => "password",
             Self::Connect => "connect",
             Self::Devices => "devices",
+            Self::Purpose => "purpose",
             Self::Belongings => "belongings",
             Self::Accounts => "accounts",
             Self::Storage => "storage",
@@ -65,6 +67,7 @@ pub enum ReviewSection {
     Identity,
     Password,
     Devices,
+    Purpose,
     Belongings,
 }
 
@@ -76,6 +79,7 @@ impl ReviewSection {
             Self::Identity => "identity",
             Self::Password => "password",
             Self::Devices => "devices",
+            Self::Purpose => "purpose",
             Self::Belongings => "belongings",
         }
     }
@@ -96,6 +100,7 @@ pub struct Journey {
     pub identity: Option<Identity>,
     pub name: String,
     pub device_name: String,
+    pub purpose: String,
     pub password: String,
     pub confirmation: String,
     pub transfer: Option<String>,
@@ -116,6 +121,7 @@ impl Journey {
             identity: None,
             name,
             device_name: String::new(),
+            purpose: install_profile_model::default_purpose(),
             password: String::new(),
             confirmation: String::new(),
             transfer: None,
@@ -142,6 +148,7 @@ impl Journey {
             browser_domains: self.browser_domains,
             excluded_flatpak_apps: self.excluded_flatpak_apps.clone(),
             device_label: self.device_name.clone(),
+            purpose: self.purpose.clone(),
         }
     }
 
@@ -169,6 +176,7 @@ impl Journey {
         self.excluded_flatpak_apps
             .clone_from(&choices.excluded_flatpak_apps);
         self.device_name.clone_from(&choices.device_label);
+        self.purpose.clone_from(&choices.purpose);
         self.identity = Some(if kind == IdentityKind::New {
             Identity::New
         } else {
@@ -202,6 +210,7 @@ impl Journey {
                 self.categories[0] = false;
                 self.categories[1] = false;
             }
+            (Page::Purpose, "computer" | "server") => self.purpose = choice.into(),
             (Page::Migration, "migrate") => self.migrate = Some(true),
             (Page::Migration, "fresh") => self.migrate = Some(false),
             (Page::Identity, "new") => {
@@ -247,9 +256,11 @@ impl Journey {
             {
                 return Err("installer-preview-device-invalid");
             }
+            Page::Devices if self.destination != Some(Destination::Desktop) => Page::Purpose,
+            Page::Purpose if self.migrate == Some(true) => Page::Belongings,
             Page::Devices if self.migrate == Some(true) => Page::Belongings,
             Page::Belongings if self.categories[2] => Page::Accounts,
-            Page::Devices | Page::Belongings | Page::Accounts => Page::Storage,
+            Page::Devices | Page::Purpose | Page::Belongings | Page::Accounts => Page::Storage,
             Page::Storage => Page::Review,
             Page::Review => {
                 self.password.clear();
@@ -266,6 +277,7 @@ impl Journey {
                 | (ReviewSection::Password, Page::Password)
                 | (ReviewSection::Identity, Page::Devices)
                 | (ReviewSection::Devices, Page::Devices)
+                | (ReviewSection::Purpose, Page::Purpose)
                 | (ReviewSection::Destination, Page::Storage)
                 | (ReviewSection::Belongings, Page::Belongings) => Page::Review,
                 (ReviewSection::Belongings, Page::Migration) => {
@@ -288,6 +300,9 @@ impl Journey {
                 Page::Connect
             });
             self.history.extend([Page::Password, Page::Devices]);
+            if self.destination != Some(Destination::Desktop) {
+                self.history.push(Page::Purpose);
+            }
             if self.migrate == Some(true) {
                 self.history.push(Page::Belongings);
                 if self.categories[2] {
@@ -327,6 +342,7 @@ impl Journey {
             "identity" => (ReviewSection::Identity, Page::Identity),
             "password" => (ReviewSection::Password, Page::Password),
             "devices" => (ReviewSection::Devices, Page::Devices),
+            "purpose" => (ReviewSection::Purpose, Page::Purpose),
             "belongings" => (ReviewSection::Belongings, Page::Migration),
             "belongings-details" if self.migrate == Some(true) => {
                 (ReviewSection::Belongings, Page::Belongings)
@@ -369,10 +385,12 @@ impl Journey {
     pub fn editing_choices(&self) -> bool {
         self.editing_destination()
             || self.editing_belongings()
-            || self
-                .editing
-                .as_ref()
-                .is_some_and(|edit| edit.section == ReviewSection::Devices)
+            || self.editing.as_ref().is_some_and(|edit| {
+                matches!(
+                    edit.section,
+                    ReviewSection::Devices | ReviewSection::Purpose
+                )
+            })
     }
 
     pub fn belongings_source_changed(&self) -> bool {
@@ -413,6 +431,7 @@ impl Journey {
                         | (ReviewSection::Profile, Page::Profile)
                         | (ReviewSection::Identity, Page::Devices)
                         | (ReviewSection::Devices, Page::Devices)
+                        | (ReviewSection::Purpose, Page::Purpose)
                         | (ReviewSection::Password, Page::Password)
                         | (ReviewSection::Belongings, Page::Belongings)
                 )
@@ -465,7 +484,7 @@ impl Journey {
             "preview": true, "page": self.page.key(),
             "destination": self.destination.map(Destination::key), "migrate": self.migrate,
             "identity": self.identity.map(|v| if v == Identity::New { "new" } else { "existing" }),
-            "name": self.name, "device_name": self.device_name,
+            "name": self.name, "device_name": self.device_name, "purpose": self.purpose,
             "categories": self.categories, "browser_domains": self.browser_domains, "details": self.details,
             "selected_count": self.selected_count(),
             "transfer": self.transfer,

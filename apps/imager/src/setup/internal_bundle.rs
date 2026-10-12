@@ -168,10 +168,10 @@ impl InternalBundle {
     /// Refuses a target without its actual browser and engine consumer proof.
     pub fn require_service_session_protocol(&self, required: Option<u32>) -> Result<(), String> {
         if required.is_some_and(|protocol| {
-            self.manifest
-                .account_custody
-                .as_ref()
-                .is_none_or(|proof| !proof.supports_service_session_protocol(protocol))
+            self.manifest.account_custody.as_ref().is_none_or(|proof| {
+                !proof.supports_service_session_protocol(protocol)
+                    && !super::account_admission::source_candidate(protocol, proof).unwrap_or(false)
+            })
         }) {
             return Err("The selected system cannot use the saved connections".into());
         }

@@ -41,6 +41,9 @@ impl MediaProfileField {
 /// `None` means that field must be completed on this device.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MediaProfile {
+    pub purpose: String,
+    pub device_label: String,
+    pub prepared_setup: Option<install_profile_model::PreparedSetupExpectation>,
     pub hostname: Option<String>,
     pub username: Option<String>,
     pub full_name: Option<String>,
@@ -81,6 +84,12 @@ impl MediaProfile {
 #[serde(deny_unknown_fields)]
 struct RawMediaProfile {
     schema: u8,
+    #[serde(default = "install_profile_model::default_purpose")]
+    purpose: String,
+    #[serde(default)]
+    device_label: String,
+    #[serde(default, deserialize_with = "present_expectation")]
+    prepared_setup: Option<install_profile_model::PreparedSetupExpectation>,
     #[serde(default)]
     hostname: Option<String>,
     #[serde(default)]
@@ -95,6 +104,15 @@ struct RawMediaProfile {
     timezone: Option<String>,
     #[serde(default)]
     filesystem: Option<String>,
+}
+
+fn present_expectation<'de, D>(
+    deserializer: D,
+) -> Result<Option<install_profile_model::PreparedSetupExpectation>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    install_profile_model::PreparedSetupExpectation::deserialize(deserializer).map(Some)
 }
 
 fn retain_valid<F>(
@@ -119,6 +137,12 @@ impl RawMediaProfile {
     fn validate(self, zoneinfo_root: &Path) -> Result<MediaProfile, String> {
         if self.schema != 1 {
             return Err("unsupported installation profile version".into());
+        }
+        if !install_profile_model::valid_purpose(&self.purpose) {
+            return Err("unsupported installation purpose".into());
+        }
+        if !install_profile_model::valid_device_label(&self.device_label) {
+            return Err("invalid installation device label".into());
         }
         let mut repairs = Vec::new();
         let hostname = retain_valid(
@@ -177,6 +201,9 @@ impl RawMediaProfile {
             |filesystem| install_profile_model::FILESYSTEMS.contains(&filesystem),
         );
         Ok(MediaProfile {
+            purpose: self.purpose,
+            device_label: self.device_label,
+            prepared_setup: self.prepared_setup,
             hostname,
             username,
             full_name,
@@ -214,7 +241,7 @@ fn load_from_with_zoneinfo(
         return Err("installation profile is unexpectedly large".into());
     }
     serde_json::from_slice::<RawMediaProfile>(&bytes)
-        .map_err(|error| format!("installation profile is malformed: {error}"))?
+        .map_err(|_| "installation profile is malformed".to_string())?
         .validate(zoneinfo_root)
         .map(Some)
 }
@@ -242,7 +269,7 @@ pub(crate) fn validate_object_with_zoneinfo(
         .entry("schema")
         .or_insert_with(|| serde_json::Value::from(1));
     serde_json::from_value::<RawMediaProfile>(serde_json::Value::Object(object))
-        .map_err(|error| format!("installation profile is malformed: {error}"))?
+        .map_err(|_| "installation profile is malformed".to_string())?
         .validate(zoneinfo_root)
 }
 
@@ -272,6 +299,20 @@ mod tests {
             "timezone": "Europe/Berlin",
             "filesystem": "btrfs",
         })
+    }
+
+    #[test]
+    fn purpose_is_validated_and_legacy_profiles_keep_computer_defaults() {
+        let parse = |purpose: Option<&str>| {
+            let mut object = serde_json::Map::new();
+            if let Some(purpose) = purpose {
+                object.insert("purpose".into(), purpose.into());
+            }
+            validate_object(&object)
+        };
+        assert_eq!(parse(None).unwrap().purpose, "computer");
+        assert_eq!(parse(Some("server")).unwrap().purpose, "server");
+        assert!(parse(Some("other-os")).is_err());
     }
 
     #[test]

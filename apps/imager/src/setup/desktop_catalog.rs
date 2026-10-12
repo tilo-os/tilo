@@ -143,9 +143,10 @@ impl DesktopRelease {
     ) -> Result<(), String> {
         self.validate_metadata()?;
         if required.is_some_and(|protocol| {
-            self.account_custody
-                .as_ref()
-                .is_none_or(|proof| !proof.supports_service_session_protocol(protocol))
+            self.account_custody.as_ref().is_none_or(|proof| {
+                !proof.supports_service_session_protocol(protocol)
+                    && !super::account_admission::source_candidate(protocol, proof).unwrap_or(false)
+            })
         }) {
             return Err(super::strings::t(
                 "imager-setup-account-consumer-unavailable",

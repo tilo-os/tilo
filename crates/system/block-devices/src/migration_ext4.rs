@@ -25,7 +25,7 @@ pub const MKFS_ARGS: &[&str] = &[
     "-E",
     "desc_size=64,num_backup_sb=2,lazy_itable_init=0,lazy_journal_init=0,nodiscard",
 ];
-/// Conservative fresh filesystem free bytes for exactly MKFS_ARGS.
+/// Conservative fresh filesystem free bytes for exactly `MKFS_ARGS`.
 ///
 /// # Errors
 /// Refuses small filesystems, arithmetic overflow or metadata exceeding extent.

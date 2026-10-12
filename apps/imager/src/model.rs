@@ -690,13 +690,12 @@ pub struct PreparedSetupExpectation {
 }
 impl PreparedSetupExpectation {
     pub fn valid(&self) -> bool {
-        self.schema == 1
-            && (48..=40 * 1024 * 1024).contains(&self.sealed_bytes)
-            && self.ciphertext_sha256.len() == 64
-            && self
-                .ciphertext_sha256
-                .bytes()
-                .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+        install_profile_model::PreparedSetupExpectation {
+            schema: self.schema,
+            sealed_bytes: self.sealed_bytes,
+            ciphertext_sha256: self.ciphertext_sha256.clone(),
+        }
+        .valid()
     }
 }
 
@@ -710,6 +709,9 @@ impl PreparedSetupExpectation {
 /// stay on this machine.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Model)]
 pub struct InstallProfile {
+    /// Same OS, with ordinary computer or always-available server defaults.
+    #[serde(default = "install_profile_model::default_purpose")]
+    pub purpose: String,
     /// Hostname
     pub hostname: String,
     pub user: UserAccount,
@@ -750,6 +752,7 @@ pub const DEFAULT_HOSTNAME: &str = "tilo";
 impl Default for InstallProfile {
     fn default() -> Self {
         Self {
+            purpose: install_profile_model::default_purpose(),
             hostname: DEFAULT_HOSTNAME.into(),
             user: UserAccount::default(),
             locale: "en_US.UTF-8".into(),
@@ -777,10 +780,10 @@ impl InstallProfile {
     /// rejected by the live installer.
     pub fn validate_media_profile(&self) -> Result<(), String> {
         use install_profile_model as rules;
-        if (!self.device_label.is_empty() && self.device_label.trim().is_empty())
-            || self.device_label.len() > 64
-            || self.device_label.chars().any(char::is_control)
-        {
+        if !rules::valid_purpose(&self.purpose) {
+            return Err("Choose computer or server purpose.".into());
+        }
+        if !rules::valid_device_label(&self.device_label) {
             return Err("Device name must be at most 64 bytes without control characters.".into());
         }
         if !rules::valid_hostname(&self.hostname) {
@@ -833,6 +836,7 @@ impl InstallProfile {
         #[derive(Serialize)]
         struct MediaProfile<'a> {
             schema: u8,
+            purpose: &'a str,
             hostname: &'a str,
             username: &'a str,
             full_name: &'a str,
@@ -848,6 +852,7 @@ impl InstallProfile {
 
         serde_json::to_vec(&MediaProfile {
             schema: 1,
+            purpose: &self.purpose,
             hostname: self.hostname.trim(),
             username: self.user.username.trim(),
             full_name: self.user.full_name.trim(),
@@ -863,6 +868,7 @@ impl InstallProfile {
     /// A named saved-profile snapshot for the "saved install profiles" list.
     pub fn sample_workstation() -> Self {
         InstallProfile {
+            purpose: install_profile_model::default_purpose(),
             hostname: "tilo-workstation".into(),
             user: UserAccount {
                 full_name: "ada".into(),

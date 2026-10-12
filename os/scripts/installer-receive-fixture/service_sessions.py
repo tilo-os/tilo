@@ -20,6 +20,7 @@ CHAT = {'slack': 'https://slack.com/app_redirect?team=T123&channel=C456',
 REPORT = {'service', 'session_id', 'status', 'authenticated', 'origin_storage_imported',
           'requires_reconnect', 'engine_shutdown_confirmed', 'destination_navigation_observed',
           'native_restart_readback_verified'}
+REVOCATION_REPORT = {'custody_revoked', 'custody_backend_needed', 'local_only'}
 
 
 def require(value, reason):
@@ -47,10 +48,17 @@ def selections(value):
 
 
 def imported(report, selected):
-    require(type(report) is dict and set(report) == REPORT
+    if type(report) is dict and report.get('status') == 'opening':
+        require(report.get('session_id') == selected['id']
+                and report.get('authenticated') is False
+                and report.get('engine_shutdown_confirmed') is False,
+                'pending Browser opening differs from admitted selection')
+        return False
+    require(type(report) is dict and REPORT <= set(report)
+            and set(report) <= REPORT | REVOCATION_REPORT
             and report['session_id'] == selected['id'] and report['service'] == selected['service']
             and type(report['status']) is str
-            and all(type(report[name]) is bool for name in REPORT
+            and all(type(report[name]) is bool for name in report
                     if name not in ('service', 'session_id', 'status')),
             'actual Browser service report differs from admitted selection')
     require(report['authenticated'] is False, 'offline qualification cannot claim remote login')
@@ -64,6 +72,22 @@ def imported(report, selected):
             and (selected['service'] != 'discord' or report['origin_storage_imported']),
             'actual selected origin state requires reconnect')
     return report['destination_navigation_observed']
+
+
+def revoked(report, selected):
+    require(type(report) is dict and report.get('session_id') == selected['id'],
+            'revocation report differs from selected native session')
+    for name in ('custody_revoked', 'custody_backend_needed', 'local_only',
+                 'engine_shutdown_confirmed'):
+        require(type(report.get(name)) is bool, 'revocation observation lacks native result')
+    if report.get('status') != 'forgotten':
+        require(report.get('status') in ('forgetting', 'forget-incomplete'),
+                'Browser did not perform genuine selected custody revocation')
+        return False
+    require(report['custody_revoked'] and report['engine_shutdown_confirmed']
+            and not report['custody_backend_needed'] and not report['local_only'],
+            'local profile cleanup alone cannot certify custody revocation')
+    return True
 
 
 def verify(control, candidate, account, services, log, deadline, selected, subjects):
@@ -114,21 +138,78 @@ def verify(control, candidate, account, services, log, deadline, selected, subje
                     and any(row['kind'] == 'cef' for row in processes),
                     'actual signed Browser/CEF process subjects were not observed')
             service_processes.private_profile(processes, selected, account)
+            parent = service_processes.hold_profile_parent(processes, selected)
+            try:
+                forget = _application_row(control, BROWSER, 'forget-service-session', services, deadline,
+                                          'browser.service.' + selected['id'])
+                _invoke(control, forget, {}, services, deadline)
+                while True:
+                    read = _application_row(control, BROWSER, 'read-service-session', services, deadline,
+                                            'browser.service-status')
+                    if revoked(_invoke(control, read, {}, services, deadline), selected):
+                        break
+                    _pause(services, deadline)
+                require(not any(service_processes.live(row['pidfd']) for row in processes
+                                if row['kind'] == 'cef')
+                        and service_processes.profile_removed(parent, selected),
+                        'selected native engine/profile retirement remains unobserved')
+            finally:
+                os.close(parent)
             _close(control, BROWSER, services, deadline)
             while any(service_processes.live(row['pidfd']) for row in processes):
                 _pause(services, deadline)
         finally:
             service_processes.close(processes)
+        # A fresh default Browser must replay private List after revocation;
+        # absence in the old cached list or a Remove ACK is not enough.
+        launch = _row(control, lambda row: row.get('provider') == 'applications'
+                      and row.get('id') == BROWSER, services, deadline)
+        _invoke(control, launch, {}, services, deadline)
+        inventory = _application_row(control, BROWSER, 'list-service-sessions', services, deadline,
+                                     'browser.service-sessions')
+        listed = _invoke(control, inventory, {}, services, deadline)
+        require(type(listed) is dict and set(listed) == {'schema', 'sessions'}
+                and type(listed['schema']) is int and listed['schema'] == 1
+                and type(listed['sessions']) is list
+                and all(type(row) is dict and type(row.get('id')) is str
+                        for row in listed['sessions'])
+                and all(row['id'] != selected['id'] for row in listed['sessions']),
+                'fresh authenticated Browser List still offers revoked selection')
+        # Challenge Resolve through the same ordinary view action with the old
+        # public anchor; a disappeared resource row alone cannot prove denial.
+        opener = _application_row(control, BROWSER, 'tilo.app.open', services, deadline)
+        _invoke(control, opener, {'anchor': 'service:' + selected['id']}, services, deadline)
+        while True:
+            read = _application_row(control, BROWSER, 'read-service-session', services, deadline,
+                                    'browser.service-status')
+            denied = _invoke(control, read, {}, services, deadline)
+            require(type(denied) is dict and denied.get('session_id') == selected['id'],
+                    'stale selected Resolve has no native observation')
+            if denied.get('status') == 'needs-reconnect':
+                require(denied.get('requires_reconnect') is True,
+                        'stale selected Resolve did not require reconnect')
+                break
+            require(denied.get('status') in ('opening', 'waiting'),
+                    'revoked selected Resolve was not denied')
+            _pause(services, deadline)
+        fresh = service_processes.observe(subjects, account, vault)
+        try:
+            require(any(row['kind'] == 'browser' for row in fresh),
+                    'fresh signed Browser retirement subject absent')
+            _close(control, BROWSER, services, deadline)
+            while any(service_processes.live(row['pidfd']) for row in fresh):
+                _pause(services, deadline)
+        finally:
+            service_processes.close(fresh)
         result.append({'id': selected['id'], 'service': selected['service'],
                        'native_profile_restart_readback': True,
                        'origin_storage_imported': observed['origin_storage_imported'],
                        'chat_navigation_observed': True, 'remote_authenticated': False})
     services.check_live()
-    # Deliberately no revocation/no-vault/owned-retirement flags: those require
-    # additional actual observations by the canonical owner, not queue ACKs.
+    # The outer owner still independently proves source/target retirement.
     return {'schema': 1, 'sessions': result, 'browser_windows_closed': True,
             'remote_authenticated': False,
             'conditions': {'private_list_verified': True, 'private_resolve_verified': True,
                 'isolated_profile_verified': True, 'no_vault_mount_verified': True,
                 'origin_storage_persisted': True, 'chat_destination_navigation_verified': True,
-                'revocation_verified': False}}
+                'revocation_verified': True}}

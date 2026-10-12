@@ -2069,6 +2069,7 @@ fn source_home_checkpoint_requires_current_acknowledged_operation_and_keeps_gene
                 browser_domains: [true, true],
                 excluded_flatpak_apps: Default::default(),
                 device_label: "My computer".into(),
+                purpose: install_profile_model::default_purpose(),
             },
             IdentityKind::New,
         )

@@ -9,6 +9,22 @@ on:
     tags: ["imager-v*"]
   workflow_dispatch:
     inputs:
+      capture_qualifier_base:
+        description: "Immutable sha256 image ID in native rootless Podman, with receiving-fixture native prerequisites."
+        type: string
+        default: ""
+      capture_source_assets:
+        description: "Native runner path to the frozen official Electron/Slack distribution manifest and its measured trees/archives."
+        type: string
+        default: ""
+      capture_runtime_identity:
+        description: "Native runner path to the authorized runtime-bundle signing identity."
+        type: string
+        default: ""
+      capture_service_identity:
+        description: "Native runner path to the authorized capture tapp signing identity."
+        type: string
+        default: ""
       full_native:
         description: "Build Linux, Windows, and macOS on both architectures instead of the Linux x86_64 smoke lane."
         type: boolean
@@ -55,6 +71,7 @@ concurrency:
 env:
   # Public binaries live on GitHub, outside the private Forgejo source repository.
   # Override only to pre-created public repositories governed by the same App.
+  TILO_VERSION: ${{ startsWith(github.ref, 'refs/tags/imager-v') && github.ref_name || '0.0.0' }}
   TILO_RELEASE_SERVER: https://github.com
   TILO_RELEASE_API_URL: https://api.github.com
   TILO_RELEASE_REPOSITORY: ${{ vars.IMAGER_PUBLIC_RELEASE_REPOSITORY || 'tilo-os/releases' }}
@@ -146,6 +163,10 @@ jobs:
     runs-on: ${{ matrix.runner }}
     enable-openid-connect: true
     env:
+      TILO_CAPTURE_QUALIFIER_BASE: ${{ github.event.inputs.capture_qualifier_base || fromJSON(vars.IMAGER_CAPTURE_QUALIFIER_BASES || '{}')[matrix.arch] }}
+      TILO_CAPTURE_SOURCE_ASSETS: ${{ github.event.inputs.capture_source_assets || fromJSON(vars.IMAGER_CAPTURE_SOURCE_ASSETS || '{}')[matrix.arch] }}
+      TILO_CAPTURE_RUNTIME_IDENTITY: ${{ github.event.inputs.capture_runtime_identity || fromJSON(vars.IMAGER_CAPTURE_RUNTIME_IDENTITIES || '{}')[matrix.arch] }}
+      TILO_CAPTURE_SERVICE_IDENTITY: ${{ github.event.inputs.capture_service_identity || fromJSON(vars.IMAGER_CAPTURE_SERVICE_IDENTITIES || '{}')[matrix.arch] }}
       REGISTRY_AUTH_FILE: /tmp/tilo-registry-auth-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.arch }}.json
       TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY: ${{ vars.TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY }}
       TILO_PUBLISHED_OS_IMAGE: ${{ github.event.inputs.published_os_image || vars.TILO_INSTALLER_OS_IMAGE }}
@@ -210,6 +231,7 @@ jobs:
               software_display_device=virtio-gpu-pci
             fi
             sudo -n apt-get install -y --no-install-recommends \
+              gcc pkg-config libgpgme-dev gnupg bubblewrap binutils tar ostree capnproto \
               clang dosfstools e2fsprogs fdisk imagemagick lld mtools ntfs-3g podman fuse-overlayfs jq \
               qemu-system-gui qemu-utils skopeo slirp4netns socat tesseract-ocr uidmap zstd $native_packages
           elif command -v dnf >/dev/null; then
@@ -224,7 +246,8 @@ jobs:
               display_device=virtio-gpu-gl-pci
               software_display_device=virtio-gpu-pci
             fi
-            sudo -n dnf install -y clang dosfstools e2fsprogs ImageMagick lld mtools ntfs-3g util-linux podman fuse-overlayfs slirp4netns jq \
+            sudo -n dnf install -y gcc pkgconf-pkg-config gpgme-devel gnupg2 bubblewrap binutils tar ostree capnproto \
+              clang dosfstools e2fsprogs ImageMagick lld mtools ntfs-3g util-linux podman fuse-overlayfs slirp4netns jq \
               qemu-img qemu-ui-egl-headless qemu-ui-opengl skopeo socat tesseract zstd $native_packages
           else
             printf 'unsupported runner OS for installer VM cycle\n' >&2
@@ -304,8 +327,16 @@ jobs:
               echo "::notice::rehearsal overlays $GITHUB_SHA onto verified published generation $generation ($TILO_PUBLISHED_OS_IMAGE)"
             fi
           fi
-          # The signed OS already contains the native installer binary. Reuse it
-          # while applying this checkout's small installer-only runtime overlay.
+          # Qualify the actual source/receiver cohort before putting capture in
+          # the medium. Do not inherit a historical installer with null pins.
+          capture_output="${RUNNER_TEMP:?}/capture-medium-${{ matrix.arch }}"
+          python3 apps/imager/packaging/prepare-capture-release.py \
+            --output "$capture_output" --feature host-media-writer
+          base_id="$(podman image inspect "${TILO_IMAGE:-localhost/tilo:latest}" --format '{{.Id}}')"
+          python3 apps/imager/packaging/layer-capture-install-medium.py \
+            --environment "$capture_output/environment.json" --base "$base_id" \
+            --iidfile "$capture_output/medium-image-id"
+          export TILO_IMAGE="$(<"$capture_output/medium-image-id")"
           ./os/dev/build-custom-installer.sh --reuse-image-installer
           if [[ -n ${TILO_INSTALLER_OFFLINE_TARGET_DIR:-} ]]; then
             # WHPX consumes the tested qcow2 directly. The legacy imager path
@@ -804,6 +835,16 @@ jobs:
         run: cargo test -p imager --lib --locked --features host-media-writer
       - name: Prove the sandboxed UDisks2 writer is enabled
         run: cargo test -p imager --lib --locked --features flatpak-media-writer
+      - name: Assemble signed capture before building its native host
+        env:
+          TILO_CAPTURE_QUALIFIER_BASE: ${{ github.event.inputs.capture_qualifier_base || fromJSON(vars.IMAGER_CAPTURE_QUALIFIER_BASES || '{}')[matrix.arch] }}
+          TILO_CAPTURE_SOURCE_ASSETS: ${{ github.event.inputs.capture_source_assets || fromJSON(vars.IMAGER_CAPTURE_SOURCE_ASSETS || '{}')[matrix.arch] }}
+          TILO_CAPTURE_RUNTIME_IDENTITY: ${{ github.event.inputs.capture_runtime_identity || fromJSON(vars.IMAGER_CAPTURE_RUNTIME_IDENTITIES || '{}')[matrix.arch] }}
+          TILO_CAPTURE_SERVICE_IDENTITY: ${{ github.event.inputs.capture_service_identity || fromJSON(vars.IMAGER_CAPTURE_SERVICE_IDENTITIES || '{}')[matrix.arch] }}
+        run: >-
+          python3 apps/imager/packaging/prepare-capture-release.py
+          --output "$RUNNER_TEMP/capture-release-${{ matrix.arch }}"
+          --feature host-media-writer --github-env "$GITHUB_ENV"
       - name: Build the complete native Linux package set
         env:
           TILO_REQUIRE_NATIVE_PACKAGES: "1"

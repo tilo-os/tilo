@@ -40,6 +40,8 @@ pub(super) struct PublicChoices {
     #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
     pub excluded_flatpak_apps: std::collections::BTreeSet<String>,
     pub device_label: String,
+    #[serde(default = "install_profile_model::default_purpose")]
+    pub purpose: String,
 }
 fn default_browser_domains() -> [bool; 2] {
     [true; 2]
@@ -50,6 +52,9 @@ impl PublicChoices {
         self.migrate == Some(true) && self.categories[2]
     }
     fn validate(&self) -> io::Result<()> {
+        if !install_profile_model::valid_purpose(&self.purpose) {
+            return Err(invalid());
+        }
         if self.excluded_flatpak_apps.len() > 4096
             || self
                 .excluded_flatpak_apps

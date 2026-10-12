@@ -62,6 +62,112 @@ fn context(app: &str, live: Arc<AtomicBool>) -> BrowserServiceSessionRequestCont
     };
     BrowserServiceSessionRequestContext::authenticated(41, "certified-person".into(), read)
 }
+struct AdminService {
+    admin: AtomicBool,
+    calls: AtomicUsize,
+    revoke: bool,
+}
+impl BrowserServiceSessionServices for AdminService {
+    fn authorize(&self, context: &BrowserServiceSessionRequestContext) -> Result<(), String> {
+        context.revalidate()
+    }
+    fn authorize_command(
+        &self,
+        context: &BrowserServiceSessionRequestContext,
+        command: &BrowserServiceSessionCommand,
+    ) -> Result<(), String> {
+        self.authorize(context)?;
+        if matches!(command, BrowserServiceSessionCommand::Forget { .. })
+            && !self.admin.load(Ordering::Acquire)
+        {
+            return Err("Admin withdrawn".into());
+        }
+        Ok(())
+    }
+    fn command(
+        &self,
+        _: &BrowserServiceSessionRequestContext,
+        command: BrowserServiceSessionCommand,
+    ) -> Result<BrowserServiceSessionReply, String> {
+        let BrowserServiceSessionCommand::Forget { id, setup_binding } = command else {
+            return Err("Expected Forget".into());
+        };
+        self.calls.fetch_add(1, Ordering::AcqRel);
+        if self.revoke {
+            self.admin.store(false, Ordering::Release);
+        }
+        Ok(BrowserServiceSessionReply::Forgotten { id, setup_binding })
+    }
+    fn disconnect(&self, _: u64) {}
+}
+
+#[test]
+fn browser_forget_delegation_rechecks_admin_before_mutation_and_acknowledgement() {
+    let live = Arc::new(AtomicBool::new(true));
+    let command = BrowserServiceSessionCommand::Forget {
+        id: "selected-slack".into(),
+        setup_binding: "operation".into(),
+    };
+    for (admin, revoke, success, calls) in [
+        (false, false, false, 0),
+        (true, false, true, 1),
+        (true, true, false, 1),
+    ] {
+        let service = Arc::new(AdminService {
+            admin: AtomicBool::new(admin),
+            calls: AtomicUsize::new(0),
+            revoke,
+        });
+        let services = HostServices {
+            browser_service_sessions: Some(service.clone()),
+            ..Default::default()
+        };
+        let result = delegate_browser_service_session_command(
+            &services,
+            &context("so.tilo.browser", live.clone()),
+            &command.encode().unwrap(),
+        );
+        assert_eq!(result.is_ok(), success);
+        assert_eq!(service.calls.load(Ordering::Acquire), calls);
+        if let Ok(bytes) = result {
+            assert!(
+                BrowserServiceSessionReply::decode(&bytes)
+                    .unwrap()
+                    .matches(&command)
+            );
+        }
+    }
+}
+
+#[test]
+fn browser_forget_cannot_use_read_only_provider_authority() {
+    let live = Arc::new(AtomicBool::new(true));
+    let service = Arc::new(Service {
+        live: live.clone(),
+        calls: AtomicUsize::new(0),
+        revoke: false,
+    });
+    let services = HostServices {
+        browser_service_sessions: Some(service.clone()),
+        ..Default::default()
+    };
+    let command = BrowserServiceSessionCommand::Forget {
+        id: "selected-slack".into(),
+        setup_binding: "operation".into(),
+    }
+    .encode()
+    .unwrap();
+    assert!(
+        delegate_browser_service_session_command(
+            &services,
+            &context("so.tilo.browser", live),
+            &command,
+        )
+        .is_err()
+    );
+    assert_eq!(service.calls.load(Ordering::Acquire), 0);
+}
+
 #[test]
 fn browser_private_delegation_checks_route_and_post_provider_custody() {
     let live = Arc::new(AtomicBool::new(true));

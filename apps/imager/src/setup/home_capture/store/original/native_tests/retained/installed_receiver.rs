@@ -377,7 +377,8 @@ impl Receiver {
         let source_partition = partition(plan);
         let daemon = block_devices::udisks::Udisks::system().map_err(std::io::Error::other)?;
         if !daemon
-            .mount_points(&source_partition)
+            .filesystem(&source_partition)
+            .and_then(|proxy| proxy.get_property::<Vec<Vec<u8>>>("MountPoints"))
             .map_err(std::io::Error::other)?
             .is_empty()
         {
@@ -422,7 +423,8 @@ impl Receiver {
         drop(projection);
         authority.retire()?;
         if !daemon
-            .mount_points(&source_partition)
+            .filesystem(&source_partition)
+            .and_then(|proxy| proxy.get_property::<Vec<Vec<u8>>>("MountPoints"))
             .map_err(std::io::Error::other)?
             .is_empty()
         {

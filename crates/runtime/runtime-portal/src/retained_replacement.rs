@@ -46,6 +46,11 @@ fn canonical_id(value: &str) -> bool {
         && value.bytes().any(|byte| byte != b'0' && byte != b'-')
 }
 impl SelectedReplacementPermitRecord {
+    /// Validate descriptive identities and the bounded raw replacement locus.
+    ///
+    /// # Errors
+    /// Returns invalid data for malformed identities, mismatched devices or an
+    /// empty, escaped or oversized locus. This does not authenticate authority.
     pub fn validate(&self) -> io::Result<()> {
         let raw_bytes = self.components.iter().try_fold(0usize, |total, component| {
             if component.is_empty()
@@ -84,12 +89,16 @@ impl SelectedReplacementPermitRecord {
             || self.source_root[0] != self.selected[0]
             || self.components.is_empty()
             || self.components.len() > 64
-            || !raw_bytes.is_some_and(|bytes| bytes <= 4096)
+            || raw_bytes.is_none_or(|bytes| bytes > 4096)
         {
             return Err(invalid());
         }
         Ok(())
     }
+    /// Encode a validated record in its canonical wire representation.
+    ///
+    /// # Errors
+    /// Refuses invalid or oversized records and propagates serialization errors.
     pub fn encode(&self) -> io::Result<Vec<u8>> {
         self.validate()?;
         let bytes = serde_json::to_vec(self).map_err(io::Error::other)?;
@@ -98,6 +107,10 @@ impl SelectedReplacementPermitRecord {
         }
         Ok(bytes)
     }
+    /// Decode a bounded canonical record without granting replacement authority.
+    ///
+    /// # Errors
+    /// Refuses empty, oversized, malformed, invalid or noncanonical records.
     pub fn decode(bytes: &[u8]) -> io::Result<Self> {
         if bytes.is_empty() || bytes.len() > MAX_PERMIT_BYTES {
             return Err(invalid());

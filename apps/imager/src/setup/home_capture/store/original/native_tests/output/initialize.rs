@@ -124,9 +124,20 @@ pub(super) fn output(target: &crate::model::TargetDrive, source: &Path) {
     let daemon = Udisks::system().unwrap();
     let part = partition(&binding.partition_guid);
     assert!(
-        daemon.mount_points(&part).unwrap().is_empty(),
+        daemon
+            .filesystem(&part)
+            .and_then(|proxy| proxy.get_property::<Vec<Vec<u8>>>("MountPoints"))
+            .unwrap()
+            .is_empty(),
         "owned initializer mount must retire"
     );
     daemon.mount_migration(&part).unwrap();
-    assert_eq!(daemon.mount_points(&part).unwrap().len(), 1);
+    assert_eq!(
+        daemon
+            .filesystem(&part)
+            .and_then(|proxy| proxy.get_property::<Vec<Vec<u8>>>("MountPoints"))
+            .unwrap()
+            .len(),
+        1
+    );
 }

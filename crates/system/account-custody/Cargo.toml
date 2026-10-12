@@ -81,6 +81,7 @@ uuid = { workspace = true, optional = true }
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
+tilo-files = { path = "../../platform/tilo-files", features = ["test-support"] }
 cloud-source-onedrive = { path = "../cloud-source-onedrive", features = ["fake-server"] }
 cloud-source-dropbox = { path = "../cloud-source-dropbox", features = ["fake-server"] }
 cloud-source-icloud = { path = "../cloud-source-icloud", features = ["fake-server"] }

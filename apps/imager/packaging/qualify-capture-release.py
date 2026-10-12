@@ -3,7 +3,8 @@
 
 The operator supplies genuine compiler/source-pair receipts and an immutable
 native image. This program executes cases itself, never accepts saved success.
-All native work belongs to one newly owned rootful, network-isolated container.
+Native work owns a fresh privileged PID/mount/network namespace from a rootless
+image export. No rootful Podman storage or execution is used.
 """
 import argparse
 import hashlib
@@ -19,7 +20,6 @@ import stat
 import subprocess
 import tempfile
 import time
-import uuid
 
 ROOT = Path(__file__).resolve().parents[3]
 SOURCE_CASES = (
@@ -56,12 +56,17 @@ FIXTURE_FILES = (
     'apps/imager/src/setup/flatpak_transfer/portable/native_tests/runnable/fixture-app',
     'os/usr/libexec/tilo-firstboot-user',
     'os/usr/libexec/tilo-firstboot-home-seeds.py',
+    'os/usr/libexec/tilo-firstboot-files.py',
     'os/usr/libexec/tilo-installer-prepared-setup-extract.py',
     'os/usr/libexec/tilo-staging-handoff',
     'os/usr/libexec/tilo-store-volume',
     'os/usr/libexec/tilo-install-handoff-copy.py',
     'os/scripts/verify-account-consumer-capability.py',
     'os/scripts/service-consumer-capability.py',
+    'os/scripts/verify-home-consumer-capability.py',
+    'os/scripts/verify-applications-consumer-capability.py',
+    'os/scripts/installed-data-consumer.py',
+    'os/scripts/data-consumer-catalog-facts.py',
     'os/etc/pam.d/tilo-unlock',
     'os/usr/lib/sysusers.d/tilo-identity.conf',
     'os/usr/lib/tmpfiles.d/tilo.conf',
@@ -70,6 +75,10 @@ FIXTURE_FILES = (
 PACKAGE_FILES = (
     'apps/file-explorer/tilo-app.toml', 'apps/file-explorer/surface.toml',
     'apps/word-processor/tilo-app.toml', 'apps/word-processor/surface.toml',
+    'apps/browser/tilo-app.toml', 'apps/browser/surface.toml',
+    'scripts/browser/cef-lock.json', 'scripts/browser/build-host.py',
+    'apps/browser/chromium/tests/service_sessions.py',
+    'tools/apps/browser_runtime_release.py', 'tools/apps/app_package_isa.py',
     'tools/apps/pack-runtime-package.sh', 'tools/apps/stage_sdk_services.py',
     'os/scripts/stamp-runtime.sh',
 )
@@ -77,18 +86,27 @@ PACKAGES = {'worker': 'apps/imager', 'runtime': 'crates/runtime/runtime-dylib', 
             'shell': 'crates/session/shell', 'fs': 'crates/system/fs',
             'credential_helper': 'crates/system/account-custody',
             'prepared_helper': 'apps/imager', 'control': 'crates/session/control-cli',
-            'files': 'apps/file-explorer', 'writer': 'apps/word-processor',
+            'files': 'apps/file-explorer', 'writer': 'apps/word-processor', 'browser': 'apps/browser',
             'app_package': 'crates/packaging/tilo-app-package-cli',
-            'runtime_bundle': 'crates/packaging/runtime-bundle', 'install': 'crates/packaging/install'}
+            'runtime_bundle': 'crates/packaging/runtime-bundle', 'install': 'crates/packaging/install',
+            'installer': 'crates/session/installer'}
 TARGETS = {'worker': 'tilo-home-export', 'runtime': 'runtime_dylib', 'host': 'imager', 'imager_tests': 'imager', 'shell': 'shell', 'fs': 'fs',
            'credential_helper': 'tilo-account-credential', 'prepared_helper': 'tilo-prepared-setup',
-           'control': 'tilo-control', 'files': 'file-explorer', 'writer': 'word-processor',
-           'app_package': 'tilo-app-package', 'runtime_bundle': 'tilo-runtime-bundle', 'install': 'tilo-install'}
+           'control': 'tilo-control', 'files': 'file-explorer', 'writer': 'word-processor', 'browser': 'browser',
+           'app_package': 'tilo-app-package', 'runtime_bundle': 'tilo-runtime-bundle', 'install': 'tilo-install', 'installer': 'tilo-installer'}
+PLATFORM_SCRIPTS = {
+    'os/usr/libexec/tilo-firstboot-files.py': '/usr/libexec/tilo-firstboot-files.py',
+    'os/scripts/verify-home-consumer-capability.py': '/usr/libexec/tilo-verify-home-consumer-capability',
+    'os/scripts/verify-applications-consumer-capability.py': '/usr/libexec/tilo-verify-applications-consumer-capability',
+    'os/scripts/installed-data-consumer.py': '/usr/libexec/tilo-installed-data-consumer.py',
+    'os/scripts/data-consumer-catalog-facts.py': '/usr/libexec/tilo-data-consumer-catalog-facts',
+}
 BINDINGS = {'shell': '/usr/bin/shell', 'fs': '/usr/bin/fs',
             'credential_helper': '/usr/libexec/tilo-account-credential',
             'prepared_helper': '/usr/libexec/tilo-prepared-setup', 'control': '/usr/bin/tilo-control',
             'app_package': '/usr/bin/tilo-app-package',
-            'runtime_bundle': '/usr/bin/tilo-runtime-bundle', 'install': '/usr/bin/tilo-install'}
+            'runtime_bundle': '/usr/bin/tilo-runtime-bundle', 'install': '/usr/bin/tilo-install',
+            'installer': '/usr/bin/tilo-installer'}
 
 
 def require(value, message):
@@ -105,7 +123,35 @@ def unique(pairs):
 
 
 
+SERVICE_CONDITIONS = {'private_list_verified', 'private_resolve_verified', 'isolated_profile_verified',
+                      'revocation_verified', 'no_vault_mount_verified', 'origin_storage_persisted',
+                      'chat_destination_navigation_verified'}
+
+
+def service_completion(output):
+    require(type(output) is bytes and 0 < len(output) <= 4096, 'service completion exceeds bound')
+    value = json.loads(output, object_pairs_hook=unique)
+    require(type(value) is dict and set(value) == SERVICE_CONDITIONS | {
+                'schema', 'service_session_protocol', 'receiving_route_qualification_sha256'}
+            and type(value['schema']) is int and value['schema'] == 2
+            and type(value['service_session_protocol']) is int and value['service_session_protocol'] == 2
+            and all(type(value[key]) is bool and value[key] for key in SERVICE_CONDITIONS)
+            and type(value['receiving_route_qualification_sha256']) is str
+            and re.fullmatch('[0-9a-f]{64}', value['receiving_route_qualification_sha256']),
+            'actual Browser native import/revocation conditions incomplete')
+    return value
+
+
 def target_completion(output):
+    require(type(output) is bytes and 0 < len(output) <= 8192, 'full completion exceeds bound')
+    value = json.loads(output, object_pairs_hook=unique)
+    require(type(value) is dict and 'service_sessions' in value, 'full completion omitted native service observations')
+    service_completion(json.dumps(value.pop('service_sessions')).encode())
+    receiving_completion(json.dumps(value).encode())
+    return json.loads(output, object_pairs_hook=unique)
+
+
+def receiving_completion(output):
     require(type(output) is bytes and 0 < len(output) <= 4096,
             'qualification receiving completion exceeds bound')
     value = json.loads(output, object_pairs_hook=unique)
@@ -231,6 +277,8 @@ def admit_cohort(path, host, full):
     require(type(sources) is dict and 1 <= len(sources) <= 65536,
             'qualification current source map absent')
     required = {'Cargo.toml', 'Cargo.lock', 'apps/imager/build.rs',
+                'apps/imager/capture-service.json', 'apps/imager/desktop-catalog.json',
+                'apps/imager/release-catalog.json',
                 'apps/imager/src/setup/home_capture/native_tests/signed_export.rs',
                 'apps/imager/packaging/qualify-capture-release.py', 'tools/ci/native-stores.sh', 'tools/ci/native-store-autoclear.py'}
     if full:
@@ -243,7 +291,7 @@ def admit_cohort(path, host, full):
             continue
         name = item.decode('utf-8')
         if (name.endswith(('.rs', '.toml', '.ftl')) or name in ('Cargo.lock',)
-                or name.startswith(('apps/imager/packaging/', 'os/scripts/', 'os/usr/libexec/'))):
+                or name.startswith(('apps/imager/packaging/', 'apps/browser/chromium/', 'os/scripts/', 'os/usr/libexec/'))):
             required.add(name)
     require(required <= sources.keys(), 'qualification essential sources absent')
     for name, digest in sources.items():
@@ -362,9 +410,21 @@ try:
           TILO_CAPTURE_QUALIFIED_CANDIDATE=str(candidate))
  os.environ.clear();os.environ.update(env)
  if case==qualifier.TARGET_CASE:
+  # Producing service facts executes the fixed receiving coordinator, including
+  # authenticated Browser import and revocation, before the ordinary journey.
+  checked(['/usr/bin/python3','-I','/usr/libexec/tilo-verify-home-consumer-capability'],120)
+  checked(['/usr/bin/python3','-I','/usr/libexec/tilo-verify-applications-consumer-capability'],2800)
+  checked(['/usr/bin/python3','-I','/usr/libexec/tilo-verify-account-consumer-capability'],2800)
+  service=qualifier.service_completion((evidence/'service-bridge.log').read_bytes())
+  capabilities=qualifier.document('/usr/share/tilo/account-consumer-capabilities.json')
+  assert service['receiving_route_qualification_sha256']==capabilities['service_sessions']['receiving_route_qualification_sha256']
   code,native=call(['/usr/bin/python3','-I',str(candidate/qualifier.TARGET_FIXTURE),
                    '--candidate',str(candidate),'--evidence',str(evidence)],600)
-  if code==0:qualifier.target_completion(native)
+  if code==0:
+   completed=qualifier.receiving_completion(native)
+   completed['service_sessions']=service
+   native=json.dumps(completed,sort_keys=True,separators=(',',':')).encode()
+   qualifier.target_completion(native)
  else:
   assert case in qualifier.SOURCE_CASES
   code,native=call([str(candidate/'imager-tests'),case,'--exact','--nocapture'],600)
@@ -405,9 +465,7 @@ def fixed_module(path, name):
 def source_assets(path):
     assets = document(path)
     helper = fixed_module(ROOT / 'apps/imager/packaging/service-source-assets.py', 'public_assets')
-    require(hashlib.sha256((json.dumps(assets, sort_keys=True, indent=2) + '\n').encode()).hexdigest()
-            == helper.ASSET_MANIFEST_SHA256, 'official public asset manifest differs')
-    return assets
+    return helper.validate(assets)
 
 
 def asset_mounts(assets):
@@ -433,7 +491,32 @@ def prepare_source(candidate):
         info = path.lstat()
         require(info.st_uid == 0 and stat.S_IMODE(info.st_mode) == mode,
                 'installed source prerequisite custody differs')
+        if relative == 'os/registry-runtime-publisher.hex':
+            # Only this disposable native image enrolls the exact signed graph.
+            # Bind the unchanged official baseline plus the two selected keys;
+            # never treat enrollment as production publisher authorization.
+            baseline = candidate / relative
+            bound_file(baseline, inputs[relative])
+            sdk = document(candidate / 'capture-service.json')['runtime_publisher']
+            cef = read_input('/usr/share/tilo/browser-runtime-publisher.hex', 1024, True)[1].decode().strip()
+            require(re.fullmatch('[0-9a-f]{64}', sdk) and re.fullmatch('[0-9a-f]{64}', cef),
+                    'disposable receiving publishers are invalid')
+            expected = read_input(baseline, 1024, True)[1] + (sdk + '\n' + cef + '\n').encode()
+            require(read_input(path, 4096, True)[1] == expected,
+                    'disposable runtime enrollment differs from exact signed graph')
+        else:
+            bound_file(path, inputs[relative])
+    for relative, installed in PLATFORM_SCRIPTS.items():
+        path = Path(installed)
+        info = path.lstat()
+        require(info.st_uid == 0 and stat.S_IMODE(info.st_mode) == 0o755,
+                'installed consumer qualification script custody differs')
         bound_file(path, inputs[relative])
+    consumer = fixed_module(candidate / 'os/scripts/service-consumer-capability.py', 'fixed_service_graph')
+    selected = consumer.selected(Path('/'))
+    require(selected is not None, 'current receiving Browser/CEF graph is absent')
+    subjects = document(candidate / 'subjects.json')
+    bound_file(selected[2], subjects['browser']['sha256'])
     helper = fixed_module(candidate / 'apps/imager/packaging/service-source-assets.py', 'fixed_public_assets')
     helper.stage(document(candidate / 'source-assets.json'), candidate)
 
@@ -451,7 +534,8 @@ def stage_sources(stage, sources):
 
 
 def run_native(args, cohort, output):
-    engine = (['sudo', '-n'] if os.geteuid() != 0 else []) + ['podman']
+    require(os.geteuid() != 0, 'qualification image admission must use rootless Podman')
+    engine = ['podman']
     code, raw = execute(engine + ['image', 'inspect', args.image, '--format', '{{.ID}} {{.Architecture}}'],
                         output / 'image.log', 30)
     image = raw.decode().split()
@@ -492,67 +576,48 @@ def run_native(args, cohort, output):
             if role in cohort['roles']:
                 shutil.copyfile(cohort['roles'][role]['path'], stage / role)
                 (stage / role).chmod(0o755)
-        for role in ('files', 'writer'):
+        for role in ('files', 'writer', 'browser'):
             if role in cohort['roles']:
                 shutil.copyfile(cohort['roles'][role]['path'], stage / TARGETS[role])
                 (stage / TARGETS[role]).chmod(0o755)
         for index, case in enumerate(cases):
-            name = 'tilo-capture-qualify-' + uuid.uuid4().hex
             evidence = output / f'{index}-owned-loop-evidence'
             evidence.mkdir(mode=0o700)
             launched = False
-            command = engine + ['run', '--name', name, '--privileged', '--network=none',
-                                '--security-opt', 'label=disable', '--volume', str(stage) + ':/qualified:ro',
-                                '--volume', str(evidence.absolute()) + ':/evidence:rw',
-                                '--env', 'TILO_CAPTURE_EXACT_CASE=' + case]
+            command = ['python3', str(ROOT / 'apps/imager/packaging/capture-native-image.py'),
+                       '--image', args.image, '--stage', str(stage),
+                       '--evidence', str(evidence.absolute()), '--case', case]
             if case == TARGET_CASE:
-                command.extend(['--volume', '/proc/1/ns/pid:/qualification-initial-pidns:ro'])
-                command.extend(asset_mounts(assets))
+                asset_mounts(assets)  # Admit the fixed public mount coordinates.
             try:
                 if case in SOURCE_CASES:
-                    listed, listing = execute(command + [args.image, '/qualified/imager-tests', '--list'],
-                                              output / f'{index}-list.log', 30)
+                    listed, listing = execute(command + ['--mode', 'list'],
+                                              output / f'{index}-list.log', 180)
                     require(listed == 0 and listing.splitlines().count((case + ': test').encode()) == 1,
                             'qualification exact native case unavailable')
-                    # Retire the listing container before creating the actual owned case.
-                    retired, _ = execute(engine + ['rm', name], output / f'{index}-list-retire.log', 30)
-                    require(retired == 0, 'qualification listing container retirement failed')
+                    # The native image driver retires its stopped rootless
+                    # filesystem container before any privileged execution.
                 launched = True
-                status, native = execute(command + [args.image, 'python3', '-I', '-c', CONTAINER_RUNNER],
-                                         output / f'{index}-native.log', 900)
+                status, native = execute(command, output / f'{index}-native.log',
+                                         3600 if case == TARGET_CASE else 900)
                 require(status == 0, 'qualification actual native transfer case failed')
                 if case == TARGET_CASE:
                     target_completion(native)
                 else:
                     require(re.search(rb'test result: ok\. 1 passed; 0 failed; 0 ignored;', native),
                             'qualification exact native source case failed')
-                records.append({'case': case, 'exit_code': status,
-                                'log_sha256': facts(output / f'{index}-native.log')['sha256']})
+                record = {'case': case, 'exit_code': status,
+                          'log_sha256': facts(output / f'{index}-native.log')['sha256']}
+                if case == TARGET_CASE:
+                    record['observations'] = target_completion(native)
+                records.append(record)
             finally:
-                retired, _ = execute(engine + ['rm', '--force', '--ignore', name],
-                                      output / f'{index}-retire.log', 30)
-                absent, _ = execute(engine + ['container', 'exists', name],
-                                     output / f'{index}-absent.log', 30)
-                require(retired == 0 and absent == 1, 'qualification owned container remains')
                 if launched and case in SOURCE_CASES:
-                    observer = 'tilo-capture-observe-' + uuid.uuid4().hex
-                    try:
-                        observed, raw = execute(engine + ['run', '--name', observer, '--privileged',
-                            '--network=none', '--security-opt', 'label=disable',
-                            '--volume', str(stage) + ':/qualified:ro',
-                            '--volume', str(evidence.absolute()) + ':/evidence:ro', args.image,
-                            'python3', '-I', '/qualified/native-store-autoclear.py', 'observe',
-                            '--journal', '/evidence/owned/associations.json'],
-                            output / f'{index}-loop-observer.log', 30)
-                        require(observed == 0 and json.loads(raw, object_pairs_hook=unique) == {
-                            'schema': 1, 'observed_backings': 2, 'owned_associations_retired': True},
-                            'qualification owned loop association retirement unproved')
-                    finally:
-                        removed, _ = execute(engine + ['rm', '--force', '--ignore', observer],
-                            output / f'{index}-observer-retire.log', 30)
-                        gone, _ = execute(engine + ['container', 'exists', observer],
-                            output / f'{index}-observer-absent.log', 30)
-                        require(removed == 0 and gone == 1, 'qualification observer remains')
+                    observed, raw = execute(command + ['--mode', 'observe'],
+                        output / f'{index}-loop-observer.log', 180)
+                    require(observed == 0 and json.loads(raw, object_pairs_hook=unique) == {
+                        'schema': 1, 'observed_backings': 2, 'owned_associations_retired': True},
+                        'qualification owned loop association retirement unproved')
     return records
 
 
@@ -566,7 +631,7 @@ def main():
     parser.add_argument('--image', default=os.environ.get('TILO_CAPTURE_QUALIFIER_IMAGE'))
     parser.add_argument('--output', type=Path)
     parser.add_argument('--source-backend-only', action='store_true')
-    parser.add_argument('--source-assets', type=Path,
+    parser.add_argument('--source-assets', type=Path, default=os.environ.get('TILO_CAPTURE_SOURCE_ASSETS'),
                         help='frozen official public distribution manifest; required for full migration')
     args = parser.parse_args()
     require(args.cohort is not None, 'actual current compiler/source qualification cohort required')
@@ -600,7 +665,10 @@ def main():
     receipt = {'schema': 1, 'scope': 'source-backend' if args.source_backend_only else 'full-migration',
                'image': args.image, 'arch': args.arch, 'candidate': original,
                'qualifier_sha256': facts(__file__)['sha256'], 'cases': records,
-               'owned_resources_retired': True, 'publication_qualified': not args.source_backend_only}
+               'owned_resources_retired': True,
+               'signing_purpose': os.environ.get('TILO_CAPTURE_SIGNING_PURPOSE', 'operator-provided'),
+               'publication_qualified': not args.source_backend_only
+                   and os.environ.get('TILO_CAPTURE_SIGNING_PURPOSE') != 'developer-qualification'}
     (output / 'receipt.json').write_text(json.dumps(receipt, sort_keys=True, indent=2) + '\n')
     (output / 'receipt.json').chmod(0o600)
     print(json.dumps({'schema': 1, 'scope': receipt['scope'],

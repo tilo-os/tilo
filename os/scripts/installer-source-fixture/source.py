@@ -543,7 +543,7 @@ def install_ca(certificate):
         os.fsync(stream.fileno())
 
 
-def source_namespace(candidate, source, work, baseline_etc_fd, dav, export):
+def source_namespace(candidate, source, work, baseline_etc_fd, dav, export, service_request=None):
     require(os.geteuid() == 0, 'source namespace construction requires root')
     original_ns = Path('/proc/self/ns/mnt').stat().st_ino
     os.unshare(os.CLONE_NEWNS)
@@ -559,6 +559,11 @@ def source_namespace(candidate, source, work, baseline_etc_fd, dav, export):
     copy_public_candidate(candidate, public)
     fixed(['/usr/bin/mount', '--bind', str(public), str(public)])
     fixed(['/usr/bin/mount', '-o', 'remount,bind,ro', str(public)])
+    if service_request is not None:
+        import service_contract
+        with (work / 'native-service-source-admission.log').open('xb') as log:
+            service_contract.install_native_scope(service_request, 'source',
+                public / 'host/bin/tilo-imager', log)
     install_ca(held_bytes(dav.public_certificate, 65536))
     # /run is now source-private. Build the existing reviewed public ELF
     # closure here, rather than relying on the hidden outer runtime directory.
@@ -747,7 +752,8 @@ def wait_source_namespace(pid, deadline):
             retain_unknown_namespace()
 
 
-def run(candidate, evidence, receiving, *, service_qualification=False, service_candidate=None):
+def run(candidate, evidence, receiving, *, service_qualification=False, service_candidate=None,
+        service_request=None):
     require(type(service_qualification) is bool, 'source service qualification mode must be boolean')
     if service_qualification:
         require(type(service_candidate) is dict
@@ -760,9 +766,14 @@ def run(candidate, evidence, receiving, *, service_qualification=False, service_
                         and all(char in '0123456789abcdef' for char in value)
                         for key, value in service_candidate.items() if key != 'required_protocol'),
                 'source qualification lacks exact authenticated candidate scope')
+        import service_contract
+        request = service_contract.decode(json.dumps(service_request, separators=(',', ':')).encode())
+        require(service_contract.candidate_scope({'request': request}) == service_candidate,
+                'source native request differs from candidate scope')
         service_candidate = dict(service_candidate)
     else:
-        require(service_candidate is None, 'ordinary source cannot accept qualification scope')
+        require(service_candidate is None and service_request is None,
+                'ordinary source cannot accept qualification scope')
     require(os.geteuid() == 0 and callable(receiving), 'owned root source receiving callback required')
     candidate, evidence = Path(candidate), Path(evidence)
     require(candidate == Path('/owned/candidate') and evidence.is_dir(), 'fixed admitted candidate/evidence required')
@@ -789,7 +800,7 @@ def run(candidate, evidence, receiving, *, service_qualification=False, service_
                     # producer cannot leave a publisher behind and exit anyway.
                     require(ctypes.CDLL(None, use_errno=True).prctl(36, 1, 0, 0, 0) == 0,
                             'source helper subreaper unavailable')
-                    result = source_namespace(candidate, source, work, baseline, dav, exported)
+                    result = source_namespace(candidate, source, work, baseline, dav, exported, service_request)
                     status = 0
                 except BaseException:
                     status = 1
@@ -849,8 +860,9 @@ def run(candidate, evidence, receiving, *, service_qualification=False, service_
                 'selected_service_kinds': result['selected_service_kinds'],
                 'setup_binding': result['setup_binding']}
                 if service_qualification:
-                    # Public artifact scope only, never published service proof
-                    # or authority for the native importer to skip admission.
+                    # Public artifact scope only, never a published service proof.
+                    # Native import separately checks the root-owned namespace,
+                    # exact helper and authenticated sealed person/binding.
                     context['service_qualification'] = True
                     context['service_candidate'] = dict(service_candidate)
                 completed = receiving(context)

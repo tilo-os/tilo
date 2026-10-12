@@ -41,9 +41,10 @@ class CaptureBuildPhases(unittest.TestCase):
             self.assertNotIn('imager', bins)
             self.assertEqual(bins.count('word-processor'), int(with_writer))
             self.assertEqual(bins.count('file-explorer'), int(with_writer))
+            self.assertEqual(bins.count('browser'), int(with_writer))
             allowed = {'tilo-home-export', 'tilo-runtime-account-capability'}
             if with_writer:
-                allowed.update(('file-explorer', 'word-processor'))
+                allowed.update(('file-explorer', 'word-processor', 'browser'))
             self.assertTrue(all(binary in allowed
                                 or binary.endswith('-check') for binary in bins))
             self.assertIn('imager/capture-worker-applications', features)

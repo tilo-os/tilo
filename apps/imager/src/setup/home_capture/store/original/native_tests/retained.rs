@@ -322,7 +322,13 @@ fn retained_groups_require_actual_peer_protected_record_and_owned_rw_epoch() {
         let daemon = block_devices::udisks::Udisks::system().unwrap();
         let _owned_source_directory = directory.keep();
         daemon.unmount(&source_partition).unwrap();
-        assert!(daemon.mount_points(&source_partition).unwrap().is_empty());
+        assert!(
+            daemon
+                .filesystem(&source_partition)
+                .and_then(|proxy| proxy.get_property::<Vec<Vec<u8>>>("MountPoints"))
+                .unwrap()
+                .is_empty()
+        );
         receiver
             .take()
             .unwrap()
@@ -470,7 +476,13 @@ fn retained_groups_require_actual_peer_protected_record_and_owned_rw_epoch() {
     // No leaked TempDir path can trigger cleanup under a different remount.
     let _owned_source_directory = directory.keep();
     daemon.unmount(&source_partition).unwrap();
-    assert!(daemon.mount_points(&source_partition).unwrap().is_empty());
+    assert!(
+        daemon
+            .filesystem(&source_partition)
+            .and_then(|proxy| proxy.get_property::<Vec<Vec<u8>>>("MountPoints"))
+            .unwrap()
+            .is_empty()
+    );
     assert!(
         RetainedSourceAuthority::review(
             &counterfeit,
@@ -480,7 +492,13 @@ fn retained_groups_require_actual_peer_protected_record_and_owned_rw_epoch() {
         .is_err(),
         "a password-valid capsule cannot substitute groups for protected root source facts"
     );
-    assert!(daemon.mount_points(&source_partition).unwrap().is_empty());
+    assert!(
+        daemon
+            .filesystem(&source_partition)
+            .and_then(|proxy| proxy.get_property::<Vec<Vec<u8>>>("MountPoints"))
+            .unwrap()
+            .is_empty()
+    );
     assert!(RetainedSourceAuthority::review(&review, &[7; 32], &AtomicBool::new(false)).is_err());
     // Actual authenticated root publication creates the installed continuation;
     // no password, identity private material or user receipt becomes authority.
@@ -594,7 +612,11 @@ fn retained_groups_require_actual_peer_protected_record_and_owned_rw_epoch() {
     drop(installed_projection);
     installed_authority.retire().unwrap();
     assert_eq!(
-        daemon.mount_points(&source_partition).unwrap().len(),
+        daemon
+            .filesystem(&source_partition)
+            .and_then(|proxy| proxy.get_property::<Vec<Vec<u8>>>("MountPoints"))
+            .unwrap()
+            .len(),
         1,
         "Files lease retirement must not unmount a live editor epoch"
     );
@@ -604,7 +626,11 @@ fn retained_groups_require_actual_peer_protected_record_and_owned_rw_epoch() {
         .revalidate(&AtomicBool::new(false))
         .unwrap();
     assert_eq!(
-        daemon.mount_points(&source_partition).unwrap().len(),
+        daemon
+            .filesystem(&source_partition)
+            .and_then(|proxy| proxy.get_property::<Vec<Vec<u8>>>("MountPoints"))
+            .unwrap()
+            .len(),
         1,
         "one editor retirement must not unmount its sibling"
     );
@@ -636,7 +662,13 @@ fn retained_groups_require_actual_peer_protected_record_and_owned_rw_epoch() {
     assert!(RetainedSourceAuthority::retire(Arc::clone(&installed_authority)).is_err());
     drop(installed_projection);
     RetainedSourceAuthority::retire(installed_authority).unwrap();
-    assert!(daemon.mount_points(&source_partition).unwrap().is_empty());
+    assert!(
+        daemon
+            .filesystem(&source_partition)
+            .and_then(|proxy| proxy.get_property::<Vec<Vec<u8>>>("MountPoints"))
+            .unwrap()
+            .is_empty()
+    );
     let authority =
         RetainedSourceAuthority::review(&review, &identity.public_key(), &AtomicBool::new(false))
             .unwrap();
@@ -687,22 +719,46 @@ fn retained_groups_require_actual_peer_protected_record_and_owned_rw_epoch() {
         authority.clone().retire().is_err(),
         "live projection prevents positive mount retirement"
     );
-    assert!(!daemon.mount_points(&source_partition).unwrap().is_empty());
+    assert!(
+        !daemon
+            .filesystem(&source_partition)
+            .and_then(|proxy| proxy.get_property::<Vec<Vec<u8>>>("MountPoints"))
+            .unwrap()
+            .is_empty()
+    );
     authority.revoke();
     assert!(projection.revalidate(&AtomicBool::new(false)).is_err());
     drop(projection);
     authority.retire().unwrap();
-    assert!(daemon.mount_points(&source_partition).unwrap().is_empty());
+    assert!(
+        daemon
+            .filesystem(&source_partition)
+            .and_then(|proxy| proxy.get_property::<Vec<Vec<u8>>>("MountPoints"))
+            .unwrap()
+            .is_empty()
+    );
     assert_eq!(unsafe { libc::geteuid() }, 0);
     assert_eq!(unsafe { libc::getegid() }, 0);
     assert!(
         migration_handoff::retain_access(&plan, migration_handoff::AccessMode::ReadWrite).is_err(),
         "ordinary root retained access still cannot assume original UID/group authority"
     );
-    assert!(daemon.mount_points(&source_partition).unwrap().is_empty());
+    assert!(
+        daemon
+            .filesystem(&source_partition)
+            .and_then(|proxy| proxy.get_property::<Vec<Vec<u8>>>("MountPoints"))
+            .unwrap()
+            .is_empty()
+    );
     // Cleanup only the held, explicitly disposable source fixture through UDisks.
     let mounted = daemon.mount(&source_partition).unwrap();
     std::fs::remove_dir_all(Path::new(&mounted).join(relative)).unwrap();
     daemon.unmount(&source_partition).unwrap();
-    assert!(daemon.mount_points(&source_partition).unwrap().is_empty());
+    assert!(
+        daemon
+            .filesystem(&source_partition)
+            .and_then(|proxy| proxy.get_property::<Vec<Vec<u8>>>("MountPoints"))
+            .unwrap()
+            .is_empty()
+    );
 }

@@ -1,5 +1,7 @@
 //! Admission of protected account custody by the selected image and actual
 //! installed consumers. A staged importer never certifies its own target.
+#[cfg(target_os = "linux")]
+mod candidate;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{collections::BTreeMap, io};
@@ -258,6 +260,38 @@ impl ConsumerCapability {
                 .service_sessions
                 .as_ref()
                 .is_some_and(|proof| proof.protocol >= required)
+    }
+}
+
+/// Candidate-scoped source admission; never changes installed proof semantics.
+pub(crate) fn source_candidate(required: u32, proof: &ConsumerCapability) -> io::Result<bool> {
+    proof.validate()?;
+    #[cfg(target_os = "linux")]
+    {
+        candidate::admits(required, &proof.runtime_root_hash, None)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = required;
+        Ok(false)
+    }
+}
+
+/// Receiving admission binds the native authenticated sealed manifest's person.
+pub(super) fn receiving_candidate(
+    required: u32,
+    sdk: &str,
+    person: &[u8; 32],
+    binding: &str,
+) -> io::Result<bool> {
+    #[cfg(target_os = "linux")]
+    {
+        candidate::admits(required, sdk, Some((person, binding)))
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (required, sdk, person, binding);
+        Ok(false)
     }
 }
 

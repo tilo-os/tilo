@@ -2,19 +2,47 @@
 use std::{env, fs, io, path::PathBuf, process::Command};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    println!("cargo:rerun-if-env-changed=TILO_REQUIRE_CAPTURE");
     println!("cargo:rerun-if-env-changed=TILO_CAPTURE_PINS");
     println!("cargo:rerun-if-env-changed=TILO_CAPTURE_SIDECAR");
     println!("cargo:rerun-if-changed=capture-service.json");
     println!("cargo:rerun-if-changed=packaging/admit-capture-sidecar.py");
     let manifest = PathBuf::from(env::var("CARGO_MANIFEST_DIR")?);
     let bytes = if env::var_os("CARGO_FEATURE_CAPTURE_WORKER").is_some() {
+        if env::var("TILO_REQUIRE_CAPTURE").as_deref() == Ok("1") {
+            return Err(io::Error::other(
+                "a release host must be built separately from the capture worker bootstrap graph",
+            )
+            .into());
+        }
         b"null\n".to_vec()
     } else {
         match (
             env::var_os("TILO_CAPTURE_PINS"),
             env::var_os("TILO_CAPTURE_SIDECAR"),
         ) {
-            (None, None) => fs::read(manifest.join("capture-service.json"))?,
+            (None, None) => {
+                if env::var("TILO_REQUIRE_CAPTURE").as_deref() == Ok("1") {
+                    return Err(io::Error::other(
+                        "release migration requires signed capture pins and sidecar",
+                    )
+                    .into());
+                }
+                let defaults = fs::read(manifest.join("capture-service.json"))?;
+                if defaults
+                    .iter()
+                    .copied()
+                    .filter(|byte| !byte.is_ascii_whitespace())
+                    .collect::<Vec<_>>()
+                    != b"null"
+                {
+                    return Err(io::Error::other(
+                        "default capture pins must not bypass signed sidecar admission",
+                    )
+                    .into());
+                }
+                defaults
+            }
             (Some(pins), Some(sidecar)) => {
                 if env::var("CARGO_CFG_TARGET_OS")? != "linux" {
                     return Err(io::Error::other("capture is Linux-only").into());

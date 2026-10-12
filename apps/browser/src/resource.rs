@@ -410,6 +410,15 @@ impl ResourceSurface<Browser, BrowserEffect> for BrowserWindow {
     /// Every effect acts on the window's page; one that waits (a page
     /// loading, the engine answering) is answered once it settles.
     fn effect(&mut self, effect: BrowserEffect, cx: &mut EffectCx<Browser, Self>) -> EffectAnswer {
+        if let BrowserEffect::ListServiceSessions = &effect {
+            let waker = self
+                .service_cx
+                .as_ref()
+                .ok_or("Account custody is unavailable")?
+                .waker();
+            self.page_mut().begin_service_list(cx.reply(), waker)?;
+            return Ok(Effected::Pending);
+        }
         #[cfg(target_os = "linux")]
         if let BrowserEffect::OpenServiceSession { session_id } = &effect {
             let source = self
@@ -427,31 +436,25 @@ impl ResourceSurface<Browser, BrowserEffect> for BrowserWindow {
                 serde_json::json!({"status":"opening", "authenticated":false}),
             ));
         }
-        if let BrowserEffect::RetryForgetServiceSession { session_id } = &effect {
+        if let BrowserEffect::RetryForgetServiceSession { session_id }
+        | BrowserEffect::ForgetServiceSession { session_id } = &effect
+        {
             #[cfg(target_os = "linux")]
             {
-                let person = self
+                let source = self
                     .service_cx
                     .as_ref()
-                    .and_then(|source| source.me())
+                    .ok_or("This account could not be forgotten")?;
+                let person = source
+                    .me()
                     .and_then(crate::service_sessions::identity)
                     .ok_or("This account needs to be connected again")?;
-                return Ok(Effected::value(
-                    self.page_mut()
-                        .retry_forget_service_session(session_id, person)?,
-                ));
+                let waker = source.waker();
+                let reply = cx.reply();
+                self.page_mut()
+                    .begin_forget_service_session(session_id, person, reply, waker)?;
+                return Ok(Effected::Pending);
             }
-            #[cfg(not(target_os = "linux"))]
-            {
-                let _ = session_id;
-                return Err("Local account forgetting needs the native backend".into());
-            }
-        }
-        if let BrowserEffect::ForgetServiceSession { session_id } = &effect {
-            #[cfg(target_os = "linux")]
-            return Ok(Effected::value(
-                self.page_mut().forget_service_session(session_id)?,
-            ));
             #[cfg(not(target_os = "linux"))]
             {
                 let _ = session_id;

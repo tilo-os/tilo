@@ -99,7 +99,7 @@ impl Cookie {
             && !self.path.chars().any(|v| v.is_control() || v == ';')
             && self
                 .expires_unix_seconds
-                .is_none_or(|v| v > 0 && v <= 253402300799)
+                .is_none_or(|v| v > 0 && v <= 253_402_300_799)
             && (self.same_site != SameSite::None || self.secure)
             && (!self.name.starts_with("__Secure-") || self.secure)
             && (!self.name.starts_with("__Host-")

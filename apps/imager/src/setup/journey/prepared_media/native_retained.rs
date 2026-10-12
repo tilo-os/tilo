@@ -19,6 +19,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+#[cfg(feature = "native-capture-qualification")]
 mod actor {
     use super::*;
     #[test]
@@ -230,8 +231,65 @@ impl Drop for Actor {
 }
 /// This selector requires the existing owned-GPT native provider PLUS a genuine
 /// matched standalone Imager compiler artifact. Missing inputs are failures.
+#[cfg(feature = "native-capture-qualification")]
 #[test]
 fn full_prepare_shared_files_via_owned_gpt_and_actual_root_helper() {
+    run_owned_actor(
+        "setup::journey::prepared_media::native_retained::actor::shared_files_media_authenticates_original_plan_without_copying_home",
+    );
+}
+
+/// Re-enter a positive journey test only inside the owned nonroot actor. The
+/// parent remains responsible for source custody, genuine elevation and helper
+/// artifact authentication; this is not an alternate helper implementation.
+pub(in crate::setup) fn enter_owned_journey(selector: &str) -> bool {
+    if std::env::var_os("TILO_NATIVE_SHARED_FILES_ACTOR_ROOT").is_some() {
+        assert_eq!(unsafe { libc::getuid() }, 1000);
+        assert_eq!(unsafe { libc::geteuid() }, 1000);
+        assert_eq!(unsafe { libc::getgid() }, 1001);
+        return true;
+    }
+    run_owned_actor(selector);
+    false
+}
+
+pub(in crate::setup) fn journey_directory() -> tempfile::TempDir {
+    let root = std::env::var_os("TILO_NATIVE_SHARED_FILES_ACTOR_ROOT")
+        .expect("owned GPT journey actor required");
+    tempfile::tempdir_in(root).unwrap()
+}
+
+/// Authenticate the actual early preparation artifact, not merely its UI state.
+pub(in crate::setup) fn assert_journey_registration(preview: &super::super::InstallerPreview) {
+    let media = preview.direct.prepared_belongings.as_ref().unwrap();
+    let identity = preview.personal.prepared_handle().unwrap();
+    let intent = preview.migration_selection.reviewed_intent().unwrap();
+    let expected = intent.for_media().unwrap();
+    let review_root = tempfile::tempdir().unwrap();
+    let review = prepared_setup::PreparedSetupReview::open(
+        &media.package(),
+        preview.journey.password.as_bytes(),
+        &review_root.path().join("authenticated-review"),
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    let manifest = review.manifest();
+    assert_eq!(manifest.identity_public_key, identity.public_key());
+    assert_eq!(
+        manifest.retained_home.as_ref().unwrap().as_plan(),
+        &expected
+    );
+    manifest
+        .retained_caller
+        .as_ref()
+        .unwrap()
+        .validate_binding(&expected, &manifest.setup_binding, &identity.public_key())
+        .unwrap();
+    assert!(manifest.portable_home.is_none());
+    assert_eq!(media.home_archive_protocol(), None);
+}
+
+fn run_owned_actor(selector: &str) {
     use std::os::unix::ffi::OsStrExt;
     assert_eq!(unsafe { libc::getuid() }, 0);
     assert_eq!(unsafe { libc::geteuid() }, 0);
@@ -327,7 +385,9 @@ fn full_prepare_shared_files_via_owned_gpt_and_actual_root_helper() {
     let _mount = MountedPrivilege {
         path: control.clone(),
     };
-    std::fs::set_permissions(parent.path(), Permissions::from_mode(0o711)).unwrap();
+    // Profile stores fsync readable ancestors. This root-controlled directory
+    // contains only fixed public artifact names; actor state stays mode 0700.
+    std::fs::set_permissions(parent.path(), Permissions::from_mode(0o755)).unwrap();
     let held = File::open(&control).unwrap();
     let mut facts = std::mem::MaybeUninit::<libc::statvfs>::uninit();
     assert_eq!(
@@ -509,7 +569,23 @@ fn full_prepare_shared_files_via_owned_gpt_and_actual_root_helper() {
     let stdout = File::create(control.join("actor.stdout")).unwrap();
     let stderr = File::create(control.join("actor.stderr")).unwrap();
     let mut command = Command::new(&actor);
-    command.arg("--exact").arg("setup::journey::prepared_media::native_retained::actor::shared_files_media_authenticates_original_plan_without_copying_home").arg("--nocapture").env_clear().env("PATH",format!("{}:/usr/bin:/bin",control.display())).env("TMPDIR",&tmp).env("TILO_NATIVE_SHARED_FILES_ACTOR_ROOT",work.path()).stdin(Stdio::null()).stdout(stdout).stderr(stderr);
+    command
+        .arg("--exact")
+        .arg(selector)
+        .arg("--nocapture")
+        .env_clear()
+        .env("PATH", format!("{}:/usr/bin:/bin", control.display()))
+        .env("TMPDIR", &tmp)
+        // Full framework journeys retain large App/test frames in debug builds.
+        .env("RUST_MIN_STACK", "16777216")
+        // The actor's profile durability boundary must be owned and readable;
+        // it must never inherit the builder user's real home directory.
+        .env("HOME", &tmp)
+        .env("TILO_NATIVE_SHARED_FILES_ACTOR_ROOT", work.path())
+        .env("TILO_ORIGINAL_SOURCE_GPT_STORE", &source)
+        .stdin(Stdio::null())
+        .stdout(stdout)
+        .stderr(stderr);
     let actor_parent = unsafe { libc::getpid() };
     unsafe {
         command.pre_exec(move || {
@@ -573,7 +649,9 @@ fn full_prepare_shared_files_via_owned_gpt_and_actual_root_helper() {
     let status = child.retire();
     assert!(
         observed_success && status.success(),
-        "actual native fullprepare actor refused; private synthetic fixture logs retained until unwind"
+        "actual native actor {selector} refused: stdout={} stderr={}",
+        String::from_utf8_lossy(&std::fs::read(control.join("actor.stdout")).unwrap()),
+        String::from_utf8_lossy(&std::fs::read(control.join("actor.stderr")).unwrap())
     );
     let output = std::fs::read(control.join("actor.stdout")).unwrap();
     assert!(output.len() <= 64 * 1024);

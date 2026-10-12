@@ -239,6 +239,7 @@ pub(crate) enum BrowserOperation {
     OpenServiceSession,
     ForgetServiceSession,
     ReadServiceSession,
+    ListServiceSessions,
     RetryContinuity,
     RemovePersonalBookmark {
         url: String,
@@ -358,10 +359,16 @@ pub struct BrowserWidget {
     service_redirect: Option<String>,
     service_client: Option<ui::collaboration::browser_service_sessions::Client>,
     service_catalog_pending: Option<ui::collaboration::browser_service_sessions::Pending>,
+    service_list_reply: Option<ui::framework::EffectReply>,
+    service_list_waker: Option<ui::WakeHandle>,
+    service_list_pending: Option<ui::collaboration::browser_service_sessions::Pending>,
+    service_observation: Option<serde_json::Value>,
     #[cfg(target_os = "linux")]
     service_pending: Option<crate::service_sessions::PendingView>,
     #[cfg(target_os = "linux")]
     service_view: Option<crate::service_sessions::ServiceView>,
+    #[cfg(target_os = "linux")]
+    service_forget: Option<crate::service_sessions::PendingForget>,
     browsing_mode: BrowsingMode,
     composed: ui::widget::Composed,
     bootstrap_done: bool,
@@ -577,37 +584,39 @@ impl BrowserWidget {
         let _ = waker;
     }
     #[cfg(target_os = "linux")]
-    pub(crate) fn forget_service_session(&mut self, id: &str) -> Result<serde_json::Value, String> {
-        self.service_view
-            .as_mut()
-            .ok_or_else(|| {
-                ui::i18n::EmbeddedCatalog::new("en-US", crate::resource::LOCALES)
-                    .t("browser-service-forget-open-first")
-            })?
-            .forget(id)
-    }
-
-    #[cfg(target_os = "linux")]
-    pub(crate) fn retry_forget_service_session(
+    pub(crate) fn begin_forget_service_session(
         &mut self,
         id: &str,
         person: [u8; 32],
-    ) -> Result<serde_json::Value, String> {
-        let catalog = ui::i18n::EmbeddedCatalog::new("en-US", crate::resource::LOCALES);
-        if self.service_selection(id).is_none() {
-            return Err(catalog.t("browser-service-forget-retry-failed"));
+        reply: ui::framework::EffectReply,
+        waker: ui::WakeHandle,
+    ) -> Result<(), String> {
+        if self.service_forget.is_some()
+            || self.service_pending.is_some()
+            || self.service_catalog_pending.is_some()
+            || self.service_list_pending.is_some()
+        {
+            return Err("Account operation is still pending; retry when it settles".into());
         }
-        if let Some(view) = self.service_view.as_mut() {
-            if view.report()["session_id"] == id {
-                return view.retry_forget(id);
-            }
-        }
-        crate::service_profiles::Profile::retry_forget(person, id)
-            .map_err(|_| catalog.t("browser-service-forget-retry-failed"))?;
-        Ok(
-            serde_json::json!({"session_id":id, "status":"local-forgotten", "authenticated":false,
-            "custody_revoked":false, "custody_backend_needed":true, "local_only":true}),
-        )
+        let selection = self
+            .service_selection(id)
+            .cloned()
+            .ok_or("This account needs to be connected again")?;
+        // Clone the originally admitted route before handing work off-thread.
+        let client = self
+            .service_client
+            .clone()
+            .ok_or("Account custody is unavailable")?;
+        self.service_forget = Some(crate::service_sessions::PendingForget::start(
+            selection,
+            person,
+            client,
+            self.service_view.as_mut(),
+            reply,
+            waker,
+        )?);
+        self.structure_dirty = true;
+        Ok(())
     }
 
     pub(crate) fn request_service_close(&mut self) -> bool {
@@ -661,16 +670,18 @@ impl BrowserWidget {
         person: [u8; 32],
         waker: ui::WakeHandle,
     ) -> Result<(), String> {
-        if self.service_pending.is_some() || self.service_view.is_some() {
+        if self.service_forget.is_some()
+            || self.service_pending.is_some()
+            || self.service_view.is_some()
+            || self.service_list_pending.is_some()
+        {
             return Err("An account is already opening or open in this window".into());
         }
-        let selected = self
-            .service_selection(id)
-            .ok_or("This account needs to be connected again")?;
-        let destination = self
-            .service_destination
-            .clone()
-            .filter(|value| value.service == selected.service);
+        let destination = self.service_destination.clone().filter(|value| {
+            self.service_selection(id)
+                .is_some_and(|selected| value.service == selected.service)
+        });
+        self.service_observation = None;
         let anchor = crate::service_destinations::anchor(id, destination.as_ref());
         let client = self
             .service_client
@@ -768,7 +779,84 @@ impl BrowserWidget {
         self.service_pending = Some(pending);
         self.structure_dirty = true;
     }
+    pub(crate) fn begin_service_list(
+        &mut self,
+        reply: ui::framework::EffectReply,
+        waker: ui::WakeHandle,
+    ) -> Result<(), String> {
+        if self.service_client.is_none() || self.service_list_reply.is_some() {
+            return Err("Account custody is unavailable or busy".into());
+        }
+        self.service_list_reply = Some(reply);
+        self.service_list_waker = Some(waker);
+        self.poll_service_list();
+        Ok(())
+    }
+
+    fn poll_service_list(&mut self) {
+        use ui::collaboration::browser_service_sessions::{
+            BrowserServiceSessionCommand as Command, BrowserServiceSessionReply as Reply,
+        };
+        if self.service_list_reply.is_none() {
+            return;
+        }
+        if self.service_list_pending.is_none() {
+            if self.service_catalog_pending.is_some() {
+                return;
+            }
+            #[cfg(target_os = "linux")]
+            if self.service_pending.is_some() || self.service_forget.is_some() {
+                return;
+            }
+            match self
+                .service_client
+                .as_ref()
+                .unwrap()
+                .request(Command::List, self.service_list_waker.clone())
+            {
+                Ok(pending) => self.service_list_pending = Some(pending),
+                Err(error) => {
+                    self.service_list_reply.take().unwrap().finish(Err(error));
+                    return;
+                }
+            }
+        }
+        let Some(result) = self
+            .service_list_pending
+            .as_mut()
+            .and_then(|pending| pending.poll())
+        else {
+            return;
+        };
+        self.service_list_pending = None;
+        let result = result.and_then(|reply| match reply {
+            Reply::List { sessions } => {
+                let value = serde_json::json!({"schema": 1, "sessions": sessions.iter().map(|row| serde_json::json!({"id": row.id, "service": row.service})).collect::<Vec<_>>()});
+                self.accept_service_catalog(sessions);
+                Ok(ui::tilo_actions::ActionOutput { value: Some(value), ..Default::default() })
+            }
+            _ => Err("Account inventory could not be confirmed".into()),
+        });
+        self.service_list_reply.take().unwrap().finish(result);
+    }
+
     fn poll_service_admission(&mut self) {
+        #[cfg(target_os = "linux")]
+        if self
+            .service_forget
+            .as_mut()
+            .is_some_and(|pending| pending.poll(self.service_view.as_mut()))
+        {
+            self.service_observation = self.service_forget.as_ref().map(|pending| pending.report());
+            if let Some(report) = &self.service_observation
+                && report["custody_revoked"] == true
+            {
+                self.service_selections
+                    .retain(|selected| Some(selected.id.as_str()) != report["session_id"].as_str());
+            }
+            self.service_forget = None;
+            self.structure_dirty = true;
+        }
         if let Some(reply) = self
             .service_catalog_pending
             .as_mut()
@@ -797,9 +885,16 @@ impl BrowserWidget {
             })
             .flatten()
         {
+            self.service_observation = self.service_pending.as_ref().map(|pending| {
+                let mut report = pending.report();
+                report["status"] = serde_json::json!("needs-reconnect");
+                report["requires_reconnect"] = serde_json::json!(true);
+                report
+            });
             self.service_pending = None;
             match reply {
                 Ok(mut view) => {
+                    self.service_observation = None;
                     self.engine = view.engine();
                     view.opening.set(Some(view.anchor()));
                     let _ = view.poll_open();
@@ -810,6 +905,7 @@ impl BrowserWidget {
             }
             self.structure_dirty = true;
         }
+        self.poll_service_list();
     }
 
     #[cfg(all(test, target_os = "linux"))]
@@ -1049,10 +1145,16 @@ impl BrowserWidget {
             service_redirect: None,
             service_client: None,
             service_catalog_pending: None,
+            service_list_reply: None,
+            service_list_waker: None,
+            service_list_pending: None,
+            service_observation: None,
             #[cfg(target_os = "linux")]
             service_pending: None,
             #[cfg(target_os = "linux")]
             service_view: None,
+            #[cfg(target_os = "linux")]
+            service_forget: None,
             headless,
             dispatch: None,
             site_exceptions: std::collections::BTreeSet::new(),
@@ -1553,7 +1655,7 @@ impl BrowserWidget {
             BrowserOperation::OpenServiceSession | BrowserOperation::ForgetServiceSession => {
                 return Err("Open this account through its resource view action".into());
             }
-            BrowserOperation::ReadServiceSession => {
+            BrowserOperation::ReadServiceSession | BrowserOperation::ListServiceSessions => {
                 return Err("Account status must use its resource action".into());
             }
             BrowserOperation::ReadContinuity | BrowserOperation::RetryContinuity => {
@@ -4870,8 +4972,20 @@ impl BrowserWidget {
         for selection in &self.service_selections {
             browser.children.push(selection.resource());
         }
+        browser.children.push(
+            Resource::new(
+                "browser.service-sessions",
+                "browser.service-sessions",
+                "Accounts",
+            )
+            .with_action(E::ListServiceSessions.bound()),
+        );
         #[cfg(target_os = "linux")]
-        if self.service_view.is_some() {
+        if self.service_view.is_some()
+            || self.service_pending.is_some()
+            || self.service_forget.is_some()
+            || self.service_observation.is_some()
+        {
             browser.children.push(
                 Resource::new(
                     "browser.service-status",
@@ -5124,6 +5238,13 @@ impl BrowserWidget {
     ) -> Result<ui::framework::Effected, String> {
         if matches!(operation, BrowserOperation::ReadServiceSession) {
             #[cfg(target_os = "linux")]
+            if let Some(pending) = &self.service_forget {
+                return Ok(ui::framework::Effected::value(pending.report()));
+            }
+            if let Some(report) = &self.service_observation {
+                return Ok(ui::framework::Effected::value(report.clone()));
+            }
+            #[cfg(target_os = "linux")]
             if let Some(view) = &self.service_view {
                 let mut status = view.report();
                 status["destination_navigation_observed"] =
@@ -5263,6 +5384,81 @@ impl AppWidget for BrowserWidget {
 #[cfg(test)]
 mod architecture_tests {
     use super::*;
+
+    #[test]
+    fn public_inventory_cannot_answer_from_the_initial_render_cache() {
+        let mut widget = BrowserWidget::new_with_mode(BrowsingMode::Normal);
+        widget.accept_service_catalog(Vec::new());
+        let resource = widget.published();
+        let inventory = resource
+            .children
+            .iter()
+            .find(|row| row.id.0 == "browser.service-sessions")
+            .unwrap();
+        let action = inventory
+            .actions
+            .iter()
+            .find(|action| action.id == "list-service-sessions")
+            .unwrap();
+        let encoded = action.build_json(&serde_json::Map::new()).unwrap();
+        assert!(matches!(
+            effect_operation(&encoded.payload),
+            BrowserOperation::ListServiceSessions
+        ));
+        assert!(
+            widget
+                .admit(
+                    ui::tilo_actions::InvocationId::new(),
+                    BrowserOperation::ListServiceSessions
+                )
+                .is_err()
+        );
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn pending_revocation_and_stale_selection_remain_publicly_readable() {
+        let mut widget = BrowserWidget::new_with_mode(BrowsingMode::Normal);
+        for status in [
+            "forgetting",
+            "forget-incomplete",
+            "forgotten",
+            "needs-reconnect",
+        ] {
+            widget.service_observation = Some(
+                serde_json::json!({"session_id": "selected", "status": status,
+                "custody_revoked": status == "forgotten", "engine_shutdown_confirmed": status == "forgotten",
+                "custody_backend_needed": status != "forgotten", "local_only": false,
+                "requires_reconnect": status == "needs-reconnect"}),
+            );
+            let resource = widget.published();
+            let row = resource
+                .children
+                .iter()
+                .find(|row| row.id.0 == "browser.service-status")
+                .unwrap();
+            let action = row
+                .actions
+                .iter()
+                .find(|action| action.id == "read-service-session")
+                .unwrap();
+            let encoded = action.build_json(&serde_json::Map::new()).unwrap();
+            let ui::framework::Effected::Done(output) = widget
+                .admit(
+                    ui::tilo_actions::InvocationId::new(),
+                    effect_operation(&encoded.payload),
+                )
+                .unwrap()
+            else {
+                panic!("observation must be immediately readable")
+            };
+            let value = output.value.unwrap();
+            assert_eq!(value["session_id"], "selected");
+            assert_eq!(value["status"], status);
+            assert_eq!(value["local_only"], false);
+        }
+    }
+
     use ui::framework::HostDelivery as _;
     use ui::tilo_actions::OperationKind;
     use ui::widget::MenuButton;

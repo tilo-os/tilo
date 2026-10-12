@@ -194,6 +194,10 @@ pub struct InstallOptions {
     pub expected_partitions: Vec<PartitionExtent>,
     /// Root filesystem: `btrfs` (default), `ext4`, or `xfs`.
     pub filesystem: String,
+    /// Same installed OS; selects its availability defaults.
+    pub purpose: String,
+    pub device_label: String,
+    pub prepared_setup: Option<install_profile_model::PreparedSetupExpectation>,
     /// Hostname seeded into the installed system.
     pub hostname: String,
     /// Optional human-readable account name (GECOS), never a credential.
@@ -264,6 +268,9 @@ impl Default for InstallOptions {
             guided_boot_partuuid: String::new(),
             guided_root_partuuid: String::new(),
             expected_partitions: Vec::new(),
+            purpose: install_profile_model::default_purpose(),
+            device_label: String::new(),
+            prepared_setup: None,
             filesystem: "btrfs".to_string(),
             hostname: "tilo".to_string(),
             full_name: String::new(),
@@ -399,6 +406,16 @@ pub fn install_command(disk: &str, user: &str, opts: &InstallOptions) -> Command
             // backend rejects alongside callers that omit or alter it.
             .arg("--confirm-root")
             .arg(&opts.alongside_root);
+    }
+    if !opts.device_label.is_empty() {
+        cmd.arg("--device-label").arg(&opts.device_label);
+    }
+    if let Some(expected) = &opts.prepared_setup {
+        cmd.arg("--prepared-setup-receipt")
+            .arg(serde_json::to_string(expected).expect("public ciphertext binding"));
+    }
+    if opts.purpose != "computer" {
+        cmd.arg("--purpose").arg(&opts.purpose);
     }
     if !opts.timezone.trim().is_empty() {
         cmd.arg("--timezone").arg(opts.timezone.trim());
@@ -1210,6 +1227,60 @@ mod tests {
             let mut args = cmd.get_args().map(|a| a.to_str().unwrap());
             assert!(args.any(|a| a == "--encrypt"));
         }
+    }
+
+    #[test]
+    fn install_command_preserves_the_reviewed_ciphertext_binding_and_label() {
+        let expected = install_profile_model::PreparedSetupExpectation {
+            schema: 1,
+            sealed_bytes: 4096,
+            ciphertext_sha256: "a".repeat(64),
+        };
+        let command = install_command(
+            "/dev/test",
+            "owner",
+            &InstallOptions {
+                purpose: "server".into(),
+                device_label: "Travel computer".into(),
+                prepared_setup: Some(expected.clone()),
+                ..Default::default()
+            },
+        );
+        let args: Vec<_> = command.get_args().collect();
+        let receipt = args
+            .windows(2)
+            .find(|pair| pair[0] == "--prepared-setup-receipt")
+            .unwrap();
+        let decoded: install_profile_model::PreparedSetupExpectation =
+            serde_json::from_str(receipt[1].to_str().unwrap()).unwrap();
+        assert_eq!(decoded, expected);
+        let label = args
+            .windows(2)
+            .find(|pair| pair[0] == "--device-label")
+            .unwrap();
+        assert_eq!(label[1], "Travel computer");
+    }
+
+    #[test]
+    fn install_command_carries_purpose_without_selecting_another_image() {
+        let computer = install_command("/dev/test", "ada", &InstallOptions::default());
+        let server = install_command(
+            "/dev/test",
+            "ada",
+            &InstallOptions {
+                purpose: "server".into(),
+                ..Default::default()
+            },
+        );
+        let computer_args: Vec<_> = computer.get_args().collect();
+        let server_args: Vec<_> = server.get_args().collect();
+        assert!(!computer_args.contains(&std::ffi::OsStr::new("--purpose")));
+        let purpose = server_args
+            .windows(2)
+            .find(|pair| pair[0] == "--purpose")
+            .unwrap();
+        assert_eq!(purpose[1], "server");
+        assert_eq!(server.get_program(), computer.get_program());
     }
 
     #[test]

@@ -10,13 +10,17 @@ lint:
   naming ``clippy::too_many_arguments`` in a Rust source;
 * a Cargo manifest setting the lint to anything but ``deny``/``forbid``.
 
-Vendored third-party crates are exempt.
+Only the repository's top-level vendor/ third-party crates are exempt.
+Source scope comes from Git: tracked (including newly staged) files and
+non-ignored untracked files, never ignored image assembly or registry caches.
+Both working-tree files and indexed blobs are checked.
 """
 
 from __future__ import annotations
 
 import os
 import re
+import subprocess
 import sys
 import tomllib
 from pathlib import Path
@@ -24,17 +28,54 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 LINT = "too_many_arguments"
-SKIPPED_DIRS = {".git", ".claude", "target", "vendor", "node_modules"}
 ATTRIBUTE = re.compile(r"#!?\[")
 SILENCING = re.compile(r"\b(?:allow|expect)\s*\(")
 
 
-def repository_files(root: Path, name_matches) -> list[Path]:
-    found: list[Path] = []
-    for directory, subdirs, files in os.walk(root):
-        subdirs[:] = sorted(d for d in subdirs if d not in SKIPPED_DIRS)
-        found.extend(Path(directory) / f for f in sorted(files) if name_matches(f))
-    return found
+def git(root: Path, *args: str, input: bytes | None = None) -> bytes:
+    return subprocess.run(
+        ["git", "-C", str(root), *args],
+        input=input, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True,
+    ).stdout
+
+
+def own_source(relative: Path) -> bool:
+    return relative.parts[0] != "vendor" and (
+        relative.suffix == ".rs" or relative.name == "Cargo.toml"
+    )
+
+
+def repository_sources(root: Path):
+    names = git(root, "ls-files", "--cached", "--others", "--exclude-standard", "-z")
+    for name in sorted(set(names.split(b"\0")) - {b""}):
+        relative = Path(os.fsdecode(name))
+        path = root / relative
+        if own_source(relative) and path.is_file():
+            yield relative, path.read_text(encoding="utf-8", errors="replace")
+
+    # Check the index too: an unstaged edit must not hide a staged opt-out.
+    entries = []
+    for record in git(root, "ls-files", "--stage", "-z").split(b"\0"):
+        if not record:
+            continue
+        metadata, name = record.split(b"\t", 1)
+        mode, oid, _stage = metadata.split()
+        relative = Path(os.fsdecode(name))
+        if own_source(relative) and mode in {b"100644", b"100755"}:
+            entries.append((relative, oid))
+    if not entries:
+        return
+    blobs = git(root, "cat-file", "--batch", input=b"".join(oid + b"\n" for _, oid in entries))
+    offset = 0
+    for relative, _ in entries:
+        end = blobs.index(b"\n", offset)
+        _, kind, size = blobs[offset:end].split()
+        if kind != b"blob":
+            raise ValueError(f"{relative}: expected an indexed blob")
+        offset = end + 1
+        length = int(size)
+        yield relative, blobs[offset : offset + length].decode("utf-8", errors="replace")
+        offset += length + 1
 
 
 def attributes(text: str):
@@ -79,15 +120,14 @@ def audit_manifest(relative: Path, text: str) -> list[str]:
 
 def audit(root: Path) -> list[str]:
     violations: list[str] = []
-    for path in repository_files(root, lambda name: name.endswith(".rs")):
-        text = path.read_text(encoding="utf-8", errors="replace")
-        if LINT in text:
-            violations.extend(audit_source(path.relative_to(root), text))
-    for path in repository_files(root, lambda name: name == "Cargo.toml"):
-        text = path.read_text(encoding="utf-8")
-        if LINT in text:
-            violations.extend(audit_manifest(path.relative_to(root), text))
-    return violations
+    for relative, text in repository_sources(root):
+        if LINT not in text:
+            continue
+        if relative.suffix == ".rs":
+            violations.extend(audit_source(relative, text))
+        else:
+            violations.extend(audit_manifest(relative, text))
+    return sorted(set(violations))
 
 
 def main() -> int:

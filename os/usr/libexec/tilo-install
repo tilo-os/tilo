@@ -369,6 +369,7 @@ ASSUME_YES=0
 FILESYSTEM="btrfs"   # btrfs | ext4 | xfs
 HOSTNAME_VAL="tilo"
 DEVICE_LABEL=""
+PURPOSE_VAL="computer"
 FULL_NAME=""
 LOCALE_VAL="en_US.UTF-8"
 TIMEZONE_VAL=""      # empty → leave system default (UTC)
@@ -420,6 +421,7 @@ while [ $# -gt 0 ]; do
     --user) USERNAME="${2:-}"; shift 2 ;;
     --filesystem) FILESYSTEM="${2:-}"; shift 2 ;;
     --device-label) DEVICE_LABEL="${2:-}"; shift 2 ;;
+    --purpose) PURPOSE_VAL="${2:-}"; shift 2 ;;
     --hostname) HOSTNAME_VAL="${2:-}"; shift 2 ;;
     --full-name) FULL_NAME="${2:-}"; shift 2 ;;
     --locale) LOCALE_VAL="${2:-}"; shift 2 ;;
@@ -684,6 +686,11 @@ if [ -n "$TIMEZONE_VAL" ]; then
   [ -f "/usr/share/zoneinfo/$TIMEZONE_VAL" ] \
     || die "unknown --timezone '$TIMEZONE_VAL'"
 fi
+
+case "$PURPOSE_VAL" in
+  computer|server) ;;
+  *) die "invalid --purpose '$PURPOSE_VAL'" ;;
+esac
 
 # Keyboard layout: default to us, validate it's a plain xkb token (these
 # values land verbatim in /etc/environment and /etc/vconsole.conf below).
@@ -986,7 +993,12 @@ profile=value["install_profile"]
 if profile is not None:
     assert (profile["username"],profile["full_name"]) == tuple(sys.argv[1:3]), "prepared account differs from authenticated choices"
     assert profile.get("device_label", "") == sys.argv[3], "prepared device label differs from authenticated choices"
-' "$USERNAME" "$FULL_NAME" "$DEVICE_LABEL" || die "prepared account differs from authenticated choices; disk remains unchanged"
+    assert profile.get("purpose", "computer") == sys.argv[4], "prepared purpose differs from authenticated choices"
+    assert (profile["hostname"], profile["locale"], profile["timezone"], profile["filesystem"]) == tuple(sys.argv[5:9]), "prepared preferences differ from authenticated choices"
+    keyboard = profile["keyboard"]
+    expected_keyboard = ("us", keyboard) if keyboard in ("dvorak", "colemak") else (keyboard, "")
+    assert expected_keyboard == tuple(sys.argv[9:11]), "prepared keyboard differs from authenticated choices"
+' "$USERNAME" "$FULL_NAME" "$DEVICE_LABEL" "$PURPOSE_VAL" "$HOSTNAME_VAL" "$LOCALE_VAL" "$TIMEZONE_VAL" "$FILESYSTEM" "$KEYMAP_VAL" "$KEYVARIANT_VAL" || die "prepared account differs from authenticated choices; disk remains unchanged"
   RETAINED_TARGET_ARGS=(--disk "$DISK")
   if [ "$GUIDED_ALONGSIDE" -eq 1 ]; then
     RETAINED_TARGET_ARGS+=(--write-start "$FREE_START_BYTES" --write-size "$FREE_SIZE_BYTES")
@@ -1892,6 +1904,12 @@ if [ -n "$FULL_NAME" ]; then
   label_installed_tilo_path "$FULL_NAME_TMP" /etc/tilo/install-user-full-name
   mv -f "$FULL_NAME_TMP" "$FULL_NAME_CONF"
 fi
+
+# Same OS for either purpose. The power service reads this default;
+# neither purpose grants collaboration, discovery or remote login authority.
+printf '%s\n' "$PURPOSE_VAL" > "$DEPLOY_ETC/tilo/install-purpose"
+chmod 0644 "$DEPLOY_ETC/tilo/install-purpose"
+label_installed_tilo_path "$DEPLOY_ETC/tilo/install-purpose" /etc/tilo/install-purpose
 
 # --- 3b. room store volume ----------------------------------------------------
 # The store's key file moves into the encrypted root, next to the crypttab and
