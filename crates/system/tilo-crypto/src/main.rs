@@ -1,6 +1,9 @@
 use std::{
+    ffi::CString,
     fs::{self, OpenOptions},
     io::{Read, Write},
+    os::fd::{AsRawFd, FromRawFd, OwnedFd},
+    os::unix::ffi::OsStrExt,
     os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
 };
@@ -18,8 +21,112 @@ const EFI_GLOBAL_VARIABLE_GUID: &str = "8be4df61-93ca-11d2-aa0d-00e098032b8c";
 const EFI_IMAGE_SECURITY_DATABASE_GUID: &str = "d719b2cb-3d3a-4596-a3bc-dad00e67656f";
 const SECURE_BOOT_ATTRIBUTES: u32 = 0x27;
 
+// Deliberately not `tilo_files::native::nofollow`: the signing tool depends on
+// no workspace crate, so development-signing builds stay off workspace-hack.
+fn open_readonly_without_symlinks(path: &Path) -> std::io::Result<fs::File> {
+    const RESOLVE_NO_MAGICLINKS: u64 = 0x02;
+    const RESOLVE_NO_SYMLINKS: u64 = 0x04;
+
+    #[repr(C)]
+    struct OpenHow {
+        flags: u64,
+        mode: u64,
+        resolve: u64,
+    }
+
+    let path = CString::new(path.as_os_str().as_bytes()).map_err(|_| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "path contains an embedded NUL byte",
+        )
+    })?;
+    let flags = u64::try_from(libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NONBLOCK)
+        .map_err(|_| std::io::Error::other("open flags are outside the Linux u64 ABI"))?;
+    let how = OpenHow {
+        flags,
+        mode: 0,
+        resolve: RESOLVE_NO_MAGICLINKS | RESOLVE_NO_SYMLINKS,
+    };
+    // SAFETY: path and open_how remain live for this syscall. A successful
+    // descriptor is uniquely transferred into File below.
+    let descriptor = unsafe {
+        libc::syscall(
+            libc::SYS_openat2,
+            libc::AT_FDCWD,
+            path.as_ptr(),
+            &raw const how,
+            std::mem::size_of::<OpenHow>(),
+        )
+    };
+    if descriptor < 0 {
+        let error = std::io::Error::last_os_error();
+        // systemd's RestrictSUIDSGID= answers openat2 with ENOSYS (seccomp
+        // cannot inspect its mode). Walk the path instead, refusing a
+        // symlink at every component exactly as RESOLVE_NO_SYMLINKS does.
+        if error.raw_os_error() == Some(libc::ENOSYS) {
+            return open_components_without_symlinks(path.as_bytes());
+        }
+        return Err(error);
+    }
+    let descriptor = i32::try_from(descriptor)
+        .map_err(|_| std::io::Error::other("openat2 returned an invalid descriptor"))?;
+    // SAFETY: openat2 returned this owned descriptor and no other File owns it.
+    Ok(unsafe { fs::File::from_raw_fd(descriptor) })
+}
+
+/// `openat` one component at a time: every directory with `O_NOFOLLOW |
+/// O_DIRECTORY` (a symlink fails with ENOTDIR), the file with `O_NOFOLLOW`
+/// (a symlink fails with ELOOP).
+fn open_components_without_symlinks(path: &[u8]) -> std::io::Result<fs::File> {
+    fn openat(dir: libc::c_int, name: &[u8], flags: libc::c_int) -> std::io::Result<OwnedFd> {
+        let name = CString::new(name).map_err(|_| {
+            std::io::Error::new(std::io::ErrorKind::InvalidInput, "path contains a NUL byte")
+        })?;
+        // SAFETY: name is a live C string; a successful descriptor is owned below.
+        let descriptor = unsafe { libc::openat(dir, name.as_ptr(), flags | libc::O_CLOEXEC) };
+        if descriptor < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        // SAFETY: openat returned this descriptor and nothing else owns it.
+        Ok(unsafe { OwnedFd::from_raw_fd(descriptor) })
+    }
+    let mut components = path
+        .split(|byte| *byte == b'/')
+        .filter(|component| !component.is_empty() && *component != b".")
+        .peekable();
+    let mut current = if path.starts_with(b"/") {
+        Some(openat(
+            libc::AT_FDCWD,
+            b"/",
+            libc::O_PATH | libc::O_DIRECTORY,
+        )?)
+    } else {
+        None
+    };
+    while let Some(component) = components.next() {
+        let dir = current.as_ref().map_or(libc::AT_FDCWD, AsRawFd::as_raw_fd);
+        if components.peek().is_none() {
+            let file = openat(
+                dir,
+                component,
+                libc::O_RDONLY | libc::O_NONBLOCK | libc::O_NOFOLLOW,
+            )?;
+            return Ok(fs::File::from(file));
+        }
+        current = Some(openat(
+            dir,
+            component,
+            libc::O_PATH | libc::O_DIRECTORY | libc::O_NOFOLLOW,
+        )?);
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::InvalidInput,
+        "path names no file",
+    ))
+}
+
 fn read_bounded(path: &Path, limit: u64, kind: &str) -> Result<Vec<u8>, String> {
-    let file = tilo_files::native::nofollow::open_read(path)
+    let file = open_readonly_without_symlinks(path)
         .map_err(|error| format!("cannot open {kind} {}: {error}", path.display()))?;
     let metadata = file
         .metadata()
@@ -46,7 +153,7 @@ fn read_text_bounded(path: &Path, limit: u64, kind: &str) -> Result<String, Stri
 }
 
 fn read_private_key(path: &Path) -> Result<Zeroizing<String>, String> {
-    let file = tilo_files::native::nofollow::open_read(path)
+    let file = open_readonly_without_symlinks(path)
         .map_err(|error| format!("cannot open private key {}: {error}", path.display()))?;
     let metadata = file
         .metadata()
@@ -815,6 +922,27 @@ mod tests {
     use super::*;
     use std::ffi::OsString;
     use std::os::unix::fs::{PermissionsExt, symlink};
+
+    #[test]
+    fn component_walk_opens_files_and_refuses_every_symlink() {
+        let temp = tempfile::tempdir().expect("temporary directory");
+        let real = temp.path().join("real");
+        fs::create_dir(&real).expect("directory");
+        fs::write(real.join("key.pub"), b"public").expect("file");
+        symlink(&real, temp.path().join("linked-dir")).expect("directory link");
+        symlink(real.join("key.pub"), temp.path().join("linked.pub")).expect("file link");
+        let open = |path: &Path| open_components_without_symlinks(path.as_os_str().as_bytes());
+
+        let mut content = String::new();
+        open(&real.join("key.pub"))
+            .expect("plain path opens")
+            .read_to_string(&mut content)
+            .expect("readable");
+        assert_eq!(content, "public");
+        assert!(open(&temp.path().join("linked-dir/key.pub")).is_err());
+        assert!(open(&temp.path().join("linked.pub")).is_err());
+        assert!(open(&real.join("missing")).is_err());
+    }
 
     #[test]
     fn detached_efi_signature_check_accepts_large_uki_without_widening_generic_rsa() {

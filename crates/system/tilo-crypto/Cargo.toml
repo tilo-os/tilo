@@ -54,7 +54,6 @@ rsa = { version = "=0.10.0-rc.18", features = ["encoding", "sha2"] }
 sha-crypt = { version = "0.6", features = ["getrandom"] }
 sha2.workspace = true
 spki = "0.7"
-tilo-files = { path = "../../platform/tilo-files" }
 time = { version = "0.3", features = ["formatting", "macros"] }
 x509-cert = { version = "0.2", features = ["pem"] }
 zeroize.workspace = true
