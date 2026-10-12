@@ -106,7 +106,8 @@ def audited_unit_module_only(root: Path, path: str, packages: dict, by_dir: dict
                 if source_root.is_symlink() or any(
                         item.is_symlink() for item in source_root.rglob("*")):
                     return False
-                sources.update(source_root.rglob("*.rs"))
+                pattern = "*" if source_root == directory / "templates" else "*.rs"
+                sources.update(item for item in source_root.rglob(pattern) if item.is_file())
             sources.update(Path(target["src_path"]) for target in package.get("targets", [])
                            if target.get("kind") != ["test"])
             for source in sources:

@@ -322,7 +322,7 @@ class AppSdkAffectedTests(unittest.TestCase):
 
     def test_generated_sdk_template_source_reader_keeps_sdk(self):
         path, _, _ = self.unit_module_fixture()
-        reader = self.root / 'crates/dev/tilo-app-cli/templates/starter/src/lib.rs'
+        reader = self.root / 'crates/dev/tilo-app-cli/templates/starter/src/lib.rs.in'
         reader.parent.mkdir(parents=True)
         reader.write_text('include!("bound_component_tests.rs");\n')
         self.assertTrue(self.check(path))
