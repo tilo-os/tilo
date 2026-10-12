@@ -160,13 +160,19 @@ impl NativeDocumentReads for NativeOwnerCommitService {
             .as_ref()
             .ok_or("native document owner unavailable")?;
         let read = owner.with_current(room, |view| {
-            match view.read_document(
+            match view.read_document_with_history(
                 context.certificate().device_public_key,
-                &route.app_id,
-                &route.record_id,
+                (&route.app_id, &route.record_id),
                 known_revision,
                 maximum,
                 std::time::SystemTime::now(),
+                &mut |envelope| {
+                    self.history_keys
+                        .as_ref()
+                        .and_then(tilo_action_broker::channel_encryption::ChannelKeyProvider::get)
+                        .ok_or("committed history keys unavailable")?
+                        .open_history_write(room, envelope)
+                },
             ) {
                 Ok(read) => Ok(Some(read)),
                 // The room carries a governed checkpoint's coverage whose
@@ -182,6 +188,7 @@ impl NativeDocumentReads for NativeOwnerCommitService {
                 Err(error) => Err(error),
             }
         })?;
+        self.authorize(context)?;
         let Some(read) = read else {
             return Ok(NativeDocumentRead::Pending);
         };

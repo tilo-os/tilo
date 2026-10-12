@@ -23,10 +23,10 @@ use crate::time::{Duration, SystemTime, UNIX_EPOCH};
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, Patch, PatchAction, Prop, ReadDoc, Value};
 
-use crate::history_source::groups::{int_at, str_at};
 use crate::history_source::revert::ChangeRun;
 use crate::widget::history::HistoryEntryId;
 use crate::widget::history_group::{from_hex16, hex16};
+use tilo_automerge::read::{int_at, str_at};
 
 /// Prefix of the root keys holding this document's cross-application runs.
 /// Namespaced like [`GROUPS_KEY`](crate::history_source::groups::GROUPS_KEY) so

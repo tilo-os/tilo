@@ -39,6 +39,51 @@ use crate::widgets::{
     El, caption, card, card_with_action, error_caption, error_row, rows, setting_row, value_row,
 };
 
+// Ask the authenticated host: this app intentionally has an isolated network
+// namespace and cannot inspect the host's nl80211 interface by spawning iw.
+fn host_network_wake(
+    profile: &str,
+    enabled: Option<bool>,
+) -> Result<os_actions::network_wake::NetworkWakeStatus, String> {
+    match ui::collaboration::wifi_continuity_command(WifiContinuityCommand::NetworkWake {
+        profile_uuid: profile.into(),
+        enabled,
+    })? {
+        WifiContinuityReply::NetworkWake { status } => {
+            Ok(os_actions::network_wake::NetworkWakeStatus {
+                profile: status.profile,
+                interface: status.interface,
+                configured: status.configured,
+                supported: status.supported,
+                applied: status.applied,
+                problem: status.problem,
+            })
+        }
+        WifiContinuityReply::Rejected { reason } => Err(reason),
+        _ => Err("the host returned an invalid network wake reply".into()),
+    }
+}
+
+fn wake_description(status: &os_actions::network_wake::NetworkWakeStatus) -> &'static str {
+    if status.problem.is_some() {
+        if status.configured {
+            "net-wake-pending"
+        } else {
+            "net-wake-unavailable"
+        }
+    } else if status.configured && status.applied == Some(true) {
+        "net-wake-unverified"
+    } else if status.interface.is_none() {
+        "net-wake-connect-first"
+    } else if status.supported == Some(false) {
+        "net-wake-unsupported"
+    } else if status.supported.is_none() {
+        "net-wake-unavailable"
+    } else {
+        "net-wake-disabled"
+    }
+}
+
 /// The bands a hotspot can use.
 const HOTSPOT_BANDS: &[&str] = &["Automatic", "2.4 GHz", "5 GHz"];
 /// Whether a connection's data counts against a limit.
@@ -102,6 +147,13 @@ pub enum NetworkEffect {
     /// Join a saved network by itself whenever it is in range, or not.
     #[effect(job, row, idempotent, label = "Connect automatically")]
     SetAutoconnect {
+        #[param("The saved network's id")]
+        profile: String,
+        on: bool,
+    },
+    /// Persist magic-packet wake for this saved connection. Enabled does not certify physical resume.
+    #[effect(job, row, idempotent, label = "Wake over network")]
+    SetNetworkWake {
         #[param("The saved network's id")]
         profile: String,
         on: bool,
@@ -434,6 +486,7 @@ pub(crate) struct NetworkSnapshot {
     connectivity: Part<ConnectivityState>,
     profiles: Part<Vec<SavedNetworkProfile>>,
     profile_settings: HashMap<String, os_actions::ConnectionProfileSettings>,
+    wake_settings: HashMap<String, Result<os_actions::network_wake::NetworkWakeStatus, String>>,
     hotspot_clients: Part<Vec<os_actions::HotspotClient>>,
     vpns: Part<Vec<VpnInfo>>,
 }
@@ -451,6 +504,15 @@ impl NetworkSnapshot {
             wired: Some(os_actions::get_wired()),
             radios: Some(radios),
             connectivity: Some(os_actions::get_connectivity()),
+            wake_settings: profiles
+                .as_deref()
+                .unwrap_or_default()
+                .iter()
+                .filter(|profile| {
+                    matches!(profile.kind.as_str(), "802-11-wireless" | "802-3-ethernet")
+                })
+                .map(|profile| (profile.uuid.clone(), host_network_wake(&profile.uuid, None)))
+                .collect(),
             profile_settings: profiles
                 .as_deref()
                 .map(load_profile_settings)
@@ -483,6 +545,7 @@ impl NetworkSnapshot {
             connectivity: Some(Ok(ConnectivityState::Full)),
             profiles: Some(Ok(Vec::new())),
             profile_settings: HashMap::new(),
+            wake_settings: HashMap::new(),
             hotspot_clients: Some(Ok(Vec::new())),
             vpns: Some(Ok(Vec::new())),
         }
@@ -551,6 +614,10 @@ pub(crate) enum NetworkChange {
     Autoconnect {
         uuid: String,
         name: String,
+        on: bool,
+    },
+    Wake {
+        uuid: String,
         on: bool,
     },
     Forget {
@@ -658,6 +725,10 @@ impl NetworkService for DeviceNetwork {
             NetworkChange::Vpn { name, on } => dispatcher.set_vpn_connection(name, *on),
             NetworkChange::Autoconnect { uuid, on, .. } => {
                 os_actions::set_network_autoconnect(uuid, *on)
+            }
+            NetworkChange::Wake { uuid, on } => {
+                let status = host_network_wake(uuid, Some(*on))?;
+                status.problem.map_or(Ok(()), Err)
             }
             NetworkChange::Forget { uuid, .. } => os_actions::forget_network_profile(uuid),
             NetworkChange::Hotspot(config) => os_actions::configure_hotspot(config),
@@ -1032,6 +1103,19 @@ impl NetworkArea {
                     profile: profile.uuid.clone(),
                 }));
             }
+            if let Some(Ok(wake)) = model.wake_settings.get(&profile.uuid) {
+                row = row.presentation(ui::tilo_actions::ResourcePresentation {
+                    detail: None,
+                    badge: None,
+                    preview: Some(t(wake_description(wake))),
+                });
+                if wake.configured || wake.supported == Some(true) {
+                    row = row.operation(offer(NetworkEffect::SetNetworkWake {
+                        profile: profile.uuid.clone(),
+                        on: !wake.configured,
+                    }));
+                }
+            }
             row
         }));
         rows.extend(model.vpns.iter().map(|vpn| {
@@ -1069,6 +1153,7 @@ pub struct NetworkModel {
     connectivity: ConnectivityState,
     profiles: Vec<SavedNetworkProfile>,
     profile_settings: HashMap<String, os_actions::ConnectionProfileSettings>,
+    wake_settings: HashMap<String, Result<os_actions::network_wake::NetworkWakeStatus, String>>,
     sims: Vec<os_actions::SimInfo>,
     hotspot_clients: Vec<os_actions::HotspotClient>,
     vpns: Vec<VpnInfo>,
@@ -1229,6 +1314,7 @@ impl NetworkModel {
             connectivity: ConnectivityState::Unknown,
             profiles: Vec::new(),
             profile_settings: HashMap::new(),
+            wake_settings: HashMap::new(),
             sims: Vec::new(),
             hotspot_clients: Vec::new(),
             vpns: Vec::new(),
@@ -1349,6 +1435,7 @@ impl NetworkModel {
         if let Some(profiles) = adopt(snapshot.profiles, &mut self.read_errors.profiles) {
             self.profiles = profiles;
             self.profile_settings = snapshot.profile_settings;
+            self.wake_settings = snapshot.wake_settings;
             self.fill_forms();
         }
         if let Some(vpns) = adopt(snapshot.vpns, &mut self.read_errors.vpns) {
@@ -1532,6 +1619,16 @@ impl NetworkModel {
                     NetworkChange::Autoconnect {
                         uuid: profile.uuid,
                         name: profile.name,
+                        on,
+                    },
+                    None,
+                )
+            }
+            NetworkEffect::SetNetworkWake { profile, on } => {
+                let profile = self.profile(&profile)?;
+                self.change(
+                    NetworkChange::Wake {
+                        uuid: profile.uuid,
                         on,
                     },
                     None,
@@ -2063,6 +2160,7 @@ impl NetworkModel {
                     ))
                 }
             },
+            (NetworkChange::Wake { .. }, result) => result.map(|()| t("net-wake-saved")),
             (NetworkChange::Forget { uuid, name }, Ok(())) => {
                 self.profiles.retain(|p| &p.uuid != uuid);
                 Ok(t_args(
@@ -2579,11 +2677,47 @@ impl NetworkModel {
                     )),
             ));
         }
+        for profile in &wifi_profiles {
+            rows_out.extend(self.wake_rows(profile));
+        }
         rows_out.push(caption(&t("net-share-caption")));
         if self.policy_open {
             self.push_policy_rows(&wifi_profiles, &mut rows_out);
         }
         rows_out
+    }
+
+    fn wake_rows(&self, profile: &SavedNetworkProfile) -> Vec<El> {
+        let label = t_args(
+            "net-wake-network",
+            &[("name", profile.name.as_str().into())],
+        );
+        match self.wake_settings.get(&profile.uuid) {
+            Some(Ok(status)) => {
+                let uuid = profile.uuid.clone();
+                let toggle = self.cx.bind(
+                    Toggle::from_state(&LocalState::new(status.configured))
+                        .with_id(&format!("network.profile.wake.{}", profile.uuid))
+                        .with_accessible_name(&label)
+                        .with_enabled(status.configured || status.supported == Some(true)),
+                    effect(NetworkEffect::SET_NETWORK_WAKE).map(move |on: bool| (uuid.clone(), on)),
+                );
+                let description = wake_description(status);
+                let mut rows = vec![
+                    setting_row(&label, Box::new(toggle)),
+                    caption(&t(description)),
+                ];
+                if let Some(problem) = &status.problem {
+                    rows.push(error_caption(problem));
+                }
+                rows
+            }
+            Some(Err(error)) => vec![
+                value_row(&label, &t("net-wake-unavailable")),
+                error_caption(error),
+            ],
+            None => vec![value_row(&label, &t("net-wake-unavailable"))],
+        }
     }
 
     /// The selected saved Wi-Fi network's policy editor: metered, hardware
@@ -3458,6 +3592,7 @@ mod tests {
                     connectivity: Some(failed(&reason)),
                     profiles: Some(failed(&reason)),
                     profile_settings: HashMap::new(),
+                    wake_settings: HashMap::new(),
                     hotspot_clients: Some(failed(&reason)),
                     vpns: Some(failed(&reason)),
                 };
@@ -3477,6 +3612,7 @@ mod tests {
                     "connect {ssid} {}",
                     password.as_deref().map_or("-", String::as_str)
                 ),
+                NetworkChange::Wake { uuid, on } => format!("wake {uuid} {on}"),
                 NetworkChange::Forget { uuid, .. } => format!("forget {uuid}"),
                 NetworkChange::Hotspot(config) => format!("hotspot {}", config.ssid),
                 _ => "other".into(),
@@ -3496,6 +3632,18 @@ mod tests {
                     shared.map_or(WifiContinuityReply::NotFound, |password| {
                         WifiContinuityReply::Password { password }
                     })
+                }
+                WifiContinuityCommand::NetworkWake { profile_uuid, .. } => {
+                    WifiContinuityReply::NetworkWake {
+                        status: ui::collaboration::NetworkWakeStatus {
+                            profile: profile_uuid,
+                            interface: None,
+                            configured: false,
+                            supported: None,
+                            applied: None,
+                            problem: None,
+                        },
+                    }
                 }
                 WifiContinuityCommand::Share { ssid, .. }
                 | WifiContinuityCommand::ShareSavedProfile { profile_uuid: ssid } => {
@@ -4040,6 +4188,105 @@ mod tests {
             ["vpn Work true", "forget 1234-abcd"]
         );
         assert!(model.profiles.is_empty(), "a forgotten network is gone");
+    }
+
+    #[test]
+    fn supported_network_wake_is_named_and_routes_through_the_worker() {
+        fn named_switch(widget: &dyn Widget, name: &str) -> bool {
+            widget.accessibility().is_some_and(|node| {
+                node.role == ui::a11y::Role::Switch && node.name.as_deref() == Some(name)
+            }) || widget
+                .children()
+                .iter()
+                .any(|child| named_switch(*child, name))
+        }
+        let fake = Arc::new(FakeNetwork::default());
+        let uuid = "11111111-1111-4111-8111-111111111111";
+        *fake.profiles.lock().unwrap() = vec![SavedNetworkProfile {
+            uuid: uuid.into(),
+            name: "Home".into(),
+            kind: "802-11-wireless".into(),
+            autoconnect: true,
+        }];
+        let mut model = model(&fake);
+        model.wake_settings.insert(
+            uuid.into(),
+            Ok(os_actions::network_wake::NetworkWakeStatus {
+                profile: uuid.into(),
+                interface: Some("wlan0".into()),
+                configured: false,
+                supported: Some(true),
+                applied: Some(false),
+                problem: None,
+            }),
+        );
+        let area = NetworkArea::new(&model.cx);
+        let _ = area.model.set(Rc::new(std::cell::RefCell::new(model)));
+        let row = area
+            .rows()
+            .into_iter()
+            .find(|row| row.id() == format!("settings.network-profile:{uuid}"))
+            .unwrap()
+            .into_resource();
+        assert!(
+            row.actions
+                .iter()
+                .any(|action| action.label == "Wake over network")
+        );
+        assert!(
+            row.presentation
+                .unwrap()
+                .preview
+                .unwrap()
+                .contains("must be tested separately")
+        );
+        let mut model = area.model().borrow_mut();
+        assert!(named_switch(
+            model.build_composition().as_ref(),
+            "Wake over Home"
+        ));
+        let text = shown(&model);
+        assert!(
+            text.iter().any(|text| text.contains("Wake over Home")),
+            "{text:?}"
+        );
+        assert!(
+            text.iter()
+                .any(|text| text.contains("must be tested separately")),
+            "{text:?}"
+        );
+        run(
+            &mut model,
+            NetworkEffect::SetNetworkWake {
+                profile: uuid.into(),
+                on: true,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            fake.changes.lock().unwrap().as_slice(),
+            [format!("wake {uuid} true")]
+        );
+        assert!(
+            model
+                .begin(NetworkEffect::SetNetworkWake {
+                    profile: "missing".into(),
+                    on: true
+                })
+                .is_err()
+        );
+        *fake.refuse.lock().unwrap() = Some("not authorized".into());
+        assert!(
+            run(
+                &mut model,
+                NetworkEffect::SetNetworkWake {
+                    profile: uuid.into(),
+                    on: false
+                }
+            )
+            .unwrap_err()
+            .contains("not authorized")
+        );
     }
 
     /// The hotspot starts from its form, and a password shorter than eight
