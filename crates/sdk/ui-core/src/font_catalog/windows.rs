@@ -156,7 +156,7 @@ mod tests {
         }
         // phase: packaged_product_fonts_match_both_manifest_and_rust_sha256
         {
-            let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/fonts");
+            let root = crate::font_catalog::checkout_root();
             let manifest = std::fs::read_to_string(root.join("manifest.toml")).unwrap();
             let mut checked = 0;
             for asset in manifest.split("[[font]]").skip(1) {

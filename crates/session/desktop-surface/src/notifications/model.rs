@@ -67,6 +67,38 @@ pub struct RemoteNotificationRoute {
     pub notification_id: ContinuityNotificationId,
 }
 
+/// A durable target issued by the host scheduler, not by a notification sender.
+/// The room and occurrence remain meaningful after the sender or host restarts.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+pub struct ScheduledNotificationTarget {
+    pub room: String,
+    pub token: String,
+    pub occurrence_ms: i64,
+    #[serde(default)]
+    pub calendar_alarm: bool,
+    /// Viewer-local state; the scheduler validates the immutable occurrence.
+    #[serde(default)]
+    pub snoozed: bool,
+    pub uri: String,
+}
+
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+impl ScheduledNotificationTarget {
+    pub fn valid(&self) -> bool {
+        !self.room.is_empty()
+            && self.room.len() <= 128
+            && !self.room.chars().any(char::is_control)
+            && self.token.len() == 32
+            && self.token.bytes().all(|byte| byte.is_ascii_hexdigit())
+            && ui::notify::valid_activation(&self.uri)
+            && self
+                .uri
+                .split_once(':')
+                .is_some_and(|(_, rest)| !rest.is_empty())
+    }
+}
+
 /// Default dwell of a banner. Override via [`Notification::with_dismiss_after`].
 pub const DEFAULT_DISMISS_AFTER: Duration = Duration::from_secs(5);
 
@@ -109,6 +141,9 @@ pub struct Notification {
     /// Present only for a notification mirrored from another certified
     /// device. Mirrored records never carry a local sender id.
     pub remote_route: Option<RemoteNotificationRoute>,
+    /// Only the host's durable scheduler can attach this route.
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    pub scheduled_target: Option<ScheduledNotificationTarget>,
     /// Sending application's display name; rendered as a caption above the
     /// title when present.
     pub app_name: Option<String>,
@@ -146,6 +181,8 @@ impl Notification {
             dismiss_after: DEFAULT_DISMISS_AFTER,
             sender_id: None,
             remote_route: None,
+            #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+            scheduled_target: None,
             app_name: None,
             app_id: None,
             source_workspace: None,
@@ -168,12 +205,6 @@ impl Notification {
     #[must_use]
     pub fn with_app_name(mut self, app: impl Into<String>) -> Self {
         self.app_name = Some(app.into());
-        self
-    }
-
-    #[must_use]
-    pub fn with_sender_id(mut self, id: u32) -> Self {
-        self.sender_id = Some(id);
         self
     }
 

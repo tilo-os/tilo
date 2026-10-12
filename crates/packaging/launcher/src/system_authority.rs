@@ -10,7 +10,14 @@
 //! nothing true to show.
 //!
 //! The grant is **owned by the image, not by the package**: only the package
-//! ids in [`CLIENTS`] receive it, whatever a manifest says. It adds
+//! ids in [`CLIENTS`] receive it, whatever a manifest says. The package in
+//! turn names the contract it was built against as the `system` service of
+//! its `[sandbox.services]` ([`crate::services::SYSTEM_SERVICE`]); a client
+//! that does not declare it gets nothing, and one that requires a version
+//! the image does not serve is refused before launch. This grant is version
+//! 1 of that interface; changing what it binds or which authorities it
+//! reaches in a way an older control panel could not work with is a new
+//! version, declared in the image's `system-interfaces.toml`. It adds
 //!
 //! - the host's client binaries and configuration, read-only
 //!   ([`HOST_READ_PATHS`]);
@@ -19,10 +26,17 @@
 //!   there is no raw-bus fallback, a failed proxy leaves the bus absent;
 //! - the `PipeWire` socket, when the session runs it (printing stays behind
 //!   the Print portal: no sandbox reaches the print spooler's socket);
+//! - the cloud account service's runtime directory with its control socket:
+//!   sync now, pause and resume a mounted account (no credential crosses it,
+//!   and file requests are served only on a socket outside this grant);
 //! - the compositor's runtime state files (`$XDG_RUNTIME_DIR/tilo`: the
 //!   connected displays, input devices), read-only, with every
 //!   subdirectory (capabilities, identity projections, service sockets)
-//!   masked by an empty tmpfs.
+//!   masked by an empty tmpfs;
+//! - the installed applications, read-only: the image's store
+//!   (`/usr/share/tilo-apps`) and the person's own, at the path the app's
+//!   remapped `XDG_DATA_HOME` names, so the default-app and notification
+//!   lists show what is really installed.
 //!
 //! The rest of the sandbox is unchanged: no network namespace of its own, the
 //! same seccomp profile, Landlock rules for exactly the paths bound here.
@@ -35,7 +49,17 @@ use crate::dbus_proxy::{self, DBusProxyGuard};
 pub const CLIENTS: &[&str] = &["so.tilo.settings"];
 
 /// Host paths bound read-only (and executable) at the same path.
-pub const HOST_READ_PATHS: &[&str] = &["/usr/bin", "/usr/sbin", "/usr/libexec", "/etc"];
+pub const HOST_READ_PATHS: &[&str] = &[
+    "/usr/bin",
+    "/usr/sbin",
+    "/usr/libexec",
+    "/etc",
+    // systemctl, timedatectl and localectl probe sd_booted() before opening
+    // their bus connection. This empty marker identifies the systemd host;
+    // it grants neither its PID namespace nor its private manager socket.
+    "/run/systemd/system",
+    package_store::layout::SYSTEM_DATA_DIR,
+];
 
 /// Where the filtered system bus appears inside the sandbox: the path every
 /// client library tries when `DBUS_SYSTEM_BUS_ADDRESS` is unset.
@@ -64,10 +88,17 @@ pub const SYSTEM_BUS_FILTER_ARGS: &[&str] = &[
     "--talk=org.fedoraproject.FirewallD1",
 ];
 
-/// Whether `package_id` receives the grant.
+/// Whether `package_id` may receive the grant.
 #[must_use]
 pub fn is_client(package_id: &str) -> bool {
     CLIENTS.contains(&package_id)
+}
+
+/// Whether a launch of `package_id` declaring `services` receives the grant:
+/// an image-named client that declares the system interface.
+#[must_use]
+pub fn grants(package_id: &str, services: &std::collections::BTreeMap<String, String>) -> bool {
+    is_client(package_id) && services.contains_key(crate::services::SYSTEM_SERVICE)
 }
 
 /// One socket bound at the same path inside the sandbox.
@@ -89,6 +120,9 @@ pub struct SystemAuthorityPlan {
     pub system_bus: bool,
     /// The compositor's runtime state directory, bound read-only.
     pub runtime_state: Option<RuntimeState>,
+    /// The person's own app store, bound read-only where the app looks for
+    /// it and at its own path, which its registry's entries name.
+    pub user_apps: Option<SocketBind>,
 }
 
 /// The compositor publishes what it sees of the hardware (displays, input
@@ -118,9 +152,27 @@ fn runtime_state_in(dir: PathBuf) -> Option<RuntimeState> {
     Some(RuntimeState { dir, masked })
 }
 
-/// The host sockets the control panel's clients use, for a session of `uid`.
+/// The host sockets the control panel's clients use, for a session of `uid`:
+/// `PipeWire`, and the cloud account service's runtime directory, which holds
+/// its mount control socket (`runtime_fs::cloud::socket_in`; no credential
+/// crosses it). The directory is bound rather than the socket: it lasts the
+/// whole session (user tmpfiles, `RuntimeDirectoryPreserve=`), so a service
+/// restart's new socket shows through. That socket only lists, syncs, pauses
+/// and resumes mounts; file requests (revisions, restore, share links) are
+/// served on the file socket in `tilo-fs-cloud-files`, which is not bound.
 fn authority_sockets(uid: u32) -> Vec<PathBuf> {
-    vec![PathBuf::from(format!("/run/user/{uid}/pipewire-0"))]
+    vec![
+        PathBuf::from(format!("/run/user/{uid}/pipewire-0")),
+        PathBuf::from(format!("/run/user/{uid}/tilo-fs-cloud")),
+    ]
+}
+
+/// Where an app looks for the person's app store: under the `XDG_DATA_HOME`
+/// its sandbox environment names.
+fn sandbox_user_apps() -> PathBuf {
+    PathBuf::from(crate::appdir::SANDBOX_APP_DIR)
+        .join(".local/share")
+        .join("tilo-apps")
 }
 
 /// The upstream system bus address.
@@ -137,9 +189,10 @@ fn system_bus_address() -> String {
 #[must_use]
 pub fn resolve(
     package_id: &str,
+    services: &std::collections::BTreeMap<String, String>,
     uid: u32,
 ) -> Option<(SystemAuthorityPlan, Option<DBusProxyGuard>)> {
-    if !is_client(package_id) {
+    if !grants(package_id, services) {
         return None;
     }
     let mut plan = SystemAuthorityPlan {
@@ -159,6 +212,12 @@ pub fn resolve(
         }
     }
     plan.runtime_state = runtime_state(uid);
+    plan.user_apps = package_store::layout::default_user_root()
+        .filter(|store| store.is_dir())
+        .map(|host| SocketBind {
+            host,
+            sandbox: sandbox_user_apps(),
+        });
     let guard = spawn_system_bus_proxy(uid);
     if let Some(guard) = &guard {
         plan.sockets.push(SocketBind {
@@ -217,6 +276,15 @@ pub fn push_binds(argv: &mut Vec<String>, plan: &SystemAuthorityPlan) {
             argv.extend(["--tmpfs".to_string(), masked.display().to_string()]);
         }
     }
+    if let Some(store) = &plan.user_apps {
+        let host = store.host.display().to_string();
+        argv.extend(["--ro-bind".to_string(), host.clone(), host.clone()]);
+        argv.extend([
+            "--ro-bind".to_string(),
+            host,
+            store.sandbox.display().to_string(),
+        ]);
+    }
     if plan.system_bus {
         argv.extend([
             "--setenv".to_string(),
@@ -238,6 +306,10 @@ pub fn push_landlock_rules(argv: &mut Vec<String>, plan: &SystemAuthorityPlan) {
     if let Some(state) = &plan.runtime_state {
         argv.extend(["--ro".to_string(), state.dir.display().to_string()]);
     }
+    if let Some(store) = &plan.user_apps {
+        argv.extend(["--ro".to_string(), store.host.display().to_string()]);
+        argv.extend(["--ro".to_string(), store.sandbox.display().to_string()]);
+    }
 }
 
 #[cfg(test)]
@@ -246,7 +318,23 @@ mod tests {
 
     #[test]
     fn only_the_control_panel_receives_the_grant() {
+        let declared: std::collections::BTreeMap<String, String> =
+            [("system".to_owned(), "required@1".to_owned())].into();
         assert!(is_client("so.tilo.settings"));
+        assert!(grants("so.tilo.settings", &declared));
+        // Settings without the system interface declared is not served it.
+        assert!(!grants(
+            "so.tilo.settings",
+            &std::collections::BTreeMap::default()
+        ));
+        assert!(
+            resolve(
+                "so.tilo.settings",
+                &std::collections::BTreeMap::default(),
+                1000
+            )
+            .is_none()
+        );
         for other in [
             "so.tilo.files",
             "so.tilo.settings.evil",
@@ -254,8 +342,20 @@ mod tests {
             "so.tilo.browser",
         ] {
             assert!(!is_client(other), "{other}");
-            assert!(resolve(other, 1000).is_none(), "{other}");
+            assert!(!grants(other, &declared), "{other}");
+            assert!(resolve(other, &declared, 1000).is_none(), "{other}");
         }
+    }
+
+    #[test]
+    fn the_cloud_grant_reaches_account_control_and_never_file_requests() {
+        let sockets = authority_sockets(1000);
+        assert!(sockets.contains(&PathBuf::from("/run/user/1000/tilo-fs-cloud")));
+        let files = std::path::Path::new("/run/user/1000/tilo-fs-cloud-files/files.sock");
+        assert!(
+            !sockets.iter().any(|bound| files.starts_with(bound)),
+            "Settings' grant reaches the cloud file socket: {sockets:?}"
+        );
     }
 
     #[test]
@@ -285,6 +385,10 @@ mod tests {
                 dir: "/run/user/1000/tilo".into(),
                 masked: vec!["/run/user/1000/tilo/services".into()],
             }),
+            user_apps: Some(SocketBind {
+                host: "/home/a/.local/share/tilo-apps".into(),
+                sandbox: sandbox_user_apps(),
+            }),
         };
         let mut binds = Vec::new();
         push_binds(&mut binds, &plan);
@@ -305,6 +409,12 @@ mod tests {
                 "/run/user/1000/tilo",
                 "--tmpfs",
                 "/run/user/1000/tilo/services",
+                "--ro-bind",
+                "/home/a/.local/share/tilo-apps",
+                "/home/a/.local/share/tilo-apps",
+                "--ro-bind",
+                "/home/a/.local/share/tilo-apps",
+                "/run/tilo/app/.local/share/tilo-apps",
                 "--setenv",
                 "DBUS_SYSTEM_BUS_ADDRESS",
                 "unix:path=/run/dbus/system_bus_socket",
@@ -323,8 +433,38 @@ mod tests {
                 SANDBOX_SYSTEM_BUS,
                 "--ro",
                 "/run/user/1000/tilo",
+                "--ro",
+                "/home/a/.local/share/tilo-apps",
+                "--ro",
+                "/run/tilo/app/.local/share/tilo-apps",
             ]
         );
+    }
+
+    #[test]
+    fn systemd_clients_receive_the_boot_marker_without_the_manager_socket() {
+        let plan = SystemAuthorityPlan {
+            read_paths: HOST_READ_PATHS.iter().map(PathBuf::from).collect(),
+            ..SystemAuthorityPlan::default()
+        };
+        let mut binds = Vec::new();
+        push_binds(&mut binds, &plan);
+        assert!(
+            binds.windows(3).any(|args| {
+                args == ["--ro-bind", "/run/systemd/system", "/run/systemd/system"]
+            })
+        );
+        let mut rules = Vec::new();
+        push_landlock_rules(&mut rules, &plan);
+        assert!(
+            rules
+                .windows(2)
+                .any(|args| args == ["--ro", "/run/systemd/system"])
+        );
+        for private in ["/run/systemd/private", "/run/systemd", "/run/dbus"] {
+            assert!(!binds.iter().any(|arg| arg == private));
+            assert!(!rules.iter().any(|arg| arg == private));
+        }
     }
 
     #[test]

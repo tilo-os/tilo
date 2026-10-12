@@ -1,392 +1,1002 @@
-//! Calendar as a [`tilo_resource::Resource`]: one action vocabulary, one
-//! publish path for document state. View and effect operations live in
-//! [`Resource::local_operations`]; entity children carry open/delete.
+//! The calendar's verbs, what it publishes, and the app.
+//!
+//! The record is [`Calendar`]: its events, tasks and projects are keyed
+//! items whose fields change through field edits at their paths
+//! (`Calendar::paths().events.item(&key(id)).title.set(..)`), and each
+//! one's notes are rich text under the item's id. The methods below are
+//! what is more than setting a field: making an item with its notes,
+//! deleting one with what hangs off it, moving an event in time or to
+//! another calendar, inviting, importing, and recording what a `CalDAV`
+//! server sent or confirmed.
+//!
+//! A server learns of a change whoever made it — a click, the palette, an
+//! agent, a collaborator, an undo: after every change the calendar queues
+//! the upload or delete of what differs from what each server last
+//! confirmed ([`Calendar::remote`]) in its outboxes, which the device
+//! holding the account carries out ([`crate::outbox`]).
 
 use std::rc::Rc;
 
-use automerge::{AutoCommit, ChangeHash};
-use tilo_actions::{ActionParam, ActionSpec, EncodedAction, OperationKind, ParamType, RetryPolicy};
+use chrono::NaiveDateTime;
 use tilo_document::{RichText, RichTextAction};
-use ui::framework::{Dispatcher, ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
+use ui::framework::{
+    Dispatcher, EffectAnswer, EffectCx, EffectStatus, Fixture, LaunchInput, LiveRow, ResourceApp,
+    ResourceSurface, SurfaceCx, ViewCx,
+};
+use ui::i18n::EmbeddedCatalog;
 use ui::tilo_resource::{
-    ActionDecl, Doc, ModelError, Resource, SearchEntry, child_resource_id, publish_child,
+    self, ActionCx, Demand, Doc, Effect, Id, Invoke, JsonSchema, ModelError, Refusal, ScopeDecl,
+    SearchEntry, resource,
 };
 use ui::widget::Element;
 use uuid::Uuid;
 
-use crate::actions::{
-    CALENDAR_ACTION_TYPE, CALENDAR_OPERATION_TYPE, CalendarAction, CalendarOperation, EventData,
-    NoteOwner, ProjectData, TaskData, delete_event_action, delete_task_action, encode,
-    set_task_done_action,
-};
+use crate::actions::{EventData, TaskData};
 use crate::app::CalendarApp;
-use crate::doc::CalDoc;
-use crate::model::{Model, Palette, Priority};
+use crate::model::{
+    Attendee, Calendar, Event, InviteStatus, Palette, Project, RemoteCopy, Removal, Upload, key,
+};
 
-fn default_local_event() -> EventData {
-    EventData {
-        id: String::new(),
-        title: String::new(),
-        start: "2026-01-01T09:00".into(),
-        end: "2026-01-01T10:00".into(),
-        all_day: false,
-        location: String::new(),
-        color: Palette::Indigo.index(),
-        rrule: String::new(),
-        recurrence_interval: 1,
-        recurrence_until: String::new(),
-        recurrence_count: 0,
-        recurrence_exdates: Vec::new(),
-        occurrence_overrides: Vec::new(),
-        timezone: "floating".into(),
-        organizer: String::new(),
-        attendees: Vec::new(),
-        reminder: -1,
-        project: String::new(),
-        calendar_id: String::new(),
+/// The calendar's Fluent catalogs, source locale first.
+pub const LOCALES: &[(&str, &str)] = &[("en-US", include_str!("../locales/en-US.ftl"))];
+
+static CATALOG: EmbeddedCatalog = EmbeddedCatalog::new("en-US", LOCALES).with_system_locale();
+
+/// The message `key` of the calendar's catalog, in the person's language.
+pub(crate) fn t(key: &str) -> String {
+    CATALOG.t(key)
+}
+
+/// [`t`] with arguments.
+pub(crate) fn t_args(key: &str, args: &[(&str, ui::i18n::ArgValue)]) -> String {
+    CATALOG.t_args(key, args)
+}
+
+/// The most items one import or one task delete takes.
+pub(crate) const MAX_ITEMS_PER_ACTION: usize = 4096;
+
+/// Where a `CalDAV` server keeps an item, as a pull or an upload reports it.
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize, JsonSchema,
+)]
+pub struct RemoteAt {
+    /// The remote calendar's id
+    pub calendar: String,
+    /// The item's address on the server; empty for a sample server's item
+    pub href: String,
+    /// The version the server reported (its `ETag`)
+    pub etag: Option<String>,
+}
+
+impl RemoteAt {
+    fn valid(&self) -> Result<(), Refusal> {
+        if self.calendar.is_empty()
+            || self.calendar.len() > 512
+            || self.href.len() > 2048
+            || self.etag.as_ref().is_some_and(|etag| etag.len() > 512)
+        {
+            return Err(Refusal::new("that is no server address of a calendar item"));
+        }
+        Ok(())
+    }
+
+    fn copy(self, holds: String, task: bool) -> RemoteCopy {
+        RemoteCopy {
+            calendar: self.calendar,
+            href: self.href,
+            etag: self.etag,
+            holds,
+            task,
+        }
     }
 }
 
-/// The calendar resource — events, tasks and projects in one document.
-pub struct Calendar;
-
-/// The id an event's or a task's notes are published under, as a rich-text
-/// child of the calendar.
-pub(crate) fn notes_resource_id(owner: &NoteOwner) -> String {
-    let (kind, id) = match owner {
-        NoteOwner::Event { id } => ("event", id),
-        NoteOwner::Task { id } => ("task", id),
-    };
-    child_resource_id::<Calendar>(&format!("{kind}:{id}/notes"))
+/// The item a verb names by its id.
+fn uuid(id: &Id) -> Result<Uuid, Refusal> {
+    id.as_str()
+        .parse()
+        .map_err(|_| Refusal::new(format!("`{id}` names nothing in this calendar")))
 }
 
-/// Each edit of `owner`'s notes as the calendar's own action.
-fn notes_edit(owner: NoteOwner) -> impl Fn(RichTextAction) -> CalendarAction + Send + Sync {
-    move |edit| CalendarAction::EditNotes {
-        owner: owner.clone(),
-        edit,
+/// What the server holding `event` holds once it took this version: a
+/// fingerprint of the iCalendar it is uploaded as.
+pub(crate) fn fingerprint(event: &Event) -> String {
+    use std::hash::Hasher as _;
+    let mut hasher = fnv::FnvHasher::default();
+    hasher.write(crate::caldav::event_body(event).as_bytes());
+    format!("{:016x}", hasher.finish())
+}
+
+#[resource(
+    kind = "calendar.calendar",
+    label = "Calendar",
+    params = calendar,
+    search = Calendar::search_entries,
+    scopes = Calendar::scopes,
+    load = Calendar::load_notes,
+    queue = Calendar::queue,
+)]
+impl Calendar {
+    /// New event
+    ///
+    /// Adds an event, on the local calendar unless it names a remote one.
+    #[action]
+    pub fn new_event(
+        &mut self,
+        cx: &mut ActionCx,
+        #[param("The event: title, start and end (YYYY-MM-DDTHH:MM) at least")] event: EventData,
+    ) -> Result<(), Refusal> {
+        let mut event = event;
+        if event.id.is_empty() {
+            event.id = cx.uuid().to_string();
+        }
+        let event = event
+            .to_event()
+            .ok_or_else(|| Refusal::new("that is not an event this calendar can hold"))?;
+        if self.event(event.id).is_some() {
+            return Err(Refusal::new("the calendar already holds that event"));
+        }
+        self.project_exists(event.project)?;
+        self.notes.entry(event.id.to_string()).or_default();
+        self.events.push(event);
+        Ok(())
+    }
+
+    /// New task
+    ///
+    /// Adds a task.
+    #[action]
+    pub fn new_task(
+        &mut self,
+        cx: &mut ActionCx,
+        #[param("The task: its title at least")] task: TaskData,
+    ) -> Result<(), Refusal> {
+        let mut task = task;
+        if task.id.is_empty() {
+            task.id = cx.uuid().to_string();
+        }
+        let mut task = task
+            .to_task()
+            .ok_or_else(|| Refusal::new("that is not a task this calendar can hold"))?;
+        let title = task.title.trim().to_owned();
+        task.title = title;
+        if task.title.is_empty() {
+            return Err(Refusal::new("a task needs a title"));
+        }
+        if self.task(task.id).is_some() {
+            return Err(Refusal::new("the calendar already holds that task"));
+        }
+        self.project_exists(task.project)?;
+        if task
+            .parent
+            .is_some_and(|parent| self.task(parent).is_none())
+        {
+            return Err(Refusal::new("the task it is a step of is gone"));
+        }
+        self.notes.entry(task.id.to_string()).or_default();
+        self.tasks.push(task);
+        Ok(())
+    }
+
+    /// New task project
+    ///
+    /// Adds a project to file tasks and events under.
+    #[action]
+    pub fn new_project(
+        &mut self,
+        cx: &mut ActionCx,
+        #[param("Its name")] name: String,
+    ) -> Result<(), Refusal> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(Refusal::new("a project needs a name"));
+        }
+        let order = self
+            .projects
+            .iter()
+            .map(|project| project.order.saturating_add(1))
+            .max()
+            .unwrap_or(0);
+        self.projects.push(Project {
+            id: cx.uuid(),
+            name: name.to_owned(),
+            color: Palette::Indigo,
+            order,
+        });
+        Ok(())
+    }
+
+    /// Delete event
+    ///
+    /// Deletes an event and its notes; a server holding it deletes it too.
+    #[action(item = events)]
+    pub fn delete_event(&mut self, event: &Id) -> Result<(), Refusal> {
+        let id = uuid(event)?;
+        self.events
+            .take(event)
+            .ok_or_else(|| Refusal::new("that event is gone"))?;
+        self.notes.remove(&id.to_string());
+        Ok(())
+    }
+
+    /// Reschedule
+    ///
+    /// Moves an event to another start and end.
+    #[action(item = events)]
+    pub fn reschedule(
+        &mut self,
+        event: &Id,
+        #[param("When it starts")] start: NaiveDateTime,
+        #[param("When it ends, at or after the start")] end: NaiveDateTime,
+    ) -> Result<(), Refusal> {
+        if end < start {
+            return Err(Refusal::new("an event ends after it starts"));
+        }
+        let event = self
+            .events
+            .find_mut(event)
+            .ok_or_else(|| Refusal::new("that event is gone"))?;
+        event.start = start;
+        event.end = end;
+        Ok(())
+    }
+
+    /// Move to calendar
+    ///
+    /// Files an event on another calendar, in that calendar's colour.
+    #[action(item = events)]
+    pub fn move_to_calendar(
+        &mut self,
+        event: &Id,
+        #[param("The remote calendar's id; none for the calendar on this device")] calendar: Option<
+            String,
+        >,
+        #[param("The colour it takes")] color: Palette,
+    ) -> Result<(), Refusal> {
+        if calendar
+            .as_ref()
+            .is_some_and(|calendar| calendar.is_empty() || calendar.len() > 512)
+        {
+            return Err(Refusal::new("that is no calendar"));
+        }
+        let event = self
+            .events
+            .find_mut(event)
+            .ok_or_else(|| Refusal::new("that event is gone"))?;
+        event.calendar_id = calendar;
+        event.color = color;
+        Ok(())
+    }
+
+    /// Invite
+    ///
+    /// Adds someone to an event's attendees, awaiting their answer.
+    #[action(item = events)]
+    pub fn invite(
+        &mut self,
+        cx: &mut ActionCx,
+        event: &Id,
+        #[param("Their email address")] email: String,
+        #[param("Their name")] name: String,
+    ) -> Result<(), Refusal> {
+        let email = email.trim();
+        let email = crate::actions::email_address(email)
+            .ok_or_else(|| Refusal::new("a complete email address, such as name@example.com"))?;
+        let event = self
+            .events
+            .find_mut(event)
+            .ok_or_else(|| Refusal::new("that event is gone"))?;
+        if event
+            .attendees
+            .iter()
+            .any(|attendee| attendee.email.eq_ignore_ascii_case(email))
+        {
+            return Err(Refusal::new(format!("{email} is already invited")));
+        }
+        event.attendees.push(Attendee {
+            id: cx.uuid(),
+            name: name.trim().to_owned(),
+            email: email.to_owned(),
+            status: InviteStatus::NeedsAction,
+        });
+        Ok(())
+    }
+
+    /// Delete task
+    ///
+    /// Deletes a task with its steps and their notes.
+    #[action(item = tasks)]
+    pub fn delete_task(&mut self, task: &Id) -> Result<(), Refusal> {
+        let id = uuid(task)?;
+        if self.task(id).is_none() {
+            return Err(Refusal::new("that task is gone"));
+        }
+        let mut gone = vec![id];
+        let mut at = 0;
+        while let Some(parent) = gone.get(at).copied() {
+            gone.extend(
+                self.tasks
+                    .iter()
+                    .filter(|task| task.parent == Some(parent))
+                    .map(|task| task.id),
+            );
+            if gone.len() > MAX_ITEMS_PER_ACTION {
+                return Err(Refusal::new(
+                    "that task has too many steps to delete at once",
+                ));
+            }
+            at += 1;
+        }
+        self.tasks.retain(|task| !gone.contains(&task.id));
+        for id in gone {
+            self.notes.remove(&id.to_string());
+        }
+        Ok(())
+    }
+
+    /// Delete project
+    ///
+    /// Deletes a project; the events and tasks filed under it stay, unfiled.
+    #[action(item = projects, destructive)]
+    pub fn delete_project(&mut self, project: &Id) -> Result<(), Refusal> {
+        let id = uuid(project)?;
+        self.projects
+            .take(project)
+            .ok_or_else(|| Refusal::new("that project is gone"))?;
+        for event in self
+            .events
+            .iter_mut()
+            .filter(|event| event.project == Some(id))
+        {
+            event.project = None;
+        }
+        for task in self
+            .tasks
+            .iter_mut()
+            .filter(|task| task.project == Some(id))
+        {
+            task.project = None;
+        }
+        Ok(())
+    }
+
+    /// Import calendar items
+    ///
+    /// Adds the events and tasks of a calendar file, leaving out what the
+    /// calendar already holds.
+    #[action(id = "import-items")]
+    pub fn import_items(
+        &mut self,
+        #[param("The events, each under its own new id")] events: Vec<EventData>,
+        #[param("The tasks")] tasks: Vec<TaskData>,
+    ) -> Result<(), Refusal> {
+        if events.len().saturating_add(tasks.len()) > MAX_ITEMS_PER_ACTION {
+            return Err(Refusal::new(
+                "a calendar file to import holds at most 4096 items",
+            ));
+        }
+        let events = events
+            .iter()
+            .map(|data| {
+                let event = data
+                    .to_event()
+                    .ok_or_else(|| Refusal::new("an imported event is invalid"))?;
+                self.project_exists(event.project)?;
+                Ok(event)
+            })
+            .collect::<Result<Vec<_>, Refusal>>()?;
+        let tasks = tasks
+            .iter()
+            .map(|data| {
+                let task = data
+                    .to_task()
+                    .ok_or_else(|| Refusal::new("an imported task is invalid"))?;
+                self.project_exists(task.project)?;
+                Ok(task)
+            })
+            .collect::<Result<Vec<_>, Refusal>>()?;
+        // What the calendar already holds is not imported twice: an event is
+        // the same title at the same start, a task the same title and due
+        // date under another id.
+        for event in events {
+            if self.events.iter().any(|held| {
+                held.id == event.id || (held.title == event.title && held.start == event.start)
+            }) {
+                continue;
+            }
+            self.notes.insert(
+                event.id.to_string(),
+                RichText::from_markdown("Imported from .ics"),
+            );
+            self.events.push(event);
+        }
+        for task in tasks {
+            if self
+                .tasks
+                .iter()
+                .any(|held| held.id != task.id && held.title == task.title && held.due == task.due)
+            {
+                continue;
+            }
+            self.notes.entry(task.id.to_string()).or_default();
+            match self.tasks.find_mut(&key(task.id)) {
+                Some(held) => *held = task,
+                None => self.tasks.push(task),
+            }
+        }
+        Ok(())
+    }
+
+    /// Adopt a server's event
+    ///
+    /// Writes an event as its server holds it, which therefore needs no
+    /// upload.
+    #[action(external)]
+    pub fn adopt_remote_event(
+        &mut self,
+        #[param("The event as the server holds it")] event: EventData,
+        #[param("Where the server keeps it")] at: RemoteAt,
+    ) -> Result<(), Refusal> {
+        at.valid()?;
+        let event = event
+            .to_event()
+            .ok_or_else(|| Refusal::new("the server's event is invalid"))?;
+        let id = event.id.to_string();
+        let holds = fingerprint(&event);
+        self.notes.entry(id.clone()).or_default();
+        match self.events.find_mut(&key(event.id)) {
+            Some(held) => *held = event,
+            None => self.events.push(event),
+        }
+        self.remote.insert(id, at.copy(holds, false));
+        Ok(())
+    }
+
+    /// Adopt a server's task
+    ///
+    /// Writes a task as its server holds it.
+    #[action(external)]
+    pub fn adopt_remote_task(
+        &mut self,
+        #[param("The task as the server holds it")] task: TaskData,
+        #[param("Where the server keeps it")] at: RemoteAt,
+    ) -> Result<(), Refusal> {
+        at.valid()?;
+        let task = task
+            .to_task()
+            .ok_or_else(|| Refusal::new("the server's task is invalid"))?;
+        let id = task.id.to_string();
+        self.notes.entry(id.clone()).or_default();
+        match self.tasks.find_mut(&key(task.id)) {
+            Some(held) => *held = task,
+            None => self.tasks.push(task),
+        }
+        self.remote.insert(id, at.copy(String::new(), true));
+        Ok(())
+    }
+
+    /// Drop what a server removed
+    ///
+    /// Removes an item its server no longer holds.
+    #[action(external)]
+    pub fn drop_remote_item(&mut self, #[param("The event or task")] item: Uuid) {
+        let id = key(item);
+        self.events.take(&id);
+        self.tasks.take(&id);
+        self.notes.remove(id.as_str());
+        self.remote.remove(id.as_str());
+    }
+
+    /// Record an upload
+    ///
+    /// Records that a server took the version of an event it was sent.
+    #[action(external)]
+    pub fn server_applied(
+        &mut self,
+        #[param("The event")] event: Uuid,
+        #[param("Where the server now keeps it")] at: RemoteAt,
+        #[param("What it now holds: the uploaded version's fingerprint")] holds: String,
+    ) -> Result<(), Refusal> {
+        at.valid()?;
+        self.remote.insert(event.to_string(), at.copy(holds, false));
+        Ok(())
+    }
+
+    /// Record a server delete
+    ///
+    /// Records that a server deleted an item it was told to.
+    #[action(external)]
+    pub fn server_removed(&mut self, #[param("The event")] item: Uuid) {
+        self.remote.remove(&item.to_string());
+    }
+
+    /// Record a pull
+    ///
+    /// Remembers where a remote calendar's last pull ended.
+    #[action(external)]
+    pub fn pulled(
+        &mut self,
+        #[param("The remote calendar's id")] calendar: String,
+        #[param("Its sync token")] token: String,
+    ) -> Result<(), Refusal> {
+        if calendar.is_empty() || calendar.len() > 512 || token.len() > 4096 {
+            return Err(Refusal::new("that is no sync token of a calendar"));
+        }
+        self.sync_tokens.insert(calendar, token);
+        Ok(())
     }
 }
 
-/// The dispatcher of `owner`'s notes: a rich-text child of the calendar
-/// whose every edit is [`CalendarAction::EditNotes`] on that owner.
+/// How many settled uploads and deletes the calendar keeps.
+const SETTLED_KEPT: usize = 64;
+
+impl Calendar {
+    /// After every change, whoever made it: queue the upload of each remote
+    /// event whose server does not hold it as it is now, and the delete of
+    /// each copy a server holds of an event gone from that calendar here;
+    /// forget what no longer needs doing (an event deleted before its
+    /// upload ran, a delete an undo took back).
+    fn queue(&mut self, _before: &Self, cx: &mut ActionCx) {
+        let wanted_uploads: Vec<Upload> = self
+            .events
+            .iter()
+            .filter_map(|event| {
+                let calendar = event.calendar_id.clone()?;
+                match self.remote.get(&event.id.to_string()) {
+                    // Still on the calendar it left: deleted there first.
+                    Some(copy) if copy.calendar != calendar => None,
+                    Some(copy) if copy.holds == fingerprint(event) => None,
+                    _ => Some(Upload {
+                        event: event.id,
+                        calendar,
+                    }),
+                }
+            })
+            .collect();
+        let wanted_deletes: Vec<Removal> = self
+            .remote
+            .iter()
+            .filter(|(_, copy)| !copy.task)
+            .filter_map(|(id, copy)| {
+                let item = id.parse().ok()?;
+                let kept = self.event(item).is_some_and(|event| {
+                    event.calendar_id.as_deref() == Some(copy.calendar.as_str())
+                });
+                (!kept).then(|| Removal {
+                    item,
+                    calendar: copy.calendar.clone(),
+                    href: copy.href.clone(),
+                    etag: copy.etag.clone(),
+                })
+            })
+            .collect();
+
+        let stale: Vec<Id> = self
+            .uploads
+            .pending()
+            .filter(|(_, upload)| !wanted_uploads.contains(upload))
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in stale {
+            self.uploads.forget(&id);
+        }
+        for upload in wanted_uploads {
+            if !self.uploads.pending().any(|(_, queued)| *queued == upload) {
+                self.uploads.push(cx.id(), upload);
+            }
+        }
+        let stale: Vec<Id> = self
+            .deletes
+            .pending()
+            .filter(|(_, removal)| {
+                !wanted_deletes
+                    .iter()
+                    .any(|wanted| wanted.item == removal.item)
+            })
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in stale {
+            self.deletes.forget(&id);
+        }
+        for removal in wanted_deletes {
+            if !self
+                .deletes
+                .pending()
+                .any(|(_, queued)| queued.item == removal.item)
+            {
+                self.deletes.push(cx.id(), removal);
+            }
+        }
+        self.uploads.prune(SETTLED_KEPT);
+        self.deletes.prune(SETTLED_KEPT);
+    }
+
+    /// Refuse a project the calendar does not hold.
+    fn project_exists(&self, project: Option<crate::model::Id>) -> Result<(), Refusal> {
+        match project {
+            Some(project) if self.project(project).is_none() => {
+                Err(Refusal::new("that project is gone"))
+            }
+            _ => Ok(()),
+        }
+    }
+
+    /// Every item's notes read whole: notes are short, and the editor's
+    /// pristine check, search and the history read each as one string.
+    /// Runs after every read and refresh.
+    fn load_notes(&mut self, doc: &Doc, _demand: &Demand) -> Result<(), ModelError> {
+        let whole = Demand::range(0..usize::MAX);
+        for notes in self.notes.values_mut() {
+            notes.demand(doc, &whole)?;
+        }
+        Ok(())
+    }
+
+    /// The calendar `doc` holds, its notes read whole.
+    ///
+    /// # Errors
+    /// Returns [`ModelError`] when `doc` holds no calendar.
+    pub fn read_whole(doc: &Doc) -> Result<Self, ModelError> {
+        let mut calendar = <Self as tilo_resource::Resource>::read(doc)?;
+        calendar.load_notes(doc, &Demand::none())?;
+        Ok(calendar)
+    }
+
+    /// The published id of the item `item` names — an event, one of its
+    /// occurrences (`<event>/occurrences/<date>`), a task or a project — when
+    /// the calendar holds it.
+    fn item_resource(&self, item: &Id) -> Option<String> {
+        let (id, occurrence) = match item.as_str().split_once("/occurrences/") {
+            Some((id, date)) => (id, Some(date)),
+            None => (item.as_str(), None),
+        };
+        let id: crate::model::Id = id.parse().ok()?;
+        if self.event(id).is_some() {
+            return Some(match occurrence {
+                Some(date) => crate::actions::occurrence_resource_id(
+                    id,
+                    chrono::NaiveDate::parse_from_str(date, crate::actions::DATE_FMT).ok()?,
+                ),
+                None => crate::actions::event_resource_id(id),
+            });
+        }
+        if occurrence.is_some() {
+            return None;
+        }
+        if self.task(id).is_some() {
+            return Some(crate::actions::task_resource_id(id));
+        }
+        self.project(id)
+            .map(|_| crate::actions::project_resource_id(id))
+    }
+
+    /// Search narrows to the events, to the tasks, or to one project's
+    /// tasks; a project's scope nests under the tasks'.
+    fn scopes(&self) -> Vec<ScopeDecl> {
+        let mut scopes = vec![
+            ScopeDecl::new(EVENTS_SCOPE, "Events"),
+            ScopeDecl::new(TASKS_SCOPE, "Tasks"),
+        ];
+        scopes.extend(
+            self.projects
+                .iter()
+                .map(|project| ScopeDecl::new(project_scope(project.id), project.name.clone())),
+        );
+        scopes
+    }
+
+    /// Every event, task and project, found by its title, place or notes;
+    /// choosing one opens it.
+    fn search_entries(&self) -> Vec<SearchEntry> {
+        let events = self.events.iter().map(|event| SearchEntry {
+            within: Some(EVENTS_SCOPE.into()),
+            anchor: Some(crate::actions::event_resource_id(event.id)),
+            title: event.display_title().to_owned(),
+            text: format!("{} {}", event.location, self.notes_text(event.id))
+                .trim()
+                .to_owned(),
+            ..Default::default()
+        });
+        let tasks = self.tasks.iter().map(|task| SearchEntry {
+            within: Some(
+                task.project
+                    .map_or_else(|| TASKS_SCOPE.to_owned(), project_scope),
+            ),
+            anchor: Some(crate::actions::task_resource_id(task.id)),
+            title: task.title.clone(),
+            text: self.notes_text(task.id),
+            ..Default::default()
+        });
+        let projects = self.projects.iter().map(|project| SearchEntry {
+            anchor: Some(crate::actions::project_resource_id(project.id)),
+            title: project.name.clone(),
+            text: String::new(),
+            ..Default::default()
+        });
+        events.chain(tasks).chain(projects).collect()
+    }
+}
+
+/// The notes of the event or task `id`, as a path.
+pub(crate) fn notes_path(id: crate::model::Id) -> tilo_resource::Path<Calendar, RichText> {
+    Calendar::paths().notes.key(id.to_string())
+}
+
+/// The dispatcher of the notes of the event or task `id`: each edit of
+/// them is the calendar's field edit at their path.
 pub(crate) fn notes_dispatcher(
     calendar: &Dispatcher<Calendar>,
-    owner: &NoteOwner,
+    id: crate::model::Id,
 ) -> Dispatcher<RichText> {
-    calendar.child::<RichText>(&notes_resource_id(owner), notes_edit(owner.clone()))
+    let notes = notes_path(id);
+    calendar.child::<RichText>(
+        &tilo_resource::child_resource_id::<Calendar>(&format!("notes:{id}")),
+        move |op| tilo_resource::Stamped {
+            operation: CalendarAction::FieldEdit(notes.edit(tilo_resource::EditOp::Rich {
+                rich: serde_json::to_value(&op).unwrap_or_default(),
+            })),
+            now_ms: 0,
+        },
+    )
 }
 
-/// Every event's and task's notes, published as rich-text children.
-fn publish_notes(state: &Model) -> impl Iterator<Item = tilo_actions::Resource> + '_ {
-    let events = state.events.iter().map(|event| {
-        let owner = NoteOwner::Event {
-            id: event.id.to_string(),
-        };
-        (owner, event.display_title())
-    });
-    let tasks = state.tasks.iter().map(|task| {
-        let owner = NoteOwner::Task {
-            id: task.id.to_string(),
-        };
-        (owner, task.title.as_str())
-    });
-    events.chain(tasks).map(|(owner, of)| {
-        publish_child::<RichText, Calendar>(
-            &notes_resource_id(&owner),
-            &format!("Notes of {of}"),
-            None,
-            notes_edit(owner),
-        )
-    })
+/// The calendar's work outside its document: talking to the servers of the
+/// accounts on this device, files, Mail, and how this person shows each
+/// calendar.
+#[derive(Clone, Debug, PartialEq, Effect)]
+#[effect(operation = "calendar.effects")]
+pub enum CalendarEffect {
+    /// Sync calendars
+    ///
+    /// Pulls the calendars of this device's accounts from their servers.
+    #[effect(job, device_only)]
+    Sync,
+    /// Export ICS
+    ///
+    /// Saves every event and task to an iCalendar file you choose.
+    #[effect(job, device_only)]
+    ExportIcs,
+    /// Import ICS
+    ///
+    /// Imports the events and tasks of an iCalendar file you choose.
+    #[effect(job, device_only)]
+    ImportIcs,
+    /// Prepare invitation in Mail
+    ///
+    /// Answers with the arguments of Mail's invitation draft for one attendee;
+    /// nothing is sent.
+    #[effect(returns)]
+    PrepareInMail {
+        #[param("Event id")]
+        event_id: String,
+        #[param("Attendee id")]
+        attendee_id: String,
+    },
+    /// Set a calendar's colour
+    ///
+    /// A display choice of this person, which follows them to their other
+    /// devices.
+    SetColor {
+        #[param("Calendar id")]
+        id: String,
+        #[param("indigo, emerald, amber, red, blue, violet or slate")]
+        color: String,
+    },
+    /// Show or hide a calendar
+    ///
+    /// A display choice of this person, which follows them to their other
+    /// devices.
+    SetVisibility {
+        #[param("Calendar id")]
+        id: String,
+        #[param("Whether its events are shown")]
+        visible: bool,
+    },
+    /// Show calendar view
+    #[effect(view, idempotent)]
+    ShowView {
+        #[param("Calendar view to show", choices = ["month", "week", "day", "agenda", "tasks"])]
+        view: String,
+    },
+    /// Show all calendars
+    #[effect(view, idempotent)]
+    ShowAllCalendars,
+    /// Show month
+    #[effect(view, idempotent)]
+    ShowMonth,
+    /// Show week
+    #[effect(view, idempotent)]
+    ShowWeek,
+    /// Show day
+    #[effect(view, idempotent)]
+    ShowDay,
+    /// Show agenda
+    #[effect(view, idempotent)]
+    ShowAgenda,
+    /// Show tasks
+    ///
+    /// Opens this workspace's Inbox task list without changing its content.
+    #[effect(view, idempotent)]
+    ShowTasks,
+    /// Open
+    ///
+    /// Shows an event, one occurrence of it, a task, a project's tasks or
+    /// one calendar's events.
+    #[effect(view, row, idempotent)]
+    Open {
+        #[param("The event, occurrence, task, project or calendar's resource id")]
+        item: String,
+    },
 }
 
 /// Framework app: the calendar widget is the surface over [`Calendar`].
 pub struct CalendarShell;
 
-#[allow(
-    clippy::expect_used,
-    reason = "compile-time CalendarAction/Operation payloads always serialize"
-)]
-impl Resource for Calendar {
-    const KIND: &'static str = "calendar.calendar";
-    const LABEL: &'static str = "Calendar";
-    const ACTION_TYPE: &'static str = CALENDAR_ACTION_TYPE;
+/// Every screenshot scenario: the five views with the editor closed, the
+/// event editor and each of its popovers, the task detail and its pickers,
+/// the empty and transport states, and the two narrow presentations.
+const SCENARIOS: &[&str] = &[
+    "month",
+    "week",
+    "day",
+    "agenda",
+    "tasks",
+    "event_editor",
+    "new_event",
+    "date_popover",
+    "time_popover",
+    "calendar_popover",
+    "task_detail",
+    "task_due_picker",
+    "task_priority_picker",
+    "task_project_picker",
+    "empty",
+    "empty_week",
+    "empty_agenda",
+    "empty_tasks",
+    "sync_error",
+    "sync_offline",
+    "sync_syncing",
+    "sync_conflict",
+    "collapsed_sidebar",
+    "narrow_drawer",
+    "narrow_editor",
+];
 
-    type State = Model;
-    type Action = CalendarAction;
+/// Whether `scenario` shows a first run: no events, tasks or accounts.
+fn is_empty_scenario(scenario: Option<&str>) -> bool {
+    scenario.is_some_and(|name| name.starts_with("empty"))
+}
 
-    fn register(registry: &mut tilo_actions::ActionRegistry) {
-        crate::actions::register(registry);
+/// What a capture shows in place of the person's `CalDAV` accounts: sample
+/// accounts whose servers answer from bundled sample calendars, never the
+/// network.
+pub(crate) struct SampleAccounts(pub(crate) crate::AccountStore);
+
+/// The moment a capture shows as now: the same day and time on every run,
+/// so the sample calendar, today's highlight and the now line never move.
+pub(crate) struct ShotNow(pub(crate) chrono::NaiveDateTime);
+
+/// The day and time every capture is taken at: a Tuesday morning.
+pub(crate) fn shot_now() -> chrono::NaiveDateTime {
+    chrono::NaiveDate::from_ymd_opt(2026, 6, 30)
+        .and_then(|day| day.and_hms_opt(10, 30, 0))
+        .unwrap_or_default()
+}
+
+/// The curated notes the sample calendar opens with, by the title their event
+/// starts with.
+const SAMPLE_NOTES: [(&str, &str); 2] = [
+    (
+        "Design review",
+        "# Agenda\n\nWalk through the latest mockups.\n\nOpen questions:\n\n\
+         Sign-off on the final layout?\n\nConfirm the launch timeline.",
+    ),
+    (
+        "Team standup",
+        "# Standup\n\nWrapped up last week's report.\n\n\
+         Following up with the vendor today.\n\nBlockers: none.",
+    ),
+];
+
+/// What fills an empty calendar with `sample`: its projects, then its
+/// events and tasks, then the curated notes of the sample events.
+pub(crate) fn sample_invocations(sample: &Calendar) -> Vec<Invoke<Calendar>> {
+    let paths = Calendar::paths();
+    let projects = sample
+        .projects
+        .iter()
+        .map(|project| Invoke::from(paths.projects.insert(project)));
+    let events = sample.events.iter().map(|event| {
+        Calendar::NEW_EVENT.with(calendar::NewEvent {
+            event: EventData::from_event(event),
+        })
+    });
+    // A step after the task it is a step of.
+    let depth = |task: &crate::model::Task| {
+        std::iter::successors(task.parent, |parent| sample.task(*parent)?.parent)
+            .take(sample.tasks.len())
+            .count()
+    };
+    let mut ordered: Vec<_> = sample.tasks.iter().collect();
+    ordered.sort_by_key(|task| depth(task));
+    let tasks = ordered.into_iter().map(|task| {
+        Calendar::NEW_TASK.with(calendar::NewTask {
+            task: TaskData::from_task(task),
+        })
+    });
+    let notes = SAMPLE_NOTES.iter().filter_map(|(title, markdown)| {
+        let event = sample
+            .events
+            .iter()
+            .find(|event| event.title.starts_with(title))?;
+        notes_path(event.id)
+            .perform(&RichTextAction::ReplaceBody {
+                markdown: (*markdown).to_owned(),
+            })
+            .ok()
+            .map(Invoke::from)
+    });
+    projects.chain(events).chain(tasks).chain(notes).collect()
+}
+
+/// The `ICS` text a launch hands the calendar: the file a host handed over,
+/// else the local file its argument names.
+fn launched_ics(input: &LaunchInput<'_>) -> Result<Option<String>, String> {
+    const LIMIT: usize = 8 * 1024 * 1024;
+    let bytes = if let Some(file) = input.file() {
+        file.bytes().to_vec()
+    } else if let Some(target) = input.argument() {
+        let path = local_path(target)?;
+        let (dir, name) =
+            tilo_files::file_at(&path).map_err(|error| format!("{}: {error}", path.display()))?;
+        tilo_files::blocking::read(&dir, &name)
+            .map_err(|error| format!("{}: {error}", path.display()))?
+    } else {
+        return Ok(None);
+    };
+    if bytes.len() > LIMIT {
+        return Err("a calendar file to import is at most 8 MiB".into());
     }
+    String::from_utf8(bytes)
+        .map(Some)
+        .map_err(|_| "a calendar file to import is UTF-8 text".into())
+}
 
-    fn read(doc: &Doc) -> Result<Model, ModelError> {
-        Ok(CalDoc::read_model(doc))
-    }
-
-    fn initialize(_doc: &mut Doc) -> Result<(), ModelError> {
-        // An empty Automerge document is a valid empty calendar; maps are
-        // created on first write inside Action::apply.
-        Ok(())
-    }
-
-    fn declarations() -> Vec<ActionDecl<Self>> {
-        vec![
-            ActionDecl::new(
-                "new-event",
-                "New event",
-                vec![ActionParam::required(
-                    tilo_actions::PROMPTED_PARAM,
-                    ParamType::Text,
-                    "Title",
-                )],
-                |args, _| {
-                    let title = args
-                        .text(tilo_actions::PROMPTED_PARAM)
-                        .unwrap_or_default()
-                        .trim()
-                        .to_owned();
-                    let mut data = default_local_event();
-                    data.id = Uuid::new_v4().to_string();
-                    data.title = title;
-                    Ok(CalendarAction::UpsertEvent(data))
-                },
-            )
-            .describe("Create an event on the local calendar."),
-            ActionDecl::new(
-                "new-task",
-                "New task",
-                vec![ActionParam::required(
-                    tilo_actions::PROMPTED_PARAM,
-                    ParamType::Text,
-                    "Title",
-                )],
-                |args, _| {
-                    let title = args
-                        .text(tilo_actions::PROMPTED_PARAM)
-                        .unwrap_or_default()
-                        .trim()
-                        .to_owned();
-                    if title.is_empty() {
-                        return Err("task title must contain non-whitespace text".into());
-                    }
-                    Ok(CalendarAction::UpsertTask(TaskData {
-                        id: Uuid::new_v4().to_string(),
-                        title,
-                        done: false,
-                        due: String::new(),
-                        priority: Priority::None.rank(),
-                        project: String::new(),
-                        parent: String::new(),
-                    }))
-                },
-            ),
-            ActionDecl::new(
-                "new-project",
-                "New task project",
-                vec![ActionParam::required(
-                    tilo_actions::PROMPTED_PARAM,
-                    ParamType::Text,
-                    "Name",
-                )],
-                |args, _| {
-                    let name = args
-                        .text(tilo_actions::PROMPTED_PARAM)
-                        .unwrap_or_default()
-                        .trim()
-                        .to_owned();
-                    if name.is_empty() {
-                        return Err("project name must contain non-whitespace text".into());
-                    }
-                    Ok(CalendarAction::UpsertProject(ProjectData {
-                        id: Uuid::new_v4().to_string(),
-                        name,
-                        color: Palette::Indigo.index(),
-                        order: 0,
-                    }))
-                },
-            ),
-        ]
-    }
-
-    fn local_operations() -> Vec<ActionSpec> {
-        let mut ops = vec![
-            ActionSpec::typed_operation(
-                "show-view",
-                "Show calendar view",
-                "month / week / day / agenda",
-                OperationKind::View,
-                CALENDAR_OPERATION_TYPE,
-                vec![
-                    ActionParam::required("view", ParamType::Text, "Calendar view to show")
-                        .with_choices(["month", "week", "day", "agenda"]),
-                ],
-                |args| {
-                    let operation = match args.text("view").unwrap_or("month") {
-                        "week" => CalendarOperation::ShowWeek,
-                        "day" => CalendarOperation::ShowDay,
-                        "agenda" => CalendarOperation::ShowAgenda,
-                        _ => CalendarOperation::ShowMonth,
-                    };
-                    EncodedAction::encode_operation(CALENDAR_OPERATION_TYPE, &operation)
-                        .unwrap_or_else(|_| EncodedAction {
-                            type_id: CALENDAR_OPERATION_TYPE.to_string(),
-                            payload: Vec::new(),
-                        })
-                },
-            )
-            .retry_policy(RetryPolicy::Idempotent),
-        ];
-        for (id, label, operation) in [
-            (
-                "show-all-calendars",
-                "Show all calendars",
-                CalendarOperation::ShowAllCalendars,
-            ),
-            ("show-month", "Show month", CalendarOperation::ShowMonth),
-            ("show-week", "Show week", CalendarOperation::ShowWeek),
-            ("show-day", "Show day", CalendarOperation::ShowDay),
-            ("show-agenda", "Show agenda", CalendarOperation::ShowAgenda),
-            ("sync", "Sync calendars", CalendarOperation::Sync),
-            ("export-ics", "Export ICS", CalendarOperation::ExportIcs),
-            (
-                "import-latest-ics",
-                "Import latest ICS",
-                CalendarOperation::ImportIcs,
-            ),
-        ] {
-            let kind = match operation {
-                CalendarOperation::Sync
-                | CalendarOperation::ExportIcs
-                | CalendarOperation::ImportIcs => OperationKind::Effect,
-                _ => OperationKind::View,
-            };
-            ops.push(
-                ActionSpec::operation(id, label, kind, CALENDAR_OPERATION_TYPE, &operation)
-                    .expect("CalendarOperation encodes")
-                    .retry_policy(RetryPolicy::Idempotent),
-            );
+/// The local path a launch argument names: a path, or a `file:` URL on this
+/// machine.
+fn local_path(target: &str) -> Result<std::path::PathBuf, String> {
+    if target.to_ascii_lowercase().starts_with("file:") {
+        let url = url::Url::parse(target).map_err(|error| format!("invalid file URL: {error}"))?;
+        if url
+            .host_str()
+            .is_some_and(|host| !host.is_empty() && host != "localhost")
+        {
+            return Err("the calendar imports only files on this device".into());
         }
-        ops
+        Ok(std::path::PathBuf::from(ui::uri::decode(url.path())))
+    } else if target.contains("://") {
+        Err("the calendar imports only files on this device".into())
+    } else {
+        Ok(std::path::PathBuf::from(target))
     }
+}
 
-    fn children(state: &Model) -> Vec<tilo_actions::Resource> {
-        let mut children = Vec::new();
-        for event in &state.events {
-            let id = event.id.to_string();
-            children.push(
-                tilo_actions::Resource::new(
-                    format!("calendar.event:{id}"),
-                    "calendar.event",
-                    event.display_title().to_owned(),
-                )
-                .with_action(
-                    ActionSpec::operation(
-                        "open",
-                        "Open event",
-                        OperationKind::View,
-                        CALENDAR_OPERATION_TYPE,
-                        &CalendarOperation::OpenEvent { id: id.clone() },
-                    )
-                    .expect("encodes")
-                    .retry_policy(RetryPolicy::Idempotent),
-                )
-                .with_action(
-                    ActionSpec::immediate(
-                        "delete",
-                        "Delete event",
-                        CALENDAR_ACTION_TYPE,
-                        &delete_event_action(&id, None),
-                    )
-                    .expect("encodes")
-                    .reversible()
-                    .destructive(),
-                ),
-            );
-        }
-        for task in &state.tasks {
-            let id = task.id.to_string();
-            let done = task.done;
-            children.push(
-                tilo_actions::Resource::new(
-                    format!("calendar.task:{id}"),
-                    "calendar.task",
-                    task.title.clone(),
-                )
-                .with_action(
-                    ActionSpec::operation(
-                        "open",
-                        "Open task",
-                        OperationKind::View,
-                        CALENDAR_OPERATION_TYPE,
-                        &CalendarOperation::OpenTask { id: id.clone() },
-                    )
-                    .expect("encodes")
-                    .retry_policy(RetryPolicy::Idempotent),
-                )
-                .with_action(
-                    ActionSpec::immediate(
-                        "toggle-done",
-                        if done { "Mark not done" } else { "Mark done" },
-                        CALENDAR_ACTION_TYPE,
-                        &set_task_done_action(&id, !done),
-                    )
-                    .expect("encodes")
-                    .reversible(),
-                )
-                .with_action(
-                    ActionSpec::immediate(
-                        "delete",
-                        "Delete task",
-                        CALENDAR_ACTION_TYPE,
-                        &delete_task_action(&id, Vec::new()),
-                    )
-                    .expect("encodes")
-                    .reversible()
-                    .destructive(),
-                ),
-            );
-        }
-        children.extend(publish_notes(state));
-        for project in &state.projects {
-            let id = project.id.to_string();
-            children.push(
-                tilo_actions::Resource::new(
-                    format!("calendar.project:{id}"),
-                    "calendar.project",
-                    project.name.clone(),
-                )
-                .with_action(
-                    ActionSpec::operation(
-                        "open",
-                        "Open project tasks",
-                        OperationKind::View,
-                        CALENDAR_OPERATION_TYPE,
-                        &CalendarOperation::OpenProject { id },
-                    )
-                    .expect("encodes")
-                    .retry_policy(RetryPolicy::Idempotent),
-                ),
-            );
-        }
-        children
-    }
+/// Importing the events and tasks of the iCalendar `source`, or `None` when
+/// it holds neither.
+pub(crate) fn import(source: &str) -> Option<Invoke<Calendar>> {
+    let (events, tasks) = crate::actions::import_payload(source)?;
+    Some(Calendar::IMPORT_ITEMS.with(calendar::ImportItems { events, tasks }))
+}
 
-    fn search(state: &Model) -> Vec<SearchEntry> {
-        let events = state.events.iter().map(|event| SearchEntry {
-            anchor: Some(format!("calendar.event:{}", event.id)),
-            title: event.display_title().to_owned(),
-            text: event.location.clone(),
-            action: None,
-        });
-        let tasks = state.tasks.iter().map(|task| SearchEntry {
-            anchor: Some(format!("calendar.task:{}", task.id)),
-            title: task.title.clone(),
-            text: String::new(),
-            action: None,
-        });
-        events.chain(tasks).collect()
-    }
+/// The search scope holding every event.
+const EVENTS_SCOPE: &str = "calendar.events";
+/// The search scope holding every task.
+const TASKS_SCOPE: &str = "calendar.tasks";
+
+/// The search scope of one project's tasks, inside the tasks' scope.
+fn project_scope(id: crate::model::Id) -> String {
+    format!("{TASKS_SCOPE}/{}", crate::actions::project_resource_id(id))
 }
 
 impl ResourceApp for CalendarShell {
@@ -394,230 +1004,161 @@ impl ResourceApp for CalendarShell {
     const ID: &'static str = "so.tilo.calendar";
     const TITLE: &'static str = "Calendar";
     const ICON: Option<&'static str> = Some("calendar");
-    fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
-        (1280, 800)
-    }
+    const OPENS: &'static [&'static str] = &["text/calendar"];
+    const ARGUMENTS: usize = 1;
 
     fn view(cx: &mut ViewCx<Calendar>) -> Element {
-        cx.surface(CalendarApp::new())
-    }
-}
-
-/// Framework dispatcher when hosted; local action host for standalone tests.
-#[derive(Default)]
-pub(crate) struct ActionSink {
-    local: ui::ActionHost,
-    framework: Option<Dispatcher<Calendar>>,
-    last: Option<EncodedAction>,
-    /// Test-only: hosted lookup without a framework dispatcher.
-    #[cfg(test)]
-    hosted: bool,
-}
-
-impl ActionSink {
-    pub(crate) fn attach(&mut self, dispatcher: Dispatcher<Calendar>) {
-        self.framework = Some(dispatcher);
+        // A search hit or an agent's `open` shows the item it names.
+        let app = CalendarApp::new();
+        let opens = app.opens();
+        let live = cx.live().clone();
+        cx.on_open_item(move |item| {
+            let resource = live.get().item_resource(item).ok_or_else(|| {
+                Refusal::new(format!(
+                    "`{item}` is no event, task or project of this calendar"
+                ))
+            })?;
+            opens.borrow_mut().push(resource);
+            Ok(())
+        });
+        cx.surface(app)
     }
 
-    /// The framework's dispatcher, once the calendar is hosted.
-    pub(crate) fn framework(&self) -> Option<&Dispatcher<Calendar>> {
-        self.framework.as_ref()
+    fn catalog() -> Option<&'static EmbeddedCatalog> {
+        Some(&CATALOG)
     }
 
-    pub(crate) fn is_hosted(&self) -> bool {
-        #[cfg(test)]
-        if self.hosted {
-            return true;
-        }
-        self.framework.is_some()
-    }
-
-    /// Test-only: mark hosted without constructing a framework dispatcher.
-    #[cfg(test)]
-    pub(crate) fn mark_hosted_for_test(&mut self) {
-        self.hosted = true;
-    }
-
-    pub(crate) fn dispatch(&mut self, doc: &mut AutoCommit, action: &CalendarAction) {
-        match &self.framework {
-            Some(dispatcher) => {
-                self.last = Some(encode(action));
-                let _ =
-                    dispatcher.apply_now_with(doc, action, crate::actions::history_context(action));
+    /// A calendar file the calendar is opened with is imported into it: the
+    /// events and tasks it holds that the calendar does not, as one step.
+    fn launch(input: &LaunchInput<'_>, _created: bool) -> Vec<Invoke<Calendar>> {
+        let source = match launched_ics(input) {
+            Ok(Some(source)) => source,
+            Ok(None) => return Vec::new(),
+            Err(error) => {
+                tracing::warn!(%error, "calendar: the launch file was not imported");
+                return Vec::new();
             }
-            None => {
-                self.local.dispatch_with_context(
-                    doc,
-                    CALENDAR_ACTION_TYPE,
-                    action,
-                    crate::actions::history_context(action),
-                );
-            }
+        };
+        let import = import(&source);
+        if import.is_none() {
+            tracing::warn!("calendar: the launch file holds no supported calendar items");
         }
+        import.into_iter().collect()
     }
 
-    pub(crate) fn take_committed(&mut self) -> Option<Vec<ChangeHash>> {
-        self.local.take_committed()
+    fn scenarios() -> &'static [&'static str] {
+        SCENARIOS
     }
 
-    pub(crate) fn try_dispatch_with_context(
-        &mut self,
-        doc: &mut AutoCommit,
-        type_id: &str,
-        action: &CalendarAction,
-        context: tilo_actions::ActionContext,
-    ) -> Result<(), tilo_actions::ActionError> {
-        match &self.framework {
-            Some(dispatcher) => {
-                self.last = Some(encode(action));
-                dispatcher.apply_now_with(doc, action, context)
-            }
-            None => self
-                .local
-                .try_dispatch_with_context(doc, type_id, action, context),
-        }
-    }
-
-    #[cfg(test)]
-    #[allow(dead_code, reason = "framework migration test helper")]
-    pub(crate) fn last_dispatched(&self) -> Option<&EncodedAction> {
-        if self.framework.is_some() {
-            self.last.as_ref()
+    fn shot_viewport(scenario: Option<&str>) -> (u32, u32) {
+        if scenario.is_some_and(|name| name.starts_with("narrow_")) {
+            (720, 900)
         } else {
-            self.local.last_dispatched()
+            (1280, 800)
         }
+    }
+
+    fn fixture(fixture: &mut Fixture<Calendar>) {
+        fixture.provide(ShotNow(shot_now()));
+        if !is_empty_scenario(fixture.scenario()) {
+            fixture.provide(SampleAccounts(crate::AccountStore::sample()));
+        }
+    }
+
+    /// The sample calendar around the capture's day, unless the scenario is
+    /// a first run.
+    fn scenario(name: Option<&str>) -> Vec<Invoke<Calendar>> {
+        if is_empty_scenario(name) {
+            return Vec::new();
+        }
+        sample_invocations(&crate::model::seed_demo(shot_now().date()))
     }
 }
 
-impl ResourceSurface<Calendar> for CalendarApp {
-    fn present(&mut self, state: &Rc<Model>) {
+impl ResourceSurface<Calendar, CalendarEffect> for CalendarApp {
+    fn present(&mut self, state: &Rc<Calendar>) {
         self.adopt_resource_state(state);
     }
 
     fn attach(&mut self, cx: SurfaceCx<Calendar>) {
-        self.attach_framework(cx.dispatcher());
+        if let Some(now) = cx.fixture::<ShotNow>() {
+            self.pin_now(now.0);
+        }
+        let accounts = if let Some(sample) = cx.fixture::<SampleAccounts>() {
+            Some(sample.0.clone())
+        } else if cx.mode().is_live() {
+            Some(crate::AccountStore::load_from_settings().unwrap_or_default())
+        } else {
+            None
+        };
+        self.follow_display(cx.settings::<crate::display::CalendarDisplay>());
+        if cx.mode().is_live() {
+            crate::outbox::drain(&cx, self.device_accounts());
+        }
+        self.attach_framework(
+            cx.dispatcher(),
+            accounts,
+            cx.fixture::<SampleAccounts>().is_some(),
+        );
+        if cx.mode().is_live()
+            && let Some(accounts) = cx.shared_person::<accounts::person::PersonAccounts>()
+        {
+            self.follow_person_accounts(accounts);
+        }
     }
+
+    fn stage(&mut self, scenario: Option<&str>) {
+        self.stage_scenario(scenario);
+    }
+
+    fn effect(
+        &mut self,
+        effect: CalendarEffect,
+        cx: &mut EffectCx<Calendar, Self>,
+    ) -> EffectAnswer {
+        self.answer_effect(effect, cx)
+    }
+
+    fn effects(&self) -> Vec<EffectStatus> {
+        self.effect_statuses()
+    }
+
+    /// The calendars of the accounts on this device, which can be opened,
+    /// shown and hidden, and each event's attendees, whose invitation Mail
+    /// prepares.
+    fn live_rows(&self) -> Vec<LiveRow> {
+        let mut rows = self.collection_rows();
+        rows.extend(self.attendee_rows());
+        rows
+    }
+}
+
+/// The calendar `doc` holds, as a test reads it.
+#[cfg(test)]
+pub(crate) fn read_doc(doc: &Doc) -> Calendar {
+    Calendar::read_whole(doc).expect("a calendar document")
+}
+
+/// An event on the local calendar at `start`, an hour long, as a test makes
+/// one.
+#[cfg(test)]
+pub(crate) fn event_at(title: &str, start: NaiveDateTime) -> Event {
+    Event {
+        id: Uuid::new_v4(),
+        title: title.to_owned(),
+        start,
+        end: start + chrono::Duration::hours(1),
+        recurrence_interval: 1,
+        timezone: "floating".into(),
+        ..Event::default()
+    }
+}
+
+/// `date` at `hour`:`minute`, as a test names a time.
+#[cfg(test)]
+pub(crate) fn at(date: chrono::NaiveDate, hour: u32, minute: u32) -> NaiveDateTime {
+    date.and_hms_opt(hour, minute, 0).expect("a time of day")
 }
 
 #[cfg(test)]
-mod host_undo_tests {
-    use super::*;
-    use crate::model::Id;
-    use ui::framework::testing::TestApp;
-    use ui::tilo_resource::Invoke;
-
-    fn notes_of(app: &TestApp<CalendarShell>, event: Id) -> String {
-        app.read_document(|doc| CalDoc::note_text(doc, true, event))
-    }
-
-    /// Typing in an open event's notes edits them as the calendar's
-    /// `EditNotes`, named in history after the notes, a word per undo step,
-    /// and kept when the calendar is opened again.
-    #[test]
-    fn typing_in_an_events_notes_edits_them_through_the_calendar() {
-        let mut app = TestApp::<CalendarShell>::new().expect("test app");
-        app.harness().key("n");
-        let event = app.state().events.first().expect("n creates an event").id;
-        // The new event opens with its title focused: Tab moves on to the
-        // location, the invite field, then the notes.
-        for _ in 0..3 {
-            app.harness().key("Tab");
-        }
-        app.harness().type_text("Agenda items");
-        assert_eq!(notes_of(&app, event), "Agenda items");
-
-        let notes = notes_resource_id(&NoteOwner::Event {
-            id: event.to_string(),
-        });
-        assert!(
-            app.versions()
-                .into_iter()
-                .filter_map(|version| version.context)
-                .any(|context| context
-                    .resource
-                    .is_some_and(|resource| resource.id == notes)),
-            "history names the event's notes as the resource edited"
-        );
-        assert!(app.undo());
-        assert_eq!(notes_of(&app, event), "Agenda ");
-        assert!(app.redo());
-
-        let app = app.reopen().expect("reopen");
-        assert_eq!(notes_of(&app, event), "Agenda items");
-    }
-
-    /// The palette, agents and scripts reach an event's notes as a rich-text
-    /// resource of their own, and what they do is the calendar's edit.
-    #[test]
-    fn an_agent_edits_an_events_notes_as_a_rich_text_child() {
-        let mut app = TestApp::<CalendarShell>::new().expect("test app");
-        let mut data = default_local_event();
-        data.id = Uuid::new_v4().to_string();
-        data.title = "Review".into();
-        let event = data.id.parse::<Id>().expect("id");
-        app.invoke(Invoke::apply(&CalendarAction::UpsertEvent(data)).expect("encode"))
-            .expect("create");
-        let notes = notes_resource_id(&NoteOwner::Event {
-            id: event.to_string(),
-        });
-        let surface = app.agent_surface();
-        assert!(
-            surface.as_array().expect("rows").iter().any(|row| {
-                row["resource"] == notes.as_str() && row["resource_kind"] == RichText::KIND
-            }),
-            "the notes are published as rich text: {surface}"
-        );
-        app.invoke_child::<RichText>(
-            &notes,
-            Invoke::<RichText>::apply(&RichTextAction::AppendParagraph {
-                text: "Bring the mockups".into(),
-            })
-            .expect("encode"),
-        )
-        .expect("append");
-        assert_eq!(notes_of(&app, event), "Bring the mockups");
-        assert!(app.undo());
-        assert_eq!(notes_of(&app, event), "");
-    }
-
-    /// Creating a remote-calendar event, then undoing through the host, must
-    /// queue a `CalDAV` delete via the inverse document action — not Automerge
-    /// patches alone.
-    #[test]
-    fn undo_of_remote_event_create_queues_del_outbox_through_host() {
-        let mut app = TestApp::<CalendarShell>::new().expect("test app");
-        let remote = "work/team".to_owned();
-        let mut data = default_local_event();
-        data.id = Uuid::new_v4().to_string();
-        data.title = "Standup".into();
-        data.start = "2026-09-08T09:00".into();
-        data.end = "2026-09-08T09:30".into();
-        data.calendar_id = remote.clone();
-        let id = data.id.parse::<Id>().expect("id");
-
-        app.invoke(Invoke::apply(&CalendarAction::UpsertEvent(data)).expect("encode"))
-            .expect("create");
-        assert!(app.state().event(id).is_some());
-        assert!(
-            app.read_document(|doc| CalDoc::outbox(doc).contains(&id)),
-            "remote create records the push outbox"
-        );
-
-        // Sync's Effect drained the push queue after a successful PUT.
-        app.merge_peer_edit(|doc| {
-            CalDoc::dequeue_push(doc, id);
-        });
-        assert!(app.read_document(|doc| CalDoc::delete_outbox(doc).is_empty()));
-
-        assert!(app.undo(), "host undo applies the inverse action");
-        assert!(app.state().event(id).is_none());
-        assert!(
-            app.read_document(|doc| {
-                CalDoc::delete_outbox(doc)
-                    .iter()
-                    .any(|(cal, uid)| cal == &remote && uid == &id)
-            }),
-            "host undo queued a CalDAV delete in del_outbox"
-        );
-    }
-}
+mod tests;

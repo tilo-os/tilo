@@ -5,8 +5,8 @@ use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex};
 
-use tilo_actions::InvocationId;
 use tilo_content::ContentStore;
+use ui::tilo_actions::InvocationId;
 
 use crate::frame::FrameBuf;
 use crate::model::ScannedCode;
@@ -22,7 +22,8 @@ pub struct ScanJob {
 }
 
 pub enum ScanSource {
-    Path(PathBuf),
+    /// The bytes of an image the person chose.
+    Bytes(Vec<u8>),
     Media(String),
     Frame(FrameBuf),
 }
@@ -242,7 +243,7 @@ impl WorkerLoop {
             WorkerJob::RecordingWake => true,
             WorkerJob::Scan(job) => {
                 let luma = match job.source {
-                    ScanSource::Path(path) => crate::library::load_luma(&path, 1024),
+                    ScanSource::Bytes(bytes) => crate::library::load_luma_bytes(&bytes, 1024),
                     ScanSource::Media(id) => crate::media::read(&self.content, &id)
                         .and_then(|bytes| crate::library::load_luma_bytes(&bytes, 1024)),
                     ScanSource::Frame(frame) => Some((

@@ -8,7 +8,8 @@
 //! result list, sized to look like a fullscreen-ish dialog when
 //! anchored at a generous offset from the window's top-center.
 
-use crate::widget::{AppModel, ModelPath};
+use crate::num::f64_of_usize;
+use crate::widget::ModelPath;
 use std::collections::HashMap;
 
 use taffy::{NodeId, Style, TaffyTree};
@@ -19,13 +20,11 @@ use winit::event::{ElementState, KeyEvent, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use crate::paint::PaintCtx;
-use crate::presence::PresenceCtx;
 use crate::query_text::{QueryComposition, QueryEventChange, QueryInk, QueryView};
 use crate::text_render::TextRenderer;
 use crate::text_selection::Selection;
 use crate::theme::Theme;
 use crate::tokens::TextRole;
-use crate::tokens::colors::ON_FILL_MIN_CONTRAST;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use crate::widget::link_popover::PageEntry;
@@ -35,17 +34,6 @@ const ROW_HEIGHT: f64 = 36.0;
 const INPUT_HEIGHT: f64 = 44.0;
 const PADDING: f64 = 12.0;
 const MAX_VISIBLE_ROWS: usize = 10;
-
-/// Narrows a visible-row count/slot index (always `<= MAX_VISIBLE_ROWS`)
-/// to `f64` for layout math. Bounded far below `f64`'s precision limit,
-/// so this never loses precision in practice.
-#[allow(
-    clippy::cast_precision_loss,
-    reason = "row counts/slots are bounded to MAX_VISIBLE_ROWS (10)"
-)]
-fn row_f64(v: usize) -> f64 {
-    v as f64
-}
 
 /// Composes `base` with a translation for text placement. Affine
 /// composition is floating-point matrix multiply — it cannot overflow or
@@ -151,7 +139,12 @@ impl PageJumpPalette {
             self.search_cursor = None;
             self.cursor = 0;
         }
-        let page = provider.search_page(&self.query, self.search_cursor.as_ref(), 512, 64);
+        let page = provider.search_page(
+            &crate::search::SearchQuery::new(self.query.as_str()),
+            self.search_cursor.as_ref(),
+            512,
+            64,
+        );
         self.items.retain(|entry| !entry.id.is_nil());
         for result in page.results {
             let Some(address) = result.action_address() else {
@@ -212,7 +205,7 @@ impl PageJumpPalette {
         };
         let available = viewport.height() - 32.0 - (PADDING * 3.0 + INPUT_HEIGHT) * self.text_scale;
         (1..=MAX_VISIBLE_ROWS)
-            .rfind(|rows| row_f64(*rows) * self.row_height() * self.text_scale <= available)
+            .rfind(|rows| f64_of_usize(*rows) * self.row_height() * self.text_scale <= available)
             .unwrap_or(1)
     }
 
@@ -224,7 +217,7 @@ impl PageJumpPalette {
                 let rect = self.rect();
                 let top = rect.y0 + (PADDING * 2.0 + INPUT_HEIGHT) * self.text_scale;
                 for slot in 0..self.visible_capacity() {
-                    let y = top + row_f64(slot) * self.row_height() * self.text_scale;
+                    let y = top + f64_of_usize(slot) * self.row_height() * self.text_scale;
                     if Rect::new(rect.x0, y, rect.x1, y + self.row_height() * self.text_scale)
                         .contains(self.pointer)
                     {
@@ -300,7 +293,7 @@ impl PageJumpPalette {
     }
 
     pub fn height(&self) -> f64 {
-        let rows = row_f64(self.visible.len().clamp(1, self.visible_capacity()));
+        let rows = f64_of_usize(self.visible.len().clamp(1, self.visible_capacity()));
         (PADDING * 3.0 + INPUT_HEIGHT + self.row_height() * rows) * self.text_scale
     }
 
@@ -486,7 +479,7 @@ impl PageJumpPalette {
             rect.x1 - PADDING * scale,
             rect.y0 + (PADDING + INPUT_HEIGHT) * scale,
         );
-        let input_shape = RoundedRect::from_rect(input_rect, f64::from(theme.tokens.radii.md));
+        let input_shape = RoundedRect::from_rect(input_rect, f64::from(theme.tokens.radii.control));
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
@@ -517,11 +510,7 @@ impl PageJumpPalette {
                 input_rect.y1,
             ),
             &tokens.typography.style(TextRole::Body),
-            QueryInk::accented(
-                tokens.colors.text_primary,
-                tokens.colors.text_dim,
-                tokens.colors.accent[crate::tokens::colors::ACCENT_PRIMARY_IDX],
-            ),
+            QueryInk::of(&tokens.colors),
         );
         input_rect
     }
@@ -543,7 +532,8 @@ impl PageJumpPalette {
     ) {
         let tokens = &theme.tokens;
         let scale = f64::from(theme.text_scale);
-        let selected_ink = tokens.colors.on_accent(ON_FILL_MIN_CONTRAST);
+        // The armed row is the panel's strong lift, as in every menu.
+        let selected_ink = crate::widget::floating_surface::armed_row(theme).1;
         let list_top = input_rect.y1 + PADDING * scale;
         // Result rows use `TextRenderer`, which owns the global accessibility
         // multiplier. Keep the requested size at the unscaled design token so
@@ -579,7 +569,7 @@ impl PageJumpPalette {
             let Some(row) = self.items.get(idx) else {
                 continue;
             };
-            let y0 = list_top + row_f64(slot) * self.row_height() * scale;
+            let y0 = list_top + f64_of_usize(slot) * self.row_height() * scale;
             let row_rect = Rect::new(
                 rect.x0 + PADDING * scale,
                 y0,
@@ -587,13 +577,12 @@ impl PageJumpPalette {
                 y0 + self.row_height() * scale,
             );
             if visible_index == self.cursor {
-                let hl = RoundedRect::from_rect(row_rect, f64::from(theme.tokens.radii.sm));
-                scene.fill(
-                    vello::peniko::Fill::NonZero,
+                crate::widget::floating_surface::paint_armed_row(
+                    scene,
                     transform,
-                    tokens.colors.accent[crate::tokens::colors::ACCENT_PRIMARY_IDX],
-                    None,
-                    &hl,
+                    row_rect,
+                    row_rect.x0 - rect.x0,
+                    theme,
                 );
             }
             let subtitle = self.subtitles.get(&row.id);
@@ -638,12 +627,6 @@ impl PageJumpPalette {
             }
         }
     }
-
-    /// Page-id getter for tests that don't want to fish through
-    /// `take_selection`.
-    pub fn highlighted_id(&self) -> Option<Uuid> {
-        self.highlighted().map(|e| e.id)
-    }
 }
 
 impl Widget for PageJumpPalette {
@@ -653,19 +636,7 @@ impl Widget for PageJumpPalette {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let node = taffy.leaf_node(Style::default());
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
-    }
-    fn apply_layout(&mut self, _taffy: &TaffyTree<()>, _node: NodeId, _origin: Point) {}
-    fn draw(
-        &mut self,
-        _scene: &mut Scene,
-        _transform: Affine,
-        _text_renderer: &mut TextRenderer,
-        _theme: &Theme,
-        _presence: &PresenceCtx,
-    ) {
+        taffy.widget_leaf(Style::default(), node_map, self)
     }
     fn name(&self) -> &'static str {
         "PageJumpPalette"
@@ -678,6 +649,12 @@ impl Widget for PageJumpPalette {
     }
     fn ime_cursor_rect(&self) -> Option<Rect> {
         self.query_composition.ime_cursor_rect()
+    }
+
+    fn ime_edit_fingerprint(&self, key: &[u8; 32]) -> Option<[u8; 32]> {
+        self.ime_cursor_rect()?;
+        self.query_composition
+            .ime_edit_fingerprint(&self.query, &self.query_selection, key)
     }
 
     fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
@@ -742,7 +719,7 @@ impl Widget for PageJumpPalette {
         &mut self,
         target: &str,
         action: &crate::a11y::Action,
-        _state: &mut AppModel,
+        _state: &mut crate::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
         if !self.visible_flag {
@@ -778,23 +755,10 @@ impl Widget for PageJumpPalette {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use winit::event::{ElementState, KeyEvent};
-    use winit::keyboard::{KeyLocation, PhysicalKey, SmolStr};
 
-    fn key_press(logical_key: Key, text: Option<&str>) -> WindowEvent {
-        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = logical_key;
-        ev.physical_key = PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
-        ev.location = KeyLocation::Standard;
-        ev.state = ElementState::Pressed;
-        ev.repeat = false;
-        ev.text = text.map(SmolStr::new);
-        WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
-            event: ev,
-            is_synthetic: false,
-        }
-    }
+    use winit::keyboard::SmolStr;
+
+    use crate::synthetic_input::key_press;
 
     fn char_press(c: &str) -> WindowEvent {
         key_press(Key::Character(SmolStr::new(c)), Some(c))
@@ -821,13 +785,12 @@ mod tests {
         {
             for theme in [Theme::light(), Theme::dark(), Theme::high_contrast()] {
                 let colors = &theme.tokens.colors;
-                let ratio = crate::a11y::contrast_ratio(
-                    colors.on_accent(ON_FILL_MIN_CONTRAST),
-                    colors.accent[crate::tokens::colors::ACCENT_PRIMARY_IDX],
-                );
+                let ratio =
+                    crate::a11y::contrast_ratio(colors.intent.on_inverted, colors.intent.inverted);
+                let floor = crate::tokens::colors::ON_FILL_MIN_CONTRAST;
                 assert!(
-                    ratio >= ON_FILL_MIN_CONTRAST,
-                    "selected result contrast {ratio:.2}:1 is below {ON_FILL_MIN_CONTRAST}:1"
+                    ratio >= floor,
+                    "selected result contrast {ratio:.2}:1 is below {floor}:1"
                 );
             }
         }
@@ -1039,13 +1002,13 @@ mod tests {
                 }
                 fn search_page(
                     &self,
-                    query: &str,
+                    query: &crate::search::SearchQuery,
                     cursor: Option<&crate::search::SearchCursor>,
                     budget: usize,
                     limit: usize,
                 ) -> crate::search::SearchPage {
                     assert_eq!((budget, limit), (512, 64));
-                    self.0.query_page(query, cursor, budget, limit)
+                    self.0.query_page(query.text(), cursor, budget, limit)
                 }
             }
             let catalog = SearchCatalog::new("Notes");

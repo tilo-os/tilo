@@ -49,7 +49,7 @@ STAGES = ('rebind', 'loader', 'provisional', 'composefs', 'reseal', 'prediction'
 FIELDS = {'schema', 'source_revision', 'source_dir', 'helpers_revision', 'receipt', 'receipt_sha256',
           'public_bundle', 'manifest_sha256', 'target', 'new_public_bundle', 'new_manifest_sha256',
           'new_target', 'new_owner', 'architecture', 'generation', 'source_date_epoch', 'base_ref',
-          'rpms_ref', 'kernel_ref', 'wpe_ref', 'signer', 'systemd_version', 'minimum_free_bytes',
+          'rpms_ref', 'kernel_ref', 'signer', 'systemd_version', 'minimum_free_bytes',
           'stage_timeout_seconds', 'signing_response_timeout_seconds',
           'prediction_stage_timeout_seconds', 'publish_repository'}
 
@@ -65,7 +65,7 @@ def validate_request(request):
     for name in ('receipt_sha256', 'manifest_sha256', 'new_manifest_sha256', 'new_owner'):
         if not re.fullmatch(r'[0-9a-f]{64}', request[name]):
             raise ValueError('invalid independently pinned public identity')
-    for name in ('base_ref', 'rpms_ref', 'kernel_ref', 'wpe_ref'):
+    for name in ('base_ref', 'rpms_ref', 'kernel_ref'):
         if not re.fullmatch(r'[a-z0-9][a-z0-9./:_-]*@sha256:[0-9a-f]{64}', request[name]):
             raise ValueError('immutable build input reference required')
     for name in ('source_dir', 'receipt', 'public_bundle', 'new_public_bundle', 'signer'):
@@ -175,7 +175,7 @@ def build_final_command(request, signed_id, iidfile):
                '--rewrite-timestamp', '--iidfile', str(iidfile),
                '--build-context', 'rootfs=container-image://' + image_id(signed_id)]
     for key, value in {'BASE_REF': request['base_ref'], 'RPMS_REF': request['rpms_ref'],
-            'KERNEL_RPMS_REF': request['kernel_ref'], 'WPE_BUILDROOT_REF': request['wpe_ref'],
+            'KERNEL_RPMS_REF': request['kernel_ref'],
             'TILO_WINDOWS_ARCH': request['architecture'], 'TILO_WITH_BROWSER': '1',
             'TILO_CFS_DIGEST': '0' * 128, 'TILO_SEAL_GENERATION': '1'}.items():
         command += ['--build-arg', key + '=' + value]

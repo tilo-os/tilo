@@ -4,6 +4,39 @@
 `package-host.ps1` builds Windows. Every package receives a SHA-256 sidecar.
 Unsigned builds are suitable for CI validation only.
 
+Desktop session availability uses `apps/imager/desktop-catalog.json`, separately
+from the installer-media catalog. An explicitly `unreleased` empty Desktop
+catalog keeps Desktop installation unavailable; it does not block other Imager
+features or invent a release.
+
+For a qualified Desktop release, retain the exact signed RPMs and their native
+reports from `release-desktop.yml`. Package publication waits for
+`host-session-e2e`; its report records each RPM's size and SHA-256. That basic
+session test does not by itself prove return to the prior session, selected
+folder import, or source preservation. Review the full native onboarding
+journey, including graphical login and identity setup, before asserting all
+five `verified_runtime` fields for those exact package bytes.
+
+Commit the reviewed generator manifest as
+`apps/imager/packaging/desktop-release-manifest.json` and its nonempty native
+report references alongside the generated `apps/imager/desktop-catalog.json`.
+Use the existing `build-desktop-catalog.py MANIFEST --output CATALOG`; it measures
+the actual local packages and refuses incomplete or mismatched evidence.
+Manifest artifact paths are local generation inputs; report paths resolve
+relative to the manifest directory and must remain available in the checkout.
+Never populate this manifest from package-build or unit-test success alone.
+
+The Imager workflow's common catalog job uses `desktop-catalog-release.py
+prepare` to fetch the declared HTTPS release URLs, verify size and digest, and
+regenerate the catalog with that same generator. A nonempty catalog without its
+reviewed manifest, matching packages and complete digest-bound native report
+is refused. Repository credentials are sent only to the Forgejo origin and
+removed on redirects to other origins. Preparation emits a catalog digest and
+workflow source revision; Linux, Windows and macOS must consume that receipt
+and the exact catalog bytes before building or signing Imager. This wiring
+neither provisions signing authority nor starts a release. The existing
+protected-tag signing approvals and qualification evidence are still required.
+
 Release hosts produce this matrix (architecture is part of every filename):
 
 | Host | Native downloads | Package-manager publication |

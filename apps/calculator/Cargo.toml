@@ -27,7 +27,6 @@ android = []
 
 [dependencies]
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
-tilo-actions = { path = "../../crates/collab/actions" }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 automerge.workspace = true
 serde.workspace = true

@@ -29,7 +29,7 @@ export function createFontLoader({
     if(value?.schema!==1||typeof value.catalog!=='string'||!Array.isArray(value.assets))throw Error('invalid canonical font manifest');
     const assets=new Map();
     for(const asset of value.assets){
-      if(!asset||typeof asset.name!=='string'||!/^[A-Za-z0-9][A-Za-z0-9._\[\]-]*$/.test(asset.name)||
+      if(!asset||typeof asset.name!=='string'||!/^[A-Za-z0-9][A-Za-z0-9._,\[\]-]*$/.test(asset.name)||
         !Number.isSafeInteger(asset.bytes)||asset.bytes<1||!/^[0-9a-f]{64}$/.test(asset.sha256)||typeof asset.startup!=='boolean'||assets.has(asset.name)){
         throw Error('invalid canonical font asset descriptor');
       }

@@ -58,7 +58,7 @@ impl Draft {
         }
         doc.commit();
         self.revision = self.revision.wrapping_add(1);
-        self.field = FieldState::read(&mut doc, ROOT, self.revision).ok();
+        self.field = FieldState::read(&doc, ROOT, self.revision).ok();
         self.doc = doc;
     }
 
@@ -108,14 +108,16 @@ impl RichTextSource for Draft {
         false
     }
 
-    fn sync(&mut self, _doc: &mut Doc) {
+    fn sync(&mut self, _doc: &Doc) {
         let Some(field) = self.field.as_mut() else {
             return;
         };
-        if let Err(error) = field.refresh(&mut self.doc) {
+        // The draft's own edits are read once committed.
+        self.doc.commit();
+        if let Err(error) = field.refresh(&self.doc) {
             tracing::debug!(%error, "draft reread");
             self.revision = self.revision.wrapping_add(1);
-            self.field = FieldState::read(&mut self.doc, ROOT, self.revision).ok();
+            self.field = FieldState::read(&self.doc, ROOT, self.revision).ok();
         }
     }
 
@@ -127,7 +129,11 @@ impl RichTextSource for Draft {
         self.field.as_ref().map(|field| read(&field.state))
     }
 
-    fn apply(&mut self, _doc: &mut Doc, edit: &RichTextAction) -> Result<(), ActionError> {
+    fn apply(
+        &mut self,
+        _edits: &mut ui::widget::Edits<'_>,
+        edit: &RichTextAction,
+    ) -> Result<(), ActionError> {
         edit.apply(&mut self.doc)?;
         self.doc.commit();
         Ok(())
@@ -173,8 +179,8 @@ mod tests {
     impl Field {
         fn new(key: SubmitKey) -> Self {
             let mut host = Embedded::new(RichTextSurface::over(Draft::new()).with_submit(key));
-            let mut doc = AutoCommit::new();
-            host.sync(&mut doc, &ROOT);
+            let doc = AutoCommit::new();
+            host.sync(&doc, &ROOT);
             let mut text = ui::TextRenderer::new();
             host.layout(
                 Rect::new(0.0, 0.0, 400.0, 40.0),
@@ -194,11 +200,11 @@ mod tests {
                 event,
                 1.0,
                 &Modifiers::from(held),
-                &mut self.doc,
+                &mut ui::widget::Edits::lend(&mut self.doc),
                 &ROOT,
                 &mut handled,
             );
-            self.host.sync(&mut self.doc, &ROOT);
+            self.host.sync(&self.doc, &ROOT);
         }
 
         fn type_text(&mut self, text: &str) {
@@ -248,13 +254,15 @@ mod tests {
         let surface = field.host.widget_mut();
         assert!(surface.perform_action(
             &ui::a11y::Action::SetValue("first\nsecond".into()),
-            &mut field.doc,
+            &[],
+            &mut ui::widget::Edits::lend(&mut field.doc),
             &ROOT,
         ));
         assert_eq!(field.host.widget().source().plain_text(), "first\nsecond");
         assert!(field.host.widget_mut().perform_action(
             &ui::a11y::Action::SetValue("one".into()),
-            &mut field.doc,
+            &[],
+            &mut ui::widget::Edits::lend(&mut field.doc),
             &ROOT,
         ));
         assert_eq!(field.host.widget().source().plain_text(), "one");
@@ -264,11 +272,15 @@ mod tests {
     fn a_mention_and_an_emoji_go_through_the_field_as_edits() {
         let mut field = Field::new(SubmitKey::Enter);
         field.type_text("hi ");
+        field.host.widget_mut().insert_mention(
+            &mut ui::widget::Edits::lend(&mut field.doc),
+            "u-ada",
+            "@Ada",
+        );
         field
             .host
             .widget_mut()
-            .insert_mention(&mut field.doc, "u-ada", "@Ada");
-        field.host.widget_mut().insert_text(&mut field.doc, "🎉");
+            .insert_text(&mut ui::widget::Edits::lend(&mut field.doc), "🎉");
         let draft = field.host.widget().source();
         assert_eq!(draft.plain_text(), "hi @Ada 🎉");
         let blocks = draft.blocks();
@@ -343,7 +355,7 @@ mod tests {
         );
         assert_eq!(chat.host.widget().source().plain_text(), "one\ntwo");
         chat.host.widget_mut().source_mut().clear();
-        chat.host.sync(&mut chat.doc, &ROOT);
+        chat.host.sync(&chat.doc, &ROOT);
         assert!(chat.host.widget().source().is_empty());
         assert_eq!(chat.host.widget().editor().blocks()[0].text(), "");
     }

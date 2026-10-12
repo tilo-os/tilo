@@ -15,10 +15,13 @@ command -v pulseaudio >/dev/null || {
 # small length limit. Use a short private runtime path even if TMPDIR contains
 # spaces or points at a deeply nested build directory.
 audio_dir=$(mktemp -d /tmp/tilo-audio.XXXXXXXX)
-audio_started=
+audio_pid=
 cleanup() {
-    if [ -n "$audio_started" ]; then
-        pulseaudio --kill 2>/dev/null || true
+    if [ -n "$audio_pid" ]; then
+        # This foreground child has no PID file. Reap the process we started
+        # before removing its runtime directory or completing the test run.
+        kill "$audio_pid" 2>/dev/null || true
+        wait "$audio_pid" 2>/dev/null || true
     fi
     rm -rf -- "$audio_dir"
 }
@@ -46,6 +49,9 @@ pulseaudio --daemonize=no --exit-idle-time=-1 --use-pid-file=no \
     --load="module-native-protocol-unix socket=\"$socket_path\" auth-anonymous=1" \
     >"$audio_dir/server.log" 2>&1 &
 audio_pid=$!
+# Commands can observe their actual owned endpoint without relying on the
+# kernel's optional /proc/PID/task/PID/children interface.
+export TILO_HEADLESS_AUDIO_PID="$audio_pid"
 # The socket is bound and listening only once both modules have loaded, so it
 # is the readiness signal. On a loaded runner (cold page cache, saturated
 # disk) merely exec'ing the daemon and its libraries can take several

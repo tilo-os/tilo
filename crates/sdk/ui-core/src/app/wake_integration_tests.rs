@@ -1,6 +1,7 @@
 use super::*;
 use crate::view::{FreezeThaw, ViewContribution};
 use crate::wake::{WakeEvent, WakeHandle, WakeScope};
+use crate::widget::TaffyTreeExt;
 use crate::widget::{AppModel, ModelPath};
 use crate::{LatestRequest, LocalState};
 use std::cell::RefCell;
@@ -41,7 +42,7 @@ impl Drop for CaptureRoot {
 impl Widget for CaptureRoot {
     crate::provides!(dyn crate::view::capability::ViewState);
 
-    fn sync(&mut self, _: &mut AppModel, _: &ModelPath) {
+    fn sync(&mut self, _: &AppModel, _: &ModelPath) {
         self.capture("sync");
     }
 
@@ -52,21 +53,7 @@ impl Widget for CaptureRoot {
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.capture("layout");
-        let node = taffy.new_leaf(taffy::Style::default()).unwrap();
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
-    }
-
-    fn apply_layout(&mut self, _: &TaffyTree<()>, _: NodeId, _: Point) {}
-
-    fn draw(
-        &mut self,
-        _: &mut vello::Scene,
-        _: vello::kurbo::Affine,
-        _: &mut TextRenderer,
-        _: &Theme,
-        _: &PresenceCtx,
-    ) {
+        taffy.widget_leaf(taffy::Style::default(), node_map, self)
     }
 
     fn handle_event(&mut self, _: &WindowEvent, _ctx: &mut crate::widget::EventCtx<'_>) {
@@ -75,10 +62,6 @@ impl Widget for CaptureRoot {
 
     fn name(&self) -> &'static str {
         "capture-root"
-    }
-
-    fn get_rect(&self) -> vello::kurbo::Rect {
-        vello::kurbo::Rect::ZERO
     }
 }
 
@@ -280,4 +263,30 @@ fn factory_and_callbacks_keep_their_owner_and_restore_parent_context() {
 #[should_panic(expected = "live App requires from_factory")]
 fn detached_native_startup_fails_before_creating_an_event_loop() {
     App::new_with_controlled_inputs(State::new(), Box::new(crate::widget::Text::new("root"))).run();
+}
+
+#[test]
+fn embedded_presentation_wakes_keep_the_directory_until_a_model_wake() {
+    let mut app = App::from_factory_with_controlled_inputs(State::new(), || {
+        Box::new(crate::widget::Text::new("root"))
+    });
+    let (tx, rx) = mpsc::channel();
+    app.wake_scope
+        .as_mut()
+        .unwrap()
+        .bind(move |event| {
+            tx.send(event).unwrap();
+        })
+        .unwrap();
+    app.pump_hosted_model_as(false);
+    let revision = app.action_directory_revision();
+    for _ in rx.try_iter() {}
+    app.wake_scope.as_ref().unwrap().handle().notify_events();
+    assert!(!rx.recv().unwrap().requires_sync());
+    assert!(!app.pump_hosted_model_as(false).synced);
+    assert_eq!(app.action_directory_revision(), revision);
+    app.wake_scope.as_ref().unwrap().handle().wake();
+    assert!(rx.recv().unwrap().requires_sync());
+    assert!(app.pump_hosted_model_as(false).synced);
+    assert_ne!(app.action_directory_revision(), revision);
 }

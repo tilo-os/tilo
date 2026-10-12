@@ -3,7 +3,7 @@
 //! through it.
 //!
 //! The guest is built from an environment record whose images are fixture
-//! trees: a runtime whose `usr` is the machine's own `/usr` and a tool that
+//! trees: a materialized native shell/runtime closure and a tool that
 //! adds one command. The assertions are on bytes that came back from `bash`
 //! running inside it, and on what it left on the host.
 
@@ -78,6 +78,9 @@ fn the_service_protocol_refuses_the_host_target_answers_garbage_and_never_hangs(
             term: None,
             command: Vec::new(),
             requested_by: ush::host::RequestedBy::Person,
+            relay_session: None,
+            runs: None,
+            editor_protocol: None,
         })
         .expect_err("the host target was served");
         assert!(err.starts_with("not available"), "{err}");
@@ -125,12 +128,103 @@ fn the_service_protocol_refuses_the_host_target_answers_garbage_and_never_hangs(
     }
 }
 
+/// A device with no `env-runtime` installed: the default environment cannot
+/// be made, so the supervisor says so instead of handing out a pty whose
+/// guest prints the reason and exits — and keeps the connection open for the
+/// app to ask for something else on it.
+#[test]
+fn without_a_runtime_the_open_is_refused_in_words_and_the_connection_stays_usable() {
+    let _guest = GUEST_ENV.lock().expect("guest env lock");
+    let dir = tempfile::tempdir().expect("tempdir");
+    let images = dir.path().join("images");
+    std::fs::create_dir_all(&images).unwrap();
+    let mut env = tilo_test_env::ScopedEnv::new();
+    env.set("TILO_USH_IMAGES", &images);
+
+    let store = Store::at(dir.path().join("store"));
+    store.ensure().expect("store");
+    let socket = dir.path().join("ush.sock");
+    let serve_socket = socket.clone();
+    let serve_store = store.clone();
+    std::thread::spawn(move || {
+        let _ = ush::supervisor::serve(&serve_socket, &serve_store, &PathBuf::from("/"));
+    });
+    let deadline = tilo_test_env::hang_deadline();
+    while !socket.exists() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+
+    let stream = UnixStream::connect(&socket).expect("connect");
+    stream
+        .set_read_timeout(Some(tilo_test_env::hang_bound()))
+        .expect("read timeout");
+    let ask = |request: &ServeRequest| {
+        let mut line = serde_json::to_vec(request).unwrap();
+        line.push(b'\n');
+        (&stream).write_all(&line).expect("write request");
+        let (payload, fd) = recv_with_fd(stream.as_raw_fd()).expect("recvmsg");
+        let text = String::from_utf8_lossy(&payload).into_owned();
+        let response: ServeResponse =
+            serde_json::from_str(text.trim()).unwrap_or_else(|e| panic!("bad reply {text:?}: {e}"));
+        (response, fd)
+    };
+    let open = ServeRequest::OpenSession {
+        target: Target::default_environment(),
+        cols: 80,
+        rows: 24,
+        term: None,
+        command: Vec::new(),
+        requested_by: ush::host::RequestedBy::Person,
+        relay_session: None,
+        runs: None,
+        editor_protocol: None,
+    };
+
+    let (response, fd) = ask(&open);
+    assert!(
+        fd.is_none(),
+        "a pty was handed out for a guest that cannot be built"
+    );
+    let ServeResponse::NoRuntime { reason } = response else {
+        panic!("expected a no-runtime refusal, got {response:?}");
+    };
+    assert!(
+        reason.contains("env-runtime"),
+        "the reason names what is missing: {reason}"
+    );
+
+    // The refusal spent nothing: the same connection is answered again.
+    let (again, fd) = ask(&open);
+    assert!(fd.is_none());
+    assert!(
+        matches!(again, ServeResponse::NoRuntime { .. }),
+        "{again:?}"
+    );
+    assert!(
+        Records::at(store.records_root())
+            .load(DEFAULT_RECORD)
+            .unwrap()
+            .is_none(),
+        "no half-made default environment is left behind"
+    );
+}
+
 /// Lay out the fixture images under `root` the way the supervisor finds
 /// them: `<hex id>/` trees and the current runtime's id.
 pub fn fixture_images(root: &Path) {
     let runtime = root.join(PackageId::from_bytes(RUNTIME).to_hex());
     std::fs::create_dir_all(runtime.join("etc")).unwrap();
-    std::os::unix::fs::symlink("/usr", runtime.join("usr")).unwrap();
+    for program in ["bash", "id", "touch", "cat"] {
+        let source = PathBuf::from("/usr/bin").join(program);
+        fixture_file(&runtime, &source);
+        if let Some(closure) = ush::helper_runtime::HelperRuntime::resolve(&source).unwrap() {
+            fixture_file(&runtime, &closure.loader);
+            for library in closure.libraries.values() {
+                fixture_file(&runtime, library);
+            }
+        }
+    }
+    std::os::unix::fs::symlink("bash", runtime.join("usr/bin/sh")).unwrap();
     std::fs::write(
         runtime.join("etc/passwd"),
         "root:x:0:0:root:/root:/bin/bash\n",
@@ -153,18 +247,38 @@ pub fn fixture_images(root: &Path) {
     .unwrap();
 }
 
+// Copy bytes into the fixture instead of putting another overlay-backed
+// host /usr underneath it. Guest root aliases resolve /lib* into /usr/lib*.
+fn fixture_file(runtime: &Path, source: &Path) {
+    let relative = source.strip_prefix("/").unwrap();
+    let relative = if relative.starts_with("lib") || relative.starts_with("lib64") {
+        PathBuf::from("usr").join(relative)
+    } else {
+        relative.to_path_buf()
+    };
+    let destination = runtime.join(relative);
+    std::fs::create_dir_all(destination.parent().unwrap()).unwrap();
+    std::fs::copy(source, destination).unwrap();
+}
+
 /// Can this machine build the guest at all? The probe performs the mounts
 /// the runtime performs — a user namespace mapping the real uid, `/usr` as a
-/// read-only overlay of two lowers — not something that merely correlates
-/// with them. Inside a build container whose own `/usr` is an overlay, the
-/// kernel refuses to stack on it, and the guest tests say so and stop.
+/// read-only overlay of the materialized runtime and tool lowers. It probes
+/// the subject the tests actually use, including on an overlay-backed host.
 pub fn guest_unavailable() -> Option<String> {
     let Some(bwrap) = which_bwrap() else {
         return Some("bwrap is not installed".into());
     };
     let dir = tempfile::tempdir().ok()?;
-    let lower = dir.path().join("lower");
-    std::fs::create_dir_all(&lower).ok()?;
+    fixture_images(dir.path());
+    let lower = dir
+        .path()
+        .join(PackageId::from_bytes(TOOL).to_hex())
+        .join("usr");
+    let runtime = dir
+        .path()
+        .join(PackageId::from_bytes(RUNTIME).to_hex())
+        .join("usr");
     // SAFETY: `geteuid`/`getegid` cannot fail.
     let (uid, gid) = unsafe { (libc::geteuid(), libc::getegid()) };
     let probe = std::process::Command::new(bwrap)
@@ -172,13 +286,15 @@ pub fn guest_unavailable() -> Option<String> {
         .args(["--uid", &uid.to_string(), "--gid", &gid.to_string()])
         .arg("--overlay-src")
         .arg(&lower)
-        .args(["--overlay-src", "/usr", "--ro-overlay", "/usr"])
+        .arg("--overlay-src")
+        .arg(&runtime)
+        .args(["--ro-overlay", "/usr"])
         .args(["--symlink", "usr/bin", "/bin"])
         .args(["--symlink", "usr/sbin", "/sbin"])
         .args(["--symlink", "usr/lib", "/lib"])
         .args(["--symlink", "usr/lib64", "/lib64"])
         .args(["--proc", "/proc", "--dev", "/dev"])
-        .arg("/usr/bin/true")
+        .args(["/usr/bin/bash", "-c", "exit 0"])
         .output();
     match probe {
         Ok(o) if o.status.success() => None,
@@ -200,18 +316,74 @@ fn which_bwrap() -> Option<PathBuf> {
 /// asks for the default environment, a descriptor arrives, and a shell in a
 /// guest built from the record answers on it — with the tool the record
 /// lists, at the real uid, writing into the directory the record grants.
-/// Skipped, loudly and with the reason, where the machine can't build a
-/// guest at all.
+/// A machine that cannot build the actual guest must fail this check.
 #[test]
 fn a_terminal_gets_a_shell_in_its_environment_over_the_service_socket() {
     let _guest = GUEST_ENV.lock().expect("guest env lock");
-    let Some(reason) = guest_unavailable() else {
-        run_handoff();
-        return;
-    };
-    eprintln!(
-        "serve_handoff: not exercising the guest on this machine — {reason}. \
-         The protocol half is still covered by the tests above."
+    assert_eq!(
+        guest_unavailable(),
+        None,
+        "the native guest must be observable"
+    );
+    run_handoff();
+}
+
+/// The installed public spelling creates Default on first use and runs a
+/// command through the actual native guest, without a host-shell grant.
+#[test]
+fn the_public_ush_alias_creates_default_and_runs_a_confined_command() {
+    let _guest = GUEST_ENV.lock().expect("guest env lock");
+    assert_eq!(
+        guest_unavailable(),
+        None,
+        "the native guest must be observable"
+    );
+    let dir = tempfile::tempdir().unwrap();
+    let images = dir.path().join("images");
+    fixture_images(&images);
+    let usr = dir.path().join("usr");
+    std::fs::create_dir_all(usr.join("bin")).unwrap();
+    std::fs::create_dir_all(usr.join("libexec")).unwrap();
+    std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_tilo-ush"), usr.join("libexec/tilo-ush"))
+        .unwrap();
+    std::os::unix::fs::symlink("../libexec/tilo-ush", usr.join("bin/ush")).unwrap();
+    let store = Store::at(dir.path().join("store"));
+    let records = Records::at(store.records_root());
+    assert!(records.load(DEFAULT_RECORD).unwrap().is_none());
+    let output = std::process::Command::new("timeout")
+        .arg("--kill-after=5s")
+        .arg("30s")
+        .arg(usr.join("bin/ush"))
+        .args(["-c", "touch /usr/public-ush-probe 2>/dev/null || printf 'READ_ONLY\\n'; printf 'PUBLIC_%s\\n' DEFAULT"])
+        .env(ush::store::STORE_ENV, store.root())
+        .env_remove(ush::store::RECORDS_ENV)
+        .env_remove("TILO_USH_BIN")
+        .env("TILO_USH_IMAGES", &images)
+        .env("SHELL", "/usr/bin/bash")
+        .output().unwrap();
+    assert!(
+        output.status.success(),
+        "public ush failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert_eq!(stdout, "READ_ONLY\nPUBLIC_DEFAULT\n");
+    assert!(
+        !images
+            .join(PackageId::from_bytes(RUNTIME).to_hex())
+            .join("usr/public-ush-probe")
+            .exists()
+    );
+    let default = records
+        .load(DEFAULT_RECORD)
+        .unwrap()
+        .expect("first use creates Default");
+    assert_eq!(default.name, tilo_environment::DEFAULT_NAME);
+    assert_eq!(
+        default
+            .runtime_image(tilo_environment::host_arch())
+            .unwrap(),
+        PackageId::from_bytes(RUNTIME)
     );
 }
 
@@ -257,6 +429,9 @@ fn open_default_session(socket: &Path) -> (UnixStream, i32) {
         term: Some("xterm-256color".into()),
         command: Vec::new(),
         requested_by: ush::host::RequestedBy::Person,
+        relay_session: None,
+        runs: None,
+        editor_protocol: None,
     })
     .unwrap();
     request.push(b'\n');
@@ -269,10 +444,14 @@ fn open_default_session(socket: &Path) -> (UnixStream, i32) {
         serde_json::from_str(text.trim()).unwrap_or_else(|e| panic!("bad reply {text:?}: {e}"));
     match &response {
         ServeResponse::Session { environment, .. } => assert_eq!(environment, DEFAULT_RECORD),
-        ServeResponse::Denied { reason } | ServeResponse::HostNotAllowed { reason } => {
+        ServeResponse::Denied { reason }
+        | ServeResponse::HostNotAllowed { reason }
+        | ServeResponse::NoRuntime { reason } => {
             panic!("the service refused the session: {reason}")
         }
-        ServeResponse::Environments { .. } | ServeResponse::Allowed => {
+        ServeResponse::Environments { .. }
+        | ServeResponse::Allowed
+        | ServeResponse::Relays { .. } => {
             panic!("a session request answered with something else")
         }
     }
@@ -391,16 +570,18 @@ fn run_handoff() {
 #[test]
 fn a_sandbox_that_cannot_be_built_is_explained() {
     let _guest = GUEST_ENV.lock().expect("guest env lock");
-    if which_bwrap().is_none() {
-        eprintln!("serve_handoff: bwrap is not installed; no sandbox to fail");
-        return;
-    }
+    assert!(
+        which_bwrap().is_some(),
+        "the sandbox diagnostic test requires bwrap"
+    );
     let unavailable = guest_unavailable();
     let dir = tempfile::tempdir().expect("tempdir");
     let images = dir.path().join("images");
     fixture_images(&images);
-    let out = std::process::Command::new(env!("CARGO_BIN_EXE_tilo-ush"))
-        .args(["run", "-c", "true"])
+    let public_command = dir.path().join("ush");
+    std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_tilo-ush"), &public_command).unwrap();
+    let out = std::process::Command::new(&public_command)
+        .args(["-c", "printf ush-command-output"])
         .env(ush::store::STORE_ENV, dir.path().join("store"))
         .env("TILO_USH_IMAGES", &images)
         .stdin(std::process::Stdio::null())
@@ -408,6 +589,10 @@ fn a_sandbox_that_cannot_be_built_is_explained() {
         .expect("tilo-ush runs");
     let stderr = String::from_utf8_lossy(&out.stderr);
     let explained = stderr.contains("sandbox could not be set up");
+    assert!(
+        !stderr.contains("usually means"),
+        "generic overlay advice must not mask the actual cause: {stderr}"
+    );
     if let Some(reason) = unavailable {
         assert!(!out.status.success(), "{reason}; yet the guest ran");
         assert!(
@@ -417,6 +602,10 @@ fn a_sandbox_that_cannot_be_built_is_explained() {
         );
     } else {
         assert!(out.status.success(), "the guest should run here: {stderr}");
+        assert_eq!(
+            out.stdout, b"ush-command-output",
+            "ush -c output must be observable"
+        );
         assert!(
             !explained,
             "a guest that ran is not a setup failure: {stderr}"
@@ -541,5 +730,128 @@ fn assert_tool_recorded(store: &Store, images: &Path) {
     assert!(
         images.join(tool.to_hex()).join("usr/bin/tree").is_file(),
         "the tool image holds the command"
+    );
+}
+
+struct ReexecSupervisor(std::process::Child);
+impl Drop for ReexecSupervisor {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+fn start_reexec_supervisor(
+    binary: &Path,
+    stable: &Path,
+    socket: &Path,
+    store: &Store,
+    images: &Path,
+) -> ReexecSupervisor {
+    let unit = include_str!("../../../../os/usr/lib/systemd/user/tilo-ush.service");
+    let pin = unit
+        .lines()
+        .find_map(|line| line.strip_prefix("Environment=TILO_USH_BIN="));
+    let mut command = std::process::Command::new(binary);
+    command.env_remove("TILO_USH_BIN");
+    if let Some(pin) = pin {
+        assert_eq!(
+            pin, "/usr/libexec/tilo-ush",
+            "the service pins its installed executable"
+        );
+        command.env("TILO_USH_BIN", stable);
+    }
+    ReexecSupervisor(
+        command
+            .args(["serve", "--socket"])
+            .arg(socket)
+            .env("TILO_USH_HOME", store.root())
+            .env("TILO_USH_IMAGES", images)
+            .env("SHELL", "/usr/bin/bash")
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .unwrap(),
+    )
+}
+
+#[test]
+fn the_shipped_service_reexecs_the_same_elf_when_its_launch_path_is_unlinked() {
+    use std::os::fd::{FromRawFd, OwnedFd};
+    assert!(
+        guest_unavailable().is_none(),
+        "this regression must observe a real confined guest"
+    );
+    let dir = tempfile::tempdir().unwrap();
+    let images = dir.path().join("images");
+    fixture_images(&images);
+    let store = Store::at(dir.path().join("store"));
+    store.ensure().unwrap();
+    let granted = dir.path().join("granted");
+    std::fs::create_dir_all(&granted).unwrap();
+    fixture_environment(&store, &granted);
+    let binary = dir.path().join("tilo-ush");
+    std::fs::copy(env!("CARGO_BIN_EXE_tilo-ush"), &binary).unwrap();
+    let stable = dir.path().join("usr/libexec/tilo-ush");
+    std::fs::create_dir_all(stable.parent().unwrap()).unwrap();
+    std::fs::hard_link(&binary, &stable).unwrap();
+    let socket = dir.path().join("ush.sock");
+    let mut supervisor = start_reexec_supervisor(&binary, &stable, &socket, &store, &images);
+    let deadline = tilo_test_env::hang_deadline();
+    while !socket.exists() && Instant::now() < deadline {
+        assert!(supervisor.0.try_wait().unwrap().is_none());
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(socket.exists(), "actual supervisor must start");
+    let running = PathBuf::from(format!("/proc/{}/exe", supervisor.0.id()));
+    let original = std::fs::metadata(&binary).unwrap();
+    let observed = std::fs::metadata(&running).unwrap();
+    let pinned = std::fs::metadata(&stable).unwrap();
+    assert_eq!(
+        (pinned.dev(), pinned.ino()),
+        (original.dev(), original.ino()),
+        "the pin must retain the exact running ELF, not another build"
+    );
+    assert_eq!(
+        (observed.dev(), observed.ino()),
+        (original.dev(), original.ino())
+    );
+    std::fs::remove_file(&binary).unwrap();
+    let misleading = std::fs::read_link(&running).unwrap();
+    assert!(
+        !misleading.exists(),
+        "current_exe cannot be reexecuted in this fixture"
+    );
+    let (stream, fd) = open_default_session(&socket);
+    // SAFETY: the service handed this test ownership of one PTY master.
+    let fd = unsafe { OwnedFd::from_raw_fd(fd) };
+    let prompt = read_until(fd.as_raw_fd(), "Fixture", tilo_test_env::hang_bound());
+    assert!(
+        prompt.contains("Fixture"),
+        "same-build reexec must return an actual shell: {prompt}"
+    );
+    let script =
+        b"printf 'REEXEC_%s\\n' SAME_ELF; test ! -w /usr && printf 'USR_%s\\n' READ_ONLY; exit\r";
+    // SAFETY: the owned master is live and script is a bounded byte slice.
+    assert_eq!(
+        unsafe { libc::write(fd.as_raw_fd(), script.as_ptr().cast(), script.len()) },
+        isize::try_from(script.len()).unwrap()
+    );
+    let seen = read_until(fd.as_raw_fd(), "USR_READ_ONLY", tilo_test_env::hang_bound());
+    assert!(
+        seen.contains("REEXEC_SAME_ELF"),
+        "guest answered through the real PTY: {seen}"
+    );
+    assert!(
+        seen.contains("USR_READ_ONLY"),
+        "guest confinement remains active: {seen}"
+    );
+    stream
+        .set_read_timeout(Some(tilo_test_env::hang_bound()))
+        .unwrap();
+    let mut lifetime = &stream;
+    assert_eq!(
+        lifetime.read(&mut [0_u8; 1]).unwrap(),
+        0,
+        "the service retires and reaps the exited guest before teardown"
     );
 }

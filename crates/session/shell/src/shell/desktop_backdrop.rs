@@ -23,6 +23,46 @@ pub fn native_wallpaper(workspace_id: &str) -> Option<ImageData> {
         .or_else(|| wallpaper_image_for_workspace(workspace_id, "background"))
 }
 
+/// What a workspace's wallpaper is, as far as its temperature is concerned:
+/// the preview file and its age, and the age of the wallpaper registry.
+/// Cheap to read every few seconds; the image is decoded only when it moves.
+type WallpaperStamp = (
+    Option<std::path::PathBuf>,
+    Option<SystemTime>,
+    Option<SystemTime>,
+);
+
+fn wallpaper_stamp(workspace_id: &str) -> WallpaperStamp {
+    let modified = |path: &std::path::Path| std::fs::metadata(path).ok()?.modified().ok();
+    let preview =
+        crate::portal::desktop_services::wallpaper_preview_file_for_workspace(workspace_id);
+    let preview_modified = preview.as_deref().and_then(modified);
+    let registry_modified = modified(&crate::portal::desktop_services::wallpaper_state_path());
+    (preview, preview_modified, registry_modified)
+}
+
+/// The neutral temperature workspace `workspace_id` takes on this device:
+/// its wallpaper's dominant hue ([`ui::workspace_hue`]), or `None` for a
+/// workspace whose wallpaper has none, which stays neutral. Decodes the
+/// wallpaper only when it changed since the last call for that workspace.
+pub fn native_workspace_hue(workspace_id: &str) -> Option<f32> {
+    type KnownHues = HashMap<String, (WallpaperStamp, Option<f32>)>;
+    static HUES: OnceLock<Mutex<KnownHues>> = OnceLock::new();
+    let stamp = wallpaper_stamp(workspace_id);
+    let hues = HUES.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Ok(cache) = hues.lock()
+        && let Some((known, hue)) = cache.get(workspace_id)
+        && *known == stamp
+    {
+        return *hue;
+    }
+    let hue = native_wallpaper(workspace_id).and_then(|image| ui::workspace_hue(image.data.data()));
+    if let Ok(mut cache) = hues.lock() {
+        cache.insert(workspace_id.to_owned(), (stamp, hue));
+    }
+    hue
+}
+
 #[derive(Default)]
 struct WallpaperRenderCache {
     checked: Option<Instant>,

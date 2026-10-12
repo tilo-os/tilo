@@ -18,6 +18,10 @@ Type=simple
 # because they are the contract with tilo-launcher rather than an
 # implementation detail.
 ExecStart=/usr/libexec/tilo-ush serve --socket %t/tilo/services/ush.sock --host-root /
+# systemd-sysext can report current_exe as /libexec/tilo-ush, a dentry
+# relative to its /usr overlay rather than a usable path. The supervisor and
+# guest helper must re-exec the same image-owned binary used by this unit.
+Environment=TILO_USH_BIN=/usr/libexec/tilo-ush
 Restart=on-failure
 RestartSec=1s
 TimeoutStopSec=10s

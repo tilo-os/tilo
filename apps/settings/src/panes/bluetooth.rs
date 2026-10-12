@@ -1,42 +1,247 @@
-#![allow(
-    clippy::doc_markdown,
-    clippy::expect_used,
-    clippy::items_after_statements,
-    clippy::needless_pass_by_value,
-    reason = "BlueZ is the upstream service name and the pane consumes a closed typed command/resource contract"
-)]
+#![allow(clippy::doc_markdown, reason = "BlueZ is the upstream service name")]
 //! Bluetooth settings backed directly by `BlueZ` over D-Bus. Settings starts
 //! operations; the compositor-owned `BlueZ` Agent owns security prompts.
+//! Every change is a [`BluetoothEffect`], offered on the device it names.
+//! A device without a Bluetooth adapter offers none of them: the radio's
+//! effects are published unavailable with the reason, and the pane says so.
 
-use ui::i18n::ArgValue;
-
-use crate::i18n::{t, t_args};
-use crate::widgets::{El, caption, card_with_action, error_caption, rows, setting_row, value_row};
-use automerge::{AutoCommit, ObjId, transaction::Transactable};
+use std::cell::OnceCell;
 use std::collections::HashMap;
-use std::sync::Arc;
-use std::sync::mpsc::{self, Receiver};
-use taffy::{NodeId, TaffyTree};
-use tilo_bluez::{DeviceInfo, PairOutcome};
-use ui::doc::{read_bool, read_str_or_text};
-use ui::theme::Theme;
-use ui::widget::{AppModel, ModelPath};
-use ui::widget::{Button, Column, Row, Spacer, Text, TextInput, Toggle, Widget};
-use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
-use winit::event::WindowEvent;
+use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 
-pub const BT_ENABLED_KEY: &str = "bluetooth.enabled";
-pub const SCAN_KEY: &str = "bluetooth.scan";
-pub const REFRESH_KEY: &str = "bluetooth.refresh";
+use tilo_bluez::{DeviceInfo, PairOutcome};
+use ui::LocalState;
+use ui::framework::{EffectAnswer, EffectCx, EffectStatus, Effected, LiveRow};
+use ui::i18n::ArgValue;
+use ui::tilo_resource::{self, ActionRef, Effect};
+use ui::widget::{Button, Column, Row, Spacer, Text, TextInput, Toggle, Widget};
+
+use crate::effects::{SettingsEffect, effect};
+use crate::host::PaneCx;
+use crate::i18n::{t, t_args};
+use crate::panes::model::{PaneModel, Shared};
+use crate::resource::Settings;
+use crate::settings_app::SettingsApp;
+use crate::widgets::{El, caption, card_with_action, error_caption, rows, value_row};
+
 fn token(path: &str) -> String {
     path.rsplit('/').next().unwrap_or(path).replace('.', "_")
 }
-pub(crate) fn device_action_key(path: &str, action: &str) -> String {
-    format!("bluetooth.device.{}.{}", token(path), action)
+
+/// Bluetooth on this device: the radio, discovery, and the devices it
+/// knows, each by its `BlueZ` object path.
+#[derive(Clone, Debug, PartialEq, Eq, tilo_resource::Effect)]
+#[effect(operation = "settings.effect")]
+pub enum BluetoothEffect {
+    /// Turn the Bluetooth radio on or off.
+    #[effect(job, idempotent)]
+    SetBluetooth { on: bool },
+    /// Look for nearby devices, or stop looking.
+    #[effect(job, idempotent)]
+    SetDiscovering { on: bool },
+    /// Read the devices again.
+    #[effect(job, idempotent)]
+    RefreshBluetooth,
+    /// Pair with a nearby device; the device may ask to confirm a code.
+    #[effect(job, row, label = "Pair")]
+    PairDevice {
+        #[param("The device's object path")]
+        device: String,
+    },
+    /// Stop pairing with a device.
+    #[effect(job, row, label = "Cancel pairing")]
+    CancelPairing {
+        #[param("The device's object path")]
+        device: String,
+    },
+    /// Connect a paired device.
+    #[effect(job, row, idempotent, label = "Connect")]
+    ConnectDevice {
+        #[param("The device's object path")]
+        device: String,
+    },
+    /// Disconnect a device.
+    #[effect(job, row, idempotent, label = "Disconnect")]
+    DisconnectDevice {
+        #[param("The device's object path")]
+        device: String,
+    },
+    /// Let a paired device connect without asking.
+    #[effect(job, row, idempotent)]
+    SetDeviceTrusted {
+        #[param("The device's object path")]
+        device: String,
+        trusted: bool,
+    },
+    /// Give a paired device another name on this device.
+    #[effect(job, row)]
+    RenameDevice {
+        #[param("The device's object path")]
+        device: String,
+        #[param("The new name")]
+        name: String,
+    },
+    /// Forget a paired device; it must pair again to connect.
+    #[effect(job, row, destructive, label = "Forget")]
+    ForgetDevice {
+        #[param("The device's object path")]
+        device: String,
+    },
 }
-fn key(path: &str, action: &str) -> String {
-    device_action_key(path, action)
+
+/// Answer `effect` on a worker: `BlueZ` may take seconds. What it reports
+/// becomes the pane's notice, and the devices are read again.
+pub(crate) fn answer(
+    app: &SettingsApp,
+    effect: BluetoothEffect,
+    cx: &mut EffectCx<Settings, SettingsApp>,
+) -> EffectAnswer {
+    if effect == BluetoothEffect::RefreshBluetooth {
+        // A dongle plugged in a moment ago is seen without waiting.
+        app.host().radios().look_again();
+    }
+    let model = app.bluetooth().model();
+    let (control, name) = {
+        let mut model = model.borrow_mut();
+        let name = effect_device(&effect).and_then(|path| model.name_of(path));
+        if let BluetoothEffect::PairDevice { device } = &effect {
+            if model.pairing.is_some() {
+                return Err(t("settings-bluetooth-pairing-busy"));
+            }
+            model.pairing = Some(device.clone());
+            model.notice = Some(t_args(
+                "settings-bluetooth-pairing",
+                &[("name", name.clone().unwrap_or_default().into())],
+            ));
+            model.changed = true;
+        }
+        (Arc::clone(&model.control), name)
+    };
+    if effect_device(&effect).is_some() && name.is_none() {
+        return Err(t("settings-bluetooth-device-gone"));
+    }
+    let name = name.unwrap_or_default();
+    Ok(cx.thread(
+        move |_| carry_out(control.as_ref(), &effect, &name),
+        |app: &mut SettingsApp, outcome: Result<String, String>, _| {
+            let model = app.bluetooth().model();
+            let mut model = model.borrow_mut();
+            model.pairing = None;
+            model.notice = Some(outcome.clone().unwrap_or_else(|error| error));
+            model.refresh();
+            outcome.map(|_| Effected::done())
+        },
+    ))
+}
+
+fn effect_device(effect: &BluetoothEffect) -> Option<&str> {
+    match effect {
+        BluetoothEffect::SetBluetooth { .. }
+        | BluetoothEffect::SetDiscovering { .. }
+        | BluetoothEffect::RefreshBluetooth => None,
+        BluetoothEffect::PairDevice { device }
+        | BluetoothEffect::CancelPairing { device }
+        | BluetoothEffect::ConnectDevice { device }
+        | BluetoothEffect::DisconnectDevice { device }
+        | BluetoothEffect::SetDeviceTrusted { device, .. }
+        | BluetoothEffect::RenameDevice { device, .. }
+        | BluetoothEffect::ForgetDevice { device } => Some(device),
+    }
+}
+
+/// Carry out `effect` on `control`, for the device called `name`, and say
+/// what happened. Never called on the UI thread.
+fn carry_out(
+    control: &dyn BluetoothControl,
+    effect: &BluetoothEffect,
+    name: &str,
+) -> Result<String, String> {
+    let named = |key: &str| t_args(key, &[("name", name.to_owned().into())]);
+    let failed = |key: &str, error: String| {
+        t_args(
+            key,
+            &[("name", name.to_owned().into()), ("error", error.into())],
+        )
+    };
+    match effect {
+        BluetoothEffect::SetBluetooth { on } => control
+            .set_powered(*on)
+            .map(|()| {
+                t(if *on {
+                    "settings-bluetooth-on"
+                } else {
+                    "settings-bluetooth-off"
+                })
+            })
+            .map_err(|error| failed("settings-bluetooth-power-failed", error)),
+        BluetoothEffect::SetDiscovering { on } => {
+            let started = if *on {
+                control.start_scan()
+            } else {
+                control.stop_scan()
+            };
+            started
+                .map(|()| {
+                    t(if *on {
+                        "settings-bluetooth-discovery-started-notice"
+                    } else {
+                        "settings-bluetooth-discovery-stopped-notice"
+                    })
+                })
+                .map_err(|error| failed("settings-bluetooth-discovery-failed", error))
+        }
+        BluetoothEffect::RefreshBluetooth => control
+            .devices()
+            .map(|_| t("settings-bluetooth-refreshed"))
+            .map_err(|error| failed("settings-bluetooth-refresh-failed", error)),
+        BluetoothEffect::PairDevice { device } => match control.pair(device) {
+            Ok(PairOutcome::PairedAndConnected) => Ok(named("settings-bluetooth-paired-connected")),
+            Ok(PairOutcome::PairedNotConnected { reason }) => Ok(t_args(
+                "settings-bluetooth-paired-not-connected",
+                &[("name", name.to_owned().into()), ("reason", reason.into())],
+            )),
+            Err(error) => Err(failed("settings-bluetooth-pair-failed", error)),
+        },
+        BluetoothEffect::CancelPairing { device } => control
+            .cancel_pairing(device)
+            .map(|()| named("settings-bluetooth-cancelled"))
+            .map_err(|error| failed("settings-bluetooth-cancel-failed", error)),
+        BluetoothEffect::ConnectDevice { device } => control
+            .connect(device)
+            .map(|()| named("settings-bluetooth-connected-name"))
+            .map_err(|error| failed("settings-bluetooth-connect-failed", error)),
+        BluetoothEffect::DisconnectDevice { device } => control
+            .disconnect(device)
+            .map(|()| named("settings-bluetooth-disconnected-name"))
+            .map_err(|error| failed("settings-bluetooth-disconnect-failed", error)),
+        BluetoothEffect::SetDeviceTrusted { device, trusted } => control
+            .set_trusted(device, *trusted)
+            .map(|()| {
+                named(if *trusted {
+                    "settings-bluetooth-now-trusted"
+                } else {
+                    "settings-bluetooth-now-untrusted"
+                })
+            })
+            .map_err(|error| failed("settings-bluetooth-trust-failed", error)),
+        BluetoothEffect::RenameDevice {
+            device,
+            name: alias,
+        } => control
+            .set_alias(device, alias)
+            .map(|()| {
+                t_args(
+                    "settings-bluetooth-renamed",
+                    &[("alias", alias.trim().to_owned().into())],
+                )
+            })
+            .map_err(|error| failed("settings-bluetooth-rename-failed", error)),
+        BluetoothEffect::ForgetDevice { device } => control
+            .forget(device)
+            .map(|()| named("settings-bluetooth-forgot"))
+            .map_err(|error| failed("settings-bluetooth-forget-failed", error)),
+    }
 }
 
 pub trait BluetoothControl: Send + Sync {
@@ -150,15 +355,193 @@ impl BluetoothControl for RealBluetooth {
     }
 }
 
-#[allow(
-    clippy::struct_excessive_bools,
-    reason = "four independent lifecycle flags on a live pane (hardware powered, currently \
-              scanning, needs its initial CRDT seed, layout needs a rebuild) — not a \
-              flag-combination API, so an enum/bitflags would add indirection without \
-              reducing complexity"
-)]
-pub struct BluetoothPane {
+/// What the Bluetooth area keeps for the window: the model, read when
+/// first needed.
+pub struct BluetoothArea {
+    cx: PaneCx,
+    model: OnceCell<Shared<BluetoothModel>>,
+    /// The adapter, read off the UI thread after the window's first frame
+    /// ([`Self::start_read`]).
+    read: crate::device_read::DeviceRead<AdapterRead>,
+}
+
+impl BluetoothArea {
+    pub fn new(cx: &PaneCx) -> Self {
+        Self {
+            cx: cx.clone(),
+            model: OnceCell::new(),
+            read: crate::device_read::DeviceRead::default(),
+        }
+    }
+
+    /// `BlueZ`, or sample devices for a screenshot.
+    fn control(&self) -> Arc<dyn BluetoothControl> {
+        if self.cx.reaches_devices() {
+            Arc::new(RealBluetooth)
+        } else {
+            Arc::new(SampleBluetooth)
+        }
+    }
+
+    /// The model, over `BlueZ`, or over sample devices for a screenshot.
+    pub fn model(&self) -> &Shared<BluetoothModel> {
+        self.model.get_or_init(|| {
+            let control = self.control();
+            let read = self
+                .read
+                .take()
+                .unwrap_or_else(|| read_adapter_of(control.as_ref()));
+            Rc::new(std::cell::RefCell::new(BluetoothModel::with_read(
+                self.cx.clone(),
+                control,
+                read,
+            )))
+        })
+    }
+
+    /// Read the adapter off the UI thread; `false` when it has been read or
+    /// is being read.
+    pub(crate) fn start_read(&self) -> bool {
+        if self.is_open() {
+            return false;
+        }
+        let control = self.control();
+        self.read.start(move || read_adapter_of(control.as_ref()))
+    }
+
+    /// Whether the read [`Self::start_read`] started has ended.
+    pub(crate) fn read_finished(&self) -> bool {
+        self.read.is_finished()
+    }
+
+    /// Whether the area has read what its rows show: its pane was shown,
+    /// an effect or a row lookup reached it, or the window read it after
+    /// its first frame ([`crate::effects::LIVE_AREAS`]).
+    pub(crate) fn is_open(&self) -> bool {
+        self.model.get().is_some()
+    }
+
+    /// Whether this device has no Bluetooth adapter, as last read.
+    fn adapter_absent(&self) -> bool {
+        adapter_absent(&self.cx)
+    }
+
+    /// What this device cannot do with Bluetooth now: anything, without an
+    /// adapter; switch the radio or look for devices, while the adapter
+    /// cannot be read. Reads nothing itself: only what the radios and the
+    /// area's model have read, so it never opens the area.
+    pub(crate) fn statuses(&self) -> Vec<EffectStatus> {
+        let unavailable = |effects: &[&'static str], code: &str, reason: &str| {
+            effects
+                .iter()
+                .map(|&id| {
+                    EffectStatus::unavailable(
+                        ActionRef::<SettingsEffect, ()>::new(id, &[]),
+                        code,
+                        reason,
+                    )
+                })
+                .collect()
+        };
+        if self.adapter_absent() {
+            return unavailable(
+                &[
+                    BluetoothEffect::SET_BLUETOOTH.id,
+                    BluetoothEffect::SET_DISCOVERING.id,
+                    BluetoothEffect::REFRESH_BLUETOOTH.id,
+                ],
+                "no_adapter",
+                &t("settings-bluetooth-no-adapter"),
+            );
+        }
+        let unread = self
+            .model
+            .get()
+            .and_then(|model| model.try_borrow().ok()?.read_error.clone());
+        match unread {
+            // Reading again is how a restarted `BlueZ` is found.
+            Some(error) => unavailable(
+                &[
+                    BluetoothEffect::SET_BLUETOOTH.id,
+                    BluetoothEffect::SET_DISCOVERING.id,
+                ],
+                "unreachable",
+                &t_args("settings-bluetooth-read-error", &[("error", error.into())]),
+            ),
+            None => Vec::new(),
+        }
+    }
+
+    /// Follow the adapter while the pane is not shown: one plugged in is
+    /// read, so the rows published name its devices.
+    pub(crate) fn poll(&self) {
+        if let Some(model) = self.model.get()
+            && let Ok(mut model) = model.try_borrow_mut()
+        {
+            model.follow_adapter();
+        }
+    }
+
+    /// One row per device, offering what can be done to it now.
+    pub(crate) fn rows(&self) -> Vec<LiveRow> {
+        if self.adapter_absent() {
+            // No adapter, no devices: the last read says nothing now.
+            return Vec::new();
+        }
+        let model = self.model().borrow();
+        if model.read_error.is_some() {
+            // The last devices read say nothing about the adapter now.
+            return Vec::new();
+        }
+        model
+            .devices
+            .iter()
+            .map(|device| {
+                let path = device.path.clone();
+                let offer = |effect: BluetoothEffect| SettingsEffect::from(effect).bound();
+                let mut row = LiveRow::new(
+                    format!("settings.bluetooth-device:{path}"),
+                    "settings.bluetooth-device",
+                    device.name.clone(),
+                );
+                if model.pairing.as_deref() == Some(path.as_str()) {
+                    return row.operation(offer(BluetoothEffect::CancelPairing { device: path }));
+                }
+                if !device.paired {
+                    return row.operation(offer(BluetoothEffect::PairDevice { device: path }));
+                }
+                row = row.operation(offer(if device.connected {
+                    BluetoothEffect::DisconnectDevice {
+                        device: path.clone(),
+                    }
+                } else {
+                    BluetoothEffect::ConnectDevice {
+                        device: path.clone(),
+                    }
+                }));
+                row.operation(offer(BluetoothEffect::SetDeviceTrusted {
+                    device: path.clone(),
+                    trusted: !device.trusted,
+                }))
+                .operation(offer(BluetoothEffect::ForgetDevice { device: path }))
+            })
+            .collect()
+    }
+}
+
+/// Whether `cx`'s device has no Bluetooth adapter, as its radios were last
+/// read; `false` until they have been.
+fn adapter_absent(cx: &PaneCx) -> bool {
+    cx.radios().now().is_some_and(|radios| !radios.bluetooth)
+}
+
+pub struct BluetoothModel {
+    cx: PaneCx,
     control: Arc<dyn BluetoothControl>,
+    /// Whether the device had an adapter when the model last looked.
+    adapter: Option<bool>,
+    /// The adapter, read again off the UI thread once one is plugged in.
+    reread: crate::device_read::DeviceRead<AdapterRead>,
     devices: Vec<DeviceInfo>,
     powered: bool,
     scanning: bool,
@@ -166,41 +549,98 @@ pub struct BluetoothPane {
     /// scan state and the device list say nothing about the machine.
     read_error: Option<String>,
     notice: Option<String>,
-    expanded: Option<String>,
-    confirm_forget: Option<String>,
-    pending_pair: Option<String>,
-    pair_result: Option<Receiver<(String, Result<PairOutcome, String>)>>,
-    operation_status: ui::LocalState<crate::actions::LocalOperationStatus>,
-    command_state: ui::LocalState<Option<crate::actions::LocalPaneCommand>>,
-    local_doc: AutoCommit,
-    isolate_document: bool,
-    require_operation_token: bool,
-    needs_seed: bool,
-    structure_dirty: bool,
-    composed: Option<Box<dyn Widget>>,
-    rect: Rect,
+    /// The device being paired, by object path.
+    pairing: Option<String>,
+    /// The name typed for each paired device, by object path.
+    aliases: HashMap<String, Arc<Mutex<String>>>,
+    changed: bool,
 }
-impl Default for BluetoothPane {
-    fn default() -> Self {
-        Self::new()
+
+/// The adapter's devices, power and discovery state as one read found
+/// them, or why it could not.
+type AdapterRead = Result<(Vec<DeviceInfo>, bool, bool), String>;
+
+/// Read `control`'s adapter: a few D-Bus round trips on a device, so the
+/// window's warm-up makes this read off the UI thread.
+fn read_adapter_of(control: &dyn BluetoothControl) -> AdapterRead {
+    control
+        .devices()
+        .and_then(|devices| Ok((devices, control.powered()?, control.scanning()?)))
+}
+
+impl BluetoothModel {
+    /// The model over `control`'s adapter as `read` found it.
+    fn with_read(cx: PaneCx, control: Arc<dyn BluetoothControl>, read: AdapterRead) -> Self {
+        let adapter = cx.radios().now().map(|radios| radios.bluetooth);
+        let mut model = Self {
+            cx,
+            control,
+            adapter,
+            reread: crate::device_read::DeviceRead::default(),
+            devices: Vec::new(),
+            powered: false,
+            scanning: false,
+            read_error: None,
+            notice: None,
+            pairing: None,
+            aliases: HashMap::new(),
+            changed: false,
+        };
+        // A failure is kept on the model and shown in place of the adapter.
+        let _ = model.adopt(read);
+        model.changed = true;
+        model
     }
-}
-impl BluetoothPane {
-    pub fn new() -> Self {
-        let mut pane = Self::with_control(Arc::new(RealBluetooth), Vec::new(), false, false);
-        // A failure is kept on the pane and shown in place of the adapter.
-        let _ = pane.read_adapter();
-        pane
+
+    fn name_of(&self, path: &str) -> Option<String> {
+        self.devices
+            .iter()
+            .find(|device| device.path == path)
+            .map(|device| device.name.clone())
+    }
+
+    /// Follow the device's adapter: show it gone when it is pulled out, and
+    /// read it, off the UI thread, when one is plugged in.
+    fn follow_adapter(&mut self) {
+        let adapter = self.cx.radios().now().map(|radios| radios.bluetooth);
+        if adapter != self.adapter {
+            let plugged_in = adapter == Some(true);
+            self.adapter = adapter;
+            self.changed = true;
+            if plugged_in {
+                let control = Arc::clone(&self.control);
+                if !self.reread.start(move || read_adapter_of(control.as_ref())) {
+                    self.refresh();
+                }
+            }
+        }
+        if self.reread.is_finished()
+            && let Some(read) = self.reread.take()
+        {
+            // A failure is kept on the model and shown in place of the adapter.
+            let _ = self.adopt(read);
+            self.changed = true;
+        }
+    }
+
+    /// Read the devices, the radio and discovery again.
+    fn refresh(&mut self) {
+        // A failure is kept on the model and shown in place of the adapter.
+        let _ = self.read_adapter();
+        self.changed = true;
     }
 
     /// Read the adapter's power, scan state and devices. A read that fails
     /// keeps the last values and records why, so they are not shown as the
     /// adapter's state.
     fn read_adapter(&mut self) -> Result<(), String> {
-        let read = self
-            .control
-            .devices()
-            .and_then(|devices| Ok((devices, self.control.powered()?, self.control.scanning()?)));
+        let read = read_adapter_of(self.control.as_ref());
+        self.adopt(read)
+    }
+
+    /// Take in what a read of the adapter found; a failed read keeps the
+    /// last values and records why.
+    fn adopt(&mut self, read: AdapterRead) -> Result<(), String> {
         match read {
             Ok((devices, powered, scanning)) => {
                 self.devices = devices;
@@ -216,153 +656,7 @@ impl BluetoothPane {
             }
         }
     }
-    pub fn with_control(
-        control: Arc<dyn BluetoothControl>,
-        devices: Vec<DeviceInfo>,
-        powered: bool,
-        scanning: bool,
-    ) -> Self {
-        Self {
-            control,
-            devices,
-            powered,
-            scanning,
-            read_error: None,
-            notice: None,
-            expanded: None,
-            confirm_forget: None,
-            pending_pair: None,
-            pair_result: None,
-            operation_status: ui::LocalState::new(crate::actions::LocalOperationStatus::Idle),
-            command_state: ui::LocalState::new(None),
-            local_doc: AutoCommit::new(),
-            isolate_document: false,
-            require_operation_token: false,
-            needs_seed: true,
-            structure_dirty: false,
-            composed: None,
-            rect: Rect::ZERO,
-        }
-    }
-    pub fn devices(&self) -> &[DeviceInfo] {
-        &self.devices
-    }
-    #[must_use]
-    pub fn with_operation_status(
-        mut self,
-        status: &ui::LocalState<crate::actions::LocalOperationStatus>,
-    ) -> Self {
-        self.operation_status = status.clone();
-        self.require_operation_token = true;
-        self
-    }
-    #[must_use]
-    pub fn with_command_state(
-        mut self,
-        commands: &ui::LocalState<Option<crate::actions::LocalPaneCommand>>,
-    ) -> Self {
-        self.command_state = commands.clone();
-        self.isolate_document = true;
-        self
-    }
-    fn execute_local_command(
-        &mut self,
-        local: &mut AutoCommit,
-        operation: crate::actions::BluetoothOperation,
-    ) {
-        let root = automerge::ROOT;
-        use crate::actions::BluetoothOperation as Op;
-        match &operation {
-            Op::SetPowered { enabled } => {
-                let _ = local.put(&root, BT_ENABLED_KEY, *enabled);
-            }
-            Op::StartScan => {
-                let _ = local.put(&root, SCAN_KEY, true);
-            }
-            Op::Refresh => {
-                let _ = local.put(&root, REFRESH_KEY, true);
-            }
-            Op::Pair { path } => {
-                let _ = local.put(&root, key(path, "pair"), true);
-            }
-            Op::Connect { path } => {
-                let _ = local.put(&root, key(path, "connect"), true);
-            }
-            Op::Disconnect { path } => {
-                let _ = local.put(&root, key(path, "disconnect"), true);
-            }
-            Op::Forget { path } => {
-                let _ = local.put(&root, key(path, "forget"), true);
-            }
-        }
-        self.sync_power(local, &root);
-        self.sync_scan(local, &root);
-        self.sync_refresh(local, &root);
-        self.sync_devices(local, &root);
-    }
-    #[allow(
-        clippy::needless_pass_by_value,
-        reason = "callers construct the exact typed request whose token is completed"
-    )]
-    fn finish_local_operation(
-        &self,
-        operation: crate::actions::BluetoothOperation,
-        result: Result<String, String>,
-    ) {
-        let token = crate::actions::local_operation_token_for(
-            crate::actions::BLUETOOTH_OPERATION_TYPE,
-            &operation,
-        );
-        if !matches!(
-            self.operation_status.get(),
-            crate::actions::LocalOperationStatus::Running { token: running } if running == token
-        ) {
-            return;
-        }
-        self.operation_status.set(match result {
-            Ok(message) => crate::actions::LocalOperationStatus::Succeeded { token, message },
-            Err(message) => crate::actions::LocalOperationStatus::Failed { token, message },
-        });
-    }
-    fn operation_is_running(&self, operation: &crate::actions::BluetoothOperation) -> bool {
-        if !self.require_operation_token {
-            return true;
-        }
-        let token = crate::actions::local_operation_token_for(
-            crate::actions::BLUETOOTH_OPERATION_TYPE,
-            operation,
-        );
-        matches!(
-            self.operation_status.get(),
-            crate::actions::LocalOperationStatus::Running { token: running } if running == token
-        )
-    }
-    fn has_pending_operation(&self) -> bool {
-        if !self.require_operation_token {
-            return true;
-        }
-        matches!(
-            self.operation_status.get(),
-            crate::actions::LocalOperationStatus::Running { token }
-                if token.starts_with(crate::actions::BLUETOOTH_OPERATION_TYPE)
-        )
-    }
-    fn refresh(&mut self) {
-        let _ = self.read_adapter();
-        self.structure_dirty = true;
-    }
-    fn device_primary_action(&self, d: &DeviceInfo) -> (String, &'static str) {
-        let pairing = self.pending_pair.as_deref() == Some(&d.path);
-        if pairing {
-            (t("settings-bluetooth-cancel-pairing"), "cancel")
-        } else if !d.paired {
-            (t("settings-bluetooth-pair"), "pair")
-        } else if d.connected {
-            (t("settings-bluetooth-disconnect"), "disconnect")
-        } else {
-            (t("settings-bluetooth-connect"), "connect")
-        }
-    }
+
     fn device_status_line(d: &DeviceInfo) -> String {
         let status = t(if d.connected {
             "settings-bluetooth-connected"
@@ -382,33 +676,32 @@ impl BluetoothPane {
             None => status,
         }
     }
-    fn device_top_row(&self, d: &DeviceInfo) -> Row {
-        let (primary, action) = self.device_primary_action(d);
-        let details = t(if self.expanded.as_deref() == Some(&d.path) {
-            "settings-bluetooth-less"
+
+    fn primary_action(&self, d: &DeviceInfo) -> (String, BluetoothEffect) {
+        let device = d.path.clone();
+        if self.pairing.as_deref() == Some(d.path.as_str()) {
+            (
+                t("settings-bluetooth-cancel-pairing"),
+                BluetoothEffect::CancelPairing { device },
+            )
+        } else if !d.paired {
+            (
+                t("settings-bluetooth-pair"),
+                BluetoothEffect::PairDevice { device },
+            )
+        } else if d.connected {
+            (
+                t("settings-bluetooth-disconnect"),
+                BluetoothEffect::DisconnectDevice { device },
+            )
         } else {
-            "settings-bluetooth-details"
-        });
-        Row::new()
-            .push(Box::new(Text::new(&d.name).with_size(13.0)))
-            .push(Box::new(Spacer::new()))
-            .push(Box::new(
-                Button::new(
-                    &format!("settings.bluetooth.{action}.{}", token(&d.path)),
-                    &primary,
-                    Some(&key(&d.path, action)),
-                )
-                .content_sized(),
-            ))
-            .push(Box::new(
-                Button::new(
-                    &format!("settings.bluetooth.details.{}", token(&d.path)),
-                    &details,
-                    Some(&key(&d.path, "details")),
-                )
-                .content_sized(),
-            ))
+            (
+                t("settings-bluetooth-connect"),
+                BluetoothEffect::ConnectDevice { device },
+            )
+        }
     }
+
     fn device_detail_rows(&self, d: &DeviceInfo) -> Vec<El> {
         let mut block: Vec<El> = Vec::new();
         block.push(value_row(&t("settings-bluetooth-address"), &d.address));
@@ -422,44 +715,52 @@ impl BluetoothPane {
             ));
         }
         if d.paired {
-            let rename = t("settings-bluetooth-rename");
-            let forget = t(if self.confirm_forget.as_deref() == Some(&d.path) {
-                "settings-bluetooth-forget-confirm"
-            } else {
-                "settings-bluetooth-forget"
-            });
-            block.push(setting_row(
-                &t("settings-bluetooth-trust"),
-                Box::new(Toggle::new(
-                    &format!("settings.bluetooth.trusted.{}", token(&d.path)),
-                    &key(&d.path, "trusted"),
-                )),
-            ));
+            let path = d.path.clone();
+            block.push(
+                self.cx
+                    .row(t("settings-bluetooth-trust"))
+                    .id(format!("settings.bluetooth.trusted.{}", token(&d.path)))
+                    .toggle_effect(
+                        &LocalState::new(d.trusted),
+                        effect(BluetoothEffect::SET_DEVICE_TRUSTED)
+                            .map(move |trusted: bool| (path.clone(), trusted)),
+                    ),
+            );
             block.push(caption(&t("settings-bluetooth-trust-caption")));
+            let alias = self.aliases.get(&d.path).cloned().unwrap_or_default();
             block.push(Box::new(
-                TextInput::new(Vec::new())
+                TextInput::local()
                     .with_id(&format!("bluetooth.alias.{}", token(&d.path)))
-                    .with_on_change_path(&key(&d.path, "alias"))
+                    .with_external_buffer(Arc::clone(&alias))
                     .with_placeholder(&d.name),
             ));
+            let path = d.path.clone();
             block.push(Box::new(
                 Row::new()
-                    .push(Box::new(
+                    .push(Box::new(self.cx.bind(
                         Button::new(
                             &format!("settings.bluetooth.rename.{}", token(&d.path)),
-                            &rename,
-                            Some(&key(&d.path, "rename")),
-                        )
-                        .content_sized(),
-                    ))
-                    .push(Box::new(
+                            &t("settings-bluetooth-rename"),
+                        ),
+                        effect(BluetoothEffect::RENAME_DEVICE).map(move |()| {
+                            (
+                                path.clone(),
+                                alias
+                                    .lock()
+                                    .map(|name| name.trim().to_owned())
+                                    .unwrap_or_default(),
+                            )
+                        }),
+                    )))
+                    .push(Box::new(self.cx.bind_invocation(
                         Button::new(
                             &format!("settings.bluetooth.forget.{}", token(&d.path)),
-                            &forget,
-                            Some(&key(&d.path, "forget")),
-                        )
-                        .content_sized(),
-                    ))
+                            &t("settings-bluetooth-forget"),
+                        ),
+                        BluetoothEffect::ForgetDevice {
+                            device: d.path.clone(),
+                        },
+                    )))
                     .push(Box::new(Spacer::new())),
             ));
         }
@@ -468,11 +769,22 @@ impl BluetoothPane {
         }
         block
     }
+
     fn device_row(&self, d: &DeviceInfo) -> El {
-        let top = self.device_top_row(d);
+        let (label, primary) = self.primary_action(d);
+        let top = Row::new()
+            .push(Box::new(Text::new(&d.name).with_role(ui::TextRole::Body)))
+            .push(Box::new(Spacer::new()))
+            .push(Box::new(self.cx.bind_invocation(
+                Button::new(
+                    &format!("settings.bluetooth.primary.{}", token(&d.path)),
+                    &label,
+                ),
+                primary,
+            )));
         let status = Self::device_status_line(d);
         let mut block: Vec<El> = vec![Box::new(top), caption(&status)];
-        if self.expanded.as_deref() == Some(&d.path) {
+        if d.paired {
             block.extend(self.device_detail_rows(d));
         }
         Box::new(
@@ -482,18 +794,28 @@ impl BluetoothPane {
                 .push(rows(block)),
         )
     }
-    fn device_rows(&self) -> Vec<El> {
-        let mut out: Vec<El> = self.devices.iter().map(|d| self.device_row(d)).collect();
-        if out.is_empty() {
-            out.push(caption(&t(if self.scanning {
-                "settings-bluetooth-looking"
-            } else {
-                "settings-bluetooth-empty"
-            })));
-        }
-        out
+
+    /// The pane of a device without an adapter: the card, its switch off
+    /// and disabled, and why.
+    fn without_adapter(&self) -> Box<dyn Widget> {
+        crate::widgets::cards(vec![card_with_action(
+            &t("settings-bluetooth-card"),
+            Box::new(
+                self.cx.bind(
+                    Toggle::from_state(&LocalState::new(false))
+                        .with_id("bluetooth.toggle")
+                        .with_enabled(false),
+                    effect(BluetoothEffect::SET_BLUETOOTH),
+                ),
+            ),
+            rows(vec![caption(&t("settings-bluetooth-no-adapter"))]),
+        )])
     }
+
     fn build_composition(&self) -> Box<dyn Widget> {
+        if adapter_absent(&self.cx) {
+            return self.without_adapter();
+        }
         let scan = t(if self.scanning {
             "settings-bluetooth-stop"
         } else {
@@ -502,538 +824,148 @@ impl BluetoothPane {
         let refresh = t("settings-bluetooth-refresh");
         let mut body: Vec<El> = vec![Box::new(
             Row::new()
-                .push(Box::new(
-                    Button::new("settings.bluetooth.scan", &scan, Some(SCAN_KEY)).content_sized(),
-                ))
-                .push(Box::new(
-                    Button::new("settings.bluetooth.refresh", &refresh, Some(REFRESH_KEY))
-                        .content_sized(),
-                ))
+                .push(Box::new(self.cx.bind_invocation(
+                    Button::new("settings.bluetooth.scan", &scan),
+                    BluetoothEffect::SetDiscovering { on: !self.scanning },
+                )))
+                .push(Box::new(self.cx.bind_invocation(
+                    Button::new("settings.bluetooth.refresh", &refresh),
+                    BluetoothEffect::RefreshBluetooth,
+                )))
                 .push(Box::new(Spacer::new())),
         )];
-        if let Some(n) = &self.notice {
-            body.push(caption(n));
+        if let Some(notice) = &self.notice {
+            body.push(caption(notice));
         }
-        match &self.read_error {
-            Some(error) => body.push(error_caption(&t_args(
+        if let Some(error) = &self.read_error {
+            body.push(error_caption(&t_args(
                 "settings-bluetooth-read-error",
                 &[("error", error.as_str().into())],
-            ))),
-            None => body.extend(self.device_rows()),
+            )));
+        } else {
+            body.extend(self.devices.iter().map(|d| self.device_row(d)));
+            if self.devices.is_empty() {
+                body.push(caption(&t(if self.scanning {
+                    "settings-bluetooth-looking"
+                } else {
+                    "settings-bluetooth-empty"
+                })));
+            }
         }
         crate::widgets::cards(vec![card_with_action(
             &t("settings-bluetooth-card"),
             Box::new(
-                Toggle::new("settings.bluetooth.toggle", BT_ENABLED_KEY)
-                    .with_id("bluetooth.toggle")
-                    .on_action(
-                        crate::actions::bluetooth_bool_binding("bluetooth").expect(
-                            "Bluetooth power action is part of the static resource contract",
-                        ),
-                    )
-                    // An unread power state is not offered as a switch position.
-                    .with_enabled(self.read_error.is_none()),
+                self.cx.bind(
+                    Toggle::from_state(&LocalState::new(self.powered))
+                        .with_id("bluetooth.toggle")
+                        // An unread power state is not offered as a switch position.
+                        .with_enabled(self.read_error.is_none()),
+                    effect(BluetoothEffect::SET_BLUETOOTH),
+                ),
             ),
             rows(body),
         )])
     }
-    fn act(&mut self, state: &mut AutoCommit, root: &ObjId, d: &DeviceInfo, action: &str) {
-        let k = key(&d.path, action);
-        if !read_bool(state, root, &k).unwrap_or(false) {
-            return;
-        }
-        let _ = state.put(root, &k, false);
-        let result = match action {
-            "connect" => self.control.connect(&d.path).map(|()| {
-                t_args(
-                    "settings-bluetooth-connected-name",
-                    &[("name", d.name.clone().into())],
-                )
-            }),
-            "disconnect" => self.control.disconnect(&d.path).map(|()| {
-                t_args(
-                    "settings-bluetooth-disconnected-name",
-                    &[("name", d.name.clone().into())],
-                )
-            }),
-            _ => return,
-        };
-        let result = result.map_err(|e| {
-            t_args(
-                if action == "connect" {
-                    "settings-bluetooth-connect-failed"
-                } else {
-                    "settings-bluetooth-disconnect-failed"
-                },
-                &[("name", d.name.clone().into()), ("error", e.into())],
-            )
-        });
-        self.notice = Some(result.clone().unwrap_or_else(|error| error));
-        self.finish_local_operation(
-            if action == "connect" {
-                crate::actions::BluetoothOperation::Connect {
-                    path: d.path.clone(),
-                }
-            } else {
-                crate::actions::BluetoothOperation::Disconnect {
-                    path: d.path.clone(),
-                }
-            },
-            result,
-        );
-        self.refresh();
-    }
-    fn sync_pair_result(&mut self) {
-        if let Some(rx) = &self.pair_result
-            && let Ok((path, result)) = rx.try_recv()
-        {
-            let name = self
-                .devices
-                .iter()
-                .find(|d| d.path == path)
-                .map_or_else(|| t("settings-bluetooth-device"), |d| d.name.clone());
-            let result = match result {
-                Ok(PairOutcome::PairedAndConnected) => Ok(t_args(
-                    "settings-bluetooth-paired-connected",
-                    &[("name", name.into())],
-                )),
-                Ok(PairOutcome::PairedNotConnected { reason }) => Ok(t_args(
-                    "settings-bluetooth-paired-not-connected",
-                    &[("name", name.into()), ("reason", reason.into())],
-                )),
-                Err(error) => Err(t_args(
-                    "settings-bluetooth-pair-failed",
-                    &[("name", name.into()), ("error", error.into())],
-                )),
-            };
-            self.notice = Some(result.clone().unwrap_or_else(|error| error));
-            self.finish_local_operation(crate::actions::BluetoothOperation::Pair { path }, result);
-            self.pending_pair = None;
-            self.pair_result = None;
-            self.refresh();
-        }
-    }
-    fn seed_if_needed(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        if !self.needs_seed {
-            return;
-        }
-        let _ = state.put(root, BT_ENABLED_KEY, self.powered);
-        let _ = state.put(root, SCAN_KEY, false);
-        let _ = state.put(root, REFRESH_KEY, false);
-        for d in &self.devices {
-            for a in [
-                "pair",
-                "connect",
-                "cancel",
-                "disconnect",
-                "details",
-                "rename",
-                "forget",
-            ] {
-                let _ = state.put(root, key(&d.path, a), false);
-            }
-            let _ = state.put(root, key(&d.path, "trusted"), d.trusted);
-            let _ = crate::ensure_text_object(state, root, &key(&d.path, "alias"));
-        }
-        self.needs_seed = false;
-    }
-    fn sync_power(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        let Some(on) = read_bool(state, root, BT_ENABLED_KEY) else {
-            return;
-        };
-        if on == self.powered {
-            return;
-        }
-        let operation = crate::actions::BluetoothOperation::SetPowered { enabled: on };
-        if !self.operation_is_running(&operation) {
-            let _ = state.put(root, BT_ENABLED_KEY, self.powered);
-            return;
-        }
-        match self.control.set_powered(on) {
-            Ok(()) => {
-                self.powered = on;
-                self.notice = Some(if on {
-                    t("settings-bluetooth-on")
-                } else {
-                    t("settings-bluetooth-off")
-                });
-                self.finish_local_operation(
-                    operation,
-                    Ok(if on {
-                        t("settings-bluetooth-enabled")
-                    } else {
-                        t("settings-bluetooth-disabled")
-                    }),
-                );
-            }
-            Err(e) => {
-                self.notice = Some(t_args(
-                    "settings-bluetooth-power-failed",
-                    &[("error", e.clone().into())],
-                ));
-                let _ = state.put(root, BT_ENABLED_KEY, self.powered);
-                self.finish_local_operation(
-                    operation,
-                    Err(t_args(
-                        "settings-bluetooth-power-failed",
-                        &[("error", e.into())],
-                    )),
-                );
-            }
-        }
-        self.structure_dirty = true;
-    }
-    fn sync_scan(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        if !read_bool(state, root, SCAN_KEY).unwrap_or(false) {
-            return;
-        }
-        let _ = state.put(root, SCAN_KEY, false);
-        let r = if self.scanning {
-            self.control.stop_scan()
-        } else {
-            self.control.start_scan()
-        };
-        match r {
-            Ok(()) => {
-                self.scanning = !self.scanning;
-                self.notice = Some(if self.scanning {
-                    t("settings-bluetooth-discovery-started-notice")
-                } else {
-                    t("settings-bluetooth-discovery-stopped-notice")
-                });
-                self.finish_local_operation(
-                    crate::actions::BluetoothOperation::StartScan,
-                    Ok(if self.scanning {
-                        t("settings-bluetooth-discovery-started")
-                    } else {
-                        t("settings-bluetooth-discovery-stopped")
-                    }),
-                );
-            }
-            Err(e) => {
-                self.notice = Some(t_args(
-                    "settings-bluetooth-discovery-failed",
-                    &[("error", e.clone().into())],
-                ));
-                self.finish_local_operation(
-                    crate::actions::BluetoothOperation::StartScan,
-                    Err(t_args(
-                        "settings-bluetooth-discovery-failed-op",
-                        &[("error", e.into())],
-                    )),
-                );
-            }
-        }
-        self.refresh();
-    }
-    fn sync_refresh(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        if read_bool(state, root, REFRESH_KEY).unwrap_or(false) {
-            let _ = state.put(root, REFRESH_KEY, false);
-            let read = self.read_adapter();
-            self.structure_dirty = true;
-            match read {
-                Ok(()) => {
-                    self.finish_local_operation(
-                        crate::actions::BluetoothOperation::Refresh,
-                        Ok(t("settings-bluetooth-refreshed")),
-                    );
-                }
-                Err(error) => {
-                    // The pane already shows the failure in place of the adapter.
-                    self.finish_local_operation(
-                        crate::actions::BluetoothOperation::Refresh,
-                        Err(t_args(
-                            "settings-bluetooth-refresh-failed-op",
-                            &[("error", error.into())],
-                        )),
-                    );
-                }
-            }
-        }
-    }
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the device snapshot loop keeps each live-ID command beside its revalidation"
-    )]
-    fn sync_devices(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        let snapshot = self.devices.clone();
-        for d in &snapshot {
-            if read_bool(state, root, key(&d.path, "pair")).unwrap_or(false) {
-                let _ = state.put(root, key(&d.path, "pair"), false);
-                if self.pending_pair.is_none() {
-                    let control = Arc::clone(&self.control);
-                    let path = d.path.clone();
-                    let (tx, rx) = mpsc::channel();
-                    self.pending_pair = Some(path.clone());
-                    self.pair_result = Some(rx);
-                    self.notice = Some(t_args(
-                        "settings-bluetooth-pairing",
-                        &[("name", d.name.clone().into())],
-                    ));
-                    std::thread::spawn(move || {
-                        let result = control.pair(&path);
-                        let _ = tx.send((path, result));
-                    });
-                    self.structure_dirty = true;
-                }
-            }
-            if read_bool(state, root, key(&d.path, "cancel")).unwrap_or(false) {
-                let _ = state.put(root, key(&d.path, "cancel"), false);
-                match self.control.cancel_pairing(&d.path) {
-                    Ok(()) => {
-                        self.notice = Some(t_args(
-                            "settings-bluetooth-cancelled",
-                            &[("name", d.name.clone().into())],
-                        ));
-                    }
-                    Err(e) => {
-                        self.notice = Some(t_args(
-                            "settings-bluetooth-cancel-failed",
-                            &[("error", e.into())],
-                        ));
-                    }
-                }
-            }
-            for a in ["connect", "disconnect"] {
-                self.act(state, root, d, a);
-            }
-            if read_bool(state, root, key(&d.path, "details")).unwrap_or(false) {
-                let _ = state.put(root, key(&d.path, "details"), false);
-                self.expanded = (self.expanded.as_deref() != Some(&d.path)).then(|| d.path.clone());
-                self.structure_dirty = true;
-            }
-            if let Some(v) = read_bool(state, root, key(&d.path, "trusted"))
-                && v != d.trusted
-            {
-                match self.control.set_trusted(&d.path, v) {
-                    Ok(()) => {
-                        self.notice = Some(if v {
-                            t_args(
-                                "settings-bluetooth-now-trusted",
-                                &[("name", d.name.clone().into())],
-                            )
-                        } else {
-                            t_args(
-                                "settings-bluetooth-now-untrusted",
-                                &[("name", d.name.clone().into())],
-                            )
-                        });
-                    }
-                    Err(e) => {
-                        self.notice = Some(t_args(
-                            "settings-bluetooth-trust-failed",
-                            &[("error", e.into())],
-                        ));
-                        let _ = state.put(root, key(&d.path, "trusted"), d.trusted);
-                    }
-                }
-                self.refresh();
-            }
-            if read_bool(state, root, key(&d.path, "rename")).unwrap_or(false) {
-                let _ = state.put(root, key(&d.path, "rename"), false);
-                let alias =
-                    read_str_or_text(state, root, key(&d.path, "alias")).unwrap_or_default();
-                match self.control.set_alias(&d.path, &alias) {
-                    Ok(()) => {
-                        self.notice = Some(t_args(
-                            "settings-bluetooth-renamed",
-                            &[("alias", alias.trim().to_string().into())],
-                        ));
-                    }
-                    Err(e) => {
-                        self.notice = Some(t_args(
-                            "settings-bluetooth-rename-failed",
-                            &[("name", d.name.clone().into()), ("error", e.into())],
-                        ));
-                    }
-                }
-                self.refresh();
-            }
-            if read_bool(state, root, key(&d.path, "forget")).unwrap_or(false) {
-                let _ = state.put(root, key(&d.path, "forget"), false);
-                let local_forget = matches!(
-                    self.operation_status.get(),
-                    crate::actions::LocalOperationStatus::Running { token }
-                        if token == crate::actions::local_operation_token_for(
-                            crate::actions::BLUETOOTH_OPERATION_TYPE,
-                            &crate::actions::BluetoothOperation::Forget { path: d.path.clone() },
-                        )
-                );
-                if self.confirm_forget.as_deref() == Some(&d.path) || local_forget {
-                    match self.control.forget(&d.path) {
-                        Ok(()) => {
-                            self.notice = Some(t_args(
-                                "settings-bluetooth-forgot-notice",
-                                &[("name", d.name.clone().into())],
-                            ));
-                            self.confirm_forget = None;
-                            self.finish_local_operation(
-                                crate::actions::BluetoothOperation::Forget {
-                                    path: d.path.clone(),
-                                },
-                                Ok(t_args(
-                                    "settings-bluetooth-forgot",
-                                    &[("name", d.name.clone().into())],
-                                )),
-                            );
-                        }
-                        Err(e) => {
-                            let message = t_args(
-                                "settings-bluetooth-forget-failed",
-                                &[("name", d.name.clone().into()), ("error", e.into())],
-                            );
-                            self.notice = Some(message.clone());
-                            self.finish_local_operation(
-                                crate::actions::BluetoothOperation::Forget {
-                                    path: d.path.clone(),
-                                },
-                                Err(message),
-                            );
-                        }
-                    }
-                    self.refresh();
-                } else {
-                    self.confirm_forget = Some(d.path.clone());
-                    self.notice = Some(t_args(
-                        "settings-bluetooth-forget-ask",
-                        &[("name", d.name.clone().into())],
-                    ));
-                    self.structure_dirty = true;
-                }
-            }
-        }
-    }
 }
-pub fn build() -> Box<dyn Widget> {
-    Box::new(BluetoothPane::new())
-}
-impl Widget for BluetoothPane {
-    fn sync(&mut self, shared: &mut AppModel, root: &ModelPath) {
-        let (shared, _) = ui::doc::document(shared, root);
-        let isolated = self.isolate_document;
-        let mut state = if isolated {
-            std::mem::take(&mut self.local_doc)
-        } else {
-            std::mem::take(shared)
-        };
-        let root = automerge::ROOT;
-        self.sync_pair_result();
-        self.seed_if_needed(&mut state, &root);
-        if let Some(crate::actions::LocalPaneCommand::Bluetooth(operation)) =
-            self.command_state.get()
-        {
-            self.command_state.set(None);
-            self.execute_local_command(&mut state, operation);
-        }
-        if self.has_pending_operation() {
-            self.sync_power(&mut state, &root);
-            self.sync_scan(&mut state, &root);
-            self.sync_refresh(&mut state, &root);
-            self.sync_devices(&mut state, &root);
-        }
-        if let Some(c) = &mut self.composed {
-            c.sync(&mut state, &root);
-        }
-        if isolated {
-            self.local_doc = state;
-        } else {
-            *shared = state;
-        }
+
+impl PaneModel for BluetoothModel {
+    fn compose(&self) -> Box<dyn Widget> {
+        self.build_composition()
     }
-    fn build_layout(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        theme: &Theme,
-        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        let mut c = self.build_composition();
-        let child = c.build_layout(taffy, theme, node_map);
-        self.composed = Some(c);
-        let node = taffy
-            .new_with_children(
-                taffy::Style {
-                    display: taffy::Display::Flex,
-                    flex_direction: taffy::FlexDirection::Column,
-                    size: taffy::Size {
-                        width: taffy::Dimension::percent(1.0),
-                        height: taffy::Dimension::auto(),
-                    },
-                    ..Default::default()
-                },
-                &[child],
-            )
-            .unwrap_or(child);
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
-    }
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
-        if let Some(c) = &mut self.composed
-            && let Ok(ch) = taffy.children(node)
-            && let Some(&cn) = ch.first()
-        {
-            c.apply_layout(taffy, cn, Point::new(self.rect.x0, self.rect.y0));
+
+    fn poll(&mut self) -> bool {
+        self.follow_adapter();
+        let paired: Vec<String> = self
+            .devices
+            .iter()
+            .filter(|device| device.paired)
+            .map(|device| device.path.clone())
+            .collect();
+        self.aliases.retain(|path, _| paired.contains(path));
+        for path in paired {
+            self.aliases.entry(path).or_default();
         }
+        std::mem::take(&mut self.changed)
     }
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut ui::text_render::TextRenderer,
-        theme: &Theme,
-        presence: &ui::presence::PresenceCtx,
-    ) {
-        if let Some(c) = &mut self.composed {
-            c.draw(scene, transform, text_renderer, theme, presence);
-        }
-    }
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
-        if let Some(c) = &mut self.composed
-            && let Ok(ch) = ctx.taffy.children(ctx.node_id)
-            && let Some(&cn) = ch.first()
-        {
-            c.handle_event(event, &mut ctx.reborrow(ctx.path, cn));
-        }
-    }
-    fn children(&self) -> Vec<&dyn Widget> {
-        self.composed
-            .as_ref()
-            .map(|c| c.as_ref() as &dyn Widget)
-            .into_iter()
-            .collect()
-    }
-    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        self.composed
-            .as_mut()
-            .map(|c| c.as_mut() as &mut (dyn Widget + '_))
-            .into_iter()
-            .collect()
-    }
+
     fn name(&self) -> &'static str {
         "BluetoothPane"
     }
-    fn get_rect(&self) -> Rect {
-        self.rect
+}
+
+/// The devices a screenshot and the crate's tests show: headphones paired
+/// and a keyboard nearby. Every change succeeds and changes nothing.
+struct SampleBluetooth;
+
+impl BluetoothControl for SampleBluetooth {
+    fn devices(&self) -> Result<Vec<DeviceInfo>, String> {
+        Ok(vec![
+            DeviceInfo {
+                path: "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_01".into(),
+                address: "AA:BB:CC:DD:EE:01".into(),
+                name: "Headphones".into(),
+                icon: "audio-headset".into(),
+                paired: true,
+                trusted: true,
+                connected: true,
+                battery: Some(80),
+                rssi: Some(-48),
+            },
+            DeviceInfo {
+                path: "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_02".into(),
+                address: "AA:BB:CC:DD:EE:02".into(),
+                name: "Keyboard".into(),
+                icon: "input-keyboard".into(),
+                paired: false,
+                trusted: false,
+                connected: false,
+                battery: None,
+                rssi: Some(-63),
+            },
+        ])
     }
-    fn take_structure_dirty(&mut self) -> bool {
-        std::mem::take(&mut self.structure_dirty)
-            || self
-                .composed
-                .as_mut()
-                .is_some_and(|c| c.take_structure_dirty())
+    fn powered(&self) -> Result<bool, String> {
+        Ok(true)
+    }
+    fn scanning(&self) -> Result<bool, String> {
+        Ok(false)
+    }
+    fn set_powered(&self, _: bool) -> Result<(), String> {
+        Ok(())
+    }
+    fn start_scan(&self) -> Result<(), String> {
+        Ok(())
+    }
+    fn stop_scan(&self) -> Result<(), String> {
+        Ok(())
+    }
+    fn pair(&self, _: &str) -> Result<PairOutcome, String> {
+        Ok(PairOutcome::PairedAndConnected)
+    }
+    fn cancel_pairing(&self, _: &str) -> Result<(), String> {
+        Ok(())
+    }
+    fn connect(&self, _: &str) -> Result<(), String> {
+        Ok(())
+    }
+    fn disconnect(&self, _: &str) -> Result<(), String> {
+        Ok(())
+    }
+    fn set_trusted(&self, _: &str, _: bool) -> Result<(), String> {
+        Ok(())
+    }
+    fn set_alias(&self, _: &str, _: &str) -> Result<(), String> {
+        Ok(())
+    }
+    fn forget(&self, _: &str) -> Result<(), String> {
+        Ok(())
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
+
     struct Mock {
         calls: Mutex<Vec<String>>,
         devices: Vec<DeviceInfo>,
@@ -1131,9 +1063,18 @@ mod tests {
     /// list and no power switch at a guessed position.
     #[test]
     fn an_unreadable_adapter_is_shown_as_an_error() {
-        let mut pane = BluetoothPane::with_control(Arc::new(Unreachable), vec![dev()], true, false);
-        assert!(pane.read_adapter().is_err());
-        let text = crate::widgets::announced_text(pane.build_composition().as_ref());
+        let profile = tempfile::tempdir().unwrap();
+        let cx = PaneCx::in_file(profile.path().join("settings.json"));
+        let control: Arc<dyn BluetoothControl> = Arc::new(Mock {
+            calls: Mutex::new(vec![]),
+            devices: vec![dev()],
+        });
+        let read = read_adapter_of(control.as_ref());
+        let mut model = BluetoothModel::with_read(cx, control, read);
+        model.control = Arc::new(Unreachable);
+        assert!(model.read_adapter().is_err());
+        assert_eq!(model.devices.len(), 1, "the last read is kept");
+        let text = crate::widgets::announced_text(model.build_composition().as_ref());
         assert!(
             text.iter()
                 .any(|line| line == "Can't read Bluetooth: org.bluez is not reachable"),
@@ -1158,71 +1099,196 @@ mod tests {
             rssi: Some(-42),
         }
     }
-    /// Object paths and zero battery, inert replicated latches, and confirmed forget.
+
+    /// Each change reaches `BlueZ` for the device's object path, and a zero
+    /// battery reads as zero.
     #[test]
-    fn bluetooth_devices_are_addressed_by_path_and_guarded() {
-        // Case `uses_object_path_and_preserves_zero_battery`.
-        {
-            let m = Arc::new(Mock {
-                calls: Mutex::new(vec![]),
-                devices: vec![dev()],
-            });
-            let mut p = BluetoothPane::with_control(m.clone(), vec![dev()], true, false);
-            let mut d = AutoCommit::new();
-            let r = automerge::ROOT;
-            p.sync(&mut d, &r);
-            let _ = d.put(&r, key(&dev().path, "connect"), true);
-            p.sync(&mut d, &r);
-            assert_eq!(
-                m.calls.lock().unwrap().as_slice(),
-                ["connect:/org/bluez/hci0/dev_AA"]
-            );
-            assert_eq!(p.devices()[0].battery, Some(0));
-        }
+    fn changes_reach_the_device_by_its_path() {
+        let mock = Mock {
+            calls: Mutex::new(vec![]),
+            devices: vec![dev()],
+        };
+        let path = dev().path;
+        carry_out(
+            &mock,
+            &BluetoothEffect::ConnectDevice {
+                device: path.clone(),
+            },
+            "Headphones",
+        )
+        .unwrap();
+        carry_out(&mock, &BluetoothEffect::SetBluetooth { on: false }, "").unwrap();
+        carry_out(
+            &mock,
+            &BluetoothEffect::ForgetDevice { device: path },
+            "Headphones",
+        )
+        .unwrap();
+        assert_eq!(
+            mock.calls.lock().unwrap().as_slice(),
+            [
+                "connect:/org/bluez/hci0/dev_AA",
+                "power:false",
+                "forget:/org/bluez/hci0/dev_AA"
+            ]
+        );
+        assert_eq!(mock.devices().unwrap()[0].battery, Some(0));
+    }
 
-        // Case `replicated_bluetooth_latches_are_inert_without_a_local_token`.
-        {
-            let mock = Arc::new(Mock {
-                calls: Mutex::new(vec![]),
-                devices: vec![dev()],
-            });
-            let status = ui::LocalState::new(crate::actions::LocalOperationStatus::Idle);
-            let commands = ui::LocalState::new(None);
-            let mut pane = BluetoothPane::with_control(mock.clone(), vec![dev()], true, false)
-                .with_command_state(&commands)
-                .with_operation_status(&status);
-            let mut doc = AutoCommit::new();
-            let root = automerge::ROOT;
-            let initial_heads = doc.get_heads();
-            pane.sync(&mut doc, &root);
-            assert_eq!(doc.get_heads(), initial_heads);
-            let _ = doc.put(&root, BT_ENABLED_KEY, false);
-            let _ = doc.put(&root, key(&dev().path, "connect"), true);
-            pane.sync(&mut doc, &root);
-            assert!(mock.calls.lock().unwrap().is_empty());
-            assert!(pane.powered);
-        }
+    /// Devices are rows; forgetting one asks first, and a device the
+    /// adapter does not know is refused.
+    #[test]
+    fn devices_are_rows_and_forgetting_asks_first() {
+        use crate::resource::SettingsShell;
+        use ui::prelude::TestApp;
 
-        // Case `forget_requires_confirmation`.
-        {
-            let mock = Arc::new(Mock {
-                calls: Mutex::new(vec![]),
-                devices: vec![dev()],
-            });
-            let mut pane = BluetoothPane::with_control(mock.clone(), vec![dev()], true, false);
-            let mut doc = AutoCommit::new();
-            let root = automerge::ROOT;
-            pane.sync(&mut doc, &root);
-            let forget_key = key(&dev().path, "forget");
-            let _ = doc.put(&root, &forget_key, true);
-            pane.sync(&mut doc, &root);
-            assert!(mock.calls.lock().unwrap().is_empty());
-            let _ = doc.put(&root, &forget_key, true);
-            pane.sync(&mut doc, &root);
+        let mut app = TestApp::<SettingsShell>::new().unwrap();
+        let headphones = "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_01";
+        let row = format!("settings.bluetooth-device:{headphones}");
+        app.effect_on(
+            &row,
+            &SettingsEffect::from(BluetoothEffect::ForgetDevice {
+                device: headphones.into(),
+            }),
+        )
+        .expect_err("forgetting asks first");
+        app.effect_on(
+            &row,
+            &SettingsEffect::from(BluetoothEffect::DisconnectDevice {
+                device: headphones.into(),
+            }),
+        )
+        .expect("the headphones disconnect");
+        assert!(
+            app.effect(&SettingsEffect::from(BluetoothEffect::ConnectDevice {
+                device: "/org/bluez/hci0/dev_gone".into(),
+            }))
+            .is_err()
+        );
+    }
+
+    /// The availability Settings publishes for each of `ids`, as agents,
+    /// the palette and assistive technology read it.
+    fn published(
+        app: &mut ui::prelude::TestApp<crate::resource::SettingsShell>,
+        ids: &[&str],
+    ) -> Vec<(String, ui::tilo_actions::Availability)> {
+        let actions = app.actions().expect("the actions are published");
+        ids.iter()
+            .map(|&id| {
+                let action = actions
+                    .iter()
+                    .find(|action| action.address.action == id)
+                    .unwrap_or_else(|| panic!("`{id}` is published"));
+                (id.to_owned(), action.contract.availability.clone())
+            })
+            .collect()
+    }
+
+    /// The radio's own effects.
+    const RADIO: [&str; 3] = ["set-bluetooth", "set-discovering", "refresh-bluetooth"];
+
+    /// A device without an adapter publishes the radio's effects
+    /// unavailable with why, offers no devices and says so in the pane; an
+    /// adapter plugged in later makes them available again, and with one
+    /// nothing changes.
+    #[test]
+    fn without_an_adapter_the_radio_is_unavailable_until_one_is_plugged_in() {
+        use crate::radios::Present;
+        use crate::resource::SettingsShell;
+        use ui::prelude::TestApp;
+        use ui::tilo_actions::Availability;
+
+        let mut app = TestApp::<SettingsShell>::new().unwrap();
+        let radios = app.surface_mut::<SettingsApp>().host().radios().clone();
+        let device_rows = |app: &mut TestApp<SettingsShell>| {
+            app.surface::<SettingsApp, _>(|settings| settings.bluetooth().rows().len())
+                .unwrap()
+        };
+        let pane = |app: &mut TestApp<SettingsShell>| {
+            app.surface::<SettingsApp, _>(|settings| {
+                let model = settings.bluetooth().model().borrow();
+                crate::widgets::announced_text(model.build_composition().as_ref())
+            })
+            .unwrap()
+        };
+
+        radios.set(Present::ALL);
+        app.settle();
+        assert!(
+            published(&mut app, &RADIO)
+                .iter()
+                .all(|(_, availability)| *availability == Availability::Available),
+            "with an adapter the radio is offered"
+        );
+        assert_eq!(
+            device_rows(&mut app),
+            2,
+            "with an adapter its devices are rows"
+        );
+
+        radios.set(Present {
+            bluetooth: false,
+            ..Present::ALL
+        });
+        app.settle();
+        for (id, availability) in published(&mut app, &RADIO) {
             assert_eq!(
-                mock.calls.lock().unwrap().as_slice(),
-                ["forget:/org/bluez/hci0/dev_AA"]
+                availability,
+                Availability::Unavailable {
+                    code: "no_adapter".into(),
+                    reason: "No Bluetooth adapter on this device".into(),
+                },
+                "`{id}` without an adapter"
             );
         }
+        assert_eq!(device_rows(&mut app), 0, "no adapter, no devices");
+        let text = pane(&mut app);
+        assert!(
+            text.iter()
+                .any(|line| line == "No Bluetooth adapter on this device"),
+            "{text:#?}"
+        );
+        assert!(
+            !text.iter().any(|line| line.contains("Headphones")),
+            "{text:#?}"
+        );
+        app.effect(&SettingsEffect::from(BluetoothEffect::SetBluetooth {
+            on: true,
+        }))
+        .expect_err("an unavailable radio is refused, not tried");
+
+        radios.set(Present::ALL);
+        app.settle();
+        assert!(
+            published(&mut app, &RADIO)
+                .iter()
+                .all(|(_, availability)| *availability == Availability::Available),
+            "an adapter plugged in is offered without a restart"
+        );
+        assert_eq!(device_rows(&mut app), 2);
+        let text = pane(&mut app);
+        assert!(
+            text.iter().any(|line| line.contains("Headphones")),
+            "{text:#?}"
+        );
+    }
+
+    /// The radio's availability is read without opening the area: its
+    /// adapter is read only when its pane, a row or an effect needs it.
+    #[test]
+    fn availability_never_reads_the_adapter() {
+        use crate::radios::Present;
+
+        let profile = tempfile::tempdir().unwrap();
+        let cx = PaneCx::in_file(profile.path().join("settings.json"));
+        let area = BluetoothArea::new(&cx);
+        assert!(
+            area.statuses().is_empty(),
+            "radios not read offer everything"
+        );
+        cx.radios().set(Present::NONE);
+        assert_eq!(area.statuses().len(), RADIO.len());
+        assert!(!area.is_open(), "the adapter was not read");
     }
 }

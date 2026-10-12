@@ -12,16 +12,6 @@ use collab_types::{
     ValidationError, parse_redact_payload,
 };
 
-/// Native vault adapter; no identity or Secret Service discovery occurs here.
-pub trait SnapshotReceiptVault: Send + Sync {
-    /// Mints the snapshot receipt for `envelope` on `channel`.
-    ///
-    /// # Errors
-    ///
-    /// Returns a message when the vault cannot mint the receipt.
-    fn mint_snapshot_receipt(&self, channel: ChannelId, envelope: &SignedOp) -> Result<(), String>;
-}
-
 const AUDIT_LOG_RING_CAPACITY: usize = 256;
 
 #[derive(Clone, Debug)]
@@ -98,9 +88,6 @@ pub struct BrokerChannels {
     /// a channel is accepted and refreshed on every membership change; the
     /// broker holds the gate, never a key.
     pub gates: HashMap<ChannelId, channel_crypto::ChannelGate>,
-    /// Production Secret Service provider installed by shell startup. Kept
-    /// behind the broker boundary; applications see only opaque receipts.
-    pub mls_vault: Option<Arc<dyn SnapshotReceiptVault>>,
     /// Durable history of content-key ciphertext, so members (including
     /// ones added later) can page back past the in-memory window.
     pub history: Option<super::collab_history::CollabHistoryStore>,
@@ -108,6 +95,9 @@ pub struct BrokerChannels {
     /// `before_seq` bound and when the request left. Answers are accepted
     /// only while a request is outstanding.
     pub peer_history_requests: HashMap<ArtifactId, (u64, std::time::Instant)>,
+    /// The room each artifact's ops were validated in, by route. A history
+    /// page is only ever answered to that room.
+    pub rooms: HashMap<ArtifactId, String>,
 }
 
 /// How long a peer history request stays open for answers.
@@ -122,14 +112,6 @@ impl BrokerChannels {
 
     pub fn register_channel_state(&mut self, artifact: ArtifactId, state: ChannelState) {
         self.states.insert(artifact, state);
-    }
-
-    pub fn register_governance_journal(
-        &mut self,
-        channel: ChannelId,
-        journal: channel_crypto::GovernanceJournal,
-    ) {
-        self.governance.insert(channel, journal);
     }
 
     /// Install or refresh a channel's ingress gate.
@@ -172,9 +154,17 @@ impl BrokerChannels {
                 .is_none_or(|gate| gate.accepts_history(encryption, channel))
     }
 
-    /// Append a validated op to durable history when it belongs there.
-    /// Failure is logged, never fatal: the op is still delivered live.
-    pub fn record_history(&mut self, op: &SignedOp) {
+    /// Append an op validated on a route in `cluster_id` to durable history
+    /// when it belongs there, bound to that room. Failure is logged, never
+    /// fatal: the op is still delivered live.
+    pub fn record_history(&mut self, cluster_id: &str, op: &SignedOp) {
+        self.rooms.insert(op.artifact, cluster_id.to_owned());
+        if super::collab_history::CollabHistoryStore::retains(op)
+            && let Some(history) = self.history.as_mut()
+            && let Err(error) = history.bind_room(op.artifact, cluster_id)
+        {
+            tracing::warn!(%error, artifact = ?op.artifact, "collab history: room binding failed");
+        }
         if let Some(history) = self.history.as_mut()
             && let Err(error) = history.record(op)
         {
@@ -217,7 +207,7 @@ impl BrokerChannels {
         {
             for op in &mut page {
                 if state.is_redacted(OpId::from_op(op))
-                    && op.op_class != collab_types::OpClass::Redact
+                    && op.kind != collab_types::OpKind::Redaction
                 {
                     op.payload.clone_from(&marker);
                 }
@@ -227,6 +217,17 @@ impl BrokerChannels {
             page,
             union_exhausted && memory_exhausted && durable_exhausted,
         )
+    }
+
+    /// The room `artifact`'s ops were validated in, this session or, for
+    /// durable history, an earlier one. An artifact never bound has no room
+    /// whose members may page through it.
+    pub fn room_of(&self, artifact: ArtifactId) -> Option<String> {
+        self.rooms.get(&artifact).cloned().or_else(|| {
+            self.history
+                .as_ref()
+                .and_then(|history| history.room_of(artifact))
+        })
     }
 
     /// Whether to ask peers for history of `artifact` below `before_seq`:
@@ -260,9 +261,15 @@ impl BrokerChannels {
             self.peer_history_requests.remove(&artifact);
             return 0;
         }
+        let room = self.rooms.get(&artifact).cloned();
         let Some(history) = self.history.as_mut() else {
             return 0;
         };
+        if let Some(room) = room
+            && let Err(error) = history.bind_room(artifact, &room)
+        {
+            tracing::warn!(%error, ?artifact, "collab history: room binding failed");
+        }
         let page: Vec<&SignedOp> = ops
             .iter()
             .filter(|op| {
@@ -279,10 +286,6 @@ impl BrokerChannels {
                 tracing::warn!(%error, ?artifact, "collab history: peer page not stored");
                 0
             })
-    }
-
-    pub fn install_mls_vault(&mut self, vault: Arc<dyn SnapshotReceiptVault>) {
-        self.mls_vault = Some(vault);
     }
 }
 
@@ -329,7 +332,7 @@ pub fn apply_redaction_from_envelope(
 mod tests {
     use std::time::SystemTime;
 
-    use collab_types::{AttestationId, Ed25519PublicKey, OpClass, SignedOp};
+    use collab_types::{AttestationId, Ed25519PublicKey, OpKind, SignedOp};
 
     use super::*;
 
@@ -341,7 +344,7 @@ mod tests {
             artifact,
             Ed25519PublicKey([7; 32]),
             AttestationId::default(),
-            OpClass::Splice,
+            OpKind::Change,
             SystemTime::UNIX_EPOCH,
             seq,
         )

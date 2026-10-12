@@ -150,6 +150,7 @@ impl Build {
 #[derive(Debug)]
 pub struct CiOutcome {
     pub path: PathBuf,
+    pub reusable_path: Option<PathBuf>,
     pub forge: Forge,
     pub working_directory: String,
     pub written: bool,
@@ -162,6 +163,7 @@ impl CiOutcome {
             "artifact": "ci",
             "forge": self.forge.name(),
             "path": self.path,
+            "reusable_path": self.reusable_path,
             "working_directory": self.working_directory,
             "written": self.written,
         })
@@ -186,11 +188,15 @@ pub fn add_ci(
     let working_directory = relative_slash(&root, app_dir);
     let lock = lock_path(&root, app_dir);
     let path = root.join(forge.workflow_path());
-    if path.exists() && !replace {
-        bail!(
-            "{} already exists; pass --force to replace it",
-            path.display()
-        );
+    let reusable_path =
+        (forge == Forge::Github).then(|| root.join(".github/workflows/tilo-build.yml"));
+    for candidate in std::iter::once(&path).chain(reusable_path.iter()) {
+        if candidate.exists() && !replace {
+            bail!(
+                "{} already exists; pass --force to replace it",
+                candidate.display()
+            );
+        }
     }
     let workflow = workflow(
         forge,
@@ -203,14 +209,89 @@ pub fn add_ci(
             std::fs::create_dir_all(parent)
                 .with_context(|| format!("create {}", parent.display()))?;
         }
-        std::fs::write(&path, workflow).with_context(|| format!("write {}", path.display()))?;
+        if let Some(reusable) = &reusable_path {
+            std::fs::write(reusable, github_reusable(runner.unwrap_or("ubuntu-latest")))
+                .with_context(|| format!("write {}", reusable.display()))?;
+            std::fs::write(&path, github_caller(&working_directory, &lock))
+                .with_context(|| format!("write {}", path.display()))?;
+        } else {
+            std::fs::write(&path, workflow).with_context(|| format!("write {}", path.display()))?;
+        }
     }
     Ok(CiOutcome {
         path,
+        reusable_path,
         forge,
         working_directory,
         written: !dry_run,
     })
+}
+
+fn github_caller(working_directory: &str, lock: &str) -> String {
+    format!(
+        "# Written by `tilo-app add ci --forge github`; edit freely.\n\
+         name: Tilo app\n\
+         on:\n  push:\n    branches: [main]\n    tags: [\"v*\"]\n  pull_request:\n  workflow_dispatch:\n\
+         permissions:\n  contents: read\n\
+         jobs:\n  app:\n    uses: ./.github/workflows/tilo-build.yml\n    with:\n\
+         \x20     working-directory: {directory}\n      lockfile: {lock}\n\
+         \x20     publish: ${{{{ startsWith(github.ref, 'refs/tags/v') }}}}\n\
+         \x20   secrets:\n      TILO_PUBLISHER_KEY: ${{{{ secrets.TILO_PUBLISHER_KEY }}}}\n\
+         \x20     TILO_ANDROID_KEYSTORE: ${{{{ secrets.TILO_ANDROID_KEYSTORE }}}}\n\
+         \x20     TILO_ANDROID_KEYSTORE_PASS: ${{{{ secrets.TILO_ANDROID_KEYSTORE_PASS }}}}\n",
+        directory = serde_json::Value::String(working_directory.to_owned()),
+        lock = serde_json::Value::String(lock.to_owned()),
+    )
+}
+
+/// The same build matrix, callable from any repository. GitHub checks out
+/// the caller's source, and installs the CLI from that source's SDK pin.
+fn github_reusable(runner: &str) -> String {
+    let mut out = format!(
+        "# Written by `tilo-app add ci --forge github`; edit freely.\n\
+         name: Build a Tilo app\n\
+         on:\n  workflow_call:\n    inputs:\n\
+         \x20     working-directory:\n        type: string\n        default: .\n\
+         \x20     lockfile:\n        type: string\n        default: Cargo.lock\n\
+         \x20     linux-runner:\n        type: string\n        default: {runner}\n\
+         \x20     registry:\n        type: string\n        default: ''\n\
+         \x20     publish:\n        type: boolean\n        default: false\n\
+         \x20   secrets:\n      TILO_PUBLISHER_KEY:\n        required: false\n\
+         \x20     TILO_ANDROID_KEYSTORE:\n        required: false\n\
+         \x20     TILO_ANDROID_KEYSTORE_PASS:\n        required: false\n\
+         permissions:\n  contents: read\n\
+         defaults:\n  run:\n    shell: bash\n\
+         jobs:\n",
+        runner = serde_json::Value::String(runner.to_owned()),
+    );
+    let body = workflow_jobs(
+        Forge::Github,
+        "${{ inputs.linux-runner }}",
+        "${{ inputs.working-directory }}",
+        "${{ inputs.lockfile }}",
+    );
+    out.push_str(
+        &body
+            .replace(
+                "if: startsWith(github.ref, 'refs/tags/v')",
+                "if: inputs.publish && github.event_name != 'pull_request'",
+            )
+            .replace(
+                "${{ vars.TILO_REGISTRY }}",
+                "${{ inputs.registry || vars.TILO_REGISTRY }}",
+            ),
+    );
+    for secret in [
+        "TILO_PUBLISHER_KEY",
+        "TILO_ANDROID_KEYSTORE",
+        "TILO_ANDROID_KEYSTORE_PASS",
+    ] {
+        out = out.replace(
+            &format!("${{{{ secrets.{secret} }}}}"),
+            &format!("${{{{ inputs.publish && github.event_name != 'pull_request' && secrets.{secret} || '' }}}}"),
+        );
+    }
+    out
 }
 
 fn repository_root(app_dir: &Path) -> PathBuf {
@@ -256,8 +337,6 @@ fn join_slash(dir: &str, file: &str) -> String {
 /// The workflow text. Lines use `${{ }}` expressions, so it is assembled
 /// with `push_str` rather than `format!`.
 fn workflow(forge: Forge, runner: &str, working_directory: &str, lock: &str) -> String {
-    let (upload, download) = forge.artifact_actions();
-    let dist = join_slash(working_directory, "dist");
     let mut out = String::new();
     let _ = write!(
         out,
@@ -267,8 +346,8 @@ fn workflow(forge: Forge, runner: &str, working_directory: &str, lock: &str) -> 
          # Pushing a tag named v* also publishes the packages to the registry,\n\
          # which lists them once its owner has reviewed the request.\n\
          #\n\
-         # Publishing needs the TILO_PUBLISHER_KEY secret: the contents of the\n\
-         # file `tilo-app keys new` wrote. Packages built without it (pull\n\
+         # Publishing needs the TILO_PUBLISHER_KEY secret: what\n\
+         # `tilo-app keys export` prints. Packages built without it (pull\n\
          # requests from forks) are signed with a throwaway key. Set the\n\
          # TILO_REGISTRY variable to publish somewhere other than apps.tilo.so.\n\
          \n\
@@ -290,9 +369,18 @@ fn workflow(forge: Forge, runner: &str, working_directory: &str, lock: &str) -> 
         forge = forge.name(),
     );
 
+    out.push_str(&workflow_jobs(forge, runner, working_directory, lock));
+    out
+}
+
+fn workflow_jobs(forge: Forge, runner: &str, working_directory: &str, lock: &str) -> String {
+    let (upload, download) = forge.artifact_actions();
+    let dist = join_slash(working_directory, "dist");
+    let mut out = String::new();
     out.push_str("  check:\n");
     let _ = writeln!(out, "    runs-on: {runner}");
     let _ = writeln!(out, "    container: {BUILDER_IMAGE}");
+    job_directory(&mut out, working_directory);
     out.push_str("    steps:\n");
     steps_prelude(&mut out, lock);
     out.push_str("      - run: tilo-app check\n\n");
@@ -320,6 +408,7 @@ fn workflow(forge: Forge, runner: &str, working_directory: &str, lock: &str) -> 
             let _ = writeln!(out, "    container: {BUILDER_IMAGE}");
         }
     }
+    job_directory(&mut out, working_directory);
     out.push_str("    steps:\n");
     steps_prelude(&mut out, lock);
     android_steps(&mut out);
@@ -337,6 +426,7 @@ fn workflow(forge: Forge, runner: &str, working_directory: &str, lock: &str) -> 
     out.push_str("  publish:\n    needs: package\n    if: startsWith(github.ref, 'refs/tags/v')\n");
     let _ = writeln!(out, "    runs-on: {runner}");
     let _ = writeln!(out, "    container: {BUILDER_IMAGE}");
+    job_directory(&mut out, working_directory);
     out.push_str("    steps:\n");
     steps_prelude(&mut out, lock);
     let _ = write!(
@@ -353,6 +443,13 @@ fn workflow(forge: Forge, runner: &str, working_directory: &str, lock: &str) -> 
            run: tilo-app publish dist/*.tapp\n"
     );
     out
+}
+
+fn job_directory(out: &mut String, directory: &str) {
+    let _ = writeln!(
+        out,
+        "    defaults:\n      run:\n        working-directory: {directory}"
+    );
 }
 
 /// The package job's artifacts: every build's `.tapp`, and Android's `.apk`
@@ -417,6 +514,7 @@ fn runner_for<'a>(build: &'a Build, linux_x86: &'a str) -> &'a str {
 
 fn matrix_entry(out: &mut String, build: &Build, prefix: &str, runner: &str) {
     let container = if build.builder { BUILDER_IMAGE } else { "" };
+    let runner = serde_json::Value::String(runner.to_owned());
     let _ = writeln!(
         out,
         "          {prefix}- {{ platform: {}, arch: {}, runner: {runner}, container: \"{container}\" }}",
@@ -427,19 +525,26 @@ fn matrix_entry(out: &mut String, build: &Build, prefix: &str, runner: &str) {
 /// Checkout, then the `tilo-app` built from the SDK revision `Cargo.lock`
 /// pins, cached per revision.
 fn steps_prelude(out: &mut String, lock: &str) {
+    let lock_expression = if lock == "${{ inputs.lockfile }}" {
+        "inputs.lockfile".to_owned()
+    } else {
+        format!("'{lock}'")
+    };
     out.push_str("      - uses: actions/checkout@v4\n");
     let _ = write!(
         out,
         "      - name: Find the Tilo SDK revision\n        \
            id: sdk\n        \
            working-directory: .\n        \
+           env:\n          \
+             LOCK_FILE: {lock}\n        \
            run: |\n          \
-             rev=$(sed -n 's|^source = \"git+{SDK_GIT}?rev=\\([0-9a-f]\\{{40\\}}\\)#.*|\\1|p' {lock} | head -n1)\n          \
+             rev=$(sed -n 's|^source = \"git+{SDK_GIT}?rev=\\([0-9a-f]\\{{40\\}}\\)#.*|\\1|p' \"$LOCK_FILE\" | head -n1)\n          \
              echo \"rev=${{rev:-main}}\" >> \"$GITHUB_OUTPUT\"\n\
          \x20     - uses: actions/cache@v4\n        \
            with:\n          \
              path: .tilo-cli\n          \
-             key: tilo-app-${{{{ runner.os }}}}-${{{{ runner.arch }}}}-${{{{ steps.sdk.outputs.rev }}}}-${{{{ hashFiles('{lock}') }}}}\n\
+             key: tilo-app-${{{{ runner.os }}}}-${{{{ runner.arch }}}}-${{{{ steps.sdk.outputs.rev }}}}-${{{{ hashFiles({lock_expression}) }}}}\n\
          \x20     - name: Install tilo-app\n        \
            run: |\n          \
              root=\"$GITHUB_WORKSPACE/.tilo-cli\"\n          \
@@ -455,6 +560,108 @@ fn steps_prelude(out: &mut String, lock: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn github_reusable_checks_the_callers_app_and_publishes_only_when_requested() {
+        let text = github_reusable("ubuntu-latest");
+        let yaml: serde_yaml::Value = serde_yaml::from_str(&text).expect("valid YAML");
+        let call = &yaml["on"]["workflow_call"];
+        assert_eq!(call["inputs"]["publish"]["type"].as_str(), Some("boolean"));
+        assert_eq!(call["inputs"]["publish"]["default"].as_bool(), Some(false));
+        assert_eq!(
+            call["secrets"]["TILO_PUBLISHER_KEY"]["required"].as_bool(),
+            Some(false)
+        );
+        assert_eq!(yaml["permissions"]["contents"].as_str(), Some("read"));
+        assert_eq!(
+            yaml["jobs"]["check"]["defaults"]["run"]["working-directory"].as_str(),
+            Some("${{ inputs.working-directory }}")
+        );
+        assert_eq!(
+            yaml["jobs"]["publish"]["if"].as_str(),
+            Some("inputs.publish && github.event_name != 'pull_request'")
+        );
+        assert_eq!(
+            yaml["jobs"]["package"]["strategy"]["matrix"]["include"]
+                .as_sequence()
+                .expect("matrix")
+                .len(),
+            GITHUB_BUILDS.len()
+        );
+        assert!(text.contains("hashFiles(inputs.lockfile)"));
+        assert!(!text.contains("hashFiles('${{"));
+        assert!(text.contains("\"$LOCK_FILE\""));
+        assert!(text.contains("${{ inputs.working-directory }}/dist"));
+        assert!(text.contains("inputs.registry || vars.TILO_REGISTRY"));
+        for secret in [
+            "TILO_PUBLISHER_KEY",
+            "TILO_ANDROID_KEYSTORE",
+            "TILO_ANDROID_KEYSTORE_PASS",
+        ] {
+            assert!(text.contains(&format!("${{{{ inputs.publish && github.event_name != 'pull_request' && secrets.{secret} || '' }}}}")));
+            assert!(!text.contains(&format!("${{{{ secrets.{secret} }}}}")));
+        }
+        assert!(yaml["defaults"]["run"]["working-directory"].is_null());
+    }
+
+    #[test]
+    fn github_generator_writes_a_callable_pair_and_preserves_existing_files() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let app = temp.path().join("apps/editor");
+        std::fs::create_dir_all(temp.path().join(".git")).expect("git");
+        std::fs::create_dir_all(&app).expect("app");
+        std::fs::write(temp.path().join("Cargo.lock"), "").expect("lock");
+        let reusable = temp.path().join(".github/workflows/tilo-build.yml");
+        let preview = add_ci(&app, Forge::Github, None, false, true).expect("preview");
+        assert_eq!(preview.reusable_path.as_ref(), Some(&reusable));
+        assert_eq!(preview.to_json()["written"], false);
+        assert!(!preview.path.exists());
+        assert!(!reusable.exists());
+        std::fs::create_dir_all(reusable.parent().expect("parent")).expect("directory");
+        std::fs::write(&reusable, "existing workflow").expect("existing");
+        assert!(add_ci(&app, Forge::Github, None, false, false).is_err());
+        assert!(
+            !preview.path.exists(),
+            "refusal must not create half the pair"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&reusable).expect("read"),
+            "existing workflow"
+        );
+        let outcome = add_ci(&app, Forge::Github, None, true, false).expect("write pair");
+        let caller: serde_yaml::Value =
+            serde_yaml::from_str(&std::fs::read_to_string(&outcome.path).expect("caller"))
+                .expect("YAML");
+        assert_eq!(
+            caller["jobs"]["app"]["uses"].as_str(),
+            Some("./.github/workflows/tilo-build.yml")
+        );
+        assert_eq!(
+            caller["jobs"]["app"]["with"]["working-directory"].as_str(),
+            Some("apps/editor")
+        );
+        assert_eq!(
+            caller["jobs"]["app"]["with"]["lockfile"].as_str(),
+            Some("Cargo.lock")
+        );
+        assert_eq!(
+            caller["jobs"]["app"]["with"]["publish"].as_str(),
+            Some("${{ startsWith(github.ref, 'refs/tags/v') }}")
+        );
+        let reusable_document: serde_yaml::Value =
+            serde_yaml::from_str(&std::fs::read_to_string(&reusable).expect("callee"))
+                .expect("YAML");
+        for secret in caller["jobs"]["app"]["secrets"]
+            .as_mapping()
+            .expect("secrets")
+            .keys()
+        {
+            assert!(
+                !reusable_document["on"]["workflow_call"]["secrets"][secret].is_null(),
+                "caller secret must be declared by callee"
+            );
+        }
+    }
 
     #[test]
     fn github_workflow_builds_every_platform_and_publishes_tags_once() {

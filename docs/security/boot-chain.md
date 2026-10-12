@@ -474,6 +474,15 @@ and `tilo.generation=` reach the sealed command line through the same mechanism
 that already existed for the unsealed one. `os/dev/uki.sh` is the script it runs,
 and it fails the build if the generation did not make it into the seal.
 
+The board images (`os/Containerfile.board`) and the dev installer base
+(`os/Containerfile.dev-installer-base`) seal the same way, with the same
+`uki-tools` and `uki` stages. The tools come from one list,
+`os/dev/uki-tools.packages`, and every `uki` stage declares the same seal inputs
+(`TILO_CFS_DIGEST`, `TILO_SEAL_GENERATION`). `tools/policy/check_uki_pipeline.py`
+fails when one copy changes alone, and when a `final` stage adds anything but
+the UKI. The composefs probe under `os/dev/composefs/` is deliberately separate,
+and its header says why.
+
 Two details matter at the release boundary:
 
 - **An ordinary development build does not sign the UKI.** Published release
@@ -820,6 +829,10 @@ initrd generation to the image build.
 
 Tilo supports local roots only. The signed initramfs therefore explicitly omits
 Dracut's network, NetworkManager, NFS, iSCSI, Clevis/NBDE, and crypt-SSH modules.
+The `tilo-sibling-unlock` module (`docs/device-reach.md`) carries the image's
+NetworkManager binary for its own unit instead, which only a root whose LUKS2
+header holds a `tilo-sibling-unlock` token starts; it parses no network-root
+command line.
 Passphrase, TPM2, FIDO2, Plymouth, and rollback recovery remain mandatory. This
 cuts boot-time archive I/O and removes unused pre-root network and TLS parsers.
 

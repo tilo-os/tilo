@@ -1,0 +1,35 @@
+[Unit]
+Description=Tilo visible desktop startup recovery status
+After=local-fs.target
+Conflicts=getty@tty2.service greetd.service
+Wants=getty@tty3.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/tilo-session-recovery
+RemainAfterExit=yes
+StandardInput=null
+StandardOutput=tty
+StandardError=journal
+TTYPath=/dev/tty2
+TTYReset=yes
+TTYVHangup=yes
+TimeoutStartSec=20
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateNetwork=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+CapabilityBoundingSet=CAP_SYS_TTY_CONFIG CAP_DAC_READ_SEARCH
+RestrictAddressFamilies=AF_UNIX
+SystemCallArchitectures=native

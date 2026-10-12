@@ -6,6 +6,7 @@
 use std::rc::Rc;
 
 use serde_json::json;
+use tilo_app::advanced::{Affine, NodeId, Scene, TaffyTree};
 use tilo_app::prelude::*;
 use tilo_app::vello::kurbo::{BezPath, Stroke};
 use tilo_app::vello::peniko::Color;
@@ -116,9 +117,7 @@ fn render_answers_a_dense_view_with_its_pixels() {
     let shown = app.call("render", json!({})).unwrap().unwrap();
     let address = shown["content"].as_str().expect("a stored picture");
     let hash = tilo_app::tilo_actions::content_hash(address).expect("a content address");
-    let png = tilo_content::ContentStore::for_app()
-        .read(hash)
-        .expect("the picture is stored");
+    let png = app.content().read(hash).expect("the picture is stored");
     let picture = tilo_app::png::decode_rgba8(&png).unwrap();
     let pixels = picture.rgba.chunks_exact(4);
     let total = pixels.len();

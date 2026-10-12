@@ -8,14 +8,6 @@ from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
 PINS_FILE = ROOT / 'tools/ci/images.toml'
-# Workflows not yet moved onto the shared pins. Only shrink this set.
-PENDING = {
-    ('app-sdk.yml', 'ci-fast'),
-    ('os-dev.yml', 'ci-fast'),
-    ('os-dev-arm.yml', 'ci-fast'),
-}
-
-
 def load_pins():
     with PINS_FILE.open('rb') as stream:
         return tomllib.load(stream)
@@ -29,6 +21,19 @@ def load_resolver():
 
 
 class CiImagePins(unittest.TestCase):
+    def test_filesystem_public_builder_jobs_do_not_require_forge_credentials(self):
+        source = (ROOT / '.forgejo/workflows/ci-filesystem.yml').read_text()
+        observed = set()
+        jobs = re.findall(r'(?ms)^  ([a-z0-9_-]+):\n(.*?)(?=^  [a-z0-9_-]+:|\Z)', source)
+        for name, job in jobs:
+            container = re.search(r'(?ms)^    container:\n(.*?)(?=^    \S|\Z)', job)
+            if container and 'image: ${{ needs.builder.outputs.image }}' in container[1]:
+                observed.add(name)
+                self.assertNotIn('credentials:', container[1], name)
+        self.assertEqual(observed, {'real-fuse', 'cloud-servers', 'cloud-live', 'native-tier1', 'files-ux'})
+        self.assertIn('TILO_REQUIRE_CLOUD_SERVERS: "1"', source)
+        self.assertIn('TILO_LIVE_NEXTCLOUD_PASSWORD: ${{ secrets.TILO_LIVE_NEXTCLOUD_PASSWORD }}', source)
+
     def test_every_workflow_reference_uses_the_shared_pin(self):
         config = load_pins()
         registry = config['registry']['host'] + '/' + config['registry']['namespace'] + '/'
@@ -41,9 +46,6 @@ class CiImagePins(unittest.TestCase):
         seen = set()
         for path in sources:
             for repository, digest in reference.findall(path.read_text()):
-                key = (path.name, repository)
-                if key in PENDING:
-                    continue
                 with self.subTest(workflow=path.name, image=repository):
                     self.assertIn(repository, pins, 'add the image to tools/ci/images.toml')
                     self.assertEqual(digest, pins[repository], 'pin it in tools/ci/images.toml')

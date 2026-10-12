@@ -165,7 +165,9 @@ class Downloads final : public CefDownloadHandler {
   struct Transfer {int owner=0;CefRefPtr<CefBeforeDownloadCallback> before;CefRefPtr<CefDownloadItemCallback> active;std::string name,url,path;int64_t received=0,total=0;bool retryable=false,approved=false,cancel_requested=false,cancel_sent=false;};
   struct RetryRecord {std::string url;bool retryable=false;};
   static void Merge(Transfer& transfer,CefRefPtr<CefDownloadItem> item) {
-    auto name=FileName(item->GetSuggestedFileName());if(!name.empty())transfer.name=name;
+    // The consent callback supplies the destination name. Later item updates
+    // can report only Chromium's fallback, even after that filename was saved.
+    if(!transfer.before && !transfer.approved)transfer.name=FileName(item->GetSuggestedFileName());
     if(!item->GetURL().empty())transfer.url=item->GetURL();if(!item->GetFullPath().empty())transfer.path=item->GetFullPath();
     if(item->GetReceivedBytes()>0 || !transfer.received)transfer.received=item->GetReceivedBytes();if(item->GetTotalBytes()>0 || !transfer.total)transfer.total=item->GetTotalBytes();
   }

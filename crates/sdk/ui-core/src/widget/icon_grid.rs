@@ -9,6 +9,8 @@
 //! selection with [`set_selection`](IconGrid::set_selection) and react to
 //! `on_item_click(index, ctrl, shift)`.
 
+use crate::num::f64_of_usize;
+use crate::num::{f32_of_f64, usize_of_f64};
 use std::collections::HashMap;
 
 use taffy::{NodeId, Style, TaffyTree};
@@ -21,9 +23,10 @@ use crate::presence::PresenceCtx;
 use crate::selection::SelectionModel;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::tokens::TextRole;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
-use crate::widget::data_table::{renderer_type_size, text_band, type_line_height};
+use crate::widget::data_table::{text_band, type_line_height};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct IconGridItem {
@@ -116,12 +119,6 @@ impl IconGrid {
         self
     }
 
-    #[must_use]
-    pub fn with_icon_size(mut self, px: f64) -> Self {
-        self.icon_px = px.max(4.0);
-        self
-    }
-
     /// Host owns the selection across frames.
     pub fn set_selection(&mut self, sel: SelectionModel) {
         self.selection = sel;
@@ -163,7 +160,7 @@ impl IconGrid {
             return 1;
         }
         // width + gap, because the last cell needs no trailing gap.
-        floor_to_usize(((width + self.gap) / stride).floor()).max(1)
+        usize_of_f64(((width + self.gap) / stride).floor()).max(1)
     }
 
     fn content_height(&self, columns: usize) -> f64 {
@@ -175,7 +172,7 @@ impl IconGrid {
         if rows == 0 {
             0.0
         } else {
-            count_to_f64(rows) * self.cell_h + count_to_f64(rows.saturating_sub(1)) * self.gap
+            f64_of_usize(rows) * self.cell_h + f64_of_usize(rows.saturating_sub(1)) * self.gap
         }
     }
 
@@ -184,8 +181,8 @@ impl IconGrid {
         let col = i.checked_rem(columns).unwrap_or(0);
         let row = i.checked_div(columns).unwrap_or(0);
         Point::new(
-            self.rect.x0 + count_to_f64(col) * (self.cell_w + self.gap),
-            self.rect.y0 + count_to_f64(row) * (self.cell_h + self.gap),
+            self.rect.x0 + f64_of_usize(col) * (self.cell_w + self.gap),
+            self.rect.y0 + f64_of_usize(row) * (self.cell_h + self.gap),
         )
     }
 
@@ -205,16 +202,16 @@ impl IconGrid {
         if rel_x < 0.0 || rel_y < 0.0 {
             return None;
         }
-        let col = floor_to_usize(rel_x / stride_x);
-        let row = floor_to_usize(rel_y / stride_y);
+        let col = usize_of_f64(rel_x / stride_x);
+        let row = usize_of_f64(rel_y / stride_y);
         if col >= self.columns {
             return None;
         }
         // Reject points that land in the inter-cell gap.
-        if rel_x - count_to_f64(col) * stride_x > self.cell_w {
+        if rel_x - f64_of_usize(col) * stride_x > self.cell_w {
             return None;
         }
-        if rel_y - count_to_f64(row) * stride_y > self.cell_h {
+        if rel_y - f64_of_usize(row) * stride_y > self.cell_h {
             return None;
         }
         let idx = row.saturating_mul(self.columns).saturating_add(col);
@@ -237,39 +234,6 @@ fn translated(transform: Affine, x: f64, y: f64) -> Affine {
     transform * Affine::translate((x, y))
 }
 
-/// Widens a column/row count to `f64` for layout math. Goes through `u32`
-/// (exactly representable in `f64`) with a saturating fallback rather than
-/// an `as` cast, so it's lossless for any realistic grid size.
-fn count_to_f64(n: usize) -> f64 {
-    f64::from(u32::try_from(n).unwrap_or(u32::MAX))
-}
-
-/// Narrows a layout dimension to `f32` for taffy. Grid width/height here
-/// are always screen-space pixel sizes, many orders of magnitude below
-/// `f32::MAX`, so the truncation the lint warns about can't actually
-/// occur.
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "grid layout sizes never approach f32::MAX"
-)]
-fn to_f32(v: f64) -> f32 {
-    v as f32
-}
-
-/// Floors a non-negative layout measurement (column/row index or count)
-/// to `usize`. Grid dimensions here are always tiny (a handful of
-/// columns, at most a few hundred rows), nowhere near `usize::MAX`, and
-/// the `.max(0.0)` clamp rules out the sign-loss case the lint also warns
-/// about.
-#[allow(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    reason = "grid column/row counts are always tiny and non-negative"
-)]
-fn floor_to_usize(v: f64) -> usize {
-    v.max(0.0) as usize
-}
-
 impl Widget for IconGrid {
     fn build_layout(
         &mut self,
@@ -285,8 +249,8 @@ impl Widget for IconGrid {
             // label across (96 px at 1×) and the glyph, its label gap and one
             // label line plus a section inset above and below (88 px at 1×).
             // An authored `with_cell_size` is left exactly as written.
-            let label_size = f64::from(tokens.typography.scale.sm);
-            let label_line = type_line_height(tokens.typography.scale.sm);
+            let label_size = f64::from(tokens.typography.size(TextRole::Caption));
+            let label_line = type_line_height(&tokens.typography, TextRole::Caption);
             self.cell_w = text_band(DEFAULT_CELL_W, label_size * DEFAULT_CELL_LABEL_EMS, 0.0);
             self.cell_h = text_band(
                 DEFAULT_CELL_H,
@@ -294,9 +258,7 @@ impl Widget for IconGrid {
                 2.0 * f64::from(tokens.spacing.s3),
             );
         }
-        let node = taffy.leaf_node(Style::default());
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        taffy.widget_leaf(Style::default(), node_map, self)
     }
 
     fn measure(
@@ -318,19 +280,13 @@ impl Widget for IconGrid {
         self.columns = columns;
         let height = self.content_height(columns);
         taffy::Size {
-            width: to_f32(width),
-            height: to_f32(height),
+            width: f32_of_f64(width),
+            height: f32_of_f64(height),
         }
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
         // Actual allocated width — measure may have run against a
         // different available width.
         self.columns = self.columns_for_width(self.rect.width());
@@ -345,7 +301,7 @@ impl Widget for IconGrid {
         presence: &PresenceCtx,
     ) {
         let tokens = &theme.tokens;
-        let label_size = renderer_type_size(text_renderer, tokens.typography.scale.sm);
+        let label_style = tokens.typography.style(TextRole::Caption);
         let label_gap = f64::from(tokens.spacing.s2);
         let label_inset = f64::from(tokens.spacing.s2);
         for (i, item) in self.items.iter().enumerate() {
@@ -357,33 +313,27 @@ impl Widget for IconGrid {
             let hovered = self.hover == Some(i) && !selected;
             if selected || hovered {
                 let bg = if selected {
-                    tokens.colors.accent.stops[crate::tokens::colors::ACCENT_PRIMARY_IDX]
+                    tokens.colors.lift_on(tokens.colors.surfaces.content, 1.0)
                 } else {
-                    theme.bg_hover
+                    tokens.colors.intent.selection_hover
                 };
-                let shape = RoundedRect::from_rect(cell, f64::from(tokens.radii.md));
+                let shape = RoundedRect::from_rect(cell, f64::from(tokens.radii.control));
                 scene.fill(vello::peniko::Fill::NonZero, transform, bg, None, &shape);
             }
 
-            let label = text_renderer.elide_to_width(
+            let label = text_renderer.elide_to_width_style(
                 &item.label,
-                label_size,
                 crate::num::f32_of_f64(self.cell_w - label_inset),
+                &label_style,
             );
-            let (tw, th) = text_renderer.measure(&label, label_size, None);
+            let (tw, th) = text_renderer.measure_style(&label, None, &label_style);
             // The glyph + label block is centred in the cell so the margins
             // above and below match; the label is centred under the glyph.
             let block_h = self.icon_px + label_gap + f64::from(th);
             let icon_x = cell.x0 + (self.cell_w - self.icon_px) / 2.0;
             let icon_y = cell.y0 + ((self.cell_h - block_h) / 2.0).max(0.0);
             let icon_rect = Rect::new(icon_x, icon_y, icon_x + self.icon_px, icon_y + self.icon_px);
-            let glyph_color = if selected {
-                tokens
-                    .colors
-                    .on_accent(crate::tokens::colors::NON_TEXT_MIN_CONTRAST)
-            } else {
-                tokens.colors.text_primary
-            };
+            let glyph_color = tokens.colors.text_primary;
             draw_icon(
                 scene,
                 transform,
@@ -395,20 +345,14 @@ impl Widget for IconGrid {
 
             let tx = cell.x0 + (self.cell_w - f64::from(tw)) / 2.0;
             let ty = icon_y + self.icon_px + label_gap;
-            let label_color = if selected {
-                tokens
-                    .colors
-                    .on_accent(crate::tokens::colors::ON_FILL_MIN_CONTRAST)
-            } else {
-                tokens.colors.text_primary
-            };
-            text_renderer.draw_text(
+            let label_color = tokens.colors.text_primary;
+            text_renderer.draw_style(
                 scene,
                 &label,
-                label_size,
                 label_color,
                 translated(transform, tx, ty),
                 None,
+                &label_style,
             );
         }
 
@@ -419,7 +363,7 @@ impl Widget for IconGrid {
         {
             let cell = self.cell_rect(i);
             if !presence.should_cull(cell) {
-                let ring = RoundedRect::from_rect(cell, f64::from(tokens.radii.md));
+                let ring = RoundedRect::from_rect(cell, f64::from(tokens.radii.control));
                 scene.stroke(
                     &vello::kurbo::Stroke::new(2.0),
                     transform,
@@ -571,7 +515,6 @@ impl Widget for IconGrid {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use automerge::AutoCommit;
     use taffy::prelude::TaffyMaxContent;
 
     fn items(n: usize) -> Vec<IconGridItem> {
@@ -633,28 +576,9 @@ mod tests {
             g.rect = Rect::new(0.0, 0.0, 324.0, 200.0);
             g.columns = 3;
 
-            let mut tree = TaffyTree::<()>::new();
-            let node = tree.leaf_node(Style::default());
-            let mods = winit::event::Modifiers::default();
-            let device: winit::event::DeviceId = unsafe { std::mem::zeroed() };
-            let mut doc = AutoCommit::new();
-            let root = automerge::ROOT;
-            let mut feed = |g: &mut IconGrid, ev: WindowEvent| {
-                let mut h = false;
-                let mut f = None;
-                g.handle_event(
-                    &ev,
-                    &mut crate::widget::EventCtx {
-                        scale_factor: 1.0,
-                        modifiers: &mods,
-                        state: &mut doc,
-                        path: &root,
-                        handled: &mut h,
-                        focus_target: &mut f,
-                        node_id: node,
-                        taffy: &tree,
-                    },
-                );
+            let device = winit::event::DeviceId::dummy();
+            let feed = |g: &mut IconGrid, ev: WindowEvent| {
+                crate::testing::dispatch(g, &ev);
             };
             feed(
                 &mut g,

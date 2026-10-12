@@ -2,17 +2,7 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 
 fn run(root: &Path, host: &Path, target: Option<&Path>, dump: &Path) -> serde_json::Value {
-    run_with(root, host, target, dump, &[])
-}
-
-fn run_with(
-    root: &Path,
-    host: &Path,
-    target: Option<&Path>,
-    dump: &Path,
-    env: &[(&str, &str)],
-) -> serde_json::Value {
-    drive(root, host, target, dump, env, &serde_json::json!([]))
+    drive(root, host, target, dump, &serde_json::json!([]))
 }
 
 fn drive(
@@ -20,7 +10,6 @@ fn drive(
     host: &Path,
     target: Option<&Path>,
     dump: &Path,
-    env: &[(&str, &str)],
     actions: &serde_json::Value,
 ) -> serde_json::Value {
     std::fs::create_dir_all(host).unwrap();
@@ -54,9 +43,9 @@ fn drive(
     }
     command.current_dir(host);
     command
-        .env("TILO_NOTES_ROOT", root)
         .env("TILO_PACKAGE_ID", "so.tilo.notes")
-        .envs(env.iter().copied())
+        .arg("--data-dir")
+        .arg(root)
         .arg("--headless-drive")
         .arg(serde_json::json!({"actions": actions, "dump": dump}).to_string());
     if let Some(target) = target {
@@ -98,7 +87,7 @@ fn drive(
 
 /// The paragraphs of a page in a dumped notebook, in no particular order.
 fn texts(page: &serde_json::Value) -> Vec<String> {
-    page["body"]["blocks"]
+    page["v"]["body"]["blocks"]
         .as_object()
         .unwrap()
         .values()
@@ -132,7 +121,10 @@ fn positional_markdown_imports_and_persists_without_synthetic_input() {
         &temp.path().join("second.json"),
     );
     assert_eq!(second["pages"].as_object().unwrap().len(), 2);
-    assert_eq!(second["pages"][old_id]["title"], old_page["title"]);
+    assert_eq!(
+        second["pages"][old_id]["v"]["title"],
+        old_page["v"]["title"]
+    );
     assert!(texts(&second["pages"][old_id]).contains(&"Keep this body.".to_owned()));
     let restored = run(&notebook, &host, None, &temp.path().join("restart.json"));
     assert_eq!(restored["pages"].as_object().unwrap().len(), 2);
@@ -140,7 +132,7 @@ fn positional_markdown_imports_and_persists_without_synthetic_input() {
         .as_object()
         .unwrap()
         .values()
-        .find(|page| page["title"] == "Grüße 日本語")
+        .find(|page| page["v"]["title"] == "Grüße 日本語")
         .unwrap();
     let mut body = texts(new_page);
     body.sort();
@@ -169,39 +161,21 @@ fn record_dirs(root: &Path) -> Vec<String> {
     names
 }
 
-/// Launched into a room, Notes opens the room's default record, the one
-/// every other device's first Notes window (native or browser) opens, so
-/// they edit one notebook; a standalone launch keeps the personal notebook.
+/// A launch opens the room's default record, the one every other device's
+/// first Notes window (native or browser) opens, so they edit one notebook.
 #[test]
-fn a_room_launch_opens_the_rooms_default_record() {
+fn a_launch_opens_the_rooms_default_record() {
     let temp = tempfile::tempdir().unwrap();
-    let room_default = ui::record::RecordId::room_default().storage_key();
-    let personal = notes::hosting::default_notebook().id.storage_key();
-
-    let room_host = temp.path().join("room");
-    run_with(
-        &temp.path().join("room-notebook"),
-        &room_host,
-        None,
-        &temp.path().join("room.json"),
-        &[
-            ("TILO_WORKSPACE_ID", "095789bd-bf1b-4215-9d78-78129060e306"),
-            ("TILO_PARTICIPATION", "author"),
-        ],
-    );
-    let dirs = record_dirs(&room_host);
-    assert!(dirs.contains(&room_default), "{dirs:?}");
-    assert!(!dirs.contains(&personal), "{dirs:?}");
-
-    let personal_host = temp.path().join("personal");
+    let data = temp.path().join("notebook");
     run(
-        &temp.path().join("personal-notebook"),
-        &personal_host,
+        &data,
+        &temp.path().join("host"),
         None,
-        &temp.path().join("personal.json"),
+        &temp.path().join("dump.json"),
     );
-    let dirs = record_dirs(&personal_host);
-    assert!(dirs.contains(&personal), "{dirs:?}");
+    let dirs = record_dirs(&data);
+    let room_default = ui::record::RecordId::room_default().storage_key();
+    assert!(dirs.contains(&room_default), "{dirs:?}");
 }
 
 /// The empty state's "New note" is found where it is drawn: its button
@@ -215,7 +189,6 @@ fn clicking_new_note_where_its_button_says_it_is_creates_the_first_note() {
         &temp.path().join("host"),
         None,
         &temp.path().join("dump.json"),
-        &[],
         &serde_json::json!([{"click_named": "notes.first_note"}]),
     );
     assert_eq!(dump["pages"].as_object().unwrap().len(), 1, "{dump}");

@@ -10,7 +10,11 @@ use std::{
     reason = "test helper: a test binary that cannot name itself cannot run these tests"
 )]
 fn child() -> Command {
-    let mut command = Command::new(std::env::current_exe().unwrap());
+    child_at(std::env::current_exe().unwrap())
+}
+
+fn child_at(executable: impl AsRef<std::ffi::OsStr>) -> Command {
+    let mut command = Command::new(executable);
     command
         .args(["--exact", "bootstrap_child", "--nocapture"])
         .env("TILO_BOOTSTRAP_TEST_CHILD", "1")
@@ -21,6 +25,73 @@ fn child() -> Command {
         .env_remove("TILO_RUNTIME_BINARY")
         .env_remove("XDG_CURRENT_DESKTOP");
     command
+}
+
+#[test]
+fn source_profile_host_lookup_keeps_installed_and_desktop_boundaries() {
+    let root = std::env::temp_dir().join(format!("tilo-host-profiles-{}", std::process::id()));
+    std::fs::create_dir(&root).unwrap();
+    std::fs::create_dir_all(root.join("target/thin-app")).unwrap();
+    std::fs::create_dir_all(root.join("target/debug")).unwrap();
+    std::fs::create_dir_all(root.join("crates/runtime/tilo-runtime")).unwrap();
+    let app = root.join("target/thin-app/ebook");
+    std::fs::copy(std::env::current_exe().unwrap(), &app).unwrap();
+    let host = root.join("target/debug/tilo-runtime");
+    std::fs::write(
+        &host,
+        "#!/bin/sh\nprintf 'SOURCE HOST\\n'; printf '%s\\n' \"$@\"\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&host, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let output = child_at(&app).env("PATH", &root).output().unwrap();
+    assert!(
+        !output.status.success(),
+        "unmarked directories are not a checkout"
+    );
+    std::fs::write(root.join("Cargo.toml"), "[workspace]\n").unwrap();
+    std::fs::write(
+        root.join("crates/runtime/tilo-runtime/Cargo.toml"),
+        "[package]\n",
+    )
+    .unwrap();
+    let output = child_at(&app).env("PATH", &root).output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stdout)
+            .contains("SOURCE HOST\n--run-app\ndev.tilo.bootstrap-test")
+    );
+    let output = child_at(&app)
+        .env("PATH", &root)
+        .env("XDG_CURRENT_DESKTOP", "tilo")
+        .output()
+        .unwrap();
+    assert!(
+        !output.status.success(),
+        "the desktop never selects the standalone host"
+    );
+    assert!(String::from_utf8_lossy(&output.stderr).contains("-p shell --bin tilo-runtime-mcp"));
+    std::fs::remove_file(&host).unwrap();
+    let output = child_at(&app).env("PATH", &root).output().unwrap();
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("cargo build --locked -p tilo-runtime")
+    );
+    std::fs::write(&host, "#!/bin/sh\nexit 0\n").unwrap();
+    std::fs::set_permissions(&host, std::fs::Permissions::from_mode(0o700)).unwrap();
+    std::fs::create_dir(root.join("bin")).unwrap();
+    let installed = root.join("bin/ebook");
+    std::fs::hard_link(&app, &installed).unwrap();
+    let output = child_at(&installed).env("PATH", &root).output().unwrap();
+    assert!(
+        !output.status.success(),
+        "an installed app never searches Cargo profiles"
+    );
+    assert!(String::from_utf8_lossy(&output.stderr).contains("beside the app or on PATH"));
+    std::fs::remove_dir_all(root).unwrap();
 }
 #[test]
 fn bootstrap_child() {
@@ -163,6 +234,25 @@ fn bootstrap_attaches_standalone_inherited_or_through_the_host() {
         assert!(
             output.status.success(),
             "case complete inherited: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    // A launcher launch hands over only the services it has: an app that
+    // declares no collaboration service gets just its identity broker, and
+    // that is a complete inherited attachment, not a reason to start a host.
+    for service in ["TILO_SVC_IDENTITY_FD", "TILO_SVC_COLLAB_FD"] {
+        let (socket, _peer) = UnixStream::pair().unwrap();
+        let fd = socket.as_raw_fd();
+        let mut command = child();
+        command
+            .env(service, fd.to_string())
+            .env("TILO_RUNTIME_BINARY", "/must-not-run");
+        inherit(&mut command, vec![fd]);
+        let output = command.output().unwrap();
+        assert!(
+            output.status.success(),
+            "case only {service}: {}",
             String::from_utf8_lossy(&output.stderr)
         );
     }

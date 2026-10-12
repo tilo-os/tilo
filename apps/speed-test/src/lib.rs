@@ -1,20 +1,22 @@
 //! A small, responsive internet speed test.
 
+// Apps run in isolated processes, so app-local arithmetic checks are relaxed.
+// Panic-producing lints remain denied.
+#![allow(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    reason = "app-local arithmetic over small bounded quantities"
+)]
+
 pub mod app;
+pub mod locales;
+mod measure;
+mod model;
 pub mod resource;
+mod view;
 
-use ui::widget::Widget;
+pub use resource::{Measurement, SpeedEffect, SpeedTest, SpeedTestShell};
 
-pub fn app_root() -> Box<dyn Widget> {
-    Box::new(app::SpeedTestApp::new())
-}
-
-/// The app as every host mounts it: the live root.
-pub fn definition() -> &'static ui::application::ApplicationDefinition {
-    ui::launch::LaunchSpec::new("so.tilo.speed-test", app_root).as_definition("Speed Test")
-}
-
-pub fn shot_root(scenario: &str) -> Box<dyn Widget> {
-    Box::new(app::SpeedTestApp::demo(scenario))
-}
-pub use resource::{SpeedTest, SpeedTestShell};
+ui::dev_reload_entry!(SpeedTestShell);

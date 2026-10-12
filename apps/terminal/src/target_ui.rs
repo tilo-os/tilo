@@ -2,13 +2,17 @@
 // the target picker it opens, and the environments panel. Included into the
 // widget's module next to `main_body.rs`.
 
+use crate::i18n::t;
 use crate::sessions::OpenState;
-use crate::target::{EnvironmentSummary, Location, SessionTarget};
+use crate::target::{EnvironmentSummary, Location, RelaySummary, SessionTarget};
+use ui::widget::{Button, ButtonFace, ButtonRole, ControlSize, TextInput};
 
 /// One row of the target picker.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum TargetMenuRow {
     Open(SessionTarget),
+    /// Run the current environment here or on a relay.
+    RunOn(Location),
     Manage,
 }
 
@@ -44,10 +48,6 @@ enum RowAction {
     Open,
 }
 
-fn t(key: &str) -> String {
-    ui::i18n::I18nManager::lookup(key, None)
-}
-
 /// The tools and granted folders of an environment, as the panel shows them.
 fn environment_details(env: &EnvironmentSummary) -> (String, String) {
     let tools = if env.tools.is_empty() {
@@ -75,8 +75,23 @@ fn environment_details(env: &EnvironmentSummary) -> (String, String) {
     (tools, grants)
 }
 
+/// What the picker calls a place an environment runs.
+fn location_label(location: &Location, relays: &[RelaySummary]) -> String {
+    match location {
+        Location::ThisDevice => t("terminal-run-on-this-device"),
+        Location::Relay { relay } => relays
+            .iter()
+            .find(|r| r.relay == *relay)
+            .map_or_else(|| relay.chars().take(8).collect(), |r| r.label.clone()),
+    }
+}
+
 /// What the chip and the picker call a target.
-fn target_label(target: &SessionTarget, environments: &[EnvironmentSummary]) -> String {
+fn target_label(
+    target: &SessionTarget,
+    environments: &[EnvironmentSummary],
+    relays: &[RelaySummary],
+) -> String {
     match target {
         SessionTarget::Host => t("terminal-target-host"),
         SessionTarget::Environment { record, location } => {
@@ -99,10 +114,10 @@ fn target_label(target: &SessionTarget, environments: &[EnvironmentSummary]) -> 
                 );
             match location {
                 Location::ThisDevice => name,
-                Location::Relay { id } => format!("{name} · {id}"),
+                Location::Relay { .. } => format!("{name} on {}", location_label(location, relays)),
             }
         }
-        SessionTarget::Legacy { vm } => format!("{vm} · {}", t("terminal-target-legacy")),
+        SessionTarget::Legacy { vm } => format!("{vm} ({})", t("terminal-target-legacy")),
     }
 }
 
@@ -110,13 +125,25 @@ fn target_label(target: &SessionTarget, environments: &[EnvironmentSummary]) -> 
 /// `environment`, `environment:<record>` or `legacy:<vm>`.
 pub fn parse_target_argument(raw: &str) -> Option<SessionTarget> {
     let raw = raw.trim();
+    // `…@<relay endpoint id>` runs an environment on that relay.
+    let (raw, location) = match raw.split_once('@') {
+        Some((base, relay)) if base.starts_with("environment") => (
+            base,
+            Location::Relay {
+                relay: relay.to_ascii_lowercase(),
+            },
+        ),
+        Some(_) => return None,
+        None => (raw, Location::ThisDevice),
+    };
     let target = match raw.split_once(':') {
         None if raw == "host" => SessionTarget::Host,
         None if raw == "environment" => SessionTarget::default_environment(),
         Some(("environment", record)) => SessionTarget::environment(record),
         Some(("legacy", vm)) => SessionTarget::Legacy { vm: vm.to_owned() },
         _ => return None,
-    };
+    }
+    .at(location);
     target.is_valid().then_some(target)
 }
 
@@ -150,6 +177,12 @@ impl TerminalWidget {
         self.sessions.legacy_vms = vms;
     }
 
+    /// Report the person's relays, for "Run on" — for hosts and screenshot
+    /// scenes; a live tab lists them from the supervisor.
+    pub fn set_relays(&mut self, relays: Vec<RelaySummary>) {
+        self.sessions.relays = relays;
+    }
+
     /// Open sessions through `sessions` — for tests.
     #[cfg(test)]
     pub(crate) fn set_sessions(&mut self, sessions: crate::sessions::Sessions) {
@@ -164,59 +197,106 @@ impl TerminalWidget {
         }
     }
 
-    fn read_recorded_target(state: &AutoCommit) -> Option<SessionTarget> {
-        let parent = match state.get(&automerge::ROOT, "terminal_panel") {
-            Ok(Some((Value::Object(ObjType::Map), id))) => id,
-            _ => automerge::ROOT,
-        };
-        match state.get(&parent, crate::target::TARGET_KEY) {
-            Ok(Some((Value::Scalar(value), _))) => value.as_str().and_then(SessionTarget::decode),
-            _ => None,
-        }
+    fn record_target(&mut self, target: &SessionTarget) {
+        self.recorded_target = Some(target.clone());
+        self.submit(crate::resource::Terminal::RECORD_TARGET.with(target.encode()));
     }
 
-    fn record_target(&mut self, state: &mut AutoCommit, target: &SessionTarget) {
-        self.apply_session_action(
-            state,
-            &crate::resource::TerminalAction::SetTarget {
-                target: target.encode(),
-            },
-        );
+    /// Keep (or forget) the relay session this session re-attaches to.
+    fn record_relay_session(&mut self, session: Option<String>) {
+        if session.is_none() && self.recorded_relay_session.is_none() {
+            return;
+        }
+        self.recorded_relay_session.clone_from(&session);
+        self.submit(crate::resource::Terminal::RECORD_RELAY_SESSION.with(session));
     }
 
     /// Open the tab's session if it has none yet: on the record's target or,
     /// for a new tab, the default — recorded, so reopening returns to it.
-    fn ensure_session(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        if self.sessions.state != OpenState::Unopened {
-            self.poll_allow(state, root);
+    fn ensure_session(&mut self) {
+        if matches!(self.sessions.state, OpenState::NoRuntime(_))
+            && std::mem::take(&mut self.sessions.host_requested)
+        {
+            // Keep the explanation until the person's allowed session replaces it.
+            let _ = self.switch_target(&SessionTarget::Host, Requester::Person);
             return;
         }
-        let target = if let Some(target) = Self::read_recorded_target(state) {
+
+        if self.sessions.state != OpenState::Unopened {
+            self.poll_allow();
+            return;
+        }
+        let target = if let Some(target) = self.recorded_target.clone() {
             target
         } else {
             let target = self.sessions.default_target();
-            self.record_target(state, &target);
+            self.record_target(&target);
             target
         };
-        self.open_session(state, root, &target, Requester::Person);
+        // A session on a relay outlives the tab; reopening re-attaches to it.
+        let attach = target
+            .location()
+            .is_some_and(|location| !location.is_this_device())
+            .then(|| self.recorded_relay_session.clone())
+            .flatten();
+        self.open_session_attaching(&target, Requester::Person, attach.as_deref());
     }
 
     /// Put a session on `target` behind this tab, replacing any it has.
-    fn open_session(
+    fn open_session(&mut self, target: &SessionTarget, requested_by: Requester) {
+        self.open_session_attaching(target, requested_by, None);
+    }
+
+    /// [`Self::open_session`], re-attaching to the relay session `attach`
+    /// when one is named; a session that is gone is replaced by a new one.
+    fn open_session_attaching(
         &mut self,
-        state: &mut AutoCommit,
-        root: &ObjId,
         target: &SessionTarget,
         requested_by: Requester,
+        attach: Option<&str>,
     ) {
         self.sessions.target = Some(target.clone());
-        match self.sessions.open(target, requested_by) {
+        // Dropping the platform lifetime also shuts down reader-held clones.
+        self.service_lifetime = None;
+        if let Some(result) =
+            self.sessions
+                .begin_open(target, requested_by, attach, Arc::clone(&self.waker))
+        {
+            self.finish_session_open(target, requested_by, attach, result);
+        }
+    }
+
+    fn poll_session_open(&mut self) -> bool {
+        let Some((requester, attach, result)) = self.sessions.take_open_answer() else {
+            return false;
+        };
+        if let Some(target) = self.sessions.target.clone() {
+            self.finish_session_open(&target, requester, attach.as_deref(), result);
+        }
+        true
+    }
+
+    fn finish_session_open(
+        &mut self,
+        target: &SessionTarget,
+        requested_by: Requester,
+        attach: Option<&str>,
+        result: Result<TerminalBackend, OpenError>,
+    ) {
+        match result {
             Ok(backend) => {
+                self.record_relay_session(backend.relay_session.clone());
                 self.attach_backend(backend);
+                // A process stands behind the grid from now on.
+                self.headless = false;
                 self.resize_pty_to_grid();
                 self.sessions.state = OpenState::Open;
                 self.sessions.remember(target);
-                self.reset_stale_local_session(state, root);
+            }
+            Err(_) if attach.is_some() => {
+                self.record_relay_session(None);
+                self.open_session_attaching(target, requested_by, None);
+                return;
             }
             Err(OpenError::NeedsAllow(_))
                 if requested_by == Requester::Person && self.sessions.request_allow() =>
@@ -224,24 +304,84 @@ impl TerminalWidget {
                 self.sessions.state = OpenState::AwaitingAllow;
                 self.show_status(&t("terminal-host-awaiting-allow"));
             }
+            Err(OpenError::NoRuntime(reason)) => {
+                tracing::warn!(
+                    target = %target.encode(),
+                    %reason,
+                    "terminal: the environment cannot be built on this device"
+                );
+                self.explain_no_runtime(&reason, requested_by);
+                self.sessions.state = if requested_by == Requester::Person {
+                    OpenState::NoRuntime(reason)
+                } else {
+                    OpenState::Failed(reason)
+                };
+            }
             Err(error) => {
                 let reason = error.to_string();
                 self.show_status(&reason);
                 self.sessions.state = OpenState::Failed(reason);
             }
         }
-        request_terminal_wake(&self.waker, &self.wake_pending);
+        request_terminal_wake(&self.waker);
+    }
+
+    /// Say on the tab why its environment cannot start and what to do: the
+    /// device's own shell for the person (behind its allow), another target
+    /// from the picker, or a runtime to install. Never a blank pane.
+    fn explain_no_runtime(&mut self, reason: &str, requested_by: Requester) {
+        let mut lines = vec![
+            t("terminal-no-runtime-title"),
+            reason.to_owned(),
+            String::new(),
+        ];
+        if requested_by == Requester::Person {
+            lines.push(t("terminal-no-runtime-host"));
+            lines.push(t("terminal-no-runtime-picker"));
+        }
+        lines.push(t("terminal-no-runtime-install"));
+        let mut text = String::from("\x1b[2J\x1b[H");
+        for line in lines {
+            text.push_str(&line.replace(['\r', '\n'], " "));
+            text.push_str("\r\n");
+        }
+        self.feed(text.as_bytes());
+        self.show_status(&if requested_by == Requester::Person {
+            t("terminal-no-runtime-status")
+        } else {
+            reason.to_owned()
+        });
+    }
+
+    /// Enter on a tab whose environment cannot start takes its offer of the
+    /// device's own shell. Returns whether the key was taken.
+    fn take_no_runtime_offer(
+        &mut self,
+        key: &Key,
+        modifiers: winit::keyboard::ModifiersState,
+    ) -> bool {
+        if !matches!(self.sessions.state, OpenState::NoRuntime(_))
+            || !matches!(key, Key::Named(NamedKey::Enter))
+            || modifiers.control_key()
+            || modifiers.alt_key()
+            || modifiers.super_key()
+        {
+            return false;
+        }
+        self.sessions.host_requested = true;
+        request_terminal_wake(&self.waker);
+        true
     }
 
     /// The person answered the shell's prompt for the device's own shell.
-    fn poll_allow(&mut self, state: &mut AutoCommit, root: &ObjId) {
+    fn poll_allow(&mut self) {
         if self.sessions.state != OpenState::AwaitingAllow {
             return;
         }
         match self.sessions.take_allow_answer() {
             Some(true) => {
                 if let Some(target) = self.sessions.target.clone() {
-                    self.open_session(state, root, &target, Requester::Person);
+                    self.open_session(&target, Requester::Person);
                 }
             }
             Some(false) => {
@@ -253,6 +393,13 @@ impl TerminalWidget {
         }
     }
 
+    /// The authenticated owner selected Host through the trusted shell lifecycle channel.
+    /// This follows the ordinary picker path and still waits for supervisor permission.
+    pub(crate) fn request_device_shell(&mut self) -> bool {
+        self.switch_target(&SessionTarget::Host, Requester::Person)
+            .is_ok()
+    }
+
     /// Move this tab to `target`: record it, end the current session, and
     /// open one there.
     ///
@@ -260,8 +407,6 @@ impl TerminalWidget {
     /// Refuses the device's own shell for anyone but the person.
     pub(crate) fn switch_target(
         &mut self,
-        state: &mut AutoCommit,
-        root: &ObjId,
         target: &SessionTarget,
         requested_by: Requester,
     ) -> Result<(), String> {
@@ -271,10 +416,10 @@ impl TerminalWidget {
         if !self.sessions.is_live() {
             return Err("this terminal does not open sessions".into());
         }
-        self.record_target(state, target);
-        self.open_session(state, root, target, requested_by);
+        self.record_target(target);
+        self.open_session(target, requested_by);
         match &self.sessions.state {
-            OpenState::Failed(reason) => Err(reason.clone()),
+            OpenState::Failed(reason) | OpenState::NoRuntime(reason) => Err(reason.clone()),
             _ => Ok(()),
         }
     }
@@ -329,7 +474,7 @@ impl TerminalWidget {
         self.sessions
             .target
             .as_ref()
-            .map(|target| target_label(target, &self.sessions.environments))
+            .map(|target| target_label(target, &self.sessions.environments, &self.sessions.relays))
     }
 
     fn draw_target_header(
@@ -349,48 +494,29 @@ impl TerminalWidget {
             self.rect.x1,
             self.rect.y0 + self.header_h(),
         );
-        let pad = f64::from(theme.tokens.spacing.s2);
-        let inner = f64::from(theme.tokens.spacing.s3);
-        let size = tr
-            .renderer_input_style(&TextStyle::new(theme.tokens.typography.scale.xs))
-            .size;
-        let label = format!("{label}  ▾");
-        let max_w = (header.width() - pad * 2.0 - inner * 2.0).max(0.0) as f32;
-        let label = tr.elide_to_width(&label, size, max_w);
-        let (w, h) = tr.measure(&label, size, None);
-        let chip_h = (f64::from(h) + pad).min(header.height() - 4.0).max(0.0);
+        // The target is a dropdown-like trigger: the shared button face with
+        // a chevron, as wide as its label and never wider than the header.
+        let size = ui::widget::ControlSize::Small;
+        let inset = self.chrome_body_pad;
+        let width = ui::widget::ButtonFace::new(Rect::ZERO, &label)
+            .icon(Icon::ChevronDown)
+            .control_size(size)
+            .intrinsic_width(tr, theme)
+            .min((header.width() - inset * 2.0).max(0.0));
+        let height = ui::widget::ButtonFace::height(size, theme).min(header.height());
         let chip = Rect::new(
-            header.x0 + pad,
-            header.center().y - chip_h / 2.0,
-            header.x0 + pad + f64::from(w) + inner * 2.0,
-            header.center().y + chip_h / 2.0,
+            header.x0 + inset,
+            header.center().y - height / 2.0,
+            header.x0 + inset + width,
+            header.center().y + height / 2.0,
         );
         self.chip_rect = chip;
-        let host = self
-            .sessions
-            .target
-            .as_ref()
-            .is_some_and(SessionTarget::is_host);
-        let (fill, border) = ui::surface::chip_colors(theme, host);
-        let fill = if chip.contains(self.last_cursor_pos) && !host {
-            theme.tokens.colors.overlay_medium
-        } else {
-            fill
-        };
-        ui::surface::pill(scene, transform, chip, fill, border, None);
-        tr.draw_text_weighted(
-            scene,
-            &label,
-            size,
-            theme.text_primary,
-            transform
-                * Affine::translate((
-                    chip.x0 + inner,
-                    chip.y0 + (chip.height() - f64::from(h)) / 2.0,
-                )),
-            None,
-            TextWeight::Medium,
-        );
+        let face = ui::widget::ButtonFace::new(chip, &label)
+            .icon(Icon::ChevronDown)
+            .control_size(size)
+            .hovered(chip.contains(self.last_cursor_pos))
+            .pressed(self.context_menu.is_open() && self.target_menu_rows.is_some());
+        ui::widget::Button::paint(scene, transform, tr, theme, &face);
     }
 
     /// Drop the picker's rows once its menu has closed.
@@ -411,16 +537,44 @@ impl TerminalWidget {
         let mut menu = ContextMenu::new();
         menu.set_platform_conventions(self.conventions);
         let mut rows = Vec::with_capacity(targets.len() + 1);
+        // Picking another environment keeps it where the current one runs.
+        let here = self
+            .sessions
+            .target
+            .as_ref()
+            .and_then(SessionTarget::location)
+            .cloned();
         for target in targets {
-            let current = self.sessions.target.as_ref() == Some(&target);
-            let label = target_label(&target, &self.sessions.environments);
-            let label = if current {
-                format!("✓ {label}")
-            } else {
-                label
+            let target = match here.clone() {
+                Some(location) => target.at(location),
+                None => target,
             };
-            menu.push(MenuItem::action(label, || {}));
+            let current = self.sessions.target.as_ref() == Some(&target);
+            let label = target_label(&target, &self.sessions.environments, &self.sessions.relays);
+            menu.push(MenuItem::action(label, || {}).with_checked(current));
             rows.push(Some(TargetMenuRow::Open(target)));
+        }
+        // "Run on": this device or one of the person's relays, for the
+        // environment the tab runs.
+        if let Some(here) = here.filter(|_| !self.sessions.relays.is_empty()) {
+            menu.push(MenuItem::separator());
+            rows.push(None);
+            let places =
+                std::iter::once(Location::ThisDevice).chain(self.sessions.relays.iter().map(|r| {
+                    Location::Relay {
+                        relay: r.relay.clone(),
+                    }
+                }));
+            for place in places {
+                let label = format!(
+                    "{}{} {}",
+                    if place == here { "✓ " } else { "" },
+                    t("terminal-run-on"),
+                    location_label(&place, &self.sessions.relays)
+                );
+                menu.push(MenuItem::action(label, || {}));
+                rows.push(Some(TargetMenuRow::RunOn(place)));
+            }
         }
         menu.push(MenuItem::separator());
         rows.push(None);
@@ -428,12 +582,7 @@ impl TerminalWidget {
         rows.push(Some(TargetMenuRow::Manage));
         menu.set_viewport(Some(self.rect));
         let anchor = if self.chip_rect.width() > 0.0 {
-            Rect::new(
-                self.chip_rect.x0,
-                self.chip_rect.y1,
-                self.chip_rect.x0,
-                self.chip_rect.y1,
-            )
+            self.chip_rect
         } else {
             let at = Point::new(
                 self.rect.x0 + self.chrome_body_pad,
@@ -460,20 +609,35 @@ impl TerminalWidget {
         )
     }
 
+    /// Which of the picker's rows (as [`Self::target_menu_labels`] lists
+    /// them) carry the check of the current target — for tests.
+    #[cfg(test)]
+    pub(crate) fn target_menu_checked(&self) -> Option<Vec<bool>> {
+        self.target_menu_rows.as_ref()?;
+        Some(
+            self.context_menu
+                .items()
+                .iter()
+                .filter(|item| item.label().is_some())
+                .map(|item| item.checked().unwrap_or(false))
+                .collect(),
+        )
+    }
+
     /// Act on picker row `index`; `false` when the open menu is not the
     /// picker.
-    fn activate_target_menu_item(
-        &mut self,
-        index: usize,
-        state: &mut AutoCommit,
-        root: &ObjId,
-    ) -> bool {
+    fn activate_target_menu_item(&mut self, index: usize) -> bool {
         let Some(rows) = self.target_menu_rows.take() else {
             return false;
         };
         match rows.get(index).cloned().flatten() {
             Some(TargetMenuRow::Open(target)) => {
-                let _ = self.switch_target(state, root, &target, Requester::Person);
+                let _ = self.switch_target(&target, Requester::Person);
+            }
+            Some(TargetMenuRow::RunOn(location)) => {
+                if let Some(target) = self.sessions.target.clone() {
+                    let _ = self.switch_target(&target.at(location), Requester::Person);
+                }
             }
             Some(TargetMenuRow::Manage) => self.open_environments_panel(),
             None => {}
@@ -486,7 +650,11 @@ impl TerminalWidget {
     /// Open the environments panel.
     pub fn open_environments_panel(&mut self) {
         self.sessions.refresh_environments();
-        let mut input = TextInput::local().with_id("terminal_environment_name");
+        let placeholder = t("terminal-env-name-placeholder");
+        let mut input = TextInput::local()
+            .with_id("terminal_environment_name")
+            .with_placeholder(placeholder.clone())
+            .with_accessible_name(placeholder);
         input.set_focus(true);
         self.environments_panel = EnvironmentsPanel {
             open: true,
@@ -551,10 +719,6 @@ impl TerminalWidget {
     /// Whether a folder picker is waiting for the person.
     fn folder_picker_pending(&self) -> bool {
         self.environments_panel.picker.is_some()
-    }
-
-    pub fn environments_panel_is_open(&self) -> bool {
-        self.environments_panel.open
     }
 
     fn close_environments_panel(&mut self) {
@@ -658,7 +822,7 @@ impl TerminalWidget {
                     RowAction::Open => {
                         self.close_environments_panel();
                         let target = SessionTarget::environment(key);
-                        let _ = self.switch_target(ctx.state, ctx.path, &target, Requester::Person);
+                        let _ = self.switch_target(&target, Requester::Person);
                     }
                     RowAction::Rename => self.start_rename(key),
                     RowAction::Grant => self.pick_folder_to_grant(key),
@@ -697,68 +861,54 @@ impl TerminalWidget {
         if !self.environments_panel.open {
             return;
         }
-        let scale = f64::from(theme.text_scale).clamp(1.0, 2.0);
-        let margin = 12.0 * scale.min(1.25);
-        let gap = 8.0 * scale.min(1.25);
-        let line = 18.0 * scale;
-        let button_h = 28.0 * scale.min(1.25);
-        let title_size = 15.0 * scale as f32;
-        let body_size = 13.0 * scale as f32;
-        let dim_size = 12.0 * scale as f32;
+        let spacing = &theme.tokens.spacing;
+        let metrics = &theme.tokens.metrics;
+        let margin = f64::from(spacing.s4);
+        let gap = f64::from(spacing.s2);
+        let size = ControlSize::Small;
+        let button_h = ButtonFace::height(size, theme);
+        let title_style = theme.text(TextRole::Subheading);
+        let name_style = theme.text(TextRole::Label).strong();
+        let caption = theme.text(TextRole::Caption);
+        // Text on the panel is inked for the panel's own ground.
+        let ink = theme.on_ground(ui::chrome::panel_ground(theme));
         let envs = self.sessions.environments.clone();
-        let panel_w = (600.0 * scale)
+        let top = self.rect.y0 + self.header_h();
+        let panel_w = (f64::from(metrics.panel_width_sheet) * theme.responsive_scale())
             .min(self.rect.width() - margin * 2.0)
             .max(0.0);
         // Everything an environment has is shown in full: the lists wrap to
         // the panel's width rather than being cut off.
-        let text_w = (panel_w - margin * 2.0).max(40.0) as f32;
+        let text_w = (panel_w - margin * 2.0).max(1.0) as f32;
+        let (_, caption_line) = tr.measure_style("Ag", None, &caption);
+        let caption_line = f64::from(caption_line);
         let details: Vec<(String, String)> = envs.iter().map(environment_details).collect();
         let row_heights: Vec<f64> = details
             .iter()
             .map(|(tools, grants)| {
-                let (_, tools_h) = tr.measure(tools, dim_size, Some(text_w));
-                let (_, grants_h) = tr.measure(grants, dim_size, Some(text_w));
+                let (_, tools_h) = tr.measure_style(tools, Some(text_w), &caption);
+                let (_, grants_h) = tr.measure_style(grants, Some(text_w), &caption);
                 button_h + gap / 2.0 + f64::from(tools_h) + f64::from(grants_h) + gap * 2.0
             })
             .collect();
+        let unavailable = t("terminal-env-unavailable");
         let rows_h = if envs.is_empty() {
-            line * 3.0
+            let (_, h) = tr.measure_style(&unavailable, Some(text_w), &caption);
+            f64::from(h) + gap * 2.0
         } else {
             row_heights.iter().sum()
         };
-        let panel_h = (button_h + gap * 3.0 + rows_h + button_h + gap * 2.0 + line)
+        let panel_h = (button_h + gap * 3.0 + rows_h + button_h + gap * 2.0 + caption_line)
             .min(self.rect.height() - margin * 2.0 - self.header_h())
             .max(0.0);
         let x0 = self.rect.center().x - panel_w / 2.0;
-        let y0 = self.rect.y0 + margin + self.header_h();
+        let y0 = top + margin;
         let panel_rect = Rect::new(x0, y0, x0 + panel_w, y0 + panel_h);
         self.environments_panel.rect = panel_rect;
-        let shape = RoundedRect::from_rect(panel_rect, f64::from(theme.tokens.radii.md));
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            theme.tokens.colors.surfaces.raised,
-            None,
-            &shape,
-        );
-        scene.stroke(
-            &vello::kurbo::Stroke::new(1.0),
-            transform,
-            theme.tokens.colors.border_focus,
-            None,
-            &shape,
-        );
+        ui::widget::floating_surface::paint(scene, transform, panel_rect, theme);
+        let p = self.last_cursor_pos;
 
         // Title and close.
-        tr.draw_text_weighted(
-            scene,
-            &t("terminal-env-title"),
-            title_size,
-            theme.text_primary,
-            transform * Affine::translate((panel_rect.x0 + margin, panel_rect.y0 + gap)),
-            None,
-            TextWeight::Semibold,
-        );
         let close = Rect::new(
             panel_rect.x1 - gap - button_h,
             panel_rect.y0 + gap,
@@ -766,82 +916,118 @@ impl TerminalWidget {
             panel_rect.y0 + gap + button_h,
         );
         self.environments_panel.close_rect = close;
-        draw_icon(
+        let title = t("terminal-env-title");
+        let (_, title_h) = tr.measure_style(&title, None, &title_style);
+        tr.draw_style(
+            scene,
+            &title,
+            ink.text_primary,
+            transform
+                * Affine::translate((
+                    panel_rect.x0 + margin,
+                    close.center().y - f64::from(title_h) / 2.0,
+                )),
+            None,
+            &title_style,
+        );
+        Button::paint(
             scene,
             transform,
-            close.inset(6.0),
-            Icon::X,
-            theme.tokens.colors.text_primary,
-            1.5,
+            tr,
+            theme,
+            &ButtonFace::icon_only(close, Icon::X, "Close")
+                .control_size(size)
+                .hovered(close.contains(p)),
         );
 
-        // One row per environment.
+        // One row per environment; its buttons are as wide as their labels.
+        let row_labels = [
+            t("terminal-env-grant"),
+            t("terminal-env-rename"),
+            t("terminal-env-open"),
+        ];
+        let [grant_w, rename_w, open_w] = row_labels.each_ref().map(|label| {
+            ButtonFace::new(Rect::ZERO, label)
+                .control_size(size)
+                .intrinsic_width(tr, theme)
+        });
         let mut y = panel_rect.y0 + gap * 2.0 + button_h;
         self.environments_panel.rows.clear();
         if envs.is_empty() {
-            tr.draw_text(
+            tr.draw_style(
                 scene,
-                &t("terminal-env-unavailable"),
-                body_size,
-                theme.tokens.colors.text_dim,
+                &unavailable,
+                ink.text_dim,
                 transform * Affine::translate((panel_rect.x0 + margin, y)),
                 Some(text_w),
+                &caption,
             );
         }
-        let bw = 104.0 * scale.min(1.25);
         for ((env, (tools, grants)), row_h) in envs.iter().zip(&details).zip(&row_heights) {
             if y + row_h > panel_rect.y1 - button_h - gap * 2.0 {
                 break;
             }
             let open = Rect::new(
-                panel_rect.x1 - margin - bw,
+                panel_rect.x1 - margin - open_w,
                 y,
                 panel_rect.x1 - margin,
                 y + button_h,
             );
-            let rename = Rect::new(open.x0 - gap - bw, y, open.x0 - gap, y + button_h);
-            let grant = Rect::new(rename.x0 - gap - bw, y, rename.x0 - gap, y + button_h);
+            let rename = Rect::new(open.x0 - gap - rename_w, y, open.x0 - gap, y + button_h);
+            let grant = Rect::new(rename.x0 - gap - grant_w, y, rename.x0 - gap, y + button_h);
             let current = self
                 .sessions
                 .target
                 .as_ref()
                 .and_then(SessionTarget::environment_record)
                 == Some(env.key.as_str());
-            let name = if current {
-                format!("✓ {}", env.name)
-            } else {
-                env.name.clone()
-            };
-            let name_w = (grant.x0 - gap - panel_rect.x0 - margin).max(20.0) as f32;
-            let name = tr.elide_to_width(&name, body_size, name_w);
-            tr.draw_text_weighted(
+            let band = Rect::new(panel_rect.x0 + margin, y, grant.x0 - gap, y + button_h);
+            let mut name_x = band.x0;
+            if current {
+                // The environment this tab runs in carries the check a menu
+                // gives its applied row.
+                let mark_side = f64::from(metrics.icon_sm);
+                let mark = Rect::from_center_size(
+                    Point::new(name_x + mark_side / 2.0, band.center().y),
+                    (mark_side, mark_side),
+                );
+                Icon::Check.draw(scene, transform, mark, ink.text_primary);
+                name_x += mark_side + f64::from(metrics.icon_label_gap);
+            }
+            let name_w = (band.x1 - name_x).max(0.0) as f32;
+            let name = tr.elide_to_width_style(&env.name, name_w, &name_style);
+            let (_, name_h) = tr.measure_style(&name, None, &name_style);
+            tr.draw_style(
                 scene,
                 &name,
-                body_size,
-                theme.text_primary,
-                transform * Affine::translate((panel_rect.x0 + margin, y + gap / 2.0)),
+                ink.text_primary,
+                transform * Affine::translate((name_x, band.center().y - f64::from(name_h) / 2.0)),
                 None,
-                TextWeight::Medium,
+                &name_style,
             );
             let mut text_y = y + button_h + gap / 2.0;
             for text in [tools, grants] {
-                tr.draw_text(
+                tr.draw_style(
                     scene,
                     text,
-                    dim_size,
-                    theme.tokens.colors.text_dim,
+                    ink.text_dim,
                     transform * Affine::translate((panel_rect.x0 + margin, text_y)),
                     Some(text_w),
+                    &caption,
                 );
-                let (_, h) = tr.measure(text, dim_size, Some(text_w));
+                let (_, h) = tr.measure_style(text, Some(text_w), &caption);
                 text_y += f64::from(h);
             }
-            for (rect, label) in [
-                (grant, t("terminal-env-grant")),
-                (rename, t("terminal-env-rename")),
-                (open, t("terminal-env-open")),
-            ] {
-                self.draw_panel_button(scene, transform, tr, theme, rect, &label);
+            for (rect, label) in [grant, rename, open].into_iter().zip(&row_labels) {
+                Button::paint(
+                    scene,
+                    transform,
+                    tr,
+                    theme,
+                    &ButtonFace::new(rect, label)
+                        .control_size(size)
+                        .hovered(rect.contains(p)),
+                );
             }
             self.environments_panel.rows.push(EnvironmentRow {
                 key: env.key.clone(),
@@ -852,9 +1038,18 @@ impl TerminalWidget {
             y += row_h;
         }
 
-        // The name field: a new environment, or the one being renamed.
+        // The name field: a new environment, or the one being renamed. Making
+        // or renaming one is the panel's main action.
         let field_y = panel_rect.y1 - gap - button_h;
-        let submit_w = 96.0 * scale.min(1.25);
+        let submit_label = if self.environments_panel.renaming.is_some() {
+            t("terminal-env-rename")
+        } else {
+            t("terminal-env-create")
+        };
+        let submit_face = ButtonFace::new(Rect::ZERO, &submit_label)
+            .role(ButtonRole::Primary)
+            .control_size(size);
+        let submit_w = submit_face.intrinsic_width(tr, theme);
         let submit = Rect::new(
             panel_rect.x1 - margin - submit_w,
             field_y,
@@ -862,24 +1057,34 @@ impl TerminalWidget {
             field_y + button_h,
         );
         self.environments_panel.submit_rect = submit;
-        let submit_label = if self.environments_panel.renaming.is_some() {
-            t("terminal-env-rename")
-        } else {
-            t("terminal-env-create")
-        };
-        self.draw_panel_button(scene, transform, tr, theme, submit, &submit_label);
-        if let Some(error) = self.environments_panel.error.clone() {
-            let error = tr.elide_to_width(&error, dim_size, (panel_w - margin * 2.0) as f32);
-            tr.draw_text(
+        Button::paint(
+            scene,
+            transform,
+            tr,
+            theme,
+            &ButtonFace::new(submit, &submit_label)
+                .role(ButtonRole::Primary)
+                .control_size(size)
+                .hovered(submit.contains(p)),
+        );
+        let error = self.environments_panel.error.clone();
+        if let Some(error) = &error {
+            let error = tr.elide_to_width_style(error, text_w, &caption);
+            tr.draw_style(
                 scene,
                 &error,
-                dim_size,
-                theme.tokens.colors.text_dim,
-                transform * Affine::translate((panel_rect.x0 + margin, field_y - line)),
+                theme.tokens.colors.semantic.danger,
+                transform
+                    * Affine::translate((
+                        panel_rect.x0 + margin,
+                        field_y - gap / 2.0 - caption_line,
+                    )),
                 None,
+                &caption,
             );
         }
         if let Some(input) = self.environments_panel.input.as_mut() {
+            input.set_invalid(error.is_some());
             input.apply_layout_external(Rect::new(
                 panel_rect.x0 + margin,
                 field_y,
@@ -887,110 +1092,16 @@ impl TerminalWidget {
                 field_y + button_h,
             ));
             input.draw(scene, transform, tr, theme, presence);
-            if input.value().is_empty() {
-                let r = input.get_rect();
-                tr.draw_text(
-                    scene,
-                    &t("terminal-env-name-placeholder"),
-                    dim_size,
-                    theme.tokens.colors.text_dim,
-                    transform
-                        * Affine::translate((
-                            r.x0 + 10.0,
-                            r.center().y - f64::from(dim_size) / 2.0,
-                        )),
-                    None,
-                );
-            }
         }
-    }
-
-    fn draw_panel_button(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        rect: Rect,
-        label: &str,
-    ) {
-        let active = rect.contains(self.last_cursor_pos);
-        let shape = RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.sm));
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            if active {
-                theme.tokens.colors.overlay_medium
-            } else {
-                theme.tokens.colors.overlay_subtle
-            },
-            None,
-            &shape,
-        );
-        scene.stroke(
-            &vello::kurbo::Stroke::new(1.0),
-            transform,
-            theme.tokens.colors.border_standard,
-            None,
-            &shape,
-        );
-        let size = 12.0_f32;
-        let label = tr.elide_to_width(label, size, (rect.width() - 8.0).max(0.0) as f32);
-        let (w, h) = tr.measure(&label, size, None);
-        tr.draw_text(
-            scene,
-            &label,
-            size,
-            theme.text_primary,
-            transform
-                * Affine::translate((
-                    rect.center().x - f64::from(w) / 2.0,
-                    rect.center().y - f64::from(h) / 2.0,
-                )),
-            None,
-        );
     }
 
     // --- agent and palette operations
 
-    /// `terminal.target`: move this session to another target.
-    fn answer_target_operation(
-        &mut self,
-        payload: &[u8],
-        doc: &mut AutoCommit,
-        path: &ObjId,
-    ) -> Result<(), String> {
-        let raw: String = serde_json::from_slice(payload).map_err(|e| e.to_string())?;
-        let target = parse_target_argument(&raw)
-            .ok_or_else(|| format!("`{raw}` is not a target: use environment, environment:<record>, legacy:<vm> or host"))?;
-        self.switch_target(doc, path, &target, Requester::current())
-    }
-
-    /// `terminal.environment`: create or rename an environment.
-    fn answer_environment_operation(&mut self, payload: &[u8]) -> Result<(), String> {
-        let raw: String = serde_json::from_slice(payload).map_err(|e| e.to_string())?;
-        let request: serde_json::Value = serde_json::from_str(&raw).map_err(|e| e.to_string())?;
-        let text = |key: &str| {
-            request
-                .get(key)
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or_default()
-                .to_owned()
-        };
-        match text("op").as_str() {
-            "create" => self.sessions.create_environment(&text("name")).map(|_| ()),
-            "rename" => self
-                .sessions
-                .rename_environment(&text("record"), &text("name")),
-            "grant-folder" => self.sessions.grant_folder(
-                &text("record"),
-                &text("path"),
-                request
-                    .get("writable")
-                    .and_then(serde_json::Value::as_bool)
-                    .unwrap_or(true),
-            ),
-            other => Err(format!("unknown environment operation `{other}`")),
-        }
+    /// `open-in`: move this session to another target.
+    fn open_in(&mut self, raw: &str) -> Result<(), String> {
+        let target = parse_target_argument(raw).ok_or_else(|| {
+            format!("`{raw}` is not a target: use environment, environment:<record>, legacy:<vm> or host")
+        })?;
+        self.switch_target(&target, Requester::current())
     }
 }

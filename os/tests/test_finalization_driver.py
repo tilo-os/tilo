@@ -26,7 +26,6 @@ def request():
             'base_ref': 'registry.invalid/base@sha256:' + '1' * 64,
             'rpms_ref': 'registry.invalid/rpms@sha256:' + '2' * 64,
             'kernel_ref': 'registry.invalid/kernel@sha256:' + '3' * 64,
-            'wpe_ref': 'registry.invalid/wpe@sha256:' + '4' * 64,
             'signer': '/var/lib/bridge/signer', 'systemd_version': '259.1',
             'minimum_free_bytes': 1024**3, 'stage_timeout_seconds': 600,
             'signing_response_timeout_seconds': 1800, 'prediction_stage_timeout_seconds': 3600,

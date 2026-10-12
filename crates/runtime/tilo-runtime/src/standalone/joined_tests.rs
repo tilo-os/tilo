@@ -8,6 +8,7 @@
 use super::*;
 use crate::RuntimeServices as _;
 use automerge::{AutoCommit, ROOT, transaction::Transactable};
+use collab_types::CommitNamed as _;
 use ed25519_dalek::SigningKey;
 use std::sync::Arc;
 use tilo_action_broker::channel_encryption::{
@@ -280,6 +281,7 @@ fn assert_changed_custody_refused(joined: &Joined, room: RoomId, actor: &str) {
         .workspace_device_certs
         .insert(room_topic(room).unwrap(), room_cert);
     let mut probe = Joined {
+        executions: super::super::execution::ExecutionPins::new(&joined.owner),
         owner: joined.owner.clone(),
         custody,
         endpoint: joined.endpoint.clone(),
@@ -288,7 +290,10 @@ fn assert_changed_custody_refused(joined: &Joined, room: RoomId, actor: &str) {
         fanout: Arc::clone(&joined.fanout),
         sessions: Mutex::new(BTreeMap::new()),
         governance: Mutex::new(Vec::new()),
+        governance_wake: joined.governance_wake(),
         keys: joined.keys.clone(),
+        content: std::sync::OnceLock::new(),
+        requesters: content::Requesters::default(),
     };
     assert!(
         probe.action_room(actor, &room.to_string()).is_ok(),
@@ -299,6 +304,25 @@ fn assert_changed_custody_refused(joined: &Joined, room: RoomId, actor: &str) {
             .action_room(&default_actor, &room.to_string())
             .is_err(),
         "a default root must not borrow the selected root's admission"
+    );
+    let run = probe
+        .admit_mcp_execution(&room.to_string(), "different-own-room", actor)
+        .unwrap();
+    let retained = run.caller().clone();
+    probe.recheck_mcp_executions(room).unwrap();
+    assert!(retained.execution_is_live());
+    let original = probe.custody.workspace_device_certs.clone();
+    probe.custody.workspace_device_certs.clear();
+    assert!(probe.recheck_mcp_executions(room).is_err());
+    assert!(
+        !retained.execution_is_live(),
+        "authority-side original-pin recheck closes retained custody without a wrapper call"
+    );
+    probe.custody.workspace_device_certs = original;
+    probe.recheck_mcp_executions(room).unwrap();
+    assert!(
+        !retained.execution_is_live(),
+        "restoring original selection cannot revive the retired run"
     );
     probe.custody.workspace_device_certs.clear();
     assert!(
@@ -329,7 +353,7 @@ fn assert_runtime_admission_revoked(joined: &Arc<Joined>, room: RoomId, actor: &
 
     let mut workspace = Workspace::new(WorkspaceId(41), "Execution isolation");
     workspace.set_owner(actor.to_owned());
-    workspace.room = room;
+    workspace.set_room(room);
     let room = room.to_string();
     let mut tree = WorkspaceTree::default();
     tree.desktop.workspaces.push(workspace);
@@ -341,6 +365,7 @@ fn assert_runtime_admission_revoked(joined: &Arc<Joined>, room: RoomId, actor: &
         app_id: "so.tilo.files".into(),
         route: CrdtRoute::app("so.tilo.files", room.clone()),
         actions: vec![PublishedAction {
+            semantic_identity: None,
             resource: "files.entry:/tmp/synthetic-report".into(),
             action: "refresh".into(),
             resource_kind: "files.entry".into(),
@@ -364,12 +389,14 @@ fn assert_runtime_admission_revoked(joined: &Arc<Joined>, room: RoomId, actor: &
         broker,
         room: "private-profile-room".into(),
         joined: Arc::clone(joined),
+        session: None,
     };
     let owner = Caller::local_person(actor)
         .in_room(room.clone())
         .in_new_execution();
     let id = tilo_actions::InvocationId::new();
     let request = InvokeRequest {
+        on_behalf_of: None,
         invocation: id,
         target: RemoteActionTarget {
             provider: "7".into(),
@@ -382,6 +409,7 @@ fn assert_runtime_admission_revoked(joined: &Arc<Joined>, room: RoomId, actor: &
         context: None,
         confirmation: None,
         revision: None,
+        wait_ms: None,
     };
     let PendingPoll::Ready(Ok(_receipt)) = host.invoke(&owner, request.clone()).poll_ready() else {
         panic!("the synthetic app must accept the invocation");
@@ -470,12 +498,78 @@ async fn a_foreign_runtime_joins_a_hosted_room_as_an_editor_and_syncs_both_ways(
     );
     assert!(joined.action_room(&actor, &own_room.to_string()).is_err());
     assert!(joined.action_room(&actor, "not-a-room").is_err());
+    let execution = joined
+        .admit_mcp_execution(&room.to_string(), &own_room.to_string(), &actor)
+        .unwrap();
+    let presentation = runtime_collab::CertifiedJoinIdentity::decode(execution.presentation())
+        .unwrap()
+        .unwrap();
+    assert_eq!(presentation.workspace_id, room.to_string());
+    let presented: DeviceCert = serde_json::from_slice(&presentation.device_certificate).unwrap();
+    assert_eq!(presented, device);
+    device_key
+        .verifying_key()
+        .verify_strict(
+            &runtime_identity::collaboration_join_signing_bytes(&room.to_string()),
+            &ed25519_dalek::Signature::from_slice(&presentation.proof).unwrap(),
+        )
+        .unwrap();
+    let retained_caller = execution.caller().clone();
+    {
+        use tilo_action_broker::peer_actions::CertificateAuthority as _;
+        let origin = tilo_action_broker::peer_actions::OwnerPolicyClock::new()
+            .unwrap()
+            .new_origin();
+        let authority = super::super::Certificates {
+            room: own_room.to_string(),
+            device: device.device_public_key,
+            policy_time: origin.capture().unwrap(),
+            joined: Arc::downgrade(&joined),
+        };
+        let retained_time = authority.policy_time().unwrap().unwrap();
+        let mut forged = device.clone();
+        forged.device_label =
+            "attacker-supplied certificate claiming the public local device".into();
+        assert!(
+            authority
+                .authorize_join(uuid::Uuid::parse_str(&room.to_string()).unwrap(), &forged)
+                .is_err()
+        );
+        assert!(
+            retained_time.now_ns().is_ok(),
+            "unverified input cannot retire the runtime policy origin"
+        );
+        assert!(
+            retained_caller.execution_is_live(),
+            "unverified input cannot retire an independently pinned real run"
+        );
+        joined.recheck_mcp_executions(room).unwrap();
+    }
+
+    assert_eq!(
+        retained_caller.user_public_key(),
+        Some(&device.user_public_key)
+    );
+    assert_eq!(
+        retained_caller.device_public_key(),
+        Some(&device.device_public_key)
+    );
+    assert!(
+        joined
+            .admit_mcp_execution(
+                &room.to_string(),
+                &own_room.to_string(),
+                "forged-profile-actor"
+            )
+            .is_err()
+    );
     joined
         .owner
         .with_current(room, |view| {
-            let (role, _, _) = view
+            let role = view
                 .peer()
-                .permissions(device.device_public_key, SystemTime::now())?;
+                .permissions(device.device_public_key, SystemTime::now())?
+                .role;
             assert_eq!(
                 role,
                 collab_types::Role::Editor,
@@ -517,7 +611,7 @@ async fn a_foreign_runtime_joins_a_hosted_room_as_an_editor_and_syncs_both_ways(
     let mut doc = AutoCommit::load(&chat).unwrap();
     let heads = doc.get_heads();
     doc.put(ROOT, "topic", "written in the runtime").unwrap();
-    doc.commit();
+    doc.commit_edit("fixture", "topic");
     let message = joined
         .owner
         .with_current(room, |view| {
@@ -569,7 +663,7 @@ async fn a_foreign_runtime_joins_a_hosted_room_as_an_editor_and_syncs_both_ways(
     let mut doc = AutoCommit::load(&chat).unwrap();
     let heads = doc.get_heads();
     doc.put(ROOT, "secret", SECRET).unwrap();
-    doc.commit();
+    doc.commit_edit("fixture", "secret");
     let message = joined
         .owner
         .with_current(room, |view| {
@@ -621,6 +715,16 @@ async fn a_foreign_runtime_joins_a_hosted_room_as_an_editor_and_syncs_both_ways(
     assert_changed_custody_refused(&joined, room, &actor);
     assert_runtime_admission_revoked(&joined, room, &actor);
     assert!(
+        !retained_caller.execution_is_live(),
+        "native enrollment fence synchronously closes captured run custody"
+    );
+    assert!(execution.check(&joined).is_err());
+    assert!(
+        joined
+            .admit_mcp_execution(&room.to_string(), &own_room.to_string(), &actor)
+            .is_err()
+    );
+    assert!(
         !joined
             .workspaces()
             .iter()
@@ -665,7 +769,7 @@ fn a_live_sdk_app_in_a_joined_room_gets_keys_from_the_governors_steward() {
         assert!(manager.is_connected(), "{:?}", manager.state());
         let mut doc = AutoCommit::new();
         doc.put(ROOT, "text", SDK_WRITTEN).unwrap();
-        doc.commit();
+        doc.commit_edit("fixture", "text");
         assert!(
             manager.send(ui::collaboration::CollabRequest::document_snapshot(
                 doc.save()
@@ -833,19 +937,7 @@ impl Steward {
             .certificates()
             .into_iter()
             .filter(|cert| !cert.capabilities.can_act_as_host)
-            .filter(|cert| {
-                matches!(
-                    peer.permissions(cert.device_public_key, now),
-                    Ok((
-                        collab_types::Role::Owner
-                            | collab_types::Role::Editor
-                            | collab_types::Role::Commenter
-                            | collab_types::Role::Viewer,
-                        _,
-                        _
-                    ))
-                )
-            })
+            .filter(|cert| peer.permissions(cert.device_public_key, now).is_ok())
             .map(|cert| collab_types::Ed25519PublicKey::from_bytes(cert.device_public_key))
             .collect();
         self.keys.pump(transport);
@@ -952,4 +1044,181 @@ fn the_rooms_the_desktop_session_enrolled_are_refused() {
         desktop_enrolled(directory.path()).is_err(),
         "an unreadable desktop record refuses rather than guesses"
     );
+}
+
+/// Content kept in memory, as a profile's content store keeps it.
+#[derive(Default)]
+struct Shelf(
+    Mutex<
+        std::collections::BTreeMap<
+            (tilo_action_broker::record_content::ContentScope, String),
+            Vec<u8>,
+        >,
+    >,
+);
+
+impl tilo_action_broker::record_content::ContentShelf for Shelf {
+    fn read(
+        &self,
+        scope: &tilo_action_broker::record_content::ContentScope,
+        hash: &str,
+    ) -> Option<Vec<u8>> {
+        self.0
+            .lock()
+            .ok()?
+            .get(&(scope.clone(), hash.to_owned()))
+            .cloned()
+    }
+
+    fn keep(
+        &self,
+        scope: &tilo_action_broker::record_content::ContentScope,
+        hash: &str,
+        bytes: &[u8],
+    ) -> Result<(), String> {
+        self.0
+            .lock()
+            .map_err(|_| "poisoned".to_owned())?
+            .insert((scope.clone(), hash.to_owned()), bytes.to_vec());
+        Ok(())
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_joined_room_s_record_content_crosses_the_host_both_ways() {
+    use tilo_action_broker::record_content::{PIECE_BYTES, content_hash};
+    use tilo_peer_state::peer_handle;
+
+    let directory = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
+    let governing = Box::pin(HostedRoom::start(directory.path())).await;
+    let room = governing.room;
+    let device_key = SigningKey::from_bytes(&[95; 32]);
+    let root_key = SigningKey::from_bytes(&[96; 32]);
+    let mut capabilities = DeviceCapabilities::member();
+    capabilities.foreign = true;
+    let mut device = DeviceCert {
+        user_public_key: root_key.verifying_key().to_bytes(),
+        device_public_key: device_key.verifying_key().to_bytes(),
+        device_label: "Runtime on a laptop".into(),
+        capabilities,
+        issued_at_ns: 1,
+        expires_at_ns: None,
+        signature: [0; 64],
+    };
+    sign_device_cert(&mut device, &root_key).unwrap();
+    let invitation = governing.invite(device.user_public_key);
+    let joined = Joined::open(
+        directory.path(),
+        HostIdentity {
+            device_cert: device.clone(),
+            device_signing_key: device_key.clone(),
+            workspace_device_certs: std::collections::HashMap::default(),
+            workspace_revocations: std::collections::HashMap::default(),
+            identity_paths: None,
+        },
+        local_endpoint(&device_key).await,
+        BTreeSet::new(),
+        (
+            Arc::new(Mutex::new(BrokerChannels::default())),
+            Arc::new(FanoutState::new()),
+        ),
+    )
+    .unwrap();
+    let content = content::record_content_on(&joined, Arc::new(Shelf::default()));
+    assert_eq!(joined.join(&invitation).await.unwrap(), room);
+    let (governor, _endpoint) = governing.publish_history(device.device_public_key).await;
+    let governor_handle = peer_handle(&governing.governor.device_public_key);
+    let runtime_handle = peer_handle(&device.device_public_key);
+    let route =
+        tilo_action_broker::route::CrdtRoute::record("so.tilo.slides", room.to_string(), "deck");
+
+    // The runtime asks the room for a picture; the governor's device sends it.
+    let picture: Vec<u8> = (0..PIECE_BYTES + 5)
+        .map(|index| u8::try_from(index % 241).unwrap())
+        .collect();
+    let hash = content_hash(&picture);
+    let mut arrivals = content.subscribe(&route);
+    tilo_test_env::within("the runtime's request", async {
+        loop {
+            content.want(&route, &hash);
+            let request = tokio::time::timeout(Duration::from_millis(500), async {
+                loop {
+                    if let Some(Inbound::Presence { author, payload }) = governor.recv().await
+                        && author == device.device_public_key
+                        && let Ok(NeighbourMsg::RecordContentWant {
+                            requester,
+                            hash: asked,
+                            ..
+                        }) = postcard::from_bytes(&payload)
+                    {
+                        break (requester, asked);
+                    }
+                }
+            })
+            .await;
+            if let Ok((requester, asked)) = request {
+                assert_eq!(requester, runtime_handle);
+                assert_eq!(asked, hash);
+                break;
+            }
+        }
+    })
+    .await;
+    for (index, chunk) in picture.chunks(PIECE_BYTES).enumerate() {
+        let piece = NeighbourMsg::RecordContentPiece {
+            responder: governor_handle,
+            requester: runtime_handle,
+            app_id: route.app_id.clone(),
+            cluster_id: route.cluster_id.clone(),
+            hash: hash.clone(),
+            total: picture.len() as u64,
+            offset: (index * PIECE_BYTES) as u64,
+            bytes: chunk.to_vec(),
+        };
+        governor
+            .publish_record_content(
+                device.device_public_key,
+                postcard::to_allocvec(&piece).unwrap(),
+            )
+            .unwrap();
+    }
+    let arrival = tilo_test_env::within("the picture at the runtime", arrivals.recv())
+        .await
+        .unwrap();
+    assert_eq!(arrival.bytes, picture);
+
+    // The governor's device asks for it in turn; the runtime answers it alone.
+    let want = NeighbourMsg::RecordContentWant {
+        requester: governor_handle,
+        app_id: route.app_id.clone(),
+        cluster_id: route.cluster_id.clone(),
+        hash: hash.clone(),
+    };
+    governor
+        .publish_presence(postcard::to_allocvec(&want).unwrap())
+        .unwrap();
+    let mut gathered = vec![0_u8; picture.len()];
+    let mut received = 0;
+    tilo_test_env::within("the picture at the governor", async {
+        while received < picture.len() {
+            if let Some(Inbound::RecordContent { from, frame }) = governor.recv().await {
+                assert_eq!(from, device.device_public_key);
+                let Ok(NeighbourMsg::RecordContentPiece {
+                    requester,
+                    offset,
+                    bytes,
+                    ..
+                }) = postcard::from_bytes(&frame)
+                else {
+                    panic!("a piece of record content");
+                };
+                assert_eq!(requester, governor_handle);
+                let start = usize::try_from(offset).unwrap();
+                gathered[start..start + bytes.len()].copy_from_slice(&bytes);
+                received += bytes.len();
+            }
+        }
+    })
+    .await;
+    assert_eq!(gathered, picture);
 }

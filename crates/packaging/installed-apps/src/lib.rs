@@ -1,20 +1,9 @@
 //! The applications a session can launch.
 //!
 //! Every installed package ([`package_store::Catalog`]) read through the
-//! launcher's view of its manifest, and what each declared it may do on the
-//! action door under its own identity. The desktop session and the per-user
+//! view of its manifest ([`tilo_app_package::view`]), and what each declared
+//! it may do on the action door under its own identity. The desktop session and the per-user
 //! runtime both launch from this one answer.
-
-#![cfg_attr(
-    test,
-    allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
-        clippy::panic,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
 
 use std::path::PathBuf;
 
@@ -56,7 +45,7 @@ impl InstalledApp {
     /// when the manifest is missing (the payload was deleted behind the
     /// registry's back) or unreadable.
     fn from_package(entry: &InstalledPackage) -> Option<Self> {
-        let manifest = launcher::manifest::read_manifest(&entry.manifest_path).ok()?;
+        let manifest = tilo_app_package::view::read_manifest(&entry.manifest_path).ok()?;
         let package_id = if manifest.package_id.is_empty() {
             entry.id.clone()
         } else {
@@ -78,7 +67,7 @@ impl InstalledApp {
             // can draw, `kind` says it's something a user opens — the
             // on-screen keyboard satisfies the first but not the second.
             has_gui: manifest.entrypoint.gui_bin().is_some()
-                && manifest.kind == launcher::manifest::KIND_APP,
+                && manifest.kind == tilo_app_package::view::KIND_APP,
             opens_extensions: manifest.opens_ext.clone(),
             opens_mime_types: manifest.opens_mime.clone(),
             opens_uri_schemes: manifest.opens_schemes,
@@ -100,26 +89,11 @@ impl InstalledApp {
             .map_or(self.display_name.as_str(), |(_, name)| name.as_str())
     }
 
-    /// Whether this package declares it opens `ext` (case-insensitive,
-    /// leading dot tolerated).
-    pub fn opens_extension(&self, ext: &str) -> bool {
-        let want = ext.trim().trim_start_matches('.').to_ascii_lowercase();
-        !want.is_empty() && self.opens_extensions.contains(&want)
-    }
-
     pub fn opens_mime(&self, mime: &str) -> bool {
         desktop_policy::ResourceKind::mime(mime).is_ok_and(|resource| {
             resource
                 .mime_name()
                 .is_some_and(|mime| self.opens_mime_types.iter().any(|claim| claim == mime))
-        })
-    }
-
-    pub fn opens_scheme(&self, scheme: &str) -> bool {
-        desktop_policy::ResourceKind::scheme(scheme).is_ok_and(|resource| {
-            resource
-                .scheme_name()
-                .is_some_and(|scheme| self.opens_uri_schemes.iter().any(|claim| claim == scheme))
         })
     }
 
@@ -175,6 +149,26 @@ pub fn read(catalog: &Catalog) -> Result<Vec<InstalledApp>, CatalogError> {
         .collect())
 }
 
+/// Resolve the exact signed package selected by an installed application
+/// operation. The logical identity and manifest must agree with that row;
+/// a concurrent upgrade must not substitute another package's bytes.
+///
+/// # Errors
+/// Returns a catalogue error when either installed store cannot be read.
+pub fn read_exact(
+    catalog: &Catalog,
+    app_id: &str,
+    root: tilo_app_package::PackageId,
+) -> Result<Option<InstalledApp>, CatalogError> {
+    Ok(catalog.list()?.iter().find_map(|entry| {
+        if entry.id != app_id || entry.package_id() != Some(root) {
+            return None;
+        }
+        let app = InstalledApp::from_package(entry)?;
+        (app.package_id == app_id).then_some(app)
+    }))
+}
+
 /// [`read`] over the stores the environment names.
 ///
 /// # Errors
@@ -190,6 +184,16 @@ mod tests {
     use std::fmt::Write as _;
 
     use super::*;
+
+    /// A canonical manifest: `package` is the body of `[package]`, `tail`
+    /// the tables after the sandbox.
+    fn manifest(package: &str, tail: &str) -> String {
+        format!(
+            "[package]\n{package}\n[publisher]\nidentity = \"\"\nsignature = \"\"\n\
+             [sandbox]\nnamespaces = []\nseccomp = \"tilo-default\"\nlandlock = \"strict\"\n\
+             [sandbox.net]\nmode = \"off\"\n{tail}"
+        )
+    }
 
     fn install(root: &std::path::Path, id: &str, manifest: &str) -> InstalledPackage {
         let meta = root.join(format!("{id}.pkg"));
@@ -211,6 +215,8 @@ mod tests {
             cli_commands: Vec::new(),
             runtime: String::new(),
             source: String::new(),
+            held: false,
+            payload_bytes: 0,
             system: false,
         }
     }
@@ -221,14 +227,18 @@ mod tests {
         let viewer = install(
             tmp.path(),
             "so.tilo.viewer",
-            "[package]\nid = \"so.tilo.viewer\"\nname = \"Viewer\"\nversion = \"2.0.0\"\n\
-             kind = \"app\"\n[entrypoint]\nbin = \"bin/viewer\"\ntype = \"gui\"\n",
+            &manifest(
+                "id = \"so.tilo.viewer\"\nname = \"Viewer\"\nversion = \"2.0.0\"\nkind = \"app\"",
+                "[entrypoint]\nbin = \"bin/viewer\"\ntype = \"gui\"\n",
+            ),
         );
         let tool = install(
             tmp.path(),
             "so.tilo.tool",
-            "[package]\nid = \"so.tilo.tool\"\nversion = \"1.0.0\"\n\
-             [entrypoint]\nbin = \"bin/tool\"\ntype = \"cli\"\n",
+            &manifest(
+                "id = \"so.tilo.tool\"\nversion = \"1.0.0\"\nkind = \"app\"",
+                "[entrypoint]\nbin = \"bin/tool\"\ntype = \"cli\"\n",
+            ),
         );
         let mut gone = install(tmp.path(), "so.tilo.gone", "");
         gone.manifest_path = tmp.path().join("missing.toml");
@@ -262,6 +272,96 @@ mod tests {
             .unwrap();
         assert!(!tool.has_gui);
         assert_eq!(tool.display_name, "Tool");
+    }
+
+    #[test]
+    fn exact_launch_selection_preserves_root_and_rejects_manifest_identity_substitution() {
+        let tmp = tempfile::tempdir().unwrap();
+        let user = tmp.path().join("store");
+        std::fs::create_dir_all(&user).unwrap();
+        let mut package = install(
+            tmp.path(),
+            "so.tilo.notes",
+            &manifest(
+                "id = \"so.tilo.notes\"\nversion = \"2.0.0\"\nkind = \"app\"",
+                "[entrypoint]\nbin = \"bin/notes\"\ntype = \"gui\"\n",
+            ),
+        );
+        package.package_id_hex = "11".repeat(32);
+        let root = package.package_id().unwrap();
+        let row = format!(
+            "[[entry]]\nid = {:?}\npackage_id_hex = {:?}\npayload_root = {:?}\nmanifest_path = {:?}\n",
+            package.id,
+            package.package_id_hex,
+            package.payload_root.display().to_string(),
+            package.manifest_path.display().to_string()
+        );
+        std::fs::write(package_store::Layout::new(&user).registry(), row).unwrap();
+        let catalog = Catalog::at(&user, None);
+        assert_eq!(
+            read_exact(&catalog, "so.tilo.notes", root)
+                .unwrap()
+                .unwrap()
+                .version,
+            "2.0.0"
+        );
+        assert!(
+            read_exact(
+                &catalog,
+                "so.tilo.notes",
+                "tapp:2222222222222222222222222222222222222222222222222222222222222222"
+                    .parse()
+                    .unwrap()
+            )
+            .unwrap()
+            .is_none()
+        );
+        assert!(
+            read_exact(&catalog, "so.tilo.browser", root)
+                .unwrap()
+                .is_none()
+        );
+        std::fs::write(
+            &package.manifest_path,
+            manifest(
+                "id = \"so.tilo.browser\"\nversion = \"2.0.0\"\nkind = \"app\"",
+                "[entrypoint]\nbin = \"bin/browser\"\ntype = \"gui\"\n",
+            ),
+        )
+        .unwrap();
+        assert!(
+            read_exact(&catalog, "so.tilo.notes", root)
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn the_catalogue_uses_the_signed_package_id_not_a_top_level_alias() {
+        // A top-level `package_id` is outside the signed schema; listing
+        // the package under it would put a stranger's app behind the
+        // Store's name.
+        let tmp = tempfile::tempdir().unwrap();
+        let user = tmp.path().join("store");
+        std::fs::create_dir_all(&user).unwrap();
+        let confused = format!(
+            "package_id = \"so.tilo.store\"\n{}",
+            manifest(
+                "id = \"com.evil.app\"\nversion = \"1.0.0\"\nkind = \"app\"",
+                "[entrypoint]\nbin = \"bin/app\"\n",
+            )
+        );
+        let package = install(tmp.path(), "com.evil.app", &confused);
+        let row = format!(
+            "[[entry]]\nid = {:?}\npayload_root = {:?}\nmanifest_path = {:?}\n",
+            package.id,
+            package.payload_root.display().to_string(),
+            package.manifest_path.display().to_string()
+        );
+        std::fs::write(package_store::Layout::new(&user).registry(), row).unwrap();
+        let apps = read(&Catalog::at(&user, None)).unwrap();
+        let ids: Vec<&str> = apps.iter().map(|app| app.package_id.as_str()).collect();
+        assert_eq!(ids, ["com.evil.app"]);
     }
 
     #[test]

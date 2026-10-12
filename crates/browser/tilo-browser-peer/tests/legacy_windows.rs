@@ -11,8 +11,9 @@ mod support;
 
 use neighbour_wire::NeighbourMsg;
 use tilo_browser_peer::Host;
-use tilo_relay_client::{AttributedPresence, Envelope, RelayClient};
+use tilo_relay_client::{AttributedPresence, Envelope};
 use tilo_relay_protocol::legacy_window as wire;
+use tilo_relay_session::RelayClient;
 use tilo_user_identity::{DeviceCapabilities, RevocationList, UserIdentity};
 
 use support::{enrol, ready, start_host, start_peer, workspace};
@@ -48,12 +49,57 @@ async fn input(
         .unwrap()
 }
 
+/// The evdev strokes a US keyboard types `text` with: Shift around capitals
+/// and shifted punctuation.
+fn typing(text: &str) -> Vec<wire::InputEvent> {
+    const SHIFT: u32 = 42;
+    let key = |keysym, pressed| wire::InputEvent::Key {
+        keysym,
+        pressed,
+        modifiers: 0,
+    };
+    let mut events = Vec::new();
+    for c in text.chars() {
+        let (code, shift) = match c {
+            ' ' => (57, false),
+            ',' => (51, false),
+            '.' => (52, false),
+            '!' => (2, true),
+            c => {
+                const ROWS: [(&str, u32); 3] =
+                    [("qwertyuiop", 16), ("asdfghjkl", 30), ("zxcvbnm", 44)];
+                let lower = c.to_ascii_lowercase();
+                let code = ROWS
+                    .iter()
+                    .find_map(|(row, first)| {
+                        row.find(lower)
+                            .map(|at| first.checked_add(u32::try_from(at).unwrap()).unwrap())
+                    })
+                    .unwrap();
+                (code, c.is_ascii_uppercase())
+            }
+        };
+        if shift {
+            events.push(key(SHIFT, true));
+        }
+        events.extend([key(code, true), key(code, false)]);
+        if shift {
+            events.push(key(SHIFT, false));
+        }
+    }
+    events
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn native_window_reaches_browser_and_only_granted_input_returns() {
+    Box::pin(native_window_scenario()).await;
+}
+
 #[allow(
     clippy::too_many_lines,
     reason = "one production cross-carrier scenario"
 )]
-async fn native_window_reaches_browser_and_only_granted_input_returns() {
+async fn native_window_scenario() {
     let (root, _) = UserIdentity::generate("Legacy viewer", 1);
     let host_device = enrol(&root, "host", DeviceCapabilities::host());
     let laptop = enrol(&root, "laptop", DeviceCapabilities::primary());
@@ -251,6 +297,27 @@ async fn native_window_reaches_browser_and_only_granted_input_returns() {
         }
     })
     .await;
+    // A full batch of typing reaches the session whole and in order, the
+    // doubled letters and every release included.
+    let typed = typing("Hello, World! example.com");
+    assert!(typed.len() > wire::MAX_INPUT_EVENTS / 2);
+    for batch in typed.chunks(wire::MAX_INPUT_EVENTS) {
+        request.events = batch.to_vec();
+        assert!(input(&browser, request.clone()).await.unwrap());
+    }
+    let mut received = Vec::new();
+    tilo_test_env::within("every typed stroke at the session", async {
+        while received.len() < typed.len() {
+            if let Some(Envelope::Presence { payload, .. }) = native.recv().await
+                && let Ok(NeighbourMsg::RemoteInput { event, .. }) =
+                    postcard::from_bytes(&AttributedPresence::decode(&payload).unwrap().body)
+            {
+                received.push(postcard::from_bytes::<wire::InputEvent>(&event).unwrap());
+            }
+        }
+    })
+    .await;
+    assert_eq!(received, typed);
     publish(
         &native,
         author,
@@ -278,4 +345,19 @@ async fn native_window_reaches_browser_and_only_granted_input_returns() {
     native.close().await;
     drop(web);
     relay.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn cached_static_windows_survive_concurrent_viewer_handoffs() {
+    let mut scenarios = tokio::task::JoinSet::new();
+    for _ in 0..4 {
+        scenarios.spawn(async {
+            for _ in 0..8 {
+                Box::pin(native_window_scenario()).await;
+            }
+        });
+    }
+    while let Some(result) = scenarios.join_next().await {
+        result.expect("every original cross-carrier cached-window scenario completes");
+    }
 }

@@ -74,6 +74,12 @@ enum Command {
         #[arg(long, value_parser = parse_extent, requires = "extent")]
         touch_extent: Option<(u32, u32)>,
     },
+    /// Hold a logind sleep lock until the keep-awake lease in --lease ends
+    /// (run by tilo-vmd itself as tilo-vm-awake.service).
+    AwakeHold {
+        #[arg(long)]
+        lease: PathBuf,
+    },
     /// Install distribution packages into the VM's /usr with its package
     /// manager (a transient overlay on bootc images); output streams.
     InstallPackages {
@@ -115,8 +121,10 @@ struct State {
     /// What the VM's base image was built with, for layer ABI checks.
     #[arg(long, default_value = "/usr/share/tilo-vm/base.json")]
     base: PathBuf,
-    /// `record` performs no side effects, and `record-device` none on a
-    /// machine whose own session runs as tester; for protocol tests only.
+    /// `record` performs no side effects, `record-device` none on a
+    /// machine whose own session runs as tester, and `record-login` none
+    /// on a laptop tester is logged in to through greetd; for protocol
+    /// tests only.
     #[arg(long, value_enum, default_value_t = Backend::Systemd)]
     apply: Backend,
 }
@@ -126,6 +134,7 @@ enum Backend {
     Systemd,
     Record,
     RecordDevice,
+    RecordLogin,
 }
 
 impl State {
@@ -145,6 +154,7 @@ impl State {
             Backend::Systemd => Box::new(SystemdApply::new(&self.root)),
             Backend::Record => Box::new(RecordingApply::default()),
             Backend::RecordDevice => Box::new(RecordingApply::with_device("tester")),
+            Backend::RecordLogin => Box::new(RecordingApply::with_login("tester")),
         };
         Daemon::new(&self.root, backend, manifest, base)
     }
@@ -195,6 +205,16 @@ fn display_apply(outputs: &[tilo_vm_protocol::OutputSpec], timeout: u64) -> Exit
         }
         Err(error) => {
             eprintln!("{error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn awake_hold(lease: &std::path::Path) -> ExitCode {
+    match tilo_vmd::awake::hold(lease) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("tilo-vmd: could not hold the machine awake: {error}");
             ExitCode::FAILURE
         }
     }
@@ -296,6 +316,7 @@ fn main() -> ExitCode {
                 ExitCode::FAILURE
             }
         },
+        Command::AwakeHold { lease } => awake_hold(&lease),
         Command::DisplayApply { outputs, timeout } => display_apply(&outputs, timeout),
         Command::InstallPackages { timeout, packages } => install_packages(&packages, timeout),
     }

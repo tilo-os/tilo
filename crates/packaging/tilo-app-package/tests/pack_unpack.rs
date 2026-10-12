@@ -218,3 +218,129 @@ fn package_signatures_bind_the_hash_chain_and_root() {
         assert!(matches!(v, Verification::NotSigned), "got {v:?}");
     }
 }
+
+#[cfg(unix)]
+#[test]
+fn signal_runtime_loader_executes_after_signed_thin_package_unpack() {
+    use std::os::unix::fs::PermissionsExt;
+    let (key, public) = fresh_identity();
+    let mut manifest = manifest_with_key(&public);
+    manifest.package.kind = tilo_app_package::Kind::Runtime;
+    manifest.package.runtime = None;
+    manifest.package.provides = Some(format!(
+        "tilo-runtime/2026.10.1-signal+native.{}",
+        "a".repeat(32)
+    ));
+    let loader = "lib/lib64/ld-linux-x86-64.so.2";
+    manifest.entrypoint.as_mut().unwrap().bin = loader.into();
+    let payload = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(payload.path().join("lib/lib64")).unwrap();
+    std::fs::write(
+        payload.path().join(loader),
+        b"#!/bin/sh\nprintf 'loader started\\n'\n",
+    )
+    .unwrap();
+    std::fs::write(payload.path().join("lib/java"), b"fixture Java executable").unwrap();
+    let packed = pack(
+        payload.path(),
+        &manifest,
+        &SigningIdentity::from_signing_key(key.clone()),
+    )
+    .unwrap();
+    let thin = tapp::to_bytes(&packed.meta, None).unwrap();
+    let decoded = tapp::read(thin.as_slice(), &mut BTreeMap::new()).unwrap();
+    assert!(matches!(
+        verify(&decoded.meta, &[key.verifying_key().to_bytes()]),
+        Verification::Trusted { .. }
+    ));
+    let output = tempfile::tempdir().unwrap();
+    let root = output.path().join("runtime");
+    unpack(&decoded.meta, &packed, &root).unwrap();
+    let process = std::process::Command::new(root.join(loader))
+        .output()
+        .unwrap();
+    assert!(process.status.success());
+    assert_eq!(process.stdout, b"loader started\n");
+    assert_eq!(
+        std::fs::metadata(root.join("lib/java"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o111,
+        0
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn thin_runtime_restores_only_its_signed_entrypoint_execute_bits() {
+    use std::os::unix::fs::PermissionsExt;
+    let (key, public) = fresh_identity();
+    let mut manifest = manifest_with_key(&public);
+    manifest.package.kind = tilo_app_package::Kind::Runtime;
+    manifest.package.runtime = None;
+    manifest.package.provides = Some("tilo-runtime/2026.10.2-engine-test".into());
+    manifest.entrypoint.as_mut().unwrap().bin = "engine-host".into();
+    let payload = tempfile::tempdir().unwrap();
+    std::fs::write(
+        payload.path().join("engine-host"),
+        b"#!/bin/sh\nprintf 'thin engine started\\n'\n",
+    )
+    .unwrap();
+    std::fs::write(payload.path().join("resources.pak"), b"resource").unwrap();
+    let identity = SigningIdentity::from_signing_key(key.clone());
+    let packed = pack(payload.path(), &manifest, &identity).unwrap();
+    assert!(
+        !packed
+            .meta
+            .collection
+            .entries
+            .contains_key(tilo_app_package::image::TREE_FILE),
+        "existing runtime payload format must remain compatible"
+    );
+    let thin = tapp::to_bytes(&packed.meta, None).unwrap();
+    let decoded = tapp::read(thin.as_slice(), &mut BTreeMap::new()).unwrap();
+    assert!(!decoded.is_complete());
+    assert!(matches!(
+        verify(&decoded.meta, &[key.verifying_key().to_bytes()]),
+        Verification::Trusted { .. }
+    ));
+    let output = tempfile::tempdir().unwrap();
+    let root = output.path().join("runtime");
+    unpack(&decoded.meta, &packed, &root).unwrap();
+    assert_eq!(
+        std::fs::metadata(root.join("resources.pak"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o111,
+        0
+    );
+    let process = std::process::Command::new(root.join("engine-host"))
+        .output()
+        .unwrap();
+    assert!(process.status.success());
+    assert_eq!(process.stdout, b"thin engine started\n");
+
+    // Changing which file is executable breaks the signed manifest hash.
+    let mut forged = decoded.meta.manifest.clone();
+    forged.entrypoint.as_mut().unwrap().bin = "resources.pak".into();
+    assert!(matches!(
+        PackageMeta::from_root(
+            decoded.meta.root,
+            forged.to_toml_string().unwrap().into_bytes(),
+            decoded.meta.collection_bytes
+        ),
+        Err(MetaError::ManifestHashMismatch)
+    ));
+
+    for path in ["../engine-host", "/engine-host", "missing-host"] {
+        manifest.entrypoint.as_mut().unwrap().bin = path.into();
+        assert!(matches!(
+            pack(payload.path(), &manifest, &identity),
+            Err(tilo_app_package::PackError::Manifest(
+                tilo_app_package::ManifestError::RuntimeEntrypoint(_)
+            ))
+        ));
+    }
+}

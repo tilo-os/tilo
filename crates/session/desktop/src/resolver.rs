@@ -14,10 +14,17 @@ pub struct TileRequest<'a> {
 }
 #[expect(
     clippy::large_enum_variant,
-    reason = "a resolution is mounted immediately; boxing the component would reshape the public variant hosts construct"
+    reason = "a resolution is mounted immediately; boxing the component would reshape the public variants hosts construct"
 )]
 pub enum TileResolution {
     Component(AppComponent),
+    /// A component shown as an App of its own in the tile: its input,
+    /// focus, palette, history and collaboration are its App's, the last
+    /// over the collaboration manager the host connected it with.
+    App(
+        AppComponent,
+        Option<ui::collaboration::CollaborationManager>,
+    ),
     /// A retained checked owner moved through a hierarchy rebuild.
     Retained(TileHost),
     Hosted(Box<dyn AppWidget>),
@@ -92,7 +99,7 @@ impl<H: ComponentContextSource> TileResolver for ApplicationCatalogTileResolver<
             };
         };
         let Ok(definition) = self.catalog.resolve(&id) else {
-            return if collab_types::first_party_app_ids::is_first_party_app_id(&id) {
+            return if tilo_desktop_model::first_party::is_first_party_app_id(&id) {
                 TileResolution::Unavailable {
                     title: request.tab.title.clone(),
                     detail: crate::i18n::t_args(
@@ -134,7 +141,31 @@ impl TileResolution {
         match self {
             Self::Retained(host) => host,
             Self::Component(component) => {
-                match TileHost::mount_component(component, move |_| wake()) {
+                let mounted = TileHost::mount_component(component, move |_| wake());
+                match mounted {
+                    Ok(host) => host,
+                    Err(error) => {
+                        let detail = error.to_string();
+                        failures.push(error);
+                        TileHost::new(ui::widget::TileContent::Notice {
+                            title: crate::i18n::t("desktop-app-unavailable"),
+                            detail,
+                        })
+                    }
+                }
+            }
+            Self::App(component, collaboration) => {
+                // The portable toolkit has no App runner: there a component
+                // is its own tile.
+                #[cfg(not(target_arch = "wasm32"))]
+                let mounted = app_tile(component, collaboration, move |_| wake())
+                    .map(|app| TileHost::new(ui::widget::TileContent::App(app)));
+                #[cfg(target_arch = "wasm32")]
+                let mounted = {
+                    let _ = collaboration;
+                    TileHost::mount_component(component, move |_| wake())
+                };
+                match mounted {
                     Ok(host) => host,
                     Err(error) => {
                         let detail = error.to_string();
@@ -168,6 +199,29 @@ impl TileResolution {
         }
     }
 }
+/// `component` as the app a tile shows: an App of its own, with the input,
+/// focus, palette, history and collaboration it has in a window, drawn in
+/// the tile, collaborating over `collaboration` when the host connected it.
+/// `wake` is told when its background work wants a frame.
+///
+/// # Errors
+/// The app could not be built around the component.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn app_tile(
+    component: ui::application::AppComponent,
+    collaboration: Option<ui::collaboration::CollaborationManager>,
+    wake: impl Fn(ui::WakeEvent) + Send + Sync + 'static,
+) -> Result<Box<dyn AppWidget>, LaunchError> {
+    let inputs = ui::application::ComponentRunnerInputs::from_native_process();
+    let app = match collaboration {
+        Some(collaboration) => {
+            ui::App::from_component_with_collaboration(component, inputs, collaboration)?
+        }
+        None => ui::App::from_component(component, inputs)?,
+    };
+    Ok(Box::new(ui::app::EmbeddedApp::new(app, wake)?))
+}
+
 pub fn tile_app_kind(tile: &TileContent) -> ui::widget::AppKind {
     use ui::widget::AppKind as Kind;
     match tile {

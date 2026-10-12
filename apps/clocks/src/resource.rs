@@ -1,246 +1,339 @@
-//! Clocks as a [`tilo_resource::Resource`]. Timers and alarms are device-local
-//! effects today; the document action vocabulary is empty until those migrate
-//! onto the CRDT. The collection kind matches the published root.
+//! Clocks as a framework app: the [`Clocks`] resource, the window that
+//! shows it, the effects that change only this device, and what the window
+//! adds to the published tree.
 
-use serde::{Deserialize, Serialize};
-use ui::framework::{Dispatcher, ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
-use ui::tilo_actions::{Action, ActionError, ActionRegistry};
-use ui::tilo_resource::{Doc, ModelError, Resource};
-use ui::widget::Element;
+use std::rc::Rc;
 
-use crate::ClockState;
-use crate::app::ClocksApp;
+use chrono::Utc;
+use ui::framework::{EffectAnswer, EffectCx, Effected};
+use ui::prelude::*;
+use ui::tilo_actions::ResourcePresentation;
+use ui::tilo_resource::items::item_resource_id;
 
-/// No collaborative document mutations yet — clocks persist outside Automerge.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum EmptyDocAction {}
+use crate::app::{ClocksApp, Controls, Shown, duration, repeat_summary};
+use crate::model::Clocks;
+use crate::schedule::OnThisDevice;
 
-impl Action for EmptyDocAction {
-    fn apply(&self, _doc: &mut ui::tilo_actions::Doc) -> Result<(), ActionError> {
-        Ok(())
-    }
+/// What changes only this device: which clocks float above other windows
+/// on its screen.
+#[derive(Clone, Debug, Effect)]
+#[effect(operation = "clocks.effects", device_only)]
+pub enum ClocksEffect {
+    /// Open this alarm on this device.
+    OpenAlarm {
+        #[param("The alarm's id")]
+        alarm: String,
+    },
+    /// Dismiss the due alarm or timer notice on this device.
+    DismissNotice,
+    /// Float a timer above other windows.
+    FloatTimer {
+        #[param("The timer's id")]
+        timer: String,
+        #[param("Float it")]
+        floating: bool,
+    },
+    /// Float the stopwatch above other windows.
+    FloatStopwatch {
+        #[param("Float it")]
+        floating: bool,
+    },
 }
 
-/// The clocks collection resource.
-pub struct Clocks;
-
-impl Resource for Clocks {
-    const KIND: &'static str = "clocks.collection";
-    const LABEL: &'static str = "Clocks";
-    const ACTION_TYPE: &'static str = "clocks.action";
-
-    type State = ClockState;
-    type Action = EmptyDocAction;
-
-    fn register(registry: &mut ActionRegistry) {
-        registry.register::<EmptyDocAction>(Self::ACTION_TYPE);
-    }
-
-    fn read(_doc: &Doc) -> Result<ClockState, ModelError> {
-        // Live path starts empty; the widget still loads device-local state.
-        Ok(ClockState::default())
-    }
-
-    fn local_operations() -> Vec<tilo_actions::ActionSpec> {
-        // Creates and stopwatch transport do not name a live row. Per-item
-        // effects and the floating-overlay polarity stay on the widget.
-        crate::actions::collection_local_operations()
-    }
-}
-
-/// Framework app: the clocks widget is the surface over [`Clocks`].
+/// The Clocks app.
 pub struct ClocksShell;
+
+/// Every `--shots` scenario; a `-narrow` one is the same scene in a phone
+/// window.
+const SCENARIOS: &[&str] = &[
+    "empty",
+    "running",
+    "ringing",
+    "world",
+    "alarms",
+    "stopwatch",
+    "timers",
+    "running-narrow",
+    "ringing-narrow",
+    "world-narrow",
+    "alarms-narrow",
+    "stopwatch-narrow",
+    "timers-narrow",
+];
+
+/// The moment a capture's wall clocks show, the same on every run.
+pub(crate) struct ShotNow(pub(crate) chrono::DateTime<Utc>);
+
+/// A Tuesday morning: the time a capture's clocks read.
+fn shot_now() -> chrono::DateTime<Utc> {
+    chrono::DateTime::from_timestamp(1_782_806_400, 0).unwrap_or_default()
+}
+
+/// The scene a scenario shows, without its window size.
+fn scene(name: Option<&str>) -> &str {
+    let name = name.unwrap_or_default();
+    name.strip_suffix("-narrow").unwrap_or(name)
+}
 
 impl ResourceApp for ClocksShell {
     type Resource = Clocks;
     const ID: &'static str = "so.tilo.clocks";
     const TITLE: &'static str = "Clocks";
-    const ICON: Option<&'static str> = Some("clocks");
-    fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
-        (1280, 800)
+
+    fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {
+        Some(&crate::locales::CATALOG)
     }
 
+    const ICON: Option<&'static str> = Some("clocks");
+    const ARGUMENTS: usize = 1;
+
     fn view(cx: &mut ViewCx<Clocks>) -> Element {
-        cx.surface(ClocksApp::new())
+        let controls = Controls {
+            actions: cx.actions(),
+            dispatcher: cx.dispatcher(),
+        };
+        cx.surface(ClocksApp::new(
+            controls,
+            cx.settings::<OnThisDevice>(),
+            cx.mode().is_live(),
+        ))
+    }
+
+    fn launch_record(input: &LaunchInput<'_>) -> Option<ui::record::RecordId> {
+        let uri = input.arguments().first()?;
+        let path = uri.strip_prefix("tilo-clocks:record/")?;
+        let record = path
+            .split_once("/alarm/")
+            .map_or(path, |(record, _)| record);
+        ui::record::RecordId::parse(record)
+    }
+
+    fn launch(input: &LaunchInput<'_>, _created: bool) -> Vec<Invoke<Clocks>> {
+        input
+            .arguments()
+            .first()
+            .and_then(|uri| crate::native_timers::activation_alarm(uri))
+            .map(|alarm| {
+                vec![Invoke::effect(&ClocksEffect::OpenAlarm {
+                    alarm: alarm.to_owned(),
+                })]
+            })
+            .unwrap_or_default()
     }
 
     fn scenarios() -> &'static [&'static str] {
-        &[
-            "empty",
-            "running",
-            "ringing",
-            "world",
-            "alarms",
-            "stopwatch",
-            "timers",
-        ]
+        SCENARIOS
+    }
+
+    fn shot_viewport(scenario: Option<&str>) -> (u32, u32) {
+        if scenario.is_some_and(|name| name.ends_with("-narrow")) {
+            (520, 820)
+        } else {
+            (1280, 800)
+        }
+    }
+
+    fn fixture(fixture: &mut ui::framework::Fixture<Clocks>) {
+        fixture.provide(ShotNow(shot_now()));
+    }
+
+    fn scenario(name: Option<&str>) -> Vec<Invoke<Clocks>> {
+        use crate::model::WeekdayKey::{Fri, Mon, Thu, Tue, Wed};
+        match scene(name) {
+            "running" => vec![Clocks::ADD_TIMER.with(("Tea".to_owned(), 272))],
+            "world" => [
+                ("Tokyo", "Asia/Tokyo"),
+                ("London", "Europe/London"),
+                ("New York", "America/New_York"),
+            ]
+            .into_iter()
+            .map(|(city, zone)| Clocks::ADD_WORLD_CLOCK.with((city.to_owned(), zone.to_owned())))
+            .collect(),
+            "alarms" => vec![
+                Clocks::ADD_ALARM.with(("Wake up".to_owned(), 7, 0, vec![Mon, Tue, Wed, Thu, Fri])),
+                Clocks::ADD_ALARM.with(("Gym".to_owned(), 18, 30, Vec::new())),
+            ],
+            _ => Vec::new(),
+        }
     }
 }
 
-/// Framework dispatcher when hosted; the local action host for standalone
-/// tests and the screenshot launcher. Clocks has no document action yet.
-#[derive(Default)]
-pub(crate) struct ActionSink {
-    local: ui::ActionHost,
-    framework: Option<Dispatcher<Clocks>>,
-    /// Set by [`Self::attach`]; tests can flip it without a real dispatcher.
-    hosted: bool,
+impl ResourceSurface<Clocks, ClocksEffect> for ClocksApp {
+    fn present(&mut self, state: &Rc<Clocks>) {
+        self.show(state);
+    }
+
+    fn attach(&mut self, cx: ui::framework::SurfaceCx<Clocks>) {
+        self.record = cx.record().cloned();
+        self.opener = cx.opener();
+        if let Some(now) = cx.fixture::<ShotNow>() {
+            self.state.update(|shown| shown.pinned_now = Some(now.0));
+        }
+    }
+
+    fn stage(&mut self, scenario: Option<&str>) {
+        match scene(scenario) {
+            "world" => self.set_mode(crate::app::WORLD),
+            "alarms" => self.set_mode(crate::app::ALARMS),
+            "stopwatch" => self.set_mode(crate::app::STOPWATCH),
+            "running" => {
+                self.set_mode(crate::app::TIMERS);
+                let timers: Vec<String> = self.state.with(|shown| {
+                    shown
+                        .clocks
+                        .timers
+                        .ids()
+                        .map(|id| id.as_str().to_owned())
+                        .collect()
+                });
+                self.update_device(|device| device.floating_timers.extend(timers));
+            }
+            "ringing" => {
+                self.set_mode(crate::app::TIMERS);
+                self.notice
+                    .set(Some(("Timer finished".to_owned(), "Tea".to_owned())));
+            }
+            _ => self.set_mode(crate::app::TIMERS),
+        }
+    }
+
+    fn effect(&mut self, effect: ClocksEffect, _cx: &mut EffectCx<Clocks, Self>) -> EffectAnswer {
+        match effect {
+            ClocksEffect::OpenAlarm { alarm } => {
+                let id = Id::from_raw(alarm.as_str());
+                if !self.state.with(|shown| shown.clocks.alarms.contains(&id)) {
+                    return Err(format!("there is no alarm `{alarm}`"));
+                }
+                self.state.update(|shown| shown.selected_alarm = Some(id));
+                self.set_mode(crate::app::ALARMS);
+            }
+            ClocksEffect::DismissNotice => self.notice.set(None),
+            ClocksEffect::FloatTimer { timer, floating } => {
+                if !self
+                    .state
+                    .with(|shown| shown.clocks.timers.contains(&Id::from_raw(timer.as_str())))
+                {
+                    return Err(format!("there is no timer `{timer}`"));
+                }
+                self.update_device(|device| {
+                    if floating {
+                        device.floating_timers.insert(timer);
+                    } else {
+                        device.floating_timers.remove(&timer);
+                    }
+                });
+            }
+            ClocksEffect::FloatStopwatch { floating } => {
+                self.update_device(|device| device.floating_stopwatch = floating);
+            }
+        }
+        Ok(Effected::done())
+    }
+
+    fn live_rows(&self) -> Vec<LiveRow> {
+        self.state.with(live_rows)
+    }
 }
 
-impl ActionSink {
-    pub(crate) fn attach(&mut self, dispatcher: Dispatcher<Clocks>) {
-        self.framework = Some(dispatcher);
-        self.hosted = true;
-    }
-
-    pub(crate) fn is_hosted(&self) -> bool {
-        self.hosted || self.framework.is_some()
-    }
-
-    pub(crate) fn take_committed(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.local.take_committed()
-    }
-
-    /// Test-only: mark hosted without constructing a framework dispatcher.
-    #[cfg(test)]
-    pub(crate) fn mark_hosted_for_test(&mut self) {
-        self.hosted = true;
-    }
+fn millis(duration: std::time::Duration) -> u64 {
+    duration.as_millis().try_into().unwrap_or(u64::MAX)
 }
 
-impl ResourceSurface<Clocks> for ClocksApp {
-    /// Alarms and timers are device-local. An empty projection must not wipe
-    /// an unpublished local collection.
-    fn present(&mut self, _state: &std::rc::Rc<ClockState>) {}
+/// How each clock stands right now, published on its item for the palette
+/// and agents: what a timer has left and whether it floats here, when an
+/// alarm rings, where a city is. Floating a timer is an operation of its
+/// row; the stopwatch has a row of its own.
+fn live_rows(shown: &Shown) -> Vec<LiveRow> {
+    let now = Utc::now();
+    let clocks = &shown.clocks;
+    let mut rows: Vec<LiveRow> = clocks
+        .timers
+        .iter()
+        .map(|(id, timer)| {
+            timer_row(
+                id,
+                timer,
+                shown.device.floating_timers.contains(id.as_str()),
+                now,
+            )
+        })
+        .collect();
+    rows.extend(clocks.alarms.iter().map(|(id, alarm)| {
+        LiveRow::new(
+            item_resource_id::<Clocks>("alarms", id),
+            "clocks.alarm",
+            &alarm.label,
+        )
+        .presentation(ResourcePresentation {
+            detail: Some(format!(
+                "At {0}, repeating {1}.",
+                ui::clock::time_of_day(&alarm.local_time()),
+                repeat_summary(&alarm.weekdays())
+            )),
+            badge: Some(if alarm.enabled { "On" } else { "Off" }.into()),
+            preview: None,
+        })
+        .effect(&ClocksEffect::OpenAlarm {
+            alarm: id.as_str().to_owned(),
+        })
+    }));
+    rows.extend(clocks.world_clocks.iter().map(|(id, clock)| {
+        LiveRow::new(
+            item_resource_id::<Clocks>("world_clocks", id),
+            "clocks.world-clock",
+            &clock.city,
+        )
+        .presentation(ResourcePresentation {
+            detail: Some(clock.timezone.0.clone()),
+            badge: None,
+            preview: None,
+        })
+    }));
+    let floating = shown.device.floating_stopwatch;
+    rows.push(
+        LiveRow::new("clocks.stopwatch", "clocks.stopwatch", "Stopwatch")
+            .presentation(ResourcePresentation {
+                detail: Some(duration(millis(clocks.stopwatch.elapsed(now)))),
+                badge: floating.then(|| "Floating".into()),
+                preview: None,
+            })
+            .effect(&ClocksEffect::FloatStopwatch {
+                floating: !floating,
+            }),
+    );
+    rows
+}
 
-    fn attach(&mut self, cx: SurfaceCx<Clocks>) {
-        self.actions.attach(cx.dispatcher());
-        self.mark_framework_hosted();
-    }
+fn timer_row(
+    id: &Id,
+    timer: &crate::model::Timer,
+    floating: bool,
+    now: chrono::DateTime<Utc>,
+) -> LiveRow {
+    let status = if timer.is_running(now) {
+        "Running"
+    } else if timer.is_finished(now) {
+        "Done"
+    } else {
+        "Paused"
+    };
+    let remaining = duration(millis(timer.remaining(now)));
+    LiveRow::new(
+        item_resource_id::<Clocks>("timers", id),
+        "clocks.timer",
+        &timer.label,
+    )
+    .presentation(ResourcePresentation {
+        detail: Some(format!("{status}, with {remaining} remaining.")),
+        badge: floating.then(|| "Floating".into()),
+        preview: None,
+    })
+    .effect(&ClocksEffect::FloatTimer {
+        timer: id.as_str().to_owned(),
+        floating: !floating,
+    })
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use ui::resources::PublishesResources;
-    use ui::widget::Widget;
-
-    #[test]
-    fn publish_owns_collection_door_and_hosted_keeps_only_live_rows() {
-        let published =
-            ui::tilo_resource::publish::<Clocks>("clocks", "Clocks", &ClockState::default());
-        assert_eq!(published.kind, Clocks::KIND);
-        let ids: Vec<&str> = published
-            .actions
-            .iter()
-            .map(|action| action.id.as_str())
-            .collect();
-        for expected in [
-            "new-timer",
-            "new-alarm",
-            "add-new-york",
-            "toggle",
-            "lap",
-            "reset",
-        ] {
-            assert!(
-                ids.contains(&expected),
-                "palette `{expected}` must ride publish via local_operations: {ids:?}"
-            );
-        }
-        assert!(
-            !ids.contains(&"set-floating"),
-            "floating polarity stays on the live stopwatch: {ids:?}"
-        );
-
-        let mut app = ClocksApp::scenario("running");
-        let mut state = ui::State::new();
-        Widget::sync(&mut app, &mut state.doc, &state.root);
-        assert!(!app.is_framework_hosted());
-        let standalone = app.resources(&state.doc);
-        assert_eq!(standalone.len(), 1);
-        assert_eq!(standalone[0].id.as_str(), "clocks");
-
-        app.mark_hosted_for_test();
-        let extras = app.resources(&state.doc);
-        assert!(
-            extras.iter().all(|resource| {
-                resource.kind != Clocks::KIND && resource.id.as_str() != "clocks"
-            }),
-            "hosted must not republish clocks.collection beside ResourceRoot: {:?}",
-            extras
-                .iter()
-                .map(|resource| resource.id.as_str())
-                .collect::<Vec<_>>()
-        );
-        assert!(
-            extras
-                .iter()
-                .any(|resource| resource.kind == "clocks.timer"),
-            "hosted keeps the running timer"
-        );
-        let stopwatch = extras
-            .iter()
-            .find(|resource| resource.id.as_str() == "clocks.stopwatch")
-            .expect("stopwatch extra");
-        assert!(
-            stopwatch
-                .actions
-                .iter()
-                .any(|action| action.id.as_str() == "set-floating")
-        );
-        assert!(
-            !stopwatch
-                .actions
-                .iter()
-                .any(|action| action.id.as_str() == "lap"),
-            "lap already rides publish"
-        );
-    }
-
-    #[test]
-    fn attach_hosted_surface_does_not_republish_the_collection_root() {
-        let mut app = ClocksApp::scenario("running");
-        let mut state = ui::State::new();
-        Widget::sync(&mut app, &mut state.doc, &state.root);
-        assert!(!app.is_framework_hosted());
-        assert!(!app.sink_is_hosted());
-        let standalone = app.resources(&state.doc);
-        assert_eq!(standalone.len(), 1);
-        assert_eq!(standalone[0].kind, Clocks::KIND);
-
-        app.mark_hosted_for_test();
-        assert!(app.is_framework_hosted());
-        assert!(app.sink_is_hosted());
-        let extras = app.resources(&state.doc);
-        assert!(
-            extras.iter().all(|resource| {
-                resource.kind != Clocks::KIND && resource.id.as_str() != "clocks"
-            }),
-            "hosted attach must not republish clocks.collection: {:?}",
-            extras
-                .iter()
-                .map(|resource| resource.id.as_str())
-                .collect::<Vec<_>>()
-        );
-        assert!(
-            extras
-                .iter()
-                .any(|resource| resource.kind == "clocks.timer"),
-            "hosted keeps the running timer on the widget"
-        );
-    }
-
-    #[test]
-    fn present_empty_does_not_wipe_unpublished_local_timers() {
-        let mut app = ClocksApp::scenario("running");
-        assert!(app.timer_count() > 0);
-        let before = app.timer_count();
-        ResourceSurface::<Clocks>::present(&mut app, &std::rc::Rc::new(ClockState::default()));
-        assert_eq!(
-            app.timer_count(),
-            before,
-            "empty present must not wipe unpublished local timers"
-        );
-    }
-}
+#[path = "resource_tests.rs"]
+mod tests;

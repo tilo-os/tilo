@@ -643,6 +643,7 @@ impl Window {
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub struct KeyEventExtra {
+    pub wayland_stamp: Option<(u32, u32)>,
     pub text_with_all_modifiers: Option<SmolStr>,
     pub key_without_modifiers: Key,
 }

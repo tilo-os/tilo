@@ -13,7 +13,7 @@ fn incremental(
     ));
     let heads = doc.get_heads();
     doc.put(ROOT, name, name).unwrap();
-    doc.commit();
+    doc.commit_edit("fixture", "fixture");
     author
         .publish_incremental("test.app", "tab:1", doc.save_after(&heads), key, now)
         .unwrap()
@@ -320,17 +320,43 @@ fn delivery_admission_local_candidate_delta_includes_all_routes_and_refuses_evid
     reason = "one end-to-end scenario: its setup and assertions stay together"
 )]
 fn delivery_admission_literal_signed_bytes_and_v4_v5_migration_remain_exact() {
-    const V4: &[u8] = include_bytes!("../tests/fixtures/delivery-admission/native-v4.postcard");
-    const V5: &[u8] = include_bytes!("../tests/fixtures/delivery-admission/native-v5.postcard");
-    const OP: &[u8] =
-        include_bytes!("../tests/fixtures/delivery-admission/original-signed-op.postcard");
-    const ITEM: &[u8] =
-        include_bytes!("../tests/fixtures/delivery-admission/original-app-document.postcard");
+    static V4: std::sync::LazyLock<Vec<u8>> = std::sync::LazyLock::new(|| {
+        include_str!("../tests/fixtures/delivery-admission/native-v4.postcard.hex")
+            .split_ascii_whitespace()
+            .map(|byte| {
+                u8::from_str_radix(byte, 16).expect("checked-in fixture contains hexadecimal bytes")
+            })
+            .collect()
+    });
+    static V5: std::sync::LazyLock<Vec<u8>> = std::sync::LazyLock::new(|| {
+        include_str!("../tests/fixtures/delivery-admission/native-v5.postcard.hex")
+            .split_ascii_whitespace()
+            .map(|byte| {
+                u8::from_str_radix(byte, 16).expect("checked-in fixture contains hexadecimal bytes")
+            })
+            .collect()
+    });
+    static OP: std::sync::LazyLock<Vec<u8>> = std::sync::LazyLock::new(|| {
+        include_str!("../tests/fixtures/delivery-admission/original-signed-op.postcard.hex")
+            .split_ascii_whitespace()
+            .map(|byte| {
+                u8::from_str_radix(byte, 16).expect("checked-in fixture contains hexadecimal bytes")
+            })
+            .collect()
+    });
+    static ITEM: std::sync::LazyLock<Vec<u8>> = std::sync::LazyLock::new(|| {
+        include_str!("../tests/fixtures/delivery-admission/original-app-document.postcard.hex")
+            .split_ascii_whitespace()
+            .map(|byte| {
+                u8::from_str_radix(byte, 16).expect("checked-in fixture contains hexadecimal bytes")
+            })
+            .collect()
+    });
     const ID: &str = include_str!("../tests/fixtures/delivery-admission/operation-id.hex");
     let (_, authority, key, _, now) = fixtures();
     let room = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
     let mut old = StatePeer::restore(
-        V4,
+        V4.as_slice(),
         room,
         authority.clone(),
         vec![],
@@ -340,7 +366,7 @@ fn delivery_admission_literal_signed_bytes_and_v4_v5_migration_remain_exact() {
     .unwrap();
     assert!(!old.admission_v5_selected());
     let rewritten = old.durable().unwrap();
-    if rewritten != V4 {
+    if rewritten != V4.as_slice() {
         // Durable state re-saves its Automerge documents, whose compressed
         // columns depend on the flate2 backend unified into this build (a
         // workspace build selects zlib-rs; this crate alone uses miniz_oxide).
@@ -368,17 +394,18 @@ fn delivery_admission_literal_signed_bytes_and_v4_v5_migration_remain_exact() {
             "frozen v4 bytes changed without selection"
         );
     }
-    let item: NeighbourMsg = collab_types::canonical::from_canonical_bytes(ITEM).unwrap();
-    assert_eq!(postcard::to_allocvec(&item).unwrap(), ITEM);
+    let item: NeighbourMsg =
+        collab_types::canonical::from_canonical_bytes(ITEM.as_slice()).unwrap();
+    assert_eq!(postcard::to_allocvec(&item).unwrap(), ITEM.as_slice());
     let NeighbourMsg::AppDocument { envelope, .. } = &item else {
         panic!("unexpected fixture shape")
     };
     assert_eq!(
         collab_types::canonical_bytes(envelope.as_ref()).unwrap(),
-        OP
+        OP.as_slice()
     );
     collab_types::verify_op(envelope.as_ref()).unwrap();
-    assert_eq!(blake3::hash(OP).to_hex().as_str(), ID.trim());
+    assert_eq!(blake3::hash(OP.as_slice()).to_hex().as_str(), ID.trim());
     old.select_admission_v5().unwrap();
     let origin = TransportOrigin::RelayDelta(key.verifying_key().to_bytes());
     let report = old.receive_from_report(origin, item.clone(), now).unwrap();
@@ -388,7 +415,7 @@ fn delivery_admission_literal_signed_bytes_and_v4_v5_migration_remain_exact() {
     assert_eq!(admitted.sequence(), 7);
     assert_eq!(hex::encode(admitted.operation_id()), ID.trim());
     let mut restored = StatePeer::restore(
-        V5,
+        V5.as_slice(),
         room,
         authority.clone(),
         vec![],
@@ -404,10 +431,10 @@ fn delivery_admission_literal_signed_bytes_and_v4_v5_migration_remain_exact() {
             .primary(),
         &InputDisposition::Duplicate(admitted.clone())
     );
-    for cut in [0, 1, 2, 3, V5.len() / 2, V5.len() - 1] {
+    for cut in [0, 1, 2, 3, V5.as_slice().len() / 2, V5.as_slice().len() - 1] {
         assert!(
             StatePeer::restore(
-                &V5[..cut],
+                &V5.as_slice()[..cut],
                 room,
                 authority.clone(),
                 vec![],
@@ -417,7 +444,7 @@ fn delivery_admission_literal_signed_bytes_and_v4_v5_migration_remain_exact() {
             .is_err()
         );
     }
-    let mut trailing = V5.to_vec();
+    let mut trailing = V5.as_slice().to_vec();
     trailing.push(0);
     assert!(
         StatePeer::restore(

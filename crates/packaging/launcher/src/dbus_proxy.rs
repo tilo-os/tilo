@@ -40,9 +40,11 @@
 //! including `unix:abstract=...` — strictly more capable than the
 //! raw-bind path, which can only mount `unix:path=...` addresses.
 
-use std::io;
+use std::io::{self, Read};
+use std::os::fd::OwnedFd;
+use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command};
+use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 /// Filter args passed after `SOURCE DEST` to `xdg-dbus-proxy`.
@@ -126,7 +128,7 @@ pub const PROXY_BIN_ENV: &str = crate::dev_env::DBUS_PROXY_BIN_ENV;
 /// `/usr/libexec/flatpak-xdg-utils/xdg-dbus-proxy` (Fedora), then
 /// `/usr/lib/flatpak-xdg-utils/xdg-dbus-proxy` (some Debian derivatives).
 pub fn find_proxy_binary() -> Option<PathBuf> {
-    if let Some(bin) = crate::dev_env::dev_override(PROXY_BIN_ENV) {
+    if let Some(bin) = package_store::dev_env::dev_override(PROXY_BIN_ENV) {
         let p = PathBuf::from(bin);
         return p.is_file().then_some(p);
     }
@@ -234,7 +236,7 @@ pub enum ProxyError {
     #[error("spawning xdg-dbus-proxy: {0}")]
     Spawn(#[source] io::Error),
     #[error(
-        "xdg-dbus-proxy did not create its listener socket at {path} within {timeout:?}. \
+        "xdg-dbus-proxy did not report its listener ready at {path} within {timeout:?}. \
          The proxy binary may have exited before setting up the socket — check its stderr."
     )]
     NotReady { path: PathBuf, timeout: Duration },
@@ -254,7 +256,7 @@ pub enum ProxyError {
 ///
 /// Returns [`ProxyError::Mkdir`] if the socket's parent directory can't be
 /// created, [`ProxyError::Spawn`] if `binary` can't be spawned, or
-/// [`ProxyError::NotReady`] if its listener socket doesn't appear within
+/// [`ProxyError::NotReady`] if its listener is not reported ready within
 /// [`PROXY_READY_TIMEOUT`].
 pub fn spawn_dbus_proxy(
     binary: &Path,
@@ -279,8 +281,8 @@ pub fn spawn_filtered_proxy(
     spawn_proxy(binary, bus_addr, socket_path, filter, PROXY_READY_TIMEOUT)
 }
 
-/// How long a launch waits for the proxy's listener socket. The real proxy
-/// is ready in ~10ms; a launch does not stall on one that never comes up.
+/// Maximum wait for the proxy's listener readiness notification. A launch
+/// must not stall indefinitely on a helper that never comes up.
 pub const PROXY_READY_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// [`spawn_dbus_proxy`], waiting up to `ready_within` for the listener
@@ -322,19 +324,24 @@ fn spawn_proxy(
     // EADDRINUSE. Remove best-effort.
     let _ = std::fs::remove_file(socket_path);
 
+    let (ready_channel, child_channel) = UnixStream::pair().map_err(ProxyError::Spawn)?;
     let mut cmd = Command::new(binary);
-    cmd.arg(bus_addr).arg(socket_path);
+    // Upstream writes `x` after all listeners start and watches this channel
+    // for HUP. Keep our endpoint alive for the entire proxy lifetime. Passing
+    // the duplex endpoint as stdin preserves stdout/stderr for diagnostics.
+    cmd.arg("--fd=0").arg(bus_addr).arg(socket_path);
+    cmd.stdin(Stdio::from(OwnedFd::from(child_channel)));
     for arg in filter {
         cmd.arg(arg);
     }
     let child = cmd.spawn().map_err(ProxyError::Spawn)?;
-    let guard = DBusProxyGuard {
+    let mut guard = DBusProxyGuard {
         child: Some(child),
         socket_path: socket_path.to_path_buf(),
+        ready_channel,
     };
 
-    // The socket appears asynchronously; poll with a bounded timeout.
-    match wait_for_socket(socket_path, ready_within) {
+    match wait_for_ready(&mut guard.ready_channel, socket_path, ready_within) {
         Ok(()) => Ok(guard),
         Err(_) => Err(ProxyError::NotReady {
             path: socket_path.to_path_buf(),
@@ -343,24 +350,16 @@ fn spawn_proxy(
     }
 }
 
-fn wait_for_socket(path: &Path, timeout: Duration) -> io::Result<()> {
-    let deadline = Instant::now()
-        .checked_add(timeout)
-        .unwrap_or_else(Instant::now);
-    while Instant::now() < deadline {
-        // `try_exists` catches both regular files (mock proxy) and socket
-        // inodes (real proxy); `Path::exists` would too but hides `EACCES`.
-        if path.try_exists().unwrap_or(false) {
-            return Ok(());
-        }
-        std::thread::sleep(Duration::from_millis(20));
+fn wait_for_ready(channel: &mut UnixStream, path: &Path, timeout: Duration) -> io::Result<()> {
+    channel.set_read_timeout(Some(timeout))?;
+    let mut token = [0];
+    channel.read_exact(&mut token)?;
+    if token == *b"x" && path.try_exists()? {
+        return Ok(());
     }
     Err(io::Error::new(
-        io::ErrorKind::TimedOut,
-        format!(
-            "socket {} did not appear within {timeout:?}",
-            path.display()
-        ),
+        io::ErrorKind::InvalidData,
+        "proxy readiness notification or listener is missing",
     ))
 }
 
@@ -370,6 +369,7 @@ fn wait_for_socket(path: &Path, timeout: Duration) -> io::Result<()> {
 pub struct DBusProxyGuard {
     child: Option<Child>,
     socket_path: PathBuf,
+    ready_channel: UnixStream,
 }
 
 impl DBusProxyGuard {
@@ -556,8 +556,11 @@ mod tests {
         std::fs::write(
             &script,
             r#"#!/bin/sh
-# args: SOURCE DEST [filter args...]
+# args: [--fd=0] SOURCE DEST [filter args...]
+notify=0
+if [ "$1" = --fd=0 ]; then notify=1; shift; fi
 : >"$2"
+if [ "$notify" = 1 ]; then printf x >&0; fi
 # exec, not a backgrounded child: the guard signals and reaps this pid,
 # and a child of a shell it killed would be orphaned, never reaped.
 if [ -x /usr/bin/sleep ]; then
@@ -574,6 +577,36 @@ exit 1
         perms.set_mode(0o755);
         std::fs::set_permissions(&script, perms).unwrap();
         script
+    }
+
+    #[test]
+    fn proxy_marker_without_readiness_is_refused() {
+        use std::os::unix::fs::PermissionsExt;
+
+        for notification in ["", "?"] {
+            let tmp = tempfile::tempdir().unwrap();
+            let script = tmp.path().join("unready-proxy");
+            std::fs::write(
+                &script,
+                format!(
+                    "#!/bin/sh\nnotify=0\nif [ \"$1\" = --fd=0 ]; then notify=1; shift; fi\n: >\"$2\"\nif [ \"$notify\" = 1 ]; then printf '%s' '{notification}' >&0; fi\nexec /usr/bin/sleep infinity\n"
+                ),
+            )
+            .unwrap();
+            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+            let socket = tmp.path().join("proxy.sock");
+            let result = spawn_dbus_proxy_within(
+                &script,
+                "unix:path=/dev/null/nope",
+                &socket,
+                Duration::from_millis(100),
+            );
+            assert!(
+                matches!(&result, Err(ProxyError::NotReady { .. })),
+                "an inode with notification {notification:?} must not admit an unready proxy"
+            );
+            assert!(!socket.exists(), "a refused helper must be cleaned up");
+        }
     }
 
     #[test]

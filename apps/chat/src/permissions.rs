@@ -22,7 +22,7 @@
 //! a restricted `PermissionContext` (a member role without the relevant grant)
 //! gates exactly the actions it should.
 
-use ui::permissions::{PermissionContext, PermissionScope, Verb};
+use ui::permissions::{ActionKind, PermissionContext, PermissionScope};
 
 use crate::call::CallAction;
 
@@ -59,8 +59,17 @@ impl ChatPermissions {
     /// can read the room can hydrate the room's verified shared bytes.
     pub fn can_embed(&self, blob: &str) -> bool {
         let valid_hash = blob.len() == 64 && blob.bytes().all(|byte| byte.is_ascii_hexdigit());
-        let valid_demo = matches!(blob, "tilo-demo://call-grid" | "tilo-demo://shared-shot");
-        (valid_hash || valid_demo) && self.ctx.check(&PermissionScope::workspace(Verb::Read))
+        let valid_demo = matches!(
+            blob,
+            crate::images::DEMO_CALL_GRID
+                | crate::images::DEMO_SHARED_SHOT
+                | crate::images::DEMO_NOTES
+                | crate::images::DEMO_CLIP
+        );
+        (valid_hash || valid_demo)
+            && self
+                .ctx
+                .check(&PermissionScope::workspace(ActionKind::Read))
     }
 
     /// May this peer post / react / join a call here? `Write` on the room (a
@@ -73,7 +82,8 @@ impl ChatPermissions {
     /// underscore. An argument that is carried and dropped is worse than one
     /// that was never asked for: it describes a boundary that does not exist.
     pub fn can_participate(&self) -> bool {
-        self.ctx.check(&PermissionScope::workspace(Verb::Write))
+        self.ctx
+            .check(&PermissionScope::workspace(ActionKind::Undoable))
     }
 
     /// Join/listen requires Read; publication requires Write. This UI check
@@ -82,7 +92,9 @@ impl ChatPermissions {
     pub fn allows(&self, action: CallAction) -> bool {
         match action {
             CallAction::Leave => true,
-            CallAction::Join => self.ctx.check(&PermissionScope::workspace(Verb::Read)),
+            CallAction::Join => self
+                .ctx
+                .check(&PermissionScope::workspace(ActionKind::Read)),
             _ => self.can_participate(),
         }
     }
@@ -91,15 +103,12 @@ impl ChatPermissions {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ui::permissions::{Actor, Role};
+    use ui::permissions::Role;
 
     /// A read-only member with no file capabilities — the restricted peer a
     /// real invite without write or file access would produce.
     fn restricted_member() -> ChatPermissions {
-        ChatPermissions::from_context(PermissionContext::from_capabilities(
-            Actor::person(Some(Role::Viewer), "u_guest"),
-            vec![],
-        ))
+        ChatPermissions::from_context(PermissionContext::member("u_guest", Role::Viewer))
     }
 
     #[test]
@@ -132,8 +141,19 @@ mod tests {
         // A member without admin still passes the View check on a workspace
         // (they can read channels) — it's Edit that's gated.
         let p = restricted_member();
-        let view_ok = p.ctx.check(&PermissionScope::workspace(Verb::Read));
+        let view_ok = p.ctx.check(&PermissionScope::workspace(ActionKind::Read));
         assert!(view_ok, "a member can read the workspace");
         assert!(!p.can_participate(), "but cannot write to it");
+    }
+
+    #[test]
+    fn the_no_access_shot_is_a_reader_the_workspace_granted_no_files() {
+        let ctx = crate::app::ChatApp::shot_permission("no-access").expect("staged context");
+        let p = ChatPermissions::from_context(ctx);
+        assert!(
+            !p.can_embed(crate::images::DEMO_CLIP),
+            "attachments stay closed"
+        );
+        assert!(crate::app::ChatApp::shot_permission("call").is_none());
     }
 }

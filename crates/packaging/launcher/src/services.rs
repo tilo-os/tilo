@@ -10,7 +10,7 @@
 //!    refusing connections, which is what a session that died without
 //!    unlinking leaves behind → log a warning, continue.
 //! 4. For sockets that exist → open the socket as a `UnixStream` and
-//!    keep it, owned, for the length of the launch. `run::place_service_fds`
+//!    keep it, owned, for the length of the launch. `run::place_child_fds`
 //!    dup2s it onto the agreed `child_fd` in the forked child, and `dup2`
 //!    leaves that copy without CLOEXEC, so it survives bwrap's exec and
 //!    the `__sandbox-exec` re-exec at that number. The app reads the
@@ -27,6 +27,11 @@
 //!
 //! The launcher receives inherited descriptors directly: this keeps the
 //! handoff local, avoids another daemon, and gives each service a fixed fd.
+
+/// Native startup protocol selector; it conveys no authority.
+pub use runtime_portal::process_binding::ENV as COLLAB_EXECUTING_PEER_ENV;
+#[cfg(target_os = "linux")]
+pub use runtime_portal::process_binding::ExecutingPeer;
 
 use std::collections::BTreeMap;
 use std::io::Write;
@@ -56,12 +61,21 @@ pub const EXIT_REQUIRED_SERVICE_MISSING: i32 = 70;
 pub const COLLAB_SERVICE: &str = "collab";
 pub const IDENTITY_SERVICE: &str = "identity";
 pub const SHELL_UI_SERVICE: &str = "shell-ui";
-/// The session shell's own file choosers, for sessions without a desktop
-/// portal (`tilo_dialogs::shell`). Not declared by manifests: every app
+/// Version of the launcher-written shell-UI authentication envelope.
+/// This names the app before descriptor handoff; it is independent of the
+/// versioned requests the authenticated app subsequently sends.
+pub const SHELL_UI_LAUNCH_PROTOCOL: u16 = 1;
+/// The session shell's authenticated file chooser (`tilo_dialogs::shell`),
+/// served alongside any desktop portal. Not declared by manifests: every app
 /// launched into a room is handed a connection naming itself and the room.
 pub const CHOOSER_SERVICE: &str = "chooser";
 const CHOOSER_PROTOCOL: u16 = 1;
 pub const COMPAT_SERVICE: &str = "compat";
+/// The system interface: the image-owned grant through which the device's
+/// control panel reaches the system services it drives
+/// ([`crate::system_authority`]). Declared like a service so a package names
+/// the version it was built against, but it has no socket.
+pub const SYSTEM_SERVICE: &str = "system";
 /// Hosted model planning is performed by this per-user, desktop-owned
 /// gateway. The launcher authenticates the consuming package before handing
 /// it the connected descriptor, so a same-UID process cannot manufacture a
@@ -101,14 +115,20 @@ const CHOOSER_CHILD_FD: i32 = 32;
 /// services are handed on, so no service can replace a filter.
 pub(crate) const CLONE3_COMPAT_SECCOMP_CHILD_FD: i32 = 40;
 pub(crate) const BASELINE_SECCOMP_CHILD_FD: i32 = 41;
+/// Synthetic sandbox account file, consumed by bwrap before app execution.
+pub(crate) const ACCOUNT_CHILD_FD: i32 = 42;
+/// Bwrap private-service namespace information, closed before app execution.
+pub(crate) const SERVICE_NAMESPACE_CHILD_FD: i32 = 43;
 /// Every fixed child slot; declared services are numbered around them.
-pub(crate) const RESERVED_CHILD_FDS: [i32; 6] = [
+pub(crate) const RESERVED_CHILD_FDS: [i32; 8] = [
     runtime_identity::broker::BROKER_CHILD_FD,
     BLOB_CHILD_FD,
     IDENTITY_CHILD_FD,
     CHOOSER_CHILD_FD,
     CLONE3_COMPAT_SECCOMP_CHILD_FD,
     BASELINE_SECCOMP_CHILD_FD,
+    ACCOUNT_CHILD_FD,
+    SERVICE_NAMESPACE_CHILD_FD,
 ];
 const STORE_APP_ID: &str = "so.tilo.store";
 pub const APP_HOST_LAUNCH_MAGIC: [u8; 4] = *b"QAH1";
@@ -121,9 +141,15 @@ const COMPAT_PROTOCOL_VERSION: u16 = 1;
 pub const COMPAT_HANDOFF_FRAMING: Framing = Framing::little_endian(4 * 1024).reject_empty();
 /// The model gateway's handoff: a little-endian `u32` length, then JSON.
 const MODEL_GATEWAY_HANDOFF_FRAMING: Framing = Framing::little_endian(4 * 1024);
-/// The collaboration launch preamble (magic + protocol version) is shared
-/// with the broker through `collab-types`.
-pub use collab_types::local_transport::{COLLAB_LAUNCH_MAGIC, COLLAB_LAUNCH_PROTOCOL_VERSION};
+/// Length-prefixed launcher handoff consumed before Cap'n Proto starts on a
+/// collaboration descriptor. The broker binds it to `SO_PEERCRED` and a
+/// compositor-created one-shot launch record.
+pub const COLLAB_LAUNCH_PROTOCOL_VERSION: u16 = 1;
+/// Prefix that separates a launcher-authenticated connection from a raw
+/// Cap'n Proto diagnostic client. It is deliberately not an authority: the
+/// broker still verifies the peer process against the compositor's one-shot
+/// record before it accepts the following frame.
+pub const COLLAB_LAUNCH_MAGIC: [u8; 4] = *b"QCL1";
 /// After [`COLLAB_LAUNCH_MAGIC`]: a little-endian `u32` length, then the JSON
 /// handoff. It is deliberately tiny: it only binds a socket to the shell's
 /// already-created process record, while the certificate the app presents
@@ -199,7 +225,7 @@ pub struct ServiceLaunchContext<'a> {
 
 /// Discover `$XDG_RUNTIME_DIR/tilo/services/`.
 pub fn services_root() -> PathBuf {
-    let runtime = xdg_paths::xdg::runtime_dir().unwrap_or_else(|| {
+    let runtime = tilo_paths::xdg::runtime_dir().unwrap_or_else(|| {
         let uid = unsafe { libc::geteuid() };
         PathBuf::from(format!("/run/user/{uid}"))
     });
@@ -235,6 +261,7 @@ pub fn identity_socket() -> PathBuf {
 pub fn authenticate_shell_ui_bind(
     resolved: &[ResolvedService],
     app_id: &str,
+    egress: &crate::netgate::EgressDecision,
 ) -> Result<(), ServiceError> {
     let Some(service) = resolved
         .iter()
@@ -254,8 +281,9 @@ pub fn authenticate_shell_ui_bind(
         })?;
     let mut stream = UnixStream::from(owned);
     let mut frame = serde_json::to_vec(&serde_json::json!({
-        "protocol": 1,
+        "protocol": SHELL_UI_LAUNCH_PROTOCOL,
         "app_id": app_id,
+        "network_status_allowed": !matches!(egress, crate::netgate::EgressDecision::Blocked),
     }))
     .map_err(|error| ServiceError::OpenFailed {
         path: path.clone(),
@@ -300,18 +328,7 @@ pub fn resolve_identity_bind(
             return Ok(None);
         }
     };
-    let handshake = serde_json::json!({
-        "workspace_id": workspace_id,
-        "app_id": app_id,
-    });
-    let bytes = serde_json::to_vec(&handshake).map_err(|error| ServiceError::OpenFailed {
-        path: path.clone(),
-        source: std::io::Error::new(std::io::ErrorKind::InvalidData, error),
-    })?;
-    runtime_identity::wire::HANDSHAKE_FRAMING
-        .write(&mut stream, &bytes)
-        .map_err(std::io::Error::from)
-        .and_then(|()| stream.flush())
+    write_identity_handshake(&mut stream, app_id, workspace_id)
         .map_err(|source| ServiceError::OpenFailed { path, source })?;
     Ok(Some(ResolvedService {
         name: IDENTITY_SERVICE.to_string(),
@@ -320,6 +337,28 @@ pub fn resolve_identity_bind(
         // a reserved slot so it cannot collide as the manifest evolves.
         child_fd: IDENTITY_CHILD_FD,
     }))
+}
+
+/// Name the app and room an identity connection signs for, as the first
+/// thing on it.
+///
+/// # Errors
+/// The stream refuses the write.
+pub fn write_identity_handshake(
+    stream: &mut UnixStream,
+    app_id: &str,
+    workspace_id: &str,
+) -> std::io::Result<()> {
+    let handshake = serde_json::json!({
+        "workspace_id": workspace_id,
+        "app_id": app_id,
+    });
+    let bytes = serde_json::to_vec(&handshake)
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+    runtime_identity::wire::HANDSHAKE_FRAMING
+        .write(stream, &bytes)
+        .map_err(std::io::Error::from)?;
+    stream.flush()
 }
 
 /// The first line the launcher writes on a chooser connection: the app and
@@ -341,8 +380,8 @@ pub fn chooser_handshake(app_id: &str, workspace_id: &str) -> serde_json::Result
 /// Connect the session shell's chooser service on the app's behalf and name
 /// the app and its room before the sandboxed app can write to it.
 ///
-/// A launch outside a room, or a session whose shell serves no chooser (it
-/// has a desktop portal), degrades to `Ok(None)`.
+/// A launch outside a room, or a session whose shell serves no chooser,
+/// degrades to `Ok(None)`.
 ///
 /// # Errors
 ///
@@ -445,12 +484,25 @@ fn resolve_blob_bind_at(
         tracing::warn!(app_id, room, "no document media scope for this launch");
         return Ok(None);
     }
-    if !path.exists() {
-        tracing::warn!(
-            path = %path.display(),
-            "document media service is unavailable; the app keeps media in memory"
-        );
-        return Ok(None);
+    // Say which: a missing socket is the media service not running, a
+    // refused lookup is this person not being allowed to reach it.
+    match std::fs::symlink_metadata(path) {
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            tracing::warn!(
+                path = %path.display(),
+                "document media service is not running; the app keeps media in memory"
+            );
+            return Ok(None);
+        }
+        Err(error) => {
+            tracing::warn!(
+                %error,
+                path = %path.display(),
+                "document media service is out of this person's reach; the app keeps media in memory"
+            );
+            return Ok(None);
+        }
     }
     let mut stream = match UnixStream::connect(path) {
         Ok(stream) => stream,
@@ -578,7 +630,7 @@ fn authenticate_service(
             return handoff_failure(required, error, "optional workspace service skipped");
         };
         let result = if name == COLLAB_SERVICE {
-            write_collab_handoff(stream, launch.app_id, workspace_id).map_err(|source| {
+            write_collab_executing_handoff(stream, launch.app_id, workspace_id).map_err(|source| {
                 ServiceError::CollabHandoffFailed {
                     path: path.to_path_buf(),
                     source,
@@ -689,6 +741,9 @@ fn resolve_service_binds_inner(
     for (name, raw_req) in services {
         let req = ServiceReq::parse(raw_req)
             .map_err(|e| ServiceError::BadRequirement(raw_req.clone(), e))?;
+        if name == SYSTEM_SERVICE {
+            continue;
+        }
         let path = socket_for(name);
 
         if name == APP_HOST_SERVICE && context.is_none_or(|launch| launch.app_id != STORE_APP_ID) {
@@ -768,7 +823,12 @@ fn resolve_service_binds_inner(
     Ok(out)
 }
 
-fn write_collab_handoff(
+/// Name the app and room a collaboration connection is for, as the first
+/// thing on it: what the broker attests against the shell's launch record.
+///
+/// # Errors
+/// The stream refuses the write.
+pub fn write_collab_handoff(
     stream: &mut UnixStream,
     app_id: &str,
     workspace_id: &str,
@@ -784,6 +844,32 @@ fn write_collab_handoff(
     stream.write_all(&COLLAB_LAUNCH_MAGIC)?;
     stream.write_all(&frame)?;
     stream.flush()
+}
+
+/// Request exact executing-task custody on the existing collaboration socket.
+/// The original launcher handoff remains the sole application/room admission.
+/// # Errors
+/// The stream refuses the write.
+pub fn write_collab_executing_handoff(
+    stream: &mut UnixStream,
+    app_id: &str,
+    workspace_id: &str,
+) -> std::io::Result<()> {
+    #[cfg(not(target_os = "linux"))]
+    return write_collab_handoff(stream, app_id, workspace_id);
+    #[cfg(target_os = "linux")]
+    {
+        let bytes = serde_json::to_vec(&serde_json::json!({
+            "protocol": COLLAB_LAUNCH_PROTOCOL_VERSION,
+            "app_id": app_id,
+            "workspace_id": workspace_id,
+            "executing_peer": true,
+        }))
+        .map_err(std::io::Error::other)?;
+        stream.write_all(&COLLAB_LAUNCH_MAGIC)?;
+        COLLAB_LAUNCH_FRAMING.write(stream, &bytes)?;
+        stream.flush()
+    }
 }
 
 fn write_compat_handoff(
@@ -824,6 +910,79 @@ pub fn to_service_binds(resolved: &[ResolvedService]) -> Vec<crate::sandbox::Ser
             child_fd: s.child_fd,
         })
         .collect()
+}
+
+#[cfg(test)]
+mod image_interface_tests {
+    use super::*;
+
+    /// The image's preinstalled copy of an app is the fallback for an update
+    /// the OS cannot serve, so it must always fit the image it ships in:
+    /// every app in the repository requires only interfaces the image's
+    /// declaration serves, and the declaration names every service a
+    /// manifest can be handed.
+    #[test]
+    fn every_shipped_app_fits_the_interfaces_the_image_declares() {
+        let repo = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .ancestors()
+            .nth(3)
+            .expect("workspace root above crates/packaging/launcher");
+        let provided = package_store::interfaces::read_interfaces(
+            &repo.join("os/usr/share/tilo/system-interfaces.toml"),
+        )
+        .expect("the image's declaration parses")
+        .expect("the image declares its interfaces");
+
+        for service in [
+            COLLAB_SERVICE,
+            IDENTITY_SERVICE,
+            SHELL_UI_SERVICE,
+            COMPAT_SERVICE,
+            SYSTEM_SERVICE,
+            MODEL_GATEWAY_SERVICE,
+            APP_HOST_SERVICE,
+            USH_SERVICE,
+            "tools",
+            "models",
+            "tilo-fs",
+        ] {
+            assert!(
+                !provided.versions(service).is_empty(),
+                "the image does not declare the {service} interface"
+            );
+        }
+
+        let mut checked = 0;
+        for entry in std::fs::read_dir(repo.join("apps")).expect("apps/ readable") {
+            let path = entry.expect("dir entry").path().join("tilo-app.toml");
+            let Ok(raw) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            let manifest = tilo_app_package::Manifest::from_toml_str(&raw)
+                .unwrap_or_else(|e| panic!("{} does not parse: {e}", path.display()));
+            let unmet = provided.unmet(&manifest.required_interfaces());
+            assert!(
+                unmet.is_empty(),
+                "{} requires {}",
+                path.display(),
+                tilo_app_package::interfaces::describe_unmet(&unmet)
+            );
+            checked += 1;
+        }
+        assert!(checked > 40, "only {checked} app manifests found");
+
+        let settings = tilo_app_package::Manifest::from_toml_str(
+            &std::fs::read_to_string(repo.join("apps/settings/tilo-app.toml")).unwrap(),
+        )
+        .unwrap();
+        assert!(
+            settings
+                .required_interface_wire()
+                .iter()
+                .any(|requirement| requirement.starts_with("system@")),
+            "Settings names the system interface it was built against"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -1054,7 +1213,7 @@ mod tests {
                     Some("room-7"),
                     false
                 )
-                .expect("a shell with a portal serves no chooser")
+                .expect("an absent chooser service gives no connection")
                 .is_none()
             );
         }
@@ -1109,15 +1268,27 @@ mod tests {
                 std::os::unix::net::UnixListener::bind(root.join("shell-ui.sock")).unwrap();
             let mut services = BTreeMap::new();
             services.insert(SHELL_UI_SERVICE.to_string(), "optional@1".to_string());
-            let resolved = resolve_service_binds(&services, false).unwrap();
-            authenticate_shell_ui_bind(&resolved, "so.tilo.chat").unwrap();
+            for (mode, hosts, allowed) in [
+                ("off", Vec::new(), false),
+                ("host", Vec::new(), true),
+                ("allowlist", vec!["example.com".to_owned()], true),
+                ("allowlist", Vec::new(), false),
+            ] {
+                let egress = crate::netgate::EgressDecision::resolve(mode, &hosts, &[]);
+                let resolved = resolve_service_binds(&services, false).unwrap();
+                authenticate_shell_ui_bind(&resolved, "so.tilo.chat", &egress).unwrap();
 
-            let (stream, _) = listener.accept().unwrap();
-            let mut line = String::new();
-            BufReader::new(stream).read_line(&mut line).unwrap();
-            let handshake: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
-            assert_eq!(handshake["protocol"], 1);
-            assert_eq!(handshake["app_id"], "so.tilo.chat");
+                let (stream, _) = listener.accept().unwrap();
+                let mut line = String::new();
+                BufReader::new(stream).read_line(&mut line).unwrap();
+                let handshake: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
+                assert_eq!(handshake["protocol"], SHELL_UI_LAUNCH_PROTOCOL);
+                assert_eq!(handshake["app_id"], "so.tilo.chat");
+                assert_eq!(
+                    handshake["network_status_allowed"], allowed,
+                    "{mode}: {hosts:?}"
+                );
+            }
         }
     }
 
@@ -1384,7 +1555,7 @@ mod tests {
             let resolved = resolve_service_binds(&svcs, false).expect("a live socket resolves");
             let (mut served, _) = listener.accept().expect("the connection has to arrive");
 
-            // What `place_service_fds` makes on the other side of the fork:
+            // What `place_child_fds` makes on the other side of the fork:
             // another descriptor on the same socket. It stands in for the app.
             let app_copy = unsafe {
                 let raw = libc::dup(resolved[0].host_fd());

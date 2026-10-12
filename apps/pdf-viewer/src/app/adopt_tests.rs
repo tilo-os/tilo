@@ -5,15 +5,14 @@
 use automerge::AutoCommit;
 use tilo_automerge::ApplyIncoming;
 use ui::Widget;
+use ui::widget::Edits;
 
 use super::*;
-use crate::doc::PdfDoc;
+use crate::markup::PdfMarkup;
 use crate::model::FormEntry;
 
 fn engine_fixture(name: &str) -> std::path::PathBuf {
-    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../crates/platform/tilo-pdf/tests/fixtures")
-        .join(name)
+    std::path::Path::new(env!("OUT_DIR")).join(name)
 }
 
 /// The fixture page the tests mark up (`multipage.pdf`'s second page).
@@ -128,13 +127,11 @@ fn open(path: &std::path::Path) -> Option<(PdfApp, ui::State)> {
     let mut app = PdfApp::open(path);
     app.raster.as_ref()?;
     let mut state = ui::State::new();
-    let checkout = ui::record::capability::record_intent(&app).expect("a markup record");
-    ui::RecordSet::in_memory().checkout(&mut state, None, &checkout);
-    app.sync(&mut state.doc, &state.root);
+    app.sync_settled(&mut state.doc, &state.root);
     app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
     app.recompute_regions();
     app.sync_viewport_frame();
-    app.sync(&mut state.doc, &state.root);
+    app.sync_settled(&mut state.doc, &state.root);
     Some((app, state))
 }
 
@@ -175,7 +172,7 @@ fn file_markup_and_form_values_are_adopted_once_and_exported_without_duplicates(
         let doc = &mut state.doc;
 
         // First open: every piece of markup became a record.
-        let annotations = PdfDoc::list_annotations(doc);
+        let annotations = PdfMarkup::of(doc).list_annotations();
         assert_eq!(annotations.len(), 4, "{annotations:#?}");
         let kinds: Vec<&str> = annotations.iter().map(|a| a.kind.type_key()).collect();
         for kind in ["highlight", "note", "freetext", "ink"] {
@@ -200,7 +197,7 @@ fn file_markup_and_form_values_are_adopted_once_and_exported_without_duplicates(
             .find(|a| matches!(a.kind, AnnoKind::FreeText { .. }))
             .unwrap();
         assert!(matches!(&free.kind, AnnoKind::FreeText { text, .. } if text == "See chapter two"));
-        let comments = PdfDoc::list_comments(doc);
+        let comments = PdfMarkup::of(doc).list_comments();
         let note_id = annotations
             .iter()
             .find(|a| matches!(a.kind, AnnoKind::Note { .. }))
@@ -228,19 +225,22 @@ fn file_markup_and_form_values_are_adopted_once_and_exported_without_duplicates(
         // A second open of the same record imports nothing again.
         app.existing_request = None;
         app.sync(doc, &state.root);
-        assert_eq!(PdfDoc::list_annotations(doc).len(), 4);
+        assert_eq!(PdfMarkup::of(doc).list_annotations().len(), 4);
 
         // Edit: answer the note, rewrite its text, delete the free text; leave
         // the highlight and ink alone.
         app.perform_action(
-            doc,
-            &crate::actions::add_reply_action_with_id(&thread.id, "reply-new", "Cy", "Done"),
+            &mut Edits::lend(doc),
+            crate::actions::add_reply_action_with_id(&thread.id, "reply-new", "Done"),
         );
         app.perform_action(
-            doc,
-            &crate::actions::set_comment_body_action(&thread.id, "Check this again"),
+            &mut Edits::lend(doc),
+            crate::actions::set_comment_body_action(&thread.id, "Check this again"),
         );
-        app.perform_action(doc, &crate::actions::delete_annotation_action(&free.id));
+        app.perform_action(
+            &mut Edits::lend(doc),
+            crate::actions::delete_annotation_action(&free.id),
+        );
         app.reload(doc);
 
         let out = dir.path().join("exported.pdf");
@@ -276,7 +276,8 @@ fn file_markup_and_form_values_are_adopted_once_and_exported_without_duplicates(
         assert!(
             replies
                 .iter()
-                .any(|r| r.author == "Cy" && r.contents == "Done")
+                .any(|r| r.author == "test-author" && r.contents == "Done"),
+            "a reply is signed by whoever wrote it"
         );
         // Unchanged markup keeps its original object.
         let original = engine.open_bytes(&std::fs::read(&path).unwrap()).unwrap();
@@ -291,9 +292,9 @@ fn file_markup_and_form_values_are_adopted_once_and_exported_without_duplicates(
         let Some((_again, state2)) = open(&out) else {
             break 'phase;
         };
-        let imported = PdfDoc::list_annotations(&state2.doc);
+        let imported = PdfMarkup::of(&state2.doc).list_annotations();
         assert_eq!(imported.len(), 3, "{imported:#?}");
-        let threads = PdfDoc::list_comments(&state2.doc);
+        let threads = PdfMarkup::of(&state2.doc).list_comments();
         let note_thread = threads
             .iter()
             .find(|c| c.body == "Check this again")
@@ -311,7 +312,7 @@ fn file_markup_and_form_values_are_adopted_once_and_exported_without_duplicates(
             break 'phase;
         };
         let doc = &mut state.doc;
-        let values = PdfDoc::form_values(doc);
+        let values = PdfMarkup::of(doc).form_values;
         assert_eq!(values.get("name"), Some(&FormEntry::Text("Ada".into())));
         assert_eq!(values.get("colour"), Some(&FormEntry::Choice("Red".into())));
         assert_eq!(
@@ -321,8 +322,8 @@ fn file_markup_and_form_values_are_adopted_once_and_exported_without_duplicates(
         );
 
         app.perform_action(
-            doc,
-            &crate::actions::set_form_value_action("name", &FormEntry::Text("Grace Hopper".into())),
+            &mut Edits::lend(doc),
+            crate::actions::set_form_value_action("name", &FormEntry::Text("Grace Hopper".into())),
         );
         app.reload(doc);
         let out = dir.path().join("filled.pdf");
@@ -351,34 +352,39 @@ fn file_markup_and_form_values_are_adopted_once_and_exported_without_duplicates(
             },
             "source-1".into(),
         ));
-        let mut base = AutoCommit::new();
-        PdfDoc::ensure_page_plan(&mut base, 2);
-        base.commit();
-        let bytes = base.save();
+        let bytes = PdfMarkup::planned(2);
         let mut left = AutoCommit::load(&bytes).unwrap();
         let mut right = AutoCommit::load(&bytes).unwrap();
         // Two peers open the same bytes at once and both take the markup over.
-        PdfDoc::import_existing(&mut left, &hash, &plan);
-        PdfDoc::import_existing(&mut right, &hash, &plan);
+        let import = || crate::actions::import_existing_action(&hash, &plan);
+        PdfMarkup::apply_to(&mut left, import());
+        PdfMarkup::apply_to(&mut right, import());
         left.merge_incoming(&mut right).unwrap();
         assert_eq!(
-            PdfDoc::list_annotations(&left).len(),
+            PdfMarkup::of(&left).list_annotations().len(),
             1,
             "one record, not two"
         );
         assert_eq!(
-            PdfDoc::imported_source(&left).as_deref(),
+            PdfMarkup::of(&left)
+                .imported_source()
+                .map(str::to_owned)
+                .as_deref(),
             Some(hash.as_str())
         );
         // Importing the same source again is a no-op, even after a deletion.
-        let id = PdfDoc::list_annotations(&left)[0].id.clone();
-        PdfDoc::delete_annotation(&mut left, &id);
-        PdfDoc::import_existing(&mut left, &hash, &plan);
+        let id = PdfMarkup::of(&left).list_annotations()[0].id.clone();
+        PdfMarkup::apply_to(&mut left, crate::actions::delete_annotation_action(&id));
+        PdfMarkup::apply_to(&mut left, import());
         assert!(
-            PdfDoc::list_annotations(&left).is_empty(),
+            PdfMarkup::of(&left).list_annotations().is_empty(),
             "a deletion sticks"
         );
-        assert_eq!(PdfDoc::adopted(&left).len(), 0, "this plan adopted nothing");
+        assert_eq!(
+            PdfMarkup::of(&left).adopted_entries().len(),
+            0,
+            "this plan adopted nothing"
+        );
     }
 }
 
@@ -400,7 +406,7 @@ fn authored_free_text_and_typed_signatures_export_with_embedded_appearances() {
         };
         let doc = &mut state.doc;
         app.set_tool(Tool::Text);
-        app.create_free_text(doc, 1, (30.0, 120.0));
+        app.create_free_text(&mut Edits::lend(doc), 1, (30.0, 120.0));
         assert!(
             matches!(&app.editing, Some(e) if matches!(e.target, EditTarget::FreeText(_))),
             "a new box opens for typing"
@@ -409,8 +415,8 @@ fn authored_free_text_and_typed_signatures_export_with_embedded_appearances() {
             .as_mut()
             .unwrap()
             .set_text("Überprüfen — 検討してください");
-        app.commit_edit(doc);
-        let stored = PdfDoc::list_annotations(doc);
+        app.commit_edit(&mut Edits::lend(doc));
+        let stored = PdfMarkup::of(doc).list_annotations();
         let free = stored
             .iter()
             .find(|a| matches!(a.kind, AnnoKind::FreeText { .. }))
@@ -424,7 +430,7 @@ fn authored_free_text_and_typed_signatures_export_with_embedded_appearances() {
         let id = free.id.clone();
         let before = app.note_pos(&id).unwrap();
         app.move_note_local(&id, before.0 + 20.0, before.1 + 10.0);
-        app.persist_free_text_box(doc, &id);
+        app.persist_free_text_box(&mut Edits::lend(doc), &id);
         app.reload(doc);
         let after = app.note_pos(&id).unwrap();
         assert!(
@@ -432,7 +438,7 @@ fn authored_free_text_and_typed_signatures_export_with_embedded_appearances() {
         );
         // A larger size.
         app.selected_anno = Some(id.clone());
-        app.resize_free_text(doc, &id, 4.0);
+        app.resize_free_text(&mut Edits::lend(doc), &id, 4.0);
 
         let out = dir.path().join("with-text.pdf");
         assert!(app.save_annotated_to(&out), "{:?}", app.status_note);
@@ -494,8 +500,8 @@ fn authored_free_text_and_typed_signatures_export_with_embedded_appearances() {
         };
         let user = app.page_map(1).signature_to_user(&signature);
         app.perform_action(
-            doc,
-            &crate::actions::add_signature_on(&user, Some("source-1")),
+            &mut Edits::lend(doc),
+            crate::actions::add_signature_on(&user, "source-1"),
         );
         app.reload(doc);
         let out = dir.path().join("signed.pdf");

@@ -207,7 +207,7 @@ class Session:
 def open_app(s: Session, query: str, package_id: str, timeout=120.0) -> bool:
     """Open one app the way a person does: palette, name, Enter."""
     s.modifiers(logo=True)
-    s.key("k")
+    s.key("Space")
     s.modifiers()
     time.sleep(0.6)
     if s.palette().get("visible") is not True:

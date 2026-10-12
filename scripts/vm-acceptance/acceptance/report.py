@@ -48,6 +48,7 @@ def _markdown(meta, summary, results, owners, overall) -> str:
         ("Disk", f"`{p.get('disk')}`"),
         ("Built from", _compact(p.get("record"), 400)),
         ("Booted image digest", f"`{p.get('booted_digest')}`"),
+        ("Swapped in", _swapped(p.get("swap"))),
         ("VM", f"{meta.get('vm')} ({meta.get('vm_memory_mb')} MiB, {meta.get('vm_cpus')} vCPU, gl={meta.get('gl')})"),
         ("Slot", f"{meta.get('slot')} headful, outputs {', '.join(meta.get('outputs', []))}"),
         ("Renderer", str(meta.get("renderer"))),
@@ -84,6 +85,14 @@ def _markdown(meta, summary, results, owners, overall) -> str:
             L.append(f"| {r.id} {r.title} | {'✅ pass' if r.status == 'pass' else '❌ fail'} | {det} | {num} | {ev} |")
         L.append("")
     return "\n".join(L) + "\n"
+
+
+def _swapped(swap) -> str:
+    if not swap:
+        return "nothing: the disk's image as built"
+    parts = [f"{c['component']} → {c['slot']}" + (f" (failed: {c['error']})" if c.get("error") else "")
+             for c in swap["components"]]
+    return f"from `{swap['ref']}` (`{swap['commit'][:12]}`): " + ", ".join(parts)
 
 
 def owners_from(arg: str | None) -> dict:

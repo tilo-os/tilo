@@ -141,11 +141,143 @@ impl FrameHarness {
         crate::action_locus::interaction_bounds(&tree, &bindings, interaction)
     }
 
-    fn retained_action_geometry(
+    /// Resolve only a currently mounted publication owner, exact app instance
+    /// and record. The alias is never decoded without its host/lifetime registry.
+    /// Reads the retained frame without input, wake draining or document edits.
+    pub fn published_action_locus(
         &self,
-    ) -> Option<(SemanticTree, Vec<crate::widget::ControlBindingMetadata>)> {
+        instance: crate::application::InstanceId,
+        app: &str,
+        record: &str,
+        address: &tilo_actions::ActionAddress,
+    ) -> Option<Rect> {
+        if !self.action_geometry_visible() {
+            return None;
+        }
+        let target = self.bound_publication.target(address).ok()??;
+        if target.binding.instance_id != instance
+            || target.binding.app_id != app
+            || target.binding.checkout.id.as_str() != record
+        {
+            return None;
+        }
+        let snapshots = crate::bound_dispatch::discover_bound_resources(
+            self.root.as_ref(),
+            &self.state.doc,
+            None,
+        )
+        .ok()?;
+        let snapshot = snapshots
+            .iter()
+            .find(|s| s.binding.same_component(&target.binding))?;
+        let mut result = Vec::new();
+        self.visit_publication_locus(
+            self.root.as_ref(),
+            &target,
+            snapshot.resources(),
+            &mut result,
+        );
+        if result.len() == 1 {
+            result.pop().flatten()
+        } else {
+            None
+        }
+    }
+
+    fn visit_publication_locus(
+        &self,
+        widget: &dyn crate::widget::Widget,
+        target: &crate::bound_dispatch::BoundActionTarget,
+        resources: &[tilo_actions::Resource],
+        result: &mut Vec<Option<Rect>>,
+    ) {
+        if widget
+            .callback_binding()
+            .is_some_and(|b| b.same_component(&target.binding))
+        {
+            // Nested foreign owners cannot contribute a same-named control.
+            // Their independent geometry must be observed through their own alias.
+            fn foreign_owner(
+                widget: &dyn crate::widget::Widget,
+                owner: &crate::bound_dispatch::CallbackBinding,
+            ) -> bool {
+                if widget
+                    .callback_binding()
+                    .is_some_and(|b| !b.same_component(owner))
+                {
+                    return true;
+                }
+                let mut foreign = false;
+                widget.for_each_child(&mut |child| {
+                    foreign |= foreign_owner(child, owner);
+                });
+                foreign
+            }
+            if foreign_owner(widget, &target.binding) {
+                result.push(None);
+                return;
+            }
+            let mut tree = SemanticTree::new();
+            tree.refresh_bound(
+                widget,
+                &self.node_map,
+                &self.bindings.semantic_node_names(&self.node_map),
+                self.focused,
+                resources,
+            );
+            let bindings = crate::widget::controls::control_action_bindings(widget);
+            result.push(
+                crate::action_locus::resource_bounds(&tree, &bindings, &target.address.address)
+                    .and_then(|(bounds, node)| self.clipped_publication_bounds(bounds, node)),
+            );
+            return;
+        }
+        widget.for_each_child(&mut |child| {
+            self.visit_publication_locus(child, target, resources, result);
+        });
+    }
+
+    fn clipped_publication_bounds(&self, bounds: Rect, node: u64) -> Option<Rect> {
+        let pointer = *self.node_map.get(&taffy::NodeId::from(node))?;
+        fn visit(
+            widget: &dyn crate::widget::Widget,
+            pointer: *const dyn crate::widget::Widget,
+            bounds: Rect,
+            matches: &mut Vec<Rect>,
+        ) {
+            if std::ptr::addr_eq(std::ptr::from_ref(widget), pointer) {
+                matches.push(bounds);
+                return;
+            }
+            // Painting clips ordinary children, including ancestors outside
+            // the publication owner. Use the retained widget path, not just
+            // the semantic path (which omits non-accessible wrappers).
+            let bounds = if let Some(clip) = widget.child_clip_rect() {
+                if ![clip.x0, clip.y0, clip.x1, clip.y1]
+                    .into_iter()
+                    .all(f64::is_finite)
+                    || clip.width() <= 0.0
+                    || clip.height() <= 0.0
+                {
+                    return;
+                }
+                bounds.intersect(clip)
+            } else {
+                bounds
+            };
+            if bounds.width() <= 0.0 || bounds.height() <= 0.0 {
+                return;
+            }
+            widget.for_each_child(&mut |child| visit(child, pointer, bounds, matches));
+        }
+        let mut matches = Vec::new();
+        visit(self.root.as_ref(), pointer, bounds, &mut matches);
+        (matches.len() == 1).then(|| matches[0])
+    }
+
+    fn action_geometry_visible(&self) -> bool {
         // A system surface hiding the app cannot expose its background locus.
-        if self.system_search_presentation().is_some()
+        !(self.system_search_presentation().is_some()
             || self.caller_palette.palette.is_some()
             || self
                 .history
@@ -157,8 +289,13 @@ impl FrameHarness {
             || self
                 .action_palette
                 .as_deref()
-                .is_some_and(|palette| palette.is_presented())
-        {
+                .is_some_and(|palette| palette.is_presented()))
+    }
+
+    pub(super) fn retained_action_geometry(
+        &self,
+    ) -> Option<(SemanticTree, Vec<crate::widget::ControlBindingMetadata>)> {
+        if !self.action_geometry_visible() {
             return None;
         }
         let mut resources = Vec::new();
@@ -207,20 +344,6 @@ impl FrameHarness {
                 }
             })
             .collect()
-    }
-
-    /// Where the control a projected `ui:` resource names is on the surface.
-    pub fn projected_control_bounds(&self, resource: &str) -> Option<Rect> {
-        let id = resource
-            .strip_prefix(CONTROL_RESOURCE_PREFIX)
-            .and_then(|encoded| {
-                percent_encoding::percent_decode_str(encoded)
-                    .decode_utf8()
-                    .ok()
-            })?;
-        self.semantic_tree()
-            .node(&SemanticId(id.into_owned()))?
-            .bounds
     }
 
     /// The control `id` names, if the current frame has it.
@@ -443,9 +566,19 @@ impl FrameHarness {
         let handled = self
             .dispatch_semantic_node(owner, verb, |widget, doc, root| {
                 if let Some(key_path) = &key_path {
-                    widget.perform_action_at(verb, key_path, doc, root)
+                    widget.perform_action(
+                        verb,
+                        key_path,
+                        &mut crate::widget::Edits::lend(doc),
+                        root,
+                    )
                 } else {
-                    widget.perform_semantic_action(&semantic_target, verb, doc, root)
+                    widget.perform_semantic_action(
+                        &semantic_target,
+                        verb,
+                        &mut crate::widget::Edits::lend(doc),
+                        root,
+                    )
                 }
             })
             .map_err(|error| format!("component dispatch refused: {error:?}"))?;
@@ -511,12 +644,12 @@ mod locus_tests {
         let calls = Rc::new(Cell::new(0));
         let mut column = Column::new();
         for id in ["first", "second"] {
-            let mut resource = resource_actions::resource(id, "Same label", "edit", "Edit", false);
+            let mut resource = resource_actions::resource(id, "Same label", "edit", "Edit");
             resource.id = tilo_actions::ResourceId::new(id);
             let binding = tilo_actions::ActionBinding::unit_for(&resource, "edit").unwrap();
             let counter = calls.clone();
             column = column.push(resource_actions::immediate(
-                Box::new(Button::new(id, "Same label", None).on_action(binding)),
+                Box::new(Button::new(id, "Same label").on_action(binding)),
                 resource,
                 move |_| {
                     counter.set(counter.get() + 1);
@@ -537,7 +670,8 @@ mod locus_tests {
             sequence: 1,
             actor: tilo_actions::InteractionActor {
                 id: "synthetic-test-only".into(),
-                kind: tilo_actions::InteractionActorKind::Person,
+                kind: tilo_actions::ActorKind::Person,
+                for_person: None,
             },
             phase: tilo_actions::InteractionPhase::Applying,
             action: tilo_actions::InteractionAction {
@@ -552,6 +686,150 @@ mod locus_tests {
             },
             anchor: tilo_actions::InteractionAnchor::Resource,
             group: None,
+        }
+    }
+
+    #[test]
+    fn agent_marker_projects_real_action_without_reinvoking_and_retires_when_idle() {
+        for (viewport, reduced_motion) in [
+            ((1600, 900), false),
+            ((800, 600), false),
+            ((1600, 900), true),
+            ((800, 600), true),
+        ] {
+            let (mut frame, calls) = fixture();
+            let mut theme = frame.theme().clone();
+            theme.reduce_motion = reduced_motion;
+            frame.set_theme(theme);
+            frame.resize(viewport).unwrap();
+            frame
+                .invoke_action(
+                    &tilo_actions::ActionAddress::new("first", "edit"),
+                    &serde_json::Map::new(),
+                    false,
+                    None,
+                )
+                .unwrap();
+            assert_eq!(calls.get(), 1, "the actual semantic executor ran once");
+            let mut event = interaction("first");
+            event.actor.kind = tilo_actions::ActorKind::Agent;
+            let now = crate::time::now();
+            frame.update_presence(|presence| {
+                presence.apply_interaction_at(event.clone(), now).unwrap()
+            });
+            assert!(frame.poll_frame().unwrap());
+            assert_eq!(frame.semantic_locus(&event), Some(frame.targets()["first"]));
+            assert_eq!(
+                frame.frame_schedule().needs_animation_frame,
+                !reduced_motion
+            );
+            assert_eq!(
+                calls.get(),
+                1,
+                "painting is not a pointer click or an action"
+            );
+
+            // Observe already-settled host activity: no widget or input event
+            // is needed to keep its expiry deadline alive.
+            let mut presence = crate::presence::PresenceCtx::empty();
+            presence
+                .apply_interaction_at(
+                    event.clone(),
+                    now.checked_sub(crate::time::Duration::from_secs(2))
+                        .unwrap(),
+                )
+                .unwrap();
+            frame.set_presence_context(presence);
+            let schedule = frame.frame_schedule();
+            assert!(!schedule.needs_animation_frame, "settled dwell must sleep");
+            assert!(schedule.next_wake_deadline.is_some_and(|at| at > now));
+
+            // A discrete idle wake must clear an expired frame, including
+            // reduced-motion hosts which never have an animation pump.
+            let expired = now
+                .checked_sub(crate::time::Duration::from_secs(16))
+                .unwrap();
+            let mut terminal = event.clone();
+            terminal.sequence = 2;
+            terminal.phase = tilo_actions::InteractionPhase::Committed;
+            let mut expired_presence = crate::presence::PresenceCtx::empty();
+            expired_presence
+                .apply_interaction_at(terminal, expired)
+                .unwrap();
+            *frame.presence_mut() = expired_presence;
+            assert!(
+                !frame.frame_schedule().queued_work,
+                "no input/redraw notification"
+            );
+            assert!(
+                frame
+                    .frame_schedule()
+                    .next_wake_deadline
+                    .is_some_and(|at| at <= crate::time::now())
+            );
+            assert!(frame.poll_frame().unwrap());
+            assert!(
+                frame
+                    .presence_mut()
+                    .visible_interactions(crate::time::now())
+                    .is_empty()
+            );
+            assert!(frame.frame_schedule().next_wake_deadline.is_none());
+            assert!(!frame.frame_schedule().needs_animation_frame);
+            assert_eq!(calls.get(), 1);
+        }
+    }
+
+    #[test]
+    fn agent_marker_full_size_render_evidence() {
+        let out = crate::env::var_os("TILO_UI_AGENT_MARKER_SHOTS")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| {
+                std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../../target/agent-marker")
+            });
+        for (name, theme) in [
+            ("dark", crate::theme::Theme::dark()),
+            ("light", crate::theme::Theme::light()),
+            ("high-contrast", crate::theme::Theme::high_contrast()),
+        ] {
+            for viewport in [(1600, 900), (800, 600)] {
+                let (mut frame, calls) = fixture();
+                frame.relayout_themed(viewport, theme.clone()).unwrap();
+                let path = out
+                    .join(name)
+                    .join(format!("{}x{}", viewport.0, viewport.1));
+                std::fs::create_dir_all(&path).unwrap();
+                frame.render_png(&path.join("before.png"));
+                frame
+                    .invoke_action(
+                        &tilo_actions::ActionAddress::new("first", "edit"),
+                        &serde_json::Map::new(),
+                        false,
+                        None,
+                    )
+                    .unwrap();
+                let mut event = interaction("first");
+                event.actor.id = "scribe".into();
+                event.actor.kind = tilo_actions::ActorKind::Agent;
+                let at = crate::time::now()
+                    .checked_sub(crate::time::Duration::from_secs(2))
+                    .unwrap();
+                frame.update_presence(|presence| {
+                    presence.apply_interaction_at(event.clone(), at).unwrap()
+                });
+                assert!(frame.poll_frame().unwrap());
+                frame.render_png(&path.join("after.png"));
+                assert_eq!(calls.get(), 1);
+                for file in ["before.png", "after.png"] {
+                    assert!(std::fs::metadata(path.join(file)).unwrap().len() > 0);
+                }
+                assert_ne!(
+                    std::fs::read(path.join("before.png")).unwrap(),
+                    std::fs::read(path.join("after.png")).unwrap(),
+                    "the capture must actually observe action presence"
+                );
+            }
         }
     }
 
@@ -589,17 +867,15 @@ mod locus_tests {
 
     #[test]
     fn semantic_locus_refuses_multiple_affordances_for_one_action() {
-        let resource = resource_actions::resource("shared", "Same label", "edit", "Edit", false);
+        let resource = resource_actions::resource("shared", "Same label", "edit", "Edit");
         let binding = tilo_actions::ActionBinding::unit_for(&resource, "edit").unwrap();
         let root = resource_actions::immediate(
             Box::new(
                 Column::new()
                     .push(Box::new(
-                        Button::new("a", "Same label", None).on_action(binding.clone()),
+                        Button::new("a", "Same label").on_action(binding.clone()),
                     ))
-                    .push(Box::new(
-                        Button::new("b", "Same label", None).on_action(binding),
-                    )),
+                    .push(Box::new(Button::new("b", "Same label").on_action(binding))),
             ),
             resource,
             |_| panic!("observation must not execute"),
@@ -618,11 +894,11 @@ mod locus_tests {
     fn semantic_locus_refuses_control_id_reuse_across_distinct_resources() {
         let mut root = Column::new();
         for kind in ["one", "two"] {
-            let resource = resource_actions::resource(kind, "Same label", "edit", "Edit", false);
+            let resource = resource_actions::resource(kind, "Same label", "edit", "Edit");
             let binding = tilo_actions::ActionBinding::unit_for(&resource, "edit").unwrap();
             root = root.push(resource_actions::immediate(
                 Box::new(Column::new().with_id(kind).push(Box::new(
-                    Button::new("edit", "Same label", None).on_action(binding),
+                    Button::new("edit", "Same label").on_action(binding),
                 ))),
                 resource,
                 |_| panic!("observation must not execute"),
@@ -633,6 +909,15 @@ mod locus_tests {
         assert!(
             paths.len() >= 2,
             "fixture contains distinct owners with the same control id"
+        );
+        let (tree, bindings) = frame.retained_action_geometry().unwrap();
+        assert!(
+            crate::action_locus::resource_bounds(
+                &tree,
+                &bindings,
+                &tilo_actions::ActionAddress::new("one:root", "edit"),
+            )
+            .is_none()
         );
         for target in paths.iter().filter_map(|path| path.last()) {
             let mut event = interaction("one:root");
@@ -695,11 +980,11 @@ mod locus_tests {
 
     #[test]
     fn semantic_locus_refuses_a_control_whose_resource_is_no_longer_published() {
-        let resource = resource_actions::resource("stale", "Same label", "edit", "Edit", false);
+        let resource = resource_actions::resource("stale", "Same label", "edit", "Edit");
         let binding = tilo_actions::ActionBinding::unit_for(&resource, "edit").unwrap();
         let frame = FrameHarness::new(
             State::new(),
-            Box::new(Button::new("stale-control", "Same label", None).on_action(binding)),
+            Box::new(Button::new("stale-control", "Same label").on_action(binding)),
             (400, 240),
         );
         assert_eq!(frame.semantic_locus(&interaction("stale:root")), None);
@@ -763,6 +1048,67 @@ mod locus_tests {
     }
 
     #[test]
+    fn exact_resource_bounds_matches_unique_ranked_route_without_input() {
+        let (mut frame, calls) = fixture();
+        let before = frame.state.doc.get_heads();
+        let focus = frame.focused;
+        let layouts = frame.relayout_frames();
+        let (tree, bindings) = frame.retained_action_geometry().unwrap();
+        for id in ["first", "second"] {
+            let address = tilo_actions::ActionAddress::new(id, "edit");
+            let ranked = frame.action_ui_routes(&address);
+            assert_eq!(ranked.len(), 1);
+            let exact = crate::action_locus::resource_bounds(&tree, &bindings, &address).unwrap();
+            assert_eq!(Some(exact.0), ranked[0].bounds);
+            assert_eq!(exact.0, frame.targets()[id]);
+            let node = tree.node(ranked[0].path.last().unwrap()).unwrap();
+            assert_eq!(Some(exact.1), node.widget_taffy_id);
+        }
+        for address in [
+            tilo_actions::ActionAddress::new("missing", "edit"),
+            tilo_actions::ActionAddress::new("first", "missing"),
+        ] {
+            assert!(crate::action_locus::resource_bounds(&tree, &bindings, &address).is_none());
+        }
+        assert_eq!(frame.focused, focus);
+        assert_eq!(frame.relayout_frames(), layouts);
+        assert_eq!(frame.state.doc.get_heads(), before);
+        assert_eq!(calls.get(), 0);
+    }
+
+    #[test]
+    fn exact_resource_bounds_preserves_ambiguity_and_ranked_order() {
+        let resource = resource_actions::resource("shared", "Same label", "edit", "Edit");
+        let binding = tilo_actions::ActionBinding::unit_for(&resource, "edit").unwrap();
+        let root = resource_actions::immediate(
+            Box::new(
+                Column::new()
+                    .push(Box::new(
+                        Button::new("b", "Same label").on_action(binding.clone()),
+                    ))
+                    .push(Box::new(Button::new("a", "Same label").on_action(binding))),
+            ),
+            resource,
+            |_| panic!("observation must not execute"),
+        );
+        let frame = FrameHarness::new(State::new(), root, (400, 240));
+        let address = tilo_actions::ActionAddress::new("shared:root", "edit");
+        let ranked = frame.action_ui_routes(&address);
+        assert_eq!(ranked.len(), 2);
+        assert_eq!(ranked[0].control_id, "a");
+        assert_eq!(ranked[1].control_id, "b");
+        let (tree, mut bindings) = frame.retained_action_geometry().unwrap();
+        for _ in 0..2 {
+            assert_eq!(
+                crate::action_locus::action_ui_routes(&tree, &bindings, &address),
+                ranked
+            );
+            assert!(crate::action_locus::resource_bounds(&tree, &bindings, &address).is_none());
+            bindings.reverse();
+        }
+    }
+
+    #[test]
     fn action_locus_reads_current_layout_and_does_not_reuse_replaced_controls() {
         let (mut frame, _) = fixture();
         let address = tilo_actions::ActionAddress::new("first", "edit");
@@ -777,7 +1123,7 @@ mod locus_tests {
         let moved = frame.action_ui_routes(&address)[0].bounds;
         assert_eq!(moved, Some(frame.targets()["first"]));
         assert_ne!(before, moved);
-        frame.root = Box::new(Button::new("replacement", "Same label", None));
+        frame.root = Box::new(Button::new("replacement", "Same label"));
         frame.invalidate_layout_tree();
         frame.relayout();
         assert!(frame.action_ui_routes(&address).is_empty());

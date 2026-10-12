@@ -86,12 +86,14 @@ fn host_on_wifi_pane(
                 ssid: "Cafe WiFi".into(),
                 signal: 3,
                 secure: true,
+                security: os_actions::WifiSecurity::Wpa2,
                 connected: false,
             },
             WifiNetwork {
                 ssid: "Airport Free".into(),
                 signal: 2,
                 secure: false,
+                security: os_actions::WifiSecurity::Open,
                 connected: false,
             },
         ];
@@ -103,7 +105,7 @@ fn host_on_wifi_pane(
 }
 
 fn press(h: &mut ShellOverlayHost, key: &Key) -> bool {
-    let event = crate::shell::test_support::typed_key_event(key.clone());
+    let event = ui::synthetic_input::key_input(key, winit::event::ElementState::Pressed);
     crate::shell::test_support::with_scratch_event_ctx(|ctx| {
         h.route_wifi_password_event(&event, ctx)
     })
@@ -244,7 +246,7 @@ fn wifi_password_join_is_nonblocking_and_shares_the_secret_through_the_bridge() 
         let shared = std::rc::Rc::new(RefCell::new(Vec::new()));
         let observed = shared.clone();
         host.set_wifi_secret_bridge(std::rc::Rc::new(move |action| match action {
-            WifiSecretAction::Share { ssid, password } => {
+            WifiSecretAction::Share { ssid, password, .. } => {
                 observed.borrow_mut().push((ssid, password));
                 Ok(None)
             }
@@ -265,7 +267,7 @@ fn wifi_password_join_is_nonblocking_and_shares_the_secret_through_the_bridge() 
     fn shared_password_connects_without_entering_the_visible_editor() {
         let (mut host, chrome, recorder) = host_on_wifi_pane(false);
         host.set_wifi_secret_bridge(std::rc::Rc::new(|action| match action {
-            WifiSecretAction::Lookup { ssid } if ssid == "Cafe WiFi" => {
+            WifiSecretAction::Lookup { ssid, .. } if ssid == "Cafe WiFi" => {
                 Ok(Some("from-another-device".into()))
             }
             WifiSecretAction::Lookup { .. } | WifiSecretAction::Share { .. } => Ok(None),
@@ -391,4 +393,210 @@ fn wifi_password_rejection_and_cancel_keep_or_discard_state_correctly() {
     typing_after_a_rejection_clears_the_stale_error();
     escape_backs_out_and_takes_the_password_with_it();
     closing_the_popover_discards_a_half_typed_password();
+}
+
+fn find_node<'a>(
+    node: &'a ui::a11y::AccessNode,
+    matches: &dyn Fn(&ui::a11y::AccessNode) -> bool,
+) -> Option<&'a ui::a11y::AccessNode> {
+    if matches(node) {
+        return Some(node);
+    }
+    node.children
+        .iter()
+        .find_map(|child| find_node(child, matches))
+}
+
+fn act(h: &mut ShellOverlayHost, target: &str, action: &ui::a11y::Action) -> bool {
+    Widget::perform_semantic_action(
+        h,
+        target,
+        action,
+        &mut ui::widget::Edits::lend(&mut automerge::AutoCommit::new()),
+        &automerge::ROOT,
+    )
+}
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+)]
+fn wifi_password_prompt_is_published_and_operable_through_accessibility() {
+    use ui::a11y::{Action, Role};
+
+    fn the_prompt_is_a_modal_dialog_with_a_protected_focused_field() {
+        let (mut h, _chrome, _) = host_on_wifi_pane(false);
+        h.begin_wifi_password("Cafe WiFi");
+        for c in ["s", "e", "c"] {
+            press(&mut h, &ch(c));
+        }
+        let semantics = h.accessibility().expect("shell semantics");
+        let dialog = find_node(&semantics, &|node| {
+            node.role == Role::Dialog && node.name.as_deref() == Some("Cafe WiFi")
+        })
+        .expect("the prompt is published under its network's name");
+        assert!(dialog.state.modal);
+        let field = find_node(dialog, &|node| node.role == Role::TextInput)
+            .expect("the password field is published");
+        assert_eq!(field.name.as_deref(), Some("Password"));
+        assert!(field.state.protected, "readers treat it as password text");
+        assert!(field.state.focused, "the field has the keyboard");
+        assert_eq!(
+            field.value, None,
+            "the typed password never leaves the shell"
+        );
+        let names: Vec<_> = dialog
+            .children
+            .iter()
+            .filter(|node| node.role == Role::Button)
+            .filter_map(|node| node.name.as_deref())
+            .collect();
+        assert_eq!(names, ["Back", "Cancel", "Connect"]);
+
+        let update = ui::accesskit_bridge::build_tree_update(
+            &h,
+            &std::collections::HashMap::new(),
+            None,
+            1.0,
+        );
+        let password = update
+            .nodes
+            .iter()
+            .find(|(_, node)| node.role() == ui::accesskit::Role::PasswordInput)
+            .map(|(_, node)| node)
+            .expect("AT-SPI sees password text");
+        assert_eq!(password.value(), None);
+        assert!(
+            password.supports_action(ui::accesskit::Action::SetValue),
+            "a reader can type into it"
+        );
+    }
+
+    fn set_value_and_connect_reach_the_join() {
+        let (mut h, chrome, _) = host_on_wifi_pane(false);
+        h.begin_wifi_password("Cafe WiFi");
+        let semantics = h.accessibility().expect("shell semantics");
+        let target = |name: &str| {
+            find_node(&semantics, &|node| node.name.as_deref() == Some(name))
+                .and_then(|node| node.action_target.clone())
+                .expect("an operable node")
+        };
+        let (field, connect) = (target("Password"), target("Connect"));
+        assert!(act(&mut h, &field, &Action::SetValue("hunter22".into())));
+        assert_eq!(h.wifi_password_input.value(), "hunter22");
+        assert!(act(&mut h, &connect, &Action::Activate));
+        assert!(
+            chrome
+                .borrow()
+                .quick_settings
+                .wifi_password
+                .as_ref()
+                .is_some_and(|prompt| prompt.connecting),
+            "Connect through AT-SPI starts the same join Enter does"
+        );
+    }
+
+    fn a_target_for_another_network_changes_nothing() {
+        let (mut h, chrome, _) = host_on_wifi_pane(false);
+        h.begin_wifi_password("Cafe WiFi");
+        let semantics = h.accessibility().expect("shell semantics");
+        let cancel = find_node(&semantics, &|node| node.name.as_deref() == Some("Cancel"))
+            .and_then(|node| node.action_target.clone())
+            .expect("Cancel is operable");
+        h.cancel_wifi_password();
+        h.begin_wifi_password("Airport Free");
+        assert!(
+            act(&mut h, &cancel, &Action::Activate),
+            "a stale target is absorbed, never clicked through"
+        );
+        assert!(
+            chrome.borrow().quick_settings.wifi_password.is_some(),
+            "the prompt for another network stays up"
+        );
+        let semantics = h.accessibility().expect("shell semantics");
+        let cancel = find_node(&semantics, &|node| node.name.as_deref() == Some("Cancel"))
+            .and_then(|node| node.action_target.clone())
+            .expect("Cancel is operable");
+        assert!(act(&mut h, &cancel, &Action::Activate));
+        assert!(chrome.borrow().quick_settings.wifi_password.is_none());
+    }
+
+    fn the_network_list_is_published_while_no_prompt_is_up() {
+        let (h, _chrome, _) = host_on_wifi_pane(false);
+        let semantics = h.accessibility().expect("shell semantics");
+        assert!(
+            find_node(&semantics, &|node| node.name.as_deref()
+                == Some("Cafe WiFi")
+                && node.role == Role::Button)
+            .is_some(),
+            "every Quick Settings page publishes, including the Wi-Fi list"
+        );
+    }
+
+    the_prompt_is_a_modal_dialog_with_a_protected_focused_field();
+    set_value_and_connect_reach_the_join();
+    a_target_for_another_network_changes_nothing();
+    the_network_list_is_published_while_no_prompt_is_up();
+}
+
+#[test]
+fn wifi_secret_lookup_uses_cached_security() {
+    let (mut host, chrome, _) = host_on_wifi_pane(false);
+    for network in &mut chrome.borrow_mut().quick_settings.wifi_networks {
+        if network.ssid == "Cafe WiFi" {
+            network.security = os_actions::WifiSecurity::Wpa3;
+        }
+    }
+    let seen = std::rc::Rc::new(RefCell::new(Vec::new()));
+    let observed = seen.clone();
+    host.set_wifi_secret_bridge(std::rc::Rc::new(move |action| {
+        if let WifiSecretAction::Lookup { ssid, security } = action {
+            observed.borrow_mut().push((ssid, security));
+        }
+        Ok(None)
+    }));
+
+    host.begin_wifi_password("Cafe WiFi");
+    assert!(
+        !host.try_connect_with_shared_wifi_password(),
+        "no device shared this network"
+    );
+    assert_eq!(
+        seen.borrow().as_slice(),
+        [("Cafe WiFi".to_string(), os_actions::WifiSecurity::Wpa3)],
+        "the bridge is told the mode the scan listed, and scans nothing itself"
+    );
+
+    host.begin_wifi_password("Hidden Network");
+    assert!(!host.try_connect_with_shared_wifi_password());
+    assert_eq!(
+        seen.borrow().len(),
+        1,
+        "a network the scan did not list is not looked up"
+    );
+}
+
+#[test]
+fn wifi_secret_share_uses_cached_security() {
+    let (mut host, chrome, _) = host_on_wifi_pane(false);
+    let shared = std::rc::Rc::new(RefCell::new(Vec::new()));
+    let observed = shared.clone();
+    host.set_wifi_secret_bridge(std::rc::Rc::new(move |action| {
+        if let WifiSecretAction::Share { ssid, security, .. } = action {
+            observed.borrow_mut().push((ssid, security));
+        }
+        Ok(None)
+    }));
+    host.begin_wifi_password("Cafe WiFi");
+    for character in ["p", "w", "1"] {
+        press(&mut host, &ch(character));
+    }
+    press(&mut host, &Key::Named(NamedKey::Enter));
+    finish_join(&mut host, &chrome, Some("pw1"), false, Ok(()));
+    assert_eq!(
+        shared.borrow().as_slice(),
+        [("Cafe WiFi".to_string(), os_actions::WifiSecurity::Wpa2)],
+        "the joined network's mode comes from the scan it was picked from"
+    );
 }

@@ -1,16 +1,15 @@
-//! Retained bounded global-search index for database resources.
+//! The open connection's catalogue: its live rows and their search entries.
 //!
 //! Catalog discovery happens when the live schema or shared document changes,
-//! never on each palette keystroke. The `SearchCatalog` owns matching and
-//! continuation cursors, so very large schemas remain pageable.
+//! never on each palette keystroke. Every relation, column, result,
+//! transaction and history entry is a search entry the surface contributes
+//! to the app's one search source, which pages through very large schemas.
 
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
-use ui::search::{CatalogSearchProvider, SearchCatalog, SearchResult};
 
-use tilo_actions::Resource;
-use ui::tilo_actions::ActionAddress;
-use ui::tilo_resource::Effect;
+use ui::tilo_actions::Resource;
+use ui::tilo_resource::{Effect, SearchEntry};
 use uuid::Uuid;
 
 use crate::app::catalog_resource_id;
@@ -22,51 +21,47 @@ const KIND: &str = "Database";
 #[derive(Default)]
 struct IndexState {
     revision: Option<String>,
-    catalog: Option<SearchCatalog>,
+    entries: Vec<SearchEntry>,
     resources: HashMap<String, Resource>,
     /// The most recent rejected rebuild. Keep the last known-good snapshot
     /// available, but never make a failed index refresh invisible to the app.
     last_error: Option<String>,
 }
 
-/// A cheap-to-clone handle to the current immutable search catalogue.
+/// A cheap-to-clone handle to the open connection's catalogue.
 #[derive(Clone, Default)]
 pub struct DbSearchIndex {
     state: Arc<RwLock<IndexState>>,
 }
 
 impl DbSearchIndex {
-    /// Refresh the retained catalogue from the live session.
+    /// Refresh the catalogue from the live session.
     ///
     /// # Errors
     ///
-    /// Returns an error when the generated rows violate the canonical search
-    /// catalogue contract. The previous valid snapshot remains available.
+    /// Returns an error when two rows of the snapshot name one resource. The
+    /// previous valid snapshot remains available.
     pub fn sync(&self, session: &Session) -> Result<(), String> {
         let revision = revision(session);
         let state = self
             .state
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if state.revision.as_deref() == Some(&revision) && state.catalog.is_some() {
+        if state.revision.as_deref() == Some(&revision) {
             return Ok(());
         }
-        let catalog = state
-            .catalog
-            .clone()
-            .unwrap_or_else(|| SearchCatalog::new(KIND));
         drop(state);
 
         let mut rows = Vec::new();
         let mut resources = HashMap::new();
         index_active_catalog(session, &mut rows, &mut resources);
-        apply_catalog_snapshot(&self.state, revision, catalog, rows, resources)
+        apply_catalog_snapshot(&self.state, revision, rows, resources)
     }
 }
 
 fn index_active_catalog(
     session: &Session,
-    rows: &mut Vec<(String, String, SearchResult)>,
+    rows: &mut Vec<(String, SearchEntry)>,
     resources: &mut HashMap<String, Resource>,
 ) {
     let Some(connection) = session.active_connection().filter(|_| session.connected) else {
@@ -81,7 +76,7 @@ fn index_active_catalog(
 fn index_database_and_schema(
     session: &Session,
     connection: &crate::model::ConnectionProfile,
-    rows: &mut Vec<(String, String, SearchResult)>,
+    rows: &mut Vec<(String, SearchEntry)>,
     resources: &mut HashMap<String, Resource>,
 ) {
     let connection_id = &connection.id.to_string();
@@ -102,12 +97,7 @@ fn index_database_and_schema(
         database,
         focus.id(),
         database_name.clone(),
-        SearchResult::for_action(
-            KIND,
-            &database_name,
-            ActionAddress::new(&database_id, focus.id()),
-        )
-        .with_subtitle("Active database"),
+        hit(&database_name, &database_id).subtitled("Active database"),
     );
     for schema in &session.schema.schemas {
         let schema_id = catalog_resource_id("schema", &[connection_id, &schema.name]);
@@ -123,12 +113,7 @@ fn index_database_and_schema(
             schema_resource,
             focus.id(),
             schema.name.clone(),
-            SearchResult::for_action(
-                KIND,
-                &schema.name,
-                ActionAddress::new(&schema_id, focus.id()),
-            )
-            .with_subtitle(format!("Schema in {database_name}")),
+            hit(&schema.name, &schema_id).subtitled(format!("Schema in {database_name}")),
         );
         for relation in &schema.tables {
             index_relation(connection.id, schema, relation, rows, resources);
@@ -140,18 +125,14 @@ fn index_relation(
     connection: Uuid,
     schema: &crate::model::SchemaInfo,
     relation: &crate::model::TableInfo,
-    rows: &mut Vec<(String, String, SearchResult)>,
+    rows: &mut Vec<(String, SearchEntry)>,
     resources: &mut HashMap<String, Resource>,
 ) {
     let connection_id = &connection.to_string();
     let relation_id =
         catalog_resource_id("relation", &[connection_id, &schema.name, &relation.name]);
-    let result = SearchResult::for_action(
-        KIND,
-        &relation.name,
-        ActionAddress::new(&relation_id, "browse"),
-    )
-    .with_subtitle(format!("{}.{}", schema.name, relation.name));
+    let result =
+        hit(&relation.name, &relation_id).subtitled(format!("{}.{}", schema.name, relation.name));
     let resource = Resource::new(
         &relation_id,
         match relation.kind {
@@ -181,12 +162,10 @@ fn index_relation(
             "column",
             &[connection_id, &schema.name, &relation.name, &column.name],
         );
-        let result =
-            SearchResult::for_action(KIND, &column.name, ActionAddress::new(&column_id, "browse"))
-                .with_subtitle(format!(
-                    "{}.{} · {}",
-                    schema.name, relation.name, column.decl_type
-                ));
+        let result = hit(&column.name, &column_id).subtitled(format!(
+            "{} in {}.{}",
+            column.decl_type, schema.name, relation.name
+        ));
         let mut column_resource = Resource::new(&column_id, "database.column", &column.name);
         column_resource.actions.clone_from(&resource.actions);
         index_resource(
@@ -206,7 +185,7 @@ fn index_relation(
 fn index_current_result(
     session: &Session,
     connection: Uuid,
-    rows: &mut Vec<(String, String, SearchResult)>,
+    rows: &mut Vec<(String, SearchEntry)>,
     resources: &mut HashMap<String, Resource>,
 ) {
     let result_id = catalog_resource_id(
@@ -237,19 +216,14 @@ fn index_current_result(
             result_resource,
             show.id(),
             format!("query result {}", result.message()),
-            SearchResult::for_action(
-                KIND,
-                "Current query result",
-                ActionAddress::new(&result_id, show.id()),
-            )
-            .with_subtitle(result.message()),
+            hit("Current query result", &result_id).subtitled(result.message()),
         );
     }
 }
 
 fn index_transactions(
     connection: Uuid,
-    rows: &mut Vec<(String, String, SearchResult)>,
+    rows: &mut Vec<(String, SearchEntry)>,
     resources: &mut HashMap<String, Resource>,
 ) {
     let transaction_id = catalog_resource_id("transaction", &[&connection.to_string()]);
@@ -264,19 +238,14 @@ fn index_transactions(
         transaction,
         begin.id(),
         "transaction begin commit rollback",
-        SearchResult::for_action(
-            KIND,
-            "Transaction",
-            ActionAddress::new(&transaction_id, begin.id()),
-        )
-        .with_subtitle("Active database"),
+        hit("Transaction", &transaction_id).subtitled("Active database"),
     );
 }
 
 fn index_query_history(
     session: &Session,
     connection: &crate::model::ConnectionProfile,
-    rows: &mut Vec<(String, String, SearchResult)>,
+    rows: &mut Vec<(String, SearchEntry)>,
     resources: &mut HashMap<String, Resource>,
 ) {
     let connection_id = &connection.id.to_string();
@@ -294,7 +263,7 @@ fn index_query_history(
             "query-history-entry",
             &[connection_id, &entry.generation.to_string()],
         );
-        let title = format!("Query {} · {}", entry.generation, entry.summary);
+        let title = format!("Query {}: {}", entry.generation, entry.summary);
         let rerun = DbEffect::Rerun {
             connection: connection.id,
             generation: entry.generation,
@@ -307,8 +276,7 @@ fn index_query_history(
             history_entry,
             rerun.id(),
             format!("query {} {}", entry.generation, entry.summary),
-            SearchResult::for_action(KIND, &title, ActionAddress::new(&entry_id, rerun.id()))
-                .with_subtitle("Local only — never shared with collaborators"),
+            hit(&title, &entry_id).subtitled("Local only — never shared with collaborators"),
         );
     }
 }
@@ -316,16 +284,12 @@ fn index_query_history(
 fn apply_catalog_snapshot(
     state: &Arc<RwLock<IndexState>>,
     revision: String,
-    catalog: SearchCatalog,
-    rows: Vec<(String, String, SearchResult)>,
+    rows: Vec<(String, SearchEntry)>,
     resources: HashMap<String, Resource>,
 ) -> Result<(), String> {
-    // `replace_all` reuses the retained catalogue and advances its
-    // generation exactly once, so every continuation from the previous
-    // snapshot is rejected instead of accidentally becoming current when
-    // a rebuilt catalog happens to have the same row count.
-    if let Err(error) = catalog.replace_all(rows) {
-        let error = format!("Database search index refresh failed: {error}");
+    let mut seen = std::collections::HashSet::new();
+    if let Some((duplicate, _)) = rows.iter().find(|(id, _)| !seen.insert(id.as_str())) {
+        let error = format!("Database search index refresh failed: `{duplicate}` is listed twice");
         state
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -336,7 +300,7 @@ fn apply_catalog_snapshot(
         .write()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     state.revision = Some(revision);
-    state.catalog = Some(catalog);
+    state.entries = rows.into_iter().map(|(_, entry)| entry).collect();
     state.resources = resources;
     state.last_error = None;
     drop(state);
@@ -344,10 +308,26 @@ fn apply_catalog_snapshot(
 }
 
 impl DbSearchIndex {
-    pub fn provider(&self) -> DbSearchProvider {
-        DbSearchProvider {
-            index: self.clone(),
-        }
+    /// What opening the row anchored at `anchor` runs: the effect its hit
+    /// was found for (browse a relation, focus the database, show the
+    /// result, rerun a query). `None` once the row is gone.
+    pub fn opened(&self, anchor: &str) -> Option<DbEffect> {
+        let resource = self.resource(anchor)?;
+        let encoded = resource
+            .actions
+            .first()?
+            .build_json(&serde_json::Map::new())
+            .ok()?;
+        DbEffect::from_payload(&encoded.payload).ok()
+    }
+
+    /// Every row of the catalogue as a search entry.
+    pub fn entries(&self) -> Vec<SearchEntry> {
+        self.state
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .entries
+            .clone()
     }
 
     /// The bounded top of the live catalog: the open database and its
@@ -392,51 +372,36 @@ impl DbSearchIndex {
     }
 }
 
+/// A catalogue hit titled `title`, anchored at the row `id`.
+fn hit(title: impl Into<String>, id: &str) -> SearchEntry {
+    SearchEntry::new(title, String::new())
+        .anchored(id)
+        .grouped(KIND)
+}
+
 fn index_resource(
-    rows: &mut Vec<(String, String, SearchResult)>,
+    rows: &mut Vec<(String, SearchEntry)>,
     resources: &mut HashMap<String, Resource>,
     resource: Resource,
     action_id: &str,
     search_text: impl Into<String>,
-    result: SearchResult,
+    mut entry: SearchEntry,
 ) {
-    debug_assert!(resource.actions.iter().any(|action| action.id == action_id));
+    let mut resource = resource;
+    // What opening the row runs comes first ([`DbSearchIndex::opened`]).
+    let opens = resource
+        .actions
+        .iter()
+        .position(|action| action.id == action_id);
+    debug_assert!(opens.is_some());
+    if let Some(at) = opens {
+        let action = resource.actions.remove(at);
+        resource.actions.insert(0, action);
+    }
     let id = resource.id.as_str().to_string();
-    rows.push((id.clone(), search_text.into(), result));
+    entry.text = search_text.into();
+    rows.push((id.clone(), entry));
     resources.insert(id, resource);
-}
-
-pub struct DbSearchProvider {
-    index: DbSearchIndex,
-}
-
-impl CatalogSearchProvider for DbSearchProvider {
-    fn provider_name(&self) -> &str {
-        KIND
-    }
-
-    fn catalog(&self) -> Option<SearchCatalog> {
-        self.index
-            .state
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .catalog
-            .clone()
-    }
-
-    fn limited_work_budget(&self, limit: usize) -> usize {
-        // A one-shot query inspects no more candidates than results it asked for.
-        limit
-    }
-
-    fn resolve_action_address(&self, address: &ActionAddress) -> Option<Resource> {
-        self.index.resource(&address.resource).filter(|resource| {
-            resource
-                .actions
-                .iter()
-                .any(|action| action.id == address.action)
-        })
-    }
 }
 
 fn revision(session: &Session) -> String {
@@ -506,20 +471,23 @@ fn push_revision_part(parts: &mut String, value: &str) {
 mod tests {
     use super::*;
     use ui::search::testing::{LATE_HIT_NEEDLE, assert_late_hit_reachable};
-    use ui::search::{DEFAULT_SEARCH_RESULT_LIMIT, SearchProvider};
+    use ui::search::{DEFAULT_SEARCH_RESULT_LIMIT, SearchProvider, SearchResult};
+
+    /// The app's search source over the index's entries, as the framework
+    /// builds it.
+    fn source(index: &DbSearchIndex) -> impl SearchProvider + use<> {
+        ui::framework::testing::search_source::<crate::record::Workspace>(index.entries())
+    }
 
     fn assert_address_resolves(index: &DbSearchIndex, result: &SearchResult) {
-        let address = result.action_address().expect("canonical action address");
         let resource = index
-            .provider()
-            .resolve_action_resource(&address)
-            .expect("the provider resolves its exact canonical search address");
-        assert!(
-            resource
-                .actions
-                .iter()
-                .any(|action| action.id == address.action),
-            "search address points at an action published by the resolved resource"
+            .resource(&result.action_id)
+            .expect("the live row of the hit's anchor resolves");
+        let opened = index.opened(&result.action_id).expect("the hit opens");
+        assert_eq!(
+            resource.actions[0].id,
+            opened.id(),
+            "the hit opens with an action its row publishes"
         );
     }
 
@@ -535,8 +503,8 @@ mod tests {
             let session = Session::with_sample();
             let index = DbSearchIndex::default();
             index.sync(&session).unwrap();
-            let provider = index.provider();
-            let page = provider.search_page("albums", None, 20, 20);
+            let provider = source(&index);
+            let page = provider.search_page(&ui::search::SearchQuery::new("albums"), None, 20, 20);
             assert!(page.inspected <= 20);
             let hit = page
                 .results
@@ -545,8 +513,8 @@ mod tests {
                 .expect("relation search hit");
             assert_eq!(hit.title, "albums");
             assert_eq!(
-                hit.action_address().expect("canonical address").action,
-                "browse"
+                index.opened(&hit.action_id).map(|effect| effect.id()),
+                Some("browse")
             );
             assert_address_resolves(&index, hit);
         }
@@ -563,7 +531,7 @@ mod tests {
                 }));
             let index = DbSearchIndex::default();
             index.sync(&session).unwrap();
-            let provider = index.provider();
+            let provider = source(&index);
 
             assert_eq!(
                 provider.search_limited("", usize::MAX).len(),
@@ -571,7 +539,12 @@ mod tests {
             );
             assert_eq!(
                 provider
-                    .search_page("", None, usize::MAX, usize::MAX)
+                    .search_page(
+                        &ui::search::SearchQuery::new(""),
+                        None,
+                        usize::MAX,
+                        usize::MAX
+                    )
                     .results
                     .len(),
                 DEFAULT_SEARCH_RESULT_LIMIT
@@ -596,7 +569,7 @@ mod tests {
                         })
                         .collect();
                     index.sync(&session).unwrap();
-                    index.provider()
+                    source(&index)
                 },
                 3_000,
             );
@@ -619,7 +592,7 @@ mod tests {
                         })
                         .collect();
                     index.sync(&session).unwrap();
-                    index.provider()
+                    source(&index)
                 },
                 3_000,
             );
@@ -632,7 +605,7 @@ mod tests {
             let session = Session::with_sample();
             let index = DbSearchIndex::default();
             index.sync(&session).unwrap();
-            let provider = index.provider();
+            let provider = source(&index);
 
             let cases = [
                 (
@@ -652,10 +625,9 @@ mod tests {
                     .into_iter()
                     .find(|result| result.title == title)
                     .unwrap_or_else(|| panic!("canonical search hit for {title}"));
-                let address = hit.action_address().expect("canonical address");
-                let resource = provider
-                    .resolve_action_resource(&address)
-                    .expect("provider materializes the canonical resource");
+                let resource = index
+                    .resource(&hit.action_id)
+                    .expect("the live row materializes the canonical resource");
                 for action in expected_actions {
                     assert!(
                         resource
@@ -672,36 +644,17 @@ mod tests {
     /// Changed or renamed catalogs and a changed connection invalidate cursors and addresses; a rejected snapshot keeps the last good catalog.
     #[test]
     fn catalog_changes_invalidate_cursors_and_addresses() {
-        // --- phase: changed_catalog_invalidates_old_search_cursors ---
+        // --- phase: renamed_catalog_fields_are_found_by_their_new_names ---
         {
             let mut session = Session::with_sample();
             let index = DbSearchIndex::default();
             index.sync(&session).unwrap();
-            let provider = index.provider();
-            let first = provider.search_page("", None, 1, 1);
-            let cursor = first.next.expect("large catalog has a continuation");
-            let mut relation = session.schema.schemas[0].tables[0].clone();
-            relation.name = "cursor-change".into();
-            session.schema.schemas[0].tables.push(relation);
-            index.sync(&session).unwrap();
-            assert!(!provider.action_directory_cursor_is_current(&cursor));
-        }
-
-        // --- phase: renamed_catalog_fields_rebuild_the_retained_index ---
-        {
-            let mut session = Session::with_sample();
-            let index = DbSearchIndex::default();
-            index.sync(&session).unwrap();
-            let provider = index.provider();
-            let cursor = provider
-                .search_page("", None, 1, 1)
-                .next
-                .expect("sample catalog is pageable");
+            let before = index.entries();
 
             session.schema.schemas[0].tables[0].columns[0].name = "renamed_column".into();
             index.sync(&session).unwrap();
-            assert!(!provider.action_directory_cursor_is_current(&cursor));
-            let column = provider.search_limited("renamed_column", 4);
+            assert_ne!(index.entries(), before, "a renamed column is new entries");
+            let column = source(&index).search_limited("renamed_column", 4);
             assert_eq!(column.len(), 1);
             assert_address_resolves(&index, &column[0]);
         }
@@ -711,22 +664,16 @@ mod tests {
             let mut session = Session::with_sample();
             let index = DbSearchIndex::default();
             index.sync(&session).unwrap();
-            let provider = index.provider();
+            let provider = source(&index);
             let old_relation = provider.search_limited("albums", 4).remove(0);
-            let cursor = provider
-                .search_page("", None, 1, 1)
-                .next
-                .expect("sample catalog is pageable");
 
             session.active = 1;
             session.connected = false;
             index.sync(&session).unwrap();
 
-            assert!(!provider.action_directory_cursor_is_current(&cursor));
+            assert!(source(&index).search_limited("albums", 4).is_empty());
             assert!(
-                index
-                    .resource(&old_relation.action_address().unwrap().resource)
-                    .is_none(),
+                index.resource(&old_relation.action_id).is_none(),
                 "a relation cannot resolve against a disconnected, different active connection"
             );
         }
@@ -736,28 +683,21 @@ mod tests {
             let session = Session::with_sample();
             let index = DbSearchIndex::default();
             index.sync(&session).unwrap();
-            let before = index.provider().search_limited("albums", 8);
+            let before = source(&index).search_limited("albums", 8);
             assert!(!before.is_empty());
 
             let id = "duplicate-resource".to_string();
-            let row = || {
-                (
-                    id.clone(),
-                    "duplicate".to_string(),
-                    SearchResult::for_action(KIND, "Duplicate", ActionAddress::new(&id, "browse")),
-                )
-            };
+            let row = || (id.clone(), hit("Duplicate", &id));
             let error = apply_catalog_snapshot(
                 &index.state,
                 "broken snapshot".to_string(),
-                SearchCatalog::new(KIND),
                 vec![row(), row()],
                 HashMap::new(),
             )
             .expect_err("duplicate rows reject the snapshot");
             assert!(error.contains("Database search index refresh failed"));
             assert_eq!(index.last_error().as_deref(), Some(error.as_str()));
-            assert_eq!(index.provider().search_limited("albums", 8), before);
+            assert_eq!(source(&index).search_limited("albums", 8), before);
         }
     }
 }

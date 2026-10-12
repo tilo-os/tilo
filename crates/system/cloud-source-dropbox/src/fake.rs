@@ -70,6 +70,9 @@ pub enum FakeFault {
     DropResponse,
     /// The next download declares its full length but sends half the body.
     TruncatedBody,
+    /// The next download sends half the body, declares no length and closes
+    /// the connection.
+    ClosedEarly,
     /// The next download flips one byte of the body.
     CorruptBody,
     /// The next long-poll answer asks the client to back off this many
@@ -565,7 +568,9 @@ impl State {
         let position = self.faults.iter().position(|fault| match fault {
             FakeFault::RateLimited | FakeFault::ServerError | FakeFault::DropResponse => true,
             FakeFault::ExpiredCredential => authenticated,
-            FakeFault::TruncatedBody | FakeFault::CorruptBody => route == "files/download",
+            FakeFault::TruncatedBody | FakeFault::ClosedEarly | FakeFault::CorruptBody => {
+                route == "files/download"
+            }
             FakeFault::Backoff(_) => host == Host::Notify,
         })?;
         Some(self.faults.remove(position))
@@ -1526,13 +1531,8 @@ fn download(
         .header("Content-Type", "application/octet-stream")
         .header("Dropbox-API-Result", &result);
     Ok(match fault {
-        Some(FakeFault::TruncatedBody) => {
-            let half = body.len() / 2;
-            reply
-                .header("Content-Length", &body.len().to_string())
-                .body(body.get(..half).unwrap_or_default().to_vec())
-                .without_content_length()
-        }
+        Some(FakeFault::TruncatedBody) => reply.body(body).cut_short(true),
+        Some(FakeFault::ClosedEarly) => reply.body(body).cut_short(false),
         Some(FakeFault::CorruptBody) => {
             let middle = body.len() / 2;
             if let Some(byte) = body.get_mut(middle) {

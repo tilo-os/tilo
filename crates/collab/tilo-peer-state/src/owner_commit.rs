@@ -44,14 +44,45 @@ pub enum CommitOperation {
         caller: tilo_user_identity::DeviceCert,
         action: crate::document_import::ImportAction,
     },
+    /// Typed mutation of the room-owned Task Center state. The broker retains
+    /// the authentic person or pinned-host authority; arguments never choose it.
+    WorkspaceTaskCommand {
+        invocation: uuid::Uuid,
+        authority: crate::workspace_task::WorkspaceTaskAuthority,
+        command: crate::workspace_task::WorkspaceTaskCommand,
+    },
+    /// Original authenticated person command; governor signing custody is
+    /// supplied out of band by the installed owning host, never by arguments.
+    WorkspaceMembershipCommand {
+        invocation: uuid::Uuid,
+        caller: tilo_user_identity::DeviceCert,
+        command: crate::workspace_membership::WorkspaceMembershipCommand,
+    },
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CommitTarget {
-    Document { app: String, record: String },
-    EffectReceipt { invocation: uuid::Uuid },
-    DesktopCommand { invocation: uuid::Uuid },
+    Document {
+        app: String,
+        record: String,
+    },
+    EffectReceipt {
+        invocation: uuid::Uuid,
+    },
+    DesktopCommand {
+        invocation: uuid::Uuid,
+    },
     RetiredAgentRuntime,
-    DocumentImport { invocation: uuid::Uuid },
+    DocumentImport {
+        invocation: uuid::Uuid,
+    },
+    WorkspaceTaskCommand {
+        device: [u8; 32],
+        invocation: uuid::Uuid,
+    },
+    WorkspaceMembershipCommand {
+        device: [u8; 32],
+        invocation: uuid::Uuid,
+    },
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CommitBinding {
@@ -112,6 +143,16 @@ impl OwnerCommitRequest {
                 caller,
                 action,
             } => import_binding(*invocation, caller, action)?,
+            CommitOperation::WorkspaceTaskCommand {
+                invocation,
+                authority,
+                command,
+            } => task_binding(*invocation, authority, command)?,
+            CommitOperation::WorkspaceMembershipCommand {
+                invocation,
+                caller,
+                command,
+            } => membership_binding(*invocation, caller, command)?,
             CommitOperation::Document {
                 app,
                 record,
@@ -159,6 +200,46 @@ impl OwnerCommitRequest {
         })
     }
 }
+fn membership_binding(
+    invocation: uuid::Uuid,
+    caller: &tilo_user_identity::DeviceCert,
+    command: &crate::workspace_membership::WorkspaceMembershipCommand,
+) -> Result<(CommitTarget, Vec<u8>), String> {
+    if invocation.is_nil() {
+        return Err("invalid workspace membership invocation".into());
+    }
+    command.validate()?;
+    Ok((
+        CommitTarget::WorkspaceMembershipCommand {
+            device: caller.device_public_key,
+            invocation,
+        },
+        postcard::to_allocvec(&(invocation, caller, command)).map_err(|error| error.to_string())?,
+    ))
+}
+fn task_binding(
+    invocation: uuid::Uuid,
+    authority: &crate::workspace_task::WorkspaceTaskAuthority,
+    command: &crate::workspace_task::WorkspaceTaskCommand,
+) -> Result<(CommitTarget, Vec<u8>), String> {
+    let certificate = authority.certificate();
+    if invocation.is_nil() {
+        return Err("invalid workspace task invocation".into());
+    }
+    if let crate::workspace_task::WorkspaceTaskAuthority::Agent { agent_id, .. } = authority
+        && (agent_id.is_empty() || agent_id.len() > 256)
+    {
+        return Err("workspace task agent identity is malformed".into());
+    }
+    Ok((
+        CommitTarget::WorkspaceTaskCommand {
+            device: certificate.device_public_key,
+            invocation,
+        },
+        postcard::to_allocvec(&(invocation, authority, command))
+            .map_err(|error| error.to_string())?,
+    ))
+}
 /// The target and committed basis of a document import request.
 fn import_binding(
     invocation: uuid::Uuid,
@@ -200,6 +281,17 @@ pub trait OwnerCommitService: Send + Sync {
         true
     }
     fn commit(&self, request: OwnerCommitRequest) -> CommitFuture;
+    /// Commit a certified member's own terminal audit at the actual governor.
+    /// The authenticated caller is retained by the broker, never decoded from
+    /// the receipt. Implementations must recheck current member and signing custody.
+    fn commit_member_effect_receipt(
+        &self,
+        request: OwnerCommitRequest,
+        caller: tilo_user_identity::DeviceCert,
+    ) -> CommitFuture {
+        let _ = (request, caller);
+        Box::pin(async { Err("member effect governor unavailable".into()) })
+    }
     /// [`Self::commit`] for a document write, with the resource kind of its
     /// record as the writing app named it when joining the record. Only an
     /// owner that creates a missing record on the app's first write reads
@@ -242,6 +334,20 @@ mod tests {
         assert_eq!(
             encoded(&CommitTarget::DesktopCommand { invocation }),
             [vec![2, 16], vec![7; 16]].concat()
+        );
+        assert_eq!(
+            encoded(&CommitTarget::WorkspaceTaskCommand {
+                device: [9; 32],
+                invocation,
+            }),
+            [vec![5], vec![9; 32], vec![16], vec![7; 16]].concat()
+        );
+        assert_eq!(
+            encoded(&CommitTarget::WorkspaceMembershipCommand {
+                device: [9; 32],
+                invocation,
+            }),
+            [vec![6], vec![9; 32], vec![16], vec![7; 16]].concat()
         );
         let request = OwnerCommitRequest {
             room: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa".into(),

@@ -21,6 +21,7 @@ use crate::portal::PromptOutcome;
 pub struct PendingHostShellAllow {
     answer: tokio::sync::oneshot::Receiver<PromptOutcome>,
     reply: Weak<RefCell<HostShellAllow>>,
+    native_reply: Option<std::sync::mpsc::Sender<Vec<u8>>>,
 }
 
 /// The prompt to queue for a Terminal tab asking for the device's own shell.
@@ -39,8 +40,24 @@ pub fn prompt(
             },
             tx,
         ),
-        PendingHostShellAllow { answer: rx, reply },
+        PendingHostShellAllow {
+            answer: rx,
+            reply,
+            native_reply: None,
+        },
     )
+}
+
+/// A native Terminal asks through its launcher-authenticated shell-ui connection.
+pub fn native_prompt(
+    writer: std::sync::mpsc::Sender<Vec<u8>>,
+) -> (
+    crate::shell::chrome_state::PendingPrompt,
+    PendingHostShellAllow,
+) {
+    let (prompt, mut pending) = prompt(Weak::new());
+    pending.native_reply = Some(writer);
+    (prompt, pending)
 }
 
 /// The app the Host target belongs to.
@@ -59,6 +76,14 @@ impl PendingHostShellAllow {
             && let Ok(mut reply) = reply.try_borrow_mut()
         {
             reply.answer = Some(allowed);
+        }
+        if let Some(writer) = self.native_reply.take() {
+            let message =
+                ui::floating_surface::FloatingSurfaceHostMessage::HostShellAllowed { allowed };
+            if let Ok(mut frame) = serde_json::to_vec(&message) {
+                frame.push(b'\n');
+                let _ = writer.send(frame);
+            }
         }
         true
     }
@@ -116,9 +141,28 @@ fn tell_supervisor(_expiry: collab_types::caps::Expiry) -> bool {
     false
 }
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(test)]
+#[cfg(target_os = "linux")]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_terminal_waits_for_the_permission_answer_on_its_authenticated_connection() {
+        let (writer, replies) = std::sync::mpsc::channel();
+        let (mut prompt, mut pending) = native_prompt(writer);
+        assert!(!pending.poll());
+        assert!(replies.try_recv().is_err());
+        prompt.answer(PromptOutcome::Deny);
+        assert!(pending.poll());
+        let frame = replies.recv().unwrap();
+        assert_eq!(
+            serde_json::from_slice::<ui::floating_surface::FloatingSurfaceHostMessage>(&frame)
+                .unwrap(),
+            ui::floating_surface::FloatingSurfaceHostMessage::HostShellAllowed { allowed: false }
+        );
+        assert!(pending.poll());
+        assert!(replies.try_recv().is_err(), "an answer is delivered once");
+    }
 
     #[test]
     fn the_prompts_answers_are_the_shared_lifetimes_and_reach_the_supervisor() {

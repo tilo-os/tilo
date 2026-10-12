@@ -1,0 +1,194 @@
+[
+  {
+    "operation": "create_library_file",
+    "status": "succeeded",
+    "path": "/switcher-before-dark.png",
+    "file_id": "file_000000003a7081f6837f69c47f18abf7",
+    "library_file_id": "libfile_43d090a70e508191a87319ffbc021f9b",
+    "file_name": "switcher-before-dark.png",
+    "current_version_number": 0,
+    "restored_from_version_number": null,
+    "xattrs": [
+      {
+        "name": "user.library-file-version",
+        "value": "0"
+      }
+    ],
+    "directory_id": "libdir_1698a40024d881919368ff03c02dba6b",
+    "mime_type": "image/png",
+    "library_artifact_type": "image",
+    "file_size_bytes": 32601,
+    "width": 960,
+    "height": 540,
+    "sha256": "600e372bfac8a1ea05e252342e0693dbc3b0855a503e12414038bca397390303",
+    "source_commit": "e2a318647d486bdf0f377151db7ac36e4ba0ed4c"
+  },
+  {
+    "operation": "create_library_file",
+    "status": "succeeded",
+    "path": "/switcher-before-large-text.png",
+    "file_id": "file_00000000b62881f5b82b0397e6b09936",
+    "library_file_id": "libfile_4b0bf1d789e48191a8b1ac85c5ada724",
+    "file_name": "switcher-before-large-text.png",
+    "current_version_number": 0,
+    "restored_from_version_number": null,
+    "xattrs": [
+      {
+        "name": "user.library-file-version",
+        "value": "0"
+      }
+    ],
+    "directory_id": "libdir_1698a40024d881919368ff03c02dba6b",
+    "mime_type": "image/png",
+    "library_artifact_type": "image",
+    "file_size_bytes": 37141,
+    "width": 800,
+    "height": 600,
+    "sha256": "9fffa22ddc3bf740e26ce6001140d09c2a6fa3ec3734fe454342350ca99a2fcf",
+    "source_commit": "e2a318647d486bdf0f377151db7ac36e4ba0ed4c"
+  },
+  {
+    "operation": "create_library_file",
+    "status": "succeeded",
+    "path": "/switcher-after-dark.png",
+    "file_id": "file_0000000041a481f59cbe42bf457d6d9f",
+    "library_file_id": "libfile_feb6097cd0a481919a34a98ea670abf1",
+    "file_name": "switcher-after-dark.png",
+    "current_version_number": 0,
+    "restored_from_version_number": null,
+    "xattrs": [
+      {
+        "name": "user.library-file-version",
+        "value": "0"
+      }
+    ],
+    "directory_id": "libdir_1698a40024d881919368ff03c02dba6b",
+    "mime_type": "image/png",
+    "library_artifact_type": "image",
+    "file_size_bytes": 27626,
+    "width": 960,
+    "height": 540,
+    "sha256": "385646f2aec0ce53397ecae02bccf98cb62cfdda426019284dec60eb3948d38b",
+    "source_commit": "b0cff0c012271f537ad86b90bbdaae7251d39200"
+  },
+  {
+    "operation": "create_library_file",
+    "status": "succeeded",
+    "path": "/switcher-after-light.png",
+    "file_id": "file_000000005b5c81f7a119fe1de4bd673a",
+    "library_file_id": "libfile_4e98801eda108191b848b83e3d769028",
+    "file_name": "switcher-after-light.png",
+    "current_version_number": 0,
+    "restored_from_version_number": null,
+    "xattrs": [
+      {
+        "name": "user.library-file-version",
+        "value": "0"
+      }
+    ],
+    "directory_id": "libdir_1698a40024d881919368ff03c02dba6b",
+    "mime_type": "image/png",
+    "library_artifact_type": "image",
+    "file_size_bytes": 30449,
+    "width": 960,
+    "height": 540,
+    "sha256": "26e11e9d2baefa7d9249b99649aad3fcbfb039880fae4316b08f28f149da09c3",
+    "source_commit": "b0cff0c012271f537ad86b90bbdaae7251d39200"
+  },
+  {
+    "operation": "create_library_file",
+    "status": "succeeded",
+    "path": "/switcher-after-high-contrast.png",
+    "file_id": "file_00000000d69481f5999588d6e57ec067",
+    "library_file_id": "libfile_32383355b25881919020249fc4be21c0",
+    "file_name": "switcher-after-high-contrast.png",
+    "current_version_number": 0,
+    "restored_from_version_number": null,
+    "xattrs": [
+      {
+        "name": "user.library-file-version",
+        "value": "0"
+      }
+    ],
+    "directory_id": "libdir_1698a40024d881919368ff03c02dba6b",
+    "mime_type": "image/png",
+    "library_artifact_type": "image",
+    "file_size_bytes": 28084,
+    "width": 960,
+    "height": 540,
+    "sha256": "878b68e0a1394cc29e2a8958a194033a79aef2d4a9e44572d2eecfd026fa10bb",
+    "source_commit": "b0cff0c012271f537ad86b90bbdaae7251d39200"
+  },
+  {
+    "operation": "create_library_file",
+    "status": "succeeded",
+    "path": "/switcher-after-large-text.png",
+    "file_id": "file_00000000b02481f7a7db8ca57d483620",
+    "library_file_id": "libfile_a73f279b8ba48191b87b057a569f2658",
+    "file_name": "switcher-after-large-text.png",
+    "current_version_number": 0,
+    "restored_from_version_number": null,
+    "xattrs": [
+      {
+        "name": "user.library-file-version",
+        "value": "0"
+      }
+    ],
+    "directory_id": "libdir_1698a40024d881919368ff03c02dba6b",
+    "mime_type": "image/png",
+    "library_artifact_type": "image",
+    "file_size_bytes": 30850,
+    "width": 800,
+    "height": 600,
+    "sha256": "ed172f932db7ab47e1de881e012e5b1c9f57dccc88759e8f723f2545914967bf",
+    "source_commit": "b0cff0c012271f537ad86b90bbdaae7251d39200"
+  },
+  {
+    "operation": "create_library_file",
+    "status": "succeeded",
+    "path": "/switcher-after-ui-text-scaled.png",
+    "file_id": "file_000000009e8081f786ce6e7ce420c444",
+    "library_file_id": "libfile_adec08a1899481918dc3c7dc5c99c48a",
+    "file_name": "switcher-after-ui-text-scaled.png",
+    "current_version_number": 0,
+    "restored_from_version_number": null,
+    "xattrs": [
+      {
+        "name": "user.library-file-version",
+        "value": "0"
+      }
+    ],
+    "directory_id": "libdir_1698a40024d881919368ff03c02dba6b",
+    "mime_type": "image/png",
+    "library_artifact_type": "image",
+    "file_size_bytes": 39697,
+    "width": 960,
+    "height": 640,
+    "sha256": "c8c57c1abcf14a6febdc7554cafa3ba9c94912420918105b601d4d458b7e7d5b",
+    "source_commit": "b0cff0c012271f537ad86b90bbdaae7251d39200"
+  },
+  {
+    "operation": "create_library_file",
+    "status": "succeeded",
+    "path": "/switcher-after-narrow.png",
+    "file_id": "file_00000000da7481f7a7521f1f5f10b40f",
+    "library_file_id": "libfile_cdc90d41db708191be93feb88d8b9950",
+    "file_name": "switcher-after-narrow.png",
+    "current_version_number": 0,
+    "restored_from_version_number": null,
+    "xattrs": [
+      {
+        "name": "user.library-file-version",
+        "value": "0"
+      }
+    ],
+    "directory_id": "libdir_1698a40024d881919368ff03c02dba6b",
+    "mime_type": "image/png",
+    "library_artifact_type": "image",
+    "file_size_bytes": 21232,
+    "width": 320,
+    "height": 480,
+    "sha256": "b743267c2e88d02c0a3017cfa11aab32f718c4818eefd4ab60f238fc448d3475",
+    "source_commit": "b0cff0c012271f537ad86b90bbdaae7251d39200"
+  }
+]

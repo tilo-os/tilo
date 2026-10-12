@@ -190,10 +190,9 @@ impl LegacyWindows {
                 app_id,
                 ..
             } if *source_peer == own => {
-                // Keyframes are found in the bitstream; browsers decode
-                // H.264, which the session picks for a viewer that never
-                // advertised codecs.
-                if codec != "h264" || app_id.is_empty() {
+                // Browsers decode H.264, which the session picks for a viewer
+                // that never advertised codecs, and draw paint streams.
+                if !wire::bridged_codec(codec) || app_id.is_empty() {
                     tracing::debug!(codec, app_id, "legacy window stream not bridged");
                     return;
                 }
@@ -369,7 +368,7 @@ impl LegacyWindows {
         encoded: &[u8],
         ts_ns: u64,
     ) {
-        let key = wire::h264_keyframe(encoded);
+        let key = wire::keyframe(&stream.listed.codec, encoded);
         if !key && stream.sequence.is_empty() {
             return;
         }
@@ -617,9 +616,7 @@ impl LegacyWindows {
 )]
 mod tests {
     use super::*;
-    use tilo_moq::live::{
-        Admission, AuthorizationStatus, LiveAuthority, LiveSession, LoopbackLive,
-    };
+    use tilo_moq::live::{AuthorizationStatus, Denied, LiveAuthority, LiveSession, LoopbackLive};
 
     const WORKSPACE: u64 = 0x5eed;
     const SESSION: [u8; 32] = [7; 32];
@@ -648,11 +645,11 @@ mod tests {
     }
     struct Authority;
     impl LiveAuthority for Authority {
-        fn try_admit(&self, token: &[u8]) -> Result<Arc<dyn LiveSession>, Admission> {
+        fn try_admit(&self, token: &[u8]) -> Result<Arc<dyn LiveSession>, Denied> {
             if token == b"viewer" {
                 Ok(Arc::new(Viewer(live_room(WORKSPACE))))
             } else {
-                Err(Admission::Denied)
+                Err(Denied)
             }
         }
         fn presence_seq(&self, _: &[u8]) -> Option<u64> {
@@ -673,12 +670,15 @@ mod tests {
         }
     }
     fn start(surface: u64) -> NeighbourMsg {
+        start_with(surface, wire::H264)
+    }
+    fn start_with(surface: u64, codec: &str) -> NeighbourMsg {
         NeighbourMsg::SurfaceStreamStart {
             surface,
             source_peer: own(),
             width: 640,
             height: 480,
-            codec: "h264".into(),
+            codec: codec.into(),
             ts: 1,
             sender_monotonic_ns_at_send: 0,
             colorimetry: None,
@@ -829,6 +829,74 @@ mod tests {
         })
         .await;
         assert!(emptied);
+    }
+
+    #[tokio::test]
+    async fn paint_streams_reach_a_live_member_grouped_from_whole_frames() {
+        const KEY: [u8; 4] = [0, 9, 9, 9];
+        const PATCHES: [u8; 3] = [1, 8, 8];
+        let live = LoopbackLive::start(Arc::new(Authority)).unwrap();
+        let viewer = connect_viewer(&live).await;
+        let bridge = LegacyWindows::new(live.relay.clone(), HOST);
+        let now = Instant::now();
+        let host = tilo_peer_state::peer_handle(&HOST);
+        observe(&bridge, &grant(7, host, "granted"));
+        observe(&bridge, &start_with(7, wire::PAINT));
+        bridge.maintain(now);
+        let path = format!(
+            "tilo-live/{}/{}",
+            live_room(WORKSPACE),
+            hex::encode(SESSION)
+        );
+        let namespace = tilo_test_env::within("the session namespace", viewer.member(&path))
+            .await
+            .expect("announced by the index");
+        // Patches before a whole frame have nothing to apply to.
+        observe(&bridge, &frame(7, &PATCHES));
+        observe(&bridge, &frame(7, &KEY));
+        let mut track = namespace
+            .track(&track(&wire::stream_record(7)))
+            .unwrap()
+            .subscribe(moq_net::track::Subscription::default().with_max_age(Duration::from_secs(2)))
+            .await
+            .unwrap();
+        let mut group = tilo_test_env::within("the replayed group", async {
+            loop {
+                bridge.maintain(now);
+                if let Ok(Ok(Some(group))) =
+                    tokio::time::timeout(Duration::from_millis(50), track.recv_group()).await
+                {
+                    return group;
+                }
+            }
+        })
+        .await;
+        let mut next = async || {
+            let frame = tilo_test_env::within("a frame", group.read_frame())
+                .await
+                .unwrap()
+                .unwrap();
+            wire::Frame::decode(&frame.payload).unwrap()
+        };
+        let wire::Frame::Start(listed) = next().await else {
+            panic!("a group opens with its stream");
+        };
+        assert_eq!(listed.codec, wire::PAINT);
+        let wire::Frame::Chunk { flags, data, .. } = next().await else {
+            panic!("the whole frame follows the start");
+        };
+        assert_eq!(
+            (flags & wire::CHUNK_KEY, data.as_slice()),
+            (wire::CHUNK_KEY, KEY.as_slice())
+        );
+        observe(&bridge, &frame(7, &PATCHES));
+        let wire::Frame::Chunk { flags, data, .. } = next().await else {
+            panic!("patches join the group");
+        };
+        assert_eq!(
+            (flags & wire::CHUNK_KEY, data.as_slice()),
+            (0, PATCHES.as_slice())
+        );
     }
 
     #[tokio::test]

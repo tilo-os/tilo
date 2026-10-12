@@ -1,463 +1,437 @@
-//! Chat as a [`tilo_resource::Resource`]: one action vocabulary, one publish
-//! path. Composer drafts are rich-text child resources.
+//! Chat as every host runs it: the [`Chat`] record, what it answers to
+//! search and to a read, and the window over it.
 //!
-//! Document mutations (create channel/category, rename/archive/delete channel,
-//! post/edit/react/pin/delete message, …) live on this resource via
-//! [`Resource::children`]. Hosted [`PublishesResources::resources`] returns
-//! only live extras that are not document state — never a second hand-built
-//! `chat.workspace` Document door beside [`tilo_resource::publish`].
+//! The record's verbs and storage are in [`crate::record`]. What the window
+//! adds to the published tree is not document state: the effects it offers
+//! on the items it shows (open a conversation, reveal or read a message,
+//! join a voice channel's call), as live rows merged into the item
+//! resources the record publishes ([`crate::effects`]).
 
-use automerge::{AutoCommit, ObjType, ROOT, ReadDoc, Value};
-use ui::framework::{Dispatcher, ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
-use ui::tilo_actions::{EncodedAction, Resource as PublishedResource};
-use ui::tilo_resource::{ActionDecl, Doc, ModelError, Resource, SearchEntry};
+use tilo_content::ContentStore;
+use ui::framework::{
+    EffectAnswer, EffectCx, EffectStatus, LiveRow, ResourceApp, ResourceSurface, RunMode, SeedCx,
+    SurfaceCx, ViewCx,
+};
+use ui::tilo_resource::items::{item_of_resource, item_resource_id};
+use ui::tilo_resource::{Id, Invoke, SearchEntry};
 use ui::widget::Element;
 
-use crate::actions::{
-    self, CHAT_ACTION_TYPE, ChatAction, MessageResource, RESOLVED_CHANNEL_MESSAGES,
-    publish_document_children, register,
-};
-use crate::app::ChatApp;
-use crate::doc::ChatDoc;
-use crate::model::{Category, Channel, Workspace};
+use crate::app::{ChatApp, ChatRuntime};
+use crate::effects::ChatEffect;
+use crate::identity::LocalIdentity;
+pub use crate::record::Chat;
+use crate::record::chat;
 
-/// Lightweight projection of the shared chat document for search and publish.
-#[derive(Clone, Debug, Default)]
-pub struct ChatState {
-    pub workspaces: Vec<Workspace>,
-    pub channels: Vec<Channel>,
-    pub categories: Vec<Category>,
-    /// Recent messages keyed by channel id — base for message Document ops.
-    pub channel_messages: Vec<(String, Vec<MessageResource>)>,
-    /// Top-level message counts keyed by channel id — base for mark-read.
-    pub channel_top_level: Vec<(String, i64)>,
-    /// Channel / thread keys that already have a rich-text draft body.
-    pub draft_keys: Vec<String>,
-    /// Local peer id used to bake post / react / mark-read Document payloads.
-    pub me: String,
-    /// Mentionable people for palette `post` (document users).
-    pub participants: Vec<crate::mention::Participant>,
-}
-
-/// The chat workspace resource — rooms, channels and nested draft bodies.
-pub struct Chat;
-
-impl Resource for Chat {
-    const KIND: &'static str = "chat.workspace";
-    const LABEL: &'static str = "Chat";
-    const ACTION_TYPE: &'static str = CHAT_ACTION_TYPE;
-
-    type State = ChatState;
-    type Action = ChatAction;
-
-    fn register(registry: &mut tilo_actions::ActionRegistry) {
-        register(registry);
-    }
-
-    fn read(doc: &Doc) -> Result<ChatState, ModelError> {
-        let workspaces = ChatDoc::list_workspaces(doc);
-        let channels = ChatDoc::list_channels(doc);
-        let categories = ChatDoc::list_categories(doc);
-        let users = ChatDoc::list_users(doc);
-        let agents = ChatDoc::agent_authors(doc);
-        // Prefer the demo peer when the document still names it — tests and
-        // `--shots`. Otherwise the resolved local identity for a live peer.
-        let me = if users.iter().any(|user| user.id == crate::model::ME) {
-            crate::model::ME.to_string()
-        } else {
-            crate::identity::LocalIdentity::resolve().id
+impl Chat {
+    /// What search finds in the chat: its workspaces, channels, categories,
+    /// messages, reviewed reports and people, each opening the item it
+    /// names.
+    #[must_use]
+    pub fn search(&self) -> Vec<SearchEntry> {
+        let workspace_name = |id: &Id| {
+            self.workspaces
+                .get(id)
+                .map_or("", |workspace| workspace.name.as_str())
         };
-        let participants = users
-            .iter()
-            .map(|user| crate::mention::Participant {
-                id: user.id.clone(),
-                name: user.name.clone(),
-                is_agent: user.is_agent,
-            })
-            .collect();
-        let mut channel_messages = Vec::new();
-        let mut channel_top_level = Vec::new();
-        for channel in &channels {
-            channel_top_level.push((
-                channel.id.clone(),
-                ChatDoc::top_level_count(doc, &channel.id) as i64,
-            ));
-            let mut messages = ChatDoc::list_messages(doc, &channel.id);
-            let recent =
-                messages.split_off(messages.len().saturating_sub(RESOLVED_CHANNEL_MESSAGES));
-            let recent = recent
-                .into_iter()
-                .map(|message| {
-                    let label = message_label(
-                        &message.author,
-                        &message.text,
-                        message.attachment.as_ref(),
-                        &users,
-                        &agents,
-                    );
-                    MessageResource {
-                        id: message.id,
-                        author: message.author,
-                        label,
-                        pinned: message.pinned,
-                        parent: message.parent,
-                        attachment: message.attachment.as_ref().map(|attachment| {
-                            actions::AttachmentResource {
-                                name: attachment.name().to_owned(),
-                                blob: attachment.blob().to_owned(),
-                            }
-                        }),
-                        reactions: message
-                            .reactions
-                            .iter()
-                            .map(|reaction| actions::ReactionResource {
-                                emoji: reaction.emoji.clone(),
-                                count: reaction.count(),
-                                reacted_by_me: reaction.reacted_by(&me),
-                            })
-                            .collect(),
-                    }
-                })
-                .collect();
-            channel_messages.push((channel.id.clone(), recent));
-        }
-        // Every channel creation scaffolds an empty rich draft so first
-        // keystrokes converge. Catalogue only drafts that already have text.
-        let draft_keys = draft_keys(doc)
-            .into_iter()
-            .filter(|key| !ChatDoc::draft_text(doc, key).is_empty())
-            .collect();
-        Ok(ChatState {
-            workspaces,
-            channels,
-            categories,
-            channel_messages,
-            channel_top_level,
-            draft_keys,
-            me,
-            participants,
-        })
-    }
-
-    fn initialize(doc: &mut Doc) -> Result<(), ModelError> {
-        // Empty document: no demo people, messages or starter rooms. Shared
-        // root maps are created lazily by the first document action.
-        let _ = doc;
-        Ok(())
-    }
-
-    fn declarations() -> Vec<ActionDecl<Self>> {
-        // Prompted create-channel / create-category specs stay on workspace
-        // children (continuation identity). Stub root declarations would
-        // shadow those prompts.
-        Vec::new()
-    }
-
-    fn children(state: &ChatState) -> Vec<PublishedResource> {
-        let mut children = publish_document_children(state);
-        // Each composer draft is a nested rich-text resource.
-        children.extend(state.draft_keys.iter().map(|key| {
-            PublishedResource::new(
-                format!("chat.draft:{key}"),
-                tilo_document::RichText::KIND,
-                format!("Draft · {key}"),
+        let anchor = |field: &str, id: &Id| item_resource_id::<Self>(field, id);
+        let workspaces = self.workspaces.iter().map(|(id, workspace)| {
+            SearchEntry::new(&workspace.name, "Workspace").anchored(anchor("workspaces", id))
+        });
+        let channels = self.channels.iter().map(|(id, channel)| {
+            SearchEntry::new(
+                channel.name.clone(),
+                format!("{} {}", channel.topic, workspace_name(&channel.workspace)),
             )
-        }));
-        children
+            .anchored(anchor("channels", id))
+        });
+        let categories = self.categories.iter().map(|(id, category)| {
+            SearchEntry::new(&category.name, workspace_name(&category.workspace))
+                .anchored(anchor("categories", id))
+        });
+        let messages = self.messages.iter().map(|(id, message)| {
+            let author = self
+                .people
+                .iter()
+                .find(|person| person.id == message.author)
+                .map_or(message.author.0.as_str(), |person| person.name.as_str());
+            SearchEntry::new(author, &message.text).anchored(anchor("messages", id))
+        });
+        let feedback = self.feedback.iter().filter_map(|(id, report)| {
+            let submission = report.submission.0.as_ref()?;
+            Some(
+                SearchEntry::new(
+                    &submission.feedback.text,
+                    workspace_name(&Id::from_raw(submission.destination.room.clone())),
+                )
+                .anchored(anchor("feedback", id)),
+            )
+        });
+        let people = self.people.iter().map(|person| {
+            SearchEntry::new(&person.name, "Person")
+                .anchored(anchor("people", &Id::from_raw(person.id.0.clone())))
+        });
+        workspaces
+            .chain(channels)
+            .chain(categories)
+            .chain(messages)
+            .chain(feedback)
+            .chain(people)
+            .collect()
     }
 
-    fn search(state: &ChatState) -> Vec<SearchEntry> {
-        let workspaces = state.workspaces.iter().map(|workspace| SearchEntry {
-            anchor: Some(format!("chat.workspace:{}", workspace.id)),
-            title: workspace.name.clone(),
-            text: String::new(),
-            action: None,
-        });
-        let channels = state.channels.iter().map(|channel| SearchEntry {
-            anchor: Some(format!("chat.channel:{}", channel.id)),
-            title: channel.name.clone(),
-            text: channel.topic.clone(),
-            action: None,
-        });
-        workspaces.chain(channels).collect()
+    /// What the chat holds, for a caller that reads it: with no item, its
+    /// workspaces and their channels; with a channel, its latest messages;
+    /// with a message, the message.
+    ///
+    /// # Errors
+    /// When `item` names nothing in the chat.
+    pub fn content(&self, item: Option<&Id>) -> Result<serde_json::Value, String> {
+        let Some(item) = item else {
+            return Ok(serde_json::json!({
+                "workspaces": self.workspaces.iter().map(|(id, workspace)| serde_json::json!({
+                    "id": id,
+                    "name": workspace.name,
+                    "channels": self.channels.iter()
+                        .filter(|(_, channel)| channel.workspace == *id && !channel.archived)
+                        .map(|(id, channel)| serde_json::json!({
+                            "id": id,
+                            "name": channel.name,
+                            "topic": channel.topic,
+                            "voice": channel.kind == crate::model::ChannelKind::Voice,
+                        }))
+                        .collect::<Vec<_>>(),
+                })).collect::<Vec<_>>(),
+            }));
+        };
+        let (field, id) = item_of_resource::<Self>(item.as_str())
+            .map_or_else(|| ("", item.clone()), |(field, id)| (field, id));
+        if field != "messages"
+            && let Some(channel) = self.channels.get(&id)
+        {
+            let rows = self.message_rows(id.as_str());
+            let recent = rows.len().saturating_sub(crate::effects::RECENT_MESSAGES);
+            return Ok(serde_json::json!({
+                "id": id,
+                "name": channel.name,
+                "topic": channel.topic,
+                "messages": rows.get(recent..).unwrap_or_default().iter().map(|message| {
+                    serde_json::json!({
+                        "id": message.id,
+                        "author": message.author,
+                        "ts": message.ts,
+                        "parent": message.parent,
+                        "text": message.text,
+                    })
+                }).collect::<Vec<_>>(),
+            }));
+        }
+        let message = self
+            .message_row(id.as_str())
+            .ok_or_else(|| format!("there is no `{item}` in this chat"))?;
+        Ok(serde_json::json!({
+            "id": message.id,
+            "channel": message.channel,
+            "parent": message.parent,
+            "author": message.author,
+            "ts": message.ts,
+            "edited": message.edited,
+            "text": message.text,
+            "work": message.work,
+            "reference": message.reference,
+            "sourceProvider": message.source_provider,
+        }))
     }
 }
 
-/// Hosted-only extras that are not document state. Channel/message Document
-/// ops stay on [`tilo_resource::publish`]. Chat currently has no separate
-/// typing / in-flight publish rows — return empty once the door is complete.
-pub(crate) fn live_extras(_app: &ChatApp) -> Vec<PublishedResource> {
-    Vec::new()
-}
-
-/// Framework app: the chat widget is the surface over [`Chat`].
+/// Chat as every host runs and mounts it: the chat widget is the surface
+/// over [`Chat`], kept by the room as its own record.
 pub struct ChatShell;
+
+/// Every named scenario `--shots --scenario NAME` captures.
+pub(crate) const SCENARIOS: &[&str] = &[
+    "agent-work",
+    "narrow",
+    "history",
+    "compact",
+    "starter",
+    "people",
+    "thread-narrow",
+    "collaboration",
+    "live-context",
+    "context",
+    "msgmenu",
+    "attach",
+    "attach-loading",
+    "attach-error",
+    "edit",
+    "composer",
+    "call",
+    "share",
+    "floating-call-attached",
+    "floating-call",
+    "floating-call-hover",
+    "floating-call-returning",
+    "floating-call-returned",
+];
+
+/// The draft the `composer` scenario shows mid-compose.
+const COMPOSER_DRAFT: &str = "Shipping the composer on the shared TextInput — real caret, \
+     selection, and Ctrl+C/V now.\nEnter sends, Shift+Enter for a new line.\nPlease check teh adress";
 
 impl ResourceApp for ChatShell {
     type Resource = Chat;
     const ID: &'static str = "so.tilo.chat";
     const TITLE: &'static str = "Chat";
     const ICON: Option<&'static str> = Some("chat");
-    fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
-        (1280, 800)
-    }
+    const ROOM_RECORD: bool = true;
 
     fn view(cx: &mut ViewCx<Chat>) -> Element {
-        cx.surface(ChatApp::new())
+        crate::i18n::ensure();
+        let me = cx.me().unwrap_or_default().to_owned();
+        let live = cx.mode().is_live();
+        // Native path access controls attachment import. A live browser
+        // independently discovers its host's voice service through media replies.
+        let native = live && crate::app::native_file_access();
+        let content = cx.content().unwrap_or_else(ContentStore::memory);
+        // A capture shows the app as a device with its services draws it;
+        // nothing it stages reaches them.
+        let runtime = if native || cx.mode() == RunMode::Capture {
+            ChatRuntime::Native
+        } else {
+            ChatRuntime::Unavailable
+        };
+        let identity = LocalIdentity::for_participant(&me);
+        let app = ChatApp::new(identity, runtime, content);
+        // A search hit, or an agent's `open`, shows the item it names.
+        cx.on_open(app.opener());
+        cx.surface(if live && ui::local_identity::bound().is_some() {
+            app.announcing()
+        } else {
+            app
+        })
+    }
+
+    fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {
+        Some(&crate::i18n::CATALOG)
     }
 
     fn scenarios() -> &'static [&'static str] {
-        &[
-            "narrow",
-            "history",
-            "compact",
-            "starter",
-            "people",
-            "thread-narrow",
-            "collaboration",
-            "context",
-            "msgmenu",
-            "attach",
-            "attach-loading",
-            "attach-error",
-            "edit",
-            "composer",
-            "call",
-            "share",
-            "floating-call-attached",
-            "floating-call",
-            "floating-call-hover",
-            "floating-call-returning",
-            "floating-call-returned",
-        ]
+        SCENARIOS
+    }
+
+    /// `agent-work` is the demo conversation and an agent's reply, each
+    /// change written by whoever made it.
+    fn fixture(fixture: &mut ui::framework::Fixture<Chat>) {
+        if fixture.scenario() == Some("agent-work") {
+            for (author, invoke) in agent_work_scenario() {
+                fixture.version(author, crate::demo::NOW * 1000, invoke);
+            }
+        }
+    }
+
+    /// The first-run workspace for `starter`, the demo conversation for
+    /// every other scenario, both read by the capture's own person.
+    fn scenario(name: Option<&str>) -> Vec<Invoke<Chat>> {
+        match name {
+            Some("agent-work") => Vec::new(),
+            Some("starter") => {
+                let you = LocalIdentity::demo();
+                vec![Chat::BEGIN_CHAT.with(chat::BeginChat {
+                    workspace: None,
+                    workspace_name: None,
+                    name: you.name,
+                    initials: you.initials,
+                    color: u32::try_from(you.color_idx).unwrap_or_default(),
+                })]
+            }
+            _ => {
+                let mut invokes = demo_invokes();
+                if name == Some("composer") {
+                    // The composer mid-compose: a multi-line draft in the
+                    // channel shown.
+                    invokes.extend(COMPOSER_DRAFT.lines().filter_map(|line| {
+                        Chat::paths()
+                            .drafts
+                            .key("c_crit")
+                            .perform(&tilo_document::RichTextAction::AppendParagraph {
+                                text: line.to_owned(),
+                            })
+                            .ok()
+                            .and_then(|edit| Invoke::edit(&edit).ok())
+                    }));
+                }
+                invokes
+            }
+        }
+    }
+
+    /// A new record's first workspace, owned by its creator: the one the
+    /// host admitted it for, or a starter workspace. A capture's record is
+    /// its scenario's instead.
+    fn seed(cx: &SeedCx<'_>) -> Vec<Invoke<Chat>> {
+        if cx.host().is_some_and(|host| host.capture().is_some()) {
+            return Vec::new();
+        }
+        let creator = LocalIdentity::for_participant(cx.me());
+        let (workspace, workspace_name) = cx
+            .creation_workspace()
+            .map_or((None, None), |(workspace, name)| {
+                (Some(workspace.to_owned()), Some(name.to_owned()))
+            });
+        vec![Chat::BEGIN_CHAT.with(chat::BeginChat {
+            workspace,
+            workspace_name,
+            name: creator.name,
+            initials: creator.initials,
+            color: u32::try_from(creator.color_idx).unwrap_or_default(),
+        })]
     }
 }
 
-impl ResourceSurface<Chat> for ChatApp {
-    fn present(&mut self, state: &std::rc::Rc<ChatState>) {
-        // Adopt shared rooms/channels only — never wipe unpublished local
-        // messages or an unsynced workspace the door has not projected yet.
-        self.adopt_resource_state(state);
+/// The demo conversation, read by [`crate::model::ME`], as a scenario
+/// writes it.
+fn demo_invokes() -> Vec<Invoke<Chat>> {
+    crate::demo::edits(&crate::demo::demo(crate::model::ME))
+        .iter()
+        .filter_map(|edit| Invoke::edit(edit).ok())
+        .collect()
+}
+
+/// The agent the `agent-work` scenario summons.
+pub(crate) const DEMO_AGENT: &str = "agent-task:11111111-1111-4111-8111-111111111111";
+/// The message summoning it.
+pub(crate) const DEMO_SUMMONS: &str = "m_agent_request";
+
+/// `agent-work`: the demo conversation and [`agent_work_steps`].
+pub(crate) fn agent_work_scenario() -> Vec<(&'static str, Invoke<Chat>)> {
+    let me = crate::model::ME;
+    demo_invokes()
+        .into_iter()
+        .map(|invoke| (me, invoke))
+        .chain(agent_work_steps())
+        .collect()
+}
+
+/// On the demo conversation: a person summoning an agent, the agent
+/// introducing itself and being named, and its record of the work it took
+/// on, each by its author.
+pub(crate) fn agent_work_steps() -> Vec<(&'static str, Invoke<Chat>)> {
+    let me = crate::model::ME;
+    let summons = crate::record::Message {
+        channel: Id::from_raw("c_crit"),
+        author: ui::tilo_resource::Atom(me.to_owned()),
+        ts: crate::demo::NOW - 120,
+        text: "@Tide add the revenue curve to Calculator and keep the current bounds.".into(),
+        mentions: ui::tilo_resource::Json(vec![crate::mention::Mention {
+            user: DEMO_AGENT.into(),
+            start: 0,
+            len: "@Tide".len(),
+            is_agent: true,
+        }]),
+        ..crate::record::Message::default()
+    };
+    let at = crate::demo::demo(me).messages.len();
+    let ask = Chat::paths()
+        .messages
+        .insert_as(&Id::from_raw(DEMO_SUMMONS), at, &summons);
+    let mut steps: Vec<(&'static str, Invoke<Chat>)> = Invoke::edit(&ask)
+        .into_iter()
+        .map(|invoke| (me, invoke))
+        .collect();
+    steps.push((
+        DEMO_AGENT,
+        Chat::INTRODUCE.with(chat::Introduce {
+            name: "Tide".into(),
+            initials: "TI".into(),
+            color: 6,
+        }),
+    ));
+    steps.push((
+        me,
+        Chat::NAME_AGENT.with(chat::NameAgent {
+            participant: DEMO_AGENT.into(),
+            name: "Tide".into(),
+        }),
+    ));
+    steps.push((DEMO_AGENT, agent_work(&Id::from_raw(DEMO_SUMMONS))));
+    steps
+}
+
+/// The demo agent's record of the work `summons` asked of it.
+pub(crate) fn agent_work(summons: &Id) -> Invoke<Chat> {
+    Chat::RECORD_WORK.with(chat::RecordWork {
+        message: summons.clone(),
+        work: crate::record::WorkUpdate {
+            state: "doing".into(),
+            app: None,
+            did: Some("Add function".into()),
+            about: Some("Revenue curve, preserving the current graph bounds".into()),
+            route: Some("model".into()),
+            why: Some(
+                "Calculator offers the requested graph operation and no bounds change is needed."
+                    .into(),
+            ),
+            trace: vec![crate::record::StepUpdate {
+                id: "00000000-0000-4000-8000-000000000001".into(),
+                sequence: 0,
+                resource: "calculator.workspace".into(),
+                label: "Add function".into(),
+                outcome: "asked".into(),
+                why: None,
+            }],
+        },
+        say: None,
+    })
+}
+
+impl ResourceSurface<Chat, ChatEffect> for ChatApp {
+    fn present(&mut self, _state: &std::rc::Rc<Chat>) {
+        // The surface reads the document it syncs with, and reloads when its
+        // heads move.
     }
 
     fn attach(&mut self, cx: SurfaceCx<Chat>) {
         self.attach_framework(cx.dispatcher());
-    }
-}
-
-/// Framework dispatcher when hosted; the local action host for standalone
-/// tests and the screenshot launcher.
-pub(crate) struct ActionSink {
-    pub(crate) local: ui::ActionHost,
-    pub(crate) framework: Option<Dispatcher<Chat>>,
-    /// Set by [`Self::attach`]; tests can flip it without a real dispatcher.
-    pub(crate) hosted: bool,
-    pub(crate) last: Option<EncodedAction>,
-}
-
-impl Default for ActionSink {
-    fn default() -> Self {
-        Self {
-            local: ui::ActionHost::new(),
-            framework: None,
-            hosted: false,
-            last: None,
-        }
-    }
-}
-
-impl ActionSink {
-    pub(crate) fn attach(&mut self, dispatcher: Dispatcher<Chat>) {
-        self.framework = Some(dispatcher);
-        self.hosted = true;
-    }
-
-    pub(crate) fn is_hosted(&self) -> bool {
-        self.hosted
-    }
-
-    pub(crate) fn dispatch_with_context(
-        &mut self,
-        doc: &mut AutoCommit,
-        type_id: &str,
-        action: &ChatAction,
-        context: ui::tilo_actions::ActionContext,
-    ) {
-        match &self.framework {
-            Some(dispatcher) => {
-                self.last = Some(crate::actions::encode(action));
-                let _ = dispatcher.apply_now_with(doc, action, context);
-            }
-            None => self
-                .local
-                .dispatch_with_context(doc, type_id, action, context),
+        if cx.mode().is_live() {
+            self.follow_preferences(cx.settings());
         }
     }
 
-    pub(crate) fn take_committed(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.local.take_committed()
+    fn stage(&mut self, scenario: Option<&str>) {
+        self.stage_scenario(scenario.unwrap_or_default());
     }
 
-    #[allow(
-        dead_code,
-        reason = "ChatApp tests read the last dispatch; the hosted path does not"
-    )]
-    pub(crate) fn last_dispatched(&self) -> Option<&EncodedAction> {
-        if self.framework.is_some() {
-            self.last.as_ref()
-        } else {
-            self.local.last_dispatched()
+    fn effect(&mut self, effect: ChatEffect, cx: &mut EffectCx<Chat, Self>) -> EffectAnswer {
+        if matches!(
+            effect,
+            ChatEffect::CopyResourceLink { .. } | ChatEffect::OpenResourceLink { .. }
+        ) {
+            return self.begin_resource_navigation(&effect, cx.reply());
         }
+        if let Some(url) = crate::external::browser_destination(&effect)? {
+            return Ok(cx.thread(
+                move |_| ui::widget::try_open_external_url(&url).map_err(|error| error.to_string()),
+                |_: &mut Self, opened, _| opened.map(|()| ui::framework::Effected::done()),
+            ));
+        }
+        self.answer_effect(effect)
     }
 
-    /// Test-only: mark the sink hosted without constructing a framework dispatcher.
-    #[cfg(test)]
-    pub(crate) fn mark_hosted_for_test(&mut self) {
-        self.hosted = true;
+    fn effects(&self) -> Vec<EffectStatus> {
+        self.effect_statuses()
     }
-}
 
-fn draft_keys(doc: &Doc) -> Vec<String> {
-    let Ok(Some((Value::Object(ObjType::Map), drafts))) = doc.get(ROOT, "rich_drafts") else {
-        return Vec::new();
-    };
-    let mut keys: Vec<String> = doc.keys(&drafts).collect();
-    keys.sort();
-    keys
-}
+    /// The effects offered on the workspaces, channels, categories,
+    /// messages, reports and people the window shows: merged into the item
+    /// resources the record publishes.
+    fn live_rows(&self) -> Vec<LiveRow> {
+        self.published_rows()
+    }
 
-fn message_label(
-    author: &str,
-    text: &str,
-    attachment: Option<&crate::model::Attachment>,
-    users: &[crate::model::User],
-    agents: &std::collections::HashMap<String, String>,
-) -> String {
-    crate::actions::message_label_for_resource(author, text, attachment, users, agents)
+    fn live_row(&self, id: &str) -> Option<LiveRow> {
+        self.published_row(id)
+    }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use tilo_actions::OperationKind;
-    use ui::widget::Widget;
-
-    fn seed_doc() -> AutoCommit {
-        let mut doc = AutoCommit::new();
-        ChatDoc::seed_if_empty(&mut doc);
-        doc.commit();
-        doc
-    }
-
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "merged scenario / publish-ownership assertion kept top-to-bottom"
-    )]
-    fn resource_publish_owns_channel_and_message_document_ops_and_hosted_keeps_no_second_door() {
-        let doc = seed_doc();
-        let state = Chat::read(&doc).expect("seeded chat state");
-        let published = ui::tilo_resource::publish::<Chat>("chat.workspace", "Chat", &state);
-        assert_eq!(published.kind, "chat.workspace");
-
-        let workspace = published
-            .children
-            .iter()
-            .find(|child| child.id.as_str() == "chat.workspace:ws_acme")
-            .expect("workspace Document child on the published door");
-        for id in ["new-channel", "new-category"] {
-            assert!(
-                workspace
-                    .actions
-                    .iter()
-                    .any(|action| action.id == id && action.kind == OperationKind::Document),
-                "{id} Document op must ride the workspace child"
-            );
-        }
-
-        let channel = workspace
-            .children
-            .iter()
-            .find(|child| child.id.as_str() == "chat.channel:c_crit")
-            .expect("channel Document child");
-        for id in ["post", "rename", "archive", "mark-read", "delete"] {
-            assert!(
-                channel
-                    .actions
-                    .iter()
-                    .any(|action| action.id == id && action.kind == OperationKind::Document),
-                "{id} Document op must ride the channel child: {:?}",
-                channel
-                    .actions
-                    .iter()
-                    .map(|action| (action.id.as_str(), action.kind))
-                    .collect::<Vec<_>>()
-            );
-        }
-
-        let message = channel
-            .children
-            .iter()
-            .find(|child| child.kind == "chat.message")
-            .expect("message Document child under the channel");
-        for id in ["edit", "react", "pin", "delete"] {
-            assert!(
-                message
-                    .actions
-                    .iter()
-                    .any(|action| action.id == id && action.kind == OperationKind::Document),
-                "{id} Document op must ride the message child"
-            );
-        }
-
-        let mut app = ChatApp::new_ephemeral();
-        let mut seeded = doc.clone();
-        app.sync(&mut seeded, &automerge::ROOT);
-        assert!(!app.is_hosted(), "standalone stays on the local host");
-        let standalone = app.publish_resources(&seeded);
-        assert!(
-            standalone
-                .iter()
-                .any(|resource| resource.kind == "chat.workspace"),
-            "standalone keeps the chat root"
-        );
-
-        app.mark_hosted_for_test();
-        assert!(app.is_hosted());
-        assert!(ui::resources::resource(&app, &seeded, "chat.workspace").is_none());
-        let hosted_channel = ui::resources::resource(&app, &seeded, "chat.channel:c_crit")
-            .expect("a hosted channel is the published row");
-        assert!(
-            hosted_channel
-                .actions
-                .iter()
-                .any(|action| action.id == "post" && action.kind == OperationKind::Document),
-            "the hosted channel keeps the published post action"
-        );
-        let extras = ui::resources::PublishesResources::resources(&app, &seeded);
-        assert!(
-            extras
-                .iter()
-                .all(|resource| resource.kind != "chat.workspace"),
-            "hosted must not republish chat.workspace beside ResourceRoot: {:?}",
-            extras.iter().map(|r| r.id.as_str()).collect::<Vec<_>>()
-        );
-
-        // Empty present must not wipe unpublished local messages.
-        let mut local = ChatApp::new_ephemeral();
-        let mut seeded_local = doc;
-        local.sync(&mut seeded_local, &automerge::ROOT);
-        let before = local.messages.len();
-        assert!(before > 0, "seeded app has local messages");
-        local.adopt_resource_state(&ChatState::default());
-        assert_eq!(
-            local.messages.len(),
-            before,
-            "adopting an empty projection must not clear unpublished messages"
-        );
-        assert!(
-            !local.channels.is_empty(),
-            "empty adopt must not wipe channels either"
-        );
-    }
-}
+mod tests;

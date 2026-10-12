@@ -44,22 +44,22 @@ const DRAWINGS_SHOWS: &[&str] = &["Einstein wrote ", " famously.", " A chart."];
 const DOCX_FIXTURES: &[Fixture] = &[
     Fixture {
         name: "lo-structure.docx",
-        bytes: include_bytes!("../../fixtures/lo-structure.docx"),
+        bytes: include_bytes!(concat!(env!("OUT_DIR"), "/lo-structure.docx")),
         shows: STRUCTURE_SHOWS,
     },
     Fixture {
         name: "lo-annotations.docx",
-        bytes: include_bytes!("../../fixtures/lo-annotations.docx"),
+        bytes: include_bytes!(concat!(env!("OUT_DIR"), "/lo-annotations.docx")),
         shows: ANNOTATIONS_SHOWS,
     },
     Fixture {
         name: "lo-fields.docx",
-        bytes: include_bytes!("../../fixtures/lo-fields.docx"),
+        bytes: include_bytes!(concat!(env!("OUT_DIR"), "/lo-fields.docx")),
         shows: FIELDS_SHOWS,
     },
     Fixture {
         name: "lo-drawings.docx",
-        bytes: include_bytes!("../../fixtures/lo-drawings.docx"),
+        bytes: include_bytes!(concat!(env!("OUT_DIR"), "/lo-drawings.docx")),
         shows: DRAWINGS_SHOWS,
     },
 ];
@@ -67,22 +67,22 @@ const DOCX_FIXTURES: &[Fixture] = &[
 const ODT_FIXTURES: &[Fixture] = &[
     Fixture {
         name: "lo-structure.odt",
-        bytes: include_bytes!("../../fixtures/lo-structure.odt"),
+        bytes: include_bytes!(concat!(env!("OUT_DIR"), "/lo-structure.odt")),
         shows: STRUCTURE_SHOWS,
     },
     Fixture {
         name: "lo-annotations.odt",
-        bytes: include_bytes!("../../fixtures/lo-annotations.odt"),
+        bytes: include_bytes!(concat!(env!("OUT_DIR"), "/lo-annotations.odt")),
         shows: ANNOTATIONS_SHOWS,
     },
     Fixture {
         name: "lo-fields.odt",
-        bytes: include_bytes!("../../fixtures/lo-fields.odt"),
+        bytes: include_bytes!(concat!(env!("OUT_DIR"), "/lo-fields.odt")),
         shows: FIELDS_SHOWS,
     },
     Fixture {
         name: "lo-drawings.odt",
-        bytes: include_bytes!("../../fixtures/lo-drawings.odt"),
+        bytes: include_bytes!(concat!(env!("OUT_DIR"), "/lo-drawings.odt")),
         shows: DRAWINGS_SHOWS,
     },
 ];

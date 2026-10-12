@@ -3,8 +3,8 @@
 use launcher::{
     managed::{
         InstalledManagedPackage, ManagedBinding, ManagedLaunchAuthority, ManagedLaunchEvent,
-        ManagedLauncher, ManagedRuntime, PackageTrust, ProcessIdentity, VerifiedManagedProcess,
-        VerifiedManagedSupervisor,
+        ManagedLaunchScope, ManagedLauncher, ManagedRuntime, PackageTrust, ProcessIdentity,
+        VerifiedManagedProcess, VerifiedManagedSupervisor,
         channel::{ManagedProcessAuthority, PendingManagedConnection},
     },
     services::{EnrolledServiceContext, ManagedProviderSelection},
@@ -138,7 +138,7 @@ fn fixture_package(root: &Path) -> (InstalledManagedPackage, PackageTrust) {
         .unwrap();
     let key = ed25519_dalek::SigningKey::from_bytes(&seed);
     let public = key.verifying_key().to_bytes();
-    let public_hex: String = public.iter().map(|b| format!("{b:02x}")).collect();
+    let public_hex: String = hex::encode(public);
     let manifest = tilo_app_package::Manifest::from_toml_str(&format!(
         r#"
 [package]
@@ -369,8 +369,10 @@ fn qualify_tree(owned_stop: bool) {
         room: uuid::Uuid::new_v4().to_string(),
         app: "so.tilo.agent".into(),
         agent: "tree-fixture".into(),
-        task: "tree-task".into(),
-        run: "tree-run".into(),
+        scope: ManagedLaunchScope::Task {
+            task: "tree-task".into(),
+            run: "tree-run".into(),
+        },
         launch: uuid::Uuid::new_v4().to_string(),
         generation: 1,
     };

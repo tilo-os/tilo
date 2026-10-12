@@ -26,6 +26,19 @@ extend what is on the other side of it.
 A relay itself only runs the first two. A legacy launch on a relay is a request
 to a compute worker that advertises KVM.
 
+## The guest helper
+
+The supervisor mounts its own helper and its exact native loader dependency
+closure as individual read-only files under `/run/ush/bin` and `/run/ush/lib`.
+The host glibc loader resolves that closure before startup; missing libraries
+produce an error before a guest starts. No host library directory or tool is
+mounted, and the environment's `/usr` remains the signed image stack.
+
+The first process enters this private loader and helper directly to install
+Landlock, then executes the environment's shell. Command shims preserve their
+own names for broker dispatch and use a library path scoped to that helper
+exec. The shell and its tools receive no global `LD_LIBRARY_PATH` override.
+
 ## Images
 
 An image is a **tapp package** — signed, BLAKE3-addressed, distributed by the
@@ -46,16 +59,48 @@ them as overlay lower directories inside the guest's user namespace.
 the system app store (`/usr/share/tilo-apps`) with Tilo OS and the
 `tilo-session-apps` package, so the first environment opens offline.
 
+Built from the same snapshot as the OS, most of an env-runtime's files are
+byte-identical to the host's own `/usr`. The OS image therefore ships its tree
+sparse: the files the host already has are left out and named, each with the
+host path that holds the same bytes, in the image's `host-sources` beside its
+signed metadata (`os/scripts/seed-env-runtime.py`, TIL-735). A sparse system
+tree is never handed out as it is: `materialized_tree` rebuilds it in the
+user's store from the tree and those host files, every byte checked against
+the image's signed hash, as for any system image (`local_materialized_tree`).
+
 ### Resolving images
 
 ```rust
 /// crates/packaging/package-store
-pub fn materialized_tree(store: &Store, id: &PackageId) -> Result<PathBuf, MaterializeError>;
+pub fn local_materialized_tree(store: &Store, id: &PackageId) -> Result<PathBuf, MaterializeError>;
 ```
 
-`materialized_tree` fetches (from the registry when missing), verifies and
-materialises an image and returns its read-only root. It is the only way the
-supervisor turns an image ref into a path.
+`local_materialized_tree` resolves and admits the signed image, then returns
+its read-only root in the per-user package store. System images are rebuilt
+there from verified bytes through the content store, so bootc and system
+extensions beneath `/usr` do not consume the guest overlay's stacking depth.
+Cached bytes, links, executable modes and publisher trust are checked again
+before use. The import is one durability barrier, not one per file: the
+content store syncs once before the tree is materialised. A session that has
+to import first says so on its terminal before the prompt appears. The guest mounts this local tree read-only; its confinement stays
+the same. Other image readers can use `materialized_tree` without relocating
+the system tree.
+
+### Developer image probe
+
+`cargo run --locked -p ush --example resolve-signed-images -- RUNTIME_PACKAGE TOOL_PACKAGE`
+uses the same `StoreImages` provider as the supervisor. It checks the tool's exact
+runtime binding, admits both signed packages and prints their verified read-only
+roots as JSON. It does not mount an environment or execute a tool. Run it in the
+intended owner's profile: publisher and fleet trust are checked again, including
+on cached images. Host paths in the returned JSON are local observations, not
+collaborative resource identifiers.
+
+`tilo-install image add --publisher KEY` trusts that key for that admission only;
+it does not change subsequent image-reader trust. A device or relay normally
+uses its enrolled publisher. A developer probe may use the existing
+`TILO_USH_TRUSTED_PUBLISHER` setting scoped to its own private profile. This does
+not persist a publisher policy or bypass signature, revocation or runtime checks.
 
 ## The environment record
 

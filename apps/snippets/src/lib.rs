@@ -4,8 +4,9 @@
 //! title, language, tags and a body that may contain `${placeholder}`
 //! variables; the detail pane shows a syntax-highlighted preview, and the
 //! expand-with-variables flow fills the placeholders before copying to the
-//! clipboard. The library is a CRDT object (see [`doc`]) so it syncs across
-//! devices and collaborators converge on one shared set of snippets.
+//! clipboard. The library is a typed model (see [`model`]) stored in a CRDT
+//! document, so it syncs across devices and collaborators converge on one
+//! shared set of snippets.
 //!
 //! The app is [`SnippetsShell`], a framework app over the [`Snippets`]
 //! resource: every host mounts it through [`definition`].
@@ -28,31 +29,57 @@
 #![cfg_attr(
     test,
     allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
         clippy::string_slice,
-        clippy::panic,
         clippy::unreachable,
         reason = "in a test these are the assertion, not a hazard"
     )
 )]
 
-pub mod actions;
 pub mod app;
-pub mod doc;
+mod detail_pane;
 pub mod draw;
 pub mod expand;
 pub mod highlight;
+mod list_pane;
 pub mod model;
 pub mod resource;
 pub mod seed;
 
 pub use app::SnippetsApp;
-pub use model::{Language, Library, Selection, SmartFolder, Snippet, SnippetId};
-pub use resource::{LOCALES, Snippets, SnippetsShell};
+pub use model::{Language, Selection, SmartFolder, Snippet, SnippetId, Snippets};
+pub use resource::{LOCALES, SnippetsShell, SnippetsView};
 
 /// The app as every host mounts it.
 pub fn definition() -> &'static ui::application::ApplicationDefinition {
-    ui::framework::definition::<SnippetsShell>()
+    ui::built_in_definition!(SnippetsShell)
+}
+
+/// The catalogs, loaded on first use on each thread: a host's manager gets
+/// them added, a thread without one starts in the person's locale.
+#[cfg(not(test))]
+pub(crate) static CATALOG: ui::i18n::EmbeddedCatalog =
+    ui::i18n::EmbeddedCatalog::new("en-US", LOCALES).with_system_locale();
+
+/// Tests read the source copy on every machine.
+#[cfg(test)]
+pub(crate) static CATALOG: ui::i18n::EmbeddedCatalog =
+    ui::i18n::EmbeddedCatalog::new("en-US", LOCALES).with_pinned_locale("en-US");
+
+/// A message of the app's catalogs in the person's language.
+pub(crate) fn tr(key: &str) -> String {
+    CATALOG.t(key)
+}
+
+/// A message with named text arguments.
+pub(crate) fn tr_with(key: &str, args: &[(&str, &str)]) -> String {
+    let args: Vec<(&str, ui::i18n::ArgValue)> = args
+        .iter()
+        .map(|(name, value)| (*name, ui::i18n::ArgValue::Text((*value).to_string())))
+        .collect();
+    CATALOG.t_args(key, &args)
+}
+
+/// A message with a plural count.
+pub(crate) fn tr_count(key: &str, count: usize) -> String {
+    CATALOG.t_args(key, &[("count", ui::i18n::ArgValue::Number(count as f64))])
 }

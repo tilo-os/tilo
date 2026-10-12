@@ -1,0 +1,60 @@
+{
+  "verified_source": "4537d2ba4321fe1c884957e4fb83cacb523909bd",
+  "base": "78a7f73ece5fa25a7cf1125cd6092c2d1e3c5266",
+  "artifacts": [
+    {
+      "label": "before-dark-survivor",
+      "file_id": "file_000000002bd481f5ad4c4e1733283bfb",
+      "library_file_id": "libfile_912d9d4d7a9481919d3ea9a72db5f79e",
+      "width": 1280,
+      "height": 800,
+      "sha256": "a45b249e1791fb29e11f6f458faebce708eaf27186b51d7a3f3a37576c5232b3",
+      "source_revision": "78a7f73ece5fa25a7cf1125cd6092c2d1e3c5266"
+    },
+    {
+      "label": "after-dark-survivor",
+      "file_id": "file_00000000d96c81f9b67cd12c25fb498c",
+      "library_file_id": "libfile_baebe1ee293c8191acb27308c53df423",
+      "width": 1280,
+      "height": 800,
+      "sha256": "7c810a5f91ed956996a775e20aee8c1bd9e86e418fdd80f3fd5befb9ac47dc35",
+      "source_revision": "4537d2ba4321fe1c884957e4fb83cacb523909bd"
+    },
+    {
+      "label": "before-large-text-interruption",
+      "file_id": "file_00000000c6a881fd9a5fa4c0978df4ab",
+      "library_file_id": "libfile_e3f8aa1b28308191a0cfd99703b5b94b",
+      "width": 960,
+      "height": 540,
+      "sha256": "e9e2b1c1671a99360ea46dab4ec753d3e503e51617d1517b7960f3abc1018645",
+      "source_revision": "78a7f73ece5fa25a7cf1125cd6092c2d1e3c5266"
+    },
+    {
+      "label": "after-large-text-interruption",
+      "file_id": "file_00000000144481f5869bccf175477f62",
+      "library_file_id": "libfile_1c970ffe02dc81918e8dc2d7dd99062c",
+      "width": 960,
+      "height": 540,
+      "sha256": "7aae8de74758c6f3464d9095a040fbcb35878d1210492314e5cf700e76f2b1a0",
+      "source_revision": "4537d2ba4321fe1c884957e4fb83cacb523909bd"
+    },
+    {
+      "label": "after-light-survivor",
+      "file_id": "file_00000000181881f59cb65ae5d6c1428d",
+      "library_file_id": "libfile_dafe7813cc1881919c8b0e4421adc8df",
+      "width": 1280,
+      "height": 800,
+      "sha256": "e798093a1864359e60b81db9b3d8c94cd70692cc84698b7bb76dda16fe4d190c",
+      "source_revision": "4537d2ba4321fe1c884957e4fb83cacb523909bd"
+    },
+    {
+      "label": "after-high-contrast-interruption",
+      "file_id": "file_0000000066b881f79bf7104de08164df",
+      "library_file_id": "libfile_c97c046da65081918ae5ebe115c9d2bb",
+      "width": 1280,
+      "height": 800,
+      "sha256": "3479990f78d75b5fd212afbef84394195e93c4e703a494d85ca903aad9955b17",
+      "source_revision": "4537d2ba4321fe1c884957e4fb83cacb523909bd"
+    }
+  ]
+}

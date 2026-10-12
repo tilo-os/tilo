@@ -86,42 +86,23 @@ pub const SHARE_CONTROL_XATTR: &str = "user.tilo.share-control";
 pub const HISTORY_XATTR: &str = "user.tilo.history";
 pub const HISTORY_CONTROL_XATTR: &str = "user.tilo.history-control";
 
-/// Fetch a bounded immutable version preview from the collaborative
-/// filesystem. Binary/invalid UTF-8 versions intentionally return `None`.
-pub fn read_history_text_preview(
-    path: &Path,
-    version_id: collab_types::FileVersionId,
-) -> Option<String> {
-    let name = format!(
-        "{}{}",
-        collab_types::HISTORY_PREVIEW_XATTR_PREFIX,
-        version_id.0
-    );
-    let bytes = xattr::get(path, name).ok()??;
-    if bytes.len() > collab_types::MAX_HISTORY_PREVIEW_BYTES {
-        return None;
-    }
-    let text = String::from_utf8(bytes).ok()?;
-    (!text.chars().any(|character| character == '\0')).then_some(text)
-}
-
 /// Read the daemon's non-committing classification for one open conflict.
 /// The daemon loads the exact immutable members and base, so this result is
 /// intentionally more authoritative than a filename or timestamp heuristic.
 pub fn read_merge_preflight(
     path: &Path,
     conflict_id: uuid::Uuid,
-) -> Option<collab_types::MergePreflightProjectionV1> {
+) -> Option<fs_protocol::MergePreflightProjectionV1> {
     let name = format!(
         "{}{}",
-        collab_types::MERGE_PREFLIGHT_XATTR_PREFIX,
+        fs_protocol::MERGE_PREFLIGHT_XATTR_PREFIX,
         conflict_id
     );
     let bytes = xattr::get(path, name).ok()??;
-    if bytes.len() > collab_types::MAX_MERGE_PREFLIGHT_BYTES {
+    if bytes.len() > fs_protocol::MAX_MERGE_PREFLIGHT_BYTES {
         return None;
     }
-    let projection: collab_types::MergePreflightProjectionV1 =
+    let projection: fs_protocol::MergePreflightProjectionV1 =
         serde_json::from_slice(&bytes).ok()?;
     (projection.conflict_id == conflict_id && projection.validate().is_ok()).then_some(projection)
 }
@@ -132,8 +113,8 @@ pub const MAX_COLLAB_PROJECTION_BYTES: usize = 16 * 1024;
 #[serde(deny_unknown_fields)]
 pub struct MetadataProjection {
     pub schema_version: u16,
-    pub record_id: collab_types::FileRecordId,
-    pub properties: collab_types::FilePropertiesV1,
+    pub record_id: fs_protocol::FileRecordId,
+    pub properties: fs_protocol::FilePropertiesV1,
 }
 
 impl MetadataProjection {
@@ -280,7 +261,7 @@ pub struct HistoryProjection {
     pub heads: Vec<String>,
     pub versions: Vec<HistoryVersion>,
     pub conflicts_truncated: bool,
-    pub conflicts: Vec<collab_types::FileConflictV1>,
+    pub conflicts: Vec<fs_protocol::FileConflictV1>,
 }
 
 impl HistoryProjection {
@@ -293,11 +274,11 @@ impl HistoryProjection {
         if value.schema_version != 1
             || value.versions.len() > 12
             || value.conflicts.len() > 8
-            || value.heads.len() > collab_types::files::MAX_CONFLICT_VERSIONS
+            || value.heads.len() > fs_protocol::files::MAX_CONFLICT_VERSIONS
             || value.total_versions < value.versions.len() as u64
             || value.versions.iter().any(|version| {
                 version.record_id != value.record_id
-                    || version.parents.len() > collab_types::files::MAX_VERSION_PARENTS
+                    || version.parents.len() > fs_protocol::files::MAX_VERSION_PARENTS
                     || version.parents.contains(&version.id)
             })
             || value
@@ -310,10 +291,10 @@ impl HistoryProjection {
         Some(value)
     }
 
-    pub fn open_conflicts(&self) -> impl Iterator<Item = &collab_types::FileConflictV1> {
+    pub fn open_conflicts(&self) -> impl Iterator<Item = &fs_protocol::FileConflictV1> {
         self.conflicts
             .iter()
-            .filter(|conflict| conflict.status == collab_types::ConflictStatus::Open)
+            .filter(|conflict| conflict.status == fs_protocol::ConflictStatus::Open)
     }
 }
 
@@ -463,7 +444,7 @@ pub struct WorkspaceRecordIndexPager {
     roots: Vec<PathBuf>,
     root_index: usize,
     cursor: Option<RecordIndexCursor>,
-    opaque_cursor: Option<(String, String, Option<collab_types::FileRecordId>)>,
+    opaque_cursor: Option<(String, String, Option<fs_protocol::FileRecordId>)>,
     discovered: bool,
     reset_pending: bool,
     observed_generation: Option<String>,
@@ -488,7 +469,7 @@ struct TestV2Source {
 struct RecordIndexCursor {
     revision: String,
     offset: usize,
-    last_record_id: Option<collab_types::FileRecordId>,
+    last_record_id: Option<fs_protocol::FileRecordId>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -510,7 +491,7 @@ struct RecordIndexProjection {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RecordIndexEntry {
-    record_id: collab_types::FileRecordId,
+    record_id: fs_protocol::FileRecordId,
     path: String,
     is_dir: bool,
 }
@@ -877,7 +858,7 @@ impl WorkspaceRecordIndexPager {
                 .min(source.records);
             let records = ((offset + 1)..=end)
                 .map(|ordinal| RecordIndexEntry {
-                    record_id: collab_types::FileRecordId(uuid::Uuid::from_u128(ordinal as u128)),
+                    record_id: fs_protocol::FileRecordId(uuid::Uuid::from_u128(ordinal as u128)),
                     path: if ordinal == source.records {
                         "/late-target.txt".into()
                     } else {
@@ -919,6 +900,12 @@ impl WorkspaceRecordIndexPager {
     /// Cheap, periodic manifest/root-set poll. It never reads record pages;
     /// a changed or vanished authority withdraws the retained index before a
     /// fresh bounded page is admitted on the next idle turn.
+    /// Whether there is any root whose generation [`Self::poll_generation`]
+    /// watches; without one, polling it is a no-op.
+    pub fn has_roots(&self) -> bool {
+        !self.source_roots.is_empty() || !self.roots.is_empty()
+    }
+
     pub fn poll_generation(&mut self) -> bool {
         const ROOT_WATCH_BUDGET: usize = 8;
         let mut roots = self.source_roots.clone();
@@ -1258,7 +1245,7 @@ pub fn is_workspace_path(path: &Path) -> bool {
 
 /// Whether `path` is one of `roots` or nested under one. Pure over an explicit
 /// root list so the containment logic is testable without the environment.
-fn path_under_any(path: &Path, roots: &[PathBuf]) -> bool {
+pub(crate) fn path_under_any(path: &Path, roots: &[PathBuf]) -> bool {
     roots.iter().any(|r| path == r || path.starts_with(r))
 }
 
@@ -1332,6 +1319,8 @@ pub struct Entry {
     pub history: Option<HistoryProjection>,
     /// Useful media/document facts from signed metadata; no payload read.
     pub rich_metadata: Option<MetadataProjection>,
+    /// Object observed by the listing, used only as a stale-view precondition.
+    pub observed: Option<host_fs::ObservedObject>,
 }
 
 impl Entry {
@@ -1378,6 +1367,12 @@ pub fn format_modified(modified: Option<DateTime<Local>>) -> String {
         Some(t) => crate::i18n::format_datetime(t),
         None => "—".to_string(),
     }
+}
+
+/// Locale-sensitive modified date without the time of day, for a narrow
+/// column; `None` when unknown.
+pub fn format_modified_date(modified: Option<DateTime<Local>>) -> Option<String> {
+    modified.map(crate::i18n::format_date)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1507,6 +1502,9 @@ fn read_dir_inner(path: &Path, in_workspace: bool) -> Result<Vec<Entry>, String>
             share,
             history,
             rich_metadata,
+            observed: meta
+                .as_ref()
+                .and_then(host_fs::ObservedObject::from_metadata),
         });
     }
     Ok(out)
@@ -1578,9 +1576,9 @@ mod sync_state_tests {
         {
             let projection = MetadataProjection {
                 schema_version: 1,
-                record_id: collab_types::FileRecordId(uuid::Uuid::from_u128(7)),
-                properties: collab_types::FilePropertiesV1 {
-                    schema_version: collab_types::files::FILE_PROPERTIES_VERSION,
+                record_id: fs_protocol::FileRecordId(uuid::Uuid::from_u128(7)),
+                properties: fs_protocol::FilePropertiesV1 {
+                    schema_version: fs_protocol::files::FILE_PROPERTIES_VERSION,
                     image_width: Some(800),
                     image_height: Some(600),
                     duration_ms: None,
@@ -2031,8 +2029,6 @@ mod sync_state_tests {
 
         // --- phase: revisioned_workspace_pager_is_one_page_bounded_and_indexes_later_rows_incrementally ---
         {
-            use ui::search::SearchProvider as _;
-
             let root = tempfile::tempdir().unwrap();
             // An injected FUSE page source models dozens of pages without trying
             // to store them as host xattrs (which many filesystems reject long
@@ -2048,9 +2044,16 @@ mod sync_state_tests {
                 "one step cannot materialise the whole index"
             );
             assert!(!first.complete);
-            let provider =
-                crate::search_provider::CollaborativeRecordSearchProvider::new(&first.records);
-            assert!(provider.search("late-target").is_empty());
+            let provider = crate::search_provider::CollaborativeRecordSearch::new(&first.records);
+            let found = |provider: &crate::search_provider::CollaborativeRecordSearch| {
+                ui::search::SearchProvider::search(
+                    &ui::framework::testing::search_source::<crate::resource::FileExplorer>(
+                        provider.entries(),
+                    ),
+                    "late-target",
+                )
+            };
+            assert!(found(&provider).is_empty());
 
             let mut indexed = first.records.len();
             while pager.has_more() {
@@ -2068,11 +2071,10 @@ mod sync_state_tests {
             );
             assert_eq!(indexed, records, "every page is indexed exactly once");
             assert!(
-                provider
-                    .search("late-target")
+                found(&provider)
                     .iter()
                     .any(|hit| hit.title == "late-target.txt"),
-                "later pages enter the retained search catalogue without a full refresh"
+                "later pages enter the search entries without a full refresh"
             );
         }
     }

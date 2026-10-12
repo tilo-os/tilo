@@ -1,6 +1,4 @@
-//! Path segments in Graph URLs, and the headers that describe byte ranges.
-
-use std::ops::Range;
+//! Path segments in Graph URLs.
 
 /// Percent-encode one path segment: everything but RFC 3986 unreserved
 /// characters, so ids and names with `#`, `?`, `%`, `:` or spaces address
@@ -43,21 +41,6 @@ pub fn valid_name(name: &str) -> bool {
     !name.is_empty() && name != "." && name != ".." && !name.contains('/')
 }
 
-/// `Content-Range: bytes <first>-<last>/<total|*>` as a half-open range and
-/// the total.
-pub fn parse_content_range(value: &str) -> Option<(Range<u64>, Option<u64>)> {
-    let rest = value.trim().strip_prefix("bytes")?.trim_start();
-    let (span, total) = rest.split_once('/')?;
-    let (first, last) = span.split_once('-')?;
-    let first: u64 = first.trim().parse().ok()?;
-    let last: u64 = last.trim().parse().ok()?;
-    let total = match total.trim() {
-        "*" => None,
-        total => Some(total.parse().ok()?),
-    };
-    (first <= last).then(|| (first..last.saturating_add(1), total))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -71,17 +54,6 @@ mod tests {
         assert_eq!(percent_decode("100%"), "100%");
         assert_eq!(encode_path("/Docs//a b.txt"), Some("Docs/a%20b.txt".into()));
         assert_eq!(encode_path("/"), None);
-    }
-
-    #[test]
-    fn content_ranges_parse_half_open() {
-        assert_eq!(
-            parse_content_range("bytes 0-1023/2048"),
-            Some((0..1024, Some(2048)))
-        );
-        assert_eq!(parse_content_range("bytes 5-5/*"), Some((5..6, None)));
-        assert_eq!(parse_content_range("bytes 9-3/10"), None);
-        assert_eq!(parse_content_range("items 0-1/2"), None);
     }
 
     #[test]

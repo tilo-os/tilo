@@ -32,6 +32,9 @@ pub(crate) const S2: f64 = Spacing::BASE.s2 as f64;
 pub(crate) const S3: f64 = Spacing::BASE.s3 as f64;
 /// `spacing.s4`: section padding; the master strip's readout band.
 pub(crate) const S4: f64 = Spacing::BASE.s4 as f64;
+/// `spacing.s6`: the content gutter; the room a message keeps from the edges
+/// of the canvas it is written on.
+pub(crate) const S6: f64 = Spacing::BASE.s6 as f64;
 
 /// The square a track head's mute / lock / solo toggle occupies: the
 /// toolkit's medium icon size, which is also the band the lane's name is

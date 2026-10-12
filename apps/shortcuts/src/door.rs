@@ -33,7 +33,7 @@ use crate::model::Workbench;
 
 /// What the door does, published on the drafts for every caller.
 #[derive(Clone, Debug, PartialEq, Effect)]
-#[effect(operation = "shortcuts.door")]
+#[effect(operation = "shortcuts.door", device_only)]
 pub enum DoorEffect {
     /// Reload shortcuts.
     #[effect(job)]
@@ -103,6 +103,8 @@ pub struct RunRecord {
     pub shortcut_id: String,
     pub name: String,
     pub status: RunStatus,
+    /// When the run started, as the person reads the clock.
+    pub started: String,
 }
 
 /// The outcome of the last save or delete, for the person to read.
@@ -271,12 +273,8 @@ impl DoorCore {
         let catalog = catalog.ok_or("the action catalogue has not been read yet")?;
         self.state.update(|state| state.notice = None);
         let problems = editor::problems(&draft, &catalog, &saved);
-        if let Some((path, reasons)) = problems.iter().next() {
-            return Err(format!(
-                "{}: {}",
-                if path.is_empty() { "shortcut" } else { path },
-                reasons.join("; ")
-            ));
+        if let Some(first) = editor::problem_lines(&draft.program().steps, &problems).first() {
+            return Err(first.clone());
         }
         let shortcut = editor::candidate(&draft, &catalog);
         let action = if saved.iter().any(|other| other.id == shortcut.id) {
@@ -331,6 +329,7 @@ impl DoorCore {
                     shortcut_id: shortcut.to_owned(),
                     name,
                     status: RunStatus::Running,
+                    started: ui::clock::time_of_day(&ui::clock::local_now()),
                 },
             );
         });
@@ -616,7 +615,7 @@ impl Decorator for Door {
         self.content.as_mut()
     }
 
-    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
+    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
         self.remote.poll();
         if let Ok(mut core) = self.core.try_borrow_mut() {
             core.pump();
@@ -627,8 +626,15 @@ impl Decorator for Door {
         self.content.update(state, path)
     }
 
+    /// The door is the session's collaborative endpoint; every other request
+    /// (the shell's header row, which hosts the window's History control)
+    /// passes to the hosted view.
     fn provide_mut<'a>(&'a mut self, request: &mut ui::widget::capability::RequestMut<'a, '_>) {
-        request.provide::<dyn Collaborative>(&mut self.remote);
+        if request.wants::<dyn Collaborative>() {
+            request.provide::<dyn Collaborative>(&mut self.remote);
+        } else {
+            self.content.provide_mut(request);
+        }
     }
 
     fn name(&self) -> &'static str {

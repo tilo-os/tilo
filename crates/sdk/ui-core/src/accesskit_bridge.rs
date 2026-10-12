@@ -47,7 +47,7 @@
 //! * **Actions.** [`resolve_node_id`] inverts a synthetic id back to
 //!   `(owning widget, key path)` so an incoming `ActionRequest` reaches the
 //!   clip the user was on, via
-//!   [`Widget::perform_action_at`].
+//!   [`Widget::perform_action`].
 //!   Inversion re-walks the live tree rather than caching an index, so a stale
 //!   id from a previous frame resolves to `None` instead of to the wrong clip.
 
@@ -61,9 +61,14 @@ use accesskit::{
 };
 use taffy::NodeId as TaffyNodeId;
 
-use crate::a11y::{AccessNode, Action, Role};
+use crate::a11y::{AccessNode, AccessibleTextSelection, Action, Role};
 use crate::text_break::{grapheme_indices, graphemes};
 use crate::widget::Widget;
+
+#[cfg(any(feature = "native", test))]
+mod floating_surface;
+#[cfg(feature = "native")]
+pub(crate) use floating_surface::{surface_action_target, surface_tree_update};
 
 type HostedWidget<'a> = (Vec<usize>, &'a dyn Widget);
 type HostedByIndex<'a> = HashMap<usize, Vec<HostedWidget<'a>>>;
@@ -138,6 +143,7 @@ pub fn map_role(role: Role) -> AkRole {
         Role::RadioButton => AkRole::RadioButton,
         Role::Switch => AkRole::Switch,
         Role::Slider => AkRole::Slider,
+        Role::Separator => AkRole::Splitter,
         Role::SpinButton => AkRole::SpinButton,
         Role::ComboBox => AkRole::ComboBox,
         Role::TextInput => AkRole::TextInput,
@@ -232,6 +238,39 @@ fn synthetic_text_run_node_id(parent: AkNodeId) -> AkNodeId {
     synthetic_node_id(parent, SYNTHETIC_TEXT_RUN_KEY)
 }
 
+/// What a readable text node's run carries: its value and caret or selection,
+/// or `None` when the node exports no run.
+///
+/// A protected (password) field still gets a run: AccessKit offers AT-SPI
+/// Text and EditableText only on a node with one, and without them a screen
+/// reader cannot treat the field as editable text or type a passphrase into
+/// it. That run is always empty with the caret at its start, so it discloses
+/// neither the value, nor its length, nor whether anything was typed.
+fn text_run_content(access: &AccessNode) -> Option<(&str, AccessibleTextSelection)> {
+    if access.state.protected {
+        let editable = matches!(access.role, Role::TextInput | Role::MultilineTextInput);
+        let start = AccessibleTextSelection {
+            anchor: 0,
+            focus: 0,
+        };
+        return editable.then_some(("", start));
+    }
+    match (&access.value, access.text_selection) {
+        (Some(value), Some(selection)) => Some((value.as_str(), selection)),
+        // A terminal transcript is readable even before anyone selects it.
+        // AccessKit derives the platform Text interface from descendant runs,
+        // rather than from the terminal node's value alone.
+        (Some(value), None) if access.role == Role::Terminal => Some((
+            value.as_str(),
+            AccessibleTextSelection {
+                anchor: 0,
+                focus: 0,
+            },
+        )),
+        _ => None,
+    }
+}
+
 /// The text run that gives an editable node its AT-SPI Text and EditableText
 /// interfaces: the value as one run, and the caret/selection as positions in
 /// it. A protected (password) node never carries its value here.
@@ -242,14 +281,9 @@ fn text_run_for(
     bounds: Option<vello::kurbo::Rect>,
     scale: f64,
 ) -> Option<AkNode> {
-    if access.state.protected {
-        return None;
-    }
-    let (Some(value), Some(selection)) = (&access.value, access.text_selection) else {
-        return None;
-    };
+    let (value, selection) = text_run_content(access)?;
     let mut run = AkNode::new(AkRole::TextRun);
-    run.set_value(value.clone());
+    run.set_value(value);
     run.set_character_lengths(accessible_character_lengths(value));
     if let Some(rect) = bounds.filter(|rect| rect.width() > 0.0 || rect.height() > 0.0) {
         run.set_bounds(AkRect::new(
@@ -320,7 +354,7 @@ pub fn widget_ak_id<S: BuildHasher>(
 /// [`build_tree_update`] uses the same rule to aim the exported focus. This is
 /// the other half: the host uses it to aim *keyboard* activation at the element
 /// the user is on, so a canvas widget implements
-/// [`Widget::perform_action_at`] once
+/// [`Widget::perform_action`] once
 /// and gets both the assistive-technology and the Enter/arrow paths, instead of
 /// having to implement `perform_action` again for the keyboard.
 pub fn active_descendant_path(access: &AccessNode) -> Option<Vec<u64>> {
@@ -356,7 +390,7 @@ pub enum A11yTarget {
         owner: TaffyNodeId,
         /// Keys from `owner`'s direct synthetic child down to the target.
         /// Keys, for a widget that identifies a synthetic child by identity
-        /// — `perform_action_at` matches a clip by `hash_key(uuid)`, which is
+        /// — `perform_action` matches a clip by `hash_key(uuid)`, which is
         /// nothing like a position.
         key_path: Vec<u64>,
         /// Ordinals, for a widget that identifies one by position —
@@ -492,9 +526,7 @@ fn find_synthetic_path(
         keys.push(key);
         ordinals.push(ordinal);
         if id == wanted
-            || (child.value.is_some()
-                && child.text_selection.is_some()
-                && synthetic_text_run_node_id(id) == wanted)
+            || (text_run_content(child).is_some() && synthetic_text_run_node_id(id) == wanted)
         {
             semantic_target.clone_from(&child.action_target);
             return true;
@@ -598,83 +630,6 @@ fn accessible_character_lengths(text: &str) -> Vec<u8> {
         }
     }
     lengths
-}
-
-/// `focused` is the taffy id of the focused widget; `focus` falls back to
-/// the synthetic root when nothing (or a stale id) matches — AccessKit
-/// requires `focus` to be a real node. `scale` multiplies rects into
-/// physical-pixel bounds; pass `1.0` for logical coords.
-///
-/// Always a full tree; AccessKit's adapters suppress events for unchanged
-/// nodes, so the cost is processing, not spurious AT chatter.
-/// Resolve a synthetic AccessKit id back to the widget that published the
-/// synthetic `AccessNode` and its child-index path. This repeats the same DFS
-/// counter used by `build_tree_update`, so immediate-mode controls can be
-/// focused and activated without pretending they are taffy widgets.
-fn visit_synthetic_widget<'a>(
-    widget: &'a dyn Widget,
-    target: u64,
-    counter: &mut u64,
-) -> Option<(*const (dyn Widget + 'a), Vec<usize>)> {
-    let access = widget.accessibility();
-    *counter = counter.saturating_add(1);
-    if let Some(access) = access {
-        for child in widget.children() {
-            if let Some(found) = visit_synthetic_widget(child, target, counter) {
-                return Some(found);
-            }
-        }
-        for (index, child) in access.children.iter().enumerate() {
-            if let Some(found) = visit_synthetic_child(widget, child, vec![index], target, counter)
-            {
-                return Some(found);
-            }
-        }
-    } else {
-        for child in widget.children() {
-            if let Some(found) = visit_synthetic_widget(child, target, counter) {
-                return Some(found);
-            }
-        }
-    }
-    None
-}
-
-fn visit_synthetic_child<'a>(
-    owner: &'a dyn Widget,
-    child: &AccessNode,
-    path: Vec<usize>,
-    target: u64,
-    counter: &mut u64,
-) -> Option<(*const (dyn Widget + 'a), Vec<usize>)> {
-    let id = SYNTHETIC_ID_BIT.saturating_add(*counter);
-    *counter = counter.saturating_add(1);
-    if id == target {
-        return Some((std::ptr::from_ref(owner), path));
-    }
-    for (index, nested) in child.children.iter().enumerate() {
-        let mut nested_path = path.clone();
-        nested_path.push(index);
-        if let Some(found) = visit_synthetic_child(owner, nested, nested_path, target, counter) {
-            return Some(found);
-        }
-    }
-    None
-}
-
-pub fn resolve_synthetic_target<'a>(
-    root: &'a dyn Widget,
-    target: AkNodeId,
-) -> Option<(*const (dyn Widget + 'a), Vec<usize>)> {
-    // A single test, because synthetic ids sit above every other space:
-    // widget ids are small, the structural fallback is at 1<<48 and text runs
-    // at 1<<62, so bit 63 alone identifies a synthetic node. The old form
-    // compared against 1<<48 — the *fallback* base — which meant a fallback
-    // widget id resolved as a synthetic node.
-    if !is_synthetic_id(target) {
-        return None;
-    }
-    visit_synthetic_widget(root, target.0, &mut 0)
 }
 
 pub fn build_tree_update<S: BuildHasher>(
@@ -1209,10 +1164,14 @@ fn apply_semantics_common(ak: &mut AkNode, access: &AccessNode) {
         ak.add_action(AkAction::Click);
     }
     match access.role {
-        Role::Slider | Role::SpinButton => {
+        Role::Slider | Role::Separator | Role::SpinButton => {
             if !access.state.disabled {
                 ak.add_action(AkAction::Increment);
                 ak.add_action(AkAction::Decrement);
+                if matches!(access.role, Role::Slider | Role::Separator) && !access.state.read_only
+                {
+                    ak.add_action(AkAction::SetValue);
+                }
             }
         }
         Role::ComboBox | Role::TreeItem => {
@@ -1299,6 +1258,7 @@ mod tests {
     use super::*;
     use crate::a11y::{AccessNode, AccessState, Role};
     use crate::theme::Theme;
+    use crate::widget::TaffyTreeExt;
     use crate::widget::Widget;
     use std::collections::HashMap;
     use taffy::TaffyTree;
@@ -1334,7 +1294,7 @@ mod tests {
     }
 
     impl Widget for TestWidget {
-        fn sync(&mut self, _s: &mut crate::widget::AppModel, _p: &crate::widget::ModelPath) {}
+        fn sync(&mut self, _s: &crate::widget::AppModel, _p: &crate::widget::ModelPath) {}
         fn build_layout(
             &mut self,
             taffy: &mut TaffyTree<()>,
@@ -1346,27 +1306,7 @@ mod tests {
                 .iter_mut()
                 .map(|c| c.build_layout(taffy, theme, node_map))
                 .collect();
-            let node = taffy
-                .new_with_children(taffy::Style::default(), &child_nodes)
-                .unwrap();
-            node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-            node
-        }
-        fn apply_layout(
-            &mut self,
-            _taffy: &TaffyTree<()>,
-            _node: taffy::NodeId,
-            _origin: vello::kurbo::Point,
-        ) {
-        }
-        fn draw(
-            &mut self,
-            _scene: &mut vello::Scene,
-            _transform: vello::kurbo::Affine,
-            _text_renderer: &mut crate::text_render::TextRenderer,
-            _theme: &Theme,
-            _presence: &crate::presence::PresenceCtx,
-        ) {
+            taffy.widget_node(taffy::Style::default(), &child_nodes, node_map, self)
         }
         fn children(&self) -> Vec<&dyn Widget> {
             self.kids.iter().map(std::convert::AsRef::as_ref).collect()
@@ -1397,7 +1337,7 @@ mod tests {
     }
 
     impl Widget for AliasWrapper {
-        fn sync(&mut self, _s: &mut crate::widget::AppModel, _p: &crate::widget::ModelPath) {}
+        fn sync(&mut self, _s: &crate::widget::AppModel, _p: &crate::widget::ModelPath) {}
         fn build_layout(
             &mut self,
             tree: &mut TaffyTree<()>,
@@ -1405,22 +1345,6 @@ mod tests {
             nodes: &mut HashMap<TaffyNodeId, *mut dyn Widget>,
         ) -> TaffyNodeId {
             self.child.build_layout(tree, theme, nodes)
-        }
-        fn apply_layout(
-            &mut self,
-            _tree: &TaffyTree<()>,
-            _node: TaffyNodeId,
-            _origin: vello::kurbo::Point,
-        ) {
-        }
-        fn draw(
-            &mut self,
-            _scene: &mut vello::Scene,
-            _transform: vello::kurbo::Affine,
-            _text: &mut crate::text_render::TextRenderer,
-            _theme: &Theme,
-            _presence: &crate::presence::PresenceCtx,
-        ) {
         }
         fn children(&self) -> Vec<&dyn Widget> {
             vec![&self.child]
@@ -1677,7 +1601,7 @@ mod tests {
     }
 
     impl Widget for FirstFieldHost {
-        fn sync(&mut self, _s: &mut crate::widget::AppModel, _p: &crate::widget::ModelPath) {}
+        fn sync(&mut self, _s: &crate::widget::AppModel, _p: &crate::widget::ModelPath) {}
         fn build_layout(
             &mut self,
             taffy: &mut TaffyTree<()>,
@@ -1685,27 +1609,7 @@ mod tests {
             node_map: &mut HashMap<taffy::NodeId, *mut dyn Widget>,
         ) -> taffy::NodeId {
             let kid = self.child.build_layout(taffy, theme, node_map);
-            let node = taffy
-                .new_with_children(taffy::Style::default(), &[kid])
-                .unwrap();
-            node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-            node
-        }
-        fn apply_layout(
-            &mut self,
-            _taffy: &TaffyTree<()>,
-            _node: taffy::NodeId,
-            _origin: vello::kurbo::Point,
-        ) {
-        }
-        fn draw(
-            &mut self,
-            _scene: &mut vello::Scene,
-            _transform: vello::kurbo::Affine,
-            _text_renderer: &mut crate::text_render::TextRenderer,
-            _theme: &Theme,
-            _presence: &crate::presence::PresenceCtx,
-        ) {
+            taffy.widget_node(taffy::Style::default(), &[kid], node_map, self)
         }
         fn children(&self) -> Vec<&dyn Widget> {
             vec![&self.child]
@@ -1847,6 +1751,24 @@ mod tests {
             assert_eq!(update.tree.as_ref().unwrap().root, ROOT_ID);
             assert!(update.nodes.iter().any(|(id, _)| *id == ROOT_ID));
         }
+    }
+
+    #[test]
+    fn sidebar_shared_separator_exports_resize_verbs_to_accesskit() {
+        use crate::widget::{SplitHandle, SplitOrientation, SplitRatio};
+        let handle = SplitHandle::new(SplitOrientation::Horizontal, SplitRatio::default());
+        let mut root = TestWidget::new(None).with_child(Box::new(handle));
+        let (_taffy, map, _root_node) = lay_out(&mut root);
+        let update = build_tree_update(&root, &map, None, 1.0);
+        let (_, node) = update
+            .nodes
+            .iter()
+            .find(|(_, node)| node.role() == AkRole::Splitter)
+            .expect("actual shared divider exported");
+        for action in [AkAction::Increment, AkAction::Decrement, AkAction::SetValue] {
+            assert!(node.supports_action(action));
+        }
+        assert_eq!(node.value(), Some("50%"));
     }
 
     #[test]
@@ -2260,6 +2182,24 @@ mod tests {
             assert!(node.supports_action(AkAction::SetTextSelection));
             assert!(!node.supports_action(AkAction::SetValue));
             assert_eq!(node.value(), Some("$ cargo test"));
+            let run_id = *node
+                .children()
+                .first()
+                .expect("unselected terminal has a readable text run");
+            let run = update
+                .nodes
+                .iter()
+                .find(|(id, _)| *id == run_id)
+                .expect("terminal text run reaches the platform tree");
+            assert_eq!(run.1.role(), AkRole::TextRun);
+            assert_eq!(run.1.value(), Some("$ cargo test"));
+            assert_eq!(run.1.character_lengths().len(), 12);
+            let selection = node
+                .text_selection()
+                .expect("unselected transcript has a collapsed caret");
+            assert_eq!(selection.anchor.node, run_id);
+            assert_eq!(selection.anchor.character_index, 0);
+            assert_eq!(selection.focus, selection.anchor);
         }
 
         // Case `protected_value_is_never_exposed`.
@@ -2283,6 +2223,111 @@ mod tests {
                 node.value(),
                 None,
                 "protected value must not leak to the AT"
+            );
+        }
+
+        // Case `protected_field_is_editable_text_with_an_empty_run`.
+        {
+            // AccessKit's AT-SPI adapter offers Text and EditableText only on a
+            // text input with a text run; without them a screen reader cannot
+            // focus a password as text or type into it. The run never carries
+            // the value, its length, or a caret that moved with typing.
+            for (role, secret) in [
+                (Role::TextInput, ""),
+                (Role::TextInput, "hunter2"),
+                (Role::MultilineTextInput, "a much longer password"),
+            ] {
+                let pw = TestWidget::new(Some(
+                    AccessNode::new(role)
+                        .with_name("Passphrase")
+                        .with_value(secret)
+                        .with_text_selection(secret.len(), secret.len())
+                        .with_state(AccessState::new().focusable(true).protected(true)),
+                ));
+                let mut root = TestWidget::new(None).with_child(Box::new(pw));
+                let (_taffy, node_map, _root_node) = lay_out(&mut root);
+                let update = build_tree_update(&root, &node_map, None, 1.0);
+                let (field_id, field) = update
+                    .nodes
+                    .iter()
+                    .find(|(_, n)| n.label() == Some("Passphrase"))
+                    .unwrap();
+                assert_eq!(field.role(), AkRole::PasswordInput);
+                assert!(field.supports_action(AkAction::SetValue));
+                let [run_id] = field.children() else {
+                    panic!("one text run: {:?}", field.children());
+                };
+                let (_, run) = update.nodes.iter().find(|(id, _)| id == run_id).unwrap();
+                assert_eq!(run.role(), AkRole::TextRun);
+                assert_eq!(run.value(), Some(""));
+                assert!(run.character_lengths().is_empty());
+                let selection = field.text_selection().unwrap();
+                assert_eq!(
+                    (selection.anchor, selection.focus),
+                    (
+                        AkTextPosition {
+                            node: *run_id,
+                            character_index: 0
+                        },
+                        AkTextPosition {
+                            node: *run_id,
+                            character_index: 0
+                        }
+                    )
+                );
+                assert_eq!(
+                    resolve_node_id(&root, &node_map, *run_id),
+                    resolve_node_id(&root, &node_map, *field_id),
+                    "a verb aimed at the run reaches the field"
+                );
+            }
+        }
+
+        // Case `protected_synthetic_field_is_editable_text_with_an_empty_run`.
+        {
+            let mut root =
+                TestWidget::new(Some(AccessNode::new(Role::Dialog).with_children(vec![
+                    AccessNode::new(Role::TextInput)
+                        .with_name("Sheet password")
+                        .with_action_target("sheet:password")
+                        .with_state(AccessState::new().protected(true)),
+                ])));
+            let (_taffy, node_map, _n) = lay_out(&mut root);
+            let update = build_tree_update(&root, &node_map, None, 1.0);
+            let field_id = label_id(&update, "Sheet password");
+            let field = &update
+                .nodes
+                .iter()
+                .find(|(id, _)| *id == field_id)
+                .unwrap()
+                .1;
+            assert_eq!(field.role(), AkRole::PasswordInput);
+            let [run_id] = field.children() else {
+                panic!("one text run: {:?}", field.children());
+            };
+            let (_, run) = update.nodes.iter().find(|(id, _)| id == run_id).unwrap();
+            assert_eq!(run.value(), Some(""));
+            assert!(matches!(
+                resolve_node_id(&root, &node_map, *run_id),
+                Some(A11yTarget::Synthetic { ref semantic_target, .. })
+                    if semantic_target.as_deref() == Some("sheet:password")
+            ));
+        }
+
+        // Case `protected_non_text_node_gets_no_run`.
+        {
+            let mut root = TestWidget::new(Some(
+                AccessNode::new(Role::Label)
+                    .with_name("Recovery key")
+                    .with_state(AccessState::new().protected(true)),
+            ));
+            let (_taffy, node_map, _n) = lay_out(&mut root);
+            let update = build_tree_update(&root, &node_map, None, 1.0);
+            assert!(
+                update
+                    .nodes
+                    .iter()
+                    .all(|(_, node)| node.role() != AkRole::TextRun)
             );
         }
 
@@ -2352,7 +2397,12 @@ mod tests {
                 .unwrap();
             assert_eq!(password.value(), Some(""));
             assert!(password.supports_action(AkAction::SetValue));
-            assert!(password.children().is_empty());
+            assert!(password.children().iter().all(|child| {
+                native
+                    .nodes
+                    .iter()
+                    .any(|(id, node)| id == child && node.value() == Some(""))
+            }));
         }
     }
 

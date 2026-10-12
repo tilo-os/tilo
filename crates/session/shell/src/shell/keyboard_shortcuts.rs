@@ -29,7 +29,7 @@
 use serde_json::{Map, Value, json};
 use settings_store::hardware::{KeyChord, ShortcutAction, ShortcutConfig, ShortcutConfigError};
 use settings_store::keyboard_shortcuts::{ShortcutEntry, catalogue, fixed_shortcut};
-use tilo_actions::contract::{ActionContract, PermissionRequirement, ResultSpec, RetryPolicy};
+use tilo_actions::contract::{ActionContract, ActionKind, ResultSpec, RetryPolicy};
 use tilo_actions::door::{ActionAddress, ActionDescriptor, InputSpec};
 use tilo_actions::outcome::{ActionFailure, ActionOutput};
 use tilo_actions::params::{ARGUMENTS_JSON_PREFIX, ActionArgs, ActionParam, ParamType};
@@ -128,18 +128,18 @@ fn list_json(config: &ShortcutConfig) -> Value {
     })
 }
 
-fn contract(permission: PermissionRequirement, result: Value) -> ActionContract {
+fn contract(kind: ActionKind, result: Value) -> ActionContract {
     ActionContract {
-        permission,
+        kind,
         retry: RetryPolicy::Idempotent,
-        reversible: permission != PermissionRequirement::Read,
+        reversible: kind != ActionKind::Read,
         result: ResultSpec::Json { schema: result },
         tags: vec![
             "configuration".into(),
             "system-setting".into(),
             "keyboard-shortcuts".into(),
         ],
-        ..if permission == PermissionRequirement::Read {
+        ..if kind == ActionKind::Read {
             ActionContract::view()
         } else {
             ActionContract::default()
@@ -188,6 +188,7 @@ impl ShortcutResource {
         contract: ActionContract,
     ) -> ActionDescriptor {
         ActionDescriptor {
+            semantic_identity: None,
             address: ActionAddress::new(self.id.clone(), action),
             resource_kind: self.kind.into(),
             resource_label: self.label.clone(),
@@ -222,7 +223,7 @@ pub fn descriptors(
                 t("keyboard-shortcuts-list"),
                 t("keyboard-shortcuts-list-description"),
                 OperationKind::View,
-                contract(PermissionRequirement::Read, list_schema()),
+                contract(ActionKind::Read, list_schema()),
             ),
             None,
         ),
@@ -232,7 +233,7 @@ pub fn descriptors(
                 t("keyboard-shortcuts-reset-all"),
                 t("keyboard-shortcuts-reset-all-description"),
                 OperationKind::Effect,
-                contract(PermissionRequirement::Write, list_schema()),
+                contract(ActionKind::Undoable, list_schema()),
             ),
             None,
         ),
@@ -253,6 +254,7 @@ pub fn descriptors(
         };
         out.push((
             ActionDescriptor {
+                semantic_identity: None,
                 params: chord_param(),
                 ..resource.action(
                     REBIND_ACTION,
@@ -266,7 +268,7 @@ pub fn descriptors(
                         ],
                     ),
                     OperationKind::Effect,
-                    contract(PermissionRequirement::Write, entry_schema()),
+                    contract(ActionKind::Undoable, entry_schema()),
                 )
             },
             presentation.clone(),
@@ -283,7 +285,7 @@ pub fn descriptors(
                     ],
                 ),
                 OperationKind::Effect,
-                contract(PermissionRequirement::Write, entry_schema()),
+                contract(ActionKind::Undoable, entry_schema()),
             ),
             presentation,
         ));
@@ -602,14 +604,14 @@ mod tests {
     fn a_clash_names_the_shortcut_holding_the_chord_and_changes_nothing() {
         let mut config = ShortcutConfig::default();
         let before = config.clone();
-        let operation = rebind(&config, "quick-settings", "Super+K");
-        let error = apply(&mut config, &operation).expect_err("Super+K opens search");
+        let operation = rebind(&config, "quick-settings", "Super+Space");
+        let error = apply(&mut config, &operation).expect_err("Super+Space opens search");
         assert_eq!(error.code, "shortcut_conflict");
         let details = error.details.expect("the holder is named");
         assert_eq!(details["conflict"]["kind"], "shortcut");
         assert_eq!(details["conflict"]["id"], "search");
-        assert_eq!(details["conflict"]["label"], "Global search");
-        assert_eq!(details["chord"], "Super+K");
+        assert_eq!(details["conflict"]["label"], "Search everywhere");
+        assert_eq!(details["chord"], "Super+Space");
         assert_eq!(config, before);
     }
 
@@ -671,7 +673,7 @@ mod tests {
         assert!(
             descriptor_at(&config, &address(&entry_resource("search"), REBIND_ACTION)).is_some()
         );
-        assert!(descriptor_at(&config, &address(&entry_resource("lock"), REBIND_ACTION)).is_none());
+        assert!(descriptor_at(&config, &address(&entry_resource("lock"), REBIND_ACTION)).is_some());
         assert!(
             descriptor_at(
                 &config,

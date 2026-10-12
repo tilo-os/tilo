@@ -15,11 +15,7 @@ fn an_unreadable_video_cannot_produce_a_successful_capture() {
     assert!(!output_path.exists());
     assert!(!missing_path.exists());
     let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_video-player"));
-    command
-        .arg("--shots")
-        .arg(&output_path)
-        .arg("--open")
-        .arg(missing_path);
+    command.arg("--shots").arg(&output_path).arg(missing_path);
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -30,8 +26,7 @@ fn an_unreadable_video_cannot_produce_a_successful_capture() {
     assert!(!output_path.exists(), "an undecoded video is not a capture");
     let error = String::from_utf8_lossy(&output.stderr);
     assert!(
-        error.contains("requires the GStreamer decoder")
-            || error.contains("did not produce a frame"),
-        "the failure must identify unavailable decoding: {error}"
+        error.contains("did not settle"),
+        "the capture refuses to show a video that never decoded: {error}"
     );
 }

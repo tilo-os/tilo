@@ -7,14 +7,17 @@
 //! placement and the calm list-row visual language. Device-specific glyphs,
 //! state and actions stay in their owning panes.
 
+use ui::num::f64_of_usize;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::Color;
 
+use ui::TextRole;
 use ui::chrome::{ChromeRole, SelectionState, selection_tier};
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::tokens::{Metrics, Spacing};
+use ui::widget::ButtonRole;
 use ui::widget::{Button, ButtonFace};
 
 // ---------- one rhythm for the whole panel (HIG §7b) ----------
@@ -59,21 +62,6 @@ pub const STATUS_DOT: f64 = GLYPH / 2.0;
 /// [`control_fill`], the one definition every shell Control paints with.
 const CONTROL_FLOOR_LIFT_T: f32 = 0.35;
 
-#[allow(
-    clippy::cast_precision_loss,
-    reason = "quick-settings row counts are tiny"
-)]
-fn usize_to_f64_lossy(value: usize) -> f64 {
-    value as f64
-}
-
-/// Theme typography tokens already carry the user's text scale, and the
-/// renderer scales every authored size again; divide once so the scale is
-/// applied exactly once (HIG §7a). Identity while the renderer is at 1×.
-pub fn type_size(text: &TextRenderer, resolved: f32) -> f32 {
-    resolved / text.text_scale()
-}
-
 // ---------- the Control role, painted once ----------
 
 /// A Control's fill: the shared hover tier when hovered, otherwise a quiet
@@ -88,7 +76,7 @@ pub fn control_fill(theme: &Theme, hovered: bool) -> Color {
     }
 }
 
-/// The Control radius for `rect` (`radii.lg`, HIG §9.1).
+/// The Control radius for `rect` (`radii.control`, HIG §9.1).
 pub fn control_radius(theme: &Theme, rect: Rect) -> f64 {
     ChromeRole::Control.radius(theme, rect.height())
 }
@@ -207,7 +195,7 @@ impl DrillInList {
             .min(row_count.saturating_sub(self.first_visible));
         self.rows.clear();
         self.rows.extend((0..visible).map(|slot| {
-            let y = panel.y0 + list_top + usize_to_f64_lossy(slot) * (ROW_HEIGHT + RELATED_GAP);
+            let y = panel.y0 + list_top + f64_of_usize(slot) * (ROW_HEIGHT + RELATED_GAP);
             Rect::new(
                 panel.x0 + PANEL_PAD,
                 y,
@@ -251,7 +239,7 @@ impl DrillInList {
         let visible = capacity.min(row_count.saturating_sub(first));
         (0..visible)
             .map(|slot| {
-                let y = panel.y0 + list_top + usize_to_f64_lossy(slot) * (ROW_HEIGHT + RELATED_GAP);
+                let y = panel.y0 + list_top + f64_of_usize(slot) * (ROW_HEIGHT + RELATED_GAP);
                 (
                     first.saturating_add(slot),
                     Rect::new(
@@ -363,7 +351,7 @@ impl DrillInList {
     /// empty list keeps one row's band for its message, then the panel
     /// padding closes the page.
     pub fn list_height(list_top: f64, rows: usize) -> f64 {
-        let rows = usize_to_f64_lossy(rows.max(1));
+        let rows = f64_of_usize(rows.max(1));
         list_top + rows * ROW_HEIGHT + (rows - 1.0) * RELATED_GAP + PANEL_PAD
     }
 
@@ -403,17 +391,20 @@ impl DrillInList {
             text,
             theme,
             &ButtonFace::new(self.back, "")
-                .ghost()
+                .role(ButtonRole::Plain)
                 .icon(ui::icons::Icon::ChevronLeft)
                 .hovered(cursor.is_some_and(|point| self.back.contains(point)))
                 .accessible_name(&crate::i18n::t("drill-in-back")),
         );
-        let size = type_size(text, theme.tokens.typography.scale.sm);
-        let (width, height) = text.measure_weighted(title, size, None, TextWeight::Semibold);
-        text.draw_text_weighted(
+        let style = theme.text(TextRole::Caption);
+        let (width, height) = text.measure_style(
+            title,
+            None,
+            &style.clone().with_weight(TextWeight::Semibold),
+        );
+        text.draw_style(
             scene,
             title,
-            size,
             theme.tokens.colors.text_primary,
             transform.pre_translate(
                 (
@@ -423,7 +414,7 @@ impl DrillInList {
                     .into(),
             ),
             None,
-            TextWeight::Semibold,
+            &style.with_weight(TextWeight::Semibold),
         );
     }
 
@@ -450,12 +441,11 @@ impl DrillInList {
         message: &str,
         list_top: f64,
     ) {
-        let size = type_size(text, theme.tokens.typography.scale.sm);
-        let (width, height) = text.measure(message, size, None);
-        text.draw_text(
+        let style = theme.text(TextRole::Caption);
+        let (width, height) = text.measure_style(message, None, &style);
+        text.draw_style(
             scene,
             message,
-            size,
             theme.tokens.colors.text_dim,
             transform.pre_translate(
                 (
@@ -465,6 +455,7 @@ impl DrillInList {
                     .into(),
             ),
             None,
+            &style,
         );
     }
 
@@ -490,22 +481,22 @@ impl DrillInList {
         // those truthful status indicators.
         let label_x = glyph.x1 + CONTROL_INSET;
         let label_width = discovery_label_width(row, glyph, trailing_reserve);
-        let size = type_size(text, theme.tokens.typography.scale.sm);
+        let style = theme.text(TextRole::Caption);
         #[allow(
             clippy::cast_possible_truncation,
             reason = "the bounded quick-settings row width is represented as f32 by the text shaper"
         )]
-        let label = text.elide_to_width(label, size, label_width as f32);
-        let (_, label_height) = text.measure_weighted(&label, size, None, TextWeight::Medium);
-        text.draw_text_weighted(
+        let label = text.elide_to_width_style(label, label_width as f32, &style);
+        let (_, label_height) =
+            text.measure_style(&label, None, &style.clone().with_weight(TextWeight::Medium));
+        text.draw_style(
             scene,
             &label,
-            size,
             theme.tokens.colors.text_primary,
             transform
                 .pre_translate((label_x, centred_text_top(row, f64::from(label_height))).into()),
             None,
-            TextWeight::Medium,
+            &style.clone().with_weight(TextWeight::Medium),
         );
         glyph
     }

@@ -123,13 +123,14 @@ fn selected_snapshots_are_exact_isolated_and_reachable() {
         assert_eq!(value(&historical, "status"), None);
         assert_eq!(snapshot.heads(), &[selected_hash]);
     }
-    // phase: controller_keeps_older_entries_reachable_beyond_the_widget_default_window
+    // phase: controller_keeps_older_entries_reachable_beyond_its_first_page
     {
-        // Catches inheriting HistorySource's presentation-oriented 200-row cap in
-        // the controller, which would make an older durable version disappear.
+        // The controller lists the newest page first; an older durable
+        // version stays a request away and selectable, never gone.
         let mut doc = AutoCommit::new();
         let mut oldest = None;
-        for revision in 0..205_u64 {
+        let total = super::HISTORY_PAGE + 5;
+        for revision in 0..total as u64 {
             doc.put(ROOT, "revision", revision).unwrap();
             let committed = doc.commit().unwrap();
             oldest.get_or_insert(committed);
@@ -138,7 +139,11 @@ fn selected_snapshots_are_exact_isolated_and_reachable() {
 
         let mut history =
             HistoryController::new(resource("profile-a", "workspace-a"), &doc).unwrap();
-        assert_eq!(history.entries().len(), 205);
+        assert_eq!(history.entries().len(), super::HISTORY_PAGE);
+        assert!(history.has_earlier());
+        history.show_earlier(&doc).unwrap();
+        assert_eq!(history.entries().len(), total);
+        assert!(!history.has_earlier());
         history.select(&doc, &[oldest]).unwrap();
 
         let snapshot = load(history.snapshot().unwrap());
@@ -292,10 +297,9 @@ fn restore_review_is_scoped_to_a_preview_and_refuses_effect_receipts() {
             HistoryController::new(resource("profile-a", "workspace-a"), &doc).unwrap();
         assert_eq!(history.review_restore(), Err(HistoryError::NoPreview));
 
-        let context =
-            ActionContext::for_resource("Export", "uuid:document-1", "document", "Document")
-                .with_app("dev.tilo.history-test", "History test")
-                .with_facet(ActionFacet::new("tilo.receipt", "effect"));
+        let context = ActionContext::for_resource("uuid:document-1", "document", "Document")
+            .with_app("dev.tilo.history-test", "History test")
+            .with_facet(ActionFacet::new("tilo.receipt", "effect"));
         doc.put(ROOT, "last_export_receipt", "receipt-1").unwrap();
         let receipt = doc
             .commit_with(
@@ -323,10 +327,9 @@ fn restore_review_is_scoped_to_a_preview_and_refuses_effect_receipts() {
         history.select(&doc, &[one]).unwrap();
         let prior_review = history.review_restore().unwrap();
 
-        let context =
-            ActionContext::for_resource("Export", "uuid:document-1", "document", "Document")
-                .with_app("dev.tilo.history-test", "History test")
-                .with_facet(ActionFacet::new("tilo.receipt", "effect"));
+        let context = ActionContext::for_resource("uuid:document-1", "document", "Document")
+            .with_app("dev.tilo.history-test", "History test")
+            .with_facet(ActionFacet::new("tilo.receipt", "effect"));
         doc.put(ROOT, "last_export_receipt", "receipt-before-refresh")
             .unwrap();
         let receipt = doc

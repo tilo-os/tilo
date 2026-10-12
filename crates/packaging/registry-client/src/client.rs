@@ -7,7 +7,7 @@ use ed25519_dalek::SigningKey;
 use registry_types::application::PublisherApplication;
 use registry_types::{EntryAction, EntryChangeRequest, RegistryEntry, SignedRegistrySnapshot};
 
-/// The registry Tilo OS and Tilo Web install from.
+/// The registry Tilo OS installs from.
 pub const DEFAULT_REGISTRY: &str = "https://apps.tilo.so";
 
 /// The environment variable that names another registry.
@@ -41,7 +41,25 @@ impl RegistryClient {
     ///
     /// When the URL is not HTTPS or loopback HTTP.
     pub fn new(base: &str) -> Result<Self> {
-        let url = reqwest::Url::parse(base).with_context(|| format!("registry URL {base}"))?;
+        Self::validate_url(base)?;
+        let http = tilo_net::http::blocking_client()
+            .timeout(Duration::from_secs(300))
+            .build()
+            .context("build HTTP client")?;
+        Ok(Self {
+            base: base.trim_end_matches('/').to_owned(),
+            http,
+        })
+    }
+
+    /// Validate a registry address before storing it in a publisher profile.
+    /// This performs no network requests and does not construct an HTTP client.
+    ///
+    /// # Errors
+    ///
+    /// When the URL cannot be parsed or is not HTTPS or loopback HTTP.
+    pub fn validate_url(base: &str) -> Result<()> {
+        let url = reqwest::Url::parse(base).context("invalid registry URL")?;
         let loopback = url.host_str().is_some_and(|host| {
             host == "localhost"
                 || host
@@ -52,14 +70,7 @@ impl RegistryClient {
         if url.scheme() != "https" && !(url.scheme() == "http" && loopback) {
             bail!("a registry is reached over https (plain http only on this machine)");
         }
-        let http = tilo_net::http::blocking_client()
-            .timeout(Duration::from_secs(300))
-            .build()
-            .context("build HTTP client")?;
-        Ok(Self {
-            base: base.trim_end_matches('/').to_owned(),
-            http,
-        })
+        Ok(())
     }
 
     /// The registry's URL.

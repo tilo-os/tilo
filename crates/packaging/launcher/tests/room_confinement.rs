@@ -26,15 +26,15 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use launcher::appdir;
-use launcher::manifest::{Entrypoint, Fs, MinimalManifest, Net, Sandbox};
+use launcher::manifest::{Entrypoint, Fs, ManifestView, Net, Sandbox};
 use launcher::run::{RunError, RunOptions, run_with_captured};
 
 use crate::support::{isolated_options, roomtest_payload};
 
 const PACKAGE: &str = "so.tilo.roomtest";
 
-fn manifest() -> MinimalManifest {
-    MinimalManifest {
+fn manifest() -> ManifestView {
+    ManifestView {
         package_id: PACKAGE.to_string(),
         name: None,
         localized_names: BTreeMap::default(),
@@ -46,6 +46,7 @@ fn manifest() -> MinimalManifest {
         // expected at all.
         kind: "app".to_string(),
         runtime: None,
+        optional_runtimes: Vec::new(),
         entrypoint: Entrypoint {
             bin: "bin/roomtest".to_string(),
             r#type: launcher::manifest::EntrypointType::Gui,
@@ -85,10 +86,20 @@ fn bwrap() -> PathBuf {
 
 /// Run the fixture in `room` with `argv`, returning its stdout.
 fn run_in_room(data: &DataHome, room: Option<&str>, argv: &[&str]) -> String {
+    run_in_room_with_landlock(data, room, argv, false)
+}
+
+fn run_in_room_with_landlock(
+    data: &DataHome,
+    room: Option<&str>,
+    argv: &[&str],
+    landlock_enforce: bool,
+) -> String {
     let opts = RunOptions {
         no_services: true,
         bwrap_bin: Some(bwrap()),
-        landlock_enforce: false,
+        landlock_enforce,
+        sandbox_shim_bin: Some(PathBuf::from(env!("CARGO_BIN_EXE_tilo-launcher"))),
         workspace_id: room.map(str::to_string),
         mode: launcher::run::LaunchMode::Cli {
             command: "roomtest".to_string(),
@@ -245,7 +256,7 @@ fn rooms_and_apps_cannot_read_each_others_directories() {
 #[test]
 #[allow(
     clippy::too_many_lines,
-    reason = "each phase keeps one former test's body verbatim"
+    reason = "confinement phases assert production filesystem access in one test"
 )]
 fn the_sandbox_filesystem_is_the_app_directory_plus_the_read_only_profile() {
     // Phase `home_and_the_xdg_variables_all_point_into_the_one_directory`.
@@ -313,7 +324,6 @@ fn the_sandbox_filesystem_is_the_app_directory_plus_the_read_only_profile() {
         let real_home = std::env::var("HOME").expect("HOME is set for the test process");
         let outside_the_profile: Vec<String> = [
             "/etc/shadow".to_string(),
-            "/etc/passwd".to_string(),
             "/var/workspace".to_string(),
             "/usr/bin/env".to_string(),
             "/root".to_string(),
@@ -330,6 +340,36 @@ fn the_sandbox_filesystem_is_the_app_directory_plus_the_read_only_profile() {
                 "{outside} must not be readable without a capability: {line}"
             );
         }
+
+        // The account file is generated sandbox data, not a bind of the
+        // host database. Require the complete single-record contents, then
+        // attempt a real write and check both the sandbox and host bytes.
+        let host_accounts = std::fs::read("/etc/passwd").expect("host account database");
+        // SAFETY: these calls only read this process's effective identity.
+        let (uid, gid) = unsafe { (libc::geteuid(), libc::getegid()) };
+        let expected_account = format!(
+            "OK /etc/passwd app:x:{uid}:{gid}:Sandbox application:/run/tilo/app:/sbin/nologin"
+        );
+        let account = run_in_room(&data, Some("room-a"), &["read", "/etc/passwd"]);
+        assert_eq!(
+            account, expected_account,
+            "only the synthetic account is visible"
+        );
+        let write = run_in_room(&data, Some("room-a"), &["writeabs", "/etc/passwd", "owned"]);
+        assert!(
+            write.starts_with("ERR "),
+            "the synthetic account is read-only: {write}"
+        );
+        assert_eq!(
+            run_in_room(&data, Some("room-a"), &["read", "/etc/passwd"]),
+            expected_account,
+            "the denied write must not change sandbox account bytes"
+        );
+        assert!(
+            std::fs::read("/etc/passwd").expect("host account database after launch")
+                == host_accounts,
+            "sandbox account access must not modify the host database"
+        );
 
         // Inside the profile: readable.
         let read = run_in_room(&data, Some("room-a"), &["readdir", "/usr/share/fonts"]);
@@ -416,4 +456,26 @@ fn the_sandbox_filesystem_is_the_app_directory_plus_the_read_only_profile() {
             "a refused launch must not have created the path it named"
         );
     }
+}
+
+#[test]
+fn fedora_nss_trust_module_resolves_inside_the_app_sandbox() {
+    // NSS loads this module dynamically through Fedora's system alternative,
+    // so DT_NEEDED checks cannot observe a broken /etc/alternatives link.
+    let library = "/usr/lib64/libnssckbi.so";
+    let host = std::fs::read(library).expect("Fedora NSS trust module is required");
+    assert_eq!(
+        &host[..4],
+        b"\x7fELF",
+        "the host must supply an actual trust module"
+    );
+    let data = DataHome::new();
+    let observed = run_in_room_with_landlock(&data, Some("room-a"), &["elf", library], true);
+    assert_eq!(observed, format!("ELF {library} [127, 69, 76, 70]"));
+    let unrelated =
+        run_in_room_with_landlock(&data, Some("room-a"), &["read", "/etc/shadow"], true);
+    assert!(
+        unrelated.starts_with("ERR "),
+        "TLS trust must not expose private host configuration: {unrelated}"
+    );
 }

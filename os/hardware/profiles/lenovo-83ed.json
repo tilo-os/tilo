@@ -10,7 +10,25 @@
     "qcom/a740_sqe.fw",
     "qcom/gen70500_sqe.fw",
     "qcom/gen70500_gmu.bin",
-    "qcom/x1e80100/gen70500_zap.mbn"
+    "qcom/x1e80100/gen70500_zap.mbn",
+    "ath12k/WCN7850/hw2.0/amss.bin",
+    "ath12k/WCN7850/hw2.0/m3.bin",
+    "ath12k/WCN7850/hw2.0/board-2.bin",
+    "regulatory.db",
+    "regulatory.db.p7s"
+  ],
+  "boot_modules": [
+    "cfg80211",
+    "mac80211",
+    "mhi",
+    "qrtr",
+    "qrtr-mhi",
+    "qmi_helpers",
+    "ath12k",
+    "ath12k_wifi7",
+    "pwrseq-qcom-wcn",
+    "pci-pwrctrl-pwrseq",
+    "phy-qcom-qmp-pcie"
   ],
   "firmware": {
     "qcdxkmsuc8380.mbn": "qcom/x1e80100/LENOVO/83ED/qcdxkmsuc8380.mbn",
@@ -19,5 +37,6 @@
     "adsp_dtbs.elf": "qcom/x1e80100/LENOVO/83ED/adsp_dtbs.elf",
     "qccdsp8380.mbn": "qcom/x1e80100/LENOVO/83ED/qccdsp8380.mbn",
     "cdsp_dtbs.elf": "qcom/x1e80100/LENOVO/83ED/cdsp_dtbs.elf"
-  }
+  },
+  "wifi_wake_on_wlan": 0
 }

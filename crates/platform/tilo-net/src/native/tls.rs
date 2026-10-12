@@ -2,8 +2,10 @@
 
 use std::sync::Arc;
 
+use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::crypto::CryptoProvider;
-use rustls::{ClientConfig, RootCertStore};
+use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
+use rustls::{ClientConfig, DigitallySignedStruct, RootCertStore, SignatureScheme};
 
 /// The workspace's only TLS crypto provider.
 pub fn crypto_provider() -> Arc<CryptoProvider> {
@@ -58,6 +60,88 @@ pub fn client_config() -> Result<ClientConfig, rustls::Error> {
         .with_no_client_auth())
 }
 
+/// A client config that trusts the server certificate `accept` admits, given
+/// its DER, instead of a chain to a root: a pinned certificate or hash, or any
+/// certificate the caller checks after the handshake. The handshake signature
+/// is still verified, so the server holds the admitted certificate's key.
+///
+/// # Errors
+/// Only if the provider supports none of rustls' default protocol versions.
+pub fn pinned_client_config(
+    accept: impl Fn(&[u8]) -> bool + Send + Sync + 'static,
+) -> Result<ClientConfig, rustls::Error> {
+    let provider = crypto_provider();
+    Ok(ClientConfig::builder_with_provider(Arc::clone(&provider))
+        .with_safe_default_protocol_versions()?
+        .dangerous()
+        .with_custom_certificate_verifier(Arc::new(Pinned { accept, provider }))
+        .with_no_client_auth())
+}
+
+struct Pinned<F> {
+    accept: F,
+    provider: Arc<CryptoProvider>,
+}
+
+impl<F> std::fmt::Debug for Pinned<F> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Pinned").finish_non_exhaustive()
+    }
+}
+
+impl<F: Fn(&[u8]) -> bool + Send + Sync> ServerCertVerifier for Pinned<F> {
+    fn verify_server_cert(
+        &self,
+        end_entity: &CertificateDer<'_>,
+        _intermediates: &[CertificateDer<'_>],
+        _server_name: &ServerName<'_>,
+        _ocsp_response: &[u8],
+        _now: UnixTime,
+    ) -> Result<ServerCertVerified, rustls::Error> {
+        if (self.accept)(end_entity.as_ref()) {
+            Ok(ServerCertVerified::assertion())
+        } else {
+            Err(rustls::Error::General(
+                "certificate is not the pinned one".into(),
+            ))
+        }
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls12_signature(
+            message,
+            cert,
+            dss,
+            &self.provider.signature_verification_algorithms,
+        )
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls13_signature(
+            message,
+            cert,
+            dss,
+            &self.provider.signature_verification_algorithms,
+        )
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
+        self.provider
+            .signature_verification_algorithms
+            .supported_schemes()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -67,6 +151,7 @@ mod tests {
         // Phase `client_config_builds_with_the_ring_provider`.
         {
             assert!(client_config_with_roots(RootCertStore::empty()).is_ok());
+            assert!(pinned_client_config(|_| true).is_ok());
         }
         // Phase `install_is_idempotent`.
         {

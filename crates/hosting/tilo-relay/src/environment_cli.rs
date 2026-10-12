@@ -7,23 +7,20 @@
 //!
 //! ```text
 //! tilo-relay-environment --relay <endpoint id> --workspace <id>
-//!     (--record <id> --spec <environment json> | --session <hex>)
+//!     (--record <id> (--spec <environment json> | --records-root <dir>)
+//!      | --session <hex>)
 //!     [--relay-user <hex>] [--identity-root <dir>] [--status-fd <fd>]
 //! ```
 //!
 //! Its stdin must be a terminal; it is put in raw mode, since the guest on
 //! the relay has a terminal of its own. Status lines (the session id for
 //! re-attaching, tools built on the relay, the end) go to `--status-fd` as
-//! JSON, one per line.
-
-#![cfg_attr(
-    test,
-    allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
+//! JSON, one per line. A session that cannot be reached is reported there as
+//! its end, with the reason.
+//!
+//! With `--records-root`, the record is read where the supervisor keeps
+//! environment records, so the supervisor names a record and never builds
+//! the wire form itself.
 
 use std::io::Write;
 use std::os::fd::{AsRawFd, FromRawFd, RawFd};
@@ -46,6 +43,10 @@ struct Args {
     /// The relay's endpoint id (hex).
     #[arg(long)]
     relay: String,
+    /// The relay's endpoint address (JSON, as its home-peer registration
+    /// keeps it); absent, the relay is found by its id.
+    #[arg(long)]
+    relay_addr: Option<String>,
     /// The relay's user root (hex); absent, any valid host behind the
     /// endpoint is accepted.
     #[arg(long)]
@@ -54,11 +55,15 @@ struct Args {
     #[arg(long)]
     workspace: u64,
     /// The environment record to open a session from.
-    #[arg(long, requires = "spec", conflicts_with = "session")]
+    #[arg(long, conflicts_with = "session")]
     record: Option<String>,
     /// The record's resolved contents, as JSON.
-    #[arg(long)]
+    #[arg(long, conflicts_with = "records_root")]
     spec: Option<String>,
+    /// Where the record is kept (the supervisor's environment records),
+    /// instead of `--spec`.
+    #[arg(long)]
+    records_root: Option<PathBuf>,
     /// A session to re-attach to (hex).
     #[arg(long)]
     session: Option<String>,
@@ -128,6 +133,72 @@ fn hex32(value: &str, what: &str) -> anyhow::Result<[u8; 32]> {
         .with_context(|| format!("{what} is not 32 hex bytes"))
 }
 
+/// The relay's address: the registered one when given (it must be the
+/// relay's own), else its id alone.
+fn relay_address(
+    raw: Option<&str>,
+    relay_id: iroh_base::PublicKey,
+) -> anyhow::Result<iroh_base::EndpointAddr> {
+    let Some(raw) = raw else {
+        return Ok(iroh_base::EndpointAddr::new(relay_id));
+    };
+    let address: iroh_base::EndpointAddr = serde_json::from_str(raw).context("--relay-addr")?;
+    anyhow::ensure!(
+        address.id == relay_id,
+        "--relay-addr is another endpoint's address"
+    );
+    Ok(address)
+}
+
+/// The record's wire form, read where `records_root` keeps it.
+#[cfg(target_os = "linux")]
+fn spec_from_records(root: &std::path::Path, record: &str) -> anyhow::Result<EnvironmentSpec> {
+    let environment = ush::records::Records::at(root)
+        .load(record)
+        .map_err(|e| anyhow::anyhow!("{e}"))?
+        .with_context(|| format!("there is no environment {record:?}"))?;
+    Ok(tilo_relay::environment_bridge::environment_spec(
+        &environment,
+    ))
+}
+
+/// Records are kept by the Linux supervisor; elsewhere the spec is given.
+#[cfg(not(target_os = "linux"))]
+fn spec_from_records(_root: &std::path::Path, _record: &str) -> anyhow::Result<EnvironmentSpec> {
+    anyhow::bail!("--records-root needs the Linux shell runtime; give --spec")
+}
+
+/// Open the session the arguments name, or re-attach to it.
+async fn reach(
+    args: &Args,
+    relay: &RemoteRelay,
+    size: PtySize,
+) -> anyhow::Result<tilo_relay_client::PtyStream> {
+    let stream = match (&args.record, &args.spec, &args.records_root, &args.session) {
+        (Some(record), spec, root, None) => {
+            let spec: EnvironmentSpec = match (spec, root) {
+                (Some(spec), None) => serde_json::from_str(spec).context("--spec")?,
+                (None, Some(root)) => spec_from_records(root, record)?,
+                _ => anyhow::bail!("give --record with --spec or --records-root"),
+            };
+            let record = EnvironmentRecordRef {
+                workspace_id: args.workspace,
+                record_id: record.clone(),
+            };
+            open_remote_environment(relay, &record, &spec, size, std::env::var("TERM").ok()).await
+        }
+        (None, None, None, Some(session)) => {
+            let session = hex::decode(session)
+                .ok()
+                .and_then(|bytes| <[u8; 16]>::try_from(bytes).ok())
+                .context("--session is not 16 hex bytes")?;
+            attach_remote_environment(relay, args.workspace, session, size).await
+        }
+        _ => anyhow::bail!("give --record with --spec or --records-root, or --session"),
+    };
+    stream.context("reach the environment")
+}
+
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
@@ -140,7 +211,7 @@ async fn main() -> anyhow::Result<()> {
         endpoint: iroh::Endpoint::bind(iroh::endpoint::presets::N0)
             .await
             .context("bind an endpoint")?,
-        address: iroh_base::EndpointAddr::new(relay_id),
+        address: relay_address(args.relay_addr.as_deref(), relay_id)?,
         relay_user: args
             .relay_user
             .as_deref()
@@ -150,28 +221,6 @@ async fn main() -> anyhow::Result<()> {
         signing_key,
         revocations: RevocationList::new(),
     };
-
-    let stdin_fd = std::io::stdin().as_raw_fd();
-    let size = terminal_size(stdin_fd);
-    let stream = match (&args.record, &args.spec, &args.session) {
-        (Some(record), Some(spec), None) => {
-            let spec: EnvironmentSpec = serde_json::from_str(spec).context("--spec")?;
-            let record = EnvironmentRecordRef {
-                workspace_id: args.workspace,
-                record_id: record.clone(),
-            };
-            open_remote_environment(&relay, &record, &spec, size, std::env::var("TERM").ok()).await
-        }
-        (None, None, Some(session)) => {
-            let session = hex::decode(session)
-                .ok()
-                .and_then(|bytes| <[u8; 16]>::try_from(bytes).ok())
-                .context("--session is not 16 hex bytes")?;
-            attach_remote_environment(&relay, args.workspace, session, size).await
-        }
-        _ => anyhow::bail!("give --record with --spec, or --session"),
-    }
-    .context("reach the environment")?;
 
     let mut status_file = args.status_fd.map(|fd| {
         // SAFETY: the caller hands this process the descriptor to own.
@@ -183,6 +232,19 @@ async fn main() -> anyhow::Result<()> {
         {
             json.push(b'\n');
             let _ = file.write_all(&json);
+        }
+    };
+
+    let stdin_fd = std::io::stdin().as_raw_fd();
+    let size = terminal_size(stdin_fd);
+    let stream = match reach(&args, &relay, size).await {
+        Ok(stream) => stream,
+        Err(error) => {
+            status(BridgeStatus::Ended {
+                code: None,
+                reason: Some(format!("{error:#}")),
+            });
+            return Err(error);
         }
     };
 

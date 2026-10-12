@@ -53,6 +53,8 @@ pub const GROUPS: [Group; 4] = [
             key("Shift+2", "canvas-keys-zoom-selection"),
             key("Ctrl+scroll", "canvas-keys-zoom-pointer"),
             key("Space+drag", "canvas-keys-pan"),
+            key("[", "canvas-keys-brush-smaller"),
+            key("]", "canvas-keys-brush-larger"),
         ],
     },
     Group {
@@ -80,11 +82,21 @@ pub const GROUPS: [Group; 4] = [
     },
 ];
 
+/// The keys that do `does` (a Fluent id of [`GROUPS`]), as a menu row
+/// shows them beside the same command.
+pub fn keys_for(does: &str) -> Option<&'static str> {
+    GROUPS
+        .iter()
+        .flat_map(|group| group.shortcuts.iter())
+        .find(|shortcut| shortcut.does == does)
+        .map(|shortcut| shortcut.keys)
+}
+
 /// The tools and the keys that pick them up.
 pub fn tools() -> Vec<(String, &'static str)> {
     Tool::ALL
         .iter()
-        .map(|tool| (tool.shortcut().to_uppercase(), tool.label()))
+        .map(|tool| (tool.shortcut().to_owned(), tool.label()))
         .collect()
 }
 
@@ -92,7 +104,7 @@ pub fn tools() -> Vec<(String, &'static str)> {
 fn keycaps(keys: &str) -> Element {
     let mut row = Row::new()
         .no_wrap()
-        .with_gap(3.0)
+        .with_rhythm(ui::tokens::Rhythm::Tight)
         .with_align_items(ui::taffy::AlignItems::Center);
     let parts: Vec<&str> = if keys == "+" {
         vec!["+"]
@@ -107,27 +119,21 @@ fn keycaps(keys: &str) -> Element {
             }
             other => other.to_owned(),
         };
-        row = row.push(Box::new(ui::widget::Badge::semantic_pill(
-            shown,
-            ui::widget::BadgeTone::Neutral,
-        )));
+        row = row.push(Box::new(
+            ui::widget::Badge::text(shown).style(ui::widget::ChipStyle::Neutral),
+        ));
     }
-    Box::new(
-        Container::new()
-            .with_no_padding()
-            .with_width(KEYS)
-            .with_child(Box::new(row)),
+    super::layout::width(
+        Box::new(Container::new().with_no_padding().with_child(Box::new(row))),
+        |metrics| metrics.panel_width_list / 3.0,
     )
 }
-
-/// The width of the keys' column, so what they do lines up.
-const KEYS: f32 = 132.0; // the longest chord's caps: a layout width, not spacing
 
 fn line(keys: &str, does: &str) -> Element {
     Box::new(
         Row::new()
             .no_wrap()
-            .with_gap(12.0)
+            .with_rhythm(ui::tokens::Rhythm::Sibling)
             .with_align_items(ui::taffy::AlignItems::Center)
             .push(keycaps(keys))
             .push(Box::new(Text::new(does).with_role(TextRole::Label))),
@@ -139,7 +145,7 @@ fn group(heading: &str, lines: Vec<Element>) -> Element {
     let mut column = Column::new()
         .with_no_padding()
         .with_intrinsic_height()
-        .with_gap(4.0)
+        .with_rhythm(ui::tokens::Rhythm::Tight)
         .push(super::heading(heading));
     for line in lines {
         column = column.push(line);
@@ -154,7 +160,7 @@ pub fn overview() -> Element {
         Column::new()
             .with_no_padding()
             .with_intrinsic_height()
-            .with_gap(14.0)
+            .with_rhythm(ui::tokens::Rhythm::Sibling)
     };
     let (mut left, mut right) = (column(), column());
     let mut tools_heading = "";
@@ -174,17 +180,16 @@ pub fn overview() -> Element {
             right = right.push(group(g.heading, lines));
         }
     }
-    let mut letters = Row::new().with_gap(14.0);
+    let mut letters = Row::new().with_rhythm(ui::tokens::Rhythm::Sibling);
     for (keys, does) in tools() {
         letters = letters.push(Box::new(
             Row::new()
                 .no_wrap()
-                .with_gap(6.0)
+                .with_rhythm(ui::tokens::Rhythm::Related)
                 .with_align_items(ui::taffy::AlignItems::Center)
-                .push(Box::new(ui::widget::Badge::semantic_pill(
-                    keys,
-                    ui::widget::BadgeTone::Neutral,
-                )))
+                .push(Box::new(
+                    ui::widget::Badge::text(keys).style(ui::widget::ChipStyle::Neutral),
+                ))
                 .push(Box::new(Text::new(does).with_role(TextRole::Label))),
         ));
     }
@@ -192,11 +197,11 @@ pub fn overview() -> Element {
         Column::new()
             .with_no_padding()
             .with_intrinsic_height()
-            .with_gap(14.0)
+            .with_rhythm(ui::tokens::Rhythm::Sibling)
             .push(Box::new(
                 Row::new()
                     .no_wrap()
-                    .with_gap(28.0)
+                    .with_rhythm(ui::tokens::Rhythm::Section)
                     .with_align_items(ui::taffy::AlignItems::Start)
                     .push(Box::new(left))
                     .push(Box::new(right)),

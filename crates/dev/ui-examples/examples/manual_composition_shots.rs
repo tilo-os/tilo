@@ -2,13 +2,14 @@
 //! `cargo run -p ui-examples --example manual-composition-shots -- /tmp/manual-composition`
 use std::path::PathBuf;
 use taffy::Size;
+use tilo_ui::State;
 use tilo_ui::headless::FrameHarness;
 use tilo_ui::tokens::TextRole;
+use tilo_ui::widget::ButtonRole;
 use tilo_ui::widget::{
     Actions, Button, Checkbox, Container, Element, Field, Form, FormPage, FormSection, Manual,
     ManualContext, MeasureConstraint as M, Scrollable, Text, TextInput, WidgetLayoutError,
 };
-use tilo_ui::{State, Theme};
 use vello::kurbo::Rect;
 const NAME: &str = "Full name";
 const EMAIL: &str = "Email address for account recovery";
@@ -182,13 +183,9 @@ fn manual_account(scale: f32) -> Element {
         .child(Box::new(
             Checkbox::new("updates", "updates").with_label(UPDATES),
         ))
+        .child(Box::new(Button::new("cancel", "Cancel")))
         .child(Box::new(
-            Button::new("cancel", "Cancel", None).content_sized(),
-        ))
-        .child(Box::new(
-            Button::new("save", "Save account changes", Some("saved"))
-                .primary()
-                .content_sized(),
+            Button::new("save", "Save account changes").role(ButtonRole::Primary),
         ));
     surface(Box::new(region))
 }
@@ -197,7 +194,6 @@ fn surface(child: Element) -> Element {
         Container::new()
             .with_no_padding()
             .filling()
-            .with_fill(shot_theme().bg_app)
             .with_child(Box::new(Scrollable::new_vertical().with_child(child))),
     )
 }
@@ -216,8 +212,8 @@ fn account() -> Form {
             Checkbox::new("updates", "updates").with_label(UPDATES),
         )))
         .with_actions(
-            Actions::new(Button::new("save", "Save account changes", Some("saved")).primary())
-                .secondary(Button::new("cancel", "Cancel", None)),
+            Actions::new(Button::new("save", "Save account changes").role(ButtonRole::Primary))
+                .secondary(Button::new("cancel", "Cancel")),
         )
 }
 fn automatic_in_manual() -> Element {
@@ -265,21 +261,13 @@ fn manual_in_automatic() -> Element {
         .with_description(DESCRIPTION),
     )
 }
-/// `TILO_SHOTS_THEME=<preset>` (`light`, `high-contrast`, any `Theme::named`)
-/// renders every capture on that preset; PNGs are composited on the theme's
-/// own `bg_app`.
-fn shot_theme() -> Theme {
-    std::env::var("TILO_SHOTS_THEME")
-        .ok()
-        .and_then(|name| Theme::named(&name))
-        .unwrap_or_else(Theme::dark)
-}
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let output = std::env::args_os()
         .nth(1)
         .map_or_else(|| PathBuf::from("/tmp/manual-composition"), PathBuf::from);
     std::fs::create_dir_all(&output)?;
+    let theme = tilo_ui::launch::shot_theme_from_env()?;
     for (name, viewport, scale) in [
         ("wide", (1080, 800), 1.0),
         ("narrow", (340, 800), 1.0),
@@ -296,16 +284,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 State::new(),
                 root,
                 viewport,
-                shot_theme().with_text_scale(scale),
+                theme.clone().with_text_scale(scale),
             );
-            harness.render_window_png(&output.join(format!("{mode}-{name}.png")));
+            harness.render_png(&output.join(format!("{mode}-{name}.png")));
             std::fs::write(
                 output.join(format!("{mode}-{name}.json")),
                 serde_json::to_vec_pretty(&harness.inspection())?,
             )?;
             harness.click_at(5.0, 5.0);
             harness.scroll(0.0, -10000.0);
-            harness.render_window_png(&output.join(format!("{mode}-{name}-end.png")));
+            harness.render_png(&output.join(format!("{mode}-{name}-end.png")));
             std::fs::write(
                 output.join(format!("{mode}-{name}-end.json")),
                 serde_json::to_vec_pretty(&harness.inspection())?,
@@ -319,9 +307,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             _ => manual_account(1.0),
         };
         let mut resized =
-            FrameHarness::new_with_theme(State::new(), root, (1080, 800), shot_theme());
+            FrameHarness::new_with_theme(State::new(), root, (1080, 800), theme.clone());
         resized.resize((340, 800))?;
-        resized.render_window_png(&output.join(format!("{mode}-resized-narrow.png")));
+        resized.render_png(&output.join(format!("{mode}-resized-narrow.png")));
         std::fs::write(
             output.join(format!("{mode}-resized-narrow.json")),
             resized.inspection_json()?,

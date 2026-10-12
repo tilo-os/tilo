@@ -5,10 +5,16 @@
 //! replaces it as one step of its history, so Undo brings the old one back;
 //! a new tab starts a separate artwork beside it.
 //!
-//! The file (`.artwork`) is the artwork's content as JSON: its title, size,
-//! ground, layers in order, marks in order and the media saved in it. It is
-//! the same data every collaborator simulates from, so a painting opened
-//! from a file paints exactly as it was saved.
+//! The file (`.artwork`) is a ZIP package, so it travels whole: a
+//! `mimetype` entry first, `artwork.json` (the artwork's content: its
+//! title, size, ground, layers in order, marks in order and the media saved
+//! in it) and, under `content/`, each picture its marks show, once however
+//! often it is placed, as the bytes it was placed from and named by its
+//! content address. The JSON is the same data every collaborator simulates
+//! from, so a painting opened from a file paints exactly as it was saved;
+//! opening it puts its pictures back in the content store, so they show on
+//! a machine that never had them. The JSON alone still opens as an artwork
+//! without pictures of its own.
 
 use std::collections::BTreeMap;
 
@@ -21,11 +27,15 @@ use crate::model::{Artwork, Ground, MarkBody};
 /// The file extension of a saved artwork.
 pub const EXTENSION: &str = "artwork";
 /// The media type of a saved artwork.
-pub const MEDIA_TYPE: &str = "application/vnd.tilo.artwork+json";
+pub const MEDIA_TYPE: &str = "application/vnd.tilo.artwork+zip";
 /// What the file says it is.
 const FORMAT: &str = "tilo-artwork";
-/// The largest artwork file read, in bytes.
-pub const MAX_FILE_BYTES: usize = 64 << 20;
+/// The largest artwork file read, in bytes: room for a few large photos.
+pub const MAX_FILE_BYTES: usize = 256 << 20;
+/// The package's entry holding the artwork's JSON.
+const DOCUMENT_ENTRY: &str = "artwork.json";
+/// Where the package keeps pictures, each named by its content hash.
+const CONTENT_DIR: &str = "content/";
 
 /// A size a new artwork starts at.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -39,7 +49,7 @@ pub struct Size {
 }
 
 /// The sizes offered, in units (a unit is a pixel at 1x export).
-pub const SIZES: [Size; 6] = [
+pub const SIZES: [Size; 9] = [
     Size {
         id: "screen",
         label: "canvas-size-screen",
@@ -82,6 +92,27 @@ pub const SIZES: [Size; 6] = [
         height: 1024.0,
         icon: Icon::Star,
     },
+    Size {
+        id: "pixel-32",
+        label: "canvas-size-pixel-32",
+        width: 32.0,
+        height: 32.0,
+        icon: Icon::Square,
+    },
+    Size {
+        id: "pixel-64",
+        label: "canvas-size-pixel-64",
+        width: 64.0,
+        height: 64.0,
+        icon: Icon::Square,
+    },
+    Size {
+        id: "pixel-128",
+        label: "canvas-size-pixel-128",
+        width: 128.0,
+        height: 128.0,
+        icon: Icon::Square,
+    },
 ];
 
 /// The size named `id`.
@@ -105,7 +136,7 @@ pub struct Start {
 }
 
 /// The grounds and media offered.
-pub const STARTS: [Start; 6] = [
+pub const STARTS: [Start; 7] = [
     Start {
         id: "paper",
         label: "canvas-start-paper",
@@ -148,6 +179,13 @@ pub const STARTS: [Start; 6] = [
         colour: "#1e2024", // document colour: a dark sheet for light work
         medium: "",
     },
+    Start {
+        id: "transparent",
+        label: "canvas-start-transparent",
+        texture: "smooth",
+        colour: "#ffffff00",
+        medium: "",
+    },
 ];
 
 /// The start named `id`.
@@ -164,6 +202,8 @@ pub fn start(id: &str) -> Option<Start> {
 pub struct FileLayer {
     pub id: String,
     pub name: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub group: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub medium: String,
     #[serde(default = "one")]
@@ -185,6 +225,9 @@ pub struct FileLayer {
     /// Clipped to the layer below.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub clip: bool,
+    /// A mask that stays put when its layer's marks move.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub unlinked: bool,
     /// Colour and tone adjustments of everything on the layer.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub adjust: Option<crate::model::Adjust>,
@@ -260,6 +303,7 @@ impl ArtworkFile {
                 .map(|layer| FileLayer {
                     id: layer.id.clone(),
                     name: layer.name.clone(),
+                    group: layer.group.clone(),
                     medium: layer.medium.clone(),
                     opacity: layer.opacity,
                     visible: layer.visible,
@@ -269,6 +313,7 @@ impl ArtworkFile {
                     base: layer.base,
                     invert: layer.invert,
                     clip: layer.clip,
+                    unlinked: layer.unlinked,
                     adjust: layer.adjust.clone(),
                 })
                 .collect(),
@@ -285,15 +330,27 @@ impl ArtworkFile {
         }
     }
 
-    /// The file's bytes: indented JSON, so a saved artwork diffs and merges
-    /// as text too.
-    pub fn to_bytes(&self) -> Vec<u8> {
+    /// The artwork's JSON, indented, as the package's `artwork.json` keeps
+    /// it and an `open-artwork` action carries it.
+    pub fn to_json(&self) -> Vec<u8> {
         let mut bytes = serde_json::to_vec_pretty(self).unwrap_or_default();
         bytes.push(b'\n');
         bytes
     }
 
-    /// Read a saved artwork.
+    /// The content addresses of the pictures the marks show, each once.
+    pub fn pictures(&self) -> std::collections::BTreeSet<&str> {
+        self.marks
+            .iter()
+            .filter_map(|mark| match &mark.body.shape {
+                crate::model::Shape::Image { src, .. } => Some(src.as_str()),
+                _ => None,
+            })
+            .filter(|src| ui::tilo_actions::content_hash(src).is_some())
+            .collect()
+    }
+
+    /// Read an artwork's JSON.
     ///
     /// # Errors
     /// Says why the bytes are not an artwork this version reads.
@@ -356,60 +413,143 @@ pub struct Recent {
 /// How many recent artworks are remembered.
 pub const RECENTS_KEPT: usize = 8;
 
-/// The recent artworks, newest first, as kept in the app's own state.
-pub mod recents {
-    use super::{RECENTS_KEPT, Recent};
-    use tilo_files::{Dir, VPath, blocking};
+/// The artworks opened or saved lately, newest first. Their paths name
+/// files on this device, so the list is a device-local setting.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct RecentArtworks {
+    pub artworks: Vec<Recent>,
+}
 
-    fn place() -> Option<(Dir, VPath)> {
-        let dir = Dir::open(tilo_paths::AppPaths::for_app(crate::APP_ID).state()).ok()?;
-        Some((dir, VPath::new("recent-artworks.json").ok()?))
-    }
+impl ui::storage::SettingsSchema for RecentArtworks {
+    const SCOPE: ui::storage::Scope = ui::storage::Scope::DeviceLocal;
+}
 
-    /// The recent artworks, newest first; none where the app keeps no
-    /// state.
-    pub fn read() -> Vec<Recent> {
-        let Some((dir, path)) = place() else {
-            return Vec::new();
-        };
-        blocking::read(&dir, &path)
-            .ok()
-            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-            .unwrap_or_default()
-    }
-
+impl RecentArtworks {
     /// `recent` first, then the others it was not, at most
     /// [`RECENTS_KEPT`].
-    pub fn with(mut list: Vec<Recent>, recent: Recent) -> Vec<Recent> {
-        list.retain(|kept| kept.path != recent.path);
-        list.insert(0, recent);
-        list.truncate(RECENTS_KEPT);
-        list
-    }
-
-    /// Remember `recent`. Best effort: a machine that keeps no state for
-    /// the app simply shows no recent artworks.
-    pub fn remember(recent: Recent) -> Vec<Recent> {
-        let list = with(read(), recent);
-        if let Some((dir, path)) = place()
-            && let Ok(bytes) = serde_json::to_vec_pretty(&list)
-        {
-            let _ = blocking::write_atomic(&dir, &path, &bytes);
-        }
-        list
+    pub fn remember(&mut self, recent: Recent) {
+        self.artworks.retain(|kept| kept.path != recent.path);
+        self.artworks.insert(0, recent);
+        self.artworks.truncate(RECENTS_KEPT);
     }
 
     /// Forget the artwork at `path` (it moved or was removed).
-    pub fn forget(path: &str) -> Vec<Recent> {
-        let mut list = read();
-        list.retain(|kept| kept.path != path);
-        if let Some((dir, file)) = place()
-            && let Ok(bytes) = serde_json::to_vec_pretty(&list)
-        {
-            let _ = blocking::write_atomic(&dir, &file, &bytes);
-        }
-        list
+    pub fn forget(&mut self, path: &str) {
+        self.artworks.retain(|kept| kept.path != path);
     }
+}
+
+/// The package of `file`: its JSON and every picture its marks show that
+/// `store` holds, as the bytes it holds them as. Also the pictures it does
+/// not hold, by address: the file opens without them, as the artwork shows
+/// now.
+///
+/// # Errors
+/// Says why the package cannot be written (in memory, it always can).
+pub fn pack(
+    file: &ArtworkFile,
+    store: &tilo_content::ContentStore,
+) -> Result<(Vec<u8>, Vec<String>), String> {
+    use std::io::Write as _;
+    use zip::CompressionMethod::{Deflated, Stored};
+    use zip::write::SimpleFileOptions;
+    let failed = |error: &dyn std::fmt::Display| format!("the artwork cannot be packed: {error}");
+    let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    // First and stored, so the type shows at a fixed place in the file.
+    let stored = SimpleFileOptions::default().compression_method(Stored);
+    zip.start_file("mimetype", stored)
+        .map_err(|error| failed(&error))?;
+    zip.write_all(MEDIA_TYPE.as_bytes())
+        .map_err(|error| failed(&error))?;
+    zip.start_file(
+        DOCUMENT_ENTRY,
+        SimpleFileOptions::default().compression_method(Deflated),
+    )
+    .map_err(|error| failed(&error))?;
+    zip.write_all(&file.to_json())
+        .map_err(|error| failed(&error))?;
+    let mut missing = Vec::new();
+    for address in file.pictures() {
+        let held = ui::tilo_actions::content_hash(address)
+            .and_then(|hash| Some((hash, store.read(hash)?)));
+        let Some((hash, bytes)) = held else {
+            missing.push(address.to_owned());
+            continue;
+        };
+        // Pictures are compressed already: kept as they are.
+        zip.start_file(format!("{CONTENT_DIR}{hash}"), stored)
+            .map_err(|error| failed(&error))?;
+        zip.write_all(&bytes).map_err(|error| failed(&error))?;
+    }
+    let bytes = zip.finish().map_err(|error| failed(&error))?.into_inner();
+    Ok((bytes, missing))
+}
+
+/// Read a saved artwork: a package, its pictures put in `store`, or the
+/// artwork's JSON alone.
+///
+/// # Errors
+/// Says why the bytes are not an artwork this version reads, or a picture
+/// in it is not the content its name says.
+pub fn unpack(bytes: &[u8], store: &tilo_content::ContentStore) -> Result<ArtworkFile, String> {
+    if !bytes.starts_with(b"PK\x03\x04") {
+        return ArtworkFile::parse(bytes);
+    }
+    let broken = |error: &dyn std::fmt::Display| format!("this artwork file is damaged: {error}");
+    let mut archive =
+        zip::ZipArchive::new(std::io::Cursor::new(bytes)).map_err(|error| broken(&error))?;
+    if archive.len() > crate::model::MAX_MARKS.saturating_add(2) {
+        return Err(broken(&"it holds more pictures than an artwork can show"));
+    }
+    // What is inflated in all, held to a bound however the entries lie
+    // about their sizes.
+    let mut budget = (MAX_FILE_BYTES as u64).saturating_mul(2);
+    let json = {
+        let entry = archive
+            .by_name(DOCUMENT_ENTRY)
+            .map_err(|error| broken(&error))?;
+        inflate(entry, MAX_FILE_BYTES as u64, &mut budget).map_err(|error| broken(&error))?
+    };
+    let file = ArtworkFile::parse(&json)?;
+    for index in 0..archive.len() {
+        let entry = archive.by_index(index).map_err(|error| broken(&error))?;
+        let Some(hash) = entry.name().strip_prefix(CONTENT_DIR).map(str::to_owned) else {
+            continue;
+        };
+        if !tilo_content::valid_hash(&hash) {
+            return Err(broken(&format!("{hash:?} names no content")));
+        }
+        if store.has(&hash) {
+            continue;
+        }
+        let picture = inflate(entry, crate::picture::MAX_PICTURE_BYTES as u64, &mut budget)
+            .map_err(|error| broken(&error))?;
+        if !tilo_content::verify(&hash, &picture) {
+            return Err(broken(&format!("its picture {hash} is not that content")));
+        }
+        store
+            .put(&picture)
+            .map_err(|error| format!("the artwork's picture could not be kept: {error}"))?;
+    }
+    Ok(file)
+}
+
+/// The bytes of a package entry, at most `cap` of them and at most what is
+/// left of `budget`, which they are taken from.
+fn inflate(mut entry: impl std::io::Read, cap: u64, budget: &mut u64) -> Result<Vec<u8>, String> {
+    use std::io::Read as _;
+    let cap = cap.min(*budget);
+    let mut bytes = Vec::new();
+    (&mut entry)
+        .take(cap.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .map_err(|error| error.to_string())?;
+    let read = bytes.len() as u64;
+    if read > cap {
+        return Err(format!("an entry is over {cap} bytes"));
+    }
+    *budget = budget.saturating_sub(read);
+    Ok(bytes)
 }
 
 /// Answer `save-artwork`: write the artwork's file to the path given, or
@@ -421,23 +561,56 @@ pub fn save(
     art: &Artwork,
     save: &crate::resource::SaveArtwork,
 ) -> Result<serde_json::Value, String> {
-    let bytes = ArtworkFile::of(art).to_bytes();
+    let (bytes, missing) = pack(&ArtworkFile::of(art), &crate::content::store())?;
     let size = bytes.len();
-    let Some(path) = &save.path else {
-        let address = crate::resource::store(&bytes)?;
-        return Ok(serde_json::json!({"content": address, "bytes": size}));
+    let mut answer = match &save.path {
+        None => serde_json::json!({"content": crate::resource::store(&bytes)?, "bytes": size}),
+        Some(path) => {
+            let path = std::path::Path::new(path);
+            if !path.is_absolute()
+                || path.extension().and_then(|extension| extension.to_str()) != Some(EXTENSION)
+            {
+                return Err(format!(
+                    "path is an absolute path ending in .{EXTENSION}, not {}",
+                    path.display()
+                ));
+            }
+            write(path, &bytes)?;
+            serde_json::json!({"path": path.display().to_string(), "bytes": size})
+        }
     };
-    let path = std::path::Path::new(path);
-    if !path.is_absolute()
-        || path.extension().and_then(|extension| extension.to_str()) != Some(EXTENSION)
+    if !missing.is_empty() {
+        // Saved all the same: the file shows what the artwork shows now.
+        if let Some(answer) = answer.as_object_mut() {
+            answer.insert("missing_pictures".into(), serde_json::json!(missing));
+        }
+    }
+    Ok(answer)
+}
+
+/// Write an export's `bytes` to `path`, an absolute path ending in one of
+/// `extensions`; answers the path written.
+///
+/// # Errors
+/// Says why the path is not one or cannot be written.
+pub fn export_to(path: &str, extensions: &[&str], bytes: &[u8]) -> Result<String, String> {
+    let file = std::path::Path::new(path);
+    let extension = file
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(str::to_ascii_lowercase);
+    if !file.is_absolute()
+        || !extension
+            .as_deref()
+            .is_some_and(|extension| extensions.contains(&extension))
     {
         return Err(format!(
-            "path is an absolute path ending in .{EXTENSION}, not {}",
-            path.display()
+            "path is an absolute path ending in .{}, not {path}",
+            extensions.join(" or .")
         ));
     }
-    write(path, &bytes)?;
-    Ok(serde_json::json!({"path": path.display().to_string(), "bytes": size}))
+    write(file, bytes)?;
+    Ok(file.display().to_string())
 }
 
 /// Write `bytes` to the file at `path`, replacing it.
@@ -450,11 +623,12 @@ pub fn write(path: &std::path::Path, bytes: &[u8]) -> Result<(), String> {
     tilo_files::blocking::write_atomic(&dir, &name, bytes).map_err(cannot)
 }
 
-/// Read the artwork file at `path`.
+/// Read the artwork file at `path`, its pictures put in the app's content
+/// store.
 ///
 /// # Errors
 /// Says why it cannot be read or is not an artwork.
 pub fn read(path: &std::path::Path) -> Result<ArtworkFile, String> {
     let bytes = crate::resource::read_file(&path.display().to_string(), MAX_FILE_BYTES)?;
-    ArtworkFile::parse(&bytes)
+    unpack(&bytes, &crate::content::store())
 }

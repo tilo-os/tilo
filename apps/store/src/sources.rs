@@ -20,18 +20,37 @@ use package_store::InstalledPackage;
 ///
 /// `installed_index` is the app host's install snapshot — passed by-ref so the merge can cheaply
 /// look up install state per package id.
-#[allow(
-    clippy::unreachable,
-    reason = "VerifiedEntry is constructed only after the registry verifier rejects Untrusted; reaching this arm would violate that security boundary"
-)]
 pub fn tilo_to_store_item(
     verified: &VerifiedEntry,
     registry_name: &str,
     installed_index: &[InstalledPackage],
 ) -> StoreItem {
+    tilo_to_store_item_on_channel(
+        verified,
+        registry_name,
+        installed_index,
+        app_cli::ReleaseChannel::Stable,
+    )
+}
+
+/// Convert only versions the device can run within the configured channel.
+#[allow(
+    clippy::unreachable,
+    reason = "VerifiedEntry is constructed only after the registry verifier rejects Untrusted; reaching this arm would violate that security boundary"
+)]
+pub fn tilo_to_store_item_on_channel(
+    verified: &VerifiedEntry,
+    registry_name: &str,
+    installed_index: &[InstalledPackage],
+    channel: app_cli::ReleaseChannel,
+) -> StoreItem {
     let entry = &verified.entry;
-    let versions: Vec<StoreItemVersion> =
-        entry.versions.iter().map(tilo_version_to_store).collect();
+    // A build that needs system interfaces this OS does not serve is never
+    // offered: it could not run here.
+    let mut versions: Vec<StoreItemVersion> = app_cli::installable_versions(entry, channel)
+        .map(tilo_version_to_store)
+        .collect();
+    versions.sort_by(|left, right| app_cli::compare_versions(&right.version, &left.version));
     let latest = versions
         .first()
         .map(|v| v.version.clone())
@@ -171,7 +190,7 @@ fn tilo_version_to_store(v: &RegistryVersion) -> StoreItemVersion {
 /// until a follow-up `fetch_appstream` populates the record.
 ///
 /// `installed_flatpaks` is the `(app_id, version)` snapshot from
-/// [`crate::flathub_client::installed_flatpaks`].
+/// the app-host service.
 pub fn flathub_placeholder_to_item(
     p: &PopularEntry,
     installed_flatpaks: &[(String, String)],
@@ -244,6 +263,84 @@ pub fn installed_flatpak_to_item(app_id: &str, version: &str) -> StoreItem {
             pinned: false,
             user_managed: true,
         },
+    }
+}
+
+/// Decode cached `AppStream` metadata from an actual configured repository.
+/// No unavailable release dates, artwork or publisher identity are invented.
+pub fn remote_catalogue_items(
+    rows: &str,
+    remote: &crate::flathub_client::Remote,
+    installed: &[(String, String)],
+) -> Vec<StoreItem> {
+    rows.lines()
+        .filter_map(|line| {
+            let columns: Vec<_> = line.split('\t').collect();
+            let id = columns.first()?.trim();
+            if id.is_empty() {
+                return None;
+            }
+            let version = columns.get(3).copied().unwrap_or("").trim();
+            let mut item = installed_flatpak_to_item(id, version);
+            item.name = columns
+                .get(1)
+                .filter(|name| !name.trim().is_empty())
+                .map_or(id, |name| name.trim())
+                .to_string();
+            item.description = columns.get(2).copied().unwrap_or("").trim().to_string();
+            item.installed = installed.iter().find(|(app, _)| app == id).map_or(
+                InstalledState::Not,
+                |(_, installed)| InstalledState::Installed {
+                    version: installed.clone(),
+                    available: version.to_string(),
+                    pinned: false,
+                    user_managed: remote.user_managed,
+                },
+            );
+            item.source = StoreSource::FlatpakRemote {
+                name: remote.name.clone(),
+                title: remote.title.clone(),
+                branch: columns.get(4).copied().unwrap_or("stable").to_string(),
+                user_managed: remote.user_managed,
+            };
+            item.trust = StoreTrust::ConfiguredRemote;
+            if remote.name == "flathub"
+                && columns.get(4).is_none_or(|branch| *branch == "stable")
+                && matches!(
+                    remote.url.trim_end_matches('/'),
+                    "https://dl.flathub.org/repo" | "https://flathub.org/repo"
+                )
+            {
+                item.source = StoreSource::Flathub;
+                item.trust = StoreTrust::Flathub;
+            }
+            Some(item)
+        })
+        .collect()
+}
+
+/// Preserve the scope of apps already supplied by the device.
+pub fn apply_flatpak_origin<S: std::hash::BuildHasher>(
+    item: &mut StoreItem,
+    origins: &std::collections::HashMap<String, (String, bool), S>,
+) {
+    if let Some((origin, user_managed)) = origins.get(&item.id) {
+        if let InstalledState::Installed {
+            user_managed: mutable,
+            ..
+        } = &mut item.installed
+        {
+            *mutable = *user_managed;
+        }
+        if origin != "flathub" {
+            item.source = StoreSource::FlatpakRemote {
+                name: origin.clone(),
+                title: origin.clone(),
+                branch: "stable".into(),
+                user_managed: *user_managed,
+            };
+            item.trust = StoreTrust::ConfiguredRemote;
+        }
     }
 }
 
@@ -331,7 +428,7 @@ fn plain_text(input: &str) -> String {
 }
 
 /// Merge a Tilo pile and a Flathub pile into one deduped list.
-/// Tilo wins on any name collision (case-insensitive).
+/// Prefer native offers on name collisions, while retaining every installed app.
 pub fn merge(tilo_items: Vec<StoreItem>, flathub_items: Vec<StoreItem>) -> Vec<StoreItem> {
     let mut out = tilo_items;
     let tilo_names: std::collections::HashSet<String> = out
@@ -339,7 +436,8 @@ pub fn merge(tilo_items: Vec<StoreItem>, flathub_items: Vec<StoreItem>) -> Vec<S
         .map(|i| i.name.trim().to_ascii_lowercase())
         .collect();
     for fh in flathub_items {
-        if !tilo_names.contains(&fh.name.trim().to_ascii_lowercase()) {
+        if fh.installed.is_installed() || !tilo_names.contains(&fh.name.trim().to_ascii_lowercase())
+        {
             out.push(fh);
         }
     }
@@ -368,6 +466,98 @@ mod tests {
     use ed25519_dalek::SigningKey;
     use registry_types::{RegistryEntry, sign_entry};
 
+    #[test]
+    fn configured_remote_catalogue_preserves_metadata_and_device_scope() {
+        let mut remote = crate::flathub_client::Remote {
+            name: "tools".into(),
+            title: "Example tools".into(),
+            url: "https://tools.example/repo".into(),
+            disabled: false,
+            user_managed: true,
+        };
+        let rows = "org.example.Editor\tEditor\tEdit local documents\t2.0\tbeta\ttools\n";
+        let mut items = super::remote_catalogue_items(rows, &remote, &[]);
+        let item = &mut items[0];
+        assert_eq!(item.name, "Editor");
+        assert_eq!(item.description, "Edit local documents");
+        assert_eq!(item.source.distribution_name(), "Example tools");
+        assert_eq!(item.trust, StoreTrust::ConfiguredRemote);
+        assert!(
+            matches!(&item.source, StoreSource::FlatpakRemote { branch, .. } if branch == "beta")
+        );
+        assert!(item.allows_action(crate::model::ActionKind::FlatpakInstall, true));
+        remote.user_managed = false;
+        let item = &super::remote_catalogue_items(rows, &remote, &[])[0];
+        assert!(item.managed_by_device(crate::model::ActionKind::FlatpakInstall));
+        assert!(!item.allows_action(crate::model::ActionKind::FlatpakInstall, true));
+        let mut installed = super::remote_catalogue_items(
+            rows,
+            &remote,
+            &[("org.example.Editor".into(), "1.0".into())],
+        )
+        .remove(0);
+        let origins =
+            crate::flathub_client::installed_origins("org.example.Editor\t1.0\ttools\tsystem\n");
+        super::apply_flatpak_origin(&mut installed, &origins);
+        assert_eq!(
+            installed.action_kind(true),
+            crate::model::ActionKind::FlatpakOpen
+        );
+        assert!(installed.remove_action().is_none());
+        assert!(!installed.allows_action(crate::model::ActionKind::FlatpakUpdate, true));
+        assert!(crate::model::SourceFilter::Flatpak.accepts(&installed));
+        assert!(installed.icon_url.is_none());
+        assert!(installed.publisher_pubkey_hex.is_none());
+    }
+
+    #[test]
+    fn official_system_flathub_stable_items_use_the_account_install_route() {
+        let remote = crate::flathub_client::Remote {
+            name: "flathub".into(),
+            title: "Flathub".into(),
+            url: "https://dl.flathub.org/repo/".into(),
+            disabled: false,
+            user_managed: false,
+        };
+        let rows = "org.example.Editor\tEditor\tEdit documents\t2.0\tstable\tflathub\n";
+        let item = super::remote_catalogue_items(rows, &remote, &[]).remove(0);
+        assert!(matches!(item.source, StoreSource::Flathub));
+        assert!(item.allows_action(crate::ActionKind::FlatpakInstall, true));
+        let beta = rows.replace("stable", "beta");
+        let item = super::remote_catalogue_items(&beta, &remote, &[]).remove(0);
+        assert!(matches!(
+            item.source,
+            StoreSource::FlatpakRemote {
+                user_managed: false,
+                ..
+            }
+        ));
+        assert!(!item.allows_action(crate::ActionKind::FlatpakInstall, true));
+    }
+
+    #[test]
+    fn native_catalogue_matches_cli_target_channel_and_version_selection() {
+        let mut entry = tilo_entry("so.tilo.notes", "Notes", "1.0.0", [1; 32]);
+        let mut foreign = entry.versions[0].clone();
+        foreign.version = "9.0.0".into();
+        foreign.target.architecture = "different-device".into();
+        let mut newest = entry.versions[0].clone();
+        newest.version = "2.0.0".into();
+        let mut prerelease = entry.versions[0].clone();
+        prerelease.version = "3.0.0-beta.1".into();
+        entry.versions = vec![foreign, entry.versions[0].clone(), prerelease, newest];
+        let verified = verified(entry);
+        let item = tilo_to_store_item(&verified, "Tilo main", &[]);
+        assert_eq!(item.latest_version(), "2.0.0");
+        assert_eq!(item.versions.len(), 2);
+        assert_eq!(
+            app_cli::entry_to_app(&verified, "Tilo main")
+                .unwrap()
+                .version,
+            item.latest_version()
+        );
+    }
+
     fn tilo_entry(id: &str, name: &str, version: &str, publisher: [u8; 32]) -> RegistryEntry {
         let mut e = RegistryEntry {
             package_id: id.into(),
@@ -389,9 +579,10 @@ mod tests {
                 tapp_blake3_hex: "ef".repeat(32),
                 target: registry_types::RegistryTarget {
                     platform: registry_types::TILO_OS_PLATFORM.into(),
-                    architecture: "x86_64".into(),
-                    isa: "x86_64-v3".into(),
+                    architecture: std::env::consts::ARCH.into(),
+                    isa: std::env::consts::ARCH.into(),
                     runtime: None,
+                    interfaces: Vec::new(),
                 },
             }],
             updated_at_unix: 300,
@@ -425,6 +616,8 @@ mod tests {
             cli_commands: Vec::new(),
             runtime: String::new(),
             source: String::new(),
+            held: false,
+            payload_bytes: 0,
             system: !user_managed,
         }
     }

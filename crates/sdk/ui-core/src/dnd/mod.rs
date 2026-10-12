@@ -142,7 +142,7 @@ pub fn mime_for_path(path: &Path) -> Option<&'static str> {
 
 /// The file types Tilo's own apps write, which no general table knows:
 /// their extension and media type.
-const TILO_TYPES: &[(&str, &str)] = &[("artwork", "application/vnd.tilo.artwork+json")];
+const TILO_TYPES: &[(&str, &str)] = &[("artwork", "application/vnd.tilo.artwork+zip")];
 
 /// Start a drag carrying `paths`, out of this app and into whatever
 /// application the pointer is released over. Call from a press-and-move

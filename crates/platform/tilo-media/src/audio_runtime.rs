@@ -220,6 +220,13 @@ impl PersistentAudioPolicy {
         self.echo_session.is_some()
     }
 
+    /// When a backed-off echo-cancellation restart falls due. Nothing in the
+    /// graph changes at that moment, so an event-driven owner must reconcile
+    /// again by then on its own.
+    pub fn next_retry(&self) -> Option<std::time::Instant> {
+        self.echo_retry_at
+    }
+
     fn reconcile_output(
         &mut self,
         preferences: PersistentAudioPreferences,
@@ -351,19 +358,8 @@ fn run(bin: &str, args: &[String]) -> Result<String, String> {
     if out.status.success() {
         Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
     } else {
-        Err(sanitize_diagnostic(&out.stderr))
+        Err(out.stderr_diagnostic())
     }
-}
-
-#[cfg(unix)]
-fn sanitize_diagnostic(bytes: &[u8]) -> String {
-    String::from_utf8_lossy(bytes)
-        .chars()
-        .filter(|character| !character.is_control() || matches!(character, ' ' | '\n' | '\t'))
-        .take(512)
-        .collect::<String>()
-        .trim()
-        .to_string()
 }
 
 #[cfg(unix)]

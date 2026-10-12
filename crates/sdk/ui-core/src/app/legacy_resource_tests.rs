@@ -136,7 +136,6 @@ fn native_legacy_route_old_changed_and_noop_actionhost_edges_have_one_boundary_e
                     .unwrap()
             })
             .unwrap();
-        assert!(!crate::undo::needs_commit(&probe));
         let root = f.take_tile();
         let mut app = App::new_with_controlled_inputs(State::new(), Box::new(root));
         app.actions.action_registry = registry();

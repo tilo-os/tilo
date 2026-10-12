@@ -11,10 +11,9 @@
 //!     restore, set up) and the live catalog rows.
 //!   * [`resource`] — the resource, the device-local backup location and the
 //!     framework app.
-//!   * [`paint`] — low-level Vello drawing helpers (cards, pills, gauges).
-//!   * [`app`] — the root [`BackupsApp`] widget: a custom-drawn dashboard with
-//!     a source rail, snapshot timeline, storage gauges, a retention editor,
-//!     and a restore sheet.
+//!   * [`app`] — device runtime hosted in the shared navigation shell.
+//!   * `view` — retained places, snapshot timeline, inspector, retention
+//!     controls and restore sheet.
 
 // Apps run in isolated processes, so app-local arithmetic checks are relaxed.
 // Panic-producing lints remain denied; shared crates retain the full lint set
@@ -30,11 +29,7 @@
 #![cfg_attr(
     test,
     allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
         clippy::string_slice,
-        clippy::panic,
         clippy::unreachable,
         reason = "in a test these are the assertion, not a hazard"
     )
@@ -42,12 +37,12 @@
 
 pub mod actions;
 pub mod app;
-pub mod doc;
 pub mod engine;
+mod i18n;
 pub mod model;
-pub mod paint;
 pub mod resource;
-pub mod search_provider;
+pub mod search;
+mod view;
 
 pub use app::BackupsApp;
 pub use resource::{BackupLocation, Backups, BackupsShell};

@@ -22,11 +22,7 @@
 #![cfg_attr(
     test,
     allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
         clippy::string_slice,
-        clippy::panic,
         clippy::unreachable,
         reason = "in a test these are the assertion, not a hazard"
     )
@@ -58,6 +54,7 @@ pub mod cloud_types {
     pub const MOUNT_CONFIG_KEY: &str = "mount";
 }
 
+pub mod email;
 pub mod handoff;
 pub use handoff::{
     CommandRefresher, CredentialRefresher, HandoffCredential, HandoffCredentialSource,
@@ -68,9 +65,11 @@ pub use vault::{Secret, SecretCustody, SecretVault};
 pub mod secrets;
 pub use secrets::{
     AccessDecision, AccessRequest, BrokerError, ClipboardLease, CredentialBroker,
-    CredentialCandidate, CredentialGrant, GeneratedPasswordPolicy, SecretId, SecretItem,
-    SecretItemKind, SecretStore,
+    CredentialCandidate, CredentialGrant, CredentialOwner, CredentialProposal, CredentialScope,
+    GeneratedPasswordPolicy, GrantLifetime, SecretId, SecretItem, SecretItemKind, SecretStore,
 };
+#[cfg(feature = "person")]
+pub mod person;
 pub mod status;
 pub use status::{
     AccountSyncHealth, AccountSyncReporter, AccountSyncStatus, AccountSyncStatusStore,
@@ -209,6 +208,11 @@ pub struct AccountStore {
     /// The active account id per type. A type with no entry uses its first account.
     #[serde(default)]
     active: BTreeMap<AccountTypeId, AccountId>,
+    /// Whether this file is the projection of the person's accounts record
+    /// rather than accounts configured on this device alone, which the
+    /// record has yet to take in.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    projected: bool,
 }
 
 impl AccountStore {
@@ -348,6 +352,19 @@ impl AccountStore {
         self.accounts.is_empty()
     }
 
+    /// Whether this store is the projection of the person's accounts
+    /// record: what the record holds, not accounts it has yet to take in.
+    pub fn is_projection(&self) -> bool {
+        self.projected
+    }
+
+    /// This store, marked as the projection of the person's accounts.
+    #[must_use]
+    pub fn as_projection(mut self) -> Self {
+        self.projected = true;
+        self
+    }
+
     pub fn len(&self) -> usize {
         self.accounts.len()
     }
@@ -356,7 +373,7 @@ impl AccountStore {
 /// The per-user account config root: `$XDG_CONFIG_HOME/tilo` or `~/.config/tilo`.
 /// Like Settings, ignore empty or relative XDG paths.
 pub fn config_root() -> Option<PathBuf> {
-    Some(xdg_paths::xdg::config_home()?.join("tilo"))
+    Some(tilo_paths::xdg::config_home()?.join("tilo"))
 }
 
 /// The accounts directory under a config root (`root/accounts`).

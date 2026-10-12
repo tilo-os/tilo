@@ -49,7 +49,13 @@ pub fn effect(effect: &StoreEffect) -> Option<ActionBinding<()>> {
 
 /// A control carrying out `action` on `item`.
 pub fn package(item: &StoreItem, action: ActionKind) -> Option<ActionBinding<()>> {
-    effect(&StoreEffect::package(action, item.id.clone()))
+    let effect = StoreEffect::package(action, item.id.clone());
+    if let Some((code, reason)) = item.unavailable_action(action) {
+        let spec = effect.bound().unavailable(code, reason);
+        ActionBinding::static_json(&DOOR, &spec, effect.arguments()).ok()
+    } else {
+        self::effect(&effect)
+    }
 }
 
 /// A control starting a report about `item`.
@@ -137,7 +143,7 @@ mod tests {
                 .address()
                 .action
                 .as_str(),
-            "open"
+            "open-app"
         );
         assert!(draft_report(&item).is_some());
         let name = ui::LocalState::new("flathub".to_owned());

@@ -256,22 +256,6 @@ impl ModerationService {
             .collect()
     }
 
-    /// Restore submissions that arrived while a durable promotion was active.
-    /// Calling this repeatedly is safe, including after a crash between the
-    /// pending write and deferred-file removal.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if deferred state cannot be read or moved atomically.
-    pub fn activate_deferred_in_transaction(
-        &self,
-        _transaction: &SnapshotLock<'_>,
-        reviewed_submissions: &[PendingSubmission],
-    ) -> Result<(), ModerationError> {
-        let _thread_guard = thread_lock(&self.transition_lock)?;
-        self.activate_deferred_locked(reviewed_submissions)
-    }
-
     fn activate_deferred_locked(
         &self,
         reviewed_submissions: &[PendingSubmission],
@@ -475,20 +459,58 @@ impl ModerationService {
         let _thread_guard = thread_lock(&self.transition_lock)?;
         self.ensure_not_reserved_by_promotion(submission_id)?;
         let pending = self.require_pending(submission_id)?;
+        self.reject_locked(pending, reviewer.into(), reason.into(), reviewed_at_unix)
+    }
+
+    /// Reject exactly the pending request the operator inspected. A newer
+    /// publisher revision must be reviewed before it can be rejected.
+    /// Like ordinary rejection, this also clears malformed or revoked
+    /// requests without re-verifying their signatures.
+    ///
+    /// # Errors
+    /// Returns a changed-request error without mutation if the queued
+    /// request was replaced, or an existing storage/promotion error.
+    pub fn reject_reviewed(
+        &self,
+        candidate: &PendingSubmission,
+        reviewer: impl Into<String>,
+        reason: impl Into<String>,
+        reviewed_at_unix: u64,
+    ) -> Result<ReviewRecord, ModerationError> {
+        let _transaction = self.storage.lock_snapshot()?;
+        let _thread_guard = thread_lock(&self.transition_lock)?;
+        self.ensure_not_reserved_by_promotion(&candidate.submission_id)?;
+        let pending = self.require_pending(&candidate.submission_id)?;
+        if pending != *candidate {
+            return Err(ModerationError::PendingChanged(
+                candidate.submission_id.clone(),
+            ));
+        }
+        self.reject_locked(pending, reviewer.into(), reason.into(), reviewed_at_unix)
+    }
+
+    fn reject_locked(
+        &self,
+        pending: PendingSubmission,
+        reviewer: String,
+        reason: String,
+        reviewed_at_unix: u64,
+    ) -> Result<ReviewRecord, ModerationError> {
+        let submission_id = pending.submission_id.clone();
         let review_id = submission_review_id(&pending);
         let review = self
             .storage
             .load_review(&review_id)?
-            .unwrap_or_else(|| ReviewRecord {
+            .unwrap_or(ReviewRecord {
                 review_id,
                 decision: ReviewDecision::Rejected,
-                reviewer: reviewer.into(),
-                reason: reason.into(),
+                reviewer,
+                reason,
                 reviewed_at_unix,
                 subject: ReviewSubject::Submission(pending),
             });
         self.persist_review_if_absent(&review)?;
-        let _deleted = self.storage.delete_pending(submission_id)?;
+        let _deleted = self.storage.delete_pending(&submission_id)?;
         Ok(review)
     }
 
@@ -836,9 +858,11 @@ fn validate_version_history(
                 .iter()
                 .find(|version| same_version_identity(version, old))
             else {
-                // Only an entry at its version limit drops versions, the
-                // oldest first, and only one superseded by a newer version
-                // for its target, so no target loses its current release.
+                // A version leaves under the publisher's retention, once
+                // enough newer versions of its target and channel stay, or
+                // when the entry is at its version limit and a newer version
+                // for its target supersedes it. No target loses its current
+                // release either way.
                 let at_limit = proposed.versions.len() == registry_types::entry::MAX_ENTRY_VERSIONS;
                 let superseded = at_limit
                     && proposed.versions.iter().any(|version| {
@@ -846,7 +870,7 @@ fn validate_version_history(
                             && tilo_app_package::version::compare(&version.version, &old.version)
                                 .is_gt()
                     });
-                if superseded {
+                if superseded || registry_types::retention::may_drop(old, &proposed.versions) {
                     continue;
                 }
                 return Err(ModerationError::VersionHistoryRemoved {
@@ -926,8 +950,7 @@ fn validate_bound_version(
                     "aarch64" | "aarch64-v8.2" | "aarch64-v8.4" | "aarch64-v9"
                 )
         ),
-        registry_types::WEB_PLATFORM
-        | registry_types::LINUX_PLATFORM
+        registry_types::LINUX_PLATFORM
         | registry_types::WINDOWS_PLATFORM
         | registry_types::MACOS_PLATFORM
         | registry_types::ANDROID_PLATFORM => target.validate().is_ok(),
@@ -1110,6 +1133,7 @@ mod tests {
                     architecture: "x86_64".into(),
                     isa: "x86_64-v3".into(),
                     runtime: None,
+                    interfaces: Vec::new(),
                 },
             }],
             updated_at_unix: timestamp,
@@ -1182,14 +1206,55 @@ mod tests {
             Err(ModerationError::VersionHistoryRemoved { .. })
         ));
 
-        // Below the limit nothing may be dropped.
+        // Below the limit, retention drops versions with enough newer ones
+        // of their target and channel left.
         let mut short = current.clone();
         short
             .versions
             .retain(|v| v.version != "1.1" && v.version != "1.2");
         short.versions.push(version(limit, "x86_64"));
+        assert!(validate_version_history(&short, Some(&current), &official).is_ok());
+    }
+
+    #[test]
+    fn retention_never_drops_the_newest_versions_of_a_target() {
+        let key = SigningKey::generate(&mut UnwrapErr(SysRng));
+        let official = ArtifactHosts::default();
+        let floor = registry_types::retention::MIN_RETAINED_PER_CHANNEL;
+        let version = |n: usize| {
+            let mut v = entry(&key, 1).versions[0].clone();
+            v.version = format!("1.{n}");
+            v
+        };
+        let mut current = entry(&key, 1);
+        current.versions = (1..=floor + 1).map(version).collect();
+
+        // The oldest has `floor` newer versions: it may go.
+        let mut oldest = current.clone();
+        oldest.versions.remove(0);
+        assert!(validate_version_history(&oldest, Some(&current), &official).is_ok());
+
+        // The next one has one fewer: dropping it removes history.
+        let mut recent = current.clone();
+        recent.versions.remove(1);
         assert!(matches!(
-            validate_version_history(&short, Some(&current), &official),
+            validate_version_history(&recent, Some(&current), &official),
+            Err(ModerationError::VersionHistoryRemoved { .. })
+        ));
+
+        // A newer pre-release does not count toward a release's channel.
+        let mut current = entry(&key, 1);
+        current.versions = vec![version(1)];
+        let mut next = current.clone();
+        next.versions = (1..=floor)
+            .map(|n| {
+                let mut v = version(2);
+                v.version = format!("1.2.0-dev.{n}");
+                v
+            })
+            .collect();
+        assert!(matches!(
+            validate_version_history(&next, Some(&current), &official),
             Err(ModerationError::VersionHistoryRemoved { .. })
         ));
     }
@@ -1292,37 +1357,6 @@ mod tests {
     }
 
     #[test]
-    fn web_versions_are_a_separate_target_history() {
-        let key = SigningKey::generate(&mut UnwrapErr(SysRng));
-        let current = entry(&key, 42);
-        let official = ArtifactHosts::default();
-        let mut with_web = current.clone();
-        let mut web = with_web.versions[0].clone();
-        web.version = "0.0.1".into();
-        web.target = registry_types::RegistryTarget {
-            platform: registry_types::WEB_PLATFORM.into(),
-            architecture: registry_types::WASM32_ARCHITECTURE.into(),
-            isa: "wasm32-mvp+bulk-memory+sign-ext".into(),
-            runtime: Some("tilo-runtime/2026.07+wasm.00112233445566778899aabbccddeeff".into()),
-        };
-        with_web.versions.push(web);
-        assert!(validate_version_history(&with_web, Some(&current), &official).is_ok());
-
-        let mut unordered = with_web.clone();
-        unordered.versions[1].target.isa = "wasm32-mvp+sign-ext+bulk-memory".into();
-        assert!(matches!(
-            validate_version_history(&unordered, Some(&current), &official),
-            Err(ModerationError::UnsupportedPackageTarget { .. })
-        ));
-        let mut no_abi = with_web;
-        no_abi.versions[1].target.runtime = Some("tilo-runtime/2026.07".into());
-        assert!(matches!(
-            validate_version_history(&no_abi, Some(&current), &official),
-            Err(ModerationError::UnsupportedPackageTarget { .. })
-        ));
-    }
-
-    #[test]
     fn android_versions_are_a_separate_target_history() {
         let key = SigningKey::generate(&mut UnwrapErr(SysRng));
         let current = entry(&key, 42);
@@ -1336,6 +1370,7 @@ mod tests {
                 architecture: architecture.into(),
                 isa: isa.into(),
                 runtime: Some("tilo-runtime/2026.07".into()),
+                interfaces: Vec::new(),
             };
             with_android.versions.push(android);
         }
@@ -1379,6 +1414,84 @@ mod tests {
         assert!(hosts.allows("https://apps.tilo.so/artifacts/ab.tapp"));
         assert!(!hosts.allows("http://127.0.0.1:8788/artifacts/ab.tapp"));
         assert!(!ArtifactHosts::default().allows("http://127.0.0.1:8787/artifacts/ab.tapp"));
+    }
+
+    #[test]
+    fn rejection_refuses_a_replaced_review_but_preserves_exact_feedback() {
+        let (_dir, service) = setup();
+        let key = SigningKey::from_bytes(&[23; 32]);
+        let candidate = service
+            .submit(change(&key, EntryAction::Add, 10), 100)
+            .unwrap();
+        let replacement = service
+            .submit(append_change(&key, &candidate.change, 11), 101)
+            .unwrap();
+        assert_ne!(
+            candidate.review_id().unwrap(),
+            replacement.review_id().unwrap()
+        );
+        assert!(
+            matches!(service.reject_reviewed(&candidate, "Owner", "Old feedback", 102),
+            Err(ModerationError::PendingChanged(id)) if id == candidate.submission_id)
+        );
+        assert_eq!(
+            service.pending(&candidate.submission_id).unwrap(),
+            Some(replacement.clone())
+        );
+        assert!(
+            service
+                .storage
+                .load_review(&submission_review_id(&candidate))
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            service
+                .storage
+                .load_entry(&candidate.submission_id)
+                .unwrap()
+                .is_none()
+        );
+        let feedback = "Please revise the sandbox; keep the \"notes\" app accessible.";
+        let result = service
+            .reject_reviewed(&replacement, "Owner", feedback, 103)
+            .unwrap();
+        assert_eq!(result.reason, feedback);
+        assert_eq!(result.reviewer, "Owner");
+        assert_eq!(result.subject, ReviewSubject::Submission(replacement));
+        assert!(service.pending(&candidate.submission_id).unwrap().is_none());
+    }
+
+    #[test]
+    fn rejection_clears_the_exact_malformed_request_without_authorizing_it() {
+        let (_dir, service) = setup();
+        let key = SigningKey::from_bytes(&[24; 32]);
+        let original = service
+            .submit(change(&key, EntryAction::Add, 10), 100)
+            .unwrap();
+        let mut malformed = original.clone();
+        malformed.change.publisher_signature_hex = "not a signature".into();
+        service.storage.save_pending(&malformed).unwrap();
+        assert_ne!(
+            original.review_id().unwrap(),
+            malformed.review_id().unwrap()
+        );
+        assert!(matches!(
+            service.reject_reviewed(&original, "Owner", "Stale", 101),
+            Err(ModerationError::PendingChanged(_))
+        ));
+        let result = service
+            .reject_reviewed(&malformed, "Owner", "Invalid signature", 102)
+            .unwrap();
+        assert_eq!(result.subject, ReviewSubject::Submission(malformed));
+        assert!(service.pending(&original.submission_id).unwrap().is_none());
+        assert!(
+            service
+                .storage
+                .load_entry(&original.submission_id)
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]

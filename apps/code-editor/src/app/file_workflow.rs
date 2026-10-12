@@ -1,7 +1,6 @@
 use super::{
-    Affine, AutoCommit, CodeApp, Conflict, ConflictChoice, EditorDoc, ElementState, Key, KeyEvent,
-    ModalAction, ModalFrame, ModalSpec, PortalIntent, Project, Scene, Session, TextRenderer, Theme,
-    TreeId, WindowEvent, disk, explorer, source_filter,
+    AutoCommit, CodeApp, Conflict, ConflictChoice, EditorDoc, PortalIntent, Project, Session,
+    TreeId, disk, explorer, source_filter,
 };
 
 impl CodeApp {
@@ -13,10 +12,10 @@ impl CodeApp {
     /// is the only way to skip the freshness check, and it is never set by the
     /// app on its own.
     pub fn save_buffer(&mut self, doc: &AutoCommit, node: TreeId, force: bool) -> bool {
-        let Some(idx) = self.session.open.iter().position(|b| b.node == node) else {
+        if self.session.buffer_of(node).is_none() {
             return false;
-        };
-        let Some(path) = self.session.open.get(idx).and_then(|b| b.path.clone()) else {
+        }
+        let Some(path) = self.session.buffer_of(node).and_then(|b| b.path.clone()) else {
             // No file yet: a scratch buffer needs a destination first, which
             // only the user (through the picker) can choose.
             self.request_save_as(node);
@@ -26,21 +25,20 @@ impl CodeApp {
         let expected = if force {
             None
         } else {
-            self.session.open.get(idx).and_then(|b| b.stamp.clone())
+            self.session.buffer_of(node).and_then(|b| b.stamp.clone())
         };
 
         match disk::save(&path, &text, expected.as_ref()) {
             Ok(stamp) => {
                 let name = self
                     .session
-                    .open
-                    .get(idx)
+                    .buffer_of(node)
                     .map_or_else(String::new, |b| b.name.clone());
-                if let Some(buf) = self.session.open.get_mut(idx) {
+                if let Some(buf) = self.session.buffer_of_mut(node) {
                     buf.mark_saved(text, Some(stamp));
                 }
                 self.note(format!("Saved {name}"), false);
-                self.reconcile_tabs();
+                self.refresh_header();
                 // Tell the language server the file is on disk now; rustc-based
                 // diagnostics only refresh on save.
                 if let (Some(c), Some(uri)) = (self.lsp.as_mut(), self.lsp_uri.clone()) {
@@ -49,15 +47,14 @@ impl CodeApp {
                 true
             }
             Err(disk::SaveError::Conflict) => {
-                if let Some(buf) = self.session.open.get_mut(idx) {
+                if let Some(buf) = self.session.buffer_of_mut(node) {
                     buf.stale = true;
                 }
                 self.conflict = Some(Conflict {
                     node,
                     name: self
                         .session
-                        .open
-                        .get(idx)
+                        .buffer_of(node)
                         .map_or_else(String::new, |b| b.name.clone()),
                 });
                 false
@@ -65,8 +62,7 @@ impl CodeApp {
             Err(e) => {
                 let name = self
                     .session
-                    .open
-                    .get(idx)
+                    .buffer_of(node)
                     .map_or_else(String::new, |b| b.name.clone());
                 self.note(format!("Could not save {name}: {e}"), true);
                 false
@@ -87,7 +83,7 @@ impl CodeApp {
     pub(super) fn save_all(&mut self, doc: &AutoCommit) -> usize {
         let dirty: Vec<TreeId> = self
             .session
-            .open
+            .buffer
             .iter()
             .filter(|b| b.dirty && b.path.is_some())
             .map(|b| b.node)
@@ -112,38 +108,36 @@ impl CodeApp {
     }
 
     /// Throw away this buffer's edits and take what is on disk.
-    pub(super) fn reload_buffer(&mut self, doc: &mut AutoCommit, node: TreeId) {
-        let Some(idx) = self.session.open.iter().position(|b| b.node == node) else {
+    pub(super) fn reload_buffer(&mut self, doc: &mut ui::widget::Edits<'_>, node: TreeId) {
+        if self.session.buffer_of(node).is_none() {
             return;
-        };
+        }
         match self.session.project.file_seed(node) {
             Ok((text, stamp)) => {
                 let name = self
                     .session
-                    .open
-                    .get(idx)
+                    .buffer_of(node)
                     .map_or_else(String::new, |b| b.name.clone());
                 // Disk reload is still a visible buffer edit, so it uses the
                 // same action-owned splice path as a keystroke or replace.
                 let file_id = self.buffer_key(node);
                 let base = EditorDoc::read_buffer_key(doc, &file_id).unwrap_or_default();
-                if let Err(error) = self.dispatch_text_action(doc, file_id, &name, &base, &text) {
+                if let Err(error) = self.dispatch_text_action(doc, file_id, &base, &text) {
                     self.editor.reconcile_from_doc(doc);
                     self.note(format!("Reload was refused: {error}"), true);
                     return;
                 }
-                if let Some(buf) = self.session.open.get_mut(idx) {
+                if let Some(buf) = self.session.buffer_of_mut(node) {
                     buf.mark_saved(text, stamp);
                 }
                 self.note(format!("Reloaded {name} from disk"), false);
                 self.bound_node = None;
-                self.reconcile_tabs();
+                self.refresh_header();
             }
             Err(e) => {
                 let name = self
                     .session
-                    .open
-                    .get(idx)
+                    .buffer_of(node)
                     .map_or_else(String::new, |b| b.name.clone());
                 self.note(format!("Could not reload {name}: {e}"), true);
             }
@@ -153,9 +147,9 @@ impl CodeApp {
     /// Notice files that changed on disk since we read them, so a tab can warn
     /// before the user tries to save over someone else's work.
     pub(super) fn check_disk_staleness(&mut self) {
-        for buf in &mut self.session.open {
+        if let Some(buf) = self.session.buffer.as_mut() {
             let (Some(path), Some(stamp)) = (buf.path.as_ref(), buf.stamp.as_ref()) else {
-                continue;
+                return;
             };
             if !buf.stale && disk::changed_on_disk(path, stamp) {
                 buf.stale = true;
@@ -164,7 +158,11 @@ impl CodeApp {
     }
 
     /// Answer an open conflict.
-    pub(super) fn resolve_conflict(&mut self, doc: &mut AutoCommit, choice: ConflictChoice) {
+    pub(super) fn resolve_conflict(
+        &mut self,
+        doc: &mut ui::widget::Edits<'_>,
+        choice: ConflictChoice,
+    ) {
         let Some(conflict) = self.conflict.take() else {
             return;
         };
@@ -178,116 +176,6 @@ impl CodeApp {
                 self.note(format!("{} was not saved", conflict.name), false);
             }
         }
-    }
-
-    /// The conflict prompt's keyboard shortcuts: Escape cancels, Enter takes
-    /// the safe option (reload, which cannot destroy the other writer's work).
-    pub(super) fn conflict_key(event: &WindowEvent) -> Option<ConflictChoice> {
-        let WindowEvent::KeyboardInput {
-            event:
-                KeyEvent {
-                    logical_key,
-                    state: ElementState::Pressed,
-                    ..
-                },
-            ..
-        } = event
-        else {
-            return None;
-        };
-        match logical_key {
-            Key::Named(winit::keyboard::NamedKey::Escape) => Some(ConflictChoice::Cancel),
-            Key::Named(winit::keyboard::NamedKey::Enter) => Some(ConflictChoice::Reload),
-            _ => None,
-        }
-    }
-
-    /// Draw the "this file changed on disk" prompt over everything.
-    ///
-    /// This is deliberately a decision the user makes, not one the editor makes
-    /// for them: overwriting silently loses whatever rewrote the file, and
-    /// reloading silently loses what they typed. Both are real losses, so both
-    /// are offered by name, and the default (Enter) is the one that cannot
-    /// destroy someone else's work.
-    pub(super) fn draw_conflict(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-    ) {
-        self.conflict_buttons.clear();
-        let Some(conflict) = self.conflict.clone() else {
-            return;
-        };
-        // Shared modal chrome deliberately paints in three ordered stages:
-        // existing editor → backdrop-aware translucent scrim → raised card and
-        // controls. A plain translucent fill in this immediate scene can be
-        // batched after text by the renderer; `ModalFrame` uses isolated layers
-        // for its scrim, so the card never gets dimmed with the editor.
-        let title = format!("{} changed on disk", conflict.name);
-        let base_actions = [
-            ModalAction::primary("Reload").focused(true),
-            ModalAction::danger("Overwrite"),
-            ModalAction::secondary("Cancel"),
-        ];
-        let base_spec = ModalSpec::new(&title)
-            .actions(&base_actions)
-            .body_height(64.0)
-            .max_width(460.0)
-            .closable(false)
-            .dismiss_on_scrim(false);
-        let layout = ModalFrame::layout(self.rect, &base_spec, text_renderer, theme);
-        let actions = [
-            ModalAction::primary("Reload")
-                .hovered(
-                    layout
-                        .actions
-                        .first()
-                        .is_some_and(|bounds| bounds.contains(self.conflict_hover)),
-                )
-                .focused(true),
-            ModalAction::danger("Overwrite").hovered(
-                layout
-                    .actions
-                    .get(1)
-                    .is_some_and(|bounds| bounds.contains(self.conflict_hover)),
-            ),
-            ModalAction::secondary("Cancel").hovered(
-                layout
-                    .actions
-                    .get(2)
-                    .is_some_and(|bounds| bounds.contains(self.conflict_hover)),
-            ),
-        ];
-        let spec = ModalSpec::new(&title)
-            .actions(&actions)
-            .body_height(64.0)
-            .max_width(460.0)
-            .closable(false)
-            .dismiss_on_scrim(false);
-        ModalFrame::paint_backdrop(scene, transform, text_renderer, theme, &layout, &spec);
-
-        let (_, dim) = ModalFrame::ink(theme);
-        text_renderer.draw_text(
-            scene,
-            "Something else wrote this file after you opened it. Overwriting \
-             discards their change; reloading discards yours.",
-            13.0,
-            dim,
-            transform * Affine::translate((layout.body.x0, layout.body.y0 + 4.0)),
-            Some(layout.body.width() as f32),
-        );
-        ModalFrame::paint_actions(scene, transform, text_renderer, theme, &layout, &spec);
-        self.conflict_buttons.extend(
-            [
-                ConflictChoice::Reload,
-                ConflictChoice::Overwrite,
-                ConflictChoice::Cancel,
-            ]
-            .into_iter()
-            .zip(layout.actions),
-        );
     }
 
     // ---- the file picker --------------------------------------------------
@@ -348,7 +236,7 @@ impl CodeApp {
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                 self.portal = None;
                 self.portal_intent = None;
-                self.finish_resource_file(Err("file picker disconnected".into()));
+                self.finish_file_effect(Err("file picker disconnected".into()));
                 return;
             }
         };
@@ -369,17 +257,12 @@ impl CodeApp {
         let path = match outcome {
             PortalOutcome::Opened(p) => p,
             PortalOutcome::Cancelled => {
-                if let Some(invocation) = self.resource_invocation.take() {
-                    self.resource_result = Some(tilo_actions::InvocationUpdate::Cancelled {
-                        invocation,
-                        message: Some("file selection cancelled".into()),
-                    });
-                }
+                self.finish_file_effect(Err("file selection cancelled".into()));
                 return;
             }
             PortalOutcome::Failed(e) => {
                 self.note(format!("File picker unavailable: {e}"), true);
-                self.finish_resource_file(Err(e));
+                self.finish_file_effect(Err(e));
                 return;
             }
         };
@@ -411,28 +294,15 @@ impl CodeApp {
             }
             None => Ok(()),
         };
-        self.finish_resource_file(result);
+        self.finish_file_effect(result);
     }
 
-    pub(super) fn finish_resource_file(&mut self, result: Result<(), String>) {
-        let Some(invocation) = self.resource_invocation.take() else {
-            return;
-        };
-        self.resource_result = Some(match result {
-            Ok(()) => tilo_actions::InvocationUpdate::Succeeded {
-                invocation,
-                output: tilo_actions::ActionOutput::default(),
-            },
-            Err(message) => tilo_actions::InvocationUpdate::Failed {
-                invocation,
-                error: tilo_actions::ActionFailure {
-                    code: "code_editor.io_failed".into(),
-                    message,
-                    details: None,
-                    retryable: false,
-                },
-            },
-        });
+    /// Answer the effect that opened a picker or asked for a save, if one is
+    /// waiting.
+    pub(super) fn finish_file_effect(&mut self, result: Result<(), String>) {
+        if let Some(reply) = self.file_reply.take() {
+            reply.finish(result.map(|()| tilo_actions::ActionOutput::default()));
+        }
     }
 
     /// Replace the project with the directory at `path`.
@@ -441,6 +311,7 @@ impl CodeApp {
             Ok(project) => {
                 let name = project.name.clone();
                 self.session = Session::new(project);
+                self.adopt_presented();
                 self.invalidate_search_projection();
                 explorer::refresh(&mut self.sidebar, &self.session.project);
                 explorer::set_current(&mut self.sidebar, None);
@@ -448,8 +319,9 @@ impl CodeApp {
                 self.editor.unbind();
                 self.reset_language_server();
                 self.clear_search();
-                self.reconcile_tabs();
-                self.refresh_palette_entries();
+                self.search_symbols.clear();
+                self.symbol_projection_revision = None;
+                self.refresh_header();
                 self.note(format!("Opened {name}"), false);
                 Ok(())
             }
@@ -461,7 +333,7 @@ impl CodeApp {
         }
     }
 
-    /// Open a real file into a tab, revealing it in the tree when it lives
+    /// Show a real file, revealing it in the tree when it lives
     /// under the open project and adopting it as a one-file project when not.
     pub(super) fn open_disk_file(&mut self, path: &std::path::Path) -> Result<(), String> {
         let path = disk::canonical(path);
@@ -473,12 +345,12 @@ impl CodeApp {
         match Project::open_single_file(&path) {
             Ok((project, node)) => {
                 self.session = Session::new(project);
+                self.adopt_presented();
                 self.invalidate_search_projection();
                 explorer::refresh(&mut self.sidebar, &self.session.project);
                 self.bound_node = None;
                 self.reset_language_server();
                 self.open_node(node);
-                self.refresh_palette_entries();
                 Ok(())
             }
             Err(e) => {

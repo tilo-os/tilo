@@ -29,7 +29,7 @@ def launch_commands(fixture):
     return [
         ("word-processor", ["cargo", "run", "-p", "word-processor"]),
         ("file-explorer", ["cargo", "run", "-p", "file-explorer"]),
-        ("photos", ["cargo", "run", "-p", "photos", "--", "--open", str(fixture)]),
+        ("photos", ["cargo", "run", "-p", "photos", "--", str(fixture)]),
         ("calculator", ["cargo", "run", "-p", "calculator"]),
     ]
 
@@ -450,7 +450,6 @@ def proof_environment(profile, app_state):
         {
             "TILO_RUNTIME_PROFILE": str(profile),
             "TILO_USER_HOME": str(app_state / "home"),
-            "TILO_WP_RECOVERY_DIR": str(app_state / "word-processor-recovery"),
             "XDG_CONFIG_HOME": str(app_state / "config"),
             "XDG_DATA_HOME": str(app_state / "data"),
             "XDG_STATE_HOME": str(app_state / "state"),
@@ -466,7 +465,7 @@ def proof_environment(profile, app_state):
 
 def run_proof(repo, root, host_source_snapshot):
     fixture = root / "source.png"
-    shutil.copy2(repo / "ui/tests/fixtures/test_image.png", fixture)
+    fixture.write_bytes(bytes.fromhex((repo / "crates/sdk/ui-core/tests/fixtures/test_image.png.hex").read_text(encoding="ascii")))
     profile = pathlib.Path(tempfile.mkdtemp(prefix="tilo-auto-", dir="/tmp"))
     os.chmod(profile, 0o700)
     app_state = root / "isolated-app-state"

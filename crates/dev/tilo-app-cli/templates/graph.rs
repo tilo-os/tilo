@@ -15,14 +15,10 @@ pub struct Projects {
     pub projects: Collection<Project>,
 }
 
+/// The draft is edited at its path (`Projects::paths().draft`); creating a
+/// project from it is a verb.
 #[resource(kind = "generated.graph-project", label = "Project")]
 impl Projects {
-    /// Set the project name draft.
-    #[action]
-    pub fn set_draft(&mut self, #[param("Project name draft")] draft: String) {
-        self.draft = draft;
-    }
-
     /// Create a project from the draft.
     #[action]
     pub fn create(&mut self, cx: &mut ActionCx) -> Result<(), &'static str> {
@@ -39,12 +35,13 @@ impl Projects {
 /// The serialized screens under `ui/`, validated before any widget reaches
 /// the app. `tilo-app ui edit ui/main.json` edits them while the app runs;
 /// `tilo-app add screen` and `tilo-app add component --mount` extend them.
-fn screens() -> Element {
-    match crate::screens::router_with(
-        "main",
-        &Theme::default(),
-        crate::components::ui_graph_context(),
-    ) {
+/// A screen's text input over `draft` edits the resource's draft field; an
+/// input over any other path keeps what is typed in the screen's values until
+/// the app acts on it.
+fn screens(cx: &ViewCx<Projects>) -> Element {
+    let context = crate::components::ui_graph_context();
+    cx.route_graph_text(context.values(), "draft", Projects::paths().draft);
+    match crate::screens::router_with("main", &Theme::default(), context) {
         Ok(router) => Box::new(router),
         Err(error) => Box::new(Banner::error(ui::i18n::I18nManager::format(
             "graph-load-error",
@@ -60,10 +57,13 @@ impl ResourceApp for App {
     const ID: &'static str = crate::APP_ID;
     const TITLE: &'static str = crate::APP_TITLE;
 
+    fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {
+        Some(&crate::locales::CATALOG)
+    }
+
     fn view(cx: &mut ViewCx<Projects>) -> Element {
-        crate::install_catalog();
         let input = cx
-            .input(|projects| projects.draft.clone(), Projects::SET_DRAFT)
+            .input(cx.paths().draft)
             .with_id("name-input")
             .with_placeholder("graph-project-name");
         let preview = cx
@@ -76,7 +76,7 @@ impl ResourceApp for App {
         );
         Box::new(
             Column::new()
-                .push(screens())
+                .push(screens(cx))
                 .push(Box::new(labeled_field("graph-project-name", input)))
                 .push(Box::new(preview))
                 .push(Box::new(create))

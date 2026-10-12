@@ -2,27 +2,28 @@
 //! CRDT-native `ui` toolkit.
 //!
 //! # What it does
-//! A searchable list of accounts, each rendering a large rotating TOTP
-//! code (6 or 8 digits) and a circular countdown ring showing seconds
-//! left in the current period. Click a code to copy it; reorder or
-//! delete accounts inline. Add accounts by importing a QR code from a
-//! screenshot or photo, pasting an `otpauth://` setup link, or typing
-//! the details by hand — with the cryptographic parameters tucked behind
-//! an Advanced-options disclosure.
+//! A list of accounts, each rendering a rotating TOTP code (6 or 8 digits)
+//! and a countdown ring showing the seconds left in the current period.
+//! Click a code to copy it; reorder, edit or delete accounts from the row's
+//! hover actions. Add accounts by importing a QR code from a screenshot or
+//! photo, pasting an `otpauth://` setup link, or typing the details by hand,
+//! with the cryptographic parameters tucked behind Advanced options. Finding
+//! an account is the platform search's job.
 //!
 //! # Architecture
 //! * [`model`] — the [`model::Account`] / [`model::Vault`] data, the
-//!   `otpauth://` URI parser, and the theme-derived account palette.
-//! * [`resource`] — the [`Totp`] resource, its effects and the
-//!   [`TotpShell`] app.
+//!   `otpauth://` URI parser, and the account colour slots.
 //! * [`totp`] — RFC 6238 code generation on the `RustCrypto` HMAC/SHA
-//!   primitives, plus period timing for the ring.
+//!   primitives, plus period timing for the countdown ring.
 //! * [`doc`] — the secret-free Automerge account-metadata mirror.
-//! * [`ring`] — the custom [`ring::CountdownRing`] widget (arc → Vello).
 //! * [`list`] — the [`list::AccountList`] main screen.
-//! * [`add_panel`] — the [`add_panel::AddAccountPanel`] modal.
+//! * [`add_panel`] — the [`add_panel::AddAccountPanel`] sheet.
 //! * [`qr`] — QR ingestion: pure-Rust, offline decode from an image file.
-//! * [`app`] — the [`app::AuthenticatorApp`] surface that ties them together.
+//! * [`app`] — the [`app::AuthenticatorApp`] surface that ties them
+//!   together.
+//! * [`resource`] — the [`Totp`] resource, its effects and the
+//!   [`TotpShell`] app: the navigation shell with its header row around the
+//!   surface.
 //! * `secrets` — each account's seed in this device's secret store.
 
 // An app runs as its own sandboxed process, so an integer that wraps here
@@ -43,26 +44,19 @@
 #![cfg_attr(
     test,
     allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
         clippy::string_slice,
-        clippy::panic,
         clippy::unreachable,
         reason = "in a test these are the assertion, not a hazard"
     )
 )]
 
-pub mod actions;
 pub mod add_panel;
 pub mod app;
-pub mod doc;
 pub mod i18n;
 pub mod list;
 pub mod model;
 pub mod qr;
 pub mod resource;
-pub mod ring;
 mod secrets;
 pub mod totp;
 
@@ -76,5 +70,5 @@ pub use resource::{Totp, TotpEffect, TotpShell};
 
 /// The app as every host mounts it.
 pub fn definition() -> &'static ui::application::ApplicationDefinition {
-    ui::framework::definition::<TotpShell>()
+    ui::built_in_definition!(TotpShell)
 }

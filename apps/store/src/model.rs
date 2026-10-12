@@ -26,14 +26,30 @@ pub enum StoreSource {
     Tilo { registry_name: String },
     /// A Flathub-hosted Flatpak app.
     Flathub,
+    /// A configured Flatpak repository. Its original scope is retained.
+    FlatpakRemote {
+        name: String,
+        title: String,
+        branch: String,
+        user_managed: bool,
+    },
 }
 
 impl StoreSource {
+    /// The repository whose metadata is shown, without inventing trust claims.
+    pub fn distribution_name(&self) -> &str {
+        match self {
+            Self::Tilo { registry_name } => registry_name,
+            Self::Flathub => "Flathub",
+            Self::FlatpakRemote { title, .. } => title,
+        }
+    }
+
     /// Short label used on filter chips.
     pub fn short_label(&self) -> &'static str {
         match self {
             StoreSource::Tilo { .. } => "Tilo",
-            StoreSource::Flathub => "Flatpak",
+            StoreSource::Flathub | StoreSource::FlatpakRemote { .. } => "Flatpak",
         }
     }
 }
@@ -41,15 +57,21 @@ impl StoreSource {
 /// Provenance claim the Store can substantiate for an item.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum StoreTrust {
+    /// Signed local file authorized by this person's existing scoped attestor.
+    TrustedAttestor,
     PublisherSigned,
     Flathub,
+    /// Metadata from the device’s configured Flatpak repository.
+    ConfiguredRemote,
 }
 
 impl StoreTrust {
-    pub fn label(self) -> &'static str {
+    pub fn label(self) -> String {
         match self {
-            Self::PublisherSigned => "Publisher + registry verified",
-            Self::Flathub => "Flathub distribution",
+            Self::TrustedAttestor => ui::i18n!("store-package-local-trust"),
+            Self::PublisherSigned => "Publisher + registry verified".to_string(),
+            Self::Flathub => "Flathub distribution".to_string(),
+            Self::ConfiguredRemote => ui::i18n!("store-remote-trust-short"),
         }
     }
 }
@@ -84,13 +106,18 @@ fn default_user_managed() -> bool {
 }
 
 impl InstalledState {
-    /// True if the source's newest version differs from what's installed.
+    /// True if the source offers a newer version than what's installed. A
+    /// source that only has an older one (an app the system image ships in
+    /// a newer build than the catalogue) offers no update.
     pub fn update_available(&self) -> bool {
         match self {
             InstalledState::Not => false,
             InstalledState::Installed {
                 version, available, ..
-            } => version != available,
+            } => {
+                !available.is_empty()
+                    && registry_types::version::compare(available, version).is_gt()
+            }
         }
     }
 
@@ -260,6 +287,18 @@ pub struct StoreItem {
 }
 
 impl StoreItem {
+    /// The publisher's short pitch, or the source description when an older
+    /// catalogue does not provide a tagline. Cards and semantic resources
+    /// use the same summary; the details page still shows the full description.
+    pub fn summary(&self) -> &str {
+        let tagline = self.tagline.trim();
+        if tagline.is_empty() {
+            self.description.trim()
+        } else {
+            tagline
+        }
+    }
+
     /// The version the UI advertises as "latest" — the first entry, or
     /// an empty string when the source didn't ship any versions.
     pub fn latest_version(&self) -> &str {
@@ -283,16 +322,35 @@ impl StoreItem {
                     ActionKind::Open
                 }
             }
-            (StoreSource::Flathub, _, false) => ActionKind::NeedsFlatpakHost,
-            (StoreSource::Flathub, InstalledState::Not, true) => ActionKind::FlatpakInstall,
-            (StoreSource::Flathub, InstalledState::Installed { .. }, true)
-                if !self.latest_version().is_empty() && self.installed.update_available() =>
+            (StoreSource::Flathub | StoreSource::FlatpakRemote { .. }, _, false) => {
+                ActionKind::NeedsFlatpakHost
+            }
+            (
+                StoreSource::Flathub | StoreSource::FlatpakRemote { .. },
+                InstalledState::Not,
+                true,
+            ) => ActionKind::FlatpakInstall,
+            (
+                StoreSource::Flathub | StoreSource::FlatpakRemote { .. },
+                InstalledState::Installed { .. },
+                true,
+            ) if !self.latest_version().is_empty()
+                && self.installed.update_available()
+                && matches!(
+                    self.installed,
+                    InstalledState::Installed {
+                        user_managed: true,
+                        ..
+                    }
+                ) =>
             {
                 ActionKind::FlatpakUpdate
             }
-            (StoreSource::Flathub, InstalledState::Installed { .. }, true) => {
-                ActionKind::FlatpakOpen
-            }
+            (
+                StoreSource::Flathub | StoreSource::FlatpakRemote { .. },
+                InstalledState::Installed { .. },
+                true,
+            ) => ActionKind::FlatpakOpen,
         }
     }
 
@@ -331,10 +389,55 @@ impl StoreItem {
                     user_managed: true, ..
                 },
             ) => Some(ActionKind::Remove),
-            (StoreSource::Flathub, InstalledState::Installed { .. }) => {
-                Some(ActionKind::FlatpakRemove)
-            }
+            (
+                StoreSource::Flathub | StoreSource::FlatpakRemote { .. },
+                InstalledState::Installed {
+                    user_managed: true, ..
+                },
+            ) => Some(ActionKind::FlatpakRemove),
             _ => None,
+        }
+    }
+
+    /// Flatpak device repositories and device installs are read-only here.
+    pub fn managed_by_device(&self, action: ActionKind) -> bool {
+        match action {
+            ActionKind::FlatpakInstall => matches!(
+                self.source,
+                StoreSource::FlatpakRemote {
+                    user_managed: false,
+                    ..
+                }
+            ),
+            ActionKind::FlatpakUpdate | ActionKind::FlatpakRemove => matches!(
+                self.installed,
+                InstalledState::Installed {
+                    user_managed: false,
+                    ..
+                }
+            ),
+            _ => false,
+        }
+    }
+
+    /// The same availability contract for controls, rows and direct invocation.
+    pub fn unavailable_action(&self, action: ActionKind) -> Option<(&'static str, String)> {
+        if self.managed_by_device(action) {
+            Some((
+                "device_managed_repository",
+                ui::i18n!("store-remote-managed"),
+            ))
+        } else if matches!(action, ActionKind::Open | ActionKind::Update)
+            && matches!(self.source, StoreSource::Tilo { .. })
+            && self.versions.is_empty()
+            && !self.installed.is_installed()
+        {
+            Some((
+                "device_version_unavailable",
+                ui::i18n!("store-device-version-unavailable"),
+            ))
+        } else {
+            None
         }
     }
 
@@ -343,7 +446,8 @@ impl StoreItem {
     /// stale agent result cannot turn an old "Remove" or "Update" offer into
     /// a different package-management operation.
     pub fn allows_action(&self, action: ActionKind, flatpak_available: bool) -> bool {
-        (!action.requires_flatpak_host() || flatpak_available)
+        self.unavailable_action(action).is_none()
+            && (!action.requires_flatpak_host() || flatpak_available)
             && (self.action_kind(flatpak_available) == action
                 || self.pin_action() == Some(action)
                 || self.remove_action() == Some(action))
@@ -373,14 +477,35 @@ impl StoreItem {
 /// search bar can start empty). `index` keeps the items indexed while they
 /// stay the same.
 pub fn relevance(index: &ListIndex, needle: &str, items: &[&StoreItem]) -> Vec<Option<i32>> {
-    index.ranks(
-        needle,
-        items.iter().map(|item| {
-            [
-                (item.name.as_str(), FieldWeight::TITLE),
-                (item.description.as_str(), FieldWeight::BODY),
-            ]
-        }),
+    index.ranks(needle, items.iter().map(|item| searchable_fields(item)))
+}
+
+/// Catalogue metadata searched by both the app's list/worker and the system
+/// directory. Names keep their title rank; identities and categories remain
+/// discoverable without outranking the app a person named.
+pub(crate) fn searchable_fields(item: &StoreItem) -> impl Iterator<Item = (&str, FieldWeight)> {
+    let source_name = match &item.source {
+        StoreSource::Tilo { registry_name } => registry_name.as_str(),
+        StoreSource::Flathub => "Flathub",
+        StoreSource::FlatpakRemote { name, .. } => name.as_str(),
+    };
+    [
+        (item.name.as_str(), FieldWeight::TITLE),
+        (item.id.as_str(), FieldWeight::IDENTITY),
+        (item.description.as_str(), FieldWeight::BODY),
+        (item.tagline.as_str(), FieldWeight::SUBTITLE),
+        (
+            item.publisher_pubkey_hex.as_deref().unwrap_or(""),
+            FieldWeight::IDENTITY,
+        ),
+        (source_name, FieldWeight::METADATA),
+        (item.source.distribution_name(), FieldWeight::METADATA),
+    ]
+    .into_iter()
+    .chain(
+        item.categories
+            .iter()
+            .map(|category| (category.as_str(), FieldWeight::METADATA)),
     )
 }
 
@@ -396,6 +521,9 @@ pub enum SourceFilter {
     /// Items already present on this device: cached Tilo apps or installed
     /// Flatpaks. The variant name remains serialized for compatibility.
     Installed,
+    /// Installed apps a source offers a newer version of, the system
+    /// image's own apps included.
+    Updates,
 }
 
 impl SourceFilter {
@@ -404,6 +532,7 @@ impl SourceFilter {
         SourceFilter::Tilo,
         SourceFilter::Flatpak,
         SourceFilter::Installed,
+        SourceFilter::Updates,
     ];
 
     pub fn label(self) -> &'static str {
@@ -412,6 +541,7 @@ impl SourceFilter {
             SourceFilter::Tilo => "Tilo",
             SourceFilter::Flatpak => "Flatpak",
             SourceFilter::Installed => "On device",
+            SourceFilter::Updates => "Updates",
         }
     }
 
@@ -420,8 +550,12 @@ impl SourceFilter {
         match self {
             SourceFilter::All => true,
             SourceFilter::Tilo => matches!(item.source, StoreSource::Tilo { .. }),
-            SourceFilter::Flatpak => matches!(item.source, StoreSource::Flathub),
+            SourceFilter::Flatpak => matches!(
+                item.source,
+                StoreSource::Flathub | StoreSource::FlatpakRemote { .. }
+            ),
             SourceFilter::Installed => !matches!(item.installed, InstalledState::Not),
+            SourceFilter::Updates => item.installed.update_available(),
         }
     }
 }
@@ -591,13 +725,24 @@ mod tests {
             assert!(!cached.allows_action(ActionKind::Update, true));
         }
 
-        // Case `update_available_only_true_on_version_mismatch`.
+        // Case `update_available_only_for_a_newer_version`.
         {
-            let same = qinstalled("1", "1", false);
+            let same = qinstalled("1.0.0", "1.0.0", false);
             assert!(!same.update_available());
-            let diff = qinstalled("1", "2", false);
-            assert!(diff.update_available());
+            let newer = qinstalled("0.1.0", "0.1.62530+gabc", false);
+            assert!(newer.update_available());
+            let older = qinstalled("0.1.62530+gabc", "0.1.0", false);
+            assert!(
+                !older.update_available(),
+                "a catalogue behind the system image offers no downgrade"
+            );
+            assert!(!qinstalled("1.0.0", "", false).update_available());
             assert!(!InstalledState::Not.update_available());
+            let stale = tilo_item("Notes", qinstalled("0.1.0", "0.2.0", false), "0.2.0");
+            let current = tilo_item("Clocks", qinstalled("0.2.0", "0.2.0", false), "0.2.0");
+            assert!(SourceFilter::Updates.accepts(&stale));
+            assert!(!SourceFilter::Updates.accepts(&current));
+            assert_eq!(SourceFilter::Updates.label(), "Updates");
         }
     }
 

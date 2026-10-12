@@ -12,11 +12,14 @@ use super::*;
 
 /// A seeded project laid out at `w`×`h`, the way `--shots` composes one.
 fn app_sized(w: f64, h: f64) -> VideoEditorApp {
-    let mut doc = AutoCommit::new();
-    VideoDoc::seed_sample(&mut doc);
+    let doc = crate::seed::sample_document();
     let mut app = VideoEditorApp::new();
     app.rect = Rect::new(0.0, 0.0, w, h);
-    app.sync(&mut doc, &automerge::ROOT);
+    ui::framework::ResourceSurface::<Project, crate::actions::VideoEditorEffect>::present(
+        &mut app,
+        &std::rc::Rc::new(crate::seed::sample_project()),
+    );
+    app.sync(&doc, &automerge::ROOT);
     app
 }
 
@@ -50,17 +53,18 @@ fn transport_and_topbar_share_centre_lines_insets_and_steps() {
             assert_close(rect.center().y, cy, &format!("{verb:?} button centre"));
         }
 
-        // The readout, at the sizes the strip draws it: the playhead time centred
-        // on the same line, every smaller part standing on its foot.
+        // The readout, in the roles the strip draws it in: the playhead time
+        // centred on the same line, every smaller part standing on its foot.
         let mut tr = TextRenderer::new();
+        let theme = Theme::dark();
+        let mut height = |s: &str, role: TextRole| {
+            f64::from(tr.measure_style(s, None, &theme.text(role).numeric()).1)
+        };
         let heights = [
-            f64::from(
-                tr.measure_weighted("00:10:00", 18.0, None, TextWeight::Bold)
-                    .1,
-            ),
-            f64::from(tr.measure("/  00:28:00", 13.0, None).1),
-            f64::from(tr.measure("SHUTTLE ▶▶ 8×", 10.0, None).1),
-            f64::from(tr.measure("1920×1080 · 30 fps", 11.5, None).1),
+            height("00:10:00", TextRole::Title),
+            height("/ 00:28:00", TextRole::Body),
+            height("Shuttling forward 8×", TextRole::Caption),
+            height("1920×1080, 30 fps", TextRole::Caption),
         ];
         let tops = readout_tops(r.transport, cy, heights);
         assert_close(tops[0] + heights[0] / 2.0, cy, "playhead time centre");
@@ -97,21 +101,22 @@ fn transport_and_topbar_share_centre_lines_insets_and_steps() {
             let mut row: Vec<(&str, Rect)> = [
                 ("menu", r.menu_btn),
                 ("project", r.project_btn),
-                ("inspector", r.inspector_btn),
                 ("import", r.import_btn),
                 ("split", r.split_btn),
                 ("export", r.export_btn),
+                ("inspector", r.inspector_btn),
             ]
             .into_iter()
             .filter(|(_, rect)| rect.width() > 0.0)
             .collect();
             row.sort_by(|a, b| a.1.x0.total_cmp(&b.1.x0));
-            // The trailing cluster (inspector toggle, Import, Split, Export) is
-            // packed at exactly the sibling step; the leading controls keep at
-            // least that much from whatever follows them — the project button is
-            // width-bounded and may leave the middle of the bar empty, but never
-            // creeps closer than a step to the trailing cluster.
-            let trailing = ["inspector", "import", "split", "export"];
+            // The trailing cluster (Import, Split, Export, the inspector
+            // toggle) is packed at exactly the sibling step; the
+            // leading controls keep at least that much from whatever follows
+            // them — the project button is width-bounded and may leave the
+            // middle of the bar empty, but never creeps closer than a step to
+            // the trailing cluster.
+            let trailing = ["import", "split", "export", "inspector"];
             for pair in row.windows(2) {
                 let gap = x_gap(pair[0].1, pair[1].1);
                 assert!(
@@ -142,25 +147,30 @@ fn transport_and_topbar_share_centre_lines_insets_and_steps() {
             );
         }
     }
-    // Case `the_topbar_is_inset_equally_at_both_edges_and_its_commands_share_one_width`.
+    // Case `the_topbar_is_inset_equally_at_both_edges_and_its_commands_sit_on_its_midline`.
     {
         let app = app_sized(1280.0, 800.0);
         let r = app.regions();
         assert!(!r.bin_overlay, "1280px docks the bin");
         assert_close(
-            r.project_btn.x0 - r.topbar.x0,
-            r.topbar.x1 - r.export_btn.x1,
+            r.menu_btn.x0 - r.topbar.x0,
+            r.topbar.x1 - r.inspector_btn.x1,
             "leading inset vs trailing inset",
         );
-        for (name, rect) in [
-            ("import", r.import_btn),
-            ("split", r.split_btn),
-            ("export", r.export_btn),
+        let widths = app.topbar_widths();
+        for (name, rect, label) in [
+            ("import", r.import_btn, widths.import),
+            ("split", r.split_btn, widths.split),
+            ("export", r.export_btn, widths.export),
         ] {
-            assert_close(rect.width(), TOPBAR_BTN_W, &format!("{name} width"));
+            assert_close(
+                rect.width(),
+                label,
+                &format!("{name} is as wide as its label"),
+            );
             assert_close(
                 rect.center().y,
-                r.topbar.y0 + TOPBAR_H / 2.0,
+                r.topbar.center().y,
                 &format!("{name} centre on the topbar's midline"),
             );
         }
@@ -175,19 +185,23 @@ fn transport_and_topbar_share_centre_lines_insets_and_steps() {
             let app = app_sized(1280.0, 800.0);
             let r = app.regions();
             let l = app.goto_layout(&r, &mut tr, &theme);
-            let ty = l.type_sizes;
-            let (line_xs, timecode_line) = (line(&mut tr, ty.xs), line(&mut tr, ty.xl));
+            let ty = &l.type_sizes;
+            let (line_xs, timecode_line) = (line(&mut tr, &ty.xs), line(&mut tr, &ty.xl));
             assert!(
                 l.label_top >= l.card.y0,
                 "@{scale}x: the caption starts in the card"
             );
             assert!(
-                l.label_top + line_xs <= l.entry_top,
-                "@{scale}x: the caption runs into the timecode"
+                l.label_top + line_xs <= l.entry.y0,
+                "@{scale}x: the caption runs into the timecode field"
             );
             assert!(
-                l.entry_top + timecode_line <= l.hint_top,
-                "@{scale}x: the timecode runs into the hint"
+                l.entry.height() >= timecode_line,
+                "@{scale}x: the field holds a timecode line"
+            );
+            assert!(
+                l.entry.y1 <= l.hint_top,
+                "@{scale}x: the field runs into the hint"
             );
             assert!(
                 l.hint_top + line_xs <= l.card.y1,
@@ -214,20 +228,23 @@ fn bin_track_heads_and_captions_keep_token_clearances() {
         let add = app.add_title_rect(&r);
         assert_close(
             add.center().y,
-            r.bin.y0 + PANE_HEADING_Y0 + PANE_HEADING_H / 2.0,
-            "\"+ Title\" centre against the heading band",
+            r.bin.y0 + VideoEditorApp::BIN_LIST_TOP / 2.0,
+            "the new-title button centred on the heading band",
         );
-        assert_close(add.height(), PANE_HEADING_H, "\"+ Title\" height");
         assert!(
             add.y1 <= r.bin.y0 + VideoEditorApp::BIN_LIST_TOP,
             "the heading row ends before the first bin row starts"
         );
-        // The export chip lives in the strip under the topbar, beside the
-        // inspector's heading: same band, same centre line.
+        // The export chip lives in the header row, on its midline, between
+        // the project and the commands.
         assert_close(
             r.export_chip.center().y,
-            r.bin.y0 + PANE_HEADING_Y0 + PANE_HEADING_H / 2.0,
-            "export chip centre against the heading band",
+            r.topbar.center().y,
+            "export chip centre on the header row's midline",
+        );
+        assert!(
+            r.export_chip.x1 <= r.import_btn.x0 - TOPBAR_GAP + 1e-6,
+            "the export chip keeps a step from Import"
         );
     }
     // Case `the_transition_caption_keeps_the_clearance_every_other_row_has`.
@@ -238,9 +255,9 @@ fn bin_track_heads_and_captions_keep_token_clearances() {
         let opacity = l.opacity.expect("a video clip is selected");
         let brightness = l.brightness.expect("a video clip has a grade");
         let fade = l.fade_in.expect("every clip has a fade row");
-        // A slider label is drawn at `track.y0 - 20`, the transition caption at
-        // `transition_y - 20`: equal advances from the row above mean equal
-        // clearance over that row's knobs.
+        // A slider's label and the transition's caption are both drawn a line
+        // and a step above their control: equal advances from the row above
+        // mean equal clearance over that row's knobs.
         assert_close(
             l.transition_y - fade.y1,
             brightness.y0 - opacity.y1,
@@ -318,8 +335,8 @@ fn scaled(scale: f32) -> (TextRenderer, Theme) {
     (tr, Theme::dark().with_text_scale(scale))
 }
 
-fn line(tr: &mut TextRenderer, size: f32) -> f64 {
-    f64::from(tr.measure("Hg", size, None).1)
+fn line(tr: &mut TextRenderer, style: &TextStyle) -> f64 {
+    f64::from(tr.measure_style("Hg", None, style).1)
 }
 
 #[test]
@@ -352,8 +369,8 @@ fn dialogs_and_sheets_stay_on_their_card_at_every_text_scale() {
             app.export_notice = Some("Choosing where to save…".into());
             let l = app.export_layout(&mut tr, &theme);
             let what = format!("{w}x{h} @{scale}x");
-            let ty = l.type_sizes;
-            let (line_sm, line_xs) = (line(&mut tr, ty.sm), line(&mut tr, ty.xs));
+            let ty = &l.type_sizes;
+            let (line_sm, line_xs) = (line(&mut tr, &ty.sm), line(&mut tr, &ty.xs));
             let body = l.modal.body;
             assert!(!l.modal.body_overflows, "{what}: the card holds its body");
 
@@ -451,7 +468,7 @@ fn dialogs_and_sheets_stay_on_their_card_at_every_text_scale() {
             let what = format!("{w}x{h} @{scale}x");
             let card = l.modal.card;
             let body = l.modal.body;
-            let line_sm = line(&mut tr, l.type_sizes.sm);
+            let line_sm = line(&mut tr, &l.type_sizes.sm);
             assert!(
                 card.x0 >= app.rect.x0 && card.x1 <= app.rect.x1,
                 "{what}: the card fits the window"
@@ -500,10 +517,10 @@ fn dialogs_and_sheets_stay_on_their_card_at_every_text_scale() {
     {
         let (mut tr1, theme1) = scaled(1.0);
         let (mut tr2, theme2) = scaled(2.0);
-        let ty1 = dialog_type(&tr1, &theme1);
-        let ty2 = dialog_type(&tr2, &theme2);
-        let m1 = HelpMetrics::measure(&mut tr1, &theme1, ty1);
-        let m2 = HelpMetrics::measure(&mut tr2, &theme2, ty2);
+        let ty1 = dialog_type(&theme1);
+        let ty2 = dialog_type(&theme2);
+        let m1 = HelpMetrics::measure(&mut tr1, &theme1, &ty1);
+        let m2 = HelpMetrics::measure(&mut tr2, &theme2, &ty2);
         assert!(
             m2.row_h > m1.row_h * 1.5,
             "rows at 2x ({}) barely grew from 1x ({})",
@@ -518,7 +535,7 @@ fn dialogs_and_sheets_stay_on_their_card_at_every_text_scale() {
         );
         assert_close(
             m1.row_h,
-            line(&mut tr1, ty1.sm) + f64::from(theme1.tokens.spacing.s1),
+            line(&mut tr1, &ty1.sm) + f64::from(theme1.tokens.spacing.s1),
             "a 1x row is its line plus one step",
         );
 
@@ -527,7 +544,7 @@ fn dialogs_and_sheets_stay_on_their_card_at_every_text_scale() {
             let (mut tr, theme) = scaled(scale);
             let app = app_sized(1280.0, 800.0);
             let l = app.help_layout(&mut tr, &theme);
-            let m = HelpMetrics::measure(&mut tr, &theme, l.type_sizes);
+            let m = HelpMetrics::measure(&mut tr, &theme, &l.type_sizes);
             for g in &l.groups {
                 assert_close(g.heading.height(), m.header_h, "heading band");
                 for row in &g.rows {
@@ -557,8 +574,8 @@ fn dialogs_and_sheets_stay_on_their_card_at_every_text_scale() {
             app.export_notice = Some("Choosing where to save…".into());
             let l = app.export_layout(&mut tr, &theme);
             let what = format!("{w}x{h} @{scale}x");
-            let ty = l.type_sizes;
-            let (line_sm, line_xs) = (line(&mut tr, ty.sm), line(&mut tr, ty.xs));
+            let ty = &l.type_sizes;
+            let (line_sm, line_xs) = (line(&mut tr, &ty.sm), line(&mut tr, &ty.xs));
             let body = l.modal.body;
             let card = l.modal.card;
             assert!(
@@ -634,7 +651,7 @@ fn dialogs_and_sheets_stay_on_their_card_at_every_text_scale() {
         let mut app = app_sized(800.0, 900.0);
         app.navigation.help_open = true;
         let l = app.help_layout(&mut tr, &theme);
-        let ty = l.type_sizes;
+        let ty = &l.type_sizes;
         let columns: std::collections::BTreeSet<u64> =
             l.groups.iter().map(|g| g.heading.x0.to_bits()).collect();
         assert_eq!(
@@ -645,7 +662,7 @@ fn dialogs_and_sheets_stay_on_their_card_at_every_text_scale() {
         let widest_description = SHORTCUTS
             .iter()
             .flat_map(|(_, rows)| rows.iter())
-            .map(|(_, what)| f64::from(tr.measure(what, ty.sm, None).0))
+            .map(|(_, what)| f64::from(tr.measure_style(what, None, &ty.sm).0))
             .fold(0.0, f64::max);
         let row = l.groups[0].rows[0];
         assert!(

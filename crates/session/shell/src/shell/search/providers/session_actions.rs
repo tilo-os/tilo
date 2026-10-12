@@ -108,6 +108,11 @@ impl SessionActionPolicy {
         *self.inhibitors.borrow_mut() = inhibitors;
     }
 
+    /// The session's inhibitor registry, shared with every holder.
+    pub fn inhibitors(&self) -> tilo_power_mgmt::InhibitRegistry {
+        self.inhibitors.borrow().clone()
+    }
+
     pub fn set_user_switching(&self, supported: bool) {
         self.user_switching.set(supported);
     }
@@ -179,7 +184,7 @@ fn queued_contract(id: &str, action: os_actions::SessionAction) -> tilo_actions:
     let tags = vec!["desktop".into(), "session".into(), id.into()];
     match action {
         os_actions::SessionAction::Lock => tilo_actions::ActionContract {
-            permission: tilo_actions::PermissionRequirement::Write,
+            kind: tilo_actions::ActionKind::Undoable,
             risk: tilo_actions::RiskLevel::Low,
             confirmation: tilo_actions::ConfirmationPolicy::None,
             retry: tilo_actions::RetryPolicy::Idempotent,
@@ -187,7 +192,7 @@ fn queued_contract(id: &str, action: os_actions::SessionAction) -> tilo_actions:
             ..tilo_actions::ActionContract::default()
         },
         os_actions::SessionAction::Suspend => tilo_actions::ActionContract {
-            permission: tilo_actions::PermissionRequirement::Admin,
+            kind: tilo_actions::ActionKind::Outside,
             risk: tilo_actions::RiskLevel::Low,
             confirmation: tilo_actions::ConfirmationPolicy::Confirm,
             retry: tilo_actions::RetryPolicy::AtMostOnce,
@@ -195,7 +200,7 @@ fn queued_contract(id: &str, action: os_actions::SessionAction) -> tilo_actions:
             ..tilo_actions::ActionContract::default()
         },
         _ => tilo_actions::ActionContract {
-            permission: tilo_actions::PermissionRequirement::Admin,
+            kind: tilo_actions::ActionKind::Outside,
             risk: tilo_actions::RiskLevel::Destructive,
             confirmation: tilo_actions::ConfirmationPolicy::Confirm,
             retry: tilo_actions::RetryPolicy::AtMostOnce,
@@ -207,7 +212,7 @@ fn queued_contract(id: &str, action: os_actions::SessionAction) -> tilo_actions:
 
 fn logout_contract() -> tilo_actions::ActionContract {
     tilo_actions::ActionContract {
-        permission: tilo_actions::PermissionRequirement::Admin,
+        kind: tilo_actions::ActionKind::Outside,
         risk: tilo_actions::RiskLevel::Destructive,
         confirmation: tilo_actions::ConfirmationPolicy::Confirm,
         retry: tilo_actions::RetryPolicy::AtMostOnce,
@@ -460,7 +465,9 @@ mod tests {
                 .select(&ResourceRef::new(PROVIDER_ID, "restart"))
                 .expect("exact session action");
             assert!(
-                restart.invoke(&mut doc, &ROOT, &chrome, []).is_err(),
+                restart
+                    .invoke(&mut ui::widget::Edits::lend(&mut doc), &ROOT, &chrome, [])
+                    .is_err(),
                 "a destructive session action needs explicit confirmation"
             );
             assert!(
@@ -470,12 +477,17 @@ mod tests {
                     .is_empty()
             );
             restart
-                .invoke(&mut doc, &ROOT, &chrome, [confirmed()])
+                .invoke(
+                    &mut ui::widget::Edits::lend(&mut doc),
+                    &ROOT,
+                    &chrome,
+                    [confirmed()],
+                )
                 .expect("confirmed restart is admitted");
             exact_catalog(&policy, &chrome, "lock")
                 .select(&ResourceRef::new(PROVIDER_ID, "lock"))
                 .expect("exact session action")
-                .invoke(&mut doc, &ROOT, &chrome, [])
+                .invoke(&mut ui::widget::Edits::lend(&mut doc), &ROOT, &chrome, [])
                 .expect("lock needs no confirmation");
             assert_eq!(
                 chrome.borrow_mut().take_session_action_requests(),
@@ -503,7 +515,12 @@ mod tests {
             let error = exact_catalog(&policy, &chrome, "switch-user")
                 .select(&ResourceRef::new(PROVIDER_ID, "switch-user"))
                 .expect("exact session action")
-                .invoke(&mut AutoCommit::new(), &ROOT, &chrome, [confirmed()])
+                .invoke(
+                    &mut ui::widget::Edits::lend(&mut AutoCommit::new()),
+                    &ROOT,
+                    &chrome,
+                    [confirmed()],
+                )
                 .expect_err("an inhibitor refuses the typed action like the flyout row");
             assert!(format!("{error:?}").contains("Call is sharing the screen"));
             assert!(
@@ -535,6 +552,8 @@ mod tests {
             ("switch user", "switch-user"),
         ] {
             let mut rows = provider.query(SearchContext {
+                query_scope: None,
+                include_programmatic: false,
                 needle,
                 wanted: &[ResourceKind::Action],
                 chrome: &state,

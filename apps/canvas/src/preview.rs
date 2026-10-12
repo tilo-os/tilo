@@ -5,7 +5,7 @@
 use ui::LocalState;
 use ui::automerge::AutoCommit;
 use ui::vello::Scene;
-use ui::vello::kurbo::{Affine, Point, Rect, Stroke, Vec2};
+use ui::vello::kurbo::{Affine, Point, Rect, Stroke};
 use ui::vello::peniko::Fill;
 use ui::widget::{AppModel, Element, EventCtx, ModelPath, Widget};
 use ui::winit::event::{ElementState, KeyEvent, WindowEvent};
@@ -28,21 +28,29 @@ pub struct VersionPreview {
 }
 
 impl VersionPreview {
-    pub fn new(canvas: Element, preview: LocalState<Option<String>>) -> Self {
+    pub fn new(
+        canvas: Element,
+        preview: LocalState<Option<String>>,
+        content: Option<tilo_content::ContentStore>,
+    ) -> Self {
+        let mut renderer = Renderer::default();
+        if let Some(content) = content {
+            renderer.pictures.read_from(content);
+        }
         Self {
             canvas,
             preview,
             shown: None,
-            renderer: Renderer::default(),
+            renderer,
             cursor: Point::ZERO,
         }
     }
 
     /// The artwork at `version`, a change id or a checkpoint name.
-    fn read(doc: &mut AutoCommit, version: &str) -> Option<Artwork> {
+    fn read(doc: &AutoCommit, version: &str) -> Option<Artwork> {
         let heads = ui::history_source::steps::resolve(doc, version).ok()?;
-        let past = doc.fork_at(&heads).ok()?;
-        Some(crate::doc::read(&past))
+        let past = doc.committed_fork_at(&heads).ok()?;
+        Artwork::from_doc(&past).ok()
     }
 
     fn rect(&self) -> Rect {
@@ -71,7 +79,16 @@ impl VersionPreview {
             transform,
             &rect,
         );
-        scene.fill(Fill::NonZero, transform, theme.bg_app, None, &rect);
+        // The past version hides the live artwork: the content ground over
+        // it, and the version's sheet on that as the canvas lays its own.
+        let colors = &theme.tokens.colors;
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            colors.surfaces.content,
+            None,
+            &rect,
+        );
         let margin = f64::from(theme.tokens.spacing.s6);
         let room = rect.inset(-margin);
         if room.width() > 1.0 && room.height() > 1.0 && art.width > 0.0 && art.height > 0.0 {
@@ -80,54 +97,37 @@ impl VersionPreview {
                 room.center().x - art.width * scale / 2.0,
                 room.center().y - art.height * scale / 2.0,
             );
-            let to_screen = transform * Affine::translate(origin.to_vec2()) * Affine::scale(scale);
+            let place = Affine::translate(origin.to_vec2()) * Affine::scale(scale);
+            let sheet = place.transform_rect_bbox(art.bounds());
+            ui::surface::shadow(
+                scene,
+                transform,
+                sheet,
+                0.0,
+                &theme.tokens.elevation.floating,
+            );
             self.renderer
-                .draw(art, scene, to_screen, text, &Options::default());
+                .draw(art, scene, transform * place, text, &Options::default());
             scene.stroke(
-                &Stroke::new(1.0 / scale),
-                to_screen,
-                theme.border_standard,
+                &Stroke::new(1.0),
+                transform,
+                ui::surface::edge_on(colors.surfaces.content),
                 None,
-                &art.bounds(),
+                &sheet,
             );
         }
-        // An accent rule round the view says this is not the live artwork.
-        scene.stroke(
-            &Stroke::new(2.0),
-            transform,
-            theme.accent_primary,
-            None,
-            &rect.inset(-1.0),
-        );
+        // A badge at the top says this is not the live artwork.
         let label = ui::i18n::I18nManager::lookup_plain("canvas-preview-banner");
-        let size = theme.tokens.typography.scale.sm;
-        let (width, height) = text.measure(&label, size, None);
-        let pad = f64::from(theme.tokens.spacing.s2);
-        let pill = Rect::from_origin_size(
-            Point::new(
-                rect.center().x - f64::from(width) / 2.0 - pad * 2.0,
-                rect.y0 + pad * 2.0,
-            ),
-            (f64::from(width) + pad * 4.0, f64::from(height) + pad * 2.0),
+        let width = ui::widget::BadgeFace::intrinsic_width(&label, text, theme);
+        let height = ui::widget::BadgeFace::height(theme);
+        let pad = f64::from(theme.tokens.spacing.s4);
+        let badge = Rect::from_origin_size(
+            Point::new(rect.center().x - width / 2.0, rect.y0 + pad),
+            (width, height),
         );
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            theme.accent_primary,
-            None,
-            &pill.to_rounded_rect(pill.height() / 2.0),
-        );
-        text.draw_text(
-            scene,
-            &label,
-            size,
-            theme
-                .tokens
-                .colors
-                .on_accent(ui::tokens::colors::ON_FILL_MIN_CONTRAST),
-            transform * Affine::translate(pill.origin().to_vec2() + Vec2::new(pad * 2.0, pad)),
-            None,
-        );
+        ui::widget::BadgeFace::new(badge, &label)
+            .style(ui::widget::ChipStyle::Neutral)
+            .paint(scene, transform, text, theme);
         scene.pop_layer();
     }
 }
@@ -147,22 +147,10 @@ impl ui::widget::Decorator for VersionPreview {
         "VersionPreview"
     }
 
-    fn build_layout(
-        &mut self,
-        taffy: &mut ui::taffy::TaffyTree<()>,
-        theme: &Theme,
-        node_map: &mut std::collections::HashMap<ui::taffy::NodeId, *mut dyn Widget>,
-    ) -> ui::taffy::NodeId {
-        let node = self.canvas.build_layout(taffy, theme, node_map);
-        // The host reaches the canvas through this view of it.
-        ui::widget::decorator::register_node(node_map, node, self);
-        node
-    }
-
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         let wanted = self.preview.with(Clone::clone);
         if wanted.as_deref() != self.shown.as_ref().map(|(version, _)| version.as_str()) {
-            let (doc, _) = ui::doc::document(state, path);
+            let (doc, _) = ui::doc::document_ref(state, path);
             self.shown = wanted.and_then(|version| {
                 let art = Self::read(doc, &version)?;
                 Some((version, art))
@@ -181,26 +169,6 @@ impl ui::widget::Decorator for VersionPreview {
     ) {
         self.canvas
             .draw(scene, transform, text_renderer, theme, presence);
-        self.paint(scene, transform, text_renderer, theme);
-    }
-
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        permissions: &ui::permissions::PermissionContext,
-    ) {
-        self.canvas.draw_with_presence(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            presence,
-            permissions,
-        );
         self.paint(scene, transform, text_renderer, theme);
     }
 

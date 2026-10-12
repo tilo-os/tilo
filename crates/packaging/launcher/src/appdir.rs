@@ -17,6 +17,16 @@
 //!
 //! A launch with no room gets the [`PERSONAL_ROOM`]: one directory like any
 //! other, unreachable from a workspace.
+//!
+//! ## The person's own records are one directory per app
+//!
+//! Some of an app's data belongs to the person rather than to any room:
+//! what they watched, the words they taught the keyboard. Those records
+//! live in the person's own room (`docs/architecture/storage.md`, "Person
+//! records") and must be one record on the device whatever room the app is
+//! opened in, so the launcher binds one more directory, the same for every
+//! room: `<data home>/tilo-person/<package>` at [`SANDBOX_PERSON_DIR`],
+//! named by [`PERSON_DIR_ENV`]. The app keeps nothing else there.
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -38,6 +48,17 @@ pub const PERSONAL_ROOM: &str = "personal";
 
 /// Directory under the user's data home that holds every room.
 pub const ROOMS_DIR: &str = "tilo-rooms";
+
+/// Directory under the user's data home that holds each app's records of
+/// the person's own, shared by the app's launches in every room.
+pub const PERSON_DIR: &str = "tilo-person";
+
+/// Where the app's person directory appears inside the sandbox.
+pub const SANDBOX_PERSON_DIR: &str = "/run/tilo/person";
+
+/// Env var naming [`SANDBOX_PERSON_DIR`]; the toolkit keeps the person's
+/// records there (`ui::application::PERSON_DIR_ENV`, the same name).
+pub const PERSON_DIR_ENV: &str = "TILO_PERSON_DIR";
 
 /// Turn a workspace id into a single path component that cannot escape
 /// its parent.
@@ -85,7 +106,7 @@ fn hex_digest(raw: &str) -> String {
 /// The user's data home, as the *launcher's* own environment describes
 /// it. Mirrors `cli::data_home` so host and in-sandbox sides agree.
 pub fn host_data_home() -> Option<PathBuf> {
-    xdg_paths::xdg::data_home()
+    tilo_paths::xdg::data_home()
 }
 
 /// Host location of one package's directory in one room.
@@ -142,6 +163,37 @@ pub fn prepare_host_app_dir(
     }
     remove_startup_traces_from_home(&dir);
     Ok(dir)
+}
+
+/// Host location of one package's person directory: the same for every
+/// room it is launched into.
+pub fn host_person_dir(data_home: &Path, package_id: &str) -> PathBuf {
+    data_home
+        .join(PERSON_DIR)
+        .join(sanitise_component(package_id))
+}
+
+/// Create the person directory this launch binds.
+///
+/// # Errors
+///
+/// Returns an error if the directory cannot be created; like the app
+/// directory, a launch that could not keep the person's records refuses
+/// rather than losing them.
+pub fn prepare_host_person_dir(data_home: &Path, package_id: &str) -> io::Result<PathBuf> {
+    let dir = host_person_dir(data_home, package_id);
+    std::fs::create_dir_all(&dir)?;
+    Ok(dir)
+}
+
+/// Bind the person directory into the sandbox and name it to the app.
+pub fn push_person_dir(argv: &mut Vec<String>, host_dir: &Path) {
+    argv.push("--bind".to_string());
+    argv.push(host_dir.display().to_string());
+    argv.push(SANDBOX_PERSON_DIR.to_string());
+    argv.push("--setenv".to_string());
+    argv.push(PERSON_DIR_ENV.to_string());
+    argv.push(SANDBOX_PERSON_DIR.to_string());
 }
 
 /// **Migration.** Startup traces used to be written at the top of the app

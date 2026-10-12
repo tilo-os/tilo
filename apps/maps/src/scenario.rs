@@ -11,35 +11,109 @@
 use ui::framework::Fixture;
 use ui::tilo_resource::Invoke;
 
-use crate::actions::MapsAction;
 use crate::model::{TransitTime, TransitTimeMode, TravelMode};
-use crate::resource::Maps;
 use crate::sample;
+use crate::workspace::{Workspace, workspace};
 
-/// Every named scenario `--shots --scenario NAME` captures.
+/// Every named scenario `--shots --scenario NAME` captures; a `-narrow` one
+/// is a phone-sized window, where the panel is a drawer.
 pub(crate) const SCENARIOS: &[&str] = &[
-    "empty",
-    "explore",
     "directions",
-    "transit",
-    "transit-arrive",
-    "edit-from",
+    "explore",
     "search",
     "pois",
+    "transit",
+    "transit-arrive",
+    "edit-origin",
     "traffic",
     "traffic-empty",
     "offline",
     "menu",
     "attribution",
     "error",
-    "narrow",
-    "nav-closed",
+    "collapsed",
+    "navigation",
     "floating-navigation",
     "floating-navigation-attached",
     "floating-navigation-hover",
     "floating-navigation-returning",
     "floating-navigation-returned",
+    "empty",
+    "directions-narrow",
+    "explore-narrow",
+    "search-narrow",
+    "pois-narrow",
+    "transit-narrow",
+    "offline-narrow",
+    "navigation-narrow",
+    "empty-narrow",
 ];
+
+/// A capture scenario by name; a plain `--shots` is the drive route.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Scenario {
+    Directions,
+    Explore,
+    Search,
+    Pois,
+    Transit,
+    TransitArrive,
+    EditOrigin,
+    Traffic,
+    Offline,
+    Menu,
+    Attribution,
+    Error,
+    Collapsed,
+    /// The drive route with the turn card over the map, the panel closed
+    /// where it is a drawer.
+    Navigation,
+    /// The turn card handed to the desktop, and on its way back.
+    FloatingNavigation,
+    Empty,
+}
+
+impl Scenario {
+    pub(crate) fn of(name: Option<&str>) -> Self {
+        let name = name.unwrap_or_default();
+        match name.strip_suffix("-narrow").unwrap_or(name) {
+            "explore" => Self::Explore,
+            "search" => Self::Search,
+            "pois" => Self::Pois,
+            "transit" => Self::Transit,
+            "transit-arrive" => Self::TransitArrive,
+            "edit-origin" => Self::EditOrigin,
+            "traffic" | "traffic-empty" => Self::Traffic,
+            "offline" => Self::Offline,
+            "menu" => Self::Menu,
+            "attribution" => Self::Attribution,
+            "error" => Self::Error,
+            "collapsed" => Self::Collapsed,
+            "navigation" => Self::Navigation,
+            "empty" => Self::Empty,
+            name if name.starts_with("floating-navigation") => Self::FloatingNavigation,
+            _ => Self::Directions,
+        }
+    }
+
+    /// Whether the scenario shows the sample drive route.
+    pub(crate) fn has_route(self) -> bool {
+        matches!(
+            self,
+            Self::Directions
+                | Self::EditOrigin
+                | Self::Error
+                | Self::Collapsed
+                | Self::Navigation
+                | Self::FloatingNavigation
+        )
+    }
+
+    /// Whether the scenario plans a public-transport journey.
+    pub(crate) fn is_transit(self) -> bool {
+        matches!(self, Self::Transit | Self::TransitArrive)
+    }
+}
 
 /// What a capture's map shows in place of live imagery and a live session.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -51,16 +125,17 @@ pub(crate) enum Sample {
 }
 
 impl Sample {
-    fn of(scenario: Option<&str>) -> Self {
-        match scenario {
-            Some("empty" | "traffic-empty") => Self::Empty,
-            _ => Self::City,
+    pub(crate) fn of(scenario: Option<&str>) -> Self {
+        if scenario == Some("traffic-empty") || Scenario::of(scenario) == Scenario::Empty {
+            Self::Empty
+        } else {
+            Self::City
         }
     }
 }
 
 /// Prepare `fixture`'s sample before the view is built.
-pub(crate) fn prepare(fixture: &mut Fixture<Maps>) {
+pub(crate) fn prepare(fixture: &mut Fixture<Workspace>) {
     let sample = Sample::of(fixture.scenario());
     fixture.provide(sample);
 }
@@ -68,53 +143,22 @@ pub(crate) fn prepare(fixture: &mut Fixture<Maps>) {
 /// The viewport `scenario` is captured at.
 pub(crate) fn viewport(scenario: Option<&str>) -> (u32, u32) {
     match scenario {
-        Some("narrow" | "nav-closed") => (390, 844),
+        Some(name) if name.ends_with("-narrow") => (520, 820),
         _ => (1280, 800),
     }
 }
 
 /// The actions that put `scenario`'s places, searches and plans in the
-/// resource.
-pub(crate) fn actions(scenario: Option<&str>) -> Vec<Invoke<Maps>> {
-    if Sample::of(scenario) == Sample::Empty {
+/// resource: the sample city's places (two of them saved), its recent
+/// searches and travel settings, and — where the scenario shows one — the
+/// drive route or the transit journeys.
+pub(crate) fn actions(name: Option<&str>) -> Vec<Invoke<Workspace>> {
+    if Sample::of(name) == Sample::Empty {
         return Vec::new();
     }
-    let mut actions = city();
-    match scenario {
-        Some("transit") => {
-            actions.push(MapsAction::SetTravelMode {
-                mode: TravelMode::Transit,
-            });
-            actions.push(MapsAction::ClearRoute);
-        }
-        Some("transit-arrive") => {
-            actions.push(MapsAction::SetTravelMode {
-                mode: TravelMode::Transit,
-            });
-            actions.push(MapsAction::ClearRoute);
-            actions.push(MapsAction::SetTransitTime {
-                value: TransitTime {
-                    mode: TransitTimeMode::Arrive,
-                    offset_min: 60,
-                },
-            });
-        }
-        Some("pois" | "offline") => actions.push(MapsAction::ClearRoute),
-        _ => {}
-    }
-    actions
-        .iter()
-        .filter_map(|action| Invoke::apply(action).ok())
-        .collect()
-}
-
-/// The sample city as the resource holds it: its places (two of them
-/// saved), three recent searches, and a road route beside transit options.
-fn city() -> Vec<MapsAction> {
+    let scenario = Scenario::of(name);
     let model = sample::default_model();
-    let mut actions = vec![MapsAction::UpsertPlaces {
-        places: model.places.clone(),
-    }];
+    let mut actions = vec![Workspace::ACCEPT_PLACES.with(model.places.clone())];
     // Each committed search moves to the front of the history, so the
     // oldest is committed first.
     actions.extend(
@@ -122,28 +166,43 @@ fn city() -> Vec<MapsAction> {
             .recents
             .iter()
             .rev()
-            .map(|query| MapsAction::CommitSearch {
-                query: query.clone(),
-            }),
+            .map(|query| Workspace::COMMIT_SEARCH.with(query.as_str())),
     );
-    // Accepted transit options switch the travel mode to transit; the road
-    // route accepted after them switches it back, keeping both plans.
-    actions.push(MapsAction::SetTransit {
-        transit: model.transit.clone(),
-        origin: model.origin,
-        origin_name: model.origin_name.clone(),
-        dest: model.dest,
-        dest_name: model.dest_name.clone(),
-    });
-    if let Some(route) = model.route.clone() {
-        actions.push(MapsAction::SetRoute {
+    let mode = if scenario.is_transit() {
+        TravelMode::Transit
+    } else {
+        model.mode
+    };
+    actions.extend(Invoke::edit(&Workspace::paths().mode.set(mode)).ok());
+    if scenario == Scenario::TransitArrive {
+        actions.extend(
+            Invoke::edit(&Workspace::paths().transit_time.set(TransitTime {
+                mode: TransitTimeMode::Arrive,
+                offset_min: 60,
+            }))
+            .ok(),
+        );
+    }
+    if scenario.has_route()
+        && let Some(route) = model.route.clone()
+    {
+        actions.push(Workspace::ACCEPT_ROUTE.with(workspace::AcceptRoute {
             route,
             origin: model.origin,
             origin_name: model.origin_name.clone(),
             dest: model.dest,
             dest_name: model.dest_name.clone(),
             mode: model.mode,
-        });
+        }));
+    }
+    if scenario.is_transit() {
+        actions.push(Workspace::ACCEPT_TRANSIT.with(workspace::AcceptTransit {
+            transit: model.transit.clone(),
+            origin: model.origin,
+            origin_name: model.origin_name.clone(),
+            dest: model.dest,
+            dest_name: model.dest_name,
+        }));
     }
     actions
 }

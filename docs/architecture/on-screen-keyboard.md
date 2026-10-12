@@ -35,6 +35,21 @@ Turning the preference off first closes the private socket accept gate and then
 terminates the launcher's complete process group, with bounded escalation. A
 crashed service is retried with backoff only while the preference remains on.
 
+A normal verified package update also updates the running keyboard. The session
+follows the existing installed-package catalogue watcher and its bounded
+freshness fallback, comparing the installed keyboard row rather than another
+application's update. Before replacement it revokes the old private socket's
+accept authority and disconnects the old trusted client. Its supervisor then
+terminates and reaps the entire old process group with bounded escalation;
+only completed cleanup permits the replacement to acquire socket authority.
+The replacement uses the ordinary sandbox launcher and the installed manifest's
+verified runtime, preserving the preference and the focused text input. No
+restart action or additional global input permission is needed.
+
+This lifecycle belongs to the running compositor. The initial greeter uses Cage
+before the compositor starts; updating this service does not provide a Cage
+input method or change greeter authentication.
+
 ## Text lifecycle
 
 Editable Tilo widgets explicitly opt into IME handling. The UI runtime follows

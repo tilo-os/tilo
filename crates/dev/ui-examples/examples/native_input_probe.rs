@@ -37,7 +37,7 @@ fn main() {
     tilo_ui::App::from_factory(tilo_ui::State::new(), || {
         let mut activations = 0_u64;
         Box::new(
-            tilo_ui::widget::Button::new("native-probe", "Native input probe", None).on_click(
+            tilo_ui::widget::Button::new("native-probe", "Native input probe").on_click(
                 move || {
                     activations = activations.saturating_add(1);
                     eprintln!(

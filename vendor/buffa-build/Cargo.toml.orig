@@ -1,0 +1,18 @@
+[package]
+name = "buffa-build"
+description = "Build-time integration for buffa (use in build.rs)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords = ["protobuf", "protocol-buffers", "build", "codegen"]
+categories = ["development-tools::build-utils"]
+
+[package.metadata.docs.rs]
+rustdoc-args = ["--cfg", "docsrs"]
+
+[dependencies]
+buffa = { workspace = true, features = ["std", "fast-utf8"] }
+buffa-codegen = { workspace = true }
+tempfile = "3"

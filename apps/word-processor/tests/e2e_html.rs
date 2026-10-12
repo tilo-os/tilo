@@ -15,8 +15,9 @@
 
 use std::path::PathBuf;
 
-use ui::Widget;
-use word_processor::{WordProcessorWidget, WpFormat, open_document};
+use word_processor::WpFormat;
+
+use crate::support::{launched, snapshot};
 
 fn temp_path(name: &str) -> PathBuf {
     let mut p = std::env::temp_dir();
@@ -27,12 +28,12 @@ fn temp_path(name: &str) -> PathBuf {
 /// Author a document in the canonical model, then return its `tilo_doc_codecs::export_html`-rendered
 /// HTML — the exact bytes the editor's HTML *export* would write.
 fn render_doc_to_html() -> String {
-    let mut state = ui::State::new();
-    let c = tilo_doc::model::init(&mut state.doc, &state.root);
-    let mut ids = tilo_doc::IdGen::new(state.doc.get_actor().to_hex_string());
+    let mut doc = automerge::AutoCommit::new();
+    let c = word_processor::model::init(&mut doc).unwrap();
+    let mut ids = tilo_doc::IdGen::new(doc.get_actor().to_hex_string());
     {
         let mut dm = tilo_doc::DocMut {
-            doc: &mut state.doc,
+            doc: &mut doc,
             c: &c,
             ids: &mut ids,
         };
@@ -46,7 +47,7 @@ fn render_doc_to_html() -> String {
         dm.add_mark(&p, 4, 8, "strong", true); // "bold"
         dm.add_mark(&p, 13, 19, "link", "https://tilo.so/"); // "a link"
     }
-    let snap = tilo_doc::model::materialize(&state.doc, &c);
+    let snap = tilo_doc::model::materialize(&doc, &c);
     tilo_doc_codecs::export_html::render_html(
         &snap,
         tilo_doc_codecs::export_html::HtmlOptions::default(),
@@ -64,12 +65,12 @@ fn html_opens_with_headings_bold_and_links_recovered() {
         let path = temp_path("doc.html");
         std::fs::write(&path, html.as_bytes()).unwrap();
 
-        let (mut state, mut wp, fmt) =
-            open_document(&path, tilo_content::ContentStore::memory()).unwrap();
-        assert_eq!(fmt, WpFormat::Html, "extension picks the HTML format");
-        wp.sync(&mut state.doc, &state.root);
-
-        let snap = tilo_doc::model::materialize(&state.doc, &wp_containers(&wp, &state));
+        assert_eq!(
+            WpFormat::from_path(&path),
+            WpFormat::Html,
+            "extension picks the HTML format"
+        );
+        let snap = snapshot(&launched(&path));
 
         // The first block is the H1 heading "Report".
         let first = &snap.blocks[0];
@@ -110,21 +111,15 @@ fn html_opens_with_headings_bold_and_links_recovered() {
         let path = temp_path("small.htm");
         std::fs::write(&path, b"<h1>Hello HTML</h1><p>body</p>").unwrap();
 
-        let (mut state, mut wp, fmt) =
-            open_document(&path, tilo_content::ContentStore::memory()).unwrap();
-        assert_eq!(fmt, WpFormat::Html, ".htm also opens as HTML");
-        wp.sync(&mut state.doc, &state.root);
-
-        let snap = tilo_doc::model::materialize(&state.doc, &wp_containers(&wp, &state));
+        assert_eq!(
+            WpFormat::from_path(&path),
+            WpFormat::Html,
+            ".htm also opens as HTML"
+        );
+        let snap = snapshot(&launched(&path));
         assert_eq!(snap.blocks[0].kind, "heading");
         assert_eq!(snap.blocks[0].text, "Hello HTML");
 
         std::fs::remove_file(&path).ok();
     }
-}
-
-/// The word processor binds the canonical model at `state.root`; resolve its
-/// container ids the same way `open_document` did so we can materialize.
-fn wp_containers(_wp: &WordProcessorWidget, state: &ui::State) -> tilo_doc::Containers {
-    tilo_doc::model::open(&state.doc, &state.root).expect("document is bound at root")
 }

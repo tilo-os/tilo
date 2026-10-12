@@ -81,6 +81,7 @@ pub struct ActionHierarchy {
     pub room: String,
     pub record: String,
     pub resource: String,
+    pub semantic_identity: Option<tilo_actions::ResourceSemanticIdentity>,
     pub operation: String,
 }
 
@@ -166,11 +167,25 @@ impl ActionCatalog {
             doc,
             doc_root,
         };
+        Self::build_query(registry, &args, visibility, false)
+    }
+
+    /// Explicit bounded machine discovery uses the same visibility gate.
+    pub fn build_query(
+        registry: &SearchRegistry,
+        args: &QueryArgs<'_>,
+        visibility: &dyn ActionVisibility,
+        include_programmatic: bool,
+    ) -> Self {
         // Remote callers do not open the palette, which normally maintains
         // retained provider indexes. Start/poll that same asynchronous work
         // here so subsequent requests can discover cold sources too.
-        registry.refresh_indexes(&args);
-        let results = registry.query_exhaustive(&args);
+        registry.refresh_indexes(args);
+        let results = if include_programmatic {
+            registry.query_with_programmatic(args)
+        } else {
+            registry.query_exhaustive(args)
+        };
         let visible: Vec<usize> = results
             .iter()
             .enumerate()
@@ -293,7 +308,24 @@ impl ActionCatalog {
     /// Enumerate the typed descriptors the caller may see. Render-free —
     /// no scene is built, no widget is touched.
     pub fn enumerate(&self) -> Vec<ExportedAction> {
+        self.enumerate_rows(0..self.visible.len())
+    }
+
+    /// The visible actions' addresses, in [`Self::enumerate`]'s order,
+    /// without describing them.
+    pub fn addresses(&self) -> impl Iterator<Item = (&str, &str)> + '_ {
         self.visible
+            .iter()
+            .filter_map(|&i| self.results.get(i))
+            .map(|r| (r.provider_id.as_str(), r.id.as_str()))
+    }
+
+    /// [`Self::enumerate`]'s rows at `rows`, describing only those — one
+    /// page of a listing costs the page, not the catalogue.
+    pub fn enumerate_rows(&self, rows: std::ops::Range<usize>) -> Vec<ExportedAction> {
+        self.visible
+            .get(rows)
+            .unwrap_or_default()
             .iter()
             .filter_map(|&i| self.results.get(i).map(|result| (i, result)))
             .map(|(i, r)| ExportedAction {
@@ -384,7 +416,7 @@ impl SelectedAction<'_> {
 
     fn invoke_bound(
         &self,
-        doc: &mut AutoCommit,
+        doc: &mut ui::widget::Edits<'_>,
         root: &ObjId,
         chrome: &Chrome,
         bound: &ActionArgs,
@@ -436,31 +468,13 @@ impl SelectedAction<'_> {
     /// provider's own callback found nothing to act on.
     pub fn invoke(
         &self,
-        doc: &mut AutoCommit,
+        doc: &mut ui::widget::Edits<'_>,
         root: &ObjId,
         chrome: &Chrome,
         args: impl IntoIterator<Item = (String, ArgValue)>,
     ) -> Result<InvocationDisposition, ActionError> {
         let bound = ActionArgs::bind(&self.result.params, args).map_err(ActionError::Arguments)?;
         self.invoke_bound(doc, root, chrome, &bound)
-    }
-
-    /// Begin an invocation without fabricating success for a remote action
-    /// whose current authority is still being checked. Agents can retain and
-    /// poll the returned ticket just as the visual palette does.
-    ///
-    /// # Errors
-    ///
-    /// Returns an argument-binding or provider refusal error; callers must
-    /// poll a pending disposition rather than treating it as success.
-    pub fn invoke_disposition(
-        &self,
-        doc: &mut AutoCommit,
-        root: &ObjId,
-        chrome: &Chrome,
-        args: impl IntoIterator<Item = (String, ArgValue)>,
-    ) -> Result<InvocationDisposition, ActionError> {
-        self.invoke(doc, root, chrome, args)
     }
 
     /// Invoke from the canonical JSON object used by control sockets and MCP.
@@ -475,7 +489,7 @@ impl SelectedAction<'_> {
     /// cannot perform the bound action.
     pub fn invoke_json(
         &self,
-        doc: &mut AutoCommit,
+        doc: &mut ui::widget::Edits<'_>,
         root: &ObjId,
         chrome: &Chrome,
         args: &serde_json::Map<String, serde_json::Value>,
@@ -495,7 +509,7 @@ impl SelectedAction<'_> {
     /// falling back to a different invocation callback.
     pub fn invoke_json_disposition(
         &self,
-        doc: &mut AutoCommit,
+        doc: &mut ui::widget::Edits<'_>,
         root: &ObjId,
         chrome: &Chrome,
         args: &serde_json::Map<String, serde_json::Value>,
@@ -513,7 +527,7 @@ impl SelectedAction<'_> {
     /// parameters.
     pub fn invoke_nullary(
         &self,
-        doc: &mut AutoCommit,
+        doc: &mut ui::widget::Edits<'_>,
         root: &ObjId,
         chrome: &Chrome,
     ) -> Result<InvocationDisposition, ActionError> {
@@ -524,12 +538,10 @@ impl SelectedAction<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::shell::search::providers::{ActionsProvider, NotesProvider};
+    use crate::shell::search::providers::{ActionsProvider, ApplicationsProvider};
     use crate::shell::state::FreshId as _;
     use crate::shell::state::{Workspace, WorkspaceId, WorkspaceTree, WorkspaceTreeHandle};
-    use parking_lot::RwLock;
     use std::rc::Rc;
-    use std::sync::Arc;
 
     fn chrome_rc() -> Chrome {
         let mut tree = WorkspaceTree::default();
@@ -538,7 +550,7 @@ mod tests {
         workspace.set_owner(crate::shell::state::local_user_id_for_room(&workspace.room));
         tree.desktop.workspaces.push(workspace);
         tree.desktop.active = id;
-        let handle: WorkspaceTreeHandle = Arc::new(RwLock::new(tree));
+        let handle: WorkspaceTreeHandle = crate::shell::state::WorkspaceTreeHandle::new(tree);
         ChromeState::new_with_handle(handle)
     }
 
@@ -601,7 +613,7 @@ mod tests {
 
             // INVOKE — run the side-effect. No scene is ever constructed.
             selected
-                .invoke_nullary(&mut doc, &root, &chrome)
+                .invoke_nullary(&mut ui::widget::Edits::lend(&mut doc), &root, &chrome)
                 .expect("a nullary action invoked with no arguments must run");
 
             assert!(
@@ -614,7 +626,7 @@ mod tests {
         // The permission seam gates enumeration and selection uniformly.
         {
             let mut reg = registry_with_actions();
-            reg.register(Rc::new(NotesProvider::new()));
+            reg.register(Rc::new(ApplicationsProvider::new()));
             let chrome = chrome_rc();
             let doc = AutoCommit::new();
             let root = automerge::ROOT;
@@ -651,7 +663,7 @@ mod tests {
         // `ActiveApp` scope narrows the survey to the focused app's provider.
         {
             let mut reg = registry_with_actions();
-            reg.register(Rc::new(NotesProvider::new()));
+            reg.register(Rc::new(ApplicationsProvider::new()));
             let chrome = chrome_rc();
             let doc = AutoCommit::new();
             let root = automerge::ROOT;
@@ -818,7 +830,7 @@ mod tests {
                 .expect("addressable");
 
             let err = selected
-                .invoke_nullary(&mut doc, &root, &chrome)
+                .invoke_nullary(&mut ui::widget::Edits::lend(&mut doc), &root, &chrome)
                 .expect_err("a required parameter must not be skippable");
             assert!(matches!(
                 err,
@@ -831,7 +843,12 @@ mod tests {
 
             // …and with the argument it declared, it runs.
             selected
-                .invoke(&mut doc, &root, &chrome, [("text".to_string(), text("ok"))])
+                .invoke(
+                    &mut ui::widget::Edits::lend(&mut doc),
+                    &root,
+                    &chrome,
+                    [("text".to_string(), text("ok"))],
+                )
                 .expect("the declared argument must be accepted");
             assert!(ran.get(), "a satisfied invocation reaches the action");
         }
@@ -862,7 +879,7 @@ mod tests {
                 "a chrome toggle declares no parameters"
             );
             selected
-                .invoke_nullary(&mut doc, &root, &chrome)
+                .invoke_nullary(&mut ui::widget::Edits::lend(&mut doc), &root, &chrome)
                 .expect("a nullary action takes no arguments");
             assert!(chrome.borrow().overlays.ws_settings);
         }
@@ -978,7 +995,7 @@ mod tests {
             let disposition = catalog
                 .select(&ResourceRef::new("receipts", "broker.action"))
                 .expect("the broker action is addressable")
-                .invoke_nullary(&mut doc, &root, &chrome)
+                .invoke_nullary(&mut ui::widget::Edits::lend(&mut doc), &root, &chrome)
                 .expect("the provider admits the action");
             let InvocationDisposition::Accepted(receipt) = disposition else {
                 panic!("the synchronous provider must return its receipt immediately");
@@ -1018,7 +1035,12 @@ mod tests {
                 .select(&ResourceRef::new("async-json", "wait-for-admission"))
                 .expect("async action is addressable");
             let InvocationDisposition::Pending(ticket) = selected
-                .invoke_json(&mut doc, &root, &chrome, &serde_json::Map::new())
+                .invoke_json(
+                    &mut ui::widget::Edits::lend(&mut doc),
+                    &root,
+                    &chrome,
+                    &serde_json::Map::new(),
+                )
                 .expect("begin returns a pending ticket")
             else {
                 panic!("admission must remain pending")
@@ -1064,7 +1086,12 @@ mod tests {
             let error = catalog
                 .select(&ResourceRef::new("async-json", "wait-for-admission"))
                 .expect("async action is addressable")
-                .invoke_json(&mut doc, &root, &chrome, &serde_json::Map::new())
+                .invoke_json(
+                    &mut ui::widget::Edits::lend(&mut doc),
+                    &root,
+                    &chrome,
+                    &serde_json::Map::new(),
+                )
                 .expect_err("rejected admission must be returned");
             assert_eq!(begins.get(), 1);
             assert!(

@@ -1,0 +1,136 @@
+{
+  "schema_version": 1,
+  "evidence": "evidence_flow",
+  "status": "passed",
+  "checks": {
+    "reported_dependencies": "passed"
+  },
+  "declared_toolchain_image": null,
+  "tools": {
+    "example": {
+      "version": "unknown; synthetic fixture",
+      "executable_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+  },
+  "artifact_sha256": {
+    "cpu.json": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "rtl.json": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "synth.json": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "physical.json": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "next.json": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "excludes": [
+    "artifact_authentication",
+    "silicon_measurement",
+    "manufacturing",
+    "model_quality"
+  ],
+  "evidence_flow": {
+    "title": "Synthetic evidence dependency example",
+    "input_identity_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "stages": [
+      {
+        "id": "cpu",
+        "title": "Synthetic CPU comparison",
+        "status": "passed",
+        "original_receipt_artifact": "cpu.json",
+        "producer_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "input_identity_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "checks": {
+          "synthetic_observation": "passed"
+        },
+        "limitations": [
+          "Synthetic contract fixture; not an actual executed design"
+        ],
+        "observations": {
+          "scope": "cpu_reference",
+          "comparison": "characterization",
+          "compared_words": 8,
+          "differing_words": 1,
+          "output_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      },
+      {
+        "id": "rtl",
+        "title": "Synthetic connected simulation",
+        "status": "passed",
+        "original_receipt_artifact": "rtl.json",
+        "producer_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "input_identity_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "checks": {
+          "synthetic_observation": "passed"
+        },
+        "limitations": [
+          "Synthetic contract fixture; not an actual executed design"
+        ],
+        "observations": {
+          "scope": "rtl_simulation",
+          "cycles": 1200,
+          "accepted_inputs": 8,
+          "accepted_outputs": 8,
+          "output_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "outcome": "completed",
+          "refused_inputs": 0
+        }
+      },
+      {
+        "id": "synth",
+        "title": "Synthetic generic structure",
+        "status": "passed",
+        "original_receipt_artifact": "synth.json",
+        "producer_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "input_identity_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "checks": {
+          "synthetic_observation": "passed"
+        },
+        "limitations": [
+          "Synthetic contract fixture; not an actual executed design"
+        ],
+        "observations": {
+          "scope": "generic_synthesis",
+          "logic_cells": 80,
+          "logical_memory_bits": 256
+        }
+      },
+      {
+        "id": "physical",
+        "title": "Synthetic routed tile estimate",
+        "status": "passed",
+        "original_receipt_artifact": "physical.json",
+        "producer_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "input_identity_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "checks": {
+          "synthetic_observation": "passed"
+        },
+        "limitations": [
+          "Synthetic contract fixture; not an actual executed design"
+        ],
+        "observations": {
+          "scope": "library_physical",
+          "library": "Synthetic research library",
+          "clock_constraint_ns": 6,
+          "setup_slack_ns": 0.9,
+          "hold_slack_ns": 0.04,
+          "routed_signal_nets": 40,
+          "router_violations": 0,
+          "library_area_um2": 120
+        }
+      }
+    ],
+    "edges": [
+      {
+        "to": "rtl",
+        "kind": "verification",
+        "artifact": "cpu.json",
+        "from": "cpu"
+      }
+    ],
+    "subflows": [
+      {
+        "id": "layer-group",
+        "title": "Additional layer group",
+        "summary_artifact": "next.json"
+      }
+    ]
+  }
+}

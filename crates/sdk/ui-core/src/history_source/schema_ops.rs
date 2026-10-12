@@ -17,9 +17,9 @@ pub struct SchemaHistoryOp {
 }
 
 /// Decode committed operations after `heads` without mutating the document.
-pub fn schema_operations_since(doc: &mut AutoCommit, heads: &[ChangeHash]) -> Vec<SchemaHistoryOp> {
+pub fn schema_operations_since(doc: &AutoCommit, heads: &[ChangeHash]) -> Vec<SchemaHistoryOp> {
     let mut operations = Vec::new();
-    for change in doc.get_changes(heads) {
+    for change in doc.committed_document().get_changes(heads) {
         let decoded = change.decode();
         let timestamp = (decoded.time > 0).then_some(decoded.time);
         for (offset, operation) in decoded.operations.iter().enumerate() {

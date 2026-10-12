@@ -13,11 +13,11 @@ ok() { printf 'ok    %s\n' "$*"; }
 bad() { printf 'FAIL  %s\n' "$*" >&2; fail=1; }
 
 # Generic publication triggers share the generation-series lock. A protected
-# Lenovo dispatch uses its own source-specific group because it never allocates
-# a generic genN; validation builds remain per-ref.
-grep -Fq "group: \${{ github.event_name == 'workflow_call' && format('tilo-os-dev-{0}', github.ref == 'refs/heads/main' && github.sha || github.ref) || (github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && github.event.inputs.release == 'true' && github.event.inputs.hardware_profile == 'lenovo-83ed') && format('tilo-os-image-lenovo-{0}', github.sha) || (startsWith(github.ref, 'refs/tags/v') || (github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.release == 'true')))) && 'tilo-os-image-series-2' || format('tilo-os-image-validate-{0}', github.ref) }}" "$workflow" \
+# Board dispatches use their own profile/source-specific groups because it never allocates
+# a generic genN; full validation proofs share one queue across refs.
+grep -Fq 'group: ${{ github.event_name == '"'"'workflow_call'"'"' && format('"'"'tilo-os-dev-{0}'"'"', github.ref == '"'"'refs/heads/main'"'"' && github.sha || github.ref) || (github.ref == '"'"'refs/heads/main'"'"' && github.event_name == '"'"'workflow_dispatch'"'"' && github.event.inputs.release == '"'"'true'"'"' && github.event.inputs.hardware_profile == '"'"'lenovo-83ed'"'"') && '"'"'tilo-os-image-lenovo-series'"'"' || (github.ref == '"'"'refs/heads/main'"'"' && github.event_name == '"'"'workflow_dispatch'"'"' && github.event.inputs.release == '"'"'true'"'"' && github.event.inputs.hardware_profile == '"'"'orangepi-3b-v2-1'"'"') && format('"'"'tilo-os-image-orangepi-{0}'"'"', github.sha) || (startsWith(github.ref, '"'"'refs/tags/v'"'"') || (github.ref == '"'"'refs/heads/main'"'"' && (github.event_name == '"'"'schedule'"'"' || (github.event_name == '"'"'workflow_dispatch'"'"' && github.event.inputs.release == '"'"'true'"'"')))) && '"'"'tilo-os-image-series-2'"'"' || '"'"'tilo-os-image-validate-2'"'"' }}' "$workflow" \
   && ! grep -Eq 'CONTINUOUS_RELEASE: "1"' "$workflow" \
-  && ok 'generic generation publication is serialized separately from Lenovo' \
+  && ok 'generic generation publication is serialized separately from boards' \
   || bad 'release jobs can race and reuse one generation'
 
 kernel_verify_line="$(grep -n './os/dev/verify-kernel-provenance.sh "$ref"' "$workflow" | tail -1 | cut -d: -f1)"

@@ -69,7 +69,7 @@ impl Widget for Stack {
 
     /// Not short-circuited — a child that skipped its pass would miss a
     /// frame of state.
-    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
+    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
         let mut changed = false;
         for child in &mut self.children {
             changed |= child.update(state, path);
@@ -96,36 +96,26 @@ impl Widget for Stack {
             let _ = taffy.set_style(node, style);
         }
 
-        let node = taffy.parent_node(
-            Style {
-                display: taffy::Display::Flex,
-                size: taffy::Size {
-                    width: percent(1.0_f32),
-                    // With every child `position: Absolute`, the stack
-                    // contributes zero to intrinsic size, so `Dimension::auto()`
-                    // here made the parent ration percent-based descendant
-                    // heights from 0 rather than the viewport — a Column's
-                    // bottom-padding got silently dropped. Pinning to the
-                    // parent's height makes the viewport size flow through
-                    // to absolute children correctly.
-                    height: percent(1.0_f32),
-                },
-                ..Default::default()
+        let style = Style {
+            display: taffy::Display::Flex,
+            size: taffy::Size {
+                width: percent(1.0_f32),
+                // With every child `position: Absolute`, the stack
+                // contributes zero to intrinsic size, so `Dimension::auto()`
+                // here made the parent ration percent-based descendant
+                // heights from 0 rather than the viewport — a Column's
+                // bottom-padding got silently dropped. Pinning to the
+                // parent's height makes the viewport size flow through
+                // to absolute children correctly.
+                height: percent(1.0_f32),
             },
-            &child_nodes,
-        );
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+            ..Default::default()
+        };
+        taffy.widget_node(style, &child_nodes, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = vello::kurbo::Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
-            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
-        );
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
 
         let children = taffy.children(node).unwrap_or_default();
         for (child_widget, child_node) in self.children.iter_mut().zip(children.iter()) {
@@ -142,8 +132,17 @@ impl Widget for Stack {
         presence: &crate::presence::PresenceCtx,
     ) {
         for child in &mut self.children {
-            child.draw(scene, transform, text_renderer, theme, presence);
+            crate::widget::draw_child(
+                child.as_mut(),
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                presence,
+            );
         }
+
+        crate::widget::draw_gate_and_peer_focus(self, scene, transform, theme, presence);
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
@@ -170,6 +169,16 @@ impl Widget for Stack {
         for child in &self.children {
             visitor(child.as_ref());
         }
+    }
+
+    fn visit_retained_components(
+        &mut self,
+        request: &mut crate::bound_dispatch::RetainedComponentRequest<'_, '_>,
+    ) -> Result<(), crate::bound_dispatch::BoundDispatchError> {
+        for child in self.children_mut() {
+            request.visit(child)?;
+        }
+        Ok(())
     }
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
@@ -200,63 +209,11 @@ impl Widget for Stack {
             .map(|c| c.take_structure_dirty())
             .fold(false, |acc, d| acc || d)
     }
-
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &crate::presence::PresenceCtx,
-        permissions: &crate::permissions::PermissionContext,
-    ) {
-        if presence.should_cull(self.get_rect()) {
-            return;
-        }
-        // Propagate presence/permission context down to each child so nested
-        // opt-in widgets still render their chrome.
-        for child in &mut self.children {
-            child.draw_with_presence(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                presence,
-                permissions,
-            );
-        }
-
-        if let Some(scope) = crate::permissions::capability::permission_scope(self)
-            && !permissions.check(&scope)
-        {
-            let overlay = crate::tokens::colors::PERMISSION_DENIED_SCRIM;
-            scene.fill(
-                vello::peniko::Fill::NonZero,
-                transform,
-                overlay,
-                None,
-                &self.rect,
-            );
-        }
-
-        if let Some(key) = crate::presence::capability::presence_key(self)
-            && let Some(peers) = presence.here.get(&key)
-            && let Some(user) = peers.first()
-        {
-            presence.draw_peer_focus(scene, theme, user, self.rect);
-        }
-    }
 }
 
 impl crate::presence::capability::PublishesPresence for Stack {
     fn presence_key(&self) -> Option<PresenceKey> {
-        if self.presence_path.is_empty() {
-            None
-        } else {
-            Some(PresenceKey::Widget {
-                path: self.presence_path.clone(),
-            })
-        }
+        PresenceKey::widget(&self.presence_path)
     }
 }
 

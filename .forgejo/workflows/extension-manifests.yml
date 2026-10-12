@@ -36,6 +36,14 @@ on:
         description: "Space-separated OS images: registry.tilo.so/tilo/{tilo,tilo-ci,tilo-vm} by :tag or @sha256:... (an index resolves every architecture it holds). Empty resolves tilo:latest, tilo-vm:latest and tilo-vm:main-ci."
         required: false
         default: ""
+      publish:
+        description: "Promote the signed manifest into the client feed. False produces a signed CI artifact only."
+        type: boolean
+        default: true
+      expected_content_sha256:
+        description: "Reviewed media-codecs content hash from resolve.py content-sha256; required for sign-only, binds the image and artifact set."
+        required: false
+        default: ""
 
 concurrency:
   # One publisher per base at a time: a manifest revision must only grow.
@@ -50,6 +58,7 @@ jobs:
       matrix: ${{ steps.plan.outputs.matrix }}
       lanes: ${{ steps.plan.outputs.lanes }}
       publish: ${{ steps.plan.outputs.publish }}
+      promote: ${{ steps.plan.outputs.promote }}
     steps:
       - name: Install OCI inspection tooling
         run: |
@@ -69,10 +78,18 @@ jobs:
         id: plan
         env:
           INPUT_IMAGES: ${{ github.event.inputs.images }}
+          INPUT_PUBLISH: ${{ github.event.inputs.publish }}
+          EXPECTED_CONTENT_SHA256: ${{ github.event.inputs.expected_content_sha256 }}
         run: |
           set -euo pipefail
           images=(${INPUT_IMAGES:-})
           explicit=true
+          promote=${INPUT_PUBLISH:-true}
+          [[ $promote == true || $promote == false ]] || { echo '::error::publish must be true or false'; exit 1; }
+          if [[ $promote == false || -n $EXPECTED_CONTENT_SHA256 ]]; then
+            [[ ${#images[@]} == 1 && ${images[0]} == *@sha256:* && $EXPECTED_CONTENT_SHA256 =~ ^[0-9a-f]{64}$ ]] \
+              || { echo '::error::qualification requires one immutable image and a reviewed content hash'; exit 1; }
+          fi
           if [[ ${#images[@]} -eq 0 ]]; then
             explicit=false
             images=(registry.tilo.so/tilo/tilo:latest registry.tilo.so/tilo/tilo-vm:latest
@@ -116,12 +133,17 @@ jobs:
             done < <(jq -r '.[] | "\(.platform) \(.digest)"' <<< "$children")
           done
           lanes=$(jq -c 'unique_by(.image) | sort_by(.key)' <<< "$lanes")
+          if [[ -n $EXPECTED_CONTENT_SHA256 && $(jq length <<< "$lanes") != 1 ]]; then
+            echo '::error::reviewed qualification must resolve exactly one native image'
+            exit 1
+          fi
           publish=false
           [[ $GITHUB_REF == refs/heads/main ]] && publish=true
           {
             echo "lanes=$(jq length <<< "$lanes")"
             echo "matrix=$(jq -c '{include:.}' <<< "$lanes")"
             echo "publish=$publish"
+            echo "promote=$promote"
           } >> "$GITHUB_OUTPUT"
           jq -r '.[] | "::notice::\(.arch): \(.image) (\(.source))"' <<< "$lanes"
 
@@ -138,6 +160,7 @@ jobs:
       IMAGE: ${{ matrix.image }}
       ARCH: ${{ matrix.arch }}
       OUT: ${{ github.workspace }}/extension-manifests/${{ matrix.key }}
+      EXPECTED_CONTENT_SHA256: ${{ github.event.inputs.expected_content_sha256 }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Require the image's native architecture
@@ -177,11 +200,14 @@ jobs:
           mkdir -p "$OUT"
           for recipe in tools/extensions/*/recipe.toml; do
             id=$(basename "$(dirname "$recipe")")
+            [[ -z $EXPECTED_CONTENT_SHA256 || $id == media-codecs ]] || continue
             podman run --rm --network host --security-opt label=disable \
               --volume "$PWD/tools/extensions:/extensions:ro" --volume "$OUT:/out" \
               --entrypoint python3 "$IMAGE" /extensions/resolve.py resolve \
               --recipe "/extensions/$id/recipe.toml" --image "$IMAGE" --out "/out/$id.json"
-            python3 tools/extensions/resolve.py check "$OUT/$id.json"
+            qualification=()
+            [[ -z $EXPECTED_CONTENT_SHA256 ]] || qualification=(--expected-content-sha256 "$EXPECTED_CONTENT_SHA256")
+            python3 tools/extensions/resolve.py check "$OUT/$id.json" "${qualification[@]}"
           done
       - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         with:
@@ -228,15 +254,33 @@ jobs:
           TILO_SIGNING_AUDIENCE: tilo-extension-manifests
           TILO_PACKAGE_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
           TILO_PACKAGE_PUBLIC_BASE_URL: ${{ vars.TILO_PACKAGE_PUBLIC_BASE_URL }}
+          TILO_EXPECTED_EXTENSION_CONTENT_SHA256: ${{ github.event.inputs.expected_content_sha256 }}
+          PROMOTE: ${{ needs.plan.outputs.promote }}
         run: |
           set -euo pipefail
           . os/dev/configure-cosign-kms.sh
-          cosign public-key --key "$COSIGN_KEY_REF" | cmp --silent keys/extensions.pub - \
-            || { echo '::error::the KMS extension-manifest key does not match keys/extensions.pub'; exit 1; }
+          (
+            public_key=$(mktemp "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/tilo-extension-public-key.XXXXXX")
+            trap 'rm -f -- "$public_key"' EXIT
+            if ! cosign public-key --key "$COSIGN_KEY_REF" > "$public_key"; then
+              echo '::error::could not retrieve the KMS extension-manifest public key; see the Cosign identity/KMS error above'
+              exit 1
+            fi
+            cmp --silent keys/extensions.pub "$public_key" \
+              || { echo '::error::the KMS extension-manifest key does not match keys/extensions.pub'; exit 1; }
+          )
           mapfile -t manifests < <(find extension-manifests -type f -name '*.json' -print 2>/dev/null | LC_ALL=C sort)
           [[ ${#manifests[@]} -gt 0 ]] || { echo '::error::no lane resolved a manifest'; exit 1; }
           failed=0
           for manifest in "${manifests[@]}"; do
-            tools/extensions/publish.sh "$manifest" || failed=1
+            mode=()
+            [[ $PROMOTE == true ]] || mode=(--sign-only)
+            tools/extensions/publish.sh "${mode[@]}" "$manifest" || failed=1
           done
           exit "$failed"
+      - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
+        if: ${{ success() && needs.plan.outputs.promote == 'false' }}
+        with:
+          name: extension-manifests-signed-qualification
+          path: extension-manifests/
+          if-no-files-found: error

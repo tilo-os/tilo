@@ -29,7 +29,7 @@ use crate::model::Palette;
 /// The account-type id Calendar contributes to the shared store.
 pub const TYPE_ID: &str = "caldav";
 
-/// `CalDAV` connection + identity settings — exactly what the setup form
+/// `CalDAV` connection + identity settings — what Settings' account form
 /// collects and the sync layer consumes.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct CalDavConfig {
@@ -46,53 +46,6 @@ pub struct CalDavConfig {
     /// plaintext store (hence `serde(skip)`) — it lives only in the vault.
     #[serde(skip)]
     pub password: String,
-}
-
-impl CalDavConfig {
-    /// Heuristic autofill: given a username/email, guess a well-known `CalDAV`
-    /// endpoint for the big providers. Mirrors what a desktop client's
-    /// autoconfig does. Returns true if it recognised the domain.
-    pub fn autofill_from_username(&mut self) -> bool {
-        let Some((_, domain)) = self.username.split_once('@') else {
-            return false;
-        };
-        let url = match domain.to_ascii_lowercase().as_str() {
-            "gmail.com" | "googlemail.com" => "https://apidata.googleusercontent.com/caldav/v2",
-            "icloud.com" | "me.com" => "https://caldav.icloud.com",
-            "fastmail.com" | "fastmail.fm" => "https://caldav.fastmail.com/dav/calendars",
-            "yahoo.com" => "https://caldav.calendar.yahoo.com",
-            other => {
-                self.server_url = format!("https://{other}/.well-known/caldav");
-                return false;
-            }
-        };
-        self.server_url = url.to_string();
-        true
-    }
-
-    /// Field-level validation for the setup form: returns `(field, reason)`
-    /// pairs for anything missing or malformed. Empty vec == valid.
-    pub fn validate(&self) -> Vec<(&'static str, String)> {
-        let mut out = Vec::new();
-        if self.display_name.trim().is_empty() {
-            out.push(("display_name", "Give the account a name".into()));
-        }
-        if self.server_url.trim().is_empty() {
-            out.push(("server_url", "Server URL is required".into()));
-        } else if !self.server_url.starts_with("http://")
-            && !self.server_url.starts_with("https://")
-        {
-            out.push(("server_url", "Server URL must start with http(s)://".into()));
-        }
-        if self.username.trim().is_empty() {
-            out.push(("username", "Username is required".into()));
-        }
-        out
-    }
-
-    pub fn is_valid(&self) -> bool {
-        self.validate().is_empty()
-    }
 }
 
 /// One remote calendar collection within an account (a `CalDAV` `calendar-home-set`
@@ -182,6 +135,13 @@ impl CalendarAccount {
         stored
     }
 
+    /// The account as the shared store holds it, for a test that saves it
+    /// elsewhere.
+    #[cfg(test)]
+    pub(crate) fn to_stored_for_test(&self) -> StoredAccount {
+        self.to_stored()
+    }
+
     /// Rebuild a calendar account from a shared [`StoredAccount`], reading the
     /// password back from `vault`.
     fn from_stored(stored: &StoredAccount, vault: &SecretVault) -> Option<Self> {
@@ -261,27 +221,17 @@ impl AccountStore {
         Some(Self::load_from_settings_in(&root))
     }
 
-    /// Persist Calendar's account projection to the canonical shared store.
-    /// Other account types and their sealed secrets are retained by
-    /// [`Self::persist_in`]; callers receive an error when the real config
-    /// root cannot be resolved or written, rather than claiming a setting was
-    /// saved when it was not.
-    ///
-    /// # Errors
-    ///
-    /// Returns `Err` when no Tilo config root is available or persistence fails.
-    pub fn persist(&self) -> std::io::Result<()> {
-        let root = accounts::config_root()
-            .ok_or_else(|| std::io::Error::other("no config dir for calendar accounts"))?;
-        self.persist_in(&root)
-    }
-
     /// Load under an explicit config root — the seam tests use.
     pub fn load_from_settings_in(config_root: &Path) -> Self {
         Self::from_shared(
             &SharedStore::load_in(config_root),
             &SecretVault::open_in(config_root),
         )
+    }
+
+    /// The `CalDAV` accounts `shared` holds, each password from `vault`.
+    pub fn from_store(shared: &SharedStore, vault: &SecretVault) -> Self {
+        Self::from_shared(shared, vault)
     }
 
     fn from_shared(shared: &SharedStore, vault: &SecretVault) -> Self {
@@ -501,26 +451,6 @@ mod tests {
             assert_eq!(total, 4);
             let visible = store.all_calendars().filter(|(_, c)| c.visible).count();
             assert_eq!(visible, 3);
-        }
-    }
-
-    #[test]
-    fn config_autofill_recognises_providers_and_validation_flags_missing_fields() {
-        // Case `autofill_recognises_known_provider`.
-        {
-            let mut c = CalDavConfig {
-                username: "a@icloud.com".into(),
-                ..Default::default()
-            };
-            assert!(c.autofill_from_username());
-            assert!(c.server_url.contains("icloud.com"));
-        }
-        // Case `validate_flags_missing_fields`.
-        {
-            let c = CalDavConfig::default();
-            let errs = c.validate();
-            assert!(errs.iter().any(|(f, _)| *f == "server_url"));
-            assert!(errs.iter().any(|(f, _)| *f == "username"));
         }
     }
 }
