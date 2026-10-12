@@ -666,7 +666,7 @@ fn the_persons_own_words_are_spelled_right_in_every_window() {
     use settings_store::personal_dictionary::{Service, host::Host};
     use std::sync::Arc;
     use ui::personal_dictionary::{Edit, Word};
-    use word_processor::{PersonalDictionary, WordProcessorWidget};
+    use word_processor::WordProcessorWidget;
     struct Restore;
     impl Drop for Restore {
         fn drop(&mut self) {
@@ -713,12 +713,6 @@ fn the_persons_own_words_are_spelled_right_in_every_window() {
             .collect::<Vec<_>>(),
         ["qwordz"],
         "another consumer sees the same explicit addition"
-    );
-    assert!(
-        app.settings::<PersonalDictionary>()
-            .get()
-            .dictionary_words
-            .is_empty()
     );
 }
 

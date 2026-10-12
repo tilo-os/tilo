@@ -103,8 +103,8 @@ use image_layout::{
     wrap as image_wrap,
 };
 use layout_cache::{ShapeKeyInput, shape_key};
+pub use proofing::WriterLayout;
 use proofing::misspelled_spans;
-pub use proofing::{PersonalDictionary, WriterLayout};
 use text_runs::{
     block_change_decos, block_change_ranges, block_comment_ranges, block_note_refs, block_runs,
     char_font_family, char_font_size, char_highlight, composed_block, note_numbering, note_text,
@@ -980,13 +980,11 @@ struct ViewPreferences {
 struct ProofingPreferences {
     enabled: bool,
     language: String,
-    /// The person's own words, which "Add to dictionary" adds to and the
-    /// dictionary is built with; `None` until the editor is attached, which
-    /// keeps added words in memory only.
-    personal: Option<ui::framework::Setting<proofing::PersonalDictionary>>,
+    /// Whether the editor follows the host's personal dictionary; false
+    /// until it is attached, which keeps added words in memory only.
+    personal: bool,
     /// The personal words the dictionary was last built with.
     personal_words: proofing::PersonalDictionary,
-    migration_requested: bool,
     /// The person's spelling preferences every app follows, which name the
     /// language words are checked in; `None` until attached.
     shared: Option<ui::framework::Setting<ui::text_assistance::TextAssistancePrefs>>,
@@ -1008,9 +1006,8 @@ impl ProofingPreferences {
             } else {
                 spellcheck::default_language()
             },
-            personal: None,
+            personal: false,
             personal_words: proofing::PersonalDictionary::default(),
-            migration_requested: false,
             shared: None,
             applied_language: None,
         }
@@ -1848,11 +1845,8 @@ impl WordProcessorWidget {
 
     /// Build the spelling dictionary with the person's own words, and keep
     /// the words they add there.
-    pub(crate) fn follow_personal_dictionary(
-        &mut self,
-        personal: ui::framework::Setting<proofing::PersonalDictionary>,
-    ) {
-        self.proofing.personal = Some(personal);
+    pub(crate) fn follow_personal_dictionary(&mut self) {
+        self.proofing.personal = true;
         self.dict = None;
         self.spell_cache.clear();
     }
@@ -3123,22 +3117,8 @@ impl WordProcessorWidget {
     fn dictionary(&mut self) -> &mut spellcheck::Dictionary {
         // Explicit words added through the shared local host follow every
         // window: build the spelling overlay again when they change.
-        if let Some(personal) = &self.proofing.personal {
+        if self.proofing.personal {
             let snapshot = ui::personal_dictionary::snapshot();
-            if !self.proofing.migration_requested
-                && let Ok(snapshot) = &snapshot
-            {
-                let words = personal.get().dictionary_words;
-                if words.is_empty()
-                    || ui::personal_dictionary::edit(
-                        snapshot.revision,
-                        ui::personal_dictionary::Edit::ImportWriter { words },
-                    )
-                    .is_ok()
-                {
-                    self.proofing.migration_requested = true;
-                }
-            }
             let language = self
                 .proofing
                 .language
@@ -12521,7 +12501,7 @@ impl WordProcessorWidget {
             }
             CtxAction::SelectAll => self.select_all_via_primitive(state),
             CtxAction::AddToDictionary(word) => {
-                if self.proofing.personal.is_some() {
+                if self.proofing.personal {
                     let result = ui::personal_dictionary::snapshot().and_then(|snapshot| {
                         ui::personal_dictionary::edit(
                             snapshot.revision,
