@@ -162,7 +162,8 @@ fn read_error(error: &std::io::Error) -> FileHistoryReadErrorV1 {
         _ => FileHistoryReadErrorV1::Unavailable,
     }
 }
-/// Builds a history target bound to the mounted file at `path`.
+/// Builds a history target bound to the mounted file at `path`, whose
+/// versions `authors` names (people, and agents on their behalf).
 ///
 /// # Errors
 ///
@@ -171,12 +172,14 @@ pub fn target(
     path: &Path,
     record: fs_protocol::FileRecordId,
     label: String,
+    authors: ui::history_source::AuthorDirectory,
 ) -> std::io::Result<FileHistoryTarget> {
     Ok(FileHistoryTarget {
         binding: uuid::Uuid::new_v4(),
         record,
         label,
         transport: Arc::new(MountedFileHistory::open(path)?),
+        authors,
     })
 }
 
