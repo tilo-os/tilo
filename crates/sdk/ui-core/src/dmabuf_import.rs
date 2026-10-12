@@ -783,7 +783,7 @@ impl DmabufImage {
             ImageKind::Fixed(texture) => return Ok(texture.clone()),
             ImageKind::Aliased(aliased) => aliased,
         };
-        let started = std::time::Instant::now();
+        let started = crate::time::now();
         let hal = {
             // Safety: the guard only lends this device's Vulkan handles; it is
             // dropped before the wgpu texture is made.
