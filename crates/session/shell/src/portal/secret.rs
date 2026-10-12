@@ -138,7 +138,7 @@ impl LegacyFile {
         };
         let plaintext = Zeroizing::new(serde_json::to_vec(&*state).unwrap_or_default());
         if let Some(sealed) = seal_store(key, &plaintext) {
-            let _ = private_fs::write_atomic(&self.path, &sealed);
+            let _ = tilo_files::native::private::write_atomic(&self.path, &sealed);
         }
     }
 }
@@ -196,7 +196,7 @@ fn key_path(path: &std::path::Path) -> PathBuf {
 fn read_key(path: &std::path::Path) -> std::io::Result<Zeroizing<[u8; SECRET_BYTES]>> {
     use std::io::Read;
     let mut bytes = Zeroizing::new(Vec::with_capacity(SECRET_BYTES));
-    private_fs::read(path)?.read_to_end(&mut bytes)?;
+    tilo_files::native::private::read(path)?.read_to_end(&mut bytes)?;
     let mut key = Zeroizing::new([0; SECRET_BYTES]);
     if bytes.len() != SECRET_BYTES {
         return Err(std::io::Error::new(
@@ -328,8 +328,8 @@ mod tests {
     fn write_legacy(dir: &std::path::Path, values: &[(&str, [u8; 32])]) -> PathBuf {
         let path = dir.join("secrets.json");
         let key = [0x61; SECRET_BYTES];
-        private_fs::directory(dir).unwrap();
-        private_fs::write_atomic(&key_path(&path), &key).unwrap();
+        tilo_files::native::private::directory(dir).unwrap();
+        tilo_files::native::private::write_atomic(&key_path(&path), &key).unwrap();
         let file = SecretFile {
             values: values
                 .iter()
@@ -337,7 +337,7 @@ mod tests {
                 .collect(),
         };
         let sealed = seal_store(&key, &serde_json::to_vec(&file).unwrap()).unwrap();
-        private_fs::write_atomic(&path, &sealed).unwrap();
+        tilo_files::native::private::write_atomic(&path, &sealed).unwrap();
         path
     }
 
@@ -414,7 +414,7 @@ mod tests {
         );
         let path = write_legacy(dir.path(), &[("a.b", [3; 32])]);
         let key = key_path(&path);
-        private_fs::write_atomic(&key, &[0x62; SECRET_BYTES]).unwrap();
+        tilo_files::native::private::write_atomic(&key, &[0x62; SECRET_BYTES]).unwrap();
         assert!(LegacyFile::at_path(&path).find("a.b").is_none());
     }
 }

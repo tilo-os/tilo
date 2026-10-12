@@ -256,6 +256,7 @@ async fn framework_history_real_backend_uncertain_result_restore_undo_redo_and_r
         record,
         label: "report.txt".into(),
         transport: transport.clone(),
+        authors: ui::history_source::AuthorDirectory::new(),
     }));
     let driver = app.harness();
     driver.relayout();
@@ -487,7 +488,13 @@ fn framework_history_recovers_sessions_after_a_b_a() {
         let (record_b, version_b) = install(&b, 4);
         let returned = Arc::new(SubmitReturns::default());
         let target = |path: &std::path::Path, record, label: &str| {
-            let target = crate::framework_history::target(path, record, label.into()).unwrap();
+            let target = crate::framework_history::target(
+                path,
+                record,
+                label.into(),
+                ui::history_source::AuthorDirectory::new(),
+            )
+            .unwrap();
             FileHistoryTarget {
                 transport: Arc::new(Counted {
                     inner: target.transport.clone(),

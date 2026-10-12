@@ -2254,10 +2254,7 @@ fn encode_group(vocabulary: &Vocabulary, members: &[Built]) -> EncodedAction {
         }
     }
     payload.push(b']');
-    EncodedAction {
-        type_id: crate::group::group_type_of(vocabulary.action_type),
-        payload,
-    }
+    EncodedAction::written(crate::group::group_type_of(vocabulary.action_type), payload)
 }
 
 fn group_spec(vocabulary: &'static Vocabulary) -> ActionSpec {

@@ -51,6 +51,27 @@ pub struct HistoryAuthor {
     /// Who the author is to whoever reads the history: themselves, another
     /// person, or software acting for someone.
     pub relation: AuthorRelation,
+    /// Who acted and for whom, when the author is an agent, a Shortcut or an
+    /// app acting for a person: the same facts [`Self::name`] reads as a
+    /// sentence, kept as data for the action surface and assistive tech.
+    pub attribution: Option<HistoryAttribution>,
+}
+
+/// An author that acted for someone: an agent's change is the agent's, on
+/// behalf of its person, in every history (an app's, the Files history, and
+/// what the history actions return).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HistoryAttribution {
+    /// The acting principal as it was authenticated (`agent:scribe`).
+    pub actor: String,
+    /// What the actor is.
+    pub kind: tilo_actions::ActorKind,
+    /// The actor's display name, without the person it acted for.
+    pub actor_name: String,
+    /// The principal of the person it acted for, when it acted for one.
+    pub on_behalf_of: Option<String>,
+    /// That person's display name.
+    pub on_behalf_of_name: Option<String>,
 }
 
 /// Who an author is to the person reading the history. Rows draw the
@@ -79,12 +100,20 @@ impl HistoryAuthor {
             identity_short: identity_short.into(),
             avatar_rgb: hue_to_rgb(avatar_hue),
             relation: AuthorRelation::Person,
+            attribution: None,
         }
     }
 
     #[must_use]
     pub fn with_relation(mut self, relation: AuthorRelation) -> Self {
         self.relation = relation;
+        self
+    }
+
+    /// Record who acted and for whom.
+    #[must_use]
+    pub fn with_attribution(mut self, attribution: HistoryAttribution) -> Self {
+        self.attribution = Some(attribution);
         self
     }
 

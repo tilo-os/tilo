@@ -138,11 +138,17 @@ Routine changes land through pull requests to `main`. Each PR head revision gets
 its own affected-package check and fast-quality lint result. Both test the head
 merged onto the tip of its base branch (`main`, or the lower branch of a stack)
 at the time the run starts, and select affected packages against that tip, so a
-PR is checked as it would land. When `main` moves after a PR's check went green,
-the lander reruns that check, which then only re-runs the packages and suites
-`main`'s new commits reach. A PR that conflicts with
-`main` fails there; merge `main` into the branch. A newer commit on the PR
-cancels the older revision's runs; every push to `main` keeps its own.
+PR is checked as it would land. A green result stands when `main` moves on; the
+lander re-checks only results older than six hours, and that re-check only
+re-runs the packages and suites `main`'s new commits reach. A newer commit on
+the PR cancels the older revision's runs; every push to `main` keeps its own.
+
+Do not merge `main` into your branch to keep it current, and do not wait for a
+conflict to clear. When a ready PR conflicts with `main`, the merge assistant
+merges `main` into its branch, builds and tests what the merge touched, and
+pushes the merge commit; the PR then lands like any other. If it cannot resolve
+the conflict, it converts the PR to a draft and comments with what is in the
+way; resolve that and mark the PR ready again.
 
 A ready (non-draft) PR lands by itself: within a minute of both required checks
 passing on its current head, the lander merges it with a merge commit. The
@@ -1217,9 +1223,9 @@ exist, investigate Explorer's catalog, then run
 `./tools/windows/check-start-apps.ps1 -Apps hex-editor` (substitute
 the affected package names). The installer does not restart the desktop shell.
 
-Private identity files and local account-vault keys use the shared `private-fs`
-crate. On Windows, files are created with a protected, current-user-only DACL;
-reads validate the opened file's owner, access rules and reparse status. Existing
+Private identity files and local account-vault keys use the shared
+`tilo_files::native::private` module. On Windows, files are created with a
+protected, current-user-only DACL; reads validate the opened file's owner, access rules and reparse status. Existing
 keys with public access are rejected rather than silently replaced. Concurrent
 vault creators publish one complete key without overwriting the winner. The
 shared Accounts vault records failed loads and refuses writes until access is
@@ -1237,7 +1243,7 @@ transfer verification covers Unicode paths, acknowledged CSV export/import,
 encrypted backup, wrong-passphrase rejection, and fresh-profile restoration.
 
 ```powershell
-cargo test --locked -p private-fs -p tilo-user-identity -p accounts --lib
+cargo test --locked -p tilo-files -p tilo-user-identity -p accounts --lib
 ```
 
 Apps that need persistent content-addressed blobs without mounting a filesystem

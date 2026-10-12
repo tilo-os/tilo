@@ -2716,8 +2716,7 @@ would once confirmed.
 The toolkit's debug and capture switches are `TILO_UI_*` environment
 variables (`TILO_UI_DEBUG`, `TILO_UI_PRESENT`, `TILO_UI_VELLO_CPU`, …); the
 rendering ones are listed in [`performance-flags.md`](performance-flags.md).
-Read one from app or test code with `ui::env::var`. The old `QUICK_UI_*`
-names still work and warn once per variable; new scripts use the new names.
+Read one from app or test code with `ui::env::var`.
 
 For a post-layout inspection without opening a window, write the widget and
 accessibility tree directly. `inspect` writes `inspect.json` in the app root by

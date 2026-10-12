@@ -565,7 +565,7 @@ impl OpaqueParts {
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 struct Tint {
     night_light: Option<Color>,
-    color_filter: DesktopColorFilter,
+    color_filter: ColorFilter,
     viewport: (f64, f64),
 }
 
@@ -667,55 +667,32 @@ fn night_light_on(manual: bool, scheduled: bool, night: Option<bool>) -> bool {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-enum DesktopColorFilter {
-    #[default]
-    None,
-    Grayscale,
-    Inverted,
-    GrayscaleInverted,
-}
-
 use settings_store::magnifier::{MagnifierState, MagnifierView};
+use tilo_accessibility_settings::{AccessibilitySettings, ColorFilter};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct VisualAccessibility {
-    color_filter: DesktopColorFilter,
+    color_filter: ColorFilter,
     magnifier: MagnifierState,
     cursor_crosshair: bool,
 }
 
 impl Default for VisualAccessibility {
     fn default() -> Self {
-        Self {
-            color_filter: DesktopColorFilter::None,
-            magnifier: MagnifierState {
-                zoom: settings_store::magnifier::OFF,
-                view: MagnifierView::Lens,
-            },
-            cursor_crosshair: false,
-        }
+        Self::of(AccessibilitySettings::default())
     }
 }
 
 impl VisualAccessibility {
     fn load() -> Self {
-        let section = settings_store::load_section("accessibility");
+        Self::of(AccessibilitySettings::load())
+    }
+
+    fn of(settings: AccessibilitySettings) -> Self {
         Self {
-            color_filter: match section
-                .get("color_filter")
-                .and_then(serde_json::Value::as_str)
-            {
-                Some("grayscale") => DesktopColorFilter::Grayscale,
-                Some("inverted") => DesktopColorFilter::Inverted,
-                Some("grayscale_inverted") => DesktopColorFilter::GrayscaleInverted,
-                _ => DesktopColorFilter::None,
-            },
-            magnifier: MagnifierState::from_section(&section),
-            cursor_crosshair: section
-                .get("cursor_crosshair")
-                .and_then(serde_json::Value::as_bool)
-                .unwrap_or(false),
+            color_filter: settings.color_filter,
+            magnifier: settings.magnifier(),
+            cursor_crosshair: settings.cursor_crosshair,
         }
     }
 }
@@ -2052,10 +2029,7 @@ impl FrameBuilder {
     fn hdr_layers_composited(&self) -> bool {
         !(self.watch_configured_theme
             && (self.night_light
-                || !matches!(
-                    self.visual_accessibility.color_filter,
-                    DesktopColorFilter::None
-                )
+                || !matches!(self.visual_accessibility.color_filter, ColorFilter::None)
                 || self.visual_accessibility.magnifier.is_on()))
     }
 
@@ -3112,10 +3086,7 @@ impl FrameBuilder {
     fn global_filter(&self) -> bool {
         self.watch_configured_theme
             && (self.night_light
-                || !matches!(
-                    self.visual_accessibility.color_filter,
-                    DesktopColorFilter::None
-                )
+                || !matches!(self.visual_accessibility.color_filter, ColorFilter::None)
                 || self.visual_accessibility.magnifier.is_on()
                 || self.visual_accessibility.cursor_crosshair)
     }
@@ -3516,7 +3487,7 @@ impl FrameBuilder {
         };
         if matches!(
             self.visual_accessibility.color_filter,
-            DesktopColorFilter::Grayscale | DesktopColorFilter::GrayscaleInverted
+            ColorFilter::Grayscale | ColorFilter::GrayscaleInverted
         ) {
             // W3C `color` blend with an achromatic source preserves the
             // backdrop luminosity while replacing hue/saturation: true
@@ -3525,7 +3496,7 @@ impl FrameBuilder {
         }
         if matches!(
             self.visual_accessibility.color_filter,
-            DesktopColorFilter::Inverted | DesktopColorFilter::GrayscaleInverted
+            ColorFilter::Inverted | ColorFilter::GrayscaleInverted
         ) {
             // Difference against white is the exact per-channel inverse.
             overlay(Mix::Difference, Color::WHITE);
@@ -3669,8 +3640,11 @@ impl FrameBuilder {
             ) as u32;
         }
         self.visual_accessibility = VisualAccessibility::load();
-        self.narrator
-            .set_enabled(settings_store::screen_reader::ScreenReaderSettings::load().enabled);
+        self.narrator.set_enabled(
+            tilo_accessibility_settings::AccessibilitySettings::load()
+                .screen_reader()
+                .enabled,
+        );
     }
 
     /// Speak what changed in the chrome since the last frame (focus moves in

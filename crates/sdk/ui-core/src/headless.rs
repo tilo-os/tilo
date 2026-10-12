@@ -3244,6 +3244,7 @@ impl FrameHarness {
                 history.restore_focus(&self.node_map, &self.bindings)
             });
         } else {
+            let admitted = self.history_focus_admission();
             let allowed: Vec<_> = self
                 .node_map
                 .keys()
@@ -3260,16 +3261,10 @@ impl FrameHarness {
                                 .is_some_and(|binding| binding.instance_id == instance)
                                 && self.app_focus_eligible(node)
                         }))
-                        && crate::history_mode::embedded::allows_focus(
-                            self.root.as_ref(),
-                            node,
-                            &self.taffy,
-                        )
-                        && self.history.as_ref().is_none_or(|history| {
-                            !history.has_saved_focus() || history.owns_node(node, &self.taffy)
-                        })
+                        && admitted(node)
                 })
                 .collect();
+            drop(admitted);
             // An exact owner restored above outranks unrelated retained focus
             // flags (several mounted editors may initially report focus).
             self.focused = self.focused.filter(|node| {
@@ -3715,16 +3710,39 @@ impl FrameHarness {
         order
     }
 
+    /// Whether embedded History and a History holding saved focus leave a
+    /// node free to take focus, for asking of every node in one pass: each
+    /// History's subtrees are walked once, not once per node.
+    fn history_focus_admission(&self) -> impl Fn(NodeId) -> bool + '_ {
+        let restrictions = crate::history_mode::embedded::FocusRestrictions::collect(
+            self.root.as_ref(),
+            &self.taffy,
+        );
+        let saved = self
+            .history
+            .as_ref()
+            .filter(|history| history.has_saved_focus())
+            .map(|history| history.owned_nodes(&self.taffy));
+        move |node| {
+            restrictions.allows(node) && saved.as_ref().is_none_or(|owned| owned.contains(&node))
+        }
+    }
+
     fn history_app_focus_order(
         &self,
         root: NodeId,
         restrictions: &crate::history_mode::embedded::FocusRestrictions,
     ) -> (Vec<NodeId>, bool) {
+        // While History captures input only its own nodes take focus; walk
+        // them once for this recomputation, not once per node.
+        let owned = self
+            .history
+            .as_ref()
+            .filter(|history| history.captures_input())
+            .map(|history| history.owned_nodes(&self.taffy));
         crate::focus_navigation::mapped_order(root, &self.taffy, |node| {
             let allowed = restrictions.allows(node)
-                && self.history.as_ref().is_none_or(|history| {
-                    !history.captures_input() || history.owns_node(node, &self.taffy)
-                });
+                && owned.as_ref().is_none_or(|owned| owned.contains(&node));
             self.inspect_node(node, |widget| {
                 (
                     allowed && widget.is_focusable() && widget.is_enabled(),
@@ -3740,6 +3758,7 @@ impl FrameHarness {
         &mut self,
         before_layout: Option<crate::widget::layout::CompositionFocus>,
     ) {
+        let _profile = tilo_resource::profiling::Phase::start("ui.focus_order");
         let restrictions = crate::history_mode::embedded::FocusRestrictions::collect(
             self.root.as_ref(),
             &self.taffy,
@@ -4261,6 +4280,7 @@ impl FrameHarness {
             // clear competing mount/restoration flags, or a preceding editor
             // can consume its first key. Keep the selected compound editor's
             // ancestors/children, and never blur a history-suspended caret.
+            let admitted = self.history_focus_admission();
             let competing: Vec<_> = self
                 .node_map
                 .keys()
@@ -4269,14 +4289,7 @@ impl FrameHarness {
                     candidate != target
                         && !self.bindings.is_descendant(candidate, target)
                         && !self.bindings.is_descendant(target, candidate)
-                        && crate::history_mode::embedded::allows_focus(
-                            self.root.as_ref(),
-                            candidate,
-                            &self.taffy,
-                        )
-                        && self.history.as_ref().is_none_or(|history| {
-                            !history.has_saved_focus() || history.owns_node(candidate, &self.taffy)
-                        })
+                        && admitted(candidate)
                         && self
                             .inspect_node(candidate, |widget| {
                                 widget.is_focusable() && widget.is_focused()
@@ -4284,6 +4297,7 @@ impl FrameHarness {
                             .unwrap_or(false)
                 })
                 .collect();
+            drop(admitted);
             for competing in competing {
                 let _ = self.mutate_node(competing, |widget| widget.set_focus(false));
             }
@@ -5369,13 +5383,6 @@ impl FrameHarness {
                 }
                 ControlBindingKind::CollaborativeDocument(_)
                 | ControlBindingKind::SemanticAction(_) => None,
-                ControlBindingKind::LegacyDocumentPath(path) => Some(NativeAppIssue {
-                    control: binding.control_id,
-                    code: "legacy-document-path".into(),
-                    message: format!(
-                        "direct document path {path:?} bypasses the resource/action door"
-                    ),
-                }),
                 ControlBindingKind::LegacyCallback => Some(NativeAppIssue {
                     control: binding.control_id,
                     code: "legacy-callback".into(),

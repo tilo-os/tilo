@@ -448,17 +448,11 @@ impl SearchProvider for HostApplicationsProvider {
         }
         let exhausted = !found.more && shown == found.hits.len();
         let next = offset.saturating_add(shown);
-        SearchPage {
-            revision: revision.clone(),
+        SearchPage::continuing(
+            revision,
             results,
-            next_cursor: (!exhausted).then(|| SearchCursor {
-                revision,
-                token: format!("host:{next}\u{1f}{}", ctx.needle),
-            }),
-            exhausted,
-            stale_cursor: false,
-            budget_exhausted: !exhausted,
-        }
+            (!exhausted).then(|| format!("host:{next}\u{1f}{}", ctx.needle)),
+        )
     }
 }
 
