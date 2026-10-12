@@ -553,20 +553,14 @@ fn target_block(
     id: &str,
 ) -> Option<(usize, Vec<u8>)> {
     use automerge::{ObjType, ScalarValue, Value};
-    use tilo_doc::schema::{BLOCK_ORDER, BLOCK_TEXT, KEY_FOOTER, KEY_HEADER};
+    use tilo_doc::schema::{BLOCK_ORDER, BLOCK_TEXT};
 
-    let optional_region = |cached: &Option<ObjId>, key: &str| {
-        cached.clone().or_else(|| match doc.get(&c.root, key) {
-            Ok(Some((Value::Object(ObjType::Map), obj))) => Some(obj),
-            _ => None,
-        })
-    };
     let container = match region {
-        RegionKind::Body => c.blocks.clone(),
-        RegionKind::Header => optional_region(&c.header, KEY_HEADER)?,
-        RegionKind::Footer => optional_region(&c.footer, KEY_FOOTER)?,
+        RegionKind::Body => &c.blocks,
+        RegionKind::Header => &c.header,
+        RegionKind::Footer => &c.footer,
     };
-    let Ok(Some((Value::Object(ObjType::Map), block))) = doc.get(&container, id) else {
+    let Ok(Some((Value::Object(ObjType::Map), block))) = doc.get(container, id) else {
         return None;
     };
     let key = match doc.get(&block, BLOCK_ORDER) {
@@ -2194,17 +2188,16 @@ fn apply_resolve_comment(dm: &mut DocMut, id: &str) {
     {
         dm.remove_mark(&block, start, end, tilo_doc::schema::MARK_COMMENT);
     }
-    if let Some(comments) = dm.c.comments.as_ref() {
-        // Thread replies are sibling records in the canonical comments map,
-        // not dangling private overlay state. Remove them deterministically
-        // before their parent so a resolved thread leaves no orphan resources.
-        let mut replies = tilo_doc::model::comment_reply_ids(dm.doc, dm.c, id);
-        replies.sort();
-        for reply in replies {
-            let _ = dm.doc.delete(comments, reply);
-        }
-        let _ = dm.doc.delete(comments, id);
+    // Thread replies are sibling records in the canonical comments map,
+    // not dangling private overlay state. Remove them deterministically
+    // before their parent so a resolved thread leaves no orphan resources.
+    let comments = &dm.c.comments;
+    let mut replies = tilo_doc::model::comment_reply_ids(dm.doc, dm.c, id);
+    replies.sort();
+    for reply in replies {
+        let _ = dm.doc.delete(comments, reply);
     }
+    let _ = dm.doc.delete(comments, id);
 }
 
 fn apply_add_comment(
