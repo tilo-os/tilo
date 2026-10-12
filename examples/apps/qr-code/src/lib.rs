@@ -17,10 +17,6 @@ pub const APP_TITLE: &str = "QR Code";
 
 pub mod locales;
 
-fn install_catalog() {
-    locales::install();
-}
-
 use locales::keys;
 use ui::i18n::I18nManager;
 use ui::prelude::*;
@@ -64,6 +60,10 @@ impl ResourceApp for App {
     const ID: &'static str = crate::APP_ID;
     const TITLE: &'static str = crate::APP_TITLE;
 
+    fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {
+        Some(&crate::locales::CATALOG)
+    }
+
     fn scenarios() -> &'static [&'static str] {
         &["encoded"]
     }
@@ -78,7 +78,6 @@ impl ResourceApp for App {
     }
 
     fn view(cx: &mut ViewCx<Code>) -> Element {
-        install_catalog();
         let p = cx.paths();
         let input = cx
             .input(p.payload.clone())

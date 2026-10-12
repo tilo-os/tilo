@@ -3,19 +3,7 @@
 // tilo-app:locale=de-DE
 // tilo-app:locale=en-US
 
-const CATALOG_0: &str = include_str!("../locales/de-DE.ftl");
-const CATALOG_1: &str = include_str!("../locales/en-US.ftl");
-
-pub const IDS: &[&str] = &["de-DE", "en-US"];
-
-pub fn install() {
-    if let Err(error) = ui::i18n::I18nManager::install_system(
-        "en-US",
-        &[("de-DE", CATALOG_0), ("en-US", CATALOG_1)],
-    ) {
-        eprintln!("localization catalog: {error}");
-    }
-}
+ui::embedded_catalog!(pub static CATALOG, ["de-DE", "en-US"]);
 
 /// One constant per message of locales/en-US.ftl, for labels and placeholders.
 pub mod keys {

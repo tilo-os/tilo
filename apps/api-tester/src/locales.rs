@@ -2,13 +2,7 @@
 // Edit Fluent catalogs under locales/; tilo-app maintains this registry.
 // tilo-app:locale=en-US
 
-const CATALOG_0: &str = include_str!("../locales/en-US.ftl");
-
-pub fn install() {
-    if let Err(error) = ui::i18n::I18nManager::install_system("en-US", &[("en-US", CATALOG_0)]) {
-        eprintln!("localization catalog: {error}");
-    }
-}
+ui::embedded_catalog!(pub static CATALOG, ["en-US"]);
 
 /// One constant per message of locales/en-US.ftl, for labels and placeholders.
 pub mod keys {

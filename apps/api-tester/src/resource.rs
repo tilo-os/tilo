@@ -28,8 +28,6 @@ pub use crate::record::Workspace;
 /// API Tester's Fluent catalogs, source locale first.
 pub const LOCALES: &[(&str, &str)] = &[("en-US", include_str!("../locales/en-US.ftl"))];
 
-static CATALOG: EmbeddedCatalog = EmbeddedCatalog::new("en-US", LOCALES).with_system_locale();
-
 #[resource(
     kind = "api-tester.workspace",
     label = "API workspace",
@@ -343,7 +341,7 @@ impl ResourceApp for ApiTesterShell {
     }
 
     fn catalog() -> Option<&'static EmbeddedCatalog> {
-        Some(&CATALOG)
+        Some(&crate::locales::CATALOG)
     }
 
     fn scenarios() -> &'static [&'static str] {

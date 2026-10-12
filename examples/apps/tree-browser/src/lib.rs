@@ -17,10 +17,6 @@ pub const APP_TITLE: &str = "Tree Browser";
 
 pub mod locales;
 
-fn install_catalog() {
-    locales::install();
-}
-
 use ui::i18n::I18nManager;
 use ui::prelude::*;
 
@@ -143,12 +139,16 @@ impl ResourceApp for App {
     type Resource = Notebook;
     const ID: &'static str = crate::APP_ID;
     const TITLE: &'static str = crate::APP_TITLE;
+
+    fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {
+        Some(&crate::locales::CATALOG)
+    }
+
     fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
         (1000, 640)
     }
 
     fn view(cx: &mut ViewCx<Notebook>) -> Element {
-        install_catalog();
         let selected = cx.local(3_u64);
         let narrow_screen = cx.local(NavPane::Content);
         let selected_from_tree = selected.clone();
