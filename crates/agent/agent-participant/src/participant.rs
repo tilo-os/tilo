@@ -115,7 +115,7 @@ const KEYS_WAIT: Duration = Duration::from_secs(10);
 /// How long an export waits after the last edit others' changes merged into
 /// an open record: what others finished a moment ago is still arriving, and
 /// an export takes the record as it is (at most [`KEYS_WAIT`]).
-const EXPORT_QUIET: Duration = Duration::from_millis(500);
+const EXPORT_QUIET: Duration = Duration::from_millis(1_000);
 
 /// When the agent's loop should pump again, unless woken sooner.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1504,11 +1504,22 @@ impl AgentParticipant {
     ) -> Result<Option<ActionOutput>, String> {
         tracing::trace!(app = %route.app_id, action = %address.action, ?arguments, "agent: invoke");
         let may_confirm = self.identity.delegation.scope.may_confirm;
-        self.invoke_as(route, address, arguments, may_confirm)
+        let started = tilo_clock::unix_now_ms();
+        let outcome = self
+            .invoke_as(route, address, arguments, may_confirm)
             .map_err(|refusal| match refusal {
                 actions::Refusal::Door(error) => format!("{}: {error}", error.code()),
                 actions::Refusal::Agent(reason) => reason,
-            })
+            });
+        record_action(
+            &self.identity.delegation.agent_id,
+            route,
+            address,
+            arguments,
+            started,
+            &outcome,
+        );
+        outcome
     }
 
     /// [`Self::invoke`], with `confirmed` standing for whoever confirmed:
@@ -1776,5 +1787,52 @@ mod tests {
             tilo_agent::plan::carried_arguments(&serde_json::Map::new(), true, fresh.last.as_ref())
                 .is_err()
         );
+    }
+}
+
+/// Appends one JSON line per invoked action to `TILO_AGENT_ACTION_LOG`, when
+/// set: who did what to which record, with its arguments, when, and how it
+/// went. A run can be replayed from it, every record rebuilt step by step.
+fn record_action(
+    agent: &str,
+    route: &DocumentRoute,
+    address: &ActionAddress,
+    arguments: &serde_json::Map<String, serde_json::Value>,
+    started_ms: u64,
+    outcome: &Result<Option<ActionOutput>, String>,
+) {
+    use std::io::Write as _;
+    let Some(path) = std::env::var_os("TILO_AGENT_ACTION_LOG") else {
+        return;
+    };
+    let line = serde_json::json!({
+        "started_unix_ms": started_ms,
+        "ended_unix_ms": tilo_clock::unix_now_ms(),
+        "agent": agent,
+        "app": route.app_id,
+        "record": route.record,
+        "resource": address.resource,
+        "action": address.action,
+        "arguments": arguments,
+        "ok": outcome.is_ok(),
+        "error": outcome.as_ref().err(),
+        "produced": outcome.as_ref().ok().flatten().map(produced).unwrap_or_default(),
+        // The resources it answered with: a replay maps the ids it made (a
+        // new sheet's) onto the ones the replay makes.
+        "resources": outcome
+            .as_ref()
+            .ok()
+            .flatten()
+            .map(|output| serde_json::to_value(&output.resources).unwrap_or_default()),
+        "value": outcome.as_ref().ok().flatten().and_then(|output| output.value.clone()),
+    });
+    // One write per line, as the usage log does: agents append at once.
+    let written = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .and_then(|mut file| file.write_all(format!("{line}\n").as_bytes()));
+    if let Err(error) = written {
+        tracing::warn!(%error, "cannot record an action");
     }
 }

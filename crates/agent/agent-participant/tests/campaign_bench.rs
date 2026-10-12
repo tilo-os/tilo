@@ -797,6 +797,9 @@ struct Issued {
     task: String,
     launched_ms: u128,
     restarted: u32,
+    /// When each of its steps was first seen (status is polled every
+    /// 250 ms), for replaying the run.
+    seen_ms: Vec<u128>,
 }
 
 /// Environment:
@@ -937,6 +940,7 @@ async fn campaign_bench() {
                     task,
                     launched_ms: unix_ms(),
                     restarted: 0,
+                    seen_ms: Vec::new(),
                 });
             }
             eprintln!(
@@ -973,6 +977,16 @@ async fn campaign_bench() {
             }));
         }
         let status = browser.status().await;
+        let now = unix_ms();
+        for (_, issued) in launched.values_mut() {
+            for one in issued.iter_mut() {
+                if let Some(task) = task_in(&status, &one.grant, &one.task) {
+                    while one.seen_ms.len() < task.steps.len() {
+                        one.seen_ms.push(now);
+                    }
+                }
+            }
+        }
         for (&index, (step_started, issued)) in &launched {
             if finished_steps.contains_key(&index) {
                 continue;
@@ -999,6 +1013,7 @@ async fn campaign_bench() {
                     "resources": task.as_ref().map(|t| t.steps.iter().map(|s| s.resource.clone()).collect::<Vec<_>>()),
                     "content": task.as_ref().map(|t| t.steps.iter().flat_map(|s| s.content.clone()).collect::<Vec<_>>()),
                     "restarted": one.restarted,
+                    "step_seen_unix_ms": one.seen_ms,
                     "launched_at_unix_ms": one.launched_ms,
                     "ended_at_unix_ms": unix_ms(),
                     "step_seconds": step_started.elapsed().as_secs_f64(),
@@ -1034,6 +1049,21 @@ async fn campaign_bench() {
             std::fs::write(out.join(file), bytes).unwrap();
         } else {
             missing.push(file.clone());
+        }
+    }
+    // Every piece of content the run made, by its address, so a replay
+    // (`actions.jsonl` applied again) finds what one step handed another.
+    let content_dir = out.join("content");
+    std::fs::create_dir_all(&content_dir).unwrap();
+    for address in log
+        .iter()
+        .filter_map(|row| row["content"].as_array())
+        .flatten()
+        .filter_map(serde_json::Value::as_str)
+    {
+        if let Some(bytes) = hosted.agents.content(ROOM, address) {
+            let name = address.rsplit(':').next().unwrap_or(address);
+            std::fs::write(content_dir.join(name), bytes).unwrap();
         }
     }
     // `TILO_BENCH_REQUIRE_DONE`: the run fails unless every task completed
