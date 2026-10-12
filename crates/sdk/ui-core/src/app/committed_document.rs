@@ -23,6 +23,9 @@ impl App {
             if !read.is_current() {
                 continue;
             }
+            // Changes apply only to an owner holding their base; one that
+            // does not makes the reader read the document whole.
+            let mut lacks_base = false;
             let result = read.with_mutation(|mutation| {
                 let room_route = self
                     .collaboration
@@ -44,6 +47,10 @@ impl App {
                         .as_mut()
                         .ok_or("committed room owner unavailable".to_string())?;
                     if room.document().pending_ops() != 0 {
+                        return Ok(None);
+                    }
+                    if !read.applies_to(room.document()) {
+                        lacks_base = true;
                         return Ok(None);
                     }
                     let before = room.document().base_heads();
@@ -74,6 +81,16 @@ impl App {
                     if entry.owners.iter().any(|other| !owner.same_document(other)) {
                         return Err("committed document owner ambiguous".into());
                     }
+                    let (store, checkout) = owner.store_checkout();
+                    match store.read_checked(&checkout.id, |doc| read.applies_to(doc)) {
+                        Ok(true) => {}
+                        Ok(false) => {
+                            lacks_base = true;
+                            return Ok(None);
+                        }
+                        // Busy or not open yet: try again on the next pump.
+                        Err(_) => return Ok(None),
+                    }
                     return owner.merge_remote(mutation).map_err(|e| e.to_string());
                 }
                 if self
@@ -90,6 +107,10 @@ impl App {
                             .is_some_and(|active| active.as_str() == record)
                     })
                 {
+                    if !read.applies_to(&self.state.doc) {
+                        lacks_base = true;
+                        return Ok(None);
+                    }
                     return self
                         .state
                         .merge_remote_committed(mutation)
@@ -97,6 +118,10 @@ impl App {
                 }
                 Ok(None)
             });
+            if lacks_base {
+                read.refuse();
+                continue;
+            }
             match result {
                 Ok(Ok(Some(changed))) => {
                     read.applied();

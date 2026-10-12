@@ -8,7 +8,7 @@
 use super::*;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tilo_action_broker::services::{
-    NativeDocumentRead, NativeDocumentReadContext, NativeDocumentReads,
+    HeldRevision, NativeDocumentRead, NativeDocumentReadContext, NativeDocumentReads,
 };
 
 /// How long the app is left alone before and while it is measured.
@@ -91,6 +91,15 @@ impl NativeDocumentReads for Reads {
     ) -> Result<NativeDocumentRead, String> {
         self.counter.captures.fetch_add(1, Ordering::AcqRel);
         self.inner.capture(context, revision, maximum)
+    }
+    fn capture_since(
+        &self,
+        context: &NativeDocumentReadContext,
+        held: &HeldRevision,
+        maximum: usize,
+    ) -> Result<NativeDocumentRead, String> {
+        self.counter.captures.fetch_add(1, Ordering::AcqRel);
+        self.inner.capture_since(context, held, maximum)
     }
     fn unchanged(
         &self,

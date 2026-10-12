@@ -5,6 +5,13 @@ pub const MAX_DOCUMENT_BYTES: usize = 32 * 1024 * 1024;
 pub const MAX_WIRE_BYTES: usize = CHUNK_BYTES + 128;
 /// Bootstrap is deliberately bounded independently of ordinary document reads.
 pub const MAX_INITIALIZATION_BYTES: usize = CHUNK_BYTES;
+/// The most heads a [`Reply::Changes`] names as its base. A document edited
+/// concurrently by more writers than this is read whole instead.
+pub const MAX_CHANGES_BASE: usize = 8;
+/// The most change bytes the first piece of a [`Reply::Changes`] carries, so
+/// that piece with its base stays within [`MAX_WIRE_BYTES`] as a
+/// [`Reply::Chunk`] does. The rest follows through [`Request::Next`].
+pub const CHANGES_FIRST_BYTES: usize = CHUNK_BYTES - MAX_CHANGES_BASE * 32;
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CreationWorkspace {
     pub id: String,
@@ -107,6 +114,14 @@ pub enum Request {
     Await {
         known_revision: Option<[u8; 32]>,
     },
+    /// An `Open { Some(known_revision) }` that may answer with only the
+    /// changes since: [`Reply::Changes`] when this channel last handed out
+    /// `known_revision` (a capture whose last piece it acknowledged), and
+    /// otherwise exactly what that `Open` answers. Same checks, same
+    /// acknowledgement. An older broker refuses it, and the caller Opens.
+    OpenChanges {
+        known_revision: [u8; 32],
+    },
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Reply {
@@ -138,6 +153,21 @@ pub enum Reply {
     },
     /// An [`Request::Await`] ended: what the caller holds may be stale.
     Stale,
+    /// The first piece of the changes that turn the document with heads
+    /// `base` (the revision the caller asked from) into `revision`, as
+    /// Automerge change bytes. Only an answer to [`Request::OpenChanges`].
+    /// Like a [`Reply::Chunk`] at offset 0, `total` bytes follow through
+    /// [`Request::Next`] (answered with `Chunk`s of this `capture` and
+    /// `revision`) and [`Request::Cancel`] acknowledges the last piece. They
+    /// apply only to a document holding every `base` head.
+    Changes {
+        capture: u64,
+        revision: [u8; 32],
+        base: Vec<[u8; 32]>,
+        total: u32,
+        bytes: Vec<u8>,
+        token: [u8; 16],
+    },
 }
 impl Request {
     /// Encode a valid request for the wire.
@@ -169,7 +199,10 @@ impl Request {
     }
     fn valid(&self) -> bool {
         match self {
-            Self::Open { .. } | Self::PrivateWindowBinding | Self::Await { .. } => true,
+            Self::Open { .. }
+            | Self::PrivateWindowBinding
+            | Self::Await { .. }
+            | Self::OpenChanges { .. } => true,
             Self::Next {
                 capture,
                 offset,
@@ -253,6 +286,24 @@ impl Reply {
                     && (*offset as usize)
                         .checked_add(bytes.len())
                         .is_some_and(|end| end <= *total as usize)
+            }
+            Self::Changes {
+                capture,
+                base,
+                total,
+                bytes,
+                token,
+                ..
+            } => {
+                *capture != 0
+                    && *token != [0; 16]
+                    && *total != 0
+                    && (*total as usize) <= MAX_DOCUMENT_BYTES
+                    && !bytes.is_empty()
+                    && bytes.len() <= CHANGES_FIRST_BYTES
+                    && bytes.len() <= *total as usize
+                    && !base.is_empty()
+                    && base.len() <= MAX_CHANGES_BASE
             }
             _ => true,
         }
@@ -368,6 +419,55 @@ mod tests {
         assert_eq!(Reply::Stale.encode().unwrap(), [8]);
         assert_eq!(Reply::decode(&[8]).unwrap(), Reply::Stale);
         assert!(Reply::decode(&[8, 0]).is_err());
+    }
+
+    #[test]
+    fn open_changes_and_changes_are_appended_and_bounded() {
+        // Appended after every existing variant: older peers keep their
+        // tags, and an older broker refuses the unknown request.
+        let request = Request::OpenChanges {
+            known_revision: [5; 32],
+        };
+        let encoded = request.encode().unwrap();
+        assert_eq!(encoded[0], 6);
+        assert_eq!(Request::decode(&encoded).unwrap(), request);
+        let reply = |base: usize, first: usize, total: u32| Reply::Changes {
+            capture: 1,
+            revision: [7; 32],
+            base: vec![[3; 32]; base],
+            total,
+            bytes: vec![9; first],
+            token: [4; 16],
+        };
+        let largest = reply(
+            MAX_CHANGES_BASE,
+            CHANGES_FIRST_BYTES,
+            u32::try_from(MAX_DOCUMENT_BYTES).unwrap(),
+        );
+        let encoded = largest.encode().unwrap();
+        assert_eq!(encoded[0], 9);
+        assert!(
+            encoded.len() <= MAX_WIRE_BYTES,
+            "the largest first piece fits the wire like a chunk: {} bytes",
+            encoded.len()
+        );
+        assert_eq!(Reply::decode(&encoded).unwrap(), largest);
+        for refused in [
+            reply(0, 1, 1),
+            reply(MAX_CHANGES_BASE + 1, 1, 1),
+            reply(1, CHANGES_FIRST_BYTES + 1, u32::MAX),
+            reply(1, 0, 1),
+            reply(1, 2, 1),
+            reply(1, 1, 0),
+            reply(1, 1, u32::try_from(MAX_DOCUMENT_BYTES).unwrap() + 1),
+        ] {
+            assert!(refused.encode().is_err(), "{refused:?}");
+        }
+        let mut zero = reply(1, 1, 1);
+        if let Reply::Changes { token, .. } = &mut zero {
+            *token = [0; 16];
+        }
+        assert!(zero.encode().is_err());
     }
 
     #[test]

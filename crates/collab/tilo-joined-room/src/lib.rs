@@ -35,7 +35,7 @@ tilo_automerge_isolate::test_worker!();
 pub use application_record::{ApplicationInitialization, ApplicationRecord};
 pub use bootstrap::NativeBootstrap;
 pub use certified::{VerifiedNativeEnrollment, VerifiedNativeEnrollmentIntent};
-pub use document_read::{CommittedDocument, DocumentRead};
+pub use document_read::{ChangesRead, CommittedDocument, DocumentChanges, DocumentRead};
 pub use file_store::open_file;
 pub use history_content::HistoryContent;
 pub use limits::{LimitedWriter, MAX_AUTHORITY_BYTES, MAX_STATE_BYTES, preflight};

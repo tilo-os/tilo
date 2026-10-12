@@ -11,7 +11,7 @@ use super::*;
 use std::fmt::Write as _;
 use std::sync::atomic::{AtomicU64, Ordering};
 use tilo_action_broker::services::{
-    NativeDocumentRead, NativeDocumentReadContext, NativeDocumentReads,
+    HeldRevision, NativeDocumentRead, NativeDocumentReadContext, NativeDocumentReads,
 };
 
 /// Lines in the large document, about 50,000 characters: one text op each.
@@ -34,20 +34,23 @@ async fn a_large_shared_document_under_remote_editing_is_reread_by_the_edit() {
 #[derive(Default)]
 pub(super) struct Meter {
     captures: AtomicU64,
-    capture_bytes: AtomicU64,
+    changes: AtomicU64,
+    bytes: AtomicU64,
     owner_ns: AtomicU64,
 }
 #[derive(Clone, Copy, Debug, Default)]
 struct Sample {
     captures: u64,
-    capture_bytes: u64,
+    changes: u64,
+    bytes: u64,
     owner_ns: u64,
 }
 impl Sample {
     fn since(self, before: Self) -> Self {
         Self {
             captures: self.captures.saturating_sub(before.captures),
-            capture_bytes: self.capture_bytes.saturating_sub(before.capture_bytes),
+            changes: self.changes.saturating_sub(before.changes),
+            bytes: self.bytes.saturating_sub(before.bytes),
             owner_ns: self.owner_ns.saturating_sub(before.owner_ns),
         }
     }
@@ -70,7 +73,8 @@ impl Meter {
     fn sample(&self) -> Sample {
         Sample {
             captures: self.captures.load(Ordering::Acquire),
-            capture_bytes: self.capture_bytes.load(Ordering::Acquire),
+            changes: self.changes.load(Ordering::Acquire),
+            bytes: self.bytes.load(Ordering::Acquire),
             owner_ns: self.owner_ns.load(Ordering::Acquire),
         }
     }
@@ -82,11 +86,14 @@ impl Meter {
         result
     }
     fn handed(&self, read: &NativeDocumentRead) {
-        if let NativeDocumentRead::Captured { body, .. } = read {
-            self.captures.fetch_add(1, Ordering::AcqRel);
-            self.capture_bytes
-                .fetch_add(body.bytes().len() as u64, Ordering::AcqRel);
-        }
+        let (count, body) = match read {
+            NativeDocumentRead::Captured { body, .. } => (&self.captures, body),
+            NativeDocumentRead::Changes { body, .. } => (&self.changes, body),
+            NativeDocumentRead::Unchanged(_) | NativeDocumentRead::Pending => return,
+        };
+        count.fetch_add(1, Ordering::AcqRel);
+        self.bytes
+            .fetch_add(body.bytes().len() as u64, Ordering::AcqRel);
     }
 }
 
@@ -127,6 +134,18 @@ impl NativeDocumentReads for Reads {
         let read = self
             .meter
             .timed(|| self.inner.capture(context, revision, maximum))?;
+        self.meter.handed(&read);
+        Ok(read)
+    }
+    fn capture_since(
+        &self,
+        context: &NativeDocumentReadContext,
+        held: &HeldRevision,
+        maximum: usize,
+    ) -> Result<NativeDocumentRead, String> {
+        let read = self
+            .meter
+            .timed(|| self.inner.capture_since(context, held, maximum))?;
         self.meter.handed(&read);
         Ok(read)
     }
@@ -219,10 +238,11 @@ pub(super) async fn run(
     latencies.sort_unstable();
     let edits = EDITS as u64;
     eprintln!(
-        "ACTIVE-SHARED-DOCUMENT doc_chars={} edits={EDITS} full_captures={} reader_bytes_per_edit={} owner_read_us_per_edit={} process_cpu_ms_per_edit={} broker_cpu_ms_per_edit={} shovel_cpu_ms_per_edit={} latency_ms_p50={} latency_ms_max={}",
+        "ACTIVE-SHARED-DOCUMENT doc_chars={} edits={EDITS} full_captures={} changes={} reader_bytes_per_edit={} owner_read_us_per_edit={} process_cpu_ms_per_edit={} broker_cpu_ms_per_edit={} shovel_cpu_ms_per_edit={} latency_ms_p50={} latency_ms_max={}",
         body.len(),
         read.captures,
-        read.capture_bytes / edits,
+        read.changes,
+        read.bytes / edits,
         read.owner_ns / edits / 1_000,
         cpu.as_millis() / u128::from(edits),
         parts[0].as_millis() / u128::from(edits),
