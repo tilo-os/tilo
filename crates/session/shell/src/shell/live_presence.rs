@@ -18,9 +18,8 @@
 //! record it names, and only a frame that opens with this device's keys is
 //! read: [`seal`] and [`open`].
 //!
-//! Selection anchors use the browser peer's encoding: the editor key and a
-//! character offset, `[ANCHOR_TAG_SCOPED, uvarint(start), postcard(key)]`
-//! and `[ANCHOR_TAG_SAME_SCOPE, uvarint(end)]`.
+//! Selection anchors use the live plane's encoding of an editor key and
+//! character offsets, [`selection_anchors`].
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
@@ -28,9 +27,8 @@ use std::time::{Duration, Instant};
 use channel_crypto::ChannelContentKeys;
 use collab_types::{ChannelId, PeerPresence, PeerPresencePayload};
 use tilo_relay_protocol::live::{
-    ANCHOR_TAG_DIGEST, ANCHOR_TAG_SAME_SCOPE, ANCHOR_TAG_SCOPED, LiveAnchor, LiveFrame,
-    LiveParticipant, LiveRecord, MAX_OBJECT_ID_BYTES, ParticipantKind, PresenceFrame,
-    SealedLiveFrame,
+    AnchorScope, LiveAnchor, LiveFrame, LiveParticipant, LiveRecord, ParticipantKind,
+    PresenceFrame, SealedLiveFrame, read_selection_anchors, selection_anchors,
 };
 
 /// Seal canonical live `frame` of room `cluster_id` with the content keys of
@@ -77,66 +75,32 @@ pub fn open(
 /// (browsers mark a peer stale after 10 s without a frame).
 pub const KEEPALIVE: Duration = Duration::from_secs(3);
 
-fn push_uvarint(out: &mut Vec<u8>, mut value: u64) {
-    loop {
-        let byte = u8::try_from(value & 0x7f).unwrap_or(0);
-        value >>= 7;
-        if value == 0 {
-            out.push(byte);
-            return;
-        }
-        out.push(byte | 0x80);
-    }
-}
-
-fn read_uvarint(bytes: &[u8]) -> Option<(u64, &[u8])> {
-    let mut value = 0u64;
-    for (index, (byte, shift)) in bytes.iter().zip((0u32..64).step_by(7)).enumerate() {
-        value |= u64::from(byte & 0x7f).checked_shl(shift)?;
-        if byte & 0x80 == 0 {
-            return Some((value, bytes.get(index.checked_add(1)?..)?));
-        }
-    }
-    None
-}
-
 /// Selection anchors for the editor whose postcard key is `key`. A key too
 /// long for the anchor travels as its scope digest, which the receiving
 /// editor resolves against its own keys.
 fn anchors(key: &[u8], start: u64, end: u64) -> Option<(LiveAnchor, LiveAnchor)> {
-    let mut anchor = vec![ANCHOR_TAG_SCOPED];
-    push_uvarint(&mut anchor, start);
-    anchor.extend_from_slice(key);
-    if anchor.len() > MAX_OBJECT_ID_BYTES {
-        let key: ui::presence::PresenceKey = postcard::from_bytes(key).ok()?;
-        anchor = vec![ANCHOR_TAG_DIGEST];
-        push_uvarint(&mut anchor, start);
-        anchor.extend_from_slice(&key.scope_digest()?);
-    }
-    let mut head = vec![ANCHOR_TAG_SAME_SCOPE];
-    push_uvarint(&mut head, end);
-    (anchor.len() <= MAX_OBJECT_ID_BYTES)
-        .then_some((LiveAnchor { cursor: anchor }, LiveAnchor { cursor: head }))
+    selection_anchors(
+        key,
+        || {
+            postcard::from_bytes::<ui::presence::PresenceKey>(key)
+                .ok()?
+                .scope_digest()
+        },
+        start,
+        end,
+    )
 }
 
 /// The editor key and range of a pair made by [`anchors`]; a digest names
 /// the key's digest stand-in.
 fn read_anchors(anchor: &LiveAnchor, head: &LiveAnchor) -> Option<(Vec<u8>, u64, u64)> {
-    let (&tag, rest) = anchor.cursor.split_first()?;
-    let (start, key) = read_uvarint(rest)?;
-    let key = match tag {
-        ANCHOR_TAG_SCOPED => key.to_vec(),
-        ANCHOR_TAG_DIGEST => postcard::to_stdvec(&ui::presence::PresenceKey::from_scope_digest(
-            key.try_into().ok()?,
-        ))
-        .ok()?,
-        _ => return None,
+    let (scope, start, end) = read_selection_anchors(anchor, head)?;
+    let key = match scope {
+        AnchorScope::Key(key) => key.to_vec(),
+        AnchorScope::Digest(digest) => {
+            postcard::to_stdvec(&ui::presence::PresenceKey::from_scope_digest(digest)).ok()?
+        }
     };
-    let (&tag, rest) = head.cursor.split_first()?;
-    if tag != ANCHOR_TAG_SAME_SCOPE {
-        return None;
-    }
-    let (end, _) = read_uvarint(rest)?;
     Some((key, start, end))
 }
 
@@ -321,7 +285,7 @@ mod tests {
             kind: "tilo.rich-text".into(),
         };
         let (anchor, head) = anchors(&postcard::to_stdvec(&key).unwrap(), 5, 5).unwrap();
-        assert!(anchor.cursor.len() <= MAX_OBJECT_ID_BYTES);
+        assert!(anchor.cursor.len() <= tilo_relay_protocol::live::MAX_OBJECT_ID_BYTES);
         let (read, start, end) = read_anchors(&anchor, &head).unwrap();
         assert_eq!(
             postcard::from_bytes::<ui::presence::PresenceKey>(&read).unwrap(),
