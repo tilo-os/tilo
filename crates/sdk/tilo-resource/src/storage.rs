@@ -308,6 +308,7 @@ fn staged_element(
 
 /// The functions of every [`Set`]: each element a key of a map.
 pub static SET_OPS: ModelOps = ModelOps {
+    without_absent: crate::shape::kept_whole,
     to_json: |table, value| {
         let mut out = Vec::new();
         if let Some(set) = table.set()
