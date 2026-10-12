@@ -61,7 +61,8 @@ def sources():
              'apps/imager/src/setup/home_capture/native_tests/signed_export.rs',
              'apps/imager/packaging/qualify-capture-release.py',
              'tools/ci/native-stores.sh', 'tools/ci/native-store-autoclear.py',
-             'tools/apps/pack-runtime-package.sh', 'tools/apps/stage_sdk_services.py'}
+             'tools/apps/pack-runtime-package.sh', 'tools/apps/stage_sdk_services.py',
+             'scripts/headless-examples/_control.py'}
     listed = subprocess.check_output(['git', 'ls-files', '-z', '--cached', '--others', '--exclude-standard'], cwd=ROOT)
     for item in listed.split(b'\0'):
         if not item:
