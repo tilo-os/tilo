@@ -18,6 +18,9 @@ class SourceBoundaryTests(unittest.TestCase):
                      '/etc/passwd', '../Cargo.toml', 'keys/public.json']:
             self.assertFalse(BUILD.allowed(name, True), name)
         self.assertTrue(BUILD.allowed('crates/text/emoji/data/en.txt', True))
+        self.assertTrue(BUILD.allowed('tools/cargo-runner.sh', True))
+        self.assertTrue(BUILD.allowed('tools/with-test-environment.sh', True))
+        self.assertFalse(BUILD.allowed('tools/unreviewed-upload.sh', True))
         self.assertTrue(BUILD.allowed('apps/good-morning/src/main.rs', False))
         self.assertFalse(BUILD.allowed('apps/good-morning/untracked-data.json', False))
 
