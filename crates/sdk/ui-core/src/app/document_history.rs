@@ -769,46 +769,14 @@ impl App {
     }
 
     pub(super) fn capture_history_target(&self) -> Result<HistoryTarget, HistoryError> {
-        let mut binding = self
-            .focused_node
-            .and_then(|node| self.bindings.binding_for(node))
-            .or_else(|| self.root_widget.callback_binding());
-        if binding.is_none() {
-            for node in self.layout.node_map.keys() {
-                let Some(candidate) = self.bindings.binding_for(*node) else {
-                    continue;
-                };
-                if binding
-                    .as_ref()
-                    .is_some_and(|current| current.lifetime_id != candidate.lifetime_id)
-                {
-                    return Err(HistoryError::Unavailable);
-                }
-                binding = Some(candidate);
-            }
-        }
-        if binding.is_none()
-            && self
-                .persistence
-                .records
-                .as_ref()
-                .is_some_and(|records| records.active().is_none())
-        {
-            return Err(HistoryError::Unavailable);
-        }
-        Ok(binding.map_or_else(
-            || HistoryTarget::Legacy {
-                app_id: crate::collaboration::local_app_id(),
-                record: self
-                    .persistence
-                    .records
-                    .as_ref()
-                    .and_then(|records| records.active())
-                    .cloned(),
-                document_identity: self.state.document_identity(),
-            },
-            |binding| HistoryTarget::Bound(Box::new(binding)),
-        ))
+        HistoryTarget::capture(
+            &self.bindings,
+            self.focused_node,
+            self.root_widget.as_ref(),
+            self.layout.node_map.keys().copied(),
+            self.persistence.records.as_ref(),
+            self.state.document_identity(),
+        )
     }
 
     pub(super) fn is_history_node(&self, node: taffy::NodeId) -> bool {
