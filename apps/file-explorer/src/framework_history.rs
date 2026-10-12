@@ -353,7 +353,7 @@ mod tests {
                 CheckedHistoryOutcomeV1::Unavailable
             );
             assert!(
-                xattr::get(&path, crate::model::HISTORY_CONTROL_XATTR)
+                xattr::get(&path, fs_protocol::HISTORY_CONTROL_XATTR)
                     .unwrap()
                     .is_none()
             );

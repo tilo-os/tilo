@@ -4,22 +4,22 @@
 //! bearer token is accepted only after its consumption count is durably
 //! advanced, so two concurrent one-use attempts cannot both succeed.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
 
 use collab_types::{Ed25519PublicKey, canonical_bytes};
+use fs_protocol::projection::{MAX_SHARES_PER_RECORD, SHARE_PROJECTION_VERSION};
 use fs_protocol::{
-    FileActor, FileInviteError, FileInviteSubject, FileInviteV1, FilePermission, bearer_secret_hash,
+    FileActor, FileInviteError, FileInviteSubject, FileInviteV1, FilePermission,
+    ShareGrantProjectionV1, ShareGrantStatus, ShareProjectionV1, ShareSubjectProjection,
+    bearer_secret_hash,
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use uuid::Uuid;
 
 const AUTHORITY_VERSION: u16 = 1;
-pub const SHARE_PROJECTION_VERSION: u16 = 1;
-pub const MAX_SHARES_PER_RECORD: usize = 32;
-pub const MAX_SHARE_PROJECTION_BYTES: usize = 16 * 1024;
 pub const MAX_SHARE_AUTHORITY_GRANTS: usize = 4_096;
 pub const MAX_SHARE_AUTHORITY_FILE_BYTES: u64 = 4 * 1024 * 1024;
 
@@ -422,15 +422,7 @@ impl ShareAuthority {
                 let exhausted = state
                     .max_redemptions
                     .is_some_and(|max| state.redemptions >= max);
-                let status = if state.revoked {
-                    ShareGrantStatus::Revoked
-                } else if expired {
-                    ShareGrantStatus::Expired
-                } else if exhausted {
-                    ShareGrantStatus::Exhausted
-                } else {
-                    ShareGrantStatus::Active
-                };
+                let status = ShareGrantStatus::derive(state.revoked, expired, exhausted);
                 Some(ShareGrantProjectionV1 {
                     grant_id: *id,
                     subject,
@@ -455,144 +447,6 @@ impl ShareAuthority {
         drop(current);
         projection
     }
-}
-
-/// Redacted, versioned share state safe to expose to local applications.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ShareProjectionV1 {
-    pub schema_version: u16,
-    pub record_id: fs_protocol::FileRecordId,
-    pub observed_at_ms: u64,
-    pub grants: Vec<ShareGrantProjectionV1>,
-}
-
-impl ShareProjectionV1 {
-    /// Serialize and validate this redacted projection for an xattr.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for inconsistent state, JSON failure, or a projection
-    /// above the byte bound.
-    pub fn to_xattr_bytes(&self) -> Result<Vec<u8>, ShareProjectionError> {
-        self.validate()?;
-        let bytes = serde_json::to_vec(self)?;
-        if bytes.len() > MAX_SHARE_PROJECTION_BYTES {
-            return Err(ShareProjectionError::TooLarge);
-        }
-        Ok(bytes)
-    }
-
-    /// Parse and fully validate a redacted share projection xattr.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for oversized/malformed JSON, unsupported schema, or
-    /// inconsistent/duplicate grant state.
-    pub fn parse_xattr(bytes: &[u8]) -> Result<Self, ShareProjectionError> {
-        if bytes.len() > MAX_SHARE_PROJECTION_BYTES {
-            return Err(ShareProjectionError::TooLarge);
-        }
-        let projection: Self = serde_json::from_slice(bytes)?;
-        projection.validate()?;
-        Ok(projection)
-    }
-
-    fn validate(&self) -> Result<(), ShareProjectionError> {
-        if self.schema_version != SHARE_PROJECTION_VERSION {
-            return Err(ShareProjectionError::UnsupportedVersion(
-                self.schema_version,
-            ));
-        }
-        if self.grants.len() > MAX_SHARES_PER_RECORD {
-            return Err(ShareProjectionError::TooManyGrants);
-        }
-        let mut ids = BTreeSet::new();
-        for grant in &self.grants {
-            if !ids.insert(grant.grant_id) {
-                return Err(ShareProjectionError::InvalidGrantState);
-            }
-            let expired = grant
-                .expires_at_ms
-                .is_some_and(|deadline| self.observed_at_ms >= deadline);
-            let used = grant.redemptions > 0;
-            let exhausted = grant
-                .max_redemptions
-                .is_some_and(|max| grant.redemptions >= max);
-            let status = if grant.revoked {
-                ShareGrantStatus::Revoked
-            } else if expired {
-                ShareGrantStatus::Expired
-            } else if exhausted {
-                ShareGrantStatus::Exhausted
-            } else {
-                ShareGrantStatus::Active
-            };
-            if grant.expired != expired
-                || grant.used != used
-                || grant.exhausted != exhausted
-                || grant.status != status
-                || grant
-                    .max_redemptions
-                    .is_some_and(|max| max == 0 || grant.redemptions > max)
-                || matches!(grant.subject, ShareSubjectProjection::Person { .. })
-                    && grant.redemptions != 0
-            {
-                return Err(ShareProjectionError::InvalidGrantState);
-            }
-        }
-        Ok(())
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-#[allow(
-    clippy::struct_excessive_bools,
-    reason = "these booleans are explicit redundant fields in the versioned projection schema and are cross-validated on decode"
-)]
-pub struct ShareGrantProjectionV1 {
-    pub grant_id: Uuid,
-    pub subject: ShareSubjectProjection,
-    pub permission: FilePermission,
-    pub expires_at_ms: Option<u64>,
-    pub revoked: bool,
-    pub expired: bool,
-    pub used: bool,
-    pub exhausted: bool,
-    pub status: ShareGrantStatus,
-    pub redemptions: u32,
-    pub max_redemptions: Option<u32>,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case", tag = "kind")]
-pub enum ShareSubjectProjection {
-    Person { person: Ed25519PublicKey },
-    BearerLink,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ShareGrantStatus {
-    Active,
-    Expired,
-    Revoked,
-    Exhausted,
-}
-
-#[derive(Debug, Error)]
-pub enum ShareProjectionError {
-    #[error("share projection exceeds the {MAX_SHARE_PROJECTION_BYTES}-byte bound")]
-    TooLarge,
-    #[error("share projection is not valid JSON: {0}")]
-    Json(#[from] serde_json::Error),
-    #[error("unsupported share projection version {0}")]
-    UnsupportedVersion(u16),
-    #[error("share projection exceeds the {MAX_SHARES_PER_RECORD}-grant bound")]
-    TooManyGrants,
-    #[error("share projection contains inconsistent or duplicate grant state")]
-    InvalidGrantState,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1015,7 +869,10 @@ mod tests {
             ));
             let projection = authority.projection(record_id, 2);
             assert_eq!(projection.grants.len(), MAX_SHARES_PER_RECORD);
-            assert!(projection.to_xattr_bytes().unwrap().len() <= MAX_SHARE_PROJECTION_BYTES);
+            assert!(
+                projection.to_xattr_bytes().unwrap().len()
+                    <= fs_protocol::projection::MAX_SHARE_PROJECTION_BYTES
+            );
         }
         // Phase `restart_rejects_inconsistent_and_oversized_authority_state`.
         {
