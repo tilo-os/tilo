@@ -5383,13 +5383,6 @@ impl FrameHarness {
                 }
                 ControlBindingKind::CollaborativeDocument(_)
                 | ControlBindingKind::SemanticAction(_) => None,
-                ControlBindingKind::LegacyDocumentPath(path) => Some(NativeAppIssue {
-                    control: binding.control_id,
-                    code: "legacy-document-path".into(),
-                    message: format!(
-                        "direct document path {path:?} bypasses the resource/action door"
-                    ),
-                }),
                 ControlBindingKind::LegacyCallback => Some(NativeAppIssue {
                     control: binding.control_id,
                     code: "legacy-callback".into(),

@@ -79,7 +79,6 @@ pub enum ControlBindingKind {
     /// through the normal action door; useful for custom-painted controls and
     /// process-local editing state that does not belong in document history.
     SemanticAction(String),
-    LegacyDocumentPath(String),
     LegacyCallback,
 }
 
