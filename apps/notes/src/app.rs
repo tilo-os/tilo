@@ -486,6 +486,9 @@ impl NotesApp {
             })
         });
         let rect = editor.get_rect();
+        let active_line = editor
+            .focused_index()
+            .and_then(|index| editor.blocks().get(index));
         serde_json::json!({
             "app": "so.tilo.notes",
             "editor_id": "block_editor",
@@ -503,6 +506,15 @@ impl NotesApp {
             "rendered_body_hash": blake3::hash(rendered.as_bytes()).to_hex().to_string(),
             "rendered_body_chars": rendered.chars().count(),
             "editor_focused": editor.is_focused(),
+            "active_line_present": active_line.is_some(),
+            "active_line_focused": active_line.is_some_and(|block| block.line.is_focused()),
+            "active_line_disabled": active_line.is_some_and(|block| block.line.is_disabled()),
+            "editor_read_only": editor.is_read_only(),
+            "editor_composing": editor.is_composing(),
+            "editor_route_available": self.main_node.is_some() && self.main.editor_route_available(),
+            "sidebar_renaming": self.sidebar.is_renaming(),
+            "sidebar_menu_open": self.sidebar.menu_is_open(),
+            "editor_menu_open": editor.slash_menu_visible() || editor.link_popover().is_visible(),
             "caret": caret,
             "editor_rect": [rect.x0, rect.y0, rect.x1, rect.y1],
         })

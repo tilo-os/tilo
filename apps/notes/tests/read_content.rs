@@ -146,6 +146,19 @@ fn editor_inspection_reuses_the_native_observer_and_writes_nothing() {
     assert!(!observed.to_string().contains("Private body fixture"));
     assert!(observed.get("caret").is_some());
     assert!(observed.get("editor_focused").is_some());
+    for flag in [
+        "active_line_present",
+        "active_line_focused",
+        "active_line_disabled",
+        "editor_read_only",
+        "editor_composing",
+        "editor_route_available",
+        "sidebar_renaming",
+        "sidebar_menu_open",
+        "editor_menu_open",
+    ] {
+        assert!(observed[flag].is_boolean(), "typed routing flag {flag}");
+    }
     assert!(observed.get("text").is_none());
     assert!(observed.get("body").is_none());
     assert!(!observed.to_string().contains("Private fixture title"));
