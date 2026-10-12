@@ -3549,7 +3549,7 @@ mod tests {
                 "tilo.audio.input_device",
                 "tilo.display.auto_brightness",
                 "tilo.power.auto_suspend",
-                "tilo.updates.channel",
+                "tilo.updates.auto",
                 "tilo.security.local_credential.pin",
             ] {
                 assert!(!valid_setting_key(key), "expected {key} to stay local");
