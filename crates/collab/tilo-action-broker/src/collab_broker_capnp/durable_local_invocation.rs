@@ -434,6 +434,11 @@ impl CapnpBrokerState {
                 &current.broker_actor(),
                 now,
             )?;
+            self.authorize_checkpoint_result(
+                &caller.route.cluster_id,
+                current.certificate.as_ref(),
+                record,
+            )?;
         }
         caller.current(self)?;
         Ok(record)

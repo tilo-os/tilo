@@ -46,6 +46,8 @@ mod policy_turn_tests;
 mod process_binding;
 mod published_invocation;
 mod resolved_invocation;
+#[path = "workspace_checkpoints.rs"]
+mod workspace_checkpoints;
 #[path = "workspace_memberships.rs"]
 mod workspace_memberships;
 #[path = "workspace_tasks.rs"]
@@ -2166,7 +2168,9 @@ impl CapnpBrokerState {
             &contract.need(),
             &current.broker_actor(),
             now,
-        )
+        )?;
+        self.authorize_checkpoint_result(&caller.room, current.certificate.as_ref(), record)?;
+        Ok(())
     }
 
     pub(crate) fn verified_invocation_status(
@@ -5517,12 +5521,38 @@ impl CapnpBrokerState {
                 invocation,
                 owner: owner.clone(),
             };
-            let request = match durable {
-                Some(context) => context.intent(),
-                None => serde_json::json!({
-                    "peer_id": peer_id, "app_id": offered.0.app_id, "record_id": offered.0.route.record_id,
-                    "resource": offered.1.resource, "action": offered.1.action, "argument": argument,
-                }),
+            let request = if offered.0.app_id == "so.tilo.desktop"
+                && offered.1.resource == workspace_checkpoints::RESOURCE
+            {
+                let certificate = match origin.as_ref() {
+                    Some(InvocationCaller::Certified { caller, .. }) => self
+                        .current_action_caller(caller)?
+                        .certificate
+                        .ok_or("checkpoint caller certificate absent")?,
+                    Some(InvocationCaller::NativePerson { certificate, .. }) => certificate.clone(),
+                    _ => return Err("checkpoint requires original certified caller custody".into()),
+                };
+                workspace_checkpoints::intent(
+                    &offered.0.route.cluster_id,
+                    &certificate,
+                    &InvocationEnvelope {
+                        id,
+                        invocation,
+                        resource: offered.1.resource.clone(),
+                        action: offered.1.action.clone(),
+                        argument: argument.map(str::to_owned),
+                        actor: actor.id.clone(),
+                        context: None,
+                    },
+                )?
+            } else {
+                match durable {
+                    Some(context) => context.intent(),
+                    None => serde_json::json!({
+                        "peer_id": peer_id, "app_id": offered.0.app_id, "record_id": offered.0.route.record_id,
+                        "resource": offered.1.resource, "action": offered.1.action, "argument": argument,
+                    }),
+                }
             };
             let intent = serde_json::json!({ "request": request,
                 "contract": offered.1.contract, "operation_kind": offered.1.operation_kind,

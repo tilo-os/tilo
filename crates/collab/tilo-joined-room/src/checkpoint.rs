@@ -14,27 +14,8 @@ const MAX_BLOCK: usize = 256 * 1024;
 const MAX_DOCUMENT: usize = 3 * 1024 * 1024;
 const MAX_CAPTURE: usize = 16 * 1024 * 1024;
 
-/// Exact native route; empty record names are valid legacy singleton routes.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct CheckpointRoute {
-    pub app: String,
-    pub record: String,
-}
-impl CheckpointRoute {
-    fn validate(&self) -> Result<(), String> {
-        if self.app.is_empty()
-            || self.app.len() > 256
-            || self.record.len() > 4096
-            || [&self.app, &self.record]
-                .iter()
-                .any(|s| s.chars().any(char::is_control))
-        {
-            return Err("invalid native checkpoint route".into());
-        }
-        Ok(())
-    }
-}
+pub use tilo_peer_state::workspace_checkpoint::CheckpointRoute;
+use tilo_peer_state::workspace_checkpoint::{CheckpointCommand, CheckpointRequest};
 
 /// The identities actually stored by the record, not an inferred installed schema.
 /// None means absent legacy metadata, never a guessed current app version.
@@ -65,6 +46,9 @@ pub struct NativeCheckpoint {
     pub room: RoomId,
     pub captured_generation: u64,
     pub captured_aggregate: [u8; 32],
+    /// Person identity from authenticated admission, not an argument or grant copy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub author: Option<[u8; 32]>,
     pub entries: Vec<CheckpointEntry>,
 }
 /// Durable owner acknowledgement, returned only after metadata publication.
@@ -87,6 +71,49 @@ pub struct MaterializedCheckpoint {
 struct Index {
     checkpoints: BTreeMap<uuid::Uuid, CheckpointAcknowledgement>,
     names: BTreeMap<String, uuid::Uuid>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    invocations: BTreeMap<uuid::Uuid, InvocationResult>,
+}
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct InvocationResult {
+    digest: [u8; 32],
+    acknowledgement: CheckpointAcknowledgement,
+}
+fn retry(
+    index: &Index,
+    request: Option<&CheckpointRequest>,
+) -> Result<Option<CheckpointAcknowledgement>, String> {
+    let Some(request) = request else {
+        return Ok(None);
+    };
+    let digest = request.digest()?;
+    if let Some(result) = index.invocations.get(&request.invocation) {
+        if result.digest != digest {
+            return Err("checkpoint invocation belongs to another command or caller".into());
+        }
+        return Ok(Some(result.acknowledgement.clone()));
+    }
+    if index.invocations.len() >= 256 {
+        return Err("checkpoint invocation capacity exhausted".into());
+    }
+    Ok(None)
+}
+fn retain_result(
+    index: &mut Index,
+    request: Option<&CheckpointRequest>,
+    ack: &CheckpointAcknowledgement,
+) -> Result<(), String> {
+    if let Some(request) = request {
+        index.invocations.insert(
+            request.invocation,
+            InvocationResult {
+                digest: request.digest()?,
+                acknowledgement: ack.clone(),
+            },
+        );
+    }
+    Ok(())
 }
 fn name_valid(name: &str) -> Result<(), String> {
     if name.is_empty() || name.len() > 256 || name.chars().any(char::is_control) {
@@ -143,7 +170,10 @@ fn index(view: &NativeCommittedView, store: &dyn Store) -> Result<Index, String>
         None => Index::default(),
         Some(hash) => read(store, hash)?,
     };
-    if index.checkpoints.len() > MAX_CHECKPOINTS || index.names.len() > MAX_CHECKPOINTS {
+    if index.checkpoints.len() > MAX_CHECKPOINTS
+        || index.names.len() > MAX_CHECKPOINTS
+        || index.invocations.len() > 256
+    {
         return Err("native checkpoint index capacity exceeded".into());
     }
     for (id, ack) in &index.checkpoints {
@@ -154,6 +184,13 @@ fn index(view: &NativeCommittedView, store: &dyn Store) -> Result<Index, String>
             || (view.device() == view.governor() && ack.publication_generation > view.generation())
         {
             return Err("invalid native checkpoint acknowledgement".into());
+        }
+    }
+    for (invocation, result) in &index.invocations {
+        if invocation.is_nil()
+            || index.checkpoints.get(&result.acknowledgement.id) != Some(&result.acknowledgement)
+        {
+            return Err("invalid native checkpoint invocation result".into());
         }
     }
     for (name, id) in &index.names {
@@ -289,7 +326,116 @@ pub(crate) fn binding(room: RoomId, address: [u8; 32]) -> CommitBinding {
         basis: address,
     }
 }
+fn retain_manifest(
+    store: &dyn Store,
+    candidate: &NativeCommittedView,
+    caller: &DeviceCert,
+    capture: CheckpointCapture<'_>,
+    now: SystemTime,
+) -> Result<NativeCheckpoint, String> {
+    let mut checkpoint = NativeCheckpoint {
+        version: 1,
+        id: capture.id,
+        original_name: capture.name.into(),
+        room: candidate.record.room,
+        captured_generation: candidate.generation(),
+        captured_aggregate: *blake3::hash(&candidate.record.peer).as_bytes(),
+        author: Some(caller.user_public_key),
+        entries: Vec::new(),
+    };
+    let mut total = 0usize;
+    for route in capture.routes {
+        let captured = match candidate.read_document(
+            caller.device_public_key,
+            &route.app,
+            &route.record,
+            None,
+            MAX_DOCUMENT,
+            now,
+        )? {
+            DocumentRead::Captured(captured) => captured,
+            DocumentRead::CheckpointPending => {
+                return Err("native checkpoint capture pending room checkpoint".into());
+            }
+            DocumentRead::Unchanged(_) => {
+                return Err("native checkpoint capture missing snapshot".into());
+            }
+        };
+        total = total
+            .checked_add(captured.bytes.len())
+            .filter(|n| *n <= MAX_CAPTURE)
+            .ok_or("native checkpoint capture byte capacity")?;
+        let doc = automerge::AutoCommit::load(&captured.bytes).map_err(|e| e.to_string())?;
+        checkpoint.entries.push(CheckpointEntry {
+            route: route.clone(),
+            heads: captured.heads,
+            schema: schema(&doc)?,
+            bytes: captured.bytes.len(),
+            content: put(store, &captured.bytes)?,
+        });
+    }
+    Ok(checkpoint)
+}
+
 impl NativeWorkspaceOwner {
+    /// Execute a broker-admitted command with separately supplied governor custody.
+    /// Public reads return verified metadata only, never retained document bytes.
+    /// # Errors
+    /// Refuses absent custody, current denial, conflicting invocation or damaged content.
+    pub fn execute_checkpoint(
+        &self,
+        request: &CheckpointRequest,
+        key: &SigningKey,
+        now: SystemTime,
+    ) -> Result<serde_json::Value, String> {
+        request.digest()?;
+        let room = RoomId::parse(&request.room).ok_or("invalid checkpoint room")?;
+        self.with_current(room, |view| {
+            if view.device() != view.governor() {
+                return Err("checkpoint requires the actual governing owner".into());
+            }
+            view.peer.check_checkpoint_writer(key, now)
+        })?;
+        match &request.command {
+            CheckpointCommand::Capture { name, routes } => {
+                let ack = self.capture_checkpoint_bound(
+                    room,
+                    &request.caller,
+                    key,
+                    CheckpointCapture {
+                        id: request.invocation,
+                        name,
+                        routes,
+                    },
+                    now,
+                    Some(request),
+                )?;
+                serde_json::to_value(ack).map_err(|e| e.to_string())
+            }
+            CheckpointCommand::NameBind { name, id } => {
+                let ack = self.bind_checkpoint_name_bound(
+                    room,
+                    &request.caller,
+                    key,
+                    name,
+                    *id,
+                    Some(request),
+                )?;
+                serde_json::to_value(ack).map_err(|e| e.to_string())
+            }
+            CheckpointCommand::Inspect { id } => {
+                let retained = self.read_checkpoint(room, &request.caller, *id, now)?;
+                serde_json::to_value(retained.manifest).map_err(|e| e.to_string())
+            }
+            CheckpointCommand::Find { name } => {
+                let ack = self.resolve_checkpoint_name(room, &request.caller, name, now)?;
+                // Resolution also validates retained content, not just the index/manifest.
+                self.read_checkpoint(room, &request.caller, ack.id, now)?;
+                serde_json::to_value(ack).map_err(|e| e.to_string())
+            }
+        }
+    }
+
     /// Capture an explicit native app-record set at ONE committed generation.
     /// Caller evidence comes from host-authenticated admission, never action arguments.
     /// Current governor signing custody is required independently of caller Read.
@@ -307,6 +453,17 @@ impl NativeWorkspaceOwner {
         capture: CheckpointCapture<'_>,
         now: SystemTime,
     ) -> Result<CheckpointAcknowledgement, String> {
+        self.capture_checkpoint_bound(room, caller, key, capture, now, None)
+    }
+    fn capture_checkpoint_bound(
+        &self,
+        room: RoomId,
+        caller: &DeviceCert,
+        key: &SigningKey,
+        capture: CheckpointCapture<'_>,
+        now: SystemTime,
+        request: Option<&CheckpointRequest>,
+    ) -> Result<CheckpointAcknowledgement, String> {
         name_valid(capture.name)?;
         routes_valid(capture.routes)?;
         if capture.id.is_nil() {
@@ -320,13 +477,24 @@ impl NativeWorkspaceOwner {
             return Err("native checkpoint lacks current governor signing custody".into());
         }
         candidate.peer.check_checkpoint_writer(key, now)?;
+        candidate.peer.check_checkpoint_namer(caller, now)?;
         for route in capture.routes {
             candidate
                 .peer
                 .check_checkpoint_reader(caller, &route.app, &route.record, now)?;
         }
         let mut index = index(&candidate, self.0.store.as_ref())?;
+        if let Some(ack) = retry(&index, request)? {
+            let checkpoint = manifest(self.0.store.as_ref(), room, &ack)?;
+            for entry in &checkpoint.entries {
+                document(self.0.store.as_ref(), entry)?;
+            }
+            return Ok(ack);
+        }
         if let Some(ack) = index.checkpoints.get(&capture.id) {
+            if request.is_some() {
+                return Err("checkpoint id already exists without this invocation binding".into());
+            }
             let existing = manifest(self.0.store.as_ref(), room, ack)?;
             if existing
                 .entries
@@ -354,46 +522,7 @@ impl NativeWorkspaceOwner {
             .generation()
             .checked_add(1)
             .ok_or("checkpoint generation exhausted")?;
-        let mut checkpoint = NativeCheckpoint {
-            version: 1,
-            id: capture.id,
-            original_name: capture.name.into(),
-            room,
-            captured_generation: candidate.generation(),
-            captured_aggregate: *blake3::hash(&candidate.record.peer).as_bytes(),
-            entries: Vec::new(),
-        };
-        let mut total = 0usize;
-        for route in capture.routes {
-            let captured = match candidate.read_document(
-                caller.device_public_key,
-                &route.app,
-                &route.record,
-                None,
-                MAX_DOCUMENT,
-                now,
-            )? {
-                DocumentRead::Captured(captured) => captured,
-                DocumentRead::CheckpointPending => {
-                    return Err("native checkpoint capture pending room checkpoint".into());
-                }
-                DocumentRead::Unchanged(_) => {
-                    return Err("native checkpoint capture missing snapshot".into());
-                }
-            };
-            total = total
-                .checked_add(captured.bytes.len())
-                .filter(|n| *n <= MAX_CAPTURE)
-                .ok_or("native checkpoint capture byte capacity")?;
-            let doc = automerge::AutoCommit::load(&captured.bytes).map_err(|e| e.to_string())?;
-            checkpoint.entries.push(CheckpointEntry {
-                route: route.clone(),
-                heads: captured.heads,
-                schema: schema(&doc)?,
-                bytes: captured.bytes.len(),
-                content: put(self.0.store.as_ref(), &captured.bytes)?,
-            });
-        }
+        let checkpoint = retain_manifest(self.0.store.as_ref(), &candidate, caller, capture, now)?;
         let ack = CheckpointAcknowledgement {
             id: capture.id,
             manifest: put_metadata(self.0.store.as_ref(), &checkpoint)?,
@@ -402,6 +531,7 @@ impl NativeWorkspaceOwner {
         };
         index.checkpoints.insert(capture.id, ack.clone());
         index.names.insert(capture.name.into(), capture.id);
+        retain_result(&mut index, request, &ack)?;
         self.publish_checkpoint_index(room, candidate, &index, key, now)?;
         Ok(ack)
     }
@@ -448,6 +578,18 @@ impl NativeWorkspaceOwner {
         name: &str,
         id: uuid::Uuid,
     ) -> Result<(), String> {
+        self.bind_checkpoint_name_bound(room, caller, key, name, id, None)
+            .map(|_| ())
+    }
+    fn bind_checkpoint_name_bound(
+        &self,
+        room: RoomId,
+        caller: &DeviceCert,
+        key: &SigningKey,
+        name: &str,
+        id: uuid::Uuid,
+        request: Option<&CheckpointRequest>,
+    ) -> Result<CheckpointAcknowledgement, String> {
         name_valid(name)?;
         let now = SystemTime::now();
         let _turn = self.0.mutation.lock();
@@ -458,6 +600,7 @@ impl NativeWorkspaceOwner {
             return Err("native checkpoint naming lacks governor custody".into());
         }
         candidate.peer.check_checkpoint_writer(key, now)?;
+        candidate.peer.check_checkpoint_namer(caller, now)?;
         let mut index = index(&candidate, self.0.store.as_ref())?;
         let ack = index
             .checkpoints
@@ -475,14 +618,20 @@ impl NativeWorkspaceOwner {
         for entry in &checkpoint.entries {
             document(self.0.store.as_ref(), entry)?;
         }
-        if index.names.get(name) == Some(&id) {
-            return Ok(());
+        let ack = ack.clone();
+        if let Some(result) = retry(&index, request)? {
+            return Ok(result);
+        }
+        if request.is_none() && index.names.get(name) == Some(&id) {
+            return Ok(ack);
         }
         if index.names.len() >= MAX_CHECKPOINTS && !index.names.contains_key(name) {
             return Err("native checkpoint name capacity".into());
         }
         index.names.insert(name.into(), id);
-        self.publish_checkpoint_index(room, candidate, &index, key, now)
+        retain_result(&mut index, request, &ack)?;
+        self.publish_checkpoint_index(room, candidate, &index, key, now)?;
+        Ok(ack)
     }
     /// Resolve a movable name only if every retained route is currently readable.
     ///
