@@ -643,5 +643,6 @@ impl SenderRuntime {
     }
 }
 
-#[cfg(all(test, target_os = "macos"))]
+#[cfg(test)]
+#[cfg(target_os = "macos")]
 mod tests;

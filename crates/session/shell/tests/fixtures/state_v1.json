@@ -70,26 +70,126 @@
         }
       ],
       "collaborators": [],
-      "owner": "owner-key",
       "pending_ownership_transfer": null,
       "ownership_transfer_audit": [],
       "ownership_transfer_cancellations": [],
-      "capabilities": [
-        {
-          "subject": {
-            "Principal": {
-              "Person": "owner-key"
+      "policy": {
+        "room": "00000000-0000-4000-8000-000000000001",
+        "owner": "owner-key",
+        "members": {},
+        "grants": [
+          {
+            "id": "role:viewer:0",
+            "subject": {
+              "role": "viewer"
+            },
+            "node": "room:00000000-0000-4000-8000-000000000001",
+            "kinds": [
+              "read"
+            ],
+            "answer": "allow",
+            "lifetime": "until_revoked",
+            "granted_by": {
+              "role": "owner"
             }
           },
-          "scope": {
-            "Room": "00000000-0000-4000-8000-000000000001"
+          {
+            "id": "role:commenter:0",
+            "subject": {
+              "role": "commenter"
+            },
+            "node": "room:00000000-0000-4000-8000-000000000001",
+            "kinds": [
+              "read"
+            ],
+            "answer": "allow",
+            "lifetime": "until_revoked",
+            "granted_by": {
+              "role": "owner"
+            }
           },
-          "effect": "Grant",
-          "verb": "Admin",
-          "id": "owner-1",
-          "expiry": "Never",
-          "granted_by": null
-        },
+          {
+            "id": "role:commenter:1",
+            "subject": {
+              "role": "commenter"
+            },
+            "node": "room:00000000-0000-4000-8000-000000000001/**/field:comments",
+            "kinds": [
+              "undoable"
+            ],
+            "answer": "allow",
+            "lifetime": "until_revoked",
+            "granted_by": {
+              "role": "owner"
+            }
+          },
+          {
+            "id": "role:editor:0",
+            "subject": {
+              "role": "editor"
+            },
+            "node": "room:00000000-0000-4000-8000-000000000001",
+            "kinds": [
+              "read",
+              "undoable"
+            ],
+            "answer": "allow",
+            "lifetime": "until_revoked",
+            "granted_by": {
+              "role": "owner"
+            }
+          },
+          {
+            "id": "role:editor:1",
+            "subject": {
+              "role": "editor"
+            },
+            "node": "room:00000000-0000-4000-8000-000000000001",
+            "kinds": [
+              "outside"
+            ],
+            "answer": "ask",
+            "lifetime": "until_revoked",
+            "granted_by": {
+              "role": "owner"
+            }
+          },
+          {
+            "id": "role:editor:2",
+            "subject": {
+              "role": "editor"
+            },
+            "node": "room:00000000-0000-4000-8000-000000000001/kind:tilo.room",
+            "kinds": [
+              "undoable",
+              "outside"
+            ],
+            "answer": "deny",
+            "lifetime": "until_revoked",
+            "granted_by": {
+              "role": "owner"
+            }
+          },
+          {
+            "id": "role:owner:0",
+            "subject": {
+              "role": "owner"
+            },
+            "node": "room:00000000-0000-4000-8000-000000000001",
+            "kinds": [
+              "read",
+              "undoable",
+              "outside"
+            ],
+            "answer": "allow",
+            "lifetime": "until_revoked",
+            "granted_by": {
+              "role": "owner"
+            }
+          }
+        ]
+      },
+      "sandbox": [
         {
           "subject": {
             "Principal": {
@@ -100,13 +200,13 @@
             "FsPath": "/srv/doc"
           },
           "effect": "Grant",
-          "verb": "Write",
+          "access": "Write",
           "id": "cap-fixed",
           "expiry": "Never",
           "granted_by": null
         }
       ],
-      "permission_profiles": [],
+      "presets": [],
       "default_apps": {
         "policy": {},
         "user_choices": {}
@@ -159,12 +259,127 @@
         }
       ],
       "collaborators": [],
-      "owner": null,
       "pending_ownership_transfer": null,
       "ownership_transfer_audit": [],
       "ownership_transfer_cancellations": [],
-      "capabilities": [],
-      "permission_profiles": [],
+      "policy": {
+        "room": "00000000-0000-4000-8000-000000000002",
+        "owner": null,
+        "members": {},
+        "grants": [
+          {
+            "id": "role:viewer:0",
+            "subject": {
+              "role": "viewer"
+            },
+            "node": "room:00000000-0000-4000-8000-000000000002",
+            "kinds": [
+              "read"
+            ],
+            "answer": "allow",
+            "lifetime": "until_revoked",
+            "granted_by": {
+              "role": "owner"
+            }
+          },
+          {
+            "id": "role:commenter:0",
+            "subject": {
+              "role": "commenter"
+            },
+            "node": "room:00000000-0000-4000-8000-000000000002",
+            "kinds": [
+              "read"
+            ],
+            "answer": "allow",
+            "lifetime": "until_revoked",
+            "granted_by": {
+              "role": "owner"
+            }
+          },
+          {
+            "id": "role:commenter:1",
+            "subject": {
+              "role": "commenter"
+            },
+            "node": "room:00000000-0000-4000-8000-000000000002/**/field:comments",
+            "kinds": [
+              "undoable"
+            ],
+            "answer": "allow",
+            "lifetime": "until_revoked",
+            "granted_by": {
+              "role": "owner"
+            }
+          },
+          {
+            "id": "role:editor:0",
+            "subject": {
+              "role": "editor"
+            },
+            "node": "room:00000000-0000-4000-8000-000000000002",
+            "kinds": [
+              "read",
+              "undoable"
+            ],
+            "answer": "allow",
+            "lifetime": "until_revoked",
+            "granted_by": {
+              "role": "owner"
+            }
+          },
+          {
+            "id": "role:editor:1",
+            "subject": {
+              "role": "editor"
+            },
+            "node": "room:00000000-0000-4000-8000-000000000002",
+            "kinds": [
+              "outside"
+            ],
+            "answer": "ask",
+            "lifetime": "until_revoked",
+            "granted_by": {
+              "role": "owner"
+            }
+          },
+          {
+            "id": "role:editor:2",
+            "subject": {
+              "role": "editor"
+            },
+            "node": "room:00000000-0000-4000-8000-000000000002/kind:tilo.room",
+            "kinds": [
+              "undoable",
+              "outside"
+            ],
+            "answer": "deny",
+            "lifetime": "until_revoked",
+            "granted_by": {
+              "role": "owner"
+            }
+          },
+          {
+            "id": "role:owner:0",
+            "subject": {
+              "role": "owner"
+            },
+            "node": "room:00000000-0000-4000-8000-000000000002",
+            "kinds": [
+              "read",
+              "undoable",
+              "outside"
+            ],
+            "answer": "allow",
+            "lifetime": "until_revoked",
+            "granted_by": {
+              "role": "owner"
+            }
+          }
+        ]
+      },
+      "sandbox": [],
+      "presets": [],
       "default_apps": {
         "policy": {},
         "user_choices": {}

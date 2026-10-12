@@ -44,29 +44,13 @@ fn a_window_showing_a_typed_secret_is_withheld_from_captures() {
 
 #[test]
 fn empty_revealed_secret_preedit_protects_the_production_frame() {
-    use crate::widget::EventCtx;
-    use winit::event::{Ime, Modifiers};
-    use winit::keyboard::ModifiersState;
+    use winit::event::Ime;
     let mut field = TextInput::local().with_secret(true);
     field.toggle_reveal();
     field.set_focus(true);
-    let mut state = State::new();
-    let mut taffy = taffy::TaffyTree::new();
-    let node = taffy.new_leaf(taffy::Style::default()).unwrap();
-    let mut handled = false;
-    let mut focus_target = None;
-    field.handle_event(
+    let handled = crate::testing::dispatch(
+        &mut field,
         &WindowEvent::Ime(Ime::Preedit("秘密".into(), Some((6, 6)))),
-        &mut EventCtx {
-            scale_factor: 1.0,
-            modifiers: &Modifiers::from(ModifiersState::empty()),
-            state: crate::widget::Edits::lend(&mut state.doc),
-            path: &automerge::ROOT,
-            handled: &mut handled,
-            focus_target: &mut focus_target,
-            node_id: node,
-            taffy: &taffy,
-        },
     );
     assert!(handled);
     assert_eq!(field.value(), "", "composition is not committed text");

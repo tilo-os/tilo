@@ -45,7 +45,7 @@ fn harness(list: NavList, theme: Theme) -> FrameHarness {
 }
 
 fn key(h: &mut FrameHarness, key: Key) -> bool {
-    h.dispatch_to_root(&crate::synthetic_input::key_event(
+    h.dispatch_to_root(&crate::synthetic_input::key_input(
         &key,
         ElementState::Pressed,
     ))

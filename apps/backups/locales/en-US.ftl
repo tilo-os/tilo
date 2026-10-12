@@ -60,3 +60,26 @@ backups-retention-total = { $count ->
     [one] Each source keeps at most one snapshot, plus the ones kept until removed.
    *[other] Each source keeps at most { $snapshots } snapshots, plus the ones kept until removed.
 }
+
+## History
+
+backups-retention-policy-hourly = { $new ->
+    [0] Keeping no hourly snapshots
+    [one] Keeping one hourly snapshot
+   *[other] Keeping { $new } hourly snapshots
+}
+backups-retention-policy-daily = { $new ->
+    [0] Keeping no daily snapshots
+    [one] Keeping one daily snapshot
+   *[other] Keeping { $new } daily snapshots
+}
+backups-retention-policy-weekly = { $new ->
+    [0] Keeping no weekly snapshots
+    [one] Keeping one weekly snapshot
+   *[other] Keeping { $new } weekly snapshots
+}
+backups-retention-policy-monthly = { $new ->
+    [0] Keeping no monthly snapshots
+    [one] Keeping one monthly snapshot
+   *[other] Keeping { $new } monthly snapshots
+}

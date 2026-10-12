@@ -1,4 +1,5 @@
 pub mod actor;
+pub(crate) mod agent_questions;
 pub mod behaviour;
 pub mod decoder;
 pub mod encoder;
@@ -8,7 +9,9 @@ pub mod input_firewall;
 pub mod invite;
 pub mod media_caps;
 pub(crate) mod native_media;
+pub mod private_messages;
 pub mod protocol;
+pub mod reachability;
 pub mod replica;
 pub mod streaming;
 pub mod surface_stream;
@@ -26,6 +29,7 @@ pub use identity::{PeerIdentity, PeerIdentityError, PeerIdentityStore};
 pub use input_firewall::{Denial, RemoteInputFirewall, ShellView};
 pub use invite::{PeerInviteToken, accept_invite_into, make_invite_token, validate_invite_token};
 pub use protocol::{NeighbourMsg, PeerId as MsgPeerId, PresenceKey, SurfaceId};
+pub use reachability::Reachability;
 pub use replica::WorkspaceTreeReplica;
 pub use streaming::{
     InputEvent, RemoteAction, RemoteInputSink, ShareRegistry, StreamingShare, StreamingThrottle,

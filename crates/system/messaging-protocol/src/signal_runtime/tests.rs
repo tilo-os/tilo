@@ -47,7 +47,9 @@ fn runtime(root: &Path, stream: UnixStream) -> SignalRuntime {
 fn event(account: &str) -> Vec<u8> {
     let value = serde_json::json!({"jsonrpc":"2.0","method":"receive","params":{
         "account":account,"envelope":{"sourceUuid":"01234567-89ab-cdef-0123-456789abcdef",
-        "dataMessage":{"timestamp":42,"message":"received text"}}}});
+        "dataMessage":{"timestamp":42,"message":"received text","expiresInSeconds":0,
+        "isExpirationUpdate":false,"viewOnce":false,"isEndSession":false,
+        "isProfileKeyUpdate":false,"hasProfileKey":true}}}});
     let mut encoded = serde_json::to_vec(&value).unwrap();
     encoded.push(b'\n');
     encoded
@@ -120,30 +122,58 @@ fn socket_send_maps_registry_account_to_signal_and_restart_refuses_duplicates() 
     );
 }
 
+/// Bytes the runtime already handed to the socket, without ever blocking.
+/// `send` writes synchronously, so after it returns anything it wrote is here.
+fn written(peer: &mut UnixStream) -> Vec<u8> {
+    peer.set_nonblocking(true).unwrap();
+    let mut bytes = Vec::new();
+    let mut chunk = [0; 4096];
+    loop {
+        match peer.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(count) => bytes.extend_from_slice(&chunk[..count]),
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
+            Err(error) => panic!("peer read failed: {error}"),
+        }
+    }
+    bytes
+}
+
 #[test]
 fn silent_socket_expires_and_preserves_uncertainty_without_retry() {
-    let root = tempfile::tempdir().unwrap();
-    let (client, mut peer) = UnixStream::pair().unwrap();
-    let mut runtime = runtime(root.path(), client);
-    let start = tilo_clock::now();
-    assert_eq!(
-        runtime.send(
-            &accounts(),
-            &binding(),
-            &route(),
-            "op",
-            "private text",
-            Duration::from_millis(40)
-        ),
-        Err(CheckedSendError::Transport(SendError::Uncertain))
-    );
-    assert!(start.elapsed() < Duration::from_secs(2));
-    assert_eq!(runtime.status("op"), Some(Status::Uncertain));
-    let mut request = String::new();
-    BufReader::new(peer.try_clone().unwrap())
-        .read_line(&mut request)
-        .unwrap();
-    assert!(request.ends_with('\n'));
+    // The budget also covers the durable reservation. On a loaded host that
+    // can use up a short budget before the request is written, which is still
+    // uncertain but not the case under test, so retry with a larger budget.
+    let mut budget = Duration::from_millis(40);
+    let (_root, mut runtime, mut peer, request) = loop {
+        let root = tempfile::tempdir().unwrap();
+        let (client, mut peer) = UnixStream::pair().unwrap();
+        let mut runtime = runtime(root.path(), client);
+        let start = tilo_clock::now();
+        assert_eq!(
+            runtime.send(
+                &accounts(),
+                &binding(),
+                &route(),
+                "op",
+                "private text",
+                budget
+            ),
+            Err(CheckedSendError::Transport(SendError::Uncertain))
+        );
+        assert!(start.elapsed() < budget + Duration::from_secs(2));
+        assert_eq!(runtime.status("op"), Some(Status::Uncertain));
+        let request = written(&mut peer);
+        if !request.is_empty() {
+            break (root, runtime, peer, request);
+        }
+        budget *= 2;
+        assert!(
+            budget <= Duration::from_secs(5),
+            "reservation never left time to write the request"
+        );
+    };
+    assert!(request.ends_with(b"\n"));
     assert_eq!(
         runtime.send(
             &accounts(),
@@ -157,7 +187,6 @@ fn silent_socket_expires_and_preserves_uncertainty_without_retry() {
             Error::ConnectionUnavailable
         )))
     );
-    peer.set_nonblocking(true).unwrap();
     assert_eq!(
         peer.read(&mut [0; 1]).unwrap_err().kind(),
         io::ErrorKind::WouldBlock
@@ -284,7 +313,16 @@ fn manual_receiver_resolves_aci_to_number_and_requires_its_subscription() {
             reader.read_line(&mut line).unwrap();
             let request: serde_json::Value = serde_json::from_str(&line).unwrap();
             assert_eq!(request["method"], "listAccounts");
-            writeln!(peer, "{}", serde_json::json!({"jsonrpc":"2.0","id":request["id"],"result":[{"aci":aci,"number":"+15555550101"}]})).unwrap();
+            writeln!(peer, "{}", serde_json::json!({"jsonrpc":"2.0","id":request["id"],"result":[{"number":"+15555550101"}]})).unwrap();
+            let mut own_line = String::new();
+            reader.read_line(&mut own_line).unwrap();
+            let own_probe: serde_json::Value = serde_json::from_str(&own_line).unwrap();
+            assert_eq!(own_probe["method"], "listIdentities");
+            assert_eq!(
+                own_probe["params"]["number"],
+                own_probe["params"]["account"]
+            );
+            writeln!(peer, "{}", serde_json::json!({"jsonrpc":"2.0","id":own_probe["id"],"result":serde_json::json!([{"uuid":aci,"number":"+15555550101","trustLevel":"TRUSTED_VERIFIED","fingerprint":format!("05 {}", vec!["aa"; 32].join(" "))}])})).unwrap();
             line.clear();
             reader.read_line(&mut line).unwrap();
             let request: serde_json::Value = serde_json::from_str(&line).unwrap();

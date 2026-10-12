@@ -1,0 +1,90 @@
+# Written by `tilo-app surface`; review changes like an API change.
+
+[[resources]]
+kind = "browser.application"
+label = "Browser"
+version = 1
+fields = [
+  { path = "bookmarks", type = "Collection<Bookmark>", stored = "collection" },
+  { path = "bookmarks.*.url", type = "String", readonly = true },
+  { path = "bookmarks.*.title", type = "String", label = true },
+  { path = "preferences", type = "Settings", stored = "record" },
+  { path = "preferences.adblock_enabled", type = "bool" },
+  { path = "preferences.clear_on_exit", type = "bool" },
+  { path = "preferences.search_engine", type = "String" },
+  { path = "preferences.homepage", type = "String" },
+  { path = "site_exceptions", type = "Set<String>", readonly = true },
+]
+
+[[resources.verbs]]
+id = "add-bookmark"
+kind = "undoable"
+params = [
+  { name = "url", required = true, schema = { type = "string" } },
+  { name = "title", required = false, schema = { type = ["string", "null"] } },
+]
+
+[[resources.verbs]]
+id = "remove-bookmark"
+kind = "undoable"
+params = [
+  { name = "bookmark", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "set-site-protection"
+kind = "undoable"
+params = [
+  { name = "origin", required = true, schema = { type = "string" } },
+  { name = "enabled", required = true, schema = { type = "boolean" } },
+]
+
+[[resources]]
+kind = "browser.browsing-history"
+label = "Browsing history"
+version = 1
+person = true
+fields = [
+  { path = "visits", type = "BTreeMap<String, Visit>", readonly = true },
+]
+
+[[resources.verbs]]
+id = "visit"
+kind = "undoable"
+params = [
+  { name = "url", required = true, schema = { type = "string" } },
+  { name = "title", required = true, schema = { type = "string" } },
+  { name = "at", required = true, schema = { type = "integer", minimum = 0 } },
+]
+
+[[resources.verbs]]
+id = "forget"
+kind = "undoable"
+params = [
+  { name = "url", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "clear-history"
+kind = "undoable"
+
+[[resources]]
+kind = "browser.address-book"
+label = "Address book"
+version = 1
+person = true
+fields = [
+  { path = "enabled", type = "bool" },
+  { path = "profiles", type = "Keyed<AddressProfile>", stored = "keyed" },
+  { path = "profiles.*.id", type = "String" },
+  { path = "profiles.*.label", type = "String", label = true },
+  { path = "profiles.*.full_name", type = "String" },
+  { path = "profiles.*.given_name", type = "String" },
+  { path = "profiles.*.family_name", type = "String" },
+  { path = "profiles.*.street", type = "String" },
+  { path = "profiles.*.city", type = "String" },
+  { path = "profiles.*.region", type = "String" },
+  { path = "profiles.*.postal_code", type = "String" },
+  { path = "profiles.*.country", type = "String" },
+]
+

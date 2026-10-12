@@ -32,6 +32,7 @@ pub const NETWORK: &str = "installer.network";
 pub const STORAGE: &str = "installer.storage";
 pub const ACCOUNT: &str = "installer.account";
 pub const OPTIONS: &str = "installer.options";
+pub const MEDIA: &str = "installer.media";
 pub const REVIEW: &str = "installer.review";
 pub const RECOVERY: &str = "installer.recovery";
 pub const POWER: &str = "installer.power";

@@ -2,17 +2,23 @@
 
 use super::{Arc, Command, Duration, Instant, Offer, Reply, RetainedObject, SelectedDescriptor};
 use serde::{Deserialize, Serialize};
+use ui::tilo_resource::{self, JsonSchema};
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// What the native host reports of a transfer it carried out. Settled
+/// metadata only: it grants no authority.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Receipt {
     pub operation: String,
     pub completed: usize,
     pub cut: bool,
+    #[serde(default)]
+    pub restore: bool,
     pub error: Option<String>,
 }
 
 enum Phase {
     Snapshot,
+    Restore,
     Capture,
     Paste,
     Observe,
@@ -33,6 +39,7 @@ pub(super) struct Transfer {
     operation: String,
     receipt: Option<Receipt>,
     phase: Phase,
+    restore: bool,
     expires: Instant,
 }
 
@@ -51,7 +58,31 @@ impl Transfer {
             operation: uuid::Uuid::new_v4().to_string(),
             receipt: None,
             phase: Phase::Snapshot,
+            restore: false,
             expires: ui::time::now() + Duration::from_secs(120),
+        }
+    }
+
+    pub(super) fn restoring(
+        invocation: ui::tilo_actions::InvocationId,
+        selected: SelectedDescriptor,
+        retained: Arc<RetainedObject>,
+    ) -> Self {
+        let mut transfer = Self::new(invocation, selected, retained);
+        transfer.restore = true;
+        transfer.phase = Phase::Restore;
+        transfer.offer = Some(Offer {
+            id: transfer.operation.clone(),
+            count: 1,
+            cut: true,
+        });
+        transfer
+    }
+
+    pub(super) fn restore_command(&self) -> Command {
+        Command::RestoreTrash {
+            source: self.selected.clone(),
+            operation: self.operation.clone(),
         }
     }
 
@@ -63,6 +94,14 @@ impl Transfer {
                 .map_or_else(String::new, |offer| offer.id.clone()),
             destination: self.destination.clone().unwrap_or_default(),
             operation: self.operation.clone(),
+        }
+    }
+
+    pub(super) fn rejected(&mut self, reason: String) -> Step {
+        if matches!(self.phase, Phase::Restore) {
+            Step::Done(Err(reason))
+        } else {
+            self.failed(reason)
         }
     }
 
@@ -80,6 +119,7 @@ impl Transfer {
         match self.phase {
             // Repeat the same fingerprint, never generate another operation id.
             Phase::Paste => Step::Send(self.paste()),
+            Phase::Restore => Step::Send(self.restore_command()),
             Phase::Observe => Step::Send(Command::Observe {
                 operation: self.operation.clone(),
             }),
@@ -114,16 +154,17 @@ impl Transfer {
                 self.phase = Phase::Paste;
                 Step::Send(self.paste())
             }
-            (Phase::Paste | Phase::Observe, Reply::Running { operation })
+            (Phase::Restore | Phase::Paste | Phase::Observe, Reply::Running { operation })
                 if operation == &self.operation =>
             {
+                self.retained = None;
                 self.phase = Phase::Observe;
                 Step::Send(Command::Observe {
                     operation: self.operation.clone(),
                 })
             }
             (
-                Phase::Paste | Phase::Observe,
+                Phase::Restore | Phase::Paste | Phase::Observe,
                 Reply::Settled {
                     operation,
                     completed,
@@ -140,8 +181,17 @@ impl Transfer {
                     operation: operation.clone(),
                     completed: *completed,
                     cut: self.offer.as_ref().is_some_and(|offer| offer.cut),
+                    restore: self.restore,
                     error: error.clone(),
                 });
+                self.retained = None;
+                if self.restore {
+                    return Step::Done(
+                        self.receipt
+                            .take()
+                            .ok_or_else(|| "settled Restore receipt absent".into()),
+                    );
+                }
                 self.phase = Phase::Release;
                 Step::Send(Command::Release {
                     tickets: self.destination.iter().cloned().collect(),
@@ -157,7 +207,8 @@ impl Transfer {
     }
 }
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(test)]
+#[cfg(target_os = "linux")]
 mod tests {
     use super::*;
 

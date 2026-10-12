@@ -21,10 +21,12 @@ pub const IDENTIFY_FRESH_MS: u64 = 10_000;
 /// One request to show display numbers. The id is the request time, so a
 /// compositor that restarts never replays an old request as new.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(remote = "Self", default)]
 pub struct IdentifyRequest {
     pub requested_unix_ms: u64,
 }
+
+crate::read_through_json_value!(IdentifyRequest);
 
 impl IdentifyRequest {
     const SECTION: &'static str = "display_identify";
@@ -38,6 +40,19 @@ impl IdentifyRequest {
         };
         let value = serde_json::to_value(request).map_err(std::io::Error::other)?;
         super::update_section(
+            Self::SECTION,
+            value.as_object().cloned().unwrap_or_default(),
+        )?;
+        Ok(request)
+    }
+
+    /// Write the same identify handshake through the session-owned source.
+    ///
+    /// # Errors
+    /// Returns a persistence error without installing a global app writer.
+    pub fn request_in(source: &dyn crate::SettingsSource, request: Self) -> std::io::Result<Self> {
+        let value = serde_json::to_value(request).map_err(std::io::Error::other)?;
+        source.update_section(
             Self::SECTION,
             value.as_object().cloned().unwrap_or_default(),
         )?;

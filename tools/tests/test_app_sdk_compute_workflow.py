@@ -36,9 +36,9 @@ class AppSdkComputeWorkflowTests(unittest.TestCase):
     def test_release_gate_qualifies_uploaded_bytes_without_blocking_dev_mount(self):
         source = WORKFLOW.read_text()
         web, release = job(source, "web"), job(source, "web-size")
-        self.assertIn("needs: [builder]", web)
+        self.assertIn("needs: [builder, policy]", web)
         self.assertNotIn("web-size", web)
-        condition = "if: needs.builder.outputs.affected == 'true'"
+        condition = "needs.builder.outputs.affected == 'true' }}"
         self.assertIn(condition, web)
         self.assertIn(condition, release)
         self.assertEqual(source.count("--bundle desktop --release"), 1)

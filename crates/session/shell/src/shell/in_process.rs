@@ -18,14 +18,20 @@ use ui::application::{
 };
 use ui::application_view::InstanceViewStore;
 use ui::launch::LaunchError;
-use ui::permissions::{Actor, PermissionContext, Role, UserId};
+use ui::permissions::{PermissionContext, Role, UserId};
 use ui::record::{RecordCheckout, RecordId, RecordOpenError, RecordOwners};
 
+mod feedback_native;
+#[cfg(test)]
+mod feedback_tests;
 pub mod messaging;
 
 /// The apps the shell mounts in-process, with the store their records and
 /// views live in, as one person on one device.
 pub struct InProcessApps {
+    feedback: Option<tilo_desktop::feedback::PrivateFeedback>,
+    native_feedback: Option<Box<dyn feedback_native::Producer>>,
+    feedback_destination: Option<tilo_desktop::feedback::Destination>,
     store: Rc<dyn durable_store::DurableStore>,
     owners: RecordOwners,
     views: HashMap<String, Rc<InstanceViewStore>>,
@@ -40,11 +46,15 @@ pub struct InProcessApps {
     credential_owner: Option<accounts::CredentialOwner>,
     messaging_records: Option<Rc<dyn messaging::records::RecordQueries>>,
     messaging_record_wake: Option<crate::session_runtime::Wake>,
+    messaging_transport:
+        Option<tokio::sync::oneshot::Receiver<crate::network::private_messages::Transport>>,
+    native_messaging_transport: Option<crate::network::private_messages::Transport>,
     messaging_starts: Option<Rc<dyn messaging::activation::PendingAccounts>>,
     messaging_lifetime: std::sync::Arc<()>,
     messaging_network_prompts: Option<crate::portal::PromptQueueHandle>,
     messaging_providers: Vec<launcher::owned_service::ServiceCancellation>,
     messaging_native_accounts: Vec<std::sync::Arc<dyn messaging::NativeAccountCustody>>,
+    native_messaging_peers: Option<crate::network::PeerIdentityStore>,
     native_messaging_root: Option<std::path::PathBuf>,
     native_broker_socket: Option<std::path::PathBuf>,
     receivers: Vec<tilo_messaging_protocol::signal_broker::ReceiveGuard>,
@@ -70,6 +80,9 @@ impl InProcessApps {
     /// `device_id`.
     pub fn new(store: Rc<dyn durable_store::DurableStore>, device_id: &str, author: &str) -> Self {
         Self {
+            feedback: None,
+            native_feedback: None,
+            feedback_destination: None,
             owners: RecordOwners::with_store(Rc::clone(&store)),
             store,
             views: HashMap::new(),
@@ -82,11 +95,14 @@ impl InProcessApps {
             credential_owner: None,
             messaging_records: None,
             messaging_record_wake: None,
+            messaging_transport: None,
+            native_messaging_transport: None,
             messaging_starts: None,
             messaging_lifetime: std::sync::Arc::new(()),
             messaging_network_prompts: None,
             messaging_providers: Vec::new(),
             messaging_native_accounts: Vec::new(),
+            native_messaging_peers: None,
             native_messaging_root: None,
             native_broker_socket: None,
             receivers: Vec::new(),
@@ -104,8 +120,38 @@ impl InProcessApps {
         }
     }
 
+    pub(crate) fn bind_private_messages_network(
+        &mut self,
+        network: &crate::shell::network::ShellNetwork,
+    ) {
+        if self.native_messaging_transport.is_some() || self.messaging_transport.is_some() {
+            return;
+        }
+        self.native_messaging_peers = Some(network.private_message_identities());
+        let (reply, receiver) = tokio::sync::oneshot::channel();
+        if network
+            .cmd_tx
+            .try_send(crate::network::NetCmd::PrivateMessages(reply))
+            .is_ok()
+        {
+            self.messaging_transport = Some(receiver);
+        }
+    }
+
     /// Service bounded worker reads on the actual UI owner, without a window.
     pub(crate) fn pump_messaging_records(&mut self) {
+        if let Some(receiver) = self.messaging_transport.as_mut() {
+            match receiver.try_recv() {
+                Ok(transport) => {
+                    self.native_messaging_transport = Some(transport);
+                    self.messaging_transport = None;
+                }
+                Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
+                    self.messaging_transport = None;
+                }
+                Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {}
+            }
+        }
         if let Some(records) = &self.messaging_records {
             records.pump();
         }
@@ -201,7 +247,7 @@ impl InProcessApps {
             tilo_messaging_protocol::Service::Whatsapp => "whatsapp",
             tilo_messaging_protocol::Service::Signal => "signal",
             tilo_messaging_protocol::Service::Sms => "sms",
-            tilo_messaging_protocol::Service::Tilo => return Err(LaunchError::BindingMismatch),
+            tilo_messaging_protocol::Service::Tilo => "tilo",
         };
         let mut services = self.messaging_services.clone();
         services.push((
@@ -264,6 +310,9 @@ impl InProcessApps {
         component: &AppComponent,
         room: &str,
     ) -> Option<ui::collaboration::CollaborationManager> {
+        if component.app_id() == tilo_desktop::feedback::PACKAGE {
+            return None;
+        }
         let broker = self.broker.as_ref()?;
         component.collaborate_through(broker(component.app_id(), room))
     }
@@ -364,6 +413,7 @@ impl InProcessApps {
             )
         }));
         apps.native_broker_socket = Some(socket);
+        apps.feedback_destination = feedback_native::configured_destination(profile)?;
         apps.native_messaging_root = Some(profile.join("private-messages"));
         let registry = tilo_messaging::messaging_registry(&apps.author.0)
             .map_err(|_| LaunchError::BindingMismatch)?;
@@ -387,6 +437,12 @@ impl InProcessApps {
         record: RecordId,
         lend: impl FnOnce(&mut HostContext),
     ) -> Result<AppComponent, LaunchError> {
+        if definition.app_id == tilo_desktop::feedback::PACKAGE {
+            return match &self.feedback {
+                Some(feedback) => feedback.prepare(&self.device_id, &self.author.0, tab),
+                None => tilo_desktop::feedback::unconfigured(&self.device_id, &self.author.0, tab),
+            };
+        }
         if definition.app_id == "so.tilo.messages" {
             if self.first_accounts.is_none()
                 && self.native_broker_socket.is_some()
@@ -418,9 +474,9 @@ impl InProcessApps {
             views: Rc::clone(&views),
             device_id: self.device_id.clone(),
             instance_id: tab,
-            permissions: Rc::new(RefCell::new(PermissionContext::from_capabilities(
-                Actor::person(Some(Role::Owner), &self.author.0),
-                vec![],
+            permissions: Rc::new(RefCell::new(PermissionContext::member(
+                &self.author.0,
+                Role::Owner,
             ))),
             author: self.author.clone(),
             action_context: tilo_actions::ActionContext::default(),
@@ -469,10 +525,170 @@ impl InProcessApps {
     }
 }
 
+impl InProcessApps {
+    /// Consume enrollment-owned authenticated feedback startup custody.
+    /// A different profile person or replacement of existing custody is refused.
+    /// # Errors
+    /// Refuses mismatched identity, admission, storage or existing custody.
+    pub fn install_feedback_startup(
+        &mut self,
+        authenticated_reporter: &tilo_actions::remote::Caller,
+        startup: tilo_desktop::feedback::transport::Startup,
+    ) -> Result<(), LaunchError> {
+        if startup.reporter() != authenticated_reporter
+            || startup.reporter().principal()
+                != &tilo_actions::remote::CallerPrincipal::Person(self.author.0.clone())
+        {
+            return Err(LaunchError::BindingMismatch);
+        }
+        startup
+            .install(Rc::clone(&self.store), &mut self.feedback)
+            .map_err(|error| LaunchError::Operation(error.to_string()))
+    }
+
+    /// Bind a trusted host's already-admitted feedback adapter to this profile.
+    /// This is host configuration, never an action or a URL-supplied destination.
+    ///
+    /// # Errors
+    /// Refuses replacement of existing custody or an invalid/recovering outbox.
+    pub fn install_feedback(
+        &mut self,
+        destination: tilo_desktop::feedback::Destination,
+        host: Box<dyn tilo_desktop::feedback::FeedbackHost>,
+    ) -> Result<(), LaunchError> {
+        if self.feedback.is_some() {
+            return Err(LaunchError::BindingMismatch);
+        }
+        self.feedback = Some(
+            tilo_desktop::feedback::PrivateFeedback::new(Rc::clone(&self.store), destination, host)
+                .map_err(|error| LaunchError::Operation(error.to_string()))?,
+        );
+        Ok(())
+    }
+
+    /// Storage/transport wakes service the approved outbox, including while
+    /// its private window is closed. Failures remain in the private status UI.
+    pub(crate) fn pump_feedback(&mut self) {
+        if let Some(mut delivery) = self.native_feedback.take() {
+            let result = delivery.pump(self);
+            if let Err(error) = result {
+                tracing::debug!(%error, "native feedback remains unavailable");
+            }
+            self.native_feedback = Some(delivery);
+        }
+        if let Some(feedback) = &self.feedback {
+            let _ = feedback.pump();
+        }
+    }
+
+    pub(crate) fn feedback_deadline(&self) -> Option<ui::time::Instant> {
+        let private = self
+            .feedback
+            .as_ref()
+            .and_then(tilo_desktop::feedback::PrivateFeedback::next_wake_deadline);
+        let native = self
+            .native_feedback
+            .as_ref()
+            .and_then(|_| ui::time::now().checked_add(ui::time::Duration::from_secs(2)));
+        private.into_iter().chain(native).min()
+    }
+
+    /// Bind configured feedback to this session's already enrolled network.
+    /// Missing configuration leaves the private composer unconfigured.
+    pub(crate) fn bind_feedback_network(
+        &mut self,
+        network: std::sync::Arc<crate::shell::network::ShellNetwork>,
+    ) {
+        if self.native_feedback.is_some() || self.feedback.is_some() {
+            return;
+        }
+        let Some(destination) = self.feedback_destination.clone() else {
+            return;
+        };
+        match feedback_native::Delivery::new(network, destination, &self.author.0) {
+            Ok(delivery) => self.native_feedback = Some(Box::new(delivery)),
+            Err(error) => tracing::debug!(%error, "native feedback startup refused"),
+        }
+    }
+}
+
+/// Whether this process's session services — the collaboration broker and
+/// the identity service its in-process apps connect to — are listening yet.
+///
+/// The native session builds its desktop, and so mounts every hosted tab it
+/// restores (a Notes notebook, a Terminal), before it binds those services:
+/// the broker needs the desktop's chrome to start. A restored tab's one
+/// connection attempt then found no socket and the app stayed offline for
+/// the whole session: nothing it published reached the palette, search or an
+/// agent until the tab was reopened.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SessionServices {
+    /// No session in this process binds them (a test, a hosted host): a
+    /// missing socket is final.
+    NotHere,
+    /// The session will bind them shortly: a connection waits.
+    Starting,
+    /// Both are bound, or their start was attempted: a connection that
+    /// still fails is final.
+    Listening,
+}
+
+static SESSION_SERVICES: std::sync::OnceLock<tokio::sync::watch::Sender<SessionServices>> =
+    std::sync::OnceLock::new();
+
+fn session_services() -> &'static tokio::sync::watch::Sender<SessionServices> {
+    SESSION_SERVICES.get_or_init(|| tokio::sync::watch::channel(SessionServices::NotHere).0)
+}
+
+/// Say where this process's session services are; [`session_connector`]s
+/// waiting for them wake on the change.
+pub fn set_session_services(state: SessionServices) {
+    session_services().send_replace(state);
+}
+
+/// The most a hosted app's first connection waits for its session's
+/// services: inside the SDK's own 5 s bound on the whole connect.
+const SESSION_SERVICES_WAIT: std::time::Duration = std::time::Duration::from_secs(4);
+
+/// Connect to the session socket at `path`. A socket not there yet, while
+/// `services` says the session is still starting them, is waited for: until
+/// they listen (one retry, on the change — no polling) or `wait` ends.
+async fn connect_session_socket(
+    path: &std::path::Path,
+    services: &tokio::sync::watch::Sender<SessionServices>,
+    wait: std::time::Duration,
+) -> std::io::Result<std::os::unix::net::UnixStream> {
+    let mut changes = services.subscribe();
+    let error = match std::os::unix::net::UnixStream::connect(path) {
+        Ok(stream) => return Ok(stream),
+        Err(error) => error,
+    };
+    let not_bound_yet = matches!(
+        error.kind(),
+        std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
+    );
+    let starting = *changes.borrow_and_update() == SessionServices::Starting;
+    if !not_bound_yet || !starting {
+        return Err(error);
+    }
+    let settled = tokio::time::timeout(
+        wait,
+        changes.wait_for(|state| *state != SessionServices::Starting),
+    )
+    .await
+    .is_ok_and(|changed| changed.is_ok());
+    if !settled {
+        return Err(error);
+    }
+    std::os::unix::net::UnixStream::connect(path)
+}
+
 /// A connection for `app` in `room` to the broker at `collab` and the
 /// identity service at `identity`, made as the launcher makes an app's: the
 /// session records the launch, the connection names the app and room, and
-/// the broker attests it against that record before the app joins.
+/// the broker attests it against that record before the app joins. A tab
+/// the session restores before it binds those services waits for them
+/// ([`SessionServices`]).
 pub fn session_connector(
     collab: std::path::PathBuf,
     identity: std::path::PathBuf,
@@ -482,12 +698,17 @@ pub fn session_connector(
     let (app, room) = (app.to_owned(), room.to_owned());
     ui::collaboration::HostSessionConnector::new(move |_route| async move {
         let failed = |error: std::io::Error| runtime_portal::NotAvailable::ConnectionFailed(error);
+        let services = session_services();
         crate::shell::launcher::register_in_process_launch(&app, &room);
-        let mut stream = std::os::unix::net::UnixStream::connect(&collab).map_err(failed)?;
+        let mut stream = connect_session_socket(&collab, services, SESSION_SERVICES_WAIT)
+            .await
+            .map_err(failed)?;
         launcher::services::write_collab_handoff(&mut stream, &app, &room).map_err(failed)?;
         stream.set_nonblocking(true).map_err(failed)?;
         let collaboration = tokio::net::UnixStream::from_std(stream).map_err(failed)?;
-        let mut identity = std::os::unix::net::UnixStream::connect(&identity).map_err(failed)?;
+        let mut identity = connect_session_socket(&identity, services, SESSION_SERVICES_WAIT)
+            .await
+            .map_err(failed)?;
         launcher::services::write_identity_handshake(&mut identity, &app, &room).map_err(failed)?;
         identity.set_nonblocking(true).map_err(failed)?;
         let identity = tokio::net::UnixStream::from_std(identity).map_err(failed)?;
@@ -503,9 +724,75 @@ mod tests {
     use super::*;
     use tilo_resource::Resource as _;
     include!("in_process_files_clipboard_tests.rs");
+    include!("in_process_publication_tests.rs");
+    include!("in_process_terminal_open_tests.rs");
 
     const ROOM: &str = "6a3f0c2e-0f1b-4c5d-9e8f-123456789abc";
     const TAB: u64 = 41;
+
+    fn session_socket_runtime() -> tokio::runtime::Runtime {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+    }
+
+    /// A tab the session restores before it binds its services connects
+    /// once they listen, woken by the change.
+    #[test]
+    fn a_hosted_tab_restored_before_the_session_binds_its_services_connects_once_they_listen() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("collab.sock");
+        let (services, _) = tokio::sync::watch::channel(SessionServices::Starting);
+        let runtime = session_socket_runtime();
+        let (connected, _listener) = runtime.block_on(async {
+            let bind = async {
+                tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+                let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+                services.send_replace(SessionServices::Listening);
+                listener
+            };
+            tokio::join!(
+                connect_session_socket(&path, &services, std::time::Duration::from_secs(4)),
+                bind
+            )
+        });
+        assert!(connected.is_ok(), "{connected:?}");
+    }
+
+    /// Where no session binds the services here, or once it has, a missing
+    /// socket fails at once; a session that never comes costs the bound.
+    #[test]
+    fn a_missing_session_socket_fails_without_waiting_unless_the_session_is_starting() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("absent.sock");
+        let runtime = session_socket_runtime();
+        for state in [SessionServices::NotHere, SessionServices::Listening] {
+            let (services, _) = tokio::sync::watch::channel(state);
+            let started = std::time::Instant::now();
+            let error = runtime
+                .block_on(connect_session_socket(
+                    &path,
+                    &services,
+                    std::time::Duration::from_secs(4),
+                ))
+                .unwrap_err();
+            assert_eq!(error.kind(), std::io::ErrorKind::NotFound, "{state:?}");
+            assert!(
+                started.elapsed() < std::time::Duration::from_secs(1),
+                "{state:?}"
+            );
+        }
+        let (services, _) = tokio::sync::watch::channel(SessionServices::Starting);
+        let error = runtime
+            .block_on(connect_session_socket(
+                &path,
+                &services,
+                std::time::Duration::from_millis(50),
+            ))
+            .unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
+    }
 
     fn mount_terminal(apps: &mut InProcessApps) -> ui::headless::FrameHarness {
         let component = apps
@@ -589,22 +876,18 @@ mod tests {
             );
         }
         let target = terminal::target::SessionTarget::Legacy { vm: "build".into() };
-        let retarget = serde_json::json!({
-            tilo_resource::APPLY_PARAM: serde_json::to_value(
-                terminal::resource::TerminalAction::SetTarget { target: target.encode() }
-            )
-            .unwrap()
-        });
         harness
             .invoke_bound_action(
                 &ui::bound_dispatch::BoundActionAddress {
                     instance_id: TAB,
                     address: tilo_actions::ActionAddress::new(
                         terminal::Terminal::KIND,
-                        tilo_resource::APPLY,
+                        "record-target",
                     ),
                 },
-                retarget.as_object().unwrap(),
+                serde_json::json!({ "target": target.encode() })
+                    .as_object()
+                    .unwrap(),
             )
             .unwrap();
         harness.relayout();
@@ -620,7 +903,7 @@ mod tests {
             .unwrap();
         let kept = records
             .with(&RecordId::for_tab(TAB), |doc| {
-                terminal::Terminal::read(doc).map(|state| state.target)
+                terminal::Terminal::read(doc).map(|state| state.session_target())
             })
             .expect("the tab's record is open")
             .unwrap();
@@ -680,7 +963,7 @@ mod tests {
                 .unwrap();
             records
                 .with(&RecordId::room_default(), |doc| {
-                    file_explorer::FileExplorer::read(doc).map(|state| state.bookmarks)
+                    file_explorer::FileExplorer::read(doc).map(|state| state.bookmarks())
                 })
                 .expect("the room's record of places is open")
                 .unwrap()
@@ -693,7 +976,7 @@ mod tests {
                     instance_id: 51,
                     address: tilo_actions::ActionAddress::new("files.folder", "add-bookmark"),
                 },
-                serde_json::json!({ "path": place }).as_object().unwrap(),
+                serde_json::json!({ "place": place }).as_object().unwrap(),
             )
             .unwrap();
         harness.relayout();
@@ -771,7 +1054,7 @@ mod tests {
             .unwrap();
             harness.relayout();
             let import = notes::actions::import_markdown_action(
-                uuid::Uuid::new_v4(),
+                Some(uuid::Uuid::new_v4()),
                 title,
                 &format!("{title} body"),
                 Vec::new(),
@@ -811,8 +1094,8 @@ mod tests {
                 .with(&RecordId::for_tab(tab), |doc| {
                     notes::Notebook::read(doc).map(|state| {
                         state
-                            .pages()
-                            .iter()
+                            .pages
+                            .values()
                             .map(|page| page.title.clone())
                             .collect::<Vec<_>>()
                     })
@@ -867,7 +1150,7 @@ mod tests {
             editor
                 .resources()
                 .iter()
-                .any(|resource| resource.kind == code_editor::CodeEditor::KIND),
+                .any(|resource| resource.kind == code_editor::Project::KIND),
             "an Editor tab publishes its project"
         );
         let mut editor = editor;
@@ -943,8 +1226,8 @@ mod tests {
             .with(&RecordId::for_tab(81), |doc| {
                 notes::Notebook::read(doc).map(|state| {
                     state
-                        .pages()
-                        .iter()
+                        .pages
+                        .values()
                         .map(|page| page.title.clone())
                         .collect::<Vec<_>>()
                 })
@@ -1178,7 +1461,7 @@ mod tests {
                 .rows
                 .iter()
                 .filter_map(|row| row.action.as_ref())
-                .find(|action| action.address.action == "new-page")
+                .find(|action| action.address.action == "new-note")
                 .map(|action| action.address.clone())
                 .expect("the notebook offers a new note");
             let mut started = tilo_actions::remote::ActionHost::invoke(
@@ -1192,7 +1475,7 @@ mod tests {
                         address,
                     },
                     argument: tilo_actions::remote::InvokeArgument::Json(
-                        serde_json::json!({ tilo_actions::PROMPTED_PARAM: "Tide table" })
+                        serde_json::json!({ "title": "Tide table" })
                             .as_object()
                             .unwrap()
                             .clone(),
@@ -1200,6 +1483,7 @@ mod tests {
                     context: None,
                     confirmation: None,
                     revision: Some(listed.revision),
+                    wait_ms: None,
                 },
             );
             let mut outcome = None;
@@ -1253,19 +1537,24 @@ mod tests {
             }
         }
 
-        // The palette's search finds the note by a word only in its body.
+        // The directory lists the note the launch imported, by its title,
+        // with the verbs that act on it.
         let found = {
             let mut found = false;
             let deadline = tilo_test_env::hang_deadline();
             while !found {
                 let page = wait_page(
                     &mut [&mut notes, &mut terminal],
-                    query(&notes_provider, "quayside"),
+                    query(&notes_provider, "Harbour plan"),
                 );
-                found = !page.rows.is_empty();
+                found = page.rows.iter().any(|row| {
+                    row.action
+                        .as_ref()
+                        .is_some_and(|action| action.address.action == "rename")
+                });
                 assert!(
                     found || std::time::Instant::now() < deadline,
-                    "no row for the note's body"
+                    "no row for the imported note"
                 );
             }
             found

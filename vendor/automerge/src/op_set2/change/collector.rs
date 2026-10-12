@@ -808,7 +808,13 @@ impl<'a> ChangeCollector<'a> {
             self.flush_deletes();
         }
 
-        let pred = self.preds.remove(&op.id).unwrap_or_default();
+        // Tilo patch (TILO-PATCH.md): most ops are nobody's successor, so
+        // the map is usually empty; skip hashing the id for nothing.
+        let pred = if self.preds.is_empty() {
+            Vec::new()
+        } else {
+            self.preds.remove(&op.id).unwrap_or_default()
+        };
 
         let op = op.build(pred);
 

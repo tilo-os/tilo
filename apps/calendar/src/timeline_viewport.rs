@@ -155,10 +155,6 @@ impl TimelineViewport {
         });
     }
 
-    pub fn pin_hour(&mut self, hour: f64) {
-        self.pinned_hour = Some(hour.clamp(0.0, 24.0));
-    }
-
     pub fn tokens(&self) -> TimelineTokens {
         self.tokens
     }
@@ -295,19 +291,8 @@ impl TimelineViewport {
     }
 
     pub fn handle_event(&mut self, input: &mut InputContext<'_>) -> bool {
-        self.scroll.handle_event(
-            input.event,
-            &mut ui::widget::EventCtx {
-                scale_factor: input.scale_factor,
-                modifiers: &input.modifiers,
-                state: input.state.reborrow(),
-                path: input.path,
-                handled: input.handled,
-                focus_target: input.focus_target,
-                node_id: input.node_id,
-                taffy: input.taffy,
-            },
-        );
+        self.scroll
+            .handle_event(input.event, &mut input.event_ctx());
         *input.handled
     }
 

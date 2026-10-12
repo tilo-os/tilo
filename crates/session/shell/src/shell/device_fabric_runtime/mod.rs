@@ -4,8 +4,18 @@
 //! hardware discovery on the render path. Remote clipboard entries become
 //! history, not the live Wayland selection, until explicitly activated.
 
+mod display_auto_leases;
+mod display_refresh;
+#[cfg(test)]
+mod display_refresh_tests;
+pub(crate) mod person_layout;
 mod receive_recovery;
 mod remote_capture;
+mod spatial_cleanup;
+mod spatial_protocol;
+#[cfg(test)]
+mod spatial_revocation_tests;
+mod spatial_withdrawal;
 mod window_views;
 
 pub use window_views::{WindowViewer, publish_window_views, window_viewers};
@@ -25,7 +35,7 @@ use rand_core::Rng;
 use serde_json::{Map, Value};
 use tilo_clock::unix_now_ms;
 
-use crate::network::actor::{PersonalMediaTransferStatus, PersonalNearbyTransferFrame};
+use crate::network::actor::{PersonalNearbyTransferFrame, PersonalTransferStatus};
 use crate::notifications::{
     ContinuityNotificationCommand, ContinuityOutboundEvent, NotificationBridge,
 };
@@ -65,6 +75,7 @@ const BLUETOOTH_HANDOFF_HISTORY_TTL: Duration = Duration::from_secs(5 * 60);
 const MAX_BLUETOOTH_HANDOFF_HISTORY: usize = 32;
 const MAX_GAMEPAD_FORWARDINGS: usize = 8;
 const MAX_PENDING_NEARBY_CONSENTS: usize = 64;
+const MAX_MEDIA_AUTHORIZATIONS: usize = 64;
 const NEARBY_CONSENT_TIMEOUT: Duration = Duration::from_secs(120);
 const DEVICE_HEALTH_SAMPLE_TTL: Duration = Duration::from_secs(10);
 
@@ -220,13 +231,17 @@ struct NearbyDropState {
             crate::shell::personal_continuity::DeviceId,
             u64,
             u64,
-            PersonalMediaTransferStatus,
+            PersonalTransferStatus,
         ),
     >,
     last_offer: BTreeMap<[u8; 16], Instant>,
     incoming: BTreeMap<[u8; 16], PendingNearbyConsent>,
     destinations: BTreeMap<[u8; 16], crate::shell::nearby_transfer::SecureNearbyDestination>,
     history: VecDeque<NearbyTransferHistory>,
+    /// Exact sender/transfer pairs a queued `ResumeMedia` authorised. Only
+    /// these media-handoff offers are accepted, without a Files consent, and
+    /// only into the private media cache.
+    media_authorized: BTreeSet<(crate::shell::personal_continuity::DeviceId, [u8; 16])>,
 }
 
 struct NearbyTransferHistory {
@@ -274,6 +289,21 @@ impl NearbyDropState {
         self.history.push_front(entry);
         self.history.truncate(32);
     }
+
+    /// Authorise the media-handoff object a `ResumeMedia` names. Bounded:
+    /// the oldest authorisation gives way, and its offer is then refused.
+    fn authorize_media(
+        &mut self,
+        source: crate::shell::personal_continuity::DeviceId,
+        transfer_id: [u8; 16],
+    ) {
+        while self.media_authorized.len() >= MAX_MEDIA_AUTHORIZATIONS {
+            if self.media_authorized.pop_first().is_none() {
+                break;
+            }
+        }
+        self.media_authorized.insert((source, transfer_id));
+    }
 }
 
 fn nearby_drop_state() -> &'static Mutex<NearbyDropState> {
@@ -282,7 +312,7 @@ fn nearby_drop_state() -> &'static Mutex<NearbyDropState> {
 }
 
 fn nearby_transfer_root() -> Option<PathBuf> {
-    xdg_paths::state_dir().map(|root| root.join("tilo").join("nearby-transfers"))
+    tilo_paths::state_dir().map(|root| root.join("tilo").join("nearby-transfers"))
 }
 
 fn nearby_store_cell() -> &'static Mutex<Option<crate::shell::nearby_transfer::NearbyTransferStore>>
@@ -305,6 +335,7 @@ fn with_nearby_transfer_store<T>(
             root,
             unix_now_ms(),
         )?);
+        remove_legacy_media_cache();
     }
     operation(
         guard
@@ -313,27 +344,40 @@ fn with_nearby_transfer_store<T>(
     )
 }
 
-fn try_outbox_entries() -> Vec<crate::shell::nearby_transfer::OutboxEntry> {
-    let Ok(mut guard) = nearby_store_cell().try_lock() else {
-        return Vec::new();
-    };
-    if guard.is_none() {
-        let Some(root) = nearby_transfer_root() else {
-            return Vec::new();
-        };
-        let Ok(store) =
-            crate::shell::nearby_transfer::NearbyTransferStore::open(root, unix_now_ms())
-        else {
-            return Vec::new();
-        };
-        *guard = Some(store);
+/// Run `operation` only against a store this session already opened, and
+/// only when no staging worker holds it: the frame loop never waits for a
+/// large copy. Callers either retry on a later frame or leave cleanup to the
+/// pass that drops unreferenced media-handoff state.
+fn with_open_nearby_transfer_store<T>(
+    operation: impl FnOnce(&mut crate::shell::nearby_transfer::NearbyTransferStore) -> T,
+) -> Option<T> {
+    nearby_store_cell()
+        .try_lock()
+        .ok()
+        .and_then(|mut guard| guard.as_mut().map(operation))
+}
+
+/// The retired media-handoff lane kept its own cache. Its objects were only
+/// ever session-local player inputs, so nothing there is still referenced.
+fn remove_legacy_media_cache() {
+    if let Some(legacy) = tilo_paths::cache_dir().map(|root| root.join("tilo/personal-media")) {
+        let _ = std::fs::remove_dir_all(legacy);
     }
-    guard
-        .as_ref()
-        .map_or_else(Vec::new, |store| store.outbox().to_vec())
+}
+
+fn try_outbox_entries() -> Vec<crate::shell::nearby_transfer::OutboxEntry> {
+    try_nearby_entries(crate::shell::nearby_transfer::NearbyTransferStore::outbox)
 }
 
 fn try_inbox_entries() -> Vec<crate::shell::nearby_transfer::InboxEntry> {
+    try_nearby_entries(crate::shell::nearby_transfer::NearbyTransferStore::inbox)
+}
+
+/// A copy of the store's `entries`, opening the store on first use. A store
+/// that is busy or cannot open reads as empty rather than blocking.
+fn try_nearby_entries<T: Clone>(
+    entries: impl FnOnce(&crate::shell::nearby_transfer::NearbyTransferStore) -> &[T],
+) -> Vec<T> {
     let Ok(mut guard) = nearby_store_cell().try_lock() else {
         return Vec::new();
     };
@@ -350,7 +394,7 @@ fn try_inbox_entries() -> Vec<crate::shell::nearby_transfer::InboxEntry> {
     }
     guard
         .as_ref()
-        .map_or_else(Vec::new, |store| store.inbox().to_vec())
+        .map_or_else(Vec::new, |store| entries(store).to_vec())
 }
 
 struct NearbyStagingResult {
@@ -358,6 +402,8 @@ struct NearbyStagingResult {
     target: crate::shell::personal_continuity::DeviceId,
     name: String,
     result: Result<(), String>,
+    /// The media handoff this object carries, when it is not a Nearby send.
+    media_request: Option<[u8; 16]>,
 }
 
 #[derive(Default)]
@@ -468,9 +514,13 @@ pub(crate) fn record_nearby_transfer_progress(
     transfer_id: [u8; 16],
     sent_bytes: u64,
     total_bytes: u64,
-    status: PersonalMediaTransferStatus,
+    status: PersonalTransferStatus,
 ) {
-    if !ContinuityPolicySnapshot::load().permits(ContinuityCapability::FileTransfer) {
+    // The one transfer lane serves Nearby sends and media handoffs alike.
+    let policy = ContinuityPolicySnapshot::load();
+    if !policy.permits(ContinuityCapability::FileTransfer)
+        && !policy.permits(ContinuityCapability::Media)
+    {
         return;
     }
     if let Ok(mut state) = nearby_drop_state().lock() {
@@ -479,7 +529,7 @@ pub(crate) fn record_nearby_transfer_progress(
             .insert(transfer_id, (target, sent_bytes, total_bytes, status));
         if matches!(
             status,
-            PersonalMediaTransferStatus::Failed | PersonalMediaTransferStatus::Cancelled
+            PersonalTransferStatus::Failed | PersonalTransferStatus::Cancelled
         ) {
             state.large_offers.remove(&transfer_id);
         }
@@ -495,9 +545,6 @@ pub(crate) fn handle_nearby_transfer_frame(
     source: &crate::shell::personal_continuity::DeviceId,
     frame: PersonalNearbyTransferFrame,
 ) {
-    if !ContinuityPolicySnapshot::load().permits(ContinuityCapability::FileTransfer) {
-        return;
-    }
     let (transfer_id, request_id) = match &frame {
         PersonalNearbyTransferFrame::Chunk {
             transfer_id,
@@ -514,23 +561,36 @@ pub(crate) fn handle_nearby_transfer_frame(
             request_id,
         } => (*transfer_id, *request_id),
     };
-    let authorized = with_nearby_transfer_store(|store| {
-        Ok(store.inbox().iter().any(|entry| {
-            entry.id == transfer_id
-                && entry.source == source.as_str()
-                && entry.request_id == request_id
-        }))
+    // Bytes land only in an inbox entry admitted for this exact sender and
+    // request, and only while the continuity switch for its kind is on.
+    let kind = with_nearby_transfer_store(|store| {
+        Ok(store
+            .inbox()
+            .iter()
+            .find(|entry| {
+                entry.id == transfer_id
+                    && entry.source == source.as_str()
+                    && entry.request_id == request_id
+            })
+            .map(|entry| entry.kind))
     })
-    .unwrap_or(false);
-    if !authorized {
+    .ok()
+    .flatten()
+    .filter(|kind| ContinuityPolicySnapshot::load().permits(kind.capability()));
+    let Some(kind) = kind else {
         return;
-    }
+    };
     match frame {
         PersonalNearbyTransferFrame::Chunk { offset, bytes, .. } => {
-            if bytes.len() <= crate::network::actor::PERSONAL_MEDIA_CHUNK_BYTES {
+            if bytes.len() <= crate::network::actor::PERSONAL_TRANSFER_CHUNK_BYTES {
                 let _ =
                     with_nearby_transfer_store(|store| store.append(transfer_id, offset, &bytes));
             }
+        }
+        PersonalNearbyTransferFrame::Finish { content_hash, .. }
+            if kind == crate::shell::nearby_transfer::TransferKind::MediaHandoff =>
+        {
+            finish_media_handoff(network, source, (transfer_id, request_id), content_hash);
         }
         PersonalNearbyTransferFrame::Finish { content_hash, .. } => {
             let history = try_inbox_entries()
@@ -599,6 +659,80 @@ pub(crate) fn handle_nearby_transfer_frame(
     }
 }
 
+/// Resolve a handoff's verified object, or say what the handoff should do
+/// instead: wait while its bytes are still arriving under a live
+/// authorisation, or give up once a refused, failed or revoked receive
+/// leaves nothing to wait for.
+fn cached_media_handoff(
+    source: &crate::shell::personal_continuity::DeviceId,
+    transfer_id: [u8; 16],
+) -> Result<PathBuf, IncomingMediaLaunch> {
+    // A staging worker holding the store only delays the lookup.
+    let Ok(mut store) = nearby_store_cell().try_lock() else {
+        return Err(IncomingMediaLaunch::Waiting);
+    };
+    let cached = store
+        .as_mut()
+        .and_then(|store| store.cached_media(source.as_str(), transfer_id));
+    drop(store);
+    if let Some(path) = cached {
+        return Ok(path);
+    }
+    let arriving = nearby_drop_state().lock().is_ok_and(|state| {
+        state
+            .media_authorized
+            .contains(&(source.clone(), transfer_id))
+    });
+    Err(if arriving {
+        IncomingMediaLaunch::Waiting
+    } else {
+        IncomingMediaLaunch::Rejected(MediaHandoffFailure::DestinationUnavailable)
+    })
+}
+
+/// Verify a completed media-handoff object into the private media cache.
+/// The handoff's authorisation is spent here, so a repeated offer of the
+/// same object is refused rather than received twice.
+fn finish_media_handoff(
+    network: &ShellNetwork,
+    source: &crate::shell::personal_continuity::DeviceId,
+    (transfer_id, request_id): ([u8; 16], [u8; 16]),
+    content_hash: [u8; 32],
+) {
+    let authorized = nearby_drop_state().lock().is_ok_and(|mut state| {
+        state
+            .media_authorized
+            .remove(&(source.clone(), transfer_id))
+    });
+    let cached = authorized
+        .then(|| {
+            with_nearby_transfer_store(|store| {
+                let offered = store
+                    .inbox()
+                    .iter()
+                    .find(|entry| entry.id == transfer_id)
+                    .map(|entry| entry.content_hash);
+                if offered != Some(content_hash) {
+                    return Err("media handoff finish does not match its offer".to_string());
+                }
+                store.finish_to_cache(transfer_id)
+            })
+            .ok()
+        })
+        .flatten();
+    if cached.is_none() {
+        let _ = with_nearby_transfer_store(|store| store.cancel_incoming(transfer_id));
+    }
+    let _ = network.send_personal_fabric_action(
+        source,
+        PersonalFabricAction::NearbyTransferResult {
+            request_id,
+            transfer_id,
+            accepted: cached.is_some(),
+        },
+    );
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct PendingIncomingMedia {
     received: Instant,
@@ -652,10 +786,46 @@ struct MediaHandoffStatus {
     personal_transfer_id: Option<[u8; 16]>,
 }
 
+/// Stop the local-file transfer behind one media handoff: its stream, its
+/// offer at the destination, and its staged copy. A copy still being staged
+/// is dropped when staging finishes and finds no pending handoff.
 fn cancel_status_personal_transfer(network: &ShellNetwork, status: &MediaHandoffStatus) {
-    if let Some(transfer_id) = status.personal_transfer_id {
-        let _ = network.cancel_personal_media_transfer(&status.target, transfer_id);
+    let Some(transfer_id) = status.personal_transfer_id else {
+        return;
+    };
+    let _ = network.cancel_nearby_transfer_stream(&status.target, transfer_id);
+    let offered = nearby_drop_state().lock().ok().and_then(|mut state| {
+        state.progress.remove(&transfer_id);
+        state.last_offer.remove(&transfer_id);
+        state
+            .large_offers
+            .remove(&transfer_id)
+            .filter(|(target, _, _)| target == &status.target)
+    });
+    if let Some((target, request_id, _)) = offered {
+        let _ = network.send_personal_fabric_action(
+            &target,
+            PersonalFabricAction::NearbyTransferCancel {
+                request_id,
+                transfer_id,
+            },
+        );
     }
+    let _ = with_open_nearby_transfer_store(|store| store.cancel_outgoing(transfer_id));
+}
+
+/// Whether a still-pending media handoff carries this staged object to `target`.
+fn media_transfer_pending(
+    transfer_id: [u8; 16],
+    target: &crate::shell::personal_continuity::DeviceId,
+) -> bool {
+    media_handoff_statuses().lock().is_ok_and(|statuses| {
+        statuses.values().any(|status| {
+            status.personal_transfer_id == Some(transfer_id)
+                && &status.target == target
+                && status.phase == MediaHandoffPhase::Pending
+        })
+    })
 }
 
 fn media_handoff_statuses() -> &'static Mutex<BTreeMap<[u8; 16], MediaHandoffStatus>> {
@@ -692,6 +862,7 @@ fn finish_media_handoff_status(request_id: [u8; 16], phase: MediaHandoffPhase) {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct OutboundSpatialInput {
+    sequence: Option<u64>,
     target: crate::shell::personal_continuity::DeviceId,
     lease_nonce: [u8; 16],
     event: FabricInputEvent,
@@ -699,10 +870,20 @@ struct OutboundSpatialInput {
 
 #[derive(Default)]
 struct SpatialInputState {
+    protocol: spatial_protocol::SpatialProtocol,
+    cleanup: spatial_cleanup::SpatialCleanup,
+    withdrawals: spatial_withdrawal::SpatialWithdrawals,
     /// Permissions this device issued and must enforce on inbound input.
     issued: BTreeMap<[u8; 16], InputLease>,
+    automatic_issued: BTreeMap<crate::shell::personal_continuity::DeviceId, [u8; 16]>,
+    issued_routes: BTreeMap<[u8; 16], crate::shell::network::AuthenticatedPersonalRoute>,
     /// Permissions other devices issued to this controller.
     received: BTreeMap<crate::shell::personal_continuity::DeviceId, InputLease>,
+    /// The exact certified topic/endpoint/epoch that delivered each grant.
+    received_routes: BTreeMap<
+        crate::shell::personal_continuity::DeviceId,
+        crate::shell::network::AuthenticatedPersonalRoute,
+    >,
     inbound: VecDeque<(
         crate::shell::personal_continuity::DeviceId,
         FabricInputEvent,
@@ -717,6 +898,15 @@ struct SpatialInputState {
 }
 
 impl SpatialInputState {
+    fn release_controller(&mut self, controller: &crate::shell::personal_continuity::DeviceId) {
+        // A down edge admitted before revocation must not be delivered after
+        // the compositor consumes that controller's seat release barrier.
+        self.inbound.retain(|(source, _)| source != controller);
+        if !self.release_controllers.contains(controller) {
+            self.release_controllers.push_back(controller.clone());
+        }
+    }
+
     /// Restore only shared-plane origin from the existing owner checkpoint.
     /// Dimensions always come from live native output geometry.
     fn placed_local_rect(
@@ -780,7 +970,46 @@ impl SpatialInputState {
         }
     }
 
+    fn accept_lease_bound_input(
+        &mut self,
+        route: &crate::shell::network::AuthenticatedPersonalRoute,
+        target: &crate::shell::personal_continuity::DeviceId,
+        input: ([u8; 16], FabricInputEvent),
+        now: u64,
+    ) {
+        if !self.legacy_motion_overtaken(input.0, input.1)
+            && self.input_is_permitted(route, target, input, now)
+        {
+            self.inbound.push_back((route.device().clone(), input.1));
+        }
+    }
+
+    fn queue_lease_bound_input(
+        &mut self,
+        controller: &crate::shell::personal_continuity::DeviceId,
+        input: OutboundSpatialInput,
+        now: u64,
+    ) -> Result<(), String> {
+        if !crate::shell::device_fabric::permits_spatial_input(
+            self.received.get(&input.target),
+            controller,
+            &input.target,
+            (input.lease_nonce, input.event),
+            now,
+        ) {
+            return Err(crate::shell::i18n::t(
+                "device-fabric-error-control-not-granted",
+            ));
+        }
+        self.queue_outbound(input)
+    }
+
     fn queue_outbound(&mut self, input: OutboundSpatialInput) -> Result<(), String> {
+        if self.cleanup.blocks(&input.target, input.lease_nonce) {
+            return Err(crate::shell::i18n::t(
+                "device-fabric-error-input-cleanup-pending",
+            ));
+        }
         if matches!(input.event, FabricInputEvent::PointerMotion { .. })
             && let Some(last) = self.outbound.back_mut()
             && last.target == input.target
@@ -798,9 +1027,38 @@ impl SpatialInputState {
     }
 }
 
+fn input_control_operations() -> &'static Mutex<()> {
+    static OPERATIONS: OnceLock<Mutex<()>> = OnceLock::new();
+    OPERATIONS.get_or_init(|| Mutex::new(()))
+}
+
 fn spatial_input_state() -> &'static Mutex<SpatialInputState> {
     static STATE: OnceLock<Mutex<SpatialInputState>> = OnceLock::new();
     STATE.get_or_init(|| Mutex::new(SpatialInputState::default()))
+}
+
+/// This device's power source and whether energy saver is on.
+type LocalPower = (crate::shell::spatial_calibration::DevicePower, bool);
+
+/// A peer's health report, addressed.
+type HealthReply = (
+    crate::shell::personal_continuity::DeviceId,
+    crate::shell::spatial_calibration::DeviceHealthReport,
+);
+
+/// Probes answered once the in-flight power sample lands; older ones are
+/// dropped first.
+const MAX_PENDING_HEALTH_PROBES: usize = 32;
+
+/// A probe older than a fabric action may be is not worth answering.
+const PENDING_HEALTH_PROBE_TTL: Duration =
+    Duration::from_millis(crate::shell::device_fabric::MAX_FABRIC_ACTION_AGE_MS);
+
+/// A peer's probe waiting for the power sample.
+struct PendingHealthProbe {
+    peer: crate::shell::personal_continuity::DeviceId,
+    nonce: [u8; 16],
+    received: Instant,
 }
 
 #[derive(Default)]
@@ -812,6 +1070,9 @@ struct DeviceHealthRuntimeState {
         crate::shell::spatial_calibration::DevicePower,
         bool,
     )>,
+    /// The power sample running on its own thread, if one is.
+    power_sample: Option<mpsc::Receiver<LocalPower>>,
+    pending_probes: VecDeque<PendingHealthProbe>,
 }
 
 fn device_health_state() -> &'static Mutex<DeviceHealthRuntimeState> {
@@ -889,12 +1150,6 @@ pub fn fabric_peer_clock(
     with_fabric_clock(|core| core.estimate(peer, now_us))
 }
 
-/// Whether the fabric clock runs at all here: Media continuity is on.
-#[must_use]
-pub fn fabric_clock_enabled() -> bool {
-    with_fabric_clock(|core| core.enabled())
-}
-
 fn spatial_calibration_state()
 -> &'static Mutex<crate::shell::spatial_calibration::SpatialCalibrationState> {
     static STATE: OnceLock<Mutex<crate::shell::spatial_calibration::SpatialCalibrationState>> =
@@ -904,17 +1159,20 @@ fn spatial_calibration_state()
     })
 }
 
-fn local_device_power(
-    state: &mut DeviceHealthRuntimeState,
-    now: Instant,
-) -> (crate::shell::spatial_calibration::DevicePower, bool) {
-    if let Some((sampled, power, saver)) = state.local_power
-        && now
-            .checked_duration_since(sampled)
-            .is_some_and(|age| age < DEVICE_HEALTH_SAMPLE_TTL)
-    {
-        return (power, saver);
-    }
+/// The cached power sample, while it is fresh enough to report.
+fn fresh_local_power(state: &DeviceHealthRuntimeState, now: Instant) -> Option<LocalPower> {
+    state
+        .local_power
+        .filter(|(sampled, _, _)| {
+            now.checked_duration_since(*sampled)
+                .is_some_and(|age| age < DEVICE_HEALTH_SAMPLE_TTL)
+        })
+        .map(|(_, power, saver)| (power, saver))
+}
+
+/// Read this device's power source and profile. `powerprofilesctl` is a
+/// subprocess bounded at 2.5 s, so this runs only on a sampling thread.
+fn sample_local_power() -> LocalPower {
     let battery = os_actions::BatteryInfo::from_system();
     let power = if !battery.present {
         crate::shell::spatial_calibration::DevicePower::External
@@ -931,8 +1189,84 @@ fn local_device_power(
         os_actions::get_power_profile(),
         Ok(os_actions::PowerProfile::Saver)
     );
-    state.local_power = Some((now, power, saver));
     (power, saver)
+}
+
+fn health_report(
+    nonce: [u8; 16],
+    (power, energy_saver): LocalPower,
+) -> crate::shell::spatial_calibration::DeviceHealthReport {
+    crate::shell::spatial_calibration::DeviceHealthReport {
+        probe_nonce: nonce,
+        power,
+        energy_saver,
+    }
+}
+
+/// Answer `peer`'s probe from a fresh sample, or queue it behind a sample
+/// taken by `sample` on its own thread. A peer decides when its probes
+/// arrive, so nothing here may wait on the power daemon.
+fn answer_health_probe(
+    state: &mut DeviceHealthRuntimeState,
+    peer: crate::shell::personal_continuity::DeviceId,
+    nonce: [u8; 16],
+    now: Instant,
+    sample: impl FnOnce() -> LocalPower + Send + 'static,
+) -> Option<HealthReply> {
+    if let Some(local) = fresh_local_power(state, now) {
+        return Some((peer, health_report(nonce, local)));
+    }
+    if state.pending_probes.len() >= MAX_PENDING_HEALTH_PROBES {
+        state.pending_probes.pop_front();
+    }
+    state.pending_probes.push_back(PendingHealthProbe {
+        peer,
+        nonce,
+        received: now,
+    });
+    if state.power_sample.is_none() {
+        let (sampled, receiver) = mpsc::sync_channel(1);
+        let spawned = std::thread::Builder::new()
+            .name("tilo-health-sample".into())
+            .spawn(move || {
+                let _ = sampled.send(sample());
+            });
+        match spawned {
+            Ok(_) => state.power_sample = Some(receiver),
+            Err(error) => {
+                tracing::warn!(%error, "could not sample local power for a health probe");
+                state.pending_probes.clear();
+            }
+        }
+    }
+    None
+}
+
+/// Take a finished power sample and the replies to every probe that waited
+/// for it and is still recent.
+fn finish_power_sample(state: &mut DeviceHealthRuntimeState, now: Instant) -> Vec<HealthReply> {
+    let Some(receiver) = state.power_sample.as_ref() else {
+        return Vec::new();
+    };
+    let local = match receiver.try_recv() {
+        Ok(local) => local,
+        Err(mpsc::TryRecvError::Empty) => return Vec::new(),
+        Err(mpsc::TryRecvError::Disconnected) => {
+            state.power_sample = None;
+            state.pending_probes.clear();
+            return Vec::new();
+        }
+    };
+    state.power_sample = None;
+    state.local_power = Some((now, local.0, local.1));
+    std::mem::take(&mut state.pending_probes)
+        .into_iter()
+        .filter(|probe| {
+            now.checked_duration_since(probe.received)
+                .is_none_or(|age| age < PENDING_HEALTH_PROBE_TTL)
+        })
+        .map(|probe| (probe.peer, health_report(probe.nonce, local)))
+        .collect()
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1270,7 +1604,11 @@ pub struct LocalFabricCapabilities {
 pub struct DeviceFabricRuntime {
     counter: u64,
     last_sample: Option<Instant>,
+    display_refresh: display_refresh::DisplayRefresh,
     last_publish: Option<Instant>,
+    /// What the display files last said, so a sample that changed nothing
+    /// leaves them (and every watcher of their directory) alone.
+    published_displays: Option<PublishedDisplays>,
     local_fingerprint: Option<[u8; 32]>,
     merged_settings_fingerprint: Option<[u8; 32]>,
     roaming_provenance_fingerprint: Option<[u8; 32]>,
@@ -1287,6 +1625,7 @@ pub struct DeviceFabricRuntime {
     inbound_gamepads: BTreeMap<[u8; 16], InboundGamepadForwarding>,
     local_app_focus: Option<crate::shell::physical_gamepad::PhysicalGamepadBinding>,
     policy: Option<ContinuityPolicySnapshot>,
+    policy_cache: Option<ContinuityPolicySnapshot>,
     policy_store_stamp: Option<SystemTime>,
     last_policy_store_check: Option<Instant>,
 }
@@ -1300,7 +1639,9 @@ impl DeviceFabricRuntime {
         Self {
             counter,
             last_sample: None,
+            display_refresh: display_refresh::DisplayRefresh::new(network.loop_waker()),
             last_publish: None,
+            published_displays: None,
             local_fingerprint: None,
             merged_settings_fingerprint: None,
             roaming_provenance_fingerprint: None,
@@ -1322,6 +1663,7 @@ impl DeviceFabricRuntime {
             inbound_gamepads: BTreeMap::new(),
             local_app_focus: None,
             policy: None,
+            policy_cache: None,
             policy_store_stamp: None,
             last_policy_store_check: None,
         }
@@ -1371,17 +1713,17 @@ impl DeviceFabricRuntime {
     }
 
     fn current_policy(&mut self, now: Instant) -> ContinuityPolicySnapshot {
-        if self.policy.is_some() && self.policy_cache_fresh(now) {
-            return self.policy.unwrap_or_default();
+        if self.policy_cache.is_some() && self.policy_cache_fresh(now) {
+            return self.policy_cache.unwrap_or_default();
         }
         self.last_policy_store_check = Some(now);
         let stamp = settings_store::settings_path()
             .and_then(|path| std::fs::metadata(path).ok()?.modified().ok());
-        if self.policy.is_none() || stamp != self.policy_store_stamp {
-            self.policy = Some(ContinuityPolicySnapshot::load());
+        if self.policy_cache.is_none() || stamp != self.policy_store_stamp {
+            self.policy_cache = Some(ContinuityPolicySnapshot::load());
             self.policy_store_stamp = stamp;
         }
-        self.policy.unwrap_or_default()
+        self.policy_cache.unwrap_or_default()
     }
 
     fn policy_cache_fresh(&self, now: Instant) -> bool {
@@ -1426,6 +1768,15 @@ impl DeviceFabricRuntime {
         selection: &SharedSelection,
         local: LocalFabricCapabilities,
     ) {
+        let changes = self.display_refresh.take_changes(local);
+        if changes.resample {
+            self.last_sample = None;
+        }
+        if changes.policy {
+            // Keep the last enforced policy: teardown compares against it.
+            self.policy_cache = None;
+            self.last_policy_store_check = None;
+        }
         let policy = self.current_policy(Instant::now());
         self.enforce_policy(network, selection, policy);
         // Always drain Bluetooth worker completions. Policy teardown removes
@@ -1472,14 +1823,11 @@ impl DeviceFabricRuntime {
         );
         self.pump_realtime_continuity(network, policy);
         self.pump_notification_continuity(network, policy);
-        if policy.permits(ContinuityCapability::FileTransfer) {
-            resume_nearby_transfers(network);
-        } else {
-            discard_nearby_staging_results();
-        }
+        resume_nearby_transfers(network, policy);
         if policy.permits(ContinuityCapability::Media) {
             self.retry_waiting_media(network);
         }
+        spatial_withdrawal::flush(network);
         if policy.permits(ContinuityCapability::DisplayInput) {
             flush_spatial_input(network);
         }
@@ -1494,9 +1842,13 @@ impl DeviceFabricRuntime {
             return;
         }
         self.last_sample = Some(now);
-        crate::shell::mpris::refresh_handoff_reports();
+        if policy.permits(ContinuityCapability::Media) {
+            crate::shell::mpris::refresh_handoff_reports();
+        } else {
+            crate::shell::mpris::withdraw_handoff_reports();
+        }
         let Some((device, label)) = network.local_device_fabric_identity() else {
-            publish_device_displays(network, policy);
+            publish_device_displays(network, policy, &mut self.published_displays);
             return;
         };
         if !self.settings_origin_initialized {
@@ -1528,8 +1880,16 @@ impl DeviceFabricRuntime {
             &tentative_stamp,
             policy,
         );
+        let hardware = policy
+            .permits(ContinuityCapability::DisplayInput)
+            .then(settings_store::hardware::DisplayHardwareSnapshot::load)
+            .flatten();
+        let rich_outputs = hardware.as_ref().and_then(native_display_outputs);
         if let Some(display) = candidate.display.as_mut() {
-            display.outputs = native_display_connectors();
+            display.outputs = hardware
+                .as_ref()
+                .map(native_display_connectors)
+                .unwrap_or_default();
         }
         candidate.presence.wake_routes = crate::shell::device_wake::local_routes(
             previous
@@ -1540,11 +1900,21 @@ impl DeviceFabricRuntime {
         // Connectors are populated after build_local_snapshot; preserve their
         // exact layout stamp only once the complete observation is available.
         preserve_unchanged_stamps(&mut candidate, previous.as_ref());
-        let fingerprint = local_snapshot_fingerprint(&candidate);
-        publish_device_displays(network, policy);
-        let heartbeat_due = self
-            .last_publish
-            .is_none_or(|published| now.duration_since(published) >= PRESENCE_HEARTBEAT);
+        if let (Some(display), Some(outputs)) = (&mut candidate.display, &rich_outputs) {
+            refresh_display_observation_revision(
+                display,
+                &network.device_fabric(),
+                outputs,
+                &tentative_stamp,
+            );
+        }
+        let fingerprint = local_observation_fingerprint(&candidate, rich_outputs.as_deref());
+        // A heartbeat tells the person's connected devices this one is still
+        // here; with none connected it would only rewrite the checkpoint on
+        // disk every beat. The first device to connect gets one at once.
+        let heartbeat_due = self.last_publish.is_none_or(|published| {
+            now.duration_since(published) >= PRESENCE_HEARTBEAT && network.has_personal_routes()
+        });
         if fingerprint != self.local_fingerprint || heartbeat_due {
             self.counter = tentative_stamp.counter;
             if fingerprint == self.local_fingerprint {
@@ -1562,13 +1932,35 @@ impl DeviceFabricRuntime {
                 self.last_publish = Some(now);
             }
         }
+        if let Some(outputs) = rich_outputs
+            && let Some(stamp) = network
+                .device_fabric()
+                .snapshots()
+                .get(&device)
+                .and_then(|snapshot| snapshot.display.as_ref())
+                .map(|display| display.stamp.clone())
+            && let Err(error) = network.publish_local_display_outputs(&stamp, outputs)
+        {
+            tracing::debug!(%error, "could not publish rich display observations");
+        }
         self.merge_remote_state(network, selection, &device, policy);
+        publish_device_displays(network, policy, &mut self.published_displays);
         crate::shell::device_unlock_runtime::refresh(network);
         if policy.permits(ContinuityCapability::WifiSettings)
             && let Err(error) = network.refresh_wifi_credential_recipients()
         {
             tracing::warn!(%error, "could not refresh per-device Wi-Fi credential envelopes");
         }
+    }
+
+    #[cfg(test)]
+    pub(super) fn enforce_policy_for_test(
+        &mut self,
+        network: &ShellNetwork,
+        selection: &SharedSelection,
+        policy: ContinuityPolicySnapshot,
+    ) {
+        self.enforce_policy(network, selection, policy);
     }
 
     fn enforce_policy(
@@ -1664,7 +2056,7 @@ impl DeviceFabricRuntime {
         let fabric = network.device_fabric();
         if let Err(error) = publish_roaming_provenance(
             &fabric,
-            policy.permits(ContinuityCapability::WifiSettings),
+            policy,
             &mut self.roaming_provenance_fingerprint,
             None,
         ) {
@@ -1676,11 +2068,11 @@ impl DeviceFabricRuntime {
             merge_shared_clipboard_history(selection, &entries);
         }
 
-        let records = if policy.permits(ContinuityCapability::WifiSettings) {
-            fabric.merged_setting_records()
-        } else {
-            BTreeMap::new()
-        };
+        let records: BTreeMap<_, _> = fabric
+            .merged_setting_records()
+            .into_iter()
+            .filter(|(key, _)| permits_roaming_setting(policy, key))
+            .collect();
         let fingerprint = serde_json::to_vec(&records)
             .ok()
             .map(|bytes| *blake3::hash(&bytes).as_bytes());
@@ -1712,12 +2104,9 @@ impl DeviceFabricRuntime {
                 route,
                 received_monotonic_us,
             } = received;
-            if !network.personal_route_is_current(&route) {
-                network.revoke_queued_personal_action_authority(&envelope);
-                continue;
-            }
-            if !policy.permits_action(&envelope.action) {
-                network.revoke_queued_personal_action_authority(&envelope);
+            if !network.personal_route_is_current(&route)
+                || !policy.permits_action(&envelope.action)
+            {
                 continue;
             }
             if crate::shell::remote_audio::handle_action(network, &envelope) {
@@ -1785,14 +2174,24 @@ impl DeviceFabricRuntime {
                         has_video,
                         route,
                     };
-                    match self.try_launch_incoming_media(network, &request) {
-                        IncomingMediaLaunch::Waiting
-                            if matches!(
-                                &request.locator,
-                                MediaSourceLocator::PersonalTransfer { .. }
-                            ) && self.waiting_incoming_media.len()
-                                < MAX_PENDING_INCOMING_MEDIA =>
+                    // A local file arrives as a media-handoff transfer. This
+                    // handoff, not a Files consent, admits exactly the object
+                    // its locator names, and only while it can wait for it.
+                    let admits_transfer =
+                        if let MediaSourceLocator::PersonalTransfer { transfer_id, .. } =
+                            &request.locator
                         {
+                            let room =
+                                self.waiting_incoming_media.len() < MAX_PENDING_INCOMING_MEDIA;
+                            if room && let Ok(mut state) = nearby_drop_state().lock() {
+                                state.authorize_media(request.source.clone(), *transfer_id);
+                            }
+                            room
+                        } else {
+                            false
+                        };
+                    match self.try_launch_incoming_media(network, &request) {
+                        IncomingMediaLaunch::Waiting if admits_transfer => {
                             self.waiting_incoming_media
                                 .insert(request.request_id, request);
                         }
@@ -1904,7 +2303,7 @@ impl DeviceFabricRuntime {
                 PersonalFabricAction::WindowViews { views, decode } => {
                     window_views::record(envelope.source, views, &decode);
                 }
-                action => handle_spatial_action(network, envelope.source, &envelope.target, action),
+                action => handle_spatial_action(network, &route, &envelope.target, action),
             }
         }
     }
@@ -2203,13 +2602,7 @@ impl DeviceFabricRuntime {
             state.decisions.clear();
         }
         self.gamepad_broker.reap_expired(Instant::now());
-        let online = network
-            .device_fabric()
-            .snapshots()
-            .values()
-            .filter(|snapshot| snapshot.presence.online)
-            .map(|snapshot| snapshot.owner.clone())
-            .collect::<BTreeSet<_>>();
+        let online = network.online_device_ids();
         let expired_pending = gamepad_authorization_state().lock().map_or_else(
             |_| Vec::new(),
             |mut state| {
@@ -2335,11 +2728,10 @@ impl DeviceFabricRuntime {
         if !policy.permits(ContinuityCapability::RealtimeSessions) {
             if let Some(adapter) = self.realtime_adapter.as_ref() {
                 let peers = network
-                    .device_fabric()
-                    .snapshots()
-                    .keys()
-                    .cloned()
-                    .collect::<Vec<_>>();
+                    .with_device_fabric(|fabric| {
+                        fabric.snapshots().keys().cloned().collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
                 for peer in peers {
                     adapter.peer_offline(&peer, Instant::now());
                 }
@@ -2351,13 +2743,7 @@ impl DeviceFabricRuntime {
         let Some(adapter) = self.realtime_adapter.as_ref() else {
             return;
         };
-        let online = network
-            .device_fabric()
-            .snapshots()
-            .values()
-            .filter(|snapshot| snapshot.presence.online)
-            .map(|snapshot| snapshot.owner.clone())
-            .collect::<BTreeSet<_>>();
+        let online = network.online_device_ids();
         for peer in self.realtime_online_peers.difference(&online) {
             adapter.peer_offline(peer, Instant::now());
         }
@@ -2454,11 +2840,9 @@ impl DeviceFabricRuntime {
             return;
         };
         let peers = network
-            .device_fabric()
-            .snapshots()
-            .values()
-            .filter(|snapshot| snapshot.owner != local && snapshot.presence.online)
-            .map(|snapshot| snapshot.owner.clone())
+            .online_device_ids()
+            .into_iter()
+            .filter(|peer| *peer != local)
             .collect::<Vec<_>>();
         let online_sources = peers
             .iter()
@@ -2529,12 +2913,10 @@ impl DeviceFabricRuntime {
         }
         let verified_path = match &request.locator {
             MediaSourceLocator::PersonalTransfer { transfer_id, .. } => {
-                let Some(path) =
-                    network.completed_personal_media_transfer(&request.source, *transfer_id)
-                else {
-                    return IncomingMediaLaunch::Waiting;
-                };
-                Some(path)
+                match cached_media_handoff(&request.source, *transfer_id) {
+                    Ok(path) => Some(path),
+                    Err(launch) => return launch,
+                }
             }
             _ => None,
         };
@@ -2604,7 +2986,7 @@ impl DeviceFabricRuntime {
         request: &PendingIncomingMedia,
         failure: MediaHandoffFailure,
     ) {
-        Self::discard_incoming_media_transfer(network, request);
+        Self::discard_incoming_media_transfer(request);
         let _ = network.send_personal_fabric_action_on_route(
             &request.route,
             PersonalFabricAction::MediaRejected {
@@ -2615,9 +2997,19 @@ impl DeviceFabricRuntime {
         );
     }
 
-    fn discard_incoming_media_transfer(network: &ShellNetwork, request: &PendingIncomingMedia) {
+    /// Revoke the exact sender/transfer authorisation behind one handoff and
+    /// any bytes it brought. A verified object stays while a player lease or
+    /// another binding still references it.
+    fn discard_incoming_media_transfer(request: &PendingIncomingMedia) {
         if let MediaSourceLocator::PersonalTransfer { transfer_id, .. } = &request.locator {
-            network.discard_personal_media_transfer(&request.source, *transfer_id);
+            if let Ok(mut state) = nearby_drop_state().lock() {
+                state
+                    .media_authorized
+                    .remove(&(request.source.clone(), *transfer_id));
+            }
+            let _ = with_open_nearby_transfer_store(|store| {
+                store.release_media(request.source.as_str(), *transfer_id)
+            });
         }
     }
 
@@ -2644,7 +3036,7 @@ impl DeviceFabricRuntime {
             let Some(pending) = self.pending_incoming_media.remove(&request_id) else {
                 continue;
             };
-            Self::discard_incoming_media_transfer(network, &pending);
+            Self::discard_incoming_media_transfer(&pending);
             if network
                 .send_personal_fabric_action_on_route(
                     &pending.route,
@@ -2662,7 +3054,7 @@ impl DeviceFabricRuntime {
             let Some(pending) = self.pending_incoming_media.remove(&accepted.request_id) else {
                 continue;
             };
-            Self::discard_incoming_media_transfer(network, &pending);
+            Self::discard_incoming_media_transfer(&pending);
             let delivery = network.send_personal_fabric_action_on_route(
                 &pending.route,
                 PersonalFabricAction::MediaAccepted {
@@ -2713,7 +3105,7 @@ impl DeviceFabricRuntime {
     ) {
         for request in requests {
             let _ = crate::shell::mpris::cancel_resume_after_launch(request.request_id);
-            Self::discard_incoming_media_transfer(network, &request);
+            Self::discard_incoming_media_transfer(&request);
             if let Some(failure) = failure {
                 Self::reject_incoming_media(network, &request, failure);
             }
@@ -2805,20 +3197,14 @@ fn expire_nearby_consents(network: &ShellNetwork) {
     }
 }
 
-fn resume_nearby_transfers(network: &ShellNetwork) {
-    expire_nearby_consents(network);
-    if let Ok(receiver) = nearby_staging_queue().1.lock() {
-        while let Ok(staged) = receiver.try_recv() {
-            if staged.result.is_err()
-                && let Ok(mut state) = nearby_drop_state().lock()
-            {
-                state.events.push_back(NearbyDropEvent::Failed {
-                    file_name: staged.name,
-                    peer: staged.target,
-                });
-            }
-        }
+/// Drive the outgoing side of the one transfer lane: settle finished staging,
+/// then offer every staged object the continuity policy still allows. A
+/// media-handoff object lives exactly as long as its pending handoff.
+fn resume_nearby_transfers(network: &ShellNetwork, policy: ContinuityPolicySnapshot) {
+    if policy.permits(ContinuityCapability::FileTransfer) {
+        expire_nearby_consents(network);
     }
+    settle_nearby_staging(network, policy);
     let entries = try_outbox_entries();
     if let Ok(mut state) = nearby_drop_state().lock() {
         state
@@ -2826,10 +3212,19 @@ fn resume_nearby_transfers(network: &ShellNetwork) {
             .retain(|transfer_id, _| entries.iter().any(|entry| entry.id == *transfer_id));
     }
     for entry in entries {
+        if !policy.permits(entry.kind.capability()) {
+            continue;
+        }
         let Ok(target) = crate::shell::personal_continuity::DeviceId::new(entry.target.clone())
         else {
             continue;
         };
+        if entry.kind == crate::shell::nearby_transfer::TransferKind::MediaHandoff
+            && !media_transfer_pending(entry.id, &target)
+        {
+            let _ = with_nearby_transfer_store(|store| store.cancel_outgoing(entry.id));
+            continue;
+        }
         let should_offer = nearby_drop_state().lock().is_ok_and(|state| {
             !state.large_offers.contains_key(&entry.id)
                 && state
@@ -2861,15 +3256,70 @@ fn resume_nearby_transfers(network: &ShellNetwork) {
     }
 }
 
-fn discard_nearby_staging_results() {
-    if let Ok(receiver) = nearby_staging_queue().1.lock() {
-        while let Ok(staged) = receiver.try_recv() {
-            if staged.result.is_ok() {
-                let _ =
-                    with_nearby_transfer_store(|store| store.cancel_outgoing(staged.transfer_id));
+/// Collect finished staging. A Nearby send whose switch is now off is
+/// dropped; a media handoff that failed to stage fails its handoff, and one
+/// that is no longer pending loses its staged copy.
+fn settle_nearby_staging(network: &ShellNetwork, policy: ContinuityPolicySnapshot) {
+    let staged = nearby_staging_queue().1.lock().map_or_else(
+        |_| Vec::new(),
+        |receiver| receiver.try_iter().collect::<Vec<_>>(),
+    );
+    for staged in staged {
+        match staged.media_request {
+            Some(request_id) => {
+                let pending = policy.permits(ContinuityCapability::Media)
+                    && media_transfer_pending(staged.transfer_id, &staged.target);
+                if staged.result.is_ok() && !pending {
+                    let _ = with_nearby_transfer_store(|store| {
+                        store.cancel_outgoing(staged.transfer_id)
+                    });
+                }
+                if staged.result.is_err() && pending {
+                    fail_media_handoff(network, request_id, MediaHandoffFailure::OpenFailed);
+                }
+            }
+            None if !policy.permits(ContinuityCapability::FileTransfer) => {
+                if staged.result.is_ok() {
+                    let _ = with_nearby_transfer_store(|store| {
+                        store.cancel_outgoing(staged.transfer_id)
+                    });
+                }
+            }
+            None => {
+                if staged.result.is_err()
+                    && let Ok(mut state) = nearby_drop_state().lock()
+                {
+                    state.events.push_back(NearbyDropEvent::Failed {
+                        file_name: staged.name,
+                        peer: staged.target,
+                    });
+                }
             }
         }
     }
+}
+
+/// End one still-pending outbound media handoff on the source's own failure,
+/// telling the destination it was withdrawn.
+fn fail_media_handoff(network: &ShellNetwork, request_id: [u8; 16], failure: MediaHandoffFailure) {
+    let status = media_handoff_statuses()
+        .lock()
+        .ok()
+        .and_then(|statuses| statuses.get(&request_id).cloned())
+        .filter(|status| status.phase == MediaHandoffPhase::Pending);
+    let Some(status) = status else {
+        return;
+    };
+    let _ = media::handoff::cancel_outbound_handoff(request_id, &status.session_id);
+    cancel_status_personal_transfer(network, &status);
+    finish_media_handoff_status(request_id, MediaHandoffPhase::Failed(failure));
+    let _ = network.send_personal_fabric_action_on_route(
+        &status.route,
+        PersonalFabricAction::MediaCancelled {
+            request_id,
+            session_id: status.session_id,
+        },
+    );
 }
 
 fn prune_spatial_state(
@@ -2933,23 +3383,49 @@ fn prune_spatial_state(
             && !departed.contains(&lease.controller)
             && is_online(&lease.controller)
     });
+    spatial
+        .issued_routes
+        .retain(|nonce, _| spatial.issued.contains_key(nonce));
+    spatial
+        .automatic_issued
+        .retain(|_, nonce| spatial.issued.contains_key(nonce));
     spatial.received.retain(|target, lease| {
         lease.validate_at(now).is_ok() && !departed.contains(target) && is_online(target)
     });
     for controller in issued_to_release {
-        if !spatial.release_controllers.contains(&controller) {
-            spatial.release_controllers.push_back(controller);
-        }
+        spatial.release_controller(&controller);
     }
     let received = spatial.received.clone();
+    spatial
+        .received_routes
+        .retain(|device, _| received.contains_key(device));
     spatial.outbound.retain(|input| {
         received
             .get(&input.target)
             .is_some_and(|lease| lease.nonce == input.lease_nonce && lease.validate_at(now).is_ok())
     });
+    spatial.retain_spatial_protocol();
 }
 
 fn prune_spatial_leases(network: &ShellNetwork) {
+    // Read routes before taking the state mutex; queue admission takes the
+    // route registry before the state mutex and must not invert that order.
+    let routes = spatial_input_state().lock().map_or_else(
+        |_| Vec::new(),
+        |spatial| {
+            spatial
+                .issued_routes
+                .values()
+                .chain(spatial.received_routes.values())
+                .cloned()
+                .collect::<Vec<_>>()
+        },
+    );
+    let withdrawn = routes
+        .into_iter()
+        .filter(|route| !network.personal_route_is_current(route))
+        .map(|route| route.device().clone())
+        .collect::<BTreeSet<_>>();
     if let Ok(mut spatial) = spatial_input_state().lock() {
         let fabric = network.device_fabric();
         prune_spatial_state(
@@ -2957,10 +3433,11 @@ fn prune_spatial_leases(network: &ShellNetwork) {
             unix_now_ms(),
             &network.peer_departures(),
             |device| {
-                fabric
-                    .snapshots()
-                    .get(device)
-                    .is_some_and(|snapshot| snapshot.presence.online)
+                !withdrawn.contains(device)
+                    && fabric
+                        .snapshots()
+                        .get(device)
+                        .is_some_and(|snapshot| snapshot.presence.online)
             },
         );
     }
@@ -3037,6 +3514,25 @@ fn handle_nearby_drop_action(
         PersonalFabricAction::NearbyTransferOffer {
             transfer_id,
             name,
+            kind: crate::shell::nearby_transfer::TransferKind::MediaHandoff,
+            total_bytes,
+            content_hash,
+        } => accept_media_handoff_offer(
+            network,
+            &source,
+            crate::shell::nearby_transfer::IncomingManifest {
+                id: transfer_id,
+                source: source.as_str().to_string(),
+                request_id: envelope_request_id,
+                name,
+                kind: crate::shell::nearby_transfer::TransferKind::MediaHandoff,
+                total_bytes,
+                content_hash,
+            },
+        ),
+        PersonalFabricAction::NearbyTransferOffer {
+            transfer_id,
+            name,
             kind,
             total_bytes,
             content_hash,
@@ -3092,6 +3588,9 @@ fn handle_nearby_drop_action(
             let Ok((entry, path, local_prefix)) = manifest else {
                 return;
             };
+            if !transfer_kind_permitted(entry.kind) {
+                return;
+            }
             if local_prefix != prefix_hash {
                 let _ = network.send_personal_fabric_action(
                     &source,
@@ -3119,14 +3618,8 @@ fn handle_nearby_drop_action(
             request_id,
             transfer_id,
         } => {
-            let valid = with_nearby_transfer_store(|store| {
-                Ok(store.inbox().iter().any(|entry| {
-                    entry.id == transfer_id
-                        && entry.source == source.as_str()
-                        && entry.request_id == request_id
-                }))
-            })
-            .unwrap_or(false);
+            let valid = incoming_transfer_kind(&source, request_id, transfer_id)
+                .is_some_and(transfer_kind_permitted);
             if valid
                 && let Ok(prefix_hash) =
                     with_nearby_transfer_store(|store| store.restart_incoming(transfer_id))
@@ -3153,32 +3646,37 @@ fn handle_nearby_drop_action(
             {
                 state.incoming.remove(&transfer_id);
             }
-            let incoming = with_nearby_transfer_store(|store| {
-                Ok(store.inbox().iter().any(|entry| {
-                    entry.id == transfer_id
-                        && entry.source == source.as_str()
-                        && entry.request_id == request_id
-                }))
-            })
-            .unwrap_or(false);
-            if incoming {
+            if incoming_transfer_kind(&source, request_id, transfer_id)
+                .is_some_and(transfer_kind_permitted)
+            {
                 let _ = with_nearby_transfer_store(|store| store.cancel_incoming(transfer_id));
                 if let Ok(mut state) = nearby_drop_state().lock() {
                     state.destinations.remove(&transfer_id);
+                    state
+                        .media_authorized
+                        .remove(&(source.clone(), transfer_id));
                 }
             }
-            let outgoing = nearby_drop_state().lock().ok().and_then(|mut state| {
-                let pending = state
-                    .large_offers
-                    .get(&transfer_id)
-                    .cloned()
-                    .filter(|(target, offer, _)| target == &source && offer == &request_id);
-                if pending.is_some() {
-                    state.large_offers.remove(&transfer_id);
-                }
-                pending
-            });
+            let outgoing = transfer_kind_permitted(
+                outgoing_transfer_kind(transfer_id)
+                    .unwrap_or(crate::shell::nearby_transfer::TransferKind::File),
+            )
+            .then(|| {
+                nearby_drop_state().lock().ok().and_then(|mut state| {
+                    let pending = state
+                        .large_offers
+                        .get(&transfer_id)
+                        .cloned()
+                        .filter(|(target, offer, _)| target == &source && offer == &request_id);
+                    if pending.is_some() {
+                        state.large_offers.remove(&transfer_id);
+                    }
+                    pending
+                })
+            })
+            .flatten();
             if outgoing.is_some() {
+                let _ = network.cancel_nearby_transfer_stream(&source, transfer_id);
                 let _ = with_nearby_transfer_store(|store| store.cancel_outgoing(transfer_id));
             }
         }
@@ -3187,13 +3685,22 @@ fn handle_nearby_drop_action(
             transfer_id,
             accepted,
         } => {
+            let kind = outgoing_transfer_kind(transfer_id)
+                .unwrap_or(crate::shell::nearby_transfer::TransferKind::File);
+            if !transfer_kind_permitted(kind) {
+                return;
+            }
+            let media = kind == crate::shell::nearby_transfer::TransferKind::MediaHandoff;
             let pending = nearby_drop_state().lock().ok().and_then(|mut state| {
                 let pending = state
                     .large_offers
                     .get(&transfer_id)
                     .cloned()
                     .filter(|(target, offer, _)| target == &source && offer == &request_id);
-                if accepted && pending.is_some() {
+                // A refused media offer is offered again while its handoff
+                // is pending: the destination may not have seen the
+                // `ResumeMedia` that authorises it yet.
+                if (accepted || media) && pending.is_some() {
                     state.large_offers.remove(&transfer_id);
                 }
                 pending
@@ -3202,7 +3709,9 @@ fn handle_nearby_drop_action(
                 if accepted {
                     let _ = with_nearby_transfer_store(|store| store.cancel_outgoing(transfer_id));
                 }
-                if let Ok(mut state) = nearby_drop_state().lock() {
+                // A media handoff reports through its own status, never as
+                // a Nearby send.
+                if !media && let Ok(mut state) = nearby_drop_state().lock() {
                     state.events.push_back(if accepted {
                         NearbyDropEvent::Sent { file_name, peer }
                     } else {
@@ -3215,6 +3724,95 @@ fn handle_nearby_drop_action(
     }
 }
 
+/// Whether the continuity switch that governs `kind` is on right now.
+fn transfer_kind_permitted(kind: crate::shell::nearby_transfer::TransferKind) -> bool {
+    ContinuityPolicySnapshot::load().permits(kind.capability())
+}
+
+/// The kind of the receive this exact sender and request own, if any.
+fn incoming_transfer_kind(
+    source: &crate::shell::personal_continuity::DeviceId,
+    request_id: [u8; 16],
+    transfer_id: [u8; 16],
+) -> Option<crate::shell::nearby_transfer::TransferKind> {
+    with_nearby_transfer_store(|store| {
+        Ok(store
+            .inbox()
+            .iter()
+            .find(|entry| {
+                entry.id == transfer_id
+                    && entry.source == source.as_str()
+                    && entry.request_id == request_id
+            })
+            .map(|entry| entry.kind))
+    })
+    .ok()
+    .flatten()
+}
+
+/// The kind of one staged outgoing object, if it is still staged.
+fn outgoing_transfer_kind(
+    transfer_id: [u8; 16],
+) -> Option<crate::shell::nearby_transfer::TransferKind> {
+    with_nearby_transfer_store(|store| {
+        Ok(store
+            .outbox()
+            .iter()
+            .find(|entry| entry.id == transfer_id)
+            .map(|entry| entry.kind))
+    })
+    .ok()
+    .flatten()
+}
+
+/// Accept a media-handoff offer that a waiting `ResumeMedia` authorised, into
+/// the private media cache, resuming from any verified prefix. Every other
+/// media-handoff offer is refused; none ever reaches the Files consent queue.
+fn accept_media_handoff_offer(
+    network: &ShellNetwork,
+    source: &crate::shell::personal_continuity::DeviceId,
+    manifest: crate::shell::nearby_transfer::IncomingManifest,
+) {
+    let transfer_id = manifest.id;
+    let request_id = manifest.request_id;
+    let authorized = nearby_drop_state().lock().is_ok_and(|state| {
+        state
+            .media_authorized
+            .contains(&(source.clone(), transfer_id))
+    });
+    let checkpoint = authorized
+        .then(|| {
+            let accepted = with_nearby_transfer_store(|store| {
+                store.accept_incoming_offer(manifest, unix_now_ms())
+            });
+            if accepted.is_err()
+                && let Ok(mut state) = nearby_drop_state().lock()
+            {
+                // The receive cannot proceed, so the waiting handoff fails
+                // now instead of waiting out its timeout.
+                state
+                    .media_authorized
+                    .remove(&(source.clone(), transfer_id));
+            }
+            accepted.ok()
+        })
+        .flatten();
+    let action = match checkpoint {
+        Some((committed_offset, prefix_hash)) => PersonalFabricAction::NearbyTransferReady {
+            request_id,
+            transfer_id,
+            committed_offset,
+            prefix_hash,
+        },
+        None => PersonalFabricAction::NearbyTransferResult {
+            request_id,
+            transfer_id,
+            accepted: false,
+        },
+    };
+    let _ = network.send_personal_fabric_action(source, action);
+}
+
 fn handle_device_health_action(
     network: &ShellNetwork,
     envelope: &crate::shell::device_fabric::PersonalFabricActionEnvelope,
@@ -3222,23 +3820,21 @@ fn handle_device_health_action(
     let now = Instant::now();
     match &envelope.action {
         PersonalFabricAction::DeviceHealthProbe { nonce } => {
-            let Some((power, energy_saver)) = device_health_state()
-                .lock()
-                .ok()
-                .map(|mut state| local_device_power(&mut state, now))
-            else {
-                return true;
-            };
-            let _ = network.send_personal_fabric_action(
-                &envelope.source,
-                PersonalFabricAction::DeviceHealthReport {
-                    report: crate::shell::spatial_calibration::DeviceHealthReport {
-                        probe_nonce: *nonce,
-                        power,
-                        energy_saver,
-                    },
-                },
-            );
+            let reply = device_health_state().lock().ok().and_then(|mut state| {
+                answer_health_probe(
+                    &mut state,
+                    envelope.source.clone(),
+                    *nonce,
+                    now,
+                    sample_local_power,
+                )
+            });
+            if let Some((peer, report)) = reply {
+                let _ = network.send_personal_fabric_action(
+                    &peer,
+                    PersonalFabricAction::DeviceHealthReport { report },
+                );
+            }
             true
         }
         PersonalFabricAction::DeviceHealthReport { report } => {
@@ -3315,20 +3911,27 @@ fn pump_fabric_clock(network: &ShellNetwork, policy: ContinuityPolicySnapshot) {
     if !enabled {
         return;
     }
-    let fabric = network.device_fabric();
     let local = network
         .local_device_fabric_identity()
         .map(|(device, _)| device);
-    let snapshots = fabric.snapshots();
+    // Read in place, every frame; released before the clock lock is taken.
+    let (known, online_peers) = network
+        .with_device_fabric(|fabric| {
+            let snapshots = fabric.snapshots();
+            let online = snapshots
+                .values()
+                .filter(|snapshot| snapshot.presence.online)
+                .map(|snapshot| snapshot.owner.clone())
+                .collect::<BTreeSet<_>>();
+            (snapshots.keys().cloned().collect::<BTreeSet<_>>(), online)
+        })
+        .unwrap_or_default();
     let online = |peer: &crate::shell::personal_continuity::DeviceId| {
-        local.as_ref() != Some(peer)
-            && snapshots
-                .get(peer)
-                .is_some_and(|snapshot| snapshot.presence.online)
+        local.as_ref() != Some(peer) && online_peers.contains(peer)
     };
     let now_us = fabric_monotonic_us();
     let probes = with_fabric_clock(|core| {
-        core.retain_peers(|peer| snapshots.contains_key(peer));
+        core.retain_peers(|peer| known.contains(peer));
         core.due_probes(online, now, now_us, || {
             let mut nonce = [0; 16];
             while nonce == [0; 16] {
@@ -3349,21 +3952,36 @@ fn pump_fabric_clock(network: &ShellNetwork, policy: ContinuityPolicySnapshot) {
 }
 
 fn pump_device_health(network: &ShellNetwork, policy: ContinuityPolicySnapshot) {
+    let now = Instant::now();
+    let replies = device_health_state().lock().map_or_else(
+        |_| Vec::new(),
+        |mut state| finish_power_sample(&mut state, now),
+    );
     if !policy.permits(ContinuityCapability::DisplayInput) {
         return;
     }
-    let now = Instant::now();
-    let fabric = network.device_fabric();
+    for (peer, report) in replies {
+        let _ = network.send_personal_fabric_action(
+            &peer,
+            PersonalFabricAction::DeviceHealthReport { report },
+        );
+    }
     let local = network
         .local_device_fabric_identity()
         .map(|(device, _)| device);
-    let snapshots = fabric.snapshots();
-    let all_peers = snapshots.keys().cloned().collect::<BTreeSet<_>>();
-    let online = snapshots
-        .values()
-        .filter(|snapshot| snapshot.presence.online && local.as_ref() != Some(&snapshot.owner))
-        .map(|snapshot| snapshot.owner.clone())
-        .collect::<Vec<_>>();
+    let (all_peers, online) = network
+        .with_device_fabric(|fabric| {
+            let snapshots = fabric.snapshots();
+            let online = snapshots
+                .values()
+                .filter(|snapshot| {
+                    snapshot.presence.online && local.as_ref() != Some(&snapshot.owner)
+                })
+                .map(|snapshot| snapshot.owner.clone())
+                .collect::<Vec<_>>();
+            (snapshots.keys().cloned().collect::<BTreeSet<_>>(), online)
+        })
+        .unwrap_or_default();
     let mut probes = Vec::new();
     {
         let Ok(mut state) = device_health_state().lock() else {
@@ -3396,15 +4014,32 @@ fn pump_device_health(network: &ShellNetwork, policy: ContinuityPolicySnapshot) 
     }
 }
 
-fn handle_spatial_action(
+pub(super) fn handle_spatial_action(
     network: &ShellNetwork,
-    source: crate::shell::personal_continuity::DeviceId,
+    route: &crate::shell::network::AuthenticatedPersonalRoute,
     target: &crate::shell::personal_continuity::DeviceId,
     action: PersonalFabricAction,
 ) {
     let Ok(mut spatial) = spatial_input_state().lock() else {
         return;
     };
+    let reply = apply_spatial_action(&mut spatial, network, route, target, action);
+    spatial.retain_spatial_protocol();
+    drop(spatial);
+    if let Some(action) = reply {
+        let _ = network.send_personal_fabric_action_on_route(route, action);
+    }
+}
+
+fn apply_spatial_action(
+    spatial: &mut SpatialInputState,
+    network: &ShellNetwork,
+    route: &crate::shell::network::AuthenticatedPersonalRoute,
+    target: &crate::shell::personal_continuity::DeviceId,
+    action: PersonalFabricAction,
+) -> Option<PersonalFabricAction> {
+    let source = route.device().clone();
+    let mut reply = None;
     match action {
         action @ PersonalFabricAction::SetDisplayPlacementChecked { .. } => {
             spatial.apply_checked_display_move(&network.device_fabric(), target, &action);
@@ -3414,29 +4049,18 @@ fn handle_spatial_action(
         }
         PersonalFabricAction::InputLeaseGranted { lease } => {
             if lease.validate_at(unix_now_ms()).is_ok() {
-                spatial.outbound.retain(|input| input.target != source);
-                spatial.received.insert(source, lease);
+                spatial.receive_spatial_grant(source, route.clone(), lease);
             }
         }
         PersonalFabricAction::InputLeaseRevoked { nonce } => {
-            spatial
-                .received
-                .retain(|device, lease| device != &source || lease.nonce != nonce);
-            spatial
-                .outbound
-                .retain(|input| input.target != source || input.lease_nonce != nonce);
+            spatial.accept_spatial_withdrawal(route, target, nonce);
+        }
+        action @ (PersonalFabricAction::SpatialInputProtocol { .. }
+        | PersonalFabricAction::SpatialInputSequenced { .. }) => {
+            reply = spatial.handle_spatial_protocol_action(route, target, &action, unix_now_ms());
         }
         PersonalFabricAction::Input { lease_nonce, event } => {
-            let accepted = crate::shell::device_fabric::permits_spatial_input(
-                spatial.issued.get(&lease_nonce),
-                &source,
-                target,
-                (lease_nonce, event),
-                unix_now_ms(),
-            );
-            if accepted {
-                spatial.inbound.push_back((source, event));
-            }
+            spatial.accept_lease_bound_input(route, target, (lease_nonce, event), unix_now_ms());
         }
         PersonalFabricAction::ResumeMedia { .. }
         | PersonalFabricAction::MediaAccepted { .. }
@@ -3501,6 +4125,7 @@ fn handle_spatial_action(
         | PersonalFabricAction::GamepadForwardEvent { .. }
         | PersonalFabricAction::GamepadForwardStop { .. } => {}
     }
+    reply
 }
 
 #[allow(
@@ -3850,13 +4475,7 @@ fn pump_bluetooth_handoffs(network: &ShellNetwork) {
         finish_bluetooth_worker(network, result);
     }
 
-    let fabric = network.device_fabric();
-    let online = fabric
-        .snapshots()
-        .values()
-        .filter(|snapshot| snapshot.presence.online)
-        .map(|snapshot| snapshot.owner.clone())
-        .collect::<BTreeSet<_>>();
+    let online = network.online_device_ids();
     let lost = bluetooth_handoff_state().lock().map_or_else(
         |_| Vec::new(),
         |mut state| {
@@ -4407,11 +5026,11 @@ pub fn request_media_handoff(
             (MediaSourceLocator::AppResource { uri: uri.clone() }, None)
         }
         media::handoff::HandoffSource::LocalFile { path } => {
-            let transfer = network.prepare_personal_media_transfer(target, path)?;
+            let transfer = PreparedMediaTransfer::prepare(path)?;
             (
                 MediaSourceLocator::PersonalTransfer {
                     transfer_id: transfer.transfer_id,
-                    file_name: transfer.file_name.clone(),
+                    file_name: transfer.name.clone(),
                 },
                 Some(transfer),
             )
@@ -4430,20 +5049,16 @@ pub fn request_media_handoff(
     let route = network
         .current_personal_route(target)
         .ok_or_else(|| crate::shell::i18n::t("device-fabric-error-no-route"))?;
+    // A staging slot is taken before the destination learns of the handoff,
+    // so a busy source refuses up front instead of withdrawing it.
+    let permit = local_transfer
+        .as_ref()
+        .map(|_| NearbyStagingPermit::acquire("shell:media-handoff"))
+        .transpose()?;
     let request_id = network.send_personal_fabric_action_on_route(&route, action)?;
     let personal_transfer_id = local_transfer.as_ref().map(|transfer| transfer.transfer_id);
-    if let Some(transfer) = local_transfer
-        && let Err(error) = network.start_personal_media_transfer(transfer)
-    {
-        let _ = network.send_personal_fabric_action_on_route(
-            &route,
-            PersonalFabricAction::MediaCancelled {
-                request_id,
-                session_id: report.session.id,
-            },
-        );
-        return Err(error);
-    }
+    // Recorded before staging starts: staging that finishes with no pending
+    // handoff drops its copy.
     record_media_handoff_status(MediaHandoffStatus {
         request_id,
         session_id: report.session.id.clone(),
@@ -4455,7 +5070,110 @@ pub fn request_media_handoff(
         personal_transfer_id,
     });
     media::handoff::remember_outbound_handoff(request_id, report);
+    if let Some((transfer, permit)) = local_transfer.zip(permit)
+        && let Err(error) = transfer.stage(target, request_id, permit)
+    {
+        fail_media_handoff(network, request_id, MediaHandoffFailure::OpenFailed);
+        return Err(error);
+    }
     Ok(request_id)
+}
+
+/// The local file behind one media handoff, checked before the destination
+/// is told about it. The file is staged into the transfer spool off the frame
+/// thread and then offered as a [`TransferKind::MediaHandoff`] object, so the
+/// handoff resumes from the destination's verified prefix after a drop.
+///
+/// [`TransferKind::MediaHandoff`]: crate::shell::nearby_transfer::TransferKind::MediaHandoff
+struct PreparedMediaTransfer {
+    transfer_id: [u8; 16],
+    name: String,
+    source: PathBuf,
+}
+
+impl PreparedMediaTransfer {
+    fn prepare(path: &Path) -> Result<Self, String> {
+        let metadata = std::fs::symlink_metadata(path)
+            .map_err(|error| format!("media file cannot be inspected: {error}"))?;
+        if !metadata.file_type().is_file()
+            || metadata.len() == 0
+            || metadata.len() > crate::shell::nearby_transfer::MAX_TRANSFER_BYTES
+        {
+            return Err("media source is not a supported regular file".into());
+        }
+        let name = path
+            .file_name()
+            .and_then(std::ffi::OsStr::to_str)
+            .and_then(portable_media_name)
+            .ok_or_else(|| "media file has no portable name".to_string())?;
+        let mut transfer_id = [0_u8; 16];
+        while transfer_id == [0; 16] {
+            UnwrapErr(SysRng).fill_bytes(&mut transfer_id);
+        }
+        Ok(Self {
+            transfer_id,
+            name,
+            source: path.to_path_buf(),
+        })
+    }
+
+    fn stage(
+        self,
+        target: &crate::shell::personal_continuity::DeviceId,
+        request_id: [u8; 16],
+        permit: NearbyStagingPermit,
+    ) -> Result<(), String> {
+        let sender = nearby_staging_queue().0.clone();
+        let target = target.clone();
+        std::thread::Builder::new()
+            .name("tilo-media-stage".into())
+            .spawn(move || {
+                let _permit = permit;
+                let result = with_nearby_transfer_store(|store| {
+                    store
+                        .stage_media_with_id(
+                            &self.source,
+                            self.name.clone(),
+                            target.as_str().to_string(),
+                            unix_now_ms(),
+                            self.transfer_id,
+                        )
+                        .map(|_| ())
+                });
+                let _ = sender.send(NearbyStagingResult {
+                    transfer_id: self.transfer_id,
+                    target,
+                    name: self.name,
+                    result,
+                    media_request: Some(request_id),
+                });
+            })
+            .map(|_| ())
+            .map_err(|error| {
+                crate::shell::i18n::t_args(
+                    "device-fabric-error-transfer-start",
+                    &[("error", error.to_string().into())],
+                )
+            })
+    }
+}
+
+/// A display name the transfer lane accepts: separators and controls become
+/// `_`, and the name is cut to at most 255 bytes on a character boundary.
+fn portable_media_name(name: &str) -> Option<String> {
+    let mut sanitized = String::new();
+    for character in name.chars() {
+        let character = if character.is_control() || matches!(character, '/' | '\\') {
+            '_'
+        } else {
+            character
+        };
+        if sanitized.len().saturating_add(character.len_utf8()) > 255 {
+            break;
+        }
+        sanitized.push(character);
+    }
+    super::device_fabric::valid_nearby_file_name(&sanitized).then_some(sanitized)
 }
 
 pub(crate) fn media_handoff_status_views(network: &ShellNetwork) -> Vec<MediaHandoffStatusView> {
@@ -4647,21 +5365,6 @@ pub fn authorize_remote_audio(
     crate::shell::remote_audio::authorize(network, session_id, approved)
 }
 
-/// Choose which part of an inbound remote-audio route's stereo stream this
-/// device plays, e.g. one side of a stereo pair formed with another device.
-///
-/// # Errors
-///
-/// Returns an error for disabled policy, a stale route, or a playback stream
-/// that cannot restart.
-pub fn set_remote_audio_role(
-    session_id: [u8; 16],
-    role: media::sync_playout::ChannelRole,
-) -> Result<(), String> {
-    require_continuity(ContinuityCapability::Media)?;
-    crate::shell::remote_audio::set_role(session_id, role)
-}
-
 /// Stop an active remote-audio route and revoke its target-issued capability.
 ///
 /// # Errors
@@ -4808,6 +5511,7 @@ pub fn request_nearby_drop(
                     target: worker_target,
                     name,
                     result,
+                    media_request: None,
                 });
             })
             .map_err(|error| {
@@ -4931,6 +5635,7 @@ pub fn request_nearby_drop_secure(
                     target: worker_target,
                     name,
                     result,
+                    media_request: None,
                 });
             })
             .map_err(|error| {
@@ -5002,6 +5707,7 @@ pub fn cancel_nearby_transfer(network: &ShellNetwork, transfer_id: [u8; 16]) -> 
         .cloned()
         .ok_or_else(|| crate::shell::i18n::t("device-fabric-error-transfer-inactive"))?;
     let (target, request_id, _) = pending;
+    let _ = network.cancel_nearby_transfer_stream(&target, transfer_id);
     network.send_personal_fabric_action(
         &target,
         PersonalFabricAction::NearbyTransferCancel {
@@ -5060,10 +5766,14 @@ pub fn decide_nearby_transfer_at(
         let destination = destination
             .ok_or_else(|| crate::shell::i18n::t("device-fabric-error-destination-expired"))?;
         let resumed = with_nearby_transfer_store(|store| {
+            // A media handoff is never delivered to a Files destination.
             let entry = store
                 .inbox()
                 .iter()
-                .find(|entry| entry.id == transfer_id)
+                .find(|entry| {
+                    entry.id == transfer_id
+                        && entry.kind != crate::shell::nearby_transfer::TransferKind::MediaHandoff
+                })
                 .cloned()
                 .ok_or_else(|| {
                     crate::shell::i18n::t("device-fabric-error-transfer-unrecoverable")
@@ -5233,9 +5943,10 @@ pub fn decide_nearby_transfer_at(
 /// Returns an error when the transfer no longer exists in the durable outbox.
 pub fn retry_nearby_transfer(network: &ShellNetwork, transfer_id: [u8; 16]) -> Result<(), String> {
     require_continuity(ContinuityCapability::FileTransfer)?;
-    let exists = try_outbox_entries()
-        .iter()
-        .any(|entry| entry.id == transfer_id);
+    let exists = try_outbox_entries().iter().any(|entry| {
+        entry.id == transfer_id
+            && entry.kind != crate::shell::nearby_transfer::TransferKind::MediaHandoff
+    });
     if !exists {
         return Err(crate::shell::i18n::t(
             "device-fabric-error-transfer-no-retry",
@@ -5246,7 +5957,7 @@ pub fn retry_nearby_transfer(network: &ShellNetwork, transfer_id: [u8; 16]) -> R
         state.progress.remove(&transfer_id);
         state.last_offer.remove(&transfer_id);
     }
-    resume_nearby_transfers(network);
+    resume_nearby_transfers(network, ContinuityPolicySnapshot::load());
     Ok(())
 }
 
@@ -5329,7 +6040,14 @@ pub fn nearby_transfer_statuses(network: &ShellNetwork) -> Vec<NearbyTransferRun
             }),
     );
     statuses.truncate(runtime_collab::MAX_NEARBY_TRANSFER_STATUSES);
-    for entry in try_inbox_entries() {
+    // A media handoff's object reports through the handoff, not Files.
+    let nearby_send = |kind: crate::shell::nearby_transfer::TransferKind| {
+        kind != crate::shell::nearby_transfer::TransferKind::MediaHandoff
+    };
+    for entry in try_inbox_entries()
+        .into_iter()
+        .filter(|entry| nearby_send(entry.kind))
+    {
         if statuses.len() >= runtime_collab::MAX_NEARBY_TRANSFER_STATUSES {
             break;
         }
@@ -5351,7 +6069,7 @@ pub fn nearby_transfer_statuses(network: &ShellNetwork) -> Vec<NearbyTransferRun
         });
     }
     let outbox = try_outbox_entries();
-    for entry in outbox {
+    for entry in outbox.into_iter().filter(|entry| nearby_send(entry.kind)) {
         if statuses.len() >= runtime_collab::MAX_NEARBY_TRANSFER_STATUSES {
             break;
         }
@@ -5366,15 +6084,13 @@ pub fn nearby_transfer_statuses(network: &ShellNetwork) -> Vec<NearbyTransferRun
             ),
             |(_, sent, total, status)| {
                 let phase = match status {
-                    PersonalMediaTransferStatus::Started
-                    | PersonalMediaTransferStatus::Progress => {
+                    PersonalTransferStatus::Started | PersonalTransferStatus::Progress => {
                         runtime_collab::NearbyTransferPhase::Transferring
                     }
-                    PersonalMediaTransferStatus::Completed => {
+                    PersonalTransferStatus::Completed => {
                         runtime_collab::NearbyTransferPhase::Completed
                     }
-                    PersonalMediaTransferStatus::Failed
-                    | PersonalMediaTransferStatus::Cancelled => {
+                    PersonalTransferStatus::Failed | PersonalTransferStatus::Cancelled => {
                         runtime_collab::NearbyTransferPhase::Failed
                     }
                 };
@@ -5395,29 +6111,13 @@ pub fn nearby_transfer_statuses(network: &ShellNetwork) -> Vec<NearbyTransferRun
     statuses
 }
 
-fn fabric_transfer_views(
-    network: &ShellNetwork,
-) -> Vec<crate::shell::overlay_host::FabricTransferView> {
-    use crate::network::actor::PersonalMediaTransferStatus;
+/// Outgoing streams on the one transfer lane, Nearby sends and media
+/// handoffs alike.
+fn fabric_transfer_views() -> Vec<crate::shell::overlay_host::FabricTransferView> {
+    use crate::network::actor::PersonalTransferStatus;
     use crate::shell::overlay_host::{FabricTransferStatus, FabricTransferView};
 
-    let media =
-        network
-            .outgoing_personal_media_transfers()
-            .into_iter()
-            .map(|transfer| FabricTransferView {
-                target: transfer.target,
-                sent_bytes: transfer.sent_bytes,
-                total_bytes: transfer.total_bytes,
-                status: match transfer.status {
-                    PersonalMediaTransferStatus::Started
-                    | PersonalMediaTransferStatus::Progress => FabricTransferStatus::Sending,
-                    PersonalMediaTransferStatus::Completed => FabricTransferStatus::Sent,
-                    PersonalMediaTransferStatus::Failed
-                    | PersonalMediaTransferStatus::Cancelled => FabricTransferStatus::Failed,
-                },
-            });
-    let nearby = nearby_drop_state().lock().map_or_else(
+    nearby_drop_state().lock().map_or_else(
         |_| Vec::new(),
         |state| {
             state
@@ -5430,13 +6130,11 @@ fn fabric_transfer_views(
                         sent_bytes,
                         total_bytes,
                         status: match status {
-                            PersonalMediaTransferStatus::Started
-                            | PersonalMediaTransferStatus::Progress => {
+                            PersonalTransferStatus::Started | PersonalTransferStatus::Progress => {
                                 FabricTransferStatus::Sending
                             }
-                            PersonalMediaTransferStatus::Completed => FabricTransferStatus::Sent,
-                            PersonalMediaTransferStatus::Failed
-                            | PersonalMediaTransferStatus::Cancelled => {
+                            PersonalTransferStatus::Completed => FabricTransferStatus::Sent,
+                            PersonalTransferStatus::Failed | PersonalTransferStatus::Cancelled => {
                                 FabricTransferStatus::Failed
                             }
                         },
@@ -5444,8 +6142,7 @@ fn fabric_transfer_views(
                 )
                 .collect::<Vec<_>>()
         },
-    );
-    media.chain(nearby).collect()
+    )
 }
 
 fn bluetooth_authorization_views(
@@ -5615,11 +6312,18 @@ impl crate::shell::automation_triggers::DeviceDirectory for FabricDeviceDirector
 /// Build the bounded presentation model for Quick Settings. Every remote row
 /// comes from a snapshot authored by that certified device; local `PipeWire`
 /// outputs are deliberately kept separate from personal-fabric identities.
+///
+/// The local outputs and inputs come from `graph`, which the caller keeps
+/// cached: enumerating `PipeWire` is a subprocess, and this view is rebuilt
+/// on the compositor thread.
 #[expect(
     clippy::too_many_lines,
     reason = "one projection builds every Quick Settings fabric row from the same snapshot"
 )]
-pub fn device_fabric_view(network: &ShellNetwork) -> crate::shell::overlay_host::DeviceFabricView {
+pub fn device_fabric_view(
+    network: &ShellNetwork,
+    graph: media::audio::AudioGraph,
+) -> crate::shell::overlay_host::DeviceFabricView {
     use crate::shell::overlay_host::{
         DeviceFabricView, FabricDeviceView, FabricMediaView, LocalMediaInputView,
         LocalMediaOutputView,
@@ -5691,7 +6395,6 @@ pub fn device_fabric_view(network: &ShellNetwork) -> crate::shell::overlay_host:
         Vec::new()
     };
 
-    let graph = media::audio::enumerate();
     let mut local_inputs = graph
         .sources
         .iter()
@@ -5726,8 +6429,10 @@ pub fn device_fabric_view(network: &ShellNetwork) -> crate::shell::overlay_host:
             .then_with(|| left.label.cmp(&right.label))
     });
 
-    let transfers = if policy.permits(ContinuityCapability::FileTransfer) {
-        fabric_transfer_views(network)
+    let transfers = if policy.permits(ContinuityCapability::FileTransfer)
+        || policy.permits(ContinuityCapability::Media)
+    {
+        fabric_transfer_views()
     } else {
         Vec::new()
     };
@@ -5951,36 +6656,6 @@ fn calibration_devices(
         .collect()
 }
 
-/// Admit locally measured geometry only after its hardware adapter has mapped
-/// the observation to an already certified exact peer. Proximity never enrolls
-/// or authenticates a device.
-///
-/// # Errors
-///
-/// Returns a message when display continuity is not enabled, the evidence
-/// does not name an online certified display, calibration state is
-/// unavailable, or the evidence is outside the calibration bounds.
-pub fn record_spatial_sensor_evidence(
-    network: &ShellNetwork,
-    evidence: crate::shell::spatial_calibration::SpatialEvidence,
-) -> Result<(), String> {
-    require_continuity(ContinuityCapability::DisplayInput)?;
-    let certified = network
-        .device_fabric()
-        .snapshots()
-        .get(&evidence.peer)
-        .is_some_and(|snapshot| snapshot.presence.online && snapshot.presence.capabilities.display);
-    if !certified {
-        return Err("sensor evidence does not name an online certified display".into());
-    }
-    spatial_calibration_state()
-        .lock()
-        .map_err(|_| crate::shell::i18n::t("device-fabric-error-spatial-unavailable"))?
-        .record_sensor_evidence(evidence)
-        .then_some(())
-        .ok_or_else(|| "sensor evidence is outside the bounded calibration profile".into())
-}
-
 fn spatial_calibration_proposals(
     network: &ShellNetwork,
 ) -> Vec<crate::shell::spatial_calibration::CalibrationProposal> {
@@ -6164,9 +6839,12 @@ pub fn move_device_display(
     let fabric = network.device_fabric();
     let (target, expected, rect) = checked_display_move(&fabric, &local, request)
         .map_err(|_| crate::shell::i18n::t("device-fabric-error-layout-changed"))?;
+    let route = network
+        .current_personal_route(&target)
+        .ok_or_else(|| crate::shell::i18n::t("device-fabric-error-layout-changed"))?;
     network
-        .send_personal_fabric_action(
-            &target,
+        .send_personal_fabric_action_on_route(
+            &route,
             PersonalFabricAction::SetDisplayPlacementChecked {
                 expected,
                 rect,
@@ -6238,18 +6916,6 @@ fn checked_display_move(
     Ok((target, display.stamp.clone(), rect))
 }
 
-/// Compatibility helper for callers that use the original right-edge action.
-///
-/// # Errors
-///
-/// Returns the same placement or delivery errors as [`place_device`].
-pub fn place_device_right(
-    network: &ShellNetwork,
-    target: &crate::shell::personal_continuity::DeviceId,
-) -> Result<(), String> {
-    place_device(network, target, DisplayEdge::Right)
-}
-
 /// Explicitly allow one certified device to control this device until the
 /// short lease expires or is revoked.
 ///
@@ -6261,7 +6927,56 @@ pub fn grant_input_control(
     network: &ShellNetwork,
     controller: &crate::shell::personal_continuity::DeviceId,
 ) -> Result<InputLease, String> {
+    let _operation = input_control_operations()
+        .lock()
+        .map_err(|_| crate::shell::i18n::t("device-fabric-error-input-operation-unavailable"))?;
+    let lease = grant_input_control_inner(network, controller, false)?;
+    display_auto_leases::record_decline(network, controller, false)?;
+    Ok(lease)
+}
+
+fn grant_input_control_automatic(
+    network: &ShellNetwork,
+    controller: &crate::shell::personal_continuity::DeviceId,
+) -> Result<(), String> {
+    let _operation = input_control_operations()
+        .lock()
+        .map_err(|_| crate::shell::i18n::t("device-fabric-error-input-operation-unavailable"))?;
+    prune_spatial_leases(network);
+    let policy = ContinuityPolicySnapshot::load();
+    let view = person_layout::current(network);
+    if !display_auto_leases::wanted_controllers(network, view.as_deref(), policy)
+        .contains(controller)
+    {
+        return Ok(());
+    }
+    let Some(route) = network.current_personal_route(controller) else {
+        return Ok(());
+    };
+    let renew = {
+        let spatial = spatial_input_state()
+            .lock()
+            .map_err(|_| "spatial input state is unavailable".to_string())?;
+        !spatial.automatic_route_withdrawn(&route)
+            && spatial.automatic_needs_grant(controller, unix_now_ms())
+    };
+    if renew {
+        grant_input_control_inner(network, controller, true)?;
+    }
+    Ok(())
+}
+
+fn grant_input_control_inner(
+    network: &ShellNetwork,
+    controller: &crate::shell::personal_continuity::DeviceId,
+    automatic: bool,
+) -> Result<InputLease, String> {
     require_continuity(ContinuityCapability::DisplayInput)?;
+    if !network.personal_device_is_enrolled(controller) {
+        return Err(crate::shell::i18n::t(
+            "device-fabric-error-controller-not-enrolled",
+        ));
+    }
     // Advance the authenticated-departure cursor before minting replacement
     // authority, so retained history cannot revoke a fresh reconnect lease.
     prune_spatial_leases(network);
@@ -6296,8 +7011,11 @@ pub fn grant_input_control(
         allow_keyboard: presence.capabilities.keyboard,
         allow_pointer: presence.capabilities.pointer,
     };
-    network.send_personal_fabric_action(
-        controller,
+    let route = network
+        .current_personal_route(controller)
+        .ok_or_else(|| "controller has no current certified route".to_string())?;
+    network.send_personal_fabric_action_on_route(
+        &route,
         PersonalFabricAction::InputLeaseGranted {
             lease: lease.clone(),
         },
@@ -6310,10 +7028,22 @@ pub fn grant_input_control(
         spatial
             .issued
             .retain(|_, current| current.controller != *controller);
-        if replaced && !spatial.release_controllers.contains(controller) {
-            spatial.release_controllers.push_back(controller.clone());
+        if replaced {
+            spatial.release_controller(controller);
         }
+        let retained = spatial.issued.keys().copied().collect::<BTreeSet<_>>();
+        spatial
+            .issued_routes
+            .retain(|nonce, _| retained.contains(nonce));
+        spatial.issued_routes.insert(nonce, route);
         spatial.issued.insert(nonce, lease.clone());
+        spatial.automatic_issued.remove(controller);
+        if !automatic {
+            spatial.resume_controller_explicitly(controller);
+        }
+        if automatic {
+            spatial.automatic_issued.insert(controller.clone(), nonce);
+        }
     }
     Ok(lease)
 }
@@ -6329,12 +7059,44 @@ pub fn revoke_input_control(
     network: &ShellNetwork,
     controller: &crate::shell::personal_continuity::DeviceId,
 ) -> Result<(), String> {
+    let _operation = input_control_operations()
+        .lock()
+        .map_err(|_| crate::shell::i18n::t("device-fabric-error-input-operation-unavailable"))?;
+    let persisted = display_auto_leases::record_decline(network, controller, true);
+    let revoked = revoke_input_control_inner(network, controller, None);
+    revoked.and(persisted)
+}
+
+fn revoke_input_control_automatic(
+    network: &ShellNetwork,
+    controller: &crate::shell::personal_continuity::DeviceId,
+    nonce: [u8; 16],
+) -> Result<(), String> {
+    let _operation = input_control_operations()
+        .lock()
+        .map_err(|_| crate::shell::i18n::t("device-fabric-error-input-operation-unavailable"))?;
+    if !spatial_input_state()
+        .lock()
+        .is_ok_and(|state| state.automatic_lease_matches(controller, nonce))
+    {
+        return Ok(());
+    }
+    revoke_input_control_inner(network, controller, Some(nonce))
+}
+
+fn revoke_input_control_inner(
+    network: &ShellNetwork,
+    controller: &crate::shell::personal_continuity::DeviceId,
+    expected: Option<[u8; 16]>,
+) -> Result<(), String> {
     let leases = spatial_input_state()
         .lock()
         .map_err(|_| "spatial input state is unavailable".to_string())?
         .issued
         .values()
-        .filter(|lease| &lease.controller == controller)
+        .filter(|lease| {
+            &lease.controller == controller && expected.is_none_or(|nonce| lease.nonce == nonce)
+        })
         .cloned()
         .collect::<Vec<_>>();
     if leases.is_empty() {
@@ -6350,79 +7112,199 @@ pub fn revoke_input_control(
         }
     }
     if let Ok(mut spatial) = spatial_input_state().lock() {
+        let revoked = leases
+            .iter()
+            .map(|lease| lease.nonce)
+            .collect::<BTreeSet<_>>();
+        let removed = spatial.issued.keys().any(|nonce| revoked.contains(nonce));
+        spatial.issued.retain(|nonce, _| !revoked.contains(nonce));
         spatial
-            .issued
-            .retain(|_, lease| &lease.controller != controller);
-        if !spatial.release_controllers.contains(controller) {
-            spatial.release_controllers.push_back(controller.clone());
+            .issued_routes
+            .retain(|nonce, _| !revoked.contains(nonce));
+        spatial
+            .automatic_issued
+            .retain(|_, nonce| !revoked.contains(nonce));
+        if removed {
+            spatial.release_controller(controller);
         }
     }
     delivery_error.map_or(Ok(()), Err)
 }
 
-/// Send one lease-bound input event to an adjacent certified target.
-///
-/// # Errors
-///
-/// Returns an error if the target has not granted control, the lease expired,
-/// its capability excludes the event, or transport delivery fails.
-pub fn send_spatial_input(
-    _network: &ShellNetwork,
+/// Current exact-controller pointer authority, never inferred from layout or
+/// same-person identity. Gestures retain this nonce until they end.
+#[must_use]
+pub fn spatial_pointer_lease(
+    network: &ShellNetwork,
     target: &crate::shell::personal_continuity::DeviceId,
-    event: FabricInputEvent,
-) -> Result<(), String> {
-    require_continuity(ContinuityCapability::DisplayInput)?;
-    let lease = spatial_input_state()
-        .lock()
-        .map_err(|_| "spatial input state is unavailable".to_string())?
-        .received
-        .get(target)
-        .cloned()
-        .ok_or_else(|| crate::shell::i18n::t("device-fabric-error-control-not-granted"))?;
-    lease
-        .validate_at(unix_now_ms())
-        .map_err(|error| error.to_string())?;
-    let allowed = match event {
-        FabricInputEvent::PointerMotion { .. }
-        | FabricInputEvent::PointerButton { .. }
-        | FabricInputEvent::Scroll { .. } => lease.allow_pointer,
-        FabricInputEvent::Key { .. } => lease.allow_keyboard,
-    };
-    if !allowed {
-        return Err(crate::shell::i18n::t("device-fabric-error-lease-input"));
+) -> Option<InputLease> {
+    require_continuity(ContinuityCapability::DisplayInput).ok()?;
+    if !network.personal_device_is_enrolled(target) {
+        return None;
     }
-    spatial_input_state()
-        .lock()
-        .map_err(|_| "spatial input state is unavailable".to_string())?
-        .queue_outbound(OutboundSpatialInput {
-            target: target.clone(),
-            lease_nonce: lease.nonce,
-            event,
-        })
+    prune_spatial_leases(network);
+    let (controller, _) = network.local_device_fabric_identity()?;
+    let (lease, route) = {
+        let spatial = spatial_input_state().lock().ok()?;
+        (
+            spatial.received.get(target)?.clone(),
+            spatial.received_routes.get(target)?.clone(),
+        )
+    };
+    if !network.personal_route_is_current(&route) {
+        return None;
+    }
+    (lease.binds(&controller, target)
+        && lease.allow_pointer
+        && lease.validate_at(unix_now_ms()).is_ok())
+    .then_some(lease)
 }
 
-fn flush_spatial_input(network: &ShellNetwork) {
+/// Queue an event only under the exact authority that began its gesture.
+///
+/// # Errors
+/// Rejects withdrawn policy, identity, replaced/revoked/expired authority or
+/// an event outside that lease's capabilities. Replacement grants never adopt
+/// a gesture's held keys or buttons.
+pub fn send_spatial_input_bound(
+    network: &ShellNetwork,
+    target: &crate::shell::personal_continuity::DeviceId,
+    nonce: [u8; 16],
+    event: FabricInputEvent,
+) -> Result<(), String> {
+    with_spatial_input_authority(network, target, |spatial, controller| {
+        spatial.queue_lease_bound_input(
+            controller,
+            OutboundSpatialInput {
+                sequence: None,
+                target: target.clone(),
+                lease_nonce: nonce,
+                event,
+            },
+            unix_now_ms(),
+        )
+    })
+}
+
+fn with_spatial_input_authority(
+    network: &ShellNetwork,
+    target: &crate::shell::personal_continuity::DeviceId,
+    operation: impl FnOnce(
+        &mut SpatialInputState,
+        &crate::shell::personal_continuity::DeviceId,
+    ) -> Result<(), String>,
+) -> Result<(), String> {
+    require_continuity(ContinuityCapability::DisplayInput)?;
+    if !network.personal_device_is_enrolled(target) {
+        return Err(crate::shell::i18n::t(
+            "device-fabric-error-control-not-granted",
+        ));
+    }
+    let (controller, _) = network
+        .local_device_fabric_identity()
+        .ok_or_else(|| crate::shell::i18n::t("device-fabric-error-no-identity"))?;
+    let route = spatial_input_state()
+        .lock()
+        .map_err(|_| "spatial input state is unavailable".to_string())?
+        .received_routes
+        .get(target)
+        .cloned()
+        .ok_or_else(|| "spatial input grant has no current certified route".to_string())?;
+    network
+        .with_current_personal_route(&route, || {
+            let mut spatial = spatial_input_state()
+                .lock()
+                .map_err(|_| "spatial input state is unavailable".to_string())?;
+            operation(&mut spatial, &controller)
+        })
+        .ok_or_else(|| "spatial input grant route is no longer current".to_string())?
+}
+
+/// Transfer held input releases to a bounded cleanup lane under the same
+/// exact authority as ordinary input. A full ordinary queue cannot lose them.
+///
+/// # Errors
+/// Rejects withdrawn policy, identity, route, lease or capabilities, and any
+/// event other than a valid key/button release. No authority is minted here.
+pub fn queue_spatial_input_cleanup_bound(
+    network: &ShellNetwork,
+    target: &crate::shell::personal_continuity::DeviceId,
+    nonce: [u8; 16],
+    events: Vec<FabricInputEvent>,
+) -> Result<(), String> {
+    with_spatial_input_authority(network, target, |spatial, controller| {
+        spatial.queue_cleanup_bound(controller, target, (nonce, events), unix_now_ms())
+    })
+}
+
+pub(super) fn flush_spatial_input(network: &ShellNetwork) {
+    spatial_withdrawal::flush(network);
+    spatial_protocol::probe(network);
     for _ in 0..MAX_SPATIAL_INPUT_FLUSH_PER_FRAME {
-        let input = spatial_input_state()
-            .lock()
-            .ok()
-            .and_then(|mut spatial| spatial.outbound.pop_front());
-        let Some(input) = input else {
+        let prepared = spatial_input_state().lock().ok().and_then(|mut spatial| {
+            let (mut input, cleanup) = spatial.next_spatial_input()?;
+            let action = spatial
+                .prepare_spatial_input(&mut input, unix_now_ms())
+                .ok()?;
+            if cleanup {
+                spatial.cleanup.prepared(&input);
+            }
+            let route = spatial.received_routes.get(&input.target).cloned();
+            Some((input, cleanup, route, action))
+        });
+        let Some((input, cleanup, route, action)) = prepared else {
             return;
         };
-        let result = network.send_personal_fabric_action(
-            &input.target,
-            PersonalFabricAction::Input {
-                lease_nonce: input.lease_nonce,
-                event: input.event,
-            },
-        );
-        if result.is_err() {
-            if let Ok(mut spatial) = spatial_input_state().lock() {
+        let Some(route) = route.filter(|route| network.personal_route_is_current(route)) else {
+            continue;
+        };
+        if network
+            .send_personal_fabric_action_on_route(&route, action)
+            .is_err()
+        {
+            if !cleanup && let Ok(mut spatial) = spatial_input_state().lock() {
                 spatial.outbound.push_front(input);
             }
             return;
         }
+        if cleanup && let Ok(mut spatial) = spatial_input_state().lock() {
+            spatial.cleanup.delivered(&input);
+        }
+    }
+}
+
+/// One causal native-seat phase. Releases precede every surviving input in a
+/// frame, so an old lease's barrier cannot erase a replacement lease's edge.
+pub(crate) enum SpatialInputBatch {
+    Releases(Vec<crate::shell::personal_continuity::DeviceId>),
+    Inputs(
+        Vec<(
+            crate::shell::personal_continuity::DeviceId,
+            FabricInputEvent,
+        )>,
+    ),
+}
+
+/// Take release barriers and admitted input under one state lock. Revocation
+/// already discards its old queued edges; fresh authority can enqueue afterward.
+pub(crate) fn take_spatial_input_batches() -> [SpatialInputBatch; 2] {
+    spatial_input_state().lock().map_or_else(
+        |_| {
+            [
+                SpatialInputBatch::Releases(Vec::new()),
+                SpatialInputBatch::Inputs(Vec::new()),
+            ]
+        },
+        |mut spatial| spatial.take_native_batches(),
+    )
+}
+
+impl SpatialInputState {
+    fn take_native_batches(&mut self) -> [SpatialInputBatch; 2] {
+        [
+            SpatialInputBatch::Releases(self.release_controllers.drain(..).collect()),
+            SpatialInputBatch::Inputs(self.inbound.drain(..).collect()),
+        ]
     }
 }
 
@@ -6438,21 +7320,10 @@ pub fn take_spatial_input() -> Vec<(
     )
 }
 
-/// Drain controllers whose target-issued lease was revoked, expired, or lost
-/// with the device. The compositor releases only input actually attributed to
-/// that controller, so cleanup cannot release a sibling controller's keys.
-pub fn take_spatial_input_releases() -> Vec<crate::shell::personal_continuity::DeviceId> {
-    spatial_input_state().lock().map_or_else(
-        |_| Vec::new(),
-        |mut spatial| spatial.release_controllers.drain(..).collect(),
-    )
-}
-
-fn native_display_connectors() -> Vec<crate::shell::device_fabric::DisplayConnectorPlacement> {
+fn native_display_connectors(
+    snapshot: &settings_store::hardware::DisplayHardwareSnapshot,
+) -> Vec<crate::shell::device_fabric::DisplayConnectorPlacement> {
     use crate::shell::device_fabric::DisplayConnectorPlacement;
-    let Some(snapshot) = settings_store::hardware::DisplayHardwareSnapshot::load() else {
-        return Vec::new();
-    };
     snapshot
         .layout
         .iter()
@@ -6483,6 +7354,62 @@ fn native_display_connectors() -> Vec<crate::shell::device_fabric::DisplayConnec
         .collect()
 }
 
+fn native_display_outputs(
+    snapshot: &settings_store::hardware::DisplayHardwareSnapshot,
+) -> Option<Vec<crate::shell::device_fabric::DisplayOutputObservation>> {
+    use crate::shell::device_fabric::DisplayOutputObservation;
+    use settings_store::person_displays::{DeviceOutput, MAX_DEVICE_OUTPUTS};
+    if snapshot.outputs.len() > MAX_DEVICE_OUTPUTS {
+        return None;
+    }
+    let identities = settings_store::hardware::DisplaySet::of(
+        snapshot
+            .outputs
+            .iter()
+            .map(|output| (&output.descriptor).into()),
+    );
+    snapshot
+        .outputs
+        .iter()
+        .map(|output| {
+            if !output.scale.is_finite() || !(0.5..=4.0).contains(&output.scale) {
+                return None;
+            }
+            let connector = &output.descriptor.connector;
+            let placement = snapshot
+                .layout
+                .iter()
+                .find(|placement| &placement.connector == connector);
+            let name = output
+                .descriptor
+                .monitor
+                .as_ref()
+                .map(settings_store::hardware::MonitorIdentity::display_name)
+                .filter(|name| !name.is_empty())
+                .unwrap_or_else(|| output.descriptor.label().to_owned());
+            let facts = DeviceOutput {
+                id: identities.members.get(connector)?.clone(),
+                name,
+                builtin: output.builtin,
+                x: placement.map_or(0, |placement| placement.x),
+                y: placement.map_or(0, |placement| placement.y),
+                width: placement.map_or(0, |placement| placement.width),
+                height: placement.map_or(0, |placement| placement.height),
+                mode_width: output.current_mode.width,
+                mode_height: output.current_mode.height,
+                refresh_mhz: output.current_mode.refresh_mhz,
+                scale_milli: format!("{:.0}", output.scale * 1000.0).parse().ok()?,
+                connected: true,
+                enabled: placement.is_some(),
+            };
+            facts.valid().then(|| DisplayOutputObservation {
+                connector: connector.clone(),
+                output: facts,
+            })
+        })
+        .collect()
+}
+
 /// The same certified observations feed Settings and the shell host view.
 pub fn observed_device_displays(
     fabric: &DeviceFabric,
@@ -6507,6 +7434,14 @@ pub fn observed_device_displays(
                         device: snapshot.owner.as_str().to_owned(),
                         device_label: snapshot.presence.label.clone(),
                         connector: output.connector.clone(),
+                        output_id: fabric
+                            .display_outputs(&snapshot.owner)
+                            .and_then(|observations| {
+                                observations
+                                    .iter()
+                                    .find(|observed| observed.connector == output.connector)
+                            })
+                            .map(|observed| observed.output.id.clone()),
                         label: output.label.clone(),
                         online: snapshot.presence.online,
                         local: local == Some(&snapshot.owner),
@@ -6523,7 +7458,17 @@ pub fn observed_device_displays(
         .collect()
 }
 
-fn publish_device_displays(network: &ShellNetwork, policy: ContinuityPolicySnapshot) {
+type PublishedDisplays = (
+    settings_store::device_displays::DeviceDisplaySnapshot,
+    settings_store::person_displays::PersonDisplays,
+);
+
+fn publish_device_displays(
+    network: &ShellNetwork,
+    policy: ContinuityPolicySnapshot,
+    published: &mut Option<PublishedDisplays>,
+) {
+    person_layout::refresh(network, policy);
     let Ok((publisher_pid, publisher_start_ticks)) = settings_store::hardware::publisher_identity()
     else {
         return;
@@ -6531,7 +7476,7 @@ fn publish_device_displays(network: &ShellNetwork, policy: ContinuityPolicySnaps
     let local = network
         .local_device_fabric_identity()
         .map(|(device, _)| device);
-    let snapshot = settings_store::device_displays::DeviceDisplaySnapshot {
+    let mut snapshot = settings_store::device_displays::DeviceDisplaySnapshot {
         publisher_pid,
         publisher_start_ticks,
         displays: if local.is_some() && policy.permits(ContinuityCapability::DisplayInput) {
@@ -6540,9 +7485,50 @@ fn publish_device_displays(network: &ShellNetwork, policy: ContinuityPolicySnaps
             Vec::new()
         },
     };
-    if let Err(error) = snapshot.save() {
-        tracing::debug!(%error, "could not publish device display observations");
+    snapshot.displays.retain(|display| {
+        crate::shell::personal_continuity::DeviceId::new(display.device.clone())
+            .is_ok_and(|owner| network.personal_device_is_enrolled(&owner))
+    });
+    for display in &mut snapshot.displays {
+        if !display.local {
+            display.online &=
+                crate::shell::personal_continuity::DeviceId::new(display.device.clone())
+                    .is_ok_and(|owner| network.current_personal_route(&owner).is_some());
+        }
     }
+    let view = settings_store::person_displays::PersonDisplays {
+        schema_version: settings_store::person_displays::SCHEMA_VERSION,
+        publisher_pid,
+        publisher_start_ticks,
+        local_device: local
+            .as_ref()
+            .map_or_else(String::new, |device| device.as_str().to_owned()),
+        devices: local
+            .as_ref()
+            .filter(|_| policy.permits(ContinuityCapability::DisplayInput))
+            .map_or_else(Vec::new, |local| network.person_display_devices(local)),
+    };
+    if let Some((saved_snapshot, saved_view)) = published.as_ref()
+        && *saved_snapshot == snapshot
+        && *saved_view == view
+    {
+        return;
+    }
+    let saved = match snapshot.save() {
+        Ok(()) => true,
+        Err(error) => {
+            tracing::debug!(%error, "could not publish device display observations");
+            false
+        }
+    };
+    let saved = match view.save() {
+        Ok(()) => saved,
+        Err(error) => {
+            tracing::debug!(%error, "could not publish person display observations");
+            false
+        }
+    };
+    *published = saved.then_some((snapshot, view));
 }
 
 fn build_local_snapshot(
@@ -6579,18 +7565,16 @@ fn build_local_snapshot(
     } else {
         Vec::new()
     };
-    let (settings, wifi) = if policy.permits(ContinuityCapability::WifiSettings) {
-        (
-            reconcile_roaming_settings(
-                roaming_setting_values(),
-                previous,
-                applied_remote_settings,
-                stamp,
-            ),
-            previous.map_or_else(Vec::new, |state| state.wifi.clone()),
-        )
+    let settings = reconcile_roaming_settings(
+        permitted_roaming_setting_values(&settings_store::load(), policy),
+        previous,
+        applied_remote_settings,
+        stamp,
+    );
+    let wifi = if policy.permits(ContinuityCapability::WifiSettings) {
+        previous.map_or_else(Vec::new, |state| state.wifi.clone())
     } else {
-        (Vec::new(), Vec::new())
+        Vec::new()
     };
     let display = if policy.permits(ContinuityCapability::DisplayInput) {
         local.display.map(|rect| DisplayPlacement {
@@ -6647,11 +7631,33 @@ fn policy_capabilities(
             || policy.permits(ContinuityCapability::DisplayInput))
             && local.display.is_some(),
         clipboard: policy.permits(ContinuityCapability::Clipboard),
-        roaming_settings: policy.permits(ContinuityCapability::WifiSettings),
+        roaming_settings: policy.permits(ContinuityCapability::WifiSettings)
+            || policy.permits(ContinuityCapability::DisplayInput),
         secret_store: policy.permits(ContinuityCapability::WifiSettings),
         app_continuation: policy.permits(ContinuityCapability::AppContinuations),
         audio_group: policy.permits(ContinuityCapability::Media) && local.audio_output,
     }
+}
+
+fn refresh_display_observation_revision(
+    display: &mut DisplayPlacement,
+    fabric: &DeviceFabric,
+    outputs: &[crate::shell::device_fabric::DisplayOutputObservation],
+    stamp: &FabricStamp,
+) {
+    if fabric.display_outputs(&display.device) != Some(outputs) {
+        // Mode or identity changes matter even when logical geometry is unchanged.
+        display.stamp = stamp.clone();
+    }
+}
+
+fn local_observation_fingerprint(
+    snapshot: &DeviceFabricSnapshot,
+    outputs: Option<&[crate::shell::device_fabric::DisplayOutputObservation]>,
+) -> Option<[u8; 32]> {
+    postcard::to_allocvec(&(local_snapshot_fingerprint(snapshot), outputs))
+        .ok()
+        .map(|bytes| *blake3::hash(&bytes).as_bytes())
 }
 
 fn local_snapshot_fingerprint(snapshot: &DeviceFabricSnapshot) -> Option<[u8; 32]> {
@@ -6769,15 +7775,36 @@ fn roaming_setting_values_from(document: &Map<String, Value>) -> BTreeMap<String
     settings_store::continuity::personal_values(document)
 }
 
+fn permitted_roaming_setting_values(
+    document: &Map<String, Value>,
+    policy: ContinuityPolicySnapshot,
+) -> BTreeMap<String, Value> {
+    roaming_setting_values_from(document)
+        .into_iter()
+        .filter(|(key, _)| permits_roaming_setting(policy, key))
+        .collect()
+}
+
+fn permits_roaming_setting(policy: ContinuityPolicySnapshot, key: &str) -> bool {
+    let capability = if key == settings_store::person_displays::ARRANGEMENT_KEY {
+        ContinuityCapability::DisplayInput
+    } else {
+        ContinuityCapability::WifiSettings
+    };
+    policy.permits(capability)
+}
+
 fn roaming_provenance(
     fabric: &DeviceFabric,
-    enabled: bool,
+    policy: ContinuityPolicySnapshot,
 ) -> settings_store::roaming_provenance::RoamingProvenance {
     use settings_store::roaming_provenance::{
         Origin, RoamingProvenance, SettingResolution, WifiResolution,
     };
 
-    if !enabled {
+    if !policy.permits(ContinuityCapability::WifiSettings)
+        && !policy.permits(ContinuityCapability::DisplayInput)
+    {
         return RoamingProvenance::default();
     }
     let origin = |stamp: &FabricStamp| Origin {
@@ -6793,7 +7820,10 @@ fn roaming_provenance(
         .snapshots()
         .values()
         .flat_map(|snapshot| &snapshot.settings)
-        .filter(|setting| settings_store::continuity::is_personal(&setting.key))
+        .filter(|setting| {
+            settings_store::continuity::is_personal(&setting.key)
+                && permits_roaming_setting(policy, &setting.key)
+        })
     {
         settings_by_key
             .entry(&setting.key)
@@ -6828,6 +7858,7 @@ fn roaming_provenance(
         .snapshots()
         .values()
         .flat_map(|snapshot| &snapshot.wifi)
+        .filter(|_| policy.permits(ContinuityCapability::WifiSettings))
     {
         wifi_by_network
             .entry(credential.network_id)
@@ -6865,11 +7896,11 @@ fn roaming_provenance(
 
 fn publish_roaming_provenance(
     fabric: &DeviceFabric,
-    enabled: bool,
+    policy: ContinuityPolicySnapshot,
     previous_fingerprint: &mut Option<[u8; 32]>,
     path: Option<&Path>,
 ) -> Result<bool, settings_store::roaming_provenance::ProvenanceError> {
-    let mut projection = roaming_provenance(fabric, enabled);
+    let mut projection = roaming_provenance(fabric, policy);
     let fingerprint = serde_json::to_vec(&projection)
         .ok()
         .map(|bytes| *blake3::hash(&bytes).as_bytes());
@@ -7220,6 +8251,7 @@ fn secure_nonce() -> Option<[u8; 16]> {
 
 fn tear_down_spatial_input(network: &ShellNetwork) {
     if let Ok(mut spatial) = spatial_input_state().lock() {
+        spatial.queue_controller_withdrawals();
         let issued = spatial.issued.values().cloned().collect::<Vec<_>>();
         for lease in issued {
             let _ = network.send_personal_fabric_action(
@@ -7234,21 +8266,38 @@ fn tear_down_spatial_input(network: &ShellNetwork) {
         }
         spatial.issued.clear();
         spatial.received.clear();
+        spatial.received_routes.clear();
+        spatial.issued_routes.clear();
+        spatial.automatic_issued.clear();
         spatial.outbound.clear();
+        spatial.cleanup.clear();
         spatial.inbound.clear();
+        spatial.retain_spatial_protocol();
     }
+    spatial_withdrawal::flush(network);
 }
 
 fn tear_down_nearby_transfers(network: &ShellNetwork) {
     if let Ok(mut admission) = nearby_staging_admission().lock() {
         admission.invalidate();
     }
+    // Media handoffs share the lane but answer to the Media switch.
+    let media_outgoing = with_nearby_transfer_store(|store| {
+        Ok(store
+            .outbox()
+            .iter()
+            .filter(|entry| entry.kind == crate::shell::nearby_transfer::TransferKind::MediaHandoff)
+            .map(|entry| entry.id)
+            .collect::<BTreeSet<_>>())
+    })
+    .unwrap_or_default();
     let active = nearby_drop_state().lock().map_or_else(
         |_| Vec::new(),
         |state| {
             state
                 .large_offers
                 .iter()
+                .filter(|(transfer_id, _)| !media_outgoing.contains(*transfer_id))
                 .map(|(transfer_id, (target, request_id, _))| {
                     (*transfer_id, target.clone(), *request_id)
                 })
@@ -7256,6 +8305,7 @@ fn tear_down_nearby_transfers(network: &ShellNetwork) {
         },
     );
     for (transfer_id, target, request_id) in &active {
+        let _ = network.cancel_nearby_transfer_stream(target, *transfer_id);
         let _ = network.send_personal_fabric_action(
             target,
             PersonalFabricAction::NearbyTransferCancel {
@@ -7291,6 +8341,7 @@ fn tear_down_nearby_transfers(network: &ShellNetwork) {
         let incoming = store
             .inbox()
             .iter()
+            .filter(|entry| entry.kind != crate::shell::nearby_transfer::TransferKind::MediaHandoff)
             .map(|entry| entry.id)
             .collect::<Vec<_>>();
         for transfer_id in incoming {
@@ -7303,9 +8354,15 @@ fn tear_down_nearby_transfers(network: &ShellNetwork) {
     });
     if let Ok(mut state) = nearby_drop_state().lock() {
         state.pending.clear();
-        state.large_offers.clear();
-        state.progress.clear();
-        state.last_offer.clear();
+        state
+            .large_offers
+            .retain(|transfer_id, _| media_outgoing.contains(transfer_id));
+        state
+            .progress
+            .retain(|transfer_id, _| media_outgoing.contains(transfer_id));
+        state
+            .last_offer
+            .retain(|transfer_id, _| media_outgoing.contains(transfer_id));
         state.incoming.clear();
         state.destinations.clear();
         state.history.clear();
@@ -7316,6 +8373,206 @@ fn tear_down_nearby_transfers(network: &ShellNetwork) {
 mod tests {
     use super::*;
     use crate::shell::personal_continuity::DeviceId;
+
+    #[test]
+    fn rich_display_native_observation_preserves_identity_mode_scale_and_inactive_outputs() {
+        use settings_store::hardware::{
+            DisplayHardwareSnapshot, DisplayOutputSnapshot, LiveOutputPlacement, MonitorIdentity,
+            OutputDescriptor, OutputMode,
+        };
+        let panel = DisplayOutputSnapshot {
+            descriptor: OutputDescriptor {
+                connector: "eDP-1".into(),
+                connector_label: String::new(),
+                modes: Vec::new(),
+                hdr: false,
+                vrr: false,
+                color_profiles: Vec::new(),
+                monitor: Some(MonitorIdentity {
+                    make: "PanelCo".into(),
+                    model: "Panel".into(),
+                    serial: "123".into(),
+                    physical_size_mm: None,
+                }),
+            },
+            current_mode: OutputMode {
+                width: 2560,
+                height: 1600,
+                refresh_mhz: 59_940,
+            },
+            scale: 2.0,
+            builtin: true,
+            sink_hdr: false,
+            hdr_unavailable_reason: None,
+            sink_vrr: false,
+            vrr_unavailable_reason: None,
+            color_profile_labels: BTreeMap::new(),
+        };
+        let mut inactive = panel.clone();
+        inactive.descriptor.connector = "DP-2".into();
+        inactive.descriptor.monitor = None;
+        inactive.builtin = false;
+        let mut hardware = DisplayHardwareSnapshot {
+            outputs: vec![panel, inactive],
+            layout: vec![LiveOutputPlacement {
+                connector: "eDP-1".into(),
+                x: 40,
+                y: 20,
+                width: 1280,
+                height: 800,
+            }],
+            ..Default::default()
+        };
+        let outputs = native_display_outputs(&hardware).unwrap();
+        assert_eq!(outputs.len(), 2);
+        let panel = &outputs[0].output;
+        assert!(panel.builtin && panel.connected && panel.enabled);
+        assert_eq!(
+            (panel.x, panel.y, panel.width, panel.height),
+            (40, 20, 1280, 800)
+        );
+        assert_eq!(
+            (panel.mode_width, panel.mode_height, panel.refresh_mhz),
+            (2560, 1600, 59_940)
+        );
+        assert_eq!(panel.scale_milli, 2000);
+        assert_eq!(panel.name, "PanelCo Panel");
+        assert!(!outputs[1].output.enabled);
+        assert_eq!(outputs[1].output.width, 0);
+        hardware.outputs[0].descriptor.connector = "eDP-9".into();
+        assert_eq!(
+            native_display_outputs(&hardware).unwrap()[0].output.id,
+            panel.id
+        );
+        hardware.outputs[0].scale = f64::NAN;
+        assert!(native_display_outputs(&hardware).is_none());
+    }
+
+    #[test]
+    fn rich_display_mode_change_gets_a_new_revision_without_geometry_change() {
+        let owner = DeviceId::new("local-mode-test").unwrap();
+        let previous = drag_snapshot(owner.clone(), 0);
+        let old_revision = previous.display.as_ref().unwrap().stamp.clone();
+        let mut fabric = DeviceFabric::default();
+        fabric.upsert(previous.clone()).unwrap();
+        let mut outputs = vec![crate::shell::device_fabric::DisplayOutputObservation {
+            connector: "eDP-1".into(),
+            output: settings_store::person_displays::DeviceOutput {
+                id: "monitor:panel".into(),
+                name: "Panel".into(),
+                builtin: true,
+                x: 0,
+                y: 0,
+                width: 1280,
+                height: 720,
+                mode_width: 1600,
+                mode_height: 900,
+                refresh_mhz: 60_000,
+                scale_milli: 1250,
+                connected: true,
+                enabled: true,
+            },
+        }];
+        fabric
+            .observe_display_outputs(&owner, &old_revision, outputs.clone())
+            .unwrap();
+        let fingerprint = local_observation_fingerprint(&previous, Some(&outputs));
+        let next_revision = FabricStamp {
+            counter: old_revision.counter + 1,
+            device: owner,
+        };
+        let mut candidate = previous.clone();
+        candidate.display.as_mut().unwrap().stamp = next_revision.clone();
+        preserve_unchanged_stamps(&mut candidate, Some(&previous));
+        refresh_display_observation_revision(
+            candidate.display.as_mut().unwrap(),
+            &fabric,
+            &outputs,
+            &next_revision,
+        );
+        assert_eq!(candidate.display.as_ref().unwrap().stamp, old_revision);
+        outputs[0].output.refresh_mhz = 59_940;
+        refresh_display_observation_revision(
+            candidate.display.as_mut().unwrap(),
+            &fabric,
+            &outputs,
+            &next_revision,
+        );
+        assert_eq!(candidate.display.as_ref().unwrap().stamp, next_revision);
+        assert_eq!(
+            candidate.display.as_ref().unwrap().rect,
+            previous.display.unwrap().rect
+        );
+        assert_ne!(
+            local_observation_fingerprint(&candidate, Some(&outputs)),
+            fingerprint
+        );
+    }
+
+    fn roaming_test_policy(wifi_settings: bool, display_input: bool) -> ContinuityPolicySnapshot {
+        ContinuityPolicySnapshot::from_document(
+            serde_json::json!({
+                "continuity": { "enabled": true, "wifi_settings": wifi_settings,
+                    "display_input": display_input }
+            })
+            .as_object()
+            .unwrap(),
+        )
+    }
+
+    #[test]
+    fn display_arrangement_policy_keeps_settings_and_credentials_independent() {
+        let device = DeviceId::new("desktop").unwrap();
+        let mut snapshot = provenance_snapshot(device, "Desktop", 1, Some(Value::Bool(true)));
+        let arrangement_key = settings_store::person_displays::ARRANGEMENT_KEY;
+        snapshot.settings.push(RoamingSetting {
+            key: arrangement_key.into(),
+            value: settings_store::person_displays::Arrangement::default().to_value(),
+            stamp: snapshot.presence.stamp.clone(),
+        });
+        let mut fabric = DeviceFabric::default();
+        fabric.upsert(snapshot).unwrap();
+        for (wifi, displays) in [(false, false), (true, false), (false, true), (true, true)] {
+            let policy = roaming_test_policy(wifi, displays);
+            let document = serde_json::json!({
+                "display": { "arrangement": { "displays": [] } },
+                "appearance": { "mode": true }
+            });
+            let records = permitted_roaming_setting_values(document.as_object().unwrap(), policy);
+            assert_eq!(records.contains_key(arrangement_key), displays);
+            assert_eq!(records.contains_key("tilo.appearance.mode"), wifi);
+            let projection = roaming_provenance(&fabric, policy);
+            assert_eq!(
+                projection
+                    .settings
+                    .iter()
+                    .any(|item| item.key == arrangement_key),
+                displays
+            );
+            assert_eq!(
+                projection
+                    .settings
+                    .iter()
+                    .any(|item| item.key == "tilo.appearance.mode"),
+                wifi
+            );
+            let caps = policy_capabilities(
+                policy,
+                LocalFabricCapabilities {
+                    display: None,
+                    pointer: false,
+                    keyboard: false,
+                    audio_output: false,
+                },
+            );
+            assert_eq!(caps.roaming_settings, wifi || displays);
+            assert_eq!(caps.secret_store, wifi);
+        }
+        assert!(!permits_roaming_setting(
+            ContinuityPolicySnapshot::default(),
+            arrangement_key
+        ));
+    }
 
     fn drag_snapshot(device: DeviceId, x: i32) -> DeviceFabricSnapshot {
         let mut snapshot = provenance_snapshot(device.clone(), "Laptop", 7, None);
@@ -7366,6 +8623,104 @@ mod tests {
             y: 720,
         };
         (fabric, local, peer, request)
+    }
+
+    #[test]
+    fn shared_pointer_layout_retains_checked_origins_and_observed_output_offsets() {
+        use crate::shell::device_fabric::DisplayOutputObservation;
+        use settings_store::person_displays::{Arrangement, DeviceOutput};
+        let (mut fabric, local, remote, _) = drag_pair();
+        let unknown = person_layout::resolve(
+            &fabric,
+            &local,
+            &Arrangement::default(),
+            &fabric.person_devices(&local),
+        );
+        assert!(unknown.layout.displays.is_empty());
+        assert_eq!(unknown.legacy_targets, vec![remote.clone()]);
+        // Negative local output origins must not turn a device bounding box
+        // into its desktop origin. Both the admitted connector and rich facts
+        // report the same desktop-relative coordinate.
+        for owner in [&local, &remote] {
+            let mut snapshot = fabric.snapshots().get(owner).unwrap().clone();
+            snapshot.display.as_mut().unwrap().stamp.counter += 1;
+            snapshot.presence.stamp.counter += 1;
+            snapshot.display.as_mut().unwrap().outputs[0].rect.x = -120;
+            let display = snapshot.display.as_ref().unwrap().clone();
+            fabric.upsert(snapshot).unwrap();
+            let connector = &display.outputs[0];
+            fabric
+                .observe_display_outputs(
+                    owner,
+                    &display.stamp,
+                    vec![DisplayOutputObservation {
+                        connector: connector.connector.clone(),
+                        output: DeviceOutput {
+                            id: format!("monitor:{}", owner.as_str()),
+                            name: "Panel".into(),
+                            builtin: true,
+                            x: connector.rect.x,
+                            y: connector.rect.y,
+                            width: connector.rect.width,
+                            height: connector.rect.height,
+                            mode_width: 1600,
+                            mode_height: 900,
+                            refresh_mhz: 60_000,
+                            scale_milli: connector.scale_milli,
+                            connected: true,
+                            enabled: true,
+                        },
+                    }],
+                )
+                .unwrap();
+        }
+        let view = person_layout::resolve(
+            &fabric,
+            &local,
+            &Arrangement::default(),
+            &fabric.person_devices(&local),
+        );
+        assert!(view.legacy_targets.is_empty());
+        let local_display = view
+            .layout
+            .find(local.as_str(), &format!("monitor:{}", local.as_str()))
+            .unwrap();
+        let remote_display = view
+            .layout
+            .find(remote.as_str(), &format!("monitor:{}", remote.as_str()))
+            .unwrap();
+        assert_eq!(local_display.local_rect.x, -120);
+        assert_eq!(local_display.rect.x, -120);
+        assert_eq!(remote_display.local_rect.x, -120);
+        assert_eq!(remote_display.rect.x, 1160);
+        assert_eq!(remote_display.to_device((1160.5, 40.25)), (-119.5, 40.25));
+        assert_eq!(remote_display.to_shared((-119.5, 40.25)), (1160.5, 40.25));
+        // The checked target-owned placement remains the anchor until an
+        // explicit arrangement pins this device elsewhere.
+        let mut snapshot = fabric.snapshots().get(&remote).unwrap().clone();
+        let display = snapshot.display.as_mut().unwrap();
+        display.rect.x = 2000;
+        display.stamp.counter += 1;
+        snapshot.presence.stamp.counter += 1;
+        let stamp = display.stamp.clone();
+        let facts = fabric.display_outputs(&remote).unwrap().to_vec();
+        fabric.upsert(snapshot).unwrap();
+        fabric
+            .observe_display_outputs(&remote, &stamp, facts)
+            .unwrap();
+        assert!(
+            !view.is_current(&fabric, &local),
+            "a stale pointer layout must stop routing immediately"
+        );
+        let moved = person_layout::resolve(
+            &fabric,
+            &local,
+            &Arrangement::default(),
+            &fabric.person_devices(&local),
+        );
+        assert!(moved.is_current(&fabric, &local));
+        assert!(!moved.is_current(&fabric, &remote));
+        assert_eq!(moved.layout.device_bounds(remote.as_str()).unwrap().x, 1880);
     }
 
     #[test]
@@ -7603,6 +8958,78 @@ mod tests {
     }
 
     #[test]
+    fn health_probe_never_samples_power_inline() {
+        use crate::shell::spatial_calibration::DevicePower;
+        let peer = DeviceId::new("health-probe-peer").unwrap();
+        let start = Instant::now();
+        let mut state = DeviceHealthRuntimeState::default();
+        let (release, gate) = mpsc::channel::<()>();
+        let (entered, sampling) = mpsc::channel::<()>();
+        let blocked_sampler = move || {
+            entered.send(()).unwrap();
+            gate.recv().unwrap();
+            (DevicePower::Battery(40), true)
+        };
+
+        assert!(
+            answer_health_probe(&mut state, peer.clone(), [3; 16], start, blocked_sampler)
+                .is_none(),
+            "an uncached probe waits for a background sample"
+        );
+        sampling
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the sample runs on its own thread");
+        assert!(
+            answer_health_probe(&mut state, peer.clone(), [4; 16], start, || {
+                panic!("one power sample at a time")
+            })
+            .is_none()
+        );
+        assert!(
+            finish_power_sample(&mut state, start).is_empty(),
+            "the sampler is still blocked, and so is nothing else"
+        );
+
+        release.send(()).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let replies = loop {
+            let replies = finish_power_sample(&mut state, start);
+            if !replies.is_empty() || Instant::now() > deadline {
+                break replies;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        assert_eq!(
+            replies
+                .iter()
+                .map(|(to, report)| (
+                    to.clone(),
+                    report.probe_nonce,
+                    report.power,
+                    report.energy_saver
+                ))
+                .collect::<Vec<_>>(),
+            vec![
+                (peer.clone(), [3; 16], DevicePower::Battery(40), true),
+                (peer.clone(), [4; 16], DevicePower::Battery(40), true),
+            ],
+            "both waiting probes are answered from the one sample"
+        );
+
+        let cached = answer_health_probe(
+            &mut state,
+            peer.clone(),
+            [5; 16],
+            start + Duration::from_secs(1),
+            || panic!("a fresh sample is answered from the cache"),
+        );
+        assert_eq!(
+            cached.map(|(to, report)| (to, report.probe_nonce)),
+            Some((peer, [5; 16]))
+        );
+    }
+
+    #[test]
     fn clock_sync_handles_are_counted_until_the_last_is_dropped() {
         let peer = DeviceId::new("clock-handle-peer").unwrap();
         let held = || with_fabric_clock(|core| core.is_held(&peer));
@@ -7812,6 +9239,75 @@ mod tests {
         master_kill_switch_removes_runtime_advertised_capabilities();
     }
 
+    #[test]
+    fn media_handoff_offer_is_admitted_only_by_its_exact_waiting_handoff() {
+        fn unsolicited_media_offer_never_reaches_consent_or_storage() {
+            let (network, _commands) = crate::shell::network::shell_network_for_test(
+                crate::shell::state::WorkspaceTree::default().shared(),
+                0x004d_4f46_4645,
+            );
+            let source = DeviceId::new("unsolicited-media-source").unwrap();
+            let transfer_id = [0x7d; 16];
+            handle_nearby_drop_action(
+                &network,
+                [0x7e; 16],
+                source.clone(),
+                PersonalFabricAction::NearbyTransferOffer {
+                    transfer_id,
+                    name: "unsolicited.mp4".into(),
+                    kind: crate::shell::nearby_transfer::TransferKind::MediaHandoff,
+                    total_bytes: 4,
+                    content_hash: *blake3::hash(b"evil").as_bytes(),
+                },
+            );
+            let state = nearby_drop_state().lock().unwrap();
+            assert!(
+                !state.incoming.contains_key(&transfer_id),
+                "a media handoff never asks Files for consent"
+            );
+            assert!(!state.media_authorized.contains(&(source, transfer_id)));
+            drop(state);
+            assert!(
+                with_open_nearby_transfer_store(|store| {
+                    store.inbox().iter().any(|entry| entry.id == transfer_id)
+                })
+                .is_none_or(|stored| !stored),
+                "an enrolled device alone cannot allocate transfer storage"
+            );
+        }
+
+        fn media_authorisation_is_exact_and_bounded() {
+            let source = DeviceId::new("media-source").unwrap();
+            let sibling = DeviceId::new("sibling-source").unwrap();
+            let mut state = NearbyDropState::default();
+            state.authorize_media(source.clone(), [1; 16]);
+            assert!(state.media_authorized.contains(&(source.clone(), [1; 16])));
+            assert!(!state.media_authorized.contains(&(sibling, [1; 16])));
+            assert!(!state.media_authorized.contains(&(source.clone(), [2; 16])));
+            for index in 0..u8::try_from(MAX_MEDIA_AUTHORIZATIONS).unwrap() {
+                state.authorize_media(source.clone(), [index.wrapping_add(10); 16]);
+            }
+            assert_eq!(state.media_authorized.len(), MAX_MEDIA_AUTHORIZATIONS);
+        }
+
+        fn media_names_stay_portable_on_the_transfer_lane() {
+            assert_eq!(
+                portable_media_name("live/at\\home\u{7}.flac").as_deref(),
+                Some("live_at_home_.flac")
+            );
+            let long = "é".repeat(200);
+            let bounded = portable_media_name(&long).unwrap();
+            assert!(bounded.len() <= 255);
+            assert!(long.starts_with(&bounded));
+            assert_eq!(portable_media_name(".."), None);
+            assert_eq!(portable_media_name(""), None);
+        }
+
+        unsolicited_media_offer_never_reaches_consent_or_storage();
+        media_authorisation_is_exact_and_bounded();
+        media_names_stay_portable_on_the_transfer_lane();
+    }
+
     fn pending_media(
         request_id: [u8; 16],
         source: DeviceId,
@@ -7857,17 +9353,31 @@ mod tests {
                 target: target.clone(),
                 phase: MediaHandoffPhase::Pending,
                 updated: Instant::now(),
-                route: crate::shell::network::AuthenticatedPersonalRoute::for_test(target),
+                route: crate::shell::network::AuthenticatedPersonalRoute::for_test(target.clone()),
                 personal_transfer_id: Some(transfer_id),
             };
+            nearby_drop_state()
+                .lock()
+                .unwrap()
+                .large_offers
+                .insert(transfer_id, (target, [0xC4; 16], "film.mkv".into()));
             cancel_status_personal_transfer(&network, &status);
             assert!(matches!(
                 commands.try_recv(),
-                Ok(crate::network::actor::NetCmd::CancelPersonalMedia {
+                Ok(crate::network::actor::NetCmd::CancelNearbyTransfer {
                     target: cancelled_target,
                     transfer_id: cancelled_id,
                 }) if cancelled_target == endpoint && cancelled_id == transfer_id
             ));
+            assert!(
+                !nearby_drop_state()
+                    .lock()
+                    .unwrap()
+                    .large_offers
+                    .contains_key(&transfer_id),
+                "the destination's offer is withdrawn with the handoff"
+            );
+            while commands.try_recv().is_ok() {}
 
             let streaming = MediaHandoffStatus {
                 personal_transfer_id: None,
@@ -8580,7 +10090,7 @@ mod tests {
                 ))
                 .unwrap();
 
-            let projection = roaming_provenance(&fabric, true);
+            let projection = roaming_provenance(&fabric, roaming_test_policy(true, false));
             assert_eq!(projection.settings.len(), 1);
             assert_eq!(projection.settings[0].winner.device_label, "Laptop");
             assert_eq!(projection.settings[0].winner.counter, 5);
@@ -8589,7 +10099,11 @@ mod tests {
                 projection.settings[0].alternatives[0].device_label,
                 "Desktop"
             );
-            assert!(roaming_provenance(&fabric, false).settings.is_empty());
+            assert!(
+                roaming_provenance(&fabric, ContinuityPolicySnapshot::default())
+                    .settings
+                    .is_empty()
+            );
         }
 
         fn unchanged_provenance_is_not_rewritten_and_settings_can_reload_it() {
@@ -8608,13 +10122,25 @@ mod tests {
                 .join(settings_store::roaming_provenance::FILE_NAME);
             let mut fingerprint = None;
             assert!(
-                publish_roaming_provenance(&fabric, true, &mut fingerprint, Some(&path)).unwrap()
+                publish_roaming_provenance(
+                    &fabric,
+                    roaming_test_policy(true, false),
+                    &mut fingerprint,
+                    Some(&path)
+                )
+                .unwrap()
             );
             let first =
                 settings_store::roaming_provenance::RoamingProvenance::load_at(&path).unwrap();
             assert_eq!(first.settings[0].winner.device_label, "Laptop");
             assert!(
-                !publish_roaming_provenance(&fabric, true, &mut fingerprint, Some(&path)).unwrap()
+                !publish_roaming_provenance(
+                    &fabric,
+                    roaming_test_policy(true, false),
+                    &mut fingerprint,
+                    Some(&path)
+                )
+                .unwrap()
             );
             let second =
                 settings_store::roaming_provenance::RoamingProvenance::load_at(&path).unwrap();
@@ -8663,7 +10189,7 @@ mod tests {
             fabric.upsert(first_snapshot).unwrap();
             fabric.upsert(second_snapshot).unwrap();
 
-            let projection = roaming_provenance(&fabric, true);
+            let projection = roaming_provenance(&fabric, roaming_test_policy(true, false));
             assert_eq!(projection.wifi.len(), 1);
             assert_eq!(projection.wifi[0].ssid, "Home");
             assert_eq!(projection.wifi[0].winner.device_label, "Laptop");
@@ -8686,10 +10212,179 @@ mod tests {
     }
 
     #[test]
+    fn spatial_input_requires_the_grant_route_epoch_and_live_nonce() {
+        use crate::shell::network::AuthenticatedPersonalRoute;
+        let controller = DeviceId::new("controller").unwrap();
+        let target = DeviceId::new("target").unwrap();
+        let route = AuthenticatedPersonalRoute::for_test_epoch(controller.clone(), 7);
+        let rejoined = AuthenticatedPersonalRoute::for_test_epoch(controller.clone(), 8);
+        let foreign = AuthenticatedPersonalRoute::for_test(DeviceId::new("foreign").unwrap());
+        let lease = InputLease {
+            controller: controller.clone(),
+            target: target.clone(),
+            issued_unix_ms: 100,
+            expires_unix_ms: 200,
+            nonce: [7; 16],
+            allow_pointer: true,
+            allow_keyboard: false,
+        };
+        let input = (
+            lease.nonce,
+            FabricInputEvent::PointerButton {
+                button: 0x110,
+                pressed: true,
+            },
+        );
+        let mut spatial = SpatialInputState::default();
+        spatial.issued.insert(lease.nonce, lease.clone());
+        spatial.issued_routes.insert(lease.nonce, route.clone());
+        spatial.accept_lease_bound_input(&route, &target, input, 150);
+        assert_eq!(
+            spatial.inbound.pop_front(),
+            Some((controller.clone(), input.1))
+        );
+        for (candidate, destination, event, now) in [
+            (&rejoined, &target, input, 150),
+            (&foreign, &target, input, 150),
+            (&route, &controller, input, 150),
+            (&route, &target, ([8; 16], input.1), 150),
+            (&route, &target, input, 201),
+            (
+                &route,
+                &target,
+                (
+                    lease.nonce,
+                    FabricInputEvent::Key {
+                        keycode: 30,
+                        pressed: true,
+                        modifiers: 0,
+                    },
+                ),
+                150,
+            ),
+        ] {
+            spatial.accept_lease_bound_input(candidate, destination, event, now);
+            assert!(spatial.inbound.is_empty());
+        }
+        // Withdrawing the exact route releases the seat even if the device
+        // still appears online and the wall-clock lease has not expired.
+        spatial.accept_lease_bound_input(&route, &target, input, 150);
+        assert_eq!(spatial.inbound.len(), 1);
+        prune_spatial_state(&mut spatial, 150, &[], |_| false);
+        assert!(
+            spatial.inbound.is_empty(),
+            "revocation must discard a queued down edge"
+        );
+        assert_eq!(spatial.release_controllers.pop_front(), Some(controller));
+        assert!(spatial.issued_routes.is_empty());
+        spatial.accept_lease_bound_input(&route, &target, input, 150);
+        assert!(spatial.inbound.is_empty());
+    }
+
+    #[test]
+    fn spatial_gestures_cannot_adopt_replacement_or_foreign_leases() {
+        let controller = DeviceId::new("controller").unwrap();
+        let target = DeviceId::new("target").unwrap();
+        let foreign = DeviceId::new("foreign").unwrap();
+        let mut spatial = SpatialInputState::default();
+        let lease = InputLease {
+            controller: controller.clone(),
+            target: target.clone(),
+            issued_unix_ms: 100,
+            expires_unix_ms: 200,
+            nonce: [7; 16],
+            allow_keyboard: true,
+            allow_pointer: true,
+        };
+        spatial.received.insert(target.clone(), lease.clone());
+        let event = |nonce, event| OutboundSpatialInput {
+            sequence: None,
+            target: target.clone(),
+            lease_nonce: nonce,
+            event,
+        };
+        let press = FabricInputEvent::Key {
+            keycode: 30,
+            pressed: true,
+            modifiers: 0,
+        };
+        let release = FabricInputEvent::Key {
+            keycode: 30,
+            pressed: false,
+            modifiers: 0,
+        };
+        spatial
+            .queue_lease_bound_input(&controller, event(lease.nonce, press), 150)
+            .unwrap();
+        assert!(
+            spatial
+                .queue_lease_bound_input(&foreign, event(lease.nonce, press), 150)
+                .is_err()
+        );
+        assert!(
+            spatial
+                .queue_lease_bound_input(&controller, event(lease.nonce, release), 201)
+                .is_err()
+        );
+        // A new grant may accept a new gesture, never the previous gesture's
+        // down/up edges. Pruning removes the old queue under the same contract.
+        let mut replacement = lease.clone();
+        replacement.nonce = [8; 16];
+        spatial.received.insert(target.clone(), replacement.clone());
+        assert!(
+            spatial
+                .queue_lease_bound_input(&controller, event(lease.nonce, release), 150)
+                .is_err()
+        );
+        prune_spatial_state(&mut spatial, 150, &[], |_| true);
+        assert!(spatial.outbound.is_empty());
+        spatial
+            .queue_lease_bound_input(&controller, event(replacement.nonce, press), 150)
+            .unwrap();
+        spatial
+            .queue_lease_bound_input(&controller, event(replacement.nonce, release), 150)
+            .unwrap();
+        assert_eq!(spatial.outbound.len(), 2);
+        assert!(
+            spatial
+                .outbound
+                .iter()
+                .all(|input| input.lease_nonce == replacement.nonce)
+        );
+        spatial.received.remove(&target);
+        assert!(
+            spatial
+                .queue_lease_bound_input(&controller, event(replacement.nonce, press), 150)
+                .is_err()
+        );
+        prune_spatial_state(&mut spatial, 150, &[], |_| true);
+        assert!(spatial.outbound.is_empty());
+        // A keyboard-only lease stays usable by the existing semantic sender.
+        replacement.allow_pointer = false;
+        spatial.received.insert(target.clone(), replacement.clone());
+        spatial
+            .queue_lease_bound_input(&controller, event(replacement.nonce, press), 150)
+            .unwrap();
+        assert!(
+            spatial
+                .queue_lease_bound_input(
+                    &controller,
+                    event(
+                        replacement.nonce,
+                        FabricInputEvent::PointerMotion { x: 1, y: 2 }
+                    ),
+                    150
+                )
+                .is_err()
+        );
+    }
+
+    #[test]
     fn remote_input_coalesces_and_departure_revokes_the_exact_controller() {
         fn pointer_bursts_coalesce_without_crossing_discrete_input() {
             let target = DeviceId::new("tablet").unwrap();
             let motion = |x| OutboundSpatialInput {
+                sequence: None,
                 target: target.clone(),
                 lease_nonce: [7; 16],
                 event: FabricInputEvent::PointerMotion { x, y: 20 },
@@ -8702,6 +10397,7 @@ mod tests {
 
             state
                 .queue_outbound(OutboundSpatialInput {
+                    sequence: None,
                     target: target.clone(),
                     lease_nonce: [7; 16],
                     event: FabricInputEvent::PointerButton {

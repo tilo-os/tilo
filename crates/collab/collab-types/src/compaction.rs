@@ -1,7 +1,7 @@
 //! Host-driven compaction checkpoint.
 //!
 //! A `CompactionCheckpoint` is the payload of a [`crate::op::SignedOp`]
-//! whose `op_class` is [`crate::role::OpClass::Compaction`]. The
+//! whose `kind` is [`crate::role::OpKind::Compaction`]. The
 //! channel's host (initially the owner's primary device) emits one every
 //! N ops or M bytes; recipients use it to evict older op-log entries so
 //! memory doesn't grow forever.
@@ -43,7 +43,7 @@ use crate::canonical::{CanonicalError, canonical_bytes, from_canonical_bytes};
 use crate::channel::ArtifactId;
 use crate::crypto::Ed25519PublicKey;
 use crate::op::{ContentRetention, SignedOp};
-use crate::role::OpClass;
+use crate::role::OpKind;
 
 /// A signed compaction checkpoint payload. `(artifact, up_to_seq)`
 /// jointly identify "every op with this artifact id and seq ≤ `up_to_seq`
@@ -83,13 +83,13 @@ pub enum CompactionError {
     /// forged for a different schema, or the op was misclassified.
     #[error("malformed compaction payload: {0}")]
     Malformed(#[source] CanonicalError),
-    /// The op claimed `op_class == Compaction` but the payload didn't match
+    /// The op claimed `kind == Compaction` but the payload didn't match
     /// the expected shape. Kept distinct so audit logs can tell "valid
     /// postcard, wrong type" from "garbage bytes".
-    #[error("compaction op had the wrong op_class: {actual:?}")]
-    WrongOpClass {
-        /// The `op_class` the envelope actually carried, for audit-log triage.
-        actual: OpClass,
+    #[error("compaction op had the wrong kind: {actual:?}")]
+    WrongOpKind {
+        /// The `kind` the envelope actually carried, for audit-log triage.
+        actual: OpKind,
     },
     /// A sealed compaction that decoded but breaks its own contract.
     #[error("invalid sealed compaction: {0}")]
@@ -97,7 +97,7 @@ pub enum CompactionError {
 }
 
 /// Encode a `CompactionCheckpoint` to canonical bytes — the format an
-/// op's payload field should carry when `op_class == Compaction`.
+/// op's payload field should carry when `kind == Compaction`.
 ///
 /// # Errors
 ///
@@ -107,20 +107,18 @@ pub fn encode_compaction_payload(cp: &CompactionCheckpoint) -> Result<Vec<u8>, C
 }
 
 /// Decode a `SignedOp::payload` as a `CompactionCheckpoint`. Verifies
-/// `op.op_class == Compaction` so a caller gets a precise error rather
+/// `op.kind == Compaction` so a caller gets a precise error rather
 /// than a silently-decoded random struct. The returned struct is owned,
 /// so callers can drop the original envelope.
 ///
 /// # Errors
 ///
-/// Returns [`CompactionError::WrongOpClass`] if `op.op_class != Compaction`,
+/// Returns [`CompactionError::WrongOpKind`] if `op.kind != Compaction`,
 /// or [`CompactionError::Malformed`] if the payload doesn't decode as a
 /// `CompactionCheckpoint`.
 pub fn parse_compaction_payload(op: &SignedOp) -> Result<CompactionCheckpoint, CompactionError> {
-    if op.op_class != OpClass::Compaction {
-        return Err(CompactionError::WrongOpClass {
-            actual: op.op_class,
-        });
+    if op.kind != OpKind::Compaction {
+        return Err(CompactionError::WrongOpKind { actual: op.kind });
     }
     from_canonical_bytes::<CompactionCheckpoint>(&op.payload).map_err(CompactionError::Malformed)
 }
@@ -216,13 +214,11 @@ impl SealedCompaction {
     ///
     /// # Errors
     ///
-    /// [`CompactionError::WrongOpClass`], [`CompactionError::Malformed`] or
+    /// [`CompactionError::WrongOpKind`], [`CompactionError::Malformed`] or
     /// [`CompactionError::InvalidSealed`].
     pub fn parse(op: &SignedOp) -> Result<Self, CompactionError> {
-        if op.op_class != OpClass::Compaction {
-            return Err(CompactionError::WrongOpClass {
-                actual: op.op_class,
-            });
+        if op.kind != OpKind::Compaction {
+            return Err(CompactionError::WrongOpKind { actual: op.kind });
         }
         if op.encryption.and_then(|meta| meta.retention()) != Some(ContentRetention::Checkpoint) {
             return Err(CompactionError::InvalidSealed(
@@ -289,7 +285,7 @@ pub fn hash_sealed_prefix<'a>(
 ///
 /// As [`SealedCompaction::parse`], for a `Compaction` op.
 pub fn sealed_ciphertext(op: &SignedOp) -> Result<Cow<'_, [u8]>, CompactionError> {
-    if op.op_class == OpClass::Compaction {
+    if op.kind == OpKind::Compaction {
         return SealedCompaction::parse(op).map(|compaction| Cow::Owned(compaction.ciphertext));
     }
     Ok(Cow::Borrowed(&op.payload))
@@ -309,7 +305,7 @@ mod tests {
             ArtifactId::new(),
             pk,
             AttestationId::new(),
-            OpClass::Splice,
+            OpKind::Change,
             SystemTime::UNIX_EPOCH,
             seq,
         )
@@ -329,14 +325,14 @@ mod tests {
             let bytes = encode_compaction_payload(&cp).expect("encode");
 
             // Build a SignedOp carrying the encoded payload and the
-            // matching op_class.
+            // matching kind.
             let (_, pk) = generate_keypair();
             let op = SignedOp::new_unsigned(
                 bytes,
                 cp.artifact,
                 pk,
                 AttestationId::new(),
-                OpClass::Compaction,
+                OpKind::Compaction,
                 SystemTime::UNIX_EPOCH,
                 100,
             );
@@ -344,9 +340,9 @@ mod tests {
             assert_eq!(parsed, cp);
         }
 
-        // Phase: parse_compaction_payload_rejects_wrong_op_class.
+        // Phase: parse_compaction_payload_rejects_wrong_op_kind.
         {
-            // A SignedOp with op_class=Splice carrying a checkpoint-shaped
+            // A SignedOp with kind=Splice carrying a checkpoint-shaped
             // payload still must be rejected — the role table gives Editors
             // Splice but NOT Compaction, and a typed error here lets the audit
             // log distinguish forgery from a genuine malformed payload.
@@ -362,15 +358,15 @@ mod tests {
                 cp.artifact,
                 pk,
                 AttestationId::new(),
-                OpClass::Splice,
+                OpKind::Change,
                 SystemTime::UNIX_EPOCH,
                 7,
             );
             match parse_compaction_payload(&op) {
-                Err(CompactionError::WrongOpClass { actual }) => {
-                    assert_eq!(actual, OpClass::Splice);
+                Err(CompactionError::WrongOpKind { actual }) => {
+                    assert_eq!(actual, OpKind::Change);
                 }
-                other => panic!("expected WrongOpClass, got {other:?}"),
+                other => panic!("expected WrongOpKind, got {other:?}"),
             }
         }
 
@@ -405,14 +401,14 @@ mod tests {
         }
     }
 
-    fn sealed_op(payload: Vec<u8>, op_class: OpClass, retention: ContentRetention) -> SignedOp {
+    fn sealed_op(payload: Vec<u8>, kind: OpKind, retention: ContentRetention) -> SignedOp {
         let (_, pk) = generate_keypair();
         SignedOp::new_unsigned_with_encryption(
             payload,
             ArtifactId::new(),
             pk,
             AttestationId::new(),
-            op_class,
+            kind,
             SystemTime::UNIX_EPOCH,
             9,
             crate::op::EncryptionMetadata::content_key(3, crate::ChannelId::new(), retention),
@@ -460,29 +456,25 @@ mod tests {
         let payload = compaction.encode().unwrap();
         let op = sealed_op(
             payload.clone(),
-            OpClass::Compaction,
+            OpKind::Compaction,
             ContentRetention::Checkpoint,
         );
         assert_eq!(SealedCompaction::parse(&op).unwrap(), compaction);
         assert_eq!(sealed_ciphertext(&op).unwrap().as_ref(), &[7]);
-        let write = sealed_op(vec![1, 2], OpClass::Splice, ContentRetention::Delta);
+        let write = sealed_op(vec![1, 2], OpKind::Change, ContentRetention::Delta);
         assert_eq!(sealed_ciphertext(&write).unwrap().as_ref(), &[1, 2]);
 
         for (op, why) in [
             (
                 sealed_op(
                     payload.clone(),
-                    OpClass::Splice,
+                    OpKind::Change,
                     ContentRetention::Checkpoint,
                 ),
                 "another op class",
             ),
             (
-                sealed_op(
-                    payload.clone(),
-                    OpClass::Compaction,
-                    ContentRetention::Delta,
-                ),
+                sealed_op(payload.clone(), OpKind::Compaction, ContentRetention::Delta),
                 "delta retention",
             ),
             (
@@ -491,7 +483,7 @@ mod tests {
                     ArtifactId::new(),
                     a.author,
                     AttestationId::new(),
-                    OpClass::Compaction,
+                    OpKind::Compaction,
                     SystemTime::UNIX_EPOCH,
                     1,
                 ),
@@ -505,7 +497,7 @@ mod tests {
         assert!(
             SealedCompaction::parse(&sealed_op(
                 extended,
-                OpClass::Compaction,
+                OpKind::Compaction,
                 ContentRetention::Checkpoint
             ))
             .is_err(),
@@ -557,7 +549,7 @@ mod tests {
         ] {
             let op = sealed_op(
                 tampered.encode().unwrap(),
-                OpClass::Compaction,
+                OpKind::Compaction,
                 ContentRetention::Checkpoint,
             );
             assert!(SealedCompaction::parse(&op).is_err(), "{why} parses");

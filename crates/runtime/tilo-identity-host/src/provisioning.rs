@@ -12,9 +12,9 @@ use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use threshold_identity::ThresholdIdentity;
+use tilo_identity_ceremony::IdentityRecord;
 use tilo_user_identity::persist::DeviceKeyCustody;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, IdentityPaths, persist};
-use ui::widget::identity_flow::IdentityRecord;
 
 /// Where a newly provisioned personal identity's private share is kept.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -150,21 +150,6 @@ pub const PRIMARY_IDENTITY_FILE: &str = "primary.json";
 /// is a hard link, not this name; `create_new` simply prevents a stale temp
 /// file from ever being overwritten.
 static OWNER_CLAIM_SEQUENCE: AtomicU64 = AtomicU64::new(0);
-
-/// Current wall-clock time as nanoseconds since the epoch, clamped to
-/// `u64::MAX` rather than truncated — a value that large is centuries past
-/// any real device-cert issuance this crate computes against.
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "clamped to 0..=u64::MAX immediately above, so it always fits u64"
-)]
-fn now_ns_u64() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos()
-        .min(u128::from(u64::MAX)) as u64
-}
 
 /// Result of the "make sure a primary identity exists" step, exposed so
 /// tests can distinguish "we created one" from "one was already there".
@@ -698,57 +683,12 @@ fn copy_home_peers(
         &tilo_relay_protocol::home_peer_registry_path(parent),
         &encoded,
     )?;
-    remember_personal_device(
-        &tilo_relay_protocol::home_peer_registry_path(parent)
-            .with_file_name("personal-device-peers.json"),
+    tilo_relay_protocol::remember_personal_device(
+        &tilo_relay_protocol::personal_device_peer_path(parent),
         local_cert.device_public_key,
     )?;
     let local_peers = source.with_file_name("personal-device-peers.json");
-    remember_personal_device(&local_peers, joined_device)?;
-    Ok(())
-}
-
-fn remember_personal_device(path: &Path, device_public_key: [u8; 32]) -> io::Result<()> {
-    let id = hex::encode(device_public_key);
-    let bytes = match fs::read(path) {
-        Ok(bytes) => bytes,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Vec::new(),
-        Err(error) => return Err(error),
-    };
-    if bytes.len() > 64 * 1024 {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "personal device list exceeds 64 KiB",
-        ));
-    }
-    let mut ids: Vec<String> = if bytes.is_empty() {
-        Vec::new()
-    } else {
-        serde_json::from_slice(&bytes)
-            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?
-    };
-    if ids.len() > 128
-        || ids.iter().any(|known| {
-            known.len() != 64
-                || hex::decode(known)
-                    .ok()
-                    .is_none_or(|decoded| decoded.len() != 32)
-        })
-    {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "personal device list is invalid",
-        ));
-    }
-    if !ids.iter().any(|known| known == &id) {
-        ids.push(id);
-    }
-    let encoded = serde_json::to_vec_pretty(&ids)
-        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    tilo_files::native::atomic::write(path, &encoded)?;
+    tilo_relay_protocol::remember_personal_device(&local_peers, joined_device)?;
     Ok(())
 }
 
@@ -926,7 +866,7 @@ fn ensure_collaboration_identity_in_context(
 ) -> Result<ProvisionOutcome, io::Error> {
     prepare_identity_directory(identity_dir)?;
 
-    match persist::joined_device_is_ready(paths, now_ns_u64()) {
+    match persist::joined_device_is_ready(paths, tilo_clock::unix_now_ns()) {
         Ok(true) => return Ok(ProvisionOutcome::Existing),
         Ok(false) => {}
         Err(error) => {
@@ -1223,7 +1163,7 @@ fn issue_device_certificate(
     device_label: &str,
     class: DeviceClass,
 ) -> Result<DeviceCert, io::Error> {
-    let issued_at_ns = now_ns_u64();
+    let issued_at_ns = tilo_clock::unix_now_ns();
     let expires_at_ns = match class {
         DeviceClass::Native | DeviceClass::Foreign => None,
         #[cfg(any(debug_assertions, feature = "throwaway-test-identity"))]
@@ -1429,7 +1369,7 @@ mod tests {
         assert_eq!(outcome, ProvisionOutcome::Existing);
         assert!(!identity_dir.join(PRIMARY_IDENTITY_FILE).exists());
         assert!(!paths.user_privkey.exists());
-        assert!(persist::joined_device_is_ready(&paths, now_ns_u64()).unwrap());
+        assert!(persist::joined_device_is_ready(&paths, tilo_clock::unix_now_ns()).unwrap());
     }
 
     /// A device approved from a nearby device: a public-only record selected
@@ -1565,7 +1505,9 @@ mod tests {
             "joined device must not reuse the setup machine's device key"
         );
         let target_system = IdentityPaths::under(dir.path().join("var/lib/tilo"));
-        assert!(persist::joined_device_is_ready(&target_system, now_ns_u64()).unwrap());
+        assert!(
+            persist::joined_device_is_ready(&target_system, tilo_clock::unix_now_ns()).unwrap()
+        );
         assert!(!target_system.user_privkey.exists());
         let identity_dir = dir.path().join("var/home/quser/.config/tilo/identity");
         let registry = crate::registry::IdentityRegistryStore::at(&identity_dir)
@@ -1725,7 +1667,9 @@ mod tests {
         assert_ne!(cert.device_public_key, local_cert.device_public_key);
         assert_eq!(cert.user_public_key, local_cert.user_public_key);
         let target_system = IdentityPaths::under(dir.path().join("var/lib/tilo"));
-        assert!(persist::joined_device_is_ready(&target_system, now_ns_u64()).unwrap());
+        assert!(
+            persist::joined_device_is_ready(&target_system, tilo_clock::unix_now_ns()).unwrap()
+        );
         assert!(!target_system.user_privkey.exists());
         assert!(cert.capabilities.can_read_all_workspaces);
     }

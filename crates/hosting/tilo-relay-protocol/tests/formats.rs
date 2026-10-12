@@ -15,6 +15,7 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 
 use tilo_relay_protocol::config::CheckpointPrefixRecovery;
+use tilo_relay_protocol::metrics::RoomEgress;
 use tilo_relay_protocol::{
     ComputeAccelerator, DeviceMeshProfile, DeviceRole, HomePeerRegistration, MetricsSnapshot,
     PeerRelayConfig, PowerAvailability, ProcessLease, RelayConfig, ReplicationIntent,
@@ -138,8 +139,48 @@ fn json_encodings_are_pinned() {
         replayed_pending: 9,
         subscriber_dropped: 10,
         subscriber_dropped_backpressure: 11,
+        bytes_sent: 12,
+        bytes_sent_live: 13,
+        rooms: BTreeMap::from([(
+            14,
+            RoomEgress {
+                bytes_sent: 15,
+                bytes_sent_live: 16,
+            },
+        )]),
     };
     let encoded = r#"{
+  "conns_accepted": 1,
+  "conns_authed": 2,
+  "auth_rejected": 3,
+  "deltas_received": 4,
+  "bytes_queued": 5,
+  "deltas_fanned_out": 6,
+  "subscribes": 7,
+  "replayed_retained": 8,
+  "replayed_pending": 9,
+  "subscriber_dropped": 10,
+  "subscriber_dropped_backpressure": 11,
+  "bytes_sent": 12,
+  "bytes_sent_live": 13,
+  "rooms": {
+    "14": {
+      "bytes_sent": 15,
+      "bytes_sent_live": 16
+    }
+  }
+}"#;
+    assert_eq!(
+        String::from_utf8(serde_json::to_vec_pretty(&snapshot).unwrap()).unwrap(),
+        encoded
+    );
+    assert_eq!(
+        serde_json::from_str::<MetricsSnapshot>(encoded).unwrap(),
+        snapshot
+    );
+    // A snapshot a relay wrote before the egress counters still reads, with
+    // no egress.
+    let before_egress = r#"{
   "conns_accepted": 1,
   "conns_authed": 2,
   "auth_rejected": 3,
@@ -153,12 +194,13 @@ fn json_encodings_are_pinned() {
   "subscriber_dropped_backpressure": 11
 }"#;
     assert_eq!(
-        String::from_utf8(serde_json::to_vec_pretty(&snapshot).unwrap()).unwrap(),
-        encoded
-    );
-    assert_eq!(
-        serde_json::from_str::<MetricsSnapshot>(encoded).unwrap(),
-        snapshot
+        serde_json::from_str::<MetricsSnapshot>(before_egress).unwrap(),
+        MetricsSnapshot {
+            bytes_sent: 0,
+            bytes_sent_live: 0,
+            rooms: BTreeMap::new(),
+            ..snapshot
+        }
     );
 
     // Process lease.

@@ -16,6 +16,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, TryRecvError, TrySendError, sync_channel};
 use std::thread::JoinHandle;
 use std::time::Duration;
+use zeroize::{Zeroize as _, Zeroizing};
 
 const CHANNELS: usize = 2;
 const BYTES_PER_SAMPLE: usize = 2;
@@ -66,9 +67,9 @@ pub fn availability() -> AudioAvailability {
 
 pub struct AudioCapture {
     child: Child,
-    receiver: Receiver<Vec<u8>>,
+    receiver: Receiver<Zeroizing<Vec<u8>>>,
     reader: Option<JoinHandle<()>>,
-    pending: Vec<u8>,
+    pending: Zeroizing<Vec<u8>>,
     frame_bytes: usize,
     discontinuity: Arc<AtomicBool>,
 }
@@ -150,7 +151,10 @@ impl AudioCapture {
             CapturePurpose::Dictation => vec![
                 "--target".into(), target,
                 "--properties".into(),
-                "{ node.name = tilo-dictation-microphone node.description = \"Tilo dictation microphone\" }".into(),
+                // Consent covers this server-assigned source, not any future
+                // default. Source removal must close the pipe with an error;
+                // otherwise pw-record can remain alive without producing PCM.
+                "{ node.name = tilo-dictation-microphone node.description = \"Tilo dictation microphone\" node.dont-reconnect = true node.dont-fallback = true node.dont-move = true }".into(),
             ],
         };
         let mut recorder = Command::new(if matches!(purpose, CapturePurpose::Dictation) {
@@ -212,7 +216,7 @@ impl AudioCapture {
             child,
             receiver,
             reader: Some(reader),
-            pending: Vec::new(),
+            pending: Zeroizing::new(Vec::new()),
             frame_bytes: purpose.frame_bytes(),
             discontinuity,
         })
@@ -223,7 +227,7 @@ impl AudioCapture {
     /// rather than appending audio captured during the pause.
     pub fn drain(&mut self, keep: bool) -> Result<Vec<u8>, String> {
         if self.discontinuity.load(Ordering::Acquire) {
-            self.pending.clear();
+            self.pending.zeroize();
             return Err("PipeWire dictation audio was interrupted".into());
         }
         if let Some(status) = self
@@ -243,11 +247,11 @@ impl AudioCapture {
             }
         }
         if !keep {
-            self.pending.clear();
+            self.pending.zeroize();
             return Ok(Vec::new());
         }
         if self.discontinuity.load(Ordering::Acquire) {
-            self.pending.clear();
+            self.pending.zeroize();
             return Err("PipeWire dictation audio was interrupted".into());
         }
         let remainder = self
@@ -259,8 +263,9 @@ impl AudioCapture {
         if aligned == 0 {
             return Ok(Vec::new());
         }
-        let tail = self.pending.split_off(aligned);
-        Ok(std::mem::replace(&mut self.pending, tail))
+        let tail = Zeroizing::new(self.pending.split_off(aligned));
+        let mut complete = std::mem::replace(&mut self.pending, tail);
+        Ok(std::mem::take(&mut *complete))
     }
 }
 
@@ -297,11 +302,11 @@ fn bind_recorder_to_owner(command: &mut Command) {
 
 fn read_audio(
     mut stdout: impl Read,
-    sender: &SyncSender<Vec<u8>>,
+    sender: &SyncSender<Zeroizing<Vec<u8>>>,
     purpose: CapturePurpose,
     discontinuity: &AtomicBool,
 ) {
-    let mut buffer = vec![0u8; PIPE_BUFFER];
+    let mut buffer = Zeroizing::new(vec![0u8; PIPE_BUFFER]);
     while let Ok(read) = stdout.read(&mut buffer) {
         if read == 0 {
             break;
@@ -309,7 +314,7 @@ fn read_audio(
         let Some(bytes) = buffer.get(..read) else {
             break;
         };
-        match sender.try_send(bytes.to_vec()) {
+        match sender.try_send(Zeroizing::new(bytes.to_vec())) {
             Err(TrySendError::Full(_)) if matches!(purpose, CapturePurpose::Dictation) => {
                 discontinuity.store(true, Ordering::Release);
                 break;
@@ -483,7 +488,7 @@ mod tests {
             child,
             receiver,
             reader: Some(reader),
-            pending: Vec::new(),
+            pending: Zeroizing::new(Vec::new()),
             frame_bytes: BYTES_PER_SAMPLE,
             discontinuity,
         };

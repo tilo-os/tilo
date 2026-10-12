@@ -7,14 +7,10 @@ use std::rc::Rc;
 
 use taffy::style_helpers::percent;
 use taffy::{NodeId, Style, TaffyTree};
-use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
-use winit::event::WindowEvent;
+use vello::kurbo::Rect;
 
 use crate::gesture::NavDirection;
 use crate::nav_stack::NavStack;
-use crate::presence::PresenceCtx;
-use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 
 use super::{Element, TaffyTreeExt, Widget};
@@ -215,13 +211,6 @@ impl RouteHandle {
         }))
     }
 
-    pub fn back_action(&self) -> impl FnMut() + use<> {
-        let handle = self.clone();
-        move || {
-            let _ = handle.back();
-        }
-    }
-
     fn require_known(&self, route: &str) -> Result<(), RouteError> {
         if self.knows(route) {
             Ok(())
@@ -404,68 +393,17 @@ impl Widget for Router {
     ) -> NodeId {
         self.theme = theme.clone();
         let child = self.child.build_layout(taffy, theme, node_map);
-        let node = taffy.parent_node(
-            Style {
-                size: taffy::Size {
-                    width: percent(1.0_f32),
-                    height: percent(1.0_f32),
-                },
-                ..Default::default()
+        let style = Style {
+            size: taffy::Size {
+                width: percent(1.0_f32),
+                height: percent(1.0_f32),
             },
-            &[child],
-        );
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+            ..Default::default()
+        };
+        taffy.widget_node(style, &[child], node_map, self)
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x + layout.size.width),
-            origin.y + f64::from(layout.location.y + layout.size.height),
-        );
-        if let Ok(children) = taffy.children(node)
-            && let Some(child) = children.first()
-        {
-            self.child
-                .apply_layout(taffy, *child, Point::new(self.rect.x0, self.rect.y0));
-        }
-    }
-
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
-        self.child
-            .draw(scene, transform, text_renderer, theme, presence);
-    }
-
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
-        if let Ok(children) = ctx.taffy.children(ctx.node_id)
-            && let Some(child) = children.first()
-        {
-            self.child
-                .handle_event(event, &mut ctx.reborrow(ctx.path, *child));
-        }
-    }
-
-    fn children(&self) -> Vec<&dyn Widget> {
-        vec![self.child.as_ref()]
-    }
-
-    fn for_each_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) {
-        visitor(self.child.as_ref());
-    }
-
-    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        vec![self.child.as_mut()]
-    }
+    crate::forward_to_child!(child, rect);
 
     fn name(&self) -> &'static str {
         "Router"
@@ -473,10 +411,6 @@ impl Widget for Router {
 
     fn test_id(&self) -> Option<&str> {
         Some("router")
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
     }
 
     fn on_nav_gesture(
@@ -521,25 +455,6 @@ impl Widget for Router {
 
     fn restore_dev_route(&mut self, route: &RouteSnapshot) -> bool {
         self.handle.adopt_stack(route).unwrap_or(false)
-    }
-
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        permissions: &crate::permissions::PermissionContext,
-    ) {
-        self.child.draw_with_presence(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            presence,
-            permissions,
-        );
     }
 }
 

@@ -24,17 +24,18 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy}
 use winit::platform::web::{EventLoopExtWebSys as _, WindowAttributesExtWebSys as _};
 use winit::window::{Window, WindowId};
 
+use tilo_desktop::feedback::PrivateFeedback;
+
 use crate::viewport::{SurfaceCaps, Viewport, ViewportState};
 
 thread_local! {
+    static FEEDBACK_STARTUPS: RefCell<HashMap<u32, tilo_desktop::feedback::transport::Startup>> =
+        RefCell::new(HashMap::new());
     static LOOP: RefCell<Option<EventLoopProxy<u64>>> = const { RefCell::new(None) };
     static MOUNTS: RefCell<HashMap<u64, Mount>> = RefCell::new(HashMap::new());
     static SERVICING: RefCell<std::collections::HashSet<u64>> = RefCell::new(std::collections::HashSet::new());
     static REPLAYING: Cell<bool> = const { Cell::new(false) };
     static DEFERRED_EVENTS: RefCell<Vec<DeferredEvent>> = const { RefCell::new(Vec::new()) };
-    #[cfg(feature = "cloud")]
-    static DEFERRED_PEER_SEMANTICS: RefCell<std::collections::HashSet<u32>> = RefCell::new(std::collections::HashSet::new());
-
     static REQUESTS: RefCell<HashMap<u64, Request>> = RefCell::new(HashMap::new());
     static NEXT: RefCell<u64> = const { RefCell::new(1) };
     static STOP: RefCell<Option<Function>> = const { RefCell::new(None) };
@@ -223,6 +224,7 @@ struct Mount {
     gpu: Option<Gpu>,
     pending: bool,
     background_retry: Option<ui::time::Instant>,
+    feedback_retry: Option<ui::time::Instant>,
     viewport: ViewportState,
     caps: SurfaceCaps,
     hidden: bool,
@@ -243,10 +245,6 @@ struct Mount {
     replica_changed: Rc<std::cell::Cell<bool>>,
     /// The focus presence last reported to the page.
     focus_presence: RefCell<Option<serde_json::Value>>,
-    /// LIVE_V1: when true, local publications and redraws stay suspended.
-    peer_suspended: bool,
-    /// LIVE_V1: leading-edge throttle for owned-record publications.
-    publication: RefCell<crate::throttle::PublicationSchedule>,
 }
 
 struct Desktop {
@@ -255,16 +253,18 @@ struct Desktop {
     persistence: crate::desktop::Persistence,
     /// Navigation commands name the mount generation they were issued for.
     generation: String,
-    /// LIVE_V1: window geometry / focus / drag published to the overlay.
-    live: Rc<RefCell<crate::live_view::LiveLayout>>,
-    /// LIVE_V1: app+record ids keyed by desktop tab id.
-    tab_records: Rc<RefCell<std::collections::BTreeMap<u64, (String, String)>>>,
     /// What the desktop asked of the page since its last status.
     requests: crate::shell::HostRequests,
 }
 
 impl Mount {
     fn service_owner_models(&mut self) {
+        self.feedback_retry = None;
+        if let Some(desktop) = &self.desktop
+            && let Some(feedback) = desktop.shared.feedback.borrow().as_ref()
+        {
+            let _ = feedback.pump();
+        }
         let p = crate::background_work::Presentation {
             hidden: self.hidden,
             suspended: self.viewport.suspended(),
@@ -561,14 +561,6 @@ fn finish_shutdown() {
 struct Runner;
 impl Runner {
     fn replay_deferred(&mut self, event_loop: &ActiveEventLoop) {
-        #[cfg(feature = "cloud")]
-        if admit_runtime().is_ok() {
-            let peers = DEFERRED_PEER_SEMANTICS.with_borrow_mut(std::mem::take);
-            for peer in peers {
-                expedite_peer_semantics(peer);
-            }
-        }
-
         let pending = REPLAYING
             .with(|active| {
                 SERVICING.with(|servicing| {
@@ -728,6 +720,24 @@ impl ApplicationHandler<u64> for Runner {
         let ids = MOUNTS.with_borrow(|mounts| mounts.keys().copied().collect::<Vec<_>>());
         for id in ids {
             let _ = with_mount(id, |m| {
+                let feedback_due = m.desktop.as_ref().and_then(|desktop| {
+                    desktop
+                        .shared
+                        .feedback
+                        .borrow()
+                        .as_ref()
+                        .and_then(PrivateFeedback::next_wake_deadline)
+                });
+                if let Some(next) = feedback_due {
+                    let due = *m.feedback_retry.get_or_insert(next);
+                    if due <= now {
+                        model_wakes.push(id);
+                    } else {
+                        wake(due);
+                    }
+                } else {
+                    m.feedback_retry = None;
+                }
                 if m.frame.has_pending_owner_models() {
                     let due = m.background_retry.unwrap_or(now);
                     if due <= now {
@@ -817,6 +827,34 @@ enum Root {
     Desktop(Box<crate::shell::BrowserShell>),
 }
 
+/// Trusted Rust startup handoff, separate from deserialized mount configuration.
+/// The certified peer must already exist. This never creates a peer or joins.
+pub(crate) fn register_feedback_startup(
+    peer: u32,
+    startup: tilo_desktop::feedback::transport::Startup,
+) -> Result<(), String> {
+    let device = startup
+        .reporter()
+        .device_public_key()
+        .ok_or("feedback reporter has no certified device")?;
+    if crate::replication::device_of(peer).as_deref() != Some(hex::encode(device).as_str()) {
+        return Err("feedback reporter does not own this certified peer".into());
+    }
+    FEEDBACK_STARTUPS.with_borrow_mut(|startups| {
+        if startups.contains_key(&peer) {
+            return Err("feedback startup already registered".into());
+        }
+        startups.insert(peer, startup);
+        Ok(())
+    })
+}
+
+pub(crate) fn forget_feedback_startup(peer: u32) {
+    FEEDBACK_STARTUPS.with_borrow_mut(|startups| {
+        startups.remove(&peer);
+    });
+}
+
 fn present_desktop(
     id: u64,
     config: &Config,
@@ -831,6 +869,9 @@ fn present_desktop(
     let wake = proxy()?;
     let (mut surface, handle, shared, persistence) = crate::desktop::mount(
         crate::desktop::Inputs {
+            feedback: config.peer.and_then(|peer| {
+                FEEDBACK_STARTUPS.with_borrow_mut(|startups| startups.remove(&peer))
+            }),
             owners: RecordOwners::with_store(Rc::clone(&dyn_store)),
             views,
             device: config.device.clone(),
@@ -889,8 +930,6 @@ fn present_desktop(
             shared,
             persistence,
             generation,
-            live: Rc::default(),
-            tab_records: Rc::default(),
             requests,
         }),
     })
@@ -902,6 +941,9 @@ fn present_component(
     dyn_store: Rc<dyn durable_store::DurableStore>,
     permissions: Rc<RefCell<PermissionContext>>,
 ) -> Result<Presentation, JsValue> {
+    if definition.app_id == tilo_desktop::feedback::PACKAGE {
+        return present_private_feedback(config);
+    }
     let record = RecordOwners::with_store(Rc::clone(&dyn_store))
         .open(definition.app_id, &config.room)
         .map_err(error)?;
@@ -1002,6 +1044,19 @@ fn present_component(
     })
 }
 
+fn present_private_feedback(config: &Config) -> Result<Presentation, JsValue> {
+    let component =
+        tilo_desktop::feedback::unconfigured(&config.device, &config.author(), config.instance)
+            .map_err(error)?;
+    Ok(Presentation {
+        root: Root::Component(Box::new(component)),
+        stores: Rc::default(),
+        checkout: None,
+        images: Rc::default(),
+        desktop: None,
+    })
+}
+
 #[allow(
     clippy::too_many_lines,
     reason = "one ordered mount: storage, records, presentation, fonts, window, frame pipeline"
@@ -1029,9 +1084,9 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
     let definition = definition(config.app.as_deref())?;
     let store = crate::storage::load(&config.profile, &config.device, &hydrated)?;
     let dyn_store: Rc<dyn durable_store::DurableStore> = store.clone();
-    let permissions = Rc::new(RefCell::new(PermissionContext::from_capabilities(
-        collab_types::caps::Actor::person(Some(collab_types::role::Role::Owner), config.author()),
-        Vec::new(),
+    let permissions = Rc::new(RefCell::new(PermissionContext::member(
+        config.author(),
+        collab_types::role::Role::Owner,
     )));
     let Presentation {
         root,
@@ -1154,6 +1209,7 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
         gpu: None,
         pending: true,
         background_retry: None,
+        feedback_retry: None,
         viewport: ViewportState::with_caps(observed, caps),
         caps,
         hidden: false,
@@ -1169,10 +1225,6 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
         peer: config.peer,
         replica_changed,
         focus_presence: RefCell::new(None),
-        peer_suspended: false,
-        publication: RefCell::new(crate::throttle::PublicationSchedule::new(
-            ui::time::Duration::from_millis(window_ms),
-        )),
     };
     MOUNTS.with_borrow_mut(|m| m.insert(id, mount));
     emit(&status, &serde_json::json!({"phase":"gpu-pending","id":id}));
@@ -1240,13 +1292,19 @@ async fn shared_gpu(
         .devices
         .get(surface.dev_id)
         .ok_or("WebGPU device missing")?;
-    let mut renderer = vello::Renderer::new(
+    // Asynchronous pipeline creation: the browser compiles vello's pipelines
+    // in parallel off its GPU process's main thread. Created synchronously
+    // they hold that thread for the whole compile (seconds each under a
+    // software rasteriser), and a page waiting on the GPU process (one tearing
+    // down its previous WebGPU context, a frame, a screenshot) waits with it.
+    let mut renderer = vello::Renderer::new_async(
         &handle.device,
         vello::RendererOptions {
             antialiasing_support: vello::AaSupport::area_only(),
             ..Default::default()
         },
     )
+    .await
     .map_err(|e| e.to_string())?;
     if caps == SurfaceCaps::CONSERVATIVE {
         renderer.set_bump_budget_limit(CONSERVATIVE_BUMP_BUDGET_BYTES);
@@ -2432,22 +2490,6 @@ pub fn desktop_apply_tree(id: u64, tree: &str) -> Result<(), JsValue> {
     })
 }
 
-/// The desktop's current tree as `DesktopTree` JSON, for peers; `None` for
-/// a single-application mount.
-///
-/// # Errors
-///
-/// Rejects a closed mount or a failure to serialize the tree.
-#[wasm_bindgen]
-pub fn desktop_tree(id: u64) -> Result<Option<String>, JsValue> {
-    with_mount(id, |m| {
-        m.desktop
-            .as_ref()
-            .map(|d| d.handle.read(serde_json::to_string).map_err(error))
-            .transpose()
-    })
-}
-
 /// A room member's presence from the page's live layer: `publisher` (the
 /// member's device, hex) with its participant `label`, `kind` (`person` or
 /// `agent`) and `color` (`#rrggbb`), and its caret or selection as the live
@@ -2837,96 +2879,6 @@ pub fn take_frame_metrics() -> Result<String, JsValue> {
             .collect();
         serde_json::to_string(&samples).map_err(error)
     })
-}
-
-thread_local! {
-    /// LIVE_V1: remote carets/selections projected onto each mount's presence.
-    static LIVE_REMOTE: RefCell<HashMap<u64, crate::live_view::RemoteProjection>> =
-        RefCell::new(HashMap::new());
-}
-/// LIVE_V1: the local presence snapshot the overlay publishes and maps
-/// remote pointers with (focus record, window rectangles, editor anchors,
-/// window drag). With the relay peer, a single-record mount reports its
-/// record and editor anchors only; otherwise it is `null`.
-#[wasm_bindgen]
-pub fn live_view_snapshot(id: u64) -> Result<String, JsValue> {
-    admit_runtime()?;
-    with_mount(id, |m| {
-        let Some(desktop) = &m.desktop else {
-            // Single-record mounts: relay-peer LIVE_V1 snapshot TBD; keep the
-            // feature gate so unexpected_cfgs stay quiet for cloud/relay.
-            #[cfg(feature = "relay")]
-            let _ = m.checkout.as_ref();
-            return Ok("null".into());
-        };
-        let layout = desktop.live.borrow();
-        let selection = crate::live_view::published_selection(
-            m.frame.focus_presence_payload(),
-            &layout.window_presence,
-        );
-        let records = desktop.tab_records.borrow();
-        Ok(crate::live_view::snapshot_json(&layout, &records, selection).to_string())
-    })
-}
-/// LIVE_V1: replace the remote carets/selections drawn by the
-/// presence-aware editors. Only a change schedules a redraw (no relayout).
-#[wasm_bindgen]
-pub fn live_view_apply(id: u64, remotes: &str) -> Result<bool, JsValue> {
-    admit_runtime()?;
-    let inputs: Vec<crate::live_view::RemoteInput> =
-        serde_json::from_str(remotes).map_err(error)?;
-    MOUNTS.with_borrow_mut(|mounts| {
-        LIVE_REMOTE.with_borrow_mut(|all| all.retain(|mount, _| mounts.contains_key(mount)));
-        let m = mounts.get_mut(&id).ok_or_else(|| error("unknown mount"))?;
-        let changed = LIVE_REMOTE.with_borrow_mut(|all| {
-            let projection = all.entry(id).or_default();
-            m.frame
-                .update_presence(|presence| projection.apply(presence, inputs))
-        });
-        if changed && !m.peer_suspended {
-            m.pending = true;
-            m.window.request_redraw();
-        }
-        Ok(changed)
-    })
-}
-/// LIVE_V1: while other members are live, this peer's publications reach
-/// them on its own ops track at once, so edits publish within `ms` instead
-/// of the configured window; `null` restores the configured window.
-#[wasm_bindgen]
-pub fn live_view_publication_window(id: u64, ms: Option<u32>) -> Result<(), JsValue> {
-    admit_runtime()?;
-    MOUNTS.with_borrow(|mounts| {
-        let m = mounts.get(&id).ok_or_else(|| error("unknown mount"))?;
-        let pending = {
-            let mut schedule = m.publication.borrow_mut();
-            schedule.set_live_window(ms.map(|ms| ui::time::Duration::from_millis(u64::from(ms))));
-            schedule.due().is_some()
-        };
-        // A pending deadline may have moved earlier than the loop's wake-up.
-        if pending && !m.peer_suspended {
-            m.window.request_redraw();
-        }
-        Ok(())
-    })
-}
-/// LIVE_V1: a forwarded or author-published change was installed into the
-/// in-memory view. The next status of each mount of this peer carries the
-/// semantics tree at once instead of waiting out the content-only throttle,
-/// so the accessibility DOM shows a collaborator's text in the same frame
-/// the canvas does. Remote live changes arrive at most once per publication
-/// window of the author, never per local keystroke.
-#[cfg(feature = "cloud")]
-pub(crate) fn expedite_peer_semantics(peer: u32) {
-    if admit_runtime().is_err() {
-        DEFERRED_PEER_SEMANTICS.with_borrow_mut(|peers| peers.insert(peer));
-        return;
-    }
-    MOUNTS.with_borrow(|mounts| {
-        for mount in mounts.values().filter(|mount| mount.peer == Some(peer)) {
-            mount.semantics.borrow_mut().request();
-        }
-    });
 }
 
 /// The shared Chat controls' local media requests, scoped to retained owners.

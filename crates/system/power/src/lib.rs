@@ -36,11 +36,7 @@
 #![cfg_attr(
     test,
     allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
         clippy::string_slice,
-        clippy::panic,
         clippy::unreachable,
         reason = "in a test these are the assertion, not a hazard"
     )
@@ -72,8 +68,8 @@ pub use bridge::{PowerBridge, PowerCommand, PowerNotification, PowerSignal};
 pub use config::{default_policy, load_policy_for_profile, policy_from_settings_json};
 #[cfg(feature = "service")]
 pub use history::{
-    BatteryHistory, BatteryHistoryPoint, PowerSourceKind, load_battery_history, load_ups_history,
-    record_power_history,
+    BatteryHistory, BatteryHistoryPoint, PowerHistoryWriter, PowerSourceKind, load_battery_history,
+    load_ups_history, record_power_history,
 };
 pub use inhibit::{InhibitRegistry, InhibitToken};
 #[cfg(feature = "service")]

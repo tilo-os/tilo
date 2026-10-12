@@ -25,7 +25,7 @@ name = "runtime_identity"
 path = "src/lib.rs"
 
 [dependencies]
-tilo-xdg-paths = { version = "0.1.0", path = "../../system/xdg-paths" }
+tilo-paths.workspace = true
 tilo-advisory-lock = { version = "0.1.0", path = "../../system/advisory-lock" }
 getrandom.workspace = true
 tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }

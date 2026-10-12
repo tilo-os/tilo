@@ -143,7 +143,7 @@ mod tests {
                 .address()
                 .action
                 .as_str(),
-            "open"
+            "open-app"
         );
         assert!(draft_report(&item).is_some());
         let name = ui::LocalState::new("flathub".to_owned());

@@ -44,10 +44,12 @@ pub(super) fn request_digest(bytes: &[u8]) -> String {
 #[cfg(any(target_os = "linux", all(test, unix)))]
 use transaction_core::{Backend, transaction};
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
+#[cfg(unix)]
 use transaction_core::{pin_input, stage_package};
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(test)]
+#[cfg(target_os = "linux")]
 use transaction_core::run_transaction;
 
 #[cfg(any(target_os = "linux", all(test, unix)))]
@@ -906,7 +908,8 @@ pub(super) fn run_native_helper(bytes: &[u8], digest: &str) -> i32 {
     }
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
+#[cfg(unix)]
 mod tests {
     use super::super::desktop_catalog::{DesktopRelease, PackageFormat, RuntimeEvidence};
     use super::super::desktop_probe::{

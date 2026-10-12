@@ -33,7 +33,7 @@ use crate::text_render::{TextRenderer, TextStyle};
 use crate::theme::Theme;
 use crate::tokens::TextRole;
 use crate::widget::control_size::ControlSize;
-use crate::widget::{Button, ButtonFace, ButtonRole, TaffyTreeExt, Widget};
+use crate::widget::{Button, ButtonFace, ButtonRole, TaffyTreeExt, Widget, layout_rect};
 
 /// The banner's metrics, from the theme.
 #[derive(Clone, Copy, Debug)]
@@ -158,18 +158,6 @@ pub struct BannerHit {
     pub secondary_action: Option<Rect>,
     /// The dismiss control's face, when the banner is dismissible.
     pub dismiss: Option<Rect>,
-}
-
-/// The node's box in absolute coordinates.
-fn layout_rect(taffy: &TaffyTree<()>, node: NodeId, origin: Point) -> Rect {
-    let l = taffy.layout(node).copied().unwrap_or_default();
-    Rect::from_origin_size(
-        (
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-        ),
-        (f64::from(l.size.width), f64::from(l.size.height)),
-    )
 }
 
 /// The face of a banner's action: the main one a secondary control, the
@@ -571,16 +559,15 @@ impl Widget for BannerBody {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.theme = theme.clone();
-        let node = taffy.leaf_node(Style {
+        let style = Style {
             size: Size {
                 width: percent(1.0_f32),
                 height: auto(),
             },
             flex_shrink: 0.0,
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn measure(
@@ -697,6 +684,24 @@ pub struct Banner {
 }
 
 impl Banner {
+    /// Show or hide this node with the banner. True when the style changed.
+    fn style_visibility(&self, taffy: &mut TaffyTree<()>, node: NodeId) -> bool {
+        let display = if self.visible() {
+            taffy::Display::Flex
+        } else {
+            taffy::Display::None
+        };
+        let Ok(current) = taffy.style(node) else {
+            return false;
+        };
+        if current.display == display {
+            return false;
+        }
+        let mut style = current.clone();
+        style.display = display;
+        taffy.set_style(node, style).is_ok()
+    }
+
     pub fn new(kind: BannerKind, title: impl Into<String>) -> Self {
         Self::from_notice(Some(BannerNotice::new(kind, title)))
     }
@@ -1038,13 +1043,13 @@ impl Widget for Banner {
         node
     }
 
-    fn adjust_layout_with_measure(
+    fn adjust_layout_style(
         &mut self,
         taffy: &mut TaffyTree<()>,
         node: NodeId,
         text: &mut TextRenderer,
     ) -> bool {
-        let mut changed = self.adjust_layout_style(taffy, node);
+        let mut changed = self.style_visibility(taffy, node);
         // The body's height depends on the buttons' widths: measure them.
         let widths = [
             self.secondary.as_mut().map(|b| button_width(b, text)),
@@ -1058,23 +1063,6 @@ impl Widget for Banner {
             changed = true;
         }
         changed
-    }
-
-    fn adjust_layout_style(&mut self, taffy: &mut TaffyTree<()>, node: NodeId) -> bool {
-        let display = if self.visible() {
-            taffy::Display::Flex
-        } else {
-            taffy::Display::None
-        };
-        let Ok(current) = taffy.style(node) else {
-            return false;
-        };
-        if current.display == display {
-            return false;
-        }
-        let mut style = current.clone();
-        style.display = display;
-        taffy.set_style(node, style).is_ok()
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {

@@ -26,6 +26,7 @@ pub use credentials::{
 };
 pub mod page;
 pub mod paint;
+pub mod text_input;
 pub use page::{PageFailure, PageKey, PageReply, PageRequest};
 pub mod profile;
 pub mod test_engine;
@@ -539,6 +540,30 @@ pub struct MediaElementInfo {
 /// the widget, the host app, and the engine's own thread can share one
 /// handle.
 pub trait WebViewEngine: Send + Sync {
+    fn supports_text_input(&self) -> bool {
+        self.wrapped()
+            .is_some_and(|engine| engine.supports_text_input())
+    }
+
+    /// Whether original-field acknowledged Undo/Redo is supported.
+    fn supports_guarded_edit_history(&self) -> bool {
+        self.wrapped()
+            .is_some_and(|engine| engine.supports_guarded_edit_history())
+    }
+
+    /// Offer system Undo/Redo to this page's native editing history.
+    /// True means the backend consumed the request, not that a history entry
+    /// existed or that an asynchronous edit has already completed.
+    fn handle_undo_request(&self, request: crate::undo::UndoRequest) -> bool {
+        self.wrapped()
+            .is_some_and(|engine| engine.handle_undo_request(request))
+    }
+
+    /// Private text transactions never enter the app event or page-agent stream.
+    fn text_input(&self, request: text_input::Request) -> Option<text_input::Receipt> {
+        self.wrapped()?.text_input(request)
+    }
+
     /// Create an independent document in the same runtime/profile.
     ///
     /// # Errors
@@ -551,7 +576,11 @@ pub trait WebViewEngine: Send + Sync {
     /// Suspend painting without discarding the document or its session history.
     fn set_visible(&self, _visible: bool) {}
     /// Keep pointer modifiers current even when no key event reaches the page.
-    fn set_modifiers(&self, _modifiers: KeyModifiers) {}
+    fn set_modifiers(&self, modifiers: KeyModifiers) {
+        if let Some(engine) = self.wrapped() {
+            engine.set_modifiers(modifiers);
+        }
+    }
     /// Native new-window intents, delivered to browser chrome as tab requests.
     fn take_new_tab_requests(&self) -> Vec<(String, bool)> {
         Vec::new()
