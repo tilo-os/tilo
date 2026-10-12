@@ -1845,6 +1845,26 @@ mod tests {
         );
     }
 
+    /// Terminal parses this reply strictly (`UshSessionReply` in
+    /// `apps/terminal/src/main_body.rs`, unknown fields refused), and its test
+    /// `a_session_that_marks_its_runs_opens_and_keeps_the_key` sends these
+    /// bytes. A field added here must be added there too, or every open of a
+    /// session that sends it fails as a malformed reply.
+    #[test]
+    fn a_session_reply_keeps_its_wire_form() {
+        let reply = ServeResponse::Session {
+            session: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
+            environment: "default".into(),
+            relay_session: None,
+            runs: true,
+            editor_protocol: None,
+        };
+        assert_eq!(
+            serde_json::to_string(&reply).unwrap(),
+            "{\"result\":\"session\",\"session\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"environment\":\"default\",\"runs\":true}"
+        );
+    }
+
     fn open(target: Target) -> ServeRequest {
         ServeRequest::OpenSession {
             target,

@@ -548,7 +548,8 @@ impl<T: HttpsTransport, P: ProcessSupervisor> LocalModelService<T, P> {
             | ModelArtifactFormat::LlamaCppGguf
             | ModelArtifactFormat::OnnxFile
             | ModelArtifactFormat::WhisperGgml
-            | ModelArtifactFormat::WhistleCact => self.object_path(&model.artifact.sha256),
+            | ModelArtifactFormat::WhistleCact
+            | ModelArtifactFormat::SileroGgml => self.object_path(&model.artifact.sha256),
         }
     }
 
@@ -626,7 +627,8 @@ impl<T: HttpsTransport, P: ProcessSupervisor> LocalModelService<T, P> {
             | ModelArtifactFormat::LlamaCppGguf
             | ModelArtifactFormat::OnnxFile
             | ModelArtifactFormat::WhisperGgml
-            | ModelArtifactFormat::WhistleCact => Ok(object),
+            | ModelArtifactFormat::WhistleCact
+            | ModelArtifactFormat::SileroGgml => Ok(object),
             ModelArtifactFormat::HfSnapshotTarZst => self.extract_snapshot(&object, model),
         }
     }
@@ -2685,12 +2687,18 @@ mod tests {
         for format in [
             ModelArtifactFormat::WhisperGgml,
             ModelArtifactFormat::WhistleCact,
+            ModelArtifactFormat::SileroGgml,
         ] {
             assert_speech_install(format);
         }
     }
 
     fn assert_speech_install(format: ModelArtifactFormat) {
+        let capability = if format == ModelArtifactFormat::SileroGgml {
+            InProcessCapability::SpeechActivity
+        } else {
+            InProcessCapability::SpeechRecognition
+        };
         let bytes = b"synthetic speech graph receipt";
         let dir = tempfile::tempdir().unwrap();
         let mut release = onnx_model(bytes);
@@ -2705,7 +2713,7 @@ mod tests {
         service.record_license_acceptance(&release).unwrap();
         service.queue_install(&release).unwrap();
         assert_eq!(
-            installed_in_process_model(dir.path(), InProcessCapability::SpeechRecognition).unwrap(),
+            installed_in_process_model(dir.path(), capability).unwrap(),
             None
         );
         assert_eq!(
@@ -2717,10 +2725,9 @@ mod tests {
             installed_in_process_model(dir.path(), InProcessCapability::Segmentation).unwrap(),
             None
         );
-        let installed =
-            installed_in_process_model(dir.path(), InProcessCapability::SpeechRecognition)
-                .unwrap()
-                .unwrap();
+        let installed = installed_in_process_model(dir.path(), capability)
+            .unwrap()
+            .unwrap();
         assert_eq!(installed.id, "speech");
         assert_eq!(installed.sha256, release.artifact.sha256);
         assert_eq!(fs::read(&installed.path).unwrap(), bytes);
@@ -2728,51 +2735,39 @@ mod tests {
         // never changes the image keyring or the person's model store.
         #[cfg(target_os = "linux")]
         {
-            use crate::catalog::{
-                CATALOG_SIGNATURE_DOMAIN, CatalogPayload, SignedCatalog, VerifiedCatalog,
-                catalog_signing_bytes,
-            };
-            use ed25519_dalek::{Signer as _, SigningKey};
-            let key = SigningKey::from_bytes(&[5; 32]);
-            let payload = CatalogPayload {
-                schema: 1,
-                models: vec![release.clone()],
-                runtimes: vec![],
-                recommendation: String::new(),
-            };
-            let signed = SignedCatalog {
-                schema: 1,
-                signature_domain: CATALOG_SIGNATURE_DOMAIN.into(),
-                key_id: "isolated-test-only".into(),
-                signature: key
-                    .sign(&catalog_signing_bytes(&payload).unwrap())
-                    .to_bytes()
-                    .to_vec(),
-                payload,
-            };
-            let catalog_path = dir.path().join("test-catalog.json");
-            let keys_path = dir.path().join("test-keys.json");
-            fs::write(&catalog_path, serde_json::to_vec(&signed).unwrap()).unwrap();
-            fs::write(&keys_path, serde_json::to_vec(&serde_json::json!({"keys": {"isolated-test-only": hex::encode(key.verifying_key().to_bytes())}})).unwrap()).unwrap();
-            let verified = VerifiedCatalog::load(&catalog_path, &keys_path).unwrap();
+            use crate::catalog::VerifiedCatalog;
+            let (verified, signed, catalog_path, keys_path) =
+                signed_speech_witness(dir.path(), &release);
+            if format == ModelArtifactFormat::SileroGgml {
+                service.state.models.get_mut("speech").unwrap().status =
+                    LocalModelStatus::NotInstalled;
+                service.persist().unwrap();
+                assert!(matches!(
+                    crate::speech::speech_activity_file(dir.path(), &verified),
+                    Err(crate::speech::SpeechError::ModelUnavailable)
+                ));
+                service.state.models.get_mut("speech").unwrap().status =
+                    LocalModelStatus::Installed;
+                service.persist().unwrap();
+            }
             assert_speech_witness(dir.path(), &verified, format, bytes);
             fs::write(&installed.path, vec![0; bytes.len()]).unwrap();
             assert!(matches!(
-                crate::speech::speech_model_bytes(dir.path(), &verified),
+                read_speech_witness(dir.path(), &verified, format),
                 Err(crate::speech::SpeechError::ModelReceipt)
             ));
             fs::write(&installed.path, bytes).unwrap();
             service.state.accepted_licenses.clear();
             service.persist().unwrap();
             assert!(matches!(
-                crate::speech::speech_model_bytes(dir.path(), &verified),
+                read_speech_witness(dir.path(), &verified, format),
                 Err(crate::speech::SpeechError::ModelUnavailable)
             ));
             service.record_license_acceptance(&release).unwrap();
             fs::remove_file(&installed.path).unwrap();
             std::os::unix::fs::symlink(&catalog_path, &installed.path).unwrap();
             assert!(matches!(
-                crate::speech::speech_model_bytes(dir.path(), &verified),
+                read_speech_witness(dir.path(), &verified, format),
                 Err(crate::speech::SpeechError::ModelUnavailable)
             ));
             fs::remove_file(&installed.path).unwrap();
@@ -2784,9 +2779,48 @@ mod tests {
         }
         service.remove("speech").unwrap();
         assert_eq!(
-            installed_in_process_model(dir.path(), InProcessCapability::SpeechRecognition).unwrap(),
+            installed_in_process_model(dir.path(), capability).unwrap(),
             None
         );
+    }
+
+    fn signed_speech_witness(
+        root: &Path,
+        release: &LocalModelRelease,
+    ) -> (
+        crate::catalog::VerifiedCatalog,
+        crate::catalog::SignedCatalog,
+        PathBuf,
+        PathBuf,
+    ) {
+        use crate::catalog::{
+            CATALOG_SIGNATURE_DOMAIN, CatalogPayload, SignedCatalog, VerifiedCatalog,
+            catalog_signing_bytes,
+        };
+        use ed25519_dalek::{Signer as _, SigningKey};
+        let key = SigningKey::from_bytes(&[5; 32]);
+        let payload = CatalogPayload {
+            schema: 1,
+            models: vec![release.clone()],
+            runtimes: vec![],
+            recommendation: String::new(),
+        };
+        let signed = SignedCatalog {
+            schema: 1,
+            signature_domain: CATALOG_SIGNATURE_DOMAIN.into(),
+            key_id: "isolated-test-only".into(),
+            signature: key
+                .sign(&catalog_signing_bytes(&payload).unwrap())
+                .to_bytes()
+                .to_vec(),
+            payload,
+        };
+        let catalog_path = root.join("test-catalog.json");
+        let keys_path = root.join("test-keys.json");
+        fs::write(&catalog_path, serde_json::to_vec(&signed).unwrap()).unwrap();
+        fs::write(&keys_path, serde_json::to_vec(&serde_json::json!({"keys": {"isolated-test-only": hex::encode(key.verifying_key().to_bytes())}})).unwrap()).unwrap();
+        let verified = VerifiedCatalog::load(&catalog_path, &keys_path).unwrap();
+        (verified, signed, catalog_path, keys_path)
     }
 
     fn assert_speech_witness(
@@ -2795,14 +2829,24 @@ mod tests {
         format: ModelArtifactFormat,
         bytes: &[u8],
     ) {
-        assert_eq!(
-            crate::speech::speech_model_file(root, verified)
+        let sealed = if format == ModelArtifactFormat::SileroGgml {
+            assert!(matches!(
+                crate::speech::speech_model_file(root, verified),
+                Err(crate::speech::SpeechError::ModelUnavailable)
+            ));
+            crate::speech::speech_activity_file(root, verified)
                 .unwrap()
-                .format(),
-            format
-        );
-        let (_, _, loaded) = crate::speech::speech_model_bytes(root, verified).unwrap();
-        assert_eq!(&**loaded, bytes);
+                .unwrap()
+        } else {
+            assert!(
+                crate::speech::speech_activity_file(root, verified)
+                    .unwrap()
+                    .is_none()
+            );
+            crate::speech::speech_model_file(root, verified).unwrap()
+        };
+        assert_eq!(sealed.format(), format);
+        assert_eq!(read_speech_witness(root, verified, format).unwrap(), bytes);
         #[cfg(feature = "whisper")]
         if format == ModelArtifactFormat::WhistleCact {
             // These authenticated fixture weights deliberately have the wrong
@@ -2816,6 +2860,28 @@ mod tests {
             );
             assert!(output.is_empty());
         }
+    }
+
+    fn read_speech_witness(
+        root: &Path,
+        verified: &crate::catalog::VerifiedCatalog,
+        format: ModelArtifactFormat,
+    ) -> Result<Vec<u8>, crate::speech::SpeechError> {
+        use std::io::Read as _;
+        let sealed = if format == ModelArtifactFormat::SileroGgml {
+            crate::speech::speech_activity_file(root, verified)?
+                .ok_or(crate::speech::SpeechError::ModelUnavailable)?
+        } else {
+            crate::speech::speech_model_file(root, verified)?
+        };
+        let mut bytes = Vec::new();
+        sealed
+            .file()
+            .try_clone()
+            .map_err(|_| crate::speech::SpeechError::ModelReceipt)?
+            .read_to_end(&mut bytes)
+            .map_err(|_| crate::speech::SpeechError::ModelReceipt)?;
+        Ok(bytes)
     }
 
     /// An in-process model installs through the verified download and the

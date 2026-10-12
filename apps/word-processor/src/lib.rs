@@ -53,7 +53,7 @@ pub mod styles;
 pub mod widget;
 pub mod word_processor;
 pub use styles::{StyleProps, StyleSheet};
-pub use widget::{PersonalDictionary, WordProcessorWidget, WriterLayout};
+pub use widget::{WordProcessorWidget, WriterLayout};
 
 /// The kind of a Writer document record, which the native app, the
 /// workspace host and the browser all open.

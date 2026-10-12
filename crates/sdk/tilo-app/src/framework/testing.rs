@@ -1445,6 +1445,42 @@ pub fn drive_live_window<A: ResourceApp, T>(
     Ok(seen)
 }
 
+/// [`drive_live_window`] with the window shown in a region of a host's
+/// scene, as the shell shows an in-process app: the real app in a
+/// [`ui_core::app::EmbeddedApp`], which the drive lays out, draws into its
+/// own scene and feeds input through
+/// [`ui_core::app::EmbeddedApp::input_for_test`].
+///
+/// # Errors
+/// Returns any launch, storage or construction failure.
+pub fn drive_live_embedded<A: ResourceApp, T>(
+    drive: impl FnOnce(&mut ui_core::app::EmbeddedApp) -> T,
+) -> Result<T, LaunchError> {
+    let profile = tempfile::tempdir().map_err(operation)?;
+    let mut host = ApplicationHost::new(
+        profile.path().join("state"),
+        "test-device".into(),
+        "test-workspace",
+        UserId(AUTHOR.into()),
+        role_permissions(AUTHOR, Role::Owner),
+        tilo_actions::ActionContext::default(),
+    )?;
+    let definition = definition::<A>();
+    let prepared = prepare_on(
+        &mut host,
+        definition,
+        INSTANCE,
+        None,
+        ComponentRunnerInputs::from_native_process(),
+    )?;
+    let component = definition.instantiate(prepared.context, prepared.target, prepared.restore)?;
+    let app = ui_core::App::from_component(component, prepared.runner_inputs)?;
+    let mut tile = ui_core::app::EmbeddedApp::new(app, |_| {})?;
+    let seen = drive(&mut tile);
+    tile.app_mut().close_components();
+    Ok(seen)
+}
+
 /// A dispatcher of `R` for testing a surface's own methods without a host:
 /// the edits it applies now ([`Dispatcher::apply_now`]) go through the same
 /// replayable executor a hosted surface's do, attributed to a test author,

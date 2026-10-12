@@ -3480,6 +3480,83 @@ mod command_path_tests {
         assert!(w.collab_panel.is_none());
     }
 
+    /// A version an agent's own device signed reaches Workspace Activity as
+    /// the agent's, on behalf of its person, as the file's History names it.
+    #[test]
+    fn history_activity_names_an_agents_version_as_the_agent_for_its_person() {
+        let root = ed25519_dalek::SigningKey::from_bytes(&[51; 32]);
+        let person = root.verifying_key().to_bytes();
+        let agent_key = ed25519_dalek::SigningKey::from_bytes(&[52; 32]);
+        let mut certificate = tilo_user_identity::DeviceCert {
+            user_public_key: person,
+            device_public_key: agent_key.verifying_key().to_bytes(),
+            device_label: "Agent: Scribe".into(),
+            capabilities: tilo_user_identity::CertificationPolicy::agent().ceiling,
+            issued_at_ns: 1,
+            expires_at_ns: None,
+            signature: [0; 64],
+        };
+        tilo_user_identity::sign_device_cert(&mut certificate, &root).unwrap();
+        let device = certificate.device_public_key;
+        let version = "c0d4e23f-c7cb-4ded-a427-b32cf9da9342";
+        let record = "c0d4e23f-c7cb-4ded-a427-b32cf9da9341";
+        let mut entry = ent("report.txt", false, "text/plain");
+        entry.history = crate::model::HistoryProjection::parse(
+            &serde_json::to_vec(&serde_json::json!({
+                "schema_version": 1, "record_id": record, "total_versions": 1,
+                "versions_truncated": false, "heads": [version],
+                "versions": [
+                    {"id": version, "record_id": record, "parents": [],
+                     "actor": {"person": person.to_vec(), "device": device.to_vec()},
+                     "timestamp_ms": 9, "content_hash": vec![3; 32], "metadata_hash": vec![4; 32], "provenance": "Edit"}
+                ], "conflicts_truncated": false, "conflicts": []
+            }))
+            .unwrap(),
+        );
+        let mut w = FileExplorerWidget::new();
+        w.trusted_humans = crate::identity_directory::TrustedHumanDirectory::from_projection_v2(
+            tilo_user_identity::TrustedIdentityProjectionV2 {
+                schema_version: tilo_user_identity::TRUSTED_IDENTITY_PROJECTION_VERSION,
+                humans: vec![tilo_user_identity::GovernedHumanIdentityV2 {
+                    root_public_key: person,
+                    display_name: "Ada Lovelace".to_string(),
+                    devices: vec![tilo_user_identity::GovernedDeviceIdentityV2 {
+                        certificate,
+                        agent: Some(tilo_user_identity::GovernedAgentIdentityV2 {
+                            agent_id: "scribe".into(),
+                            label: "Scribe".into(),
+                            color: [10, 20, 30],
+                        }),
+                    }],
+                }],
+            },
+        )
+        .unwrap();
+        w.entries = vec![entry];
+        w.selection.select_only(0);
+        let selected = fs_protocol::FileVersionId(uuid::Uuid::parse_str(version).unwrap());
+        w.apply_command(FileCommand::ShowInWorkspaceActivity {
+            record_id: record.into(),
+            version_id: selected,
+        });
+        let Some(ui::widget::AppHostIntent::ShowWorkspaceActivity {
+            entry: Some(entry), ..
+        }) = w.take_host_intent()
+        else {
+            panic!("Files hands the selected version to Workspace Activity");
+        };
+        assert_eq!(entry.author.name, "Scribe · Agent, for Ada Lovelace");
+        assert_eq!(entry.author.relation, ui::widget::AuthorRelation::Software);
+        let attribution = entry.author.attribution.expect("who acted for whom");
+        assert_eq!(attribution.actor, "agent:scribe");
+        assert_eq!(attribution.actor_name, "Scribe");
+        assert_eq!(attribution.on_behalf_of, Some(hex::encode(person)));
+        assert_eq!(
+            attribution.on_behalf_of_name.as_deref(),
+            Some("Ada Lovelace")
+        );
+    }
+
     fn history_activity_intent_preserves_selected_version_and_signed_identity() {
         let older = "a0d4e23f-c7cb-4ded-a427-b32cf9da9342";
         let current = "a0d4e23f-c7cb-4ded-a427-b32cf9da9344";
@@ -3566,7 +3643,10 @@ mod command_path_tests {
                 humans: vec![tilo_user_identity::GovernedHumanIdentityV2 {
                     root_public_key: person_bytes,
                     display_name: "Ada Lovelace".to_string(),
-                    devices: vec![tilo_user_identity::GovernedDeviceIdentityV2 { certificate }],
+                    devices: vec![tilo_user_identity::GovernedDeviceIdentityV2 {
+                        certificate,
+                        agent: None,
+                    }],
                 }],
             },
         )
@@ -3664,7 +3744,10 @@ mod command_path_tests {
                         signature: [0; 64],
                     };
                     tilo_user_identity::sign_device_cert(&mut certificate, root).unwrap();
-                    tilo_user_identity::GovernedDeviceIdentityV2 { certificate }
+                    tilo_user_identity::GovernedDeviceIdentityV2 {
+                        certificate,
+                        agent: None,
+                    }
                 })
                 .collect();
             tilo_user_identity::TrustedIdentityProjectionV2 {
@@ -6339,4 +6422,185 @@ fn completed_clipboard_undo_feedback_survives_the_actual_listing_refresh() {
         Some(t("files-clipboard-undone").as_str())
     );
     assert!(widget.entries.is_empty());
+}
+
+mod oauth_cloud_location_tests {
+    use super::*;
+    use crate::remote_accounts::{self, RemoteAccountHealth};
+
+    const PROVIDERS: [(&str, &str); 4] = [
+        ("a-google", remote_accounts::GOOGLE_DRIVE_TYPE),
+        ("b-onedrive", remote_accounts::ONEDRIVE_TYPE),
+        ("c-dropbox", remote_accounts::DROPBOX_TYPE),
+        ("d-icloud", remote_accounts::ICLOUD_DRIVE_TYPE),
+    ];
+
+    fn fixture_store(root: &Path) -> accounts::AccountStore {
+        let mut store = accounts::AccountStore::new();
+        for (id, provider) in PROVIDERS {
+            let mut account = accounts::Account::new(id, provider);
+            account.display_name = "Cloud".into();
+            // Projection must select only public provider facts, not forward
+            // arbitrary stored configuration or imply authenticated access.
+            account.config = serde_json::json!({"unsupported_private_field":"secret-sentinel"});
+            store.upsert(account);
+        }
+        store.save_in(root).unwrap();
+        accounts::AccountSyncReporter::in_root(accounts::AccountId::from("a-google"), root)
+            .offline()
+            .unwrap();
+        store
+    }
+
+    #[test]
+    fn canonical_oauth_accounts_publish_sidebar_resources_and_open_exact_cloud_mounts() {
+        let config = tempfile::tempdir().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let _store = fixture_store(config.path());
+        let mut widget = FileExplorerWidget::with_persistence_dirs(
+            None,
+            Some(home.path().to_owned()),
+            favorites::UserDirs::default(),
+        );
+        widget.accounts_root = Some(config.path().to_owned());
+        widget.refresh_external_search_catalogs();
+        let mut document = automerge::AutoCommit::new();
+        let accounts = widget.remote_account_snapshot();
+        assert_eq!(accounts.len(), PROVIDERS.len());
+        let first = accounts
+            .iter()
+            .find(|account| account.id.as_str() == "a-google")
+            .unwrap();
+        assert_eq!(first.health, RemoteAccountHealth::Offline);
+        assert!(
+            accounts
+                .iter()
+                .filter(|account| account.id.as_str() != "a-google")
+                .all(|account| account.health == RemoteAccountHealth::NeverChecked)
+        );
+        for (index, (id, provider)) in PROVIDERS.iter().enumerate() {
+            let account = accounts
+                .iter()
+                .find(|account| account.id.as_str() == *id)
+                .unwrap();
+            assert_eq!(remote_accounts::type_id(account.kind).as_str(), *provider);
+            let name = if index == 0 {
+                "Cloud".into()
+            } else {
+                format!("Cloud ({})", index.checked_add(1).unwrap())
+            };
+            let mount = home.path().join("Remote").join(name);
+            assert_eq!(account.mount.as_ref(), Some(&mount));
+            std::fs::create_dir_all(&mount).unwrap();
+            std::fs::write(mount.join("Selected-provider.txt"), id.as_bytes()).unwrap();
+            let places = widget.current_places().sections();
+            assert!(places.iter().flat_map(|section| &section.items).any(|row| {
+                row.id == format!("loc:{}", mount.display()) && row.label == "Cloud"
+            }));
+            let resource_id = remote_accounts::resource_id(&account.id);
+            let resources = crate::files_app::published::tree(&widget, &document);
+            let resource = resources
+                .iter()
+                .flat_map(|root| &root.children)
+                .find(|resource| resource.id.as_str() == resource_id)
+                .unwrap();
+            assert_eq!(resource.kind, "files.remote-account");
+            let open = resource
+                .actions
+                .iter()
+                .find(|action| action.id == crate::search_provider::REMOTE_ACCOUNT_OPEN_ACTION)
+                .unwrap();
+            assert_eq!(open.contract.availability, Availability::Available);
+            assert!(
+                !serde_json::to_string(&resource.presentation)
+                    .unwrap()
+                    .contains("secret-sentinel")
+            );
+            assert!(matches!(
+                crate::files_app::published::invoke(
+                    &mut widget,
+                    &mut document,
+                    &resource_id,
+                    crate::search_provider::REMOTE_ACCOUNT_OPEN_ACTION,
+                    &serde_json::json!({})
+                )
+                .unwrap(),
+                Some(ui::framework::Effected::Done(_))
+            ));
+            assert_eq!(widget.current_path, mount);
+            assert_eq!(
+                std::fs::read(widget.current_path.join("Selected-provider.txt")).unwrap(),
+                id.as_bytes()
+            );
+        }
+        assert!(
+            !accounts::vault_dir_in(config.path()).exists(),
+            "projection and open must not create credential custody"
+        );
+    }
+
+    #[test]
+    fn disabled_and_removed_oauth_accounts_update_existing_places_and_semantic_actions() {
+        let config = tempfile::tempdir().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let mut store = fixture_store(config.path());
+        let mut disabled = store
+            .get(&accounts::AccountId::from("c-dropbox"))
+            .unwrap()
+            .clone();
+        disabled.enabled = false;
+        store.upsert(disabled);
+        store.save_in(config.path()).unwrap();
+        let mut widget = FileExplorerWidget::with_persistence_dirs(
+            None,
+            Some(home.path().to_owned()),
+            favorites::UserDirs::default(),
+        );
+        widget.accounts_root = Some(config.path().to_owned());
+        widget.refresh_external_search_catalogs();
+        let mut document = automerge::AutoCommit::new();
+        let places = widget.current_places().sections();
+        assert!(places.iter().flat_map(|section| &section.items).any(|row| {
+            row.id == "account:c-dropbox" && row.secondary.as_deref() == Some("Disabled")
+        }));
+        let id = remote_accounts::resource_id(&accounts::AccountId::from("c-dropbox"));
+        let resources = crate::files_app::published::tree(&widget, &document);
+        let resource = resources
+            .iter()
+            .flat_map(|root| &root.children)
+            .find(|resource| resource.id.as_str() == id)
+            .unwrap();
+        assert!(resource.actions.iter().any(|action| {
+            action.id == crate::search_provider::REMOTE_ACCOUNT_OPEN_ACTION
+                && matches!(&action.contract.availability, Availability::Unavailable { code, .. } if code == "account_disabled")
+        }));
+        store.remove(&accounts::AccountId::from("c-dropbox"));
+        store.save_in(config.path()).unwrap();
+        widget.refresh_external_search_catalogs();
+        assert!(
+            !widget
+                .current_places()
+                .sections()
+                .iter()
+                .flat_map(|section| &section.items)
+                .any(|row| row.id == "account:c-dropbox")
+        );
+        let resources = crate::files_app::published::tree(&widget, &document);
+        assert!(
+            !resources
+                .iter()
+                .flat_map(|root| &root.children)
+                .any(|resource| resource.id.as_str() == id)
+        );
+        assert!(
+            crate::files_app::published::invoke(
+                &mut widget,
+                &mut document,
+                &id,
+                crate::search_provider::REMOTE_ACCOUNT_OPEN_ACTION,
+                &serde_json::json!({})
+            )
+            .is_err()
+        );
+    }
 }

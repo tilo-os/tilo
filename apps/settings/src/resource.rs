@@ -146,7 +146,7 @@ impl ResourceApp for SettingsShell {
     fn records(records: &mut ui::framework::Records<'_>) {
         records
             .settings::<crate::prefs::AppearancePrefs>()
-            .settings::<crate::prefs::AccessibilityPrefs>()
+            .settings::<crate::accessibility_settings::AccessibilitySettings>()
             .settings::<crate::prefs::InputPrefs>()
             .settings::<ui::text_assistance::TextAssistancePrefs>()
             .settings::<crate::prefs::PowerPrefs>()

@@ -1,6 +1,6 @@
 //! What this crate can do on the running target.
 
-pub use tilo_platform_caps::Availability;
+pub use tilo_platform_caps::{Availability, availability};
 /// A capability of this crate.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Feature {
@@ -32,99 +32,45 @@ const WEB_NO_REALTIME: &str = "WebCodecs calls are not wired to the engine yet";
 const WEB_NO_ENCODE: &str = "no encoder on the page yet";
 const NO_GRAPH: &str = "no PipeWire graph on this platform";
 
-/// Each feature's availability on Linux, macOS and the web, in that order,
-/// for a build with the native backends enabled.
-pub const CAPABILITIES: &[(Feature, [Availability; 3])] = &[
-    (
-        Feature::Playback,
-        [
-            Availability::Available,
-            Availability::Available,
-            Availability::Available,
-        ],
-    ),
-    (
-        Feature::ZeroCopyVideo,
-        [
-            Availability::Available,
-            Availability::Unsupported("no dmabuf import on macOS; frames are uploaded"),
-            Availability::Unsupported(WEB_READBACK),
-        ],
-    ),
-    (
-        Feature::NowPlaying,
-        [
-            Availability::Available,
-            Availability::Available,
-            Availability::Available,
-        ],
-    ),
-    (
-        Feature::Realtime,
-        [
-            Availability::Available,
-            Availability::Available,
-            Availability::Unsupported(WEB_NO_REALTIME),
-        ],
-    ),
-    (
-        Feature::Encode,
-        [
-            Availability::Available,
-            Availability::Available,
-            Availability::Unsupported(WEB_NO_ENCODE),
-        ],
-    ),
-    (
-        Feature::AudioGraph,
-        [
-            Availability::Available,
-            Availability::Unsupported(NO_GRAPH),
-            Availability::Unsupported(NO_GRAPH),
-        ],
-    ),
-];
-
-/// Whether `feature` works on the running target, in this build.
-#[must_use]
-pub fn availability(feature: Feature) -> Availability {
-    let native = !cfg!(target_family = "wasm");
-    let built = match feature {
-        Feature::Playback | Feature::ZeroCopyVideo if native && !cfg!(gst_decode) => {
-            Some(NO_DECODE)
+impl tilo_platform_caps::Feature for Feature {
+    /// The feature's availability on Linux, macOS and the web, in that order,
+    /// for a build with the native backends enabled.
+    fn targets(self) -> [Availability; 3] {
+        use Availability::{Available, Unsupported};
+        match self {
+            Self::Playback | Self::NowPlaying => [Available, Available, Available],
+            Self::ZeroCopyVideo => [
+                Available,
+                Unsupported("no dmabuf import on macOS; frames are uploaded"),
+                Unsupported(WEB_READBACK),
+            ],
+            Self::Realtime => [Available, Available, Unsupported(WEB_NO_REALTIME)],
+            Self::Encode => [Available, Available, Unsupported(WEB_NO_ENCODE)],
+            Self::AudioGraph => [Available, Unsupported(NO_GRAPH), Unsupported(NO_GRAPH)],
         }
-        Feature::Realtime if native && !cfg!(gst_realtime) => Some(NO_REALTIME),
-        Feature::Encode if native && !cfg!(any(gst_encode, gst_decode)) => Some(NO_ENCODE),
-        Feature::Playback if !native && !cfg!(web_page) => Some("no page to play in"),
-        _ => None,
-    };
-    if let Some(reason) = built {
-        return Availability::Unsupported(reason);
     }
-    CAPABILITIES
-        .iter()
-        .find(|(f, _)| *f == feature)
-        .and_then(|(_, row)| row.get(tilo_platform_caps::COLUMN).copied())
-        .unwrap_or(Availability::Unsupported("unknown feature"))
+
+    /// Whether the feature works on the running target, in this build.
+    fn availability(self) -> Availability {
+        let native = !cfg!(target_family = "wasm");
+        let built = match self {
+            Self::Playback | Self::ZeroCopyVideo if native && !cfg!(gst_decode) => Some(NO_DECODE),
+            Self::Realtime if native && !cfg!(gst_realtime) => Some(NO_REALTIME),
+            Self::Encode if native && !cfg!(any(gst_encode, gst_decode)) => Some(NO_ENCODE),
+            Self::Playback if !native && !cfg!(web_page) => Some("no page to play in"),
+            _ => None,
+        };
+        match built {
+            Some(reason) => Availability::Unsupported(reason),
+            None => self.targets()[tilo_platform_caps::COLUMN],
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn every_feature_has_a_row() {
-        for feature in [
-            Feature::Playback,
-            Feature::ZeroCopyVideo,
-            Feature::NowPlaying,
-            Feature::Realtime,
-            Feature::Encode,
-            Feature::AudioGraph,
-        ] {
-            assert!(CAPABILITIES.iter().any(|(f, _)| *f == feature));
-        }
-    }
+    use tilo_platform_caps::Feature as _;
 
     #[test]
     fn features_left_out_of_the_build_are_unsupported() {
@@ -136,11 +82,7 @@ mod tests {
         }
         assert_eq!(
             availability(Feature::AudioGraph),
-            CAPABILITIES
-                .iter()
-                .find(|(f, _)| *f == Feature::AudioGraph)
-                .map(|(_, row)| row[tilo_platform_caps::COLUMN])
-                .unwrap()
+            Feature::AudioGraph.targets()[tilo_platform_caps::COLUMN]
         );
     }
 }

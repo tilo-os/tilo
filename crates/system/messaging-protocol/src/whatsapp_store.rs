@@ -299,8 +299,9 @@ impl Disk {
         {
             return Err(unavailable());
         }
-        private_fs::directory(root).map_err(|_| unavailable())?;
-        let lock = private_fs::lock_file(&root.join("owner.lock")).map_err(|_| unavailable())?;
+        tilo_files::native::private::directory(root).map_err(|_| unavailable())?;
+        let lock = tilo_files::native::private::lock_file(&root.join("owner.lock"))
+            .map_err(|_| unavailable())?;
         let lock = FileLock::try_exclusive(lock).map_err(|_| unavailable())?;
         let mut disk = Self {
             path: root.join("state.enc"),
@@ -314,7 +315,7 @@ impl Disk {
             authority,
             _lock: lock,
         };
-        match private_fs::open_owned_for_read(&disk.path, MAX_LOG_BYTES) {
+        match tilo_files::native::private::open_owned_for_read(&disk.path, MAX_LOG_BYTES) {
             Ok((mut file, len)) => {
                 if len == 0 {
                     return Err(unavailable());
@@ -363,7 +364,9 @@ impl Disk {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 disk.check_authority()?;
                 let initial = disk.encode(0, &[])?;
-                if !private_fs::create_atomic(&disk.path, &initial).map_err(|_| unavailable())? {
+                if !tilo_files::native::private::create_atomic(&disk.path, &initial)
+                    .map_err(|_| unavailable())?
+                {
                     return Err(unavailable());
                 }
                 disk.log_bytes = initial.len() as u64;
@@ -461,10 +464,11 @@ impl Disk {
                 })
                 .collect();
             let encoded = self.encode(0, &snapshot)?;
-            private_fs::write_atomic(&self.path, &encoded).map(|()| (0, encoded.len() as u64))
+            tilo_files::native::private::write_atomic(&self.path, &encoded)
+                .map(|()| (0, encoded.len() as u64))
         } else {
             (|| {
-                let mut file = private_fs::lock_file(&self.path)?;
+                let mut file = tilo_files::native::private::lock_file(&self.path)?;
                 if file.metadata()?.len() != self.log_bytes {
                     return Err(std::io::Error::from(std::io::ErrorKind::InvalidData));
                 }

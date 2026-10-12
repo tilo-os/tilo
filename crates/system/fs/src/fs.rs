@@ -2172,12 +2172,6 @@ impl QuickFS {
                 },
             )?;
         }
-        self.recover_legacy_restores(
-            &mut *journal.lock().map_err(|_| {
-                crate::record_publisher::RecordPublisherError::PublicationUnavailable
-            })?,
-            &namespace_path,
-        )?;
         self.replacement_transactions = Some(ReplacementTransactionRuntime {
             journal,
             namespace_path,

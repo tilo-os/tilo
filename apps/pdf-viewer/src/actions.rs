@@ -347,25 +347,6 @@ pub fn create_note_on_action(
     })
 }
 
-/// A note on page occurrence `page_id` at page-point `(x, y)`.
-pub fn create_note_action(
-    note: &NoteDraft<'_>,
-    page_id: &str,
-    x: f64,
-    y: f64,
-) -> Invoke<PdfMarkup> {
-    PdfMarkup::CREATE_NOTE.with(NewNote {
-        annotation: note.anno_id.to_owned(),
-        comment: note.comment_id.to_owned(),
-        page_id: page_id.to_owned(),
-        x,
-        y,
-        color: note.color,
-        text: note.body.to_owned(),
-        space: GeomSpace::Page,
-    })
-}
-
 /// A comment free on page occurrence `page_id`, or on annotation `anno`.
 pub fn add_comment_action(
     id: &str,

@@ -81,7 +81,7 @@ PY
     echo "collection runtime tilo-runtime/$runtime_version is missing bundle.toml" >&2
     exit 1
 }
-"$bin_dir/tilo-runtime-bundle" verify "$collection_runtime/$runtime_version" >/dev/null
+"$bin_dir/tilo-runtime-bundle" verify "$collection_runtime/$runtime_version" --require-signature >/dev/null
 
 mkdir -p "$stage/usr/share/tilo-apps" "$stage/usr/lib" "$stage/etc/tilo"
 cp -a "$collection_runtime" "$stage/usr/lib/tilo-runtime"

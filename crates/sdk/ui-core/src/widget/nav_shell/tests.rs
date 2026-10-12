@@ -1138,3 +1138,132 @@ fn a_toast_floats_over_the_bottom_corner_and_a_click_dismisses_it() {
     h.click_at(card.center().x, card.center().y);
     assert_eq!(h.root::<NavShell>().toast_text(), None);
 }
+
+/// One frame of the shell as a host presents it at `scale`: its widgets and
+/// overlays painted magnified, and the damage it reports, in the host's
+/// scene pixels as a host repaints it (rounded out by a pixel).
+fn present_shell(
+    shell: &mut NavShell,
+    text: &mut TextRenderer,
+    theme: &Theme,
+    scale: f64,
+) -> (Scene, Vec<Rect>) {
+    let mut scene = Scene::new();
+    let presence = PresenceCtx::empty();
+    let transform = Affine::scale(scale);
+    shell.draw(&mut scene, transform, text, theme, &presence);
+    shell.draw_overlay(&mut scene, transform, text, theme, &presence);
+    let mut damage = Vec::new();
+    shell.collect_damage(&mut damage);
+    shell.mark_drawn();
+    let damage = damage
+        .into_iter()
+        .map(|rect| transform.transform_rect_bbox(rect).inflate(1.0, 1.0))
+        .collect();
+    (scene, damage)
+}
+
+/// Repaint `after` over `before` only where `damage` says, and require the
+/// pixels of a full render of `after`.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "the test's window is a few megapixels at scale 2"
+)]
+fn assert_sparse_equals_full(
+    (before, after): (&Scene, &Scene),
+    damage: &[Rect],
+    theme: &Theme,
+    (size, label): ((f64, f64), &str),
+) {
+    let (width, height) = (size.0.round() as u32, size.1.round() as u32);
+    let background = theme.tokens.colors.surfaces.content;
+    let mut retained = crate::offscreen::OffscreenRenderer::new(width, height);
+    let mut full = crate::offscreen::OffscreenRenderer::new(width, height);
+    let _ = retained.render(before, background);
+    let rasterized = retained.render_damage_regions_gpu_wait(after, background, damage);
+    assert!(
+        rasterized < u64::from(width).saturating_mul(u64::from(height)),
+        "{label}: the damage must exercise a sparse render: {damage:?}"
+    );
+    let expected = full.render(after, background);
+    let differing = retained
+        .readback_current()
+        .chunks_exact(4)
+        .zip(expected.chunks_exact(4))
+        .filter(|(actual, expected)| {
+            actual
+                .iter()
+                .zip(*expected)
+                .any(|(a, e)| a.abs_diff(*e) > 1)
+        })
+        .count();
+    assert_eq!(
+        differing, 0,
+        "{label}: the sparse repaint must equal a full render; damage {damage:?}"
+    );
+}
+
+/// A notice that comes and goes repaints the card and its shadow where it
+/// was and is, nothing else: the card's real painted bounds, not the
+/// window, and never short of its shadow. Every theme, at 100 % and 200 %.
+#[test]
+fn a_toast_damages_its_card_and_shadow_where_it_was_and_is() {
+    let (w, h_px) = (1280, 800);
+    for scale in [1.0, 2.0] {
+        for (name, theme) in [
+            ("dark", Theme::dark()),
+            ("light", Theme::light()),
+            ("high contrast", Theme::high_contrast()),
+        ] {
+            let label = format!("{name} at {scale}x");
+            let mut h = harness(mail_shell(), w, h_px, theme.clone());
+            settle(&mut h, w, h_px);
+            let mut text = crate::font_catalog::fixture_renderer();
+            let shell = h.root_mut::<NavShell>();
+            let size = (f64::from(w) * scale, f64::from(h_px) * scale);
+            // The first frame at this scale and renderer; then one with no
+            // change, which must damage nothing, or this observes nothing.
+            let _ = present_shell(shell, &mut text, &theme, scale);
+            let (before, quiet) = present_shell(shell, &mut text, &theme, scale);
+            assert!(
+                quiet.is_empty(),
+                "{label}: a settled shell damages nothing: {quiet:?}"
+            );
+
+            shell.toast("Saved", ToastKind::Success);
+            let (shown, damage) = present_shell(shell, &mut text, &theme, scale);
+            let card = shell.toasts.get_rect();
+            let painted = crate::widget::floating_surface::painted_bounds(card, &theme);
+            assert_eq!(
+                damage,
+                [Affine::scale(scale)
+                    .transform_rect_bbox(painted)
+                    .inflate(1.0, 1.0)],
+                "{label}: a new notice damages its card and shadow ({card:?})"
+            );
+            assert_sparse_equals_full(
+                (&before, &shown),
+                &damage,
+                &theme,
+                (size, &format!("{label}: showing")),
+            );
+
+            shell.dismiss_toast();
+            let (gone, damage) = present_shell(shell, &mut text, &theme, scale);
+            assert_eq!(
+                damage,
+                [Affine::scale(scale)
+                    .transform_rect_bbox(painted)
+                    .inflate(1.0, 1.0)],
+                "{label}: a dismissed notice damages where it was"
+            );
+            assert_sparse_equals_full(
+                (&shown, &gone),
+                &damage,
+                &theme,
+                (size, &format!("{label}: dismissing")),
+            );
+        }
+    }
+}

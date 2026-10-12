@@ -754,32 +754,44 @@ fn json_map_bytes(values: &serde_json::Map<String, serde_json::Value>, meter: &m
     }
 }
 
-/// Count a serializable opaque nested value without constructing a second
-/// payload copy. Direct `String`/`Vec` owners still use capacities above;
-/// this covers nested action/context representations whose concrete shape is
-/// intentionally owned by `tilo-actions`.
+/// Count a serializable opaque nested value: the length of its JSON text,
+/// written into one reused buffer. Direct `String`/`Vec` owners still use
+/// capacities above; this covers nested action/context representations
+/// whose concrete shape is intentionally owned by `tilo-actions`. Writing
+/// to a `Vec<u8>` reuses the serializer every value is already sent with,
+/// instead of compiling a second one per type for a counting writer.
 fn serialized_bytes<T: serde::Serialize>(value: &T, meter: &mut ByteMeter) {
-    struct Counter(usize);
-    impl std::io::Write for Counter {
-        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-            self.0 = self
-                .0
-                .checked_add(bytes.len())
-                .ok_or_else(|| std::io::Error::other("serialized size overflow"))?;
-            Ok(bytes.len())
-        }
-
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
-        }
+    thread_local! {
+        static TEXT: std::cell::RefCell<Vec<u8>> = const { std::cell::RefCell::new(Vec::new()) };
     }
-    let mut counter = Counter(0);
-    if serde_json::to_writer(&mut counter, value).is_ok() {
-        meter.add(counter.0);
-    } else {
-        meter.0 = None;
+    let written = TEXT.with(|text| {
+        let Ok(mut text) = text.try_borrow_mut() else {
+            return written_len(&mut Vec::new(), value);
+        };
+        text.clear();
+        let written = written_len(&mut text, value);
+        // Keep the buffer for the next value, but not the peak of a large one.
+        if text.capacity() > SERIALIZED_TEXT_KEPT {
+            *text = Vec::new();
+        }
+        written
+    });
+    match written {
+        Some(bytes) => meter.add(bytes),
+        None => meter.0 = None,
     }
 }
+
+/// The length of `value`'s JSON text, written after what `text` holds.
+fn written_len<T: serde::Serialize>(text: &mut Vec<u8>, value: &T) -> Option<usize> {
+    value
+        .serialize(&mut serde_json::Serializer::new(&mut *text))
+        .ok()
+        .map(|()| text.len())
+}
+
+/// The most text [`serialized_bytes`] keeps allocated between values.
+const SERIALIZED_TEXT_KEPT: usize = 64 * 1024;
 
 fn exported_action_bytes(action: &ExportedAction, meter: &mut ByteMeter) {
     meter.string_capacity(&action.resource);
@@ -3530,10 +3542,11 @@ fn run_shovel(
 /// when keys change (`channelKeysChanged`).
 const CHANNEL_KEY_REFRESH: Duration = Duration::from_secs(1);
 
-/// The longest a route waiting for keys goes unasked while nothing changes.
-/// Admission is pushed; this timer covers only what is not, such as a
-/// channel service that starts after the app or a steward this device learns
-/// of later.
+/// The longest a route waiting for keys goes unasked while nothing changes,
+/// when nothing tells it about a change: an identity service that refused or
+/// could not take its question, or a removal whose rejoin it asks for.
+/// Admission, a channel service starting after the app and a steward this
+/// device learns of later are all pushed (see `KeySchedule`).
 const CHANNEL_KEY_WAIT_LONGEST: Duration = Duration::from_secs(30);
 
 /// What makes an endpoint ask the identity service about a route's keys.
@@ -3583,7 +3596,19 @@ impl KeyRound {
 /// this device's trust and the person's role on every signature, so a stale
 /// key never publishes past the commit.
 ///
-/// A route waiting for keys is asked on a timer as well: after
+/// A route the channel service answered as waiting or unavailable is told
+/// as well when that answer may change: the service follows a member's
+/// access request to the steward's welcome, re-checks a room with no known
+/// steward whenever the workspace tree announces a change of its authority
+/// or governance, and retries a channel it failed to open on its own
+/// backoff, resolving the route's `channelKeysChanged` each time. So it is
+/// not asked on a timer either.
+///
+/// A route waiting for keys is asked on a timer only when nothing will tell
+/// it: its last question got no answer from the channel service (the
+/// identity service refused it or could not be reached, or it was never
+/// answered yet), or the service answered that this device was removed (a
+/// rejoin is asked for again on each question). It is asked after
 /// [`CHANNEL_KEY_REFRESH`], then backing off to [`CHANNEL_KEY_WAIT_LONGEST`]
 /// while nothing changes. An endpoint whose broker pushes nothing asks for
 /// every route every [`CHANNEL_KEY_REFRESH`], as before.
@@ -3608,10 +3633,11 @@ impl KeySchedule {
         }
     }
 
-    /// Whether the timer starts rounds: never while every route holds keys
-    /// and the broker pushes their changes.
-    fn timed(&self, awaiting: bool) -> bool {
-        !self.pushed || awaiting
+    /// Whether the timer starts rounds: never while the broker pushes
+    /// changes and no route waits for keys that nothing will tell it about
+    /// (`unpushed_wait`, see [`RouteKeys::asks_on_timer`]).
+    fn timed(&self, unpushed_wait: bool) -> bool {
+        !self.pushed || unpushed_wait
     }
 
     fn note(&mut self, signal: KeySignal) {
@@ -3673,13 +3699,14 @@ impl KeySchedule {
     }
 }
 
-/// Whether any route holds no keys yet and asks the identity service.
-fn any_route_awaiting_keys(routes: &std::collections::HashMap<String, SdkRoute>) -> bool {
+/// Whether any route holds no keys yet and nothing will tell it when that
+/// changes, so it is asked about on the timer.
+fn any_route_asking_on_timer(routes: &std::collections::HashMap<String, SdkRoute>) -> bool {
     routes.values().any(|route| {
         route
             .encryption
             .lock()
-            .is_ok_and(|keys| keys.awaiting_keys())
+            .is_ok_and(|keys| keys.asks_on_timer())
     })
 }
 
@@ -3771,7 +3798,7 @@ async fn drive_shovel(
     loop {
         let timed = asks_channel_keys
             && key_fetch.is_none()
-            && key_schedule.timed(any_route_awaiting_keys(&routes));
+            && key_schedule.timed(any_route_asking_on_timer(&routes));
         let queued = tokio::select! {
             queued = outbound_rx.recv() => queued,
             Some(signal) = key_signal_rx.recv() => {
@@ -5530,33 +5557,49 @@ async fn refresh_route_keys(route: &SdkRoute, signer: &mut LocalSdkDocumentSigne
 }
 
 /// The keys the identity service answered, or, when it could not answer,
-/// that they are unavailable.
+/// that they are unavailable and the answer was not the channel service's.
 fn answered_keys(
     reply: Result<runtime_identity::wire::ChannelKeysReply, runtime_portal::NotAvailable>,
     generation: u64,
-) -> runtime_identity::wire::ChannelKeysReply {
-    reply.unwrap_or_else(|error| {
-        tracing::debug!(?error, "collab: identity service refused channel keys");
-        runtime_identity::wire::ChannelKeysReply {
-            access: runtime_identity::wire::ChannelAccess::Unavailable,
-            generation,
-            keys: None,
+) -> KeysAnswer {
+    match reply {
+        Ok(reply) => KeysAnswer {
+            reply,
+            answered: true,
+        },
+        Err(error) => {
+            tracing::debug!(?error, "collab: identity service refused channel keys");
+            KeysAnswer {
+                reply: runtime_identity::wire::ChannelKeysReply {
+                    access: runtime_identity::wire::ChannelAccess::Unavailable,
+                    generation,
+                    keys: None,
+                },
+                answered: false,
+            }
         }
-    })
+    }
+}
+
+/// One route's answer to a key question.
+struct KeysAnswer {
+    reply: runtime_identity::wire::ChannelKeysReply,
+    /// The channel service answered (rather than the identity service
+    /// refusing or failing): it then tells the route when this answer may
+    /// change, and the endpoint need not ask on a timer.
+    answered: bool,
 }
 
 /// Take the identity service's `reply` for `route`, asked at `generation`.
 /// Returns whether the route's state or keys changed.
-fn update_route_keys(
-    route: &SdkRoute,
-    reply: runtime_identity::wire::ChannelKeysReply,
-    generation: u64,
-) -> bool {
+fn update_route_keys(route: &SdkRoute, answer: KeysAnswer, generation: u64) -> bool {
     let Ok(mut keys) = route.encryption.lock() else {
         return false;
     };
     let state = keys.state();
+    let KeysAnswer { reply, answered } = answer;
     keys.update(reply.access, reply.generation, reply.keys.as_deref());
+    keys.set_answered(answered);
     keys.generation() != generation || keys.state() != state
 }
 
@@ -5584,7 +5627,7 @@ impl KeyQuery {
 
 /// The identity service's answers to one round of key questions: by route,
 /// with the generation each was asked at.
-type FetchedKeys = Vec<(String, u64, runtime_identity::wire::ChannelKeysReply)>;
+type FetchedKeys = Vec<(String, u64, KeysAnswer)>;
 
 /// A round of key questions in flight on a blocking thread.
 type KeyFetch = std::pin::Pin<Box<dyn std::future::Future<Output = FetchedKeys>>>;
@@ -6359,43 +6402,11 @@ async fn dispatch_sdk_request(
         }
         #[cfg(unix)]
         CollabRequest::ManagedInvocationAttempt { attempt } => {
-            use crate::host_worker::managed_sender::{AttemptFailure, RequestView};
-            use managed_sender_transport::{Failure, Request};
             let result = match attempt.claim(&route.spec) {
                 None => return true, // A clone cannot dispatch the same local attempt twice.
                 Some(Err(error)) => Err(error),
-                Some(Ok(view)) => {
-                    let request = match view {
-                        RequestView::Invoke {
-                            invocation,
-                            binding,
-                            revision,
-                            resource,
-                            action,
-                            argument,
-                            confirmation_json,
-                        } => Request::Invoke {
-                            invocation,
-                            binding,
-                            revision,
-                            resource,
-                            action,
-                            argument,
-                            confirmation_json,
-                        },
-                        RequestView::Observe { host, invocation } => {
-                            Request::Observe { host, invocation }
-                        }
-                        RequestView::Cancel { host, invocation } => {
-                            Request::Cancel { host, invocation }
-                        }
-                    };
-                    managed_sender_transport::send(route, request, attempt.deadline())
-                        .await
-                        .map_err(|error| match error {
-                            Failure::Deadline => AttemptFailure::Deadline,
-                            Failure::Unavailable => AttemptFailure::Unavailable,
-                        })
+                Some(Ok(request)) => {
+                    managed_sender_transport::send(route, request, attempt.deadline()).await
                 }
             };
             if let Some(result) = attempt.finish(result) {
@@ -6910,6 +6921,7 @@ mod tests {
     include!("directory_client_tests.rs");
     #[cfg(unix)]
     include!("committed_read_deadline_tests.rs");
+    include!("committed_changes_tests.rs");
     use crate::collaboration::{CollaborationState, SignedSendError, SigningIdentity};
 
     fn plain_route_keys() -> SharedRouteKeys {
@@ -6943,6 +6955,14 @@ mod tests {
         scrollback_batch, stream,
     };
 
+    /// Changes the fake broker hands a reader holding `from`.
+    #[derive(Clone)]
+    struct FixtureChanges {
+        from: [u8; 32],
+        base: Vec<[u8; 32]>,
+        bytes: Vec<u8>,
+    }
+
     #[derive(Default)]
     struct Captures {
         /// How long after it is asked for the op stream hands out each op.
@@ -6966,6 +6986,19 @@ mod tests {
         committed_ack_reply: Option<runtime_collab::committed_document::Reply>,
         /// Refuse every committed Open, as a broker does for a revoked peer.
         committed_open_failure: Option<String>,
+        /// Hold committed-read `Await`s until this is notified, as a current
+        /// broker does until the read changes. Without it `Await` is refused,
+        /// as an older broker refuses a request it does not know.
+        committed_awaits: Option<Arc<tokio::sync::Notify>>,
+        /// End the next held `Await` though the read did not change, as a
+        /// broker does when an announced change leaves the reader's Open to
+        /// decide.
+        committed_await_stale: bool,
+        /// Answer `OpenChanges` as a current broker does: these changes for
+        /// a reader holding their `from` revision, the whole document for
+        /// any other. Without it `OpenChanges` is refused, as an older
+        /// broker refuses a request it does not know.
+        committed_changes: Option<FixtureChanges>,
         /// Hold each next `join_channel` reply until its gate opens, as a
         /// starved broker does.
         join_gates: std::collections::VecDeque<tokio::sync::oneshot::Receiver<()>>,
@@ -7533,12 +7566,59 @@ mod tests {
             mut results: channel_handle::CommittedDocumentResults,
         ) -> Promise<(), capnp::Error> {
             use runtime_collab::committed_document::{Reply, Request};
+            let decoded = params
+                .get()
+                .and_then(|params| params.get_request())
+                .and_then(|bytes| {
+                    Request::decode(bytes).map_err(|error| capnp::Error::failed(error.into()))
+                });
+            if let Ok(Request::Await { known_revision }) = decoded {
+                let held = {
+                    let mut captures = self.captures.lock().unwrap();
+                    captures
+                        .committed_reads
+                        .push(Request::Await { known_revision });
+                    captures.committed_awaits.clone()
+                };
+                let Some(change) = held else {
+                    return Promise::err(capnp::Error::failed(
+                        "invalid committed read request".into(),
+                    ));
+                };
+                let captures = self.captures.clone();
+                return Promise::from_future(async move {
+                    loop {
+                        let notified = change.notified();
+                        tokio::pin!(notified);
+                        notified.as_mut().enable();
+                        let current = {
+                            let mut captures = captures.lock().unwrap();
+                            let stale = std::mem::take(&mut captures.committed_await_stale);
+                            (!stale
+                                && captures.committed_open_failure.is_none()
+                                && captures.committed_history_fixture.is_some())
+                            .then(|| captures.committed_revision.unwrap_or([7; 32]))
+                        };
+                        if current.is_none() || current != known_revision {
+                            break;
+                        }
+                        notified.await;
+                    }
+                    results.get().set_reply(
+                        &Reply::Stale
+                            .encode()
+                            .map_err(|error| capnp::Error::failed(error.into()))?,
+                    );
+                    Ok(())
+                });
+            }
             let result = (|| {
-                let request = Request::decode(params.get()?.get_request()?)
-                    .map_err(|error| capnp::Error::failed(error.into()))?;
+                let request = decoded?;
                 let mut captures = self.captures.lock().unwrap();
                 captures.committed_reads.push(request.clone());
-                if matches!(request, Request::Open { .. })
+                let changes = captures.committed_changes.clone();
+                if (matches!(request, Request::Open { .. })
+                    || (changes.is_some() && matches!(request, Request::OpenChanges { .. })))
                     && let Some(error) = captures.committed_open_failure.clone()
                 {
                     return Err(capnp::Error::failed(error));
@@ -7553,6 +7633,29 @@ mod tests {
                         Request::Open {
                             known_revision: Some(revision),
                         } if revision == current_revision => Reply::Unchanged { revision },
+                        Request::OpenChanges { known_revision } if changes.is_some() => {
+                            match changes {
+                                _ if known_revision == current_revision => Reply::Unchanged {
+                                    revision: known_revision,
+                                },
+                                Some(changes) if changes.from == known_revision => Reply::Changes {
+                                    capture: 1,
+                                    revision: current_revision,
+                                    base: changes.base,
+                                    total: changes.bytes.len() as u32,
+                                    bytes: changes.bytes,
+                                    token: [3; 16],
+                                },
+                                _ => Reply::Chunk {
+                                    capture: 1,
+                                    revision: current_revision,
+                                    total: bytes.len() as u32,
+                                    offset: 0,
+                                    bytes: bytes.clone(),
+                                    token: [3; 16],
+                                },
+                            }
+                        }
                         Request::Open { .. } => Reply::Chunk {
                             capture: 1,
                             revision: current_revision,
@@ -8738,6 +8841,136 @@ mod tests {
             _: &[u8],
         ) -> Result<[u8; 64], runtime_portal::NotAvailable> {
             Ok([9; 64])
+        }
+    }
+
+    /// A certified identity whose channel service answers every route with
+    /// `access`, or that refuses every question (`None`).
+    #[cfg(unix)]
+    struct AnsweringIdentity {
+        asked: Arc<std::sync::atomic::AtomicUsize>,
+        access: Option<runtime_identity::wire::ChannelAccess>,
+    }
+
+    #[cfg(unix)]
+    impl SdkCertifiedIdentity for AnsweringIdentity {
+        fn channel_keys(
+            &self,
+            _: &str,
+            _: &str,
+            _: &str,
+            generation: u64,
+        ) -> Result<runtime_identity::wire::ChannelKeysReply, runtime_portal::NotAvailable>
+        {
+            self.asked.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+            self.access
+                .map(|access| runtime_identity::wire::ChannelKeysReply {
+                    access,
+                    generation,
+                    keys: None,
+                })
+                .ok_or(runtime_portal::NotAvailable::ServiceFdMissing)
+        }
+        fn device_certificate(&self) -> Option<&[u8]> {
+            Some(b"fixture")
+        }
+        fn signing_public_key(&self) -> [u8; 32] {
+            [5; 32]
+        }
+        fn sign_collaboration_join(
+            &self,
+            _: &str,
+        ) -> Result<[u8; 64], runtime_portal::NotAvailable> {
+            Ok([7; 64])
+        }
+        fn sign_collaboration_op(
+            &self,
+            _: &str,
+            _: &str,
+            _: &str,
+            _: &[u8],
+        ) -> Result<[u8; 64], runtime_portal::NotAvailable> {
+            Ok([9; 64])
+        }
+    }
+
+    /// How many more times than at joining an endpoint on a pushing broker
+    /// asked about its one route over three refresh intervals, when the
+    /// identity service answers `access` (or refuses, `None`). A pushed
+    /// change must still make it ask afterwards.
+    #[cfg(unix)]
+    fn asks_while_waiting(access: Option<runtime_identity::wire::ChannelAccess>) -> usize {
+        let changes = Arc::new(tokio::sync::watch::Sender::new(0_u64));
+        let broker = FakeBroker {
+            captures: Arc::new(std::sync::Mutex::new(Captures {
+                key_changes: Some(Arc::clone(&changes)),
+                ..Captures::default()
+            })),
+            ..FakeBroker::default()
+        };
+        let (fd, _captures, thread) = stand_up_fake_broker(broker);
+        let asked = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let sdk = CollaborationManager::spawn_sdk(
+            SdkConnectSource::Fd(fd),
+            Some(SdkJoinIdentity {
+                presentation: Vec::new(),
+                participant_kind: "person",
+                signer: SdkDocumentSigner::Certified(Arc::new(AnsweringIdentity {
+                    asked: Arc::clone(&asked),
+                    access,
+                })),
+            }),
+        )
+        .unwrap();
+        let mut manager = CollaborationManager::disabled();
+        manager.backend = Backend::Transport(Box::new(sdk));
+        assert!(manager.send(CollabRequest::Hello {
+            app_id: "so.tilo.test".into(),
+            cluster_id: Uuid::new_v4(),
+            record: None,
+            record_kind: None,
+            handle: None,
+        }));
+        manager.await_primary_route().unwrap();
+        tilo_test_env::wait_until("the route's endpoint to ask for its channel keys", || {
+            asked.load(std::sync::atomic::Ordering::Acquire) > 0
+        });
+        let joined = asked.load(std::sync::atomic::Ordering::Acquire);
+        // The waiting route's timer asks after 1 s and 2 s more.
+        std::thread::sleep(CHANNEL_KEY_REFRESH * 3 + Duration::from_millis(500));
+        let timed = asked.load(std::sync::atomic::Ordering::Acquire) - joined;
+        let before_change = asked.load(std::sync::atomic::Ordering::Acquire);
+        changes.send_replace(9);
+        tilo_test_env::wait_until("the endpoint to ask after its channel changed", || {
+            asked.load(std::sync::atomic::Ordering::Acquire) > before_change
+        });
+        drop(manager);
+        thread.join().unwrap();
+        timed
+    }
+
+    /// A route the channel service answered as waiting, or as unavailable
+    /// (no steward known yet), is told when that changes: it is not asked
+    /// about on a timer while the broker pushes, and a pushed change asks.
+    #[test]
+    #[cfg(unix)]
+    fn a_route_the_channel_service_answered_waits_for_its_push() {
+        use runtime_identity::wire::ChannelAccess;
+        for access in [ChannelAccess::Waiting, ChannelAccess::Unavailable] {
+            let timed = asks_while_waiting(Some(access));
+            assert_eq!(timed, 0, "{access:?}: a pushed route was asked on a timer");
+        }
+    }
+
+    /// What nothing pushes is still asked on the timer: a question the
+    /// identity service refused, and a removal, whose rejoin each question
+    /// asks for again.
+    #[test]
+    #[cfg(unix)]
+    fn a_refused_question_or_a_removal_is_still_asked_on_the_timer() {
+        for access in [None, Some(runtime_identity::wire::ChannelAccess::Removed)] {
+            let timed = asks_while_waiting(access);
+            assert!(timed >= 2, "{access:?}: asked {timed} times on the timer");
         }
     }
 

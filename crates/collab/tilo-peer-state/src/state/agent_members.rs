@@ -20,6 +20,7 @@
 //! but it is no reader of the room's channels and no op of it is admitted.
 
 use serde::{Deserialize, Serialize};
+use tilo_action_policy::roles::agent_policy;
 use tilo_relay_protocol::agents::AgentDelegation;
 use tilo_user_identity::DeviceCert;
 
@@ -98,13 +99,10 @@ impl GovernedIdentity {
     }
 }
 
-/// The role an agent acts with when its person holds `role`: the same,
-/// except that it never governs.
-pub(crate) const fn agent_role(role: Role) -> Role {
-    match role {
-        Role::Owner => Role::Editor,
-        other => other,
-    }
+/// The role an agent acts with when its person holds `role`: its person's,
+/// within what its delegation grants (the agent cap), so it never governs.
+pub(crate) fn agent_role(role: Role) -> Role {
+    agent_policy::role(role, agent_policy::ROLE_CAP)
 }
 
 /// One delegated agent on a room's roster.
@@ -163,7 +161,9 @@ impl StatePeer {
         now: SystemTime,
     ) -> Result<bool, String> {
         self.require_governance_writer(key, now)?;
-        if cert.user_public_key != self.core.authority.user_public_key {
+        if !agent_policy::OTHER_PEOPLES_AGENTS_JOIN
+            && cert.user_public_key != self.core.authority.user_public_key
+        {
             return Err("only the room owner's agents are admitted".into());
         }
         if !holds_no_power(&cert) {
@@ -218,7 +218,9 @@ impl StatePeer {
                         ..
                     }),
                 ..
-            }) => return Err("the agent was withdrawn".into()),
+            }) if agent_policy::WITHDRAWAL_IS_FINAL => {
+                return Err("the agent was withdrawn".into());
+            }
             Some(GovernedIdentity {
                 agent: Some(ref known),
                 ..

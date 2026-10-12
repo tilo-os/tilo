@@ -117,6 +117,18 @@ vm_b() {
 # stdin and the shell it starts reads the script that follows.
 sudo_a() { printf '%s\n%s\n' "$TILO_PASS" "$1" | vm_a ssh "sudo -S -p '' sh -s"; }
 sudo_b() { printf '%s\n%s\n' "$TILO_PASS" "$1" | vm_b ssh "sudo -S -p '' sh -s"; }
+# Everything this boot's session on $1 recorded, each line once: the journal's
+# copy and the compositor's own flight record, whichever carries it. Each
+# record line starts with its own timestamp, so no two events collapse.
+session_log() {
+  "$1" ssh 'journalctl -b --no-pager -o cat _UID=$(id -u) 2>/dev/null
+    cat "$HOME"/.local/state/tilo/session-logs/latest.log 2>/dev/null
+    true' 2>/dev/null | sort -u
+}
+# The personal devices $1 records: the list remote actions and wake address.
+personal_devices() {
+  "$1" ssh 'cat /var/lib/tilo/peers/personal-device-peers.json 2>/dev/null || printf "[]"'
+}
 
 collect() {
   local label=$1 run=$2 each=$3
@@ -226,6 +238,22 @@ if vm_a ssh 'command -v ping >/dev/null'; then
   done
 fi
 
+# The --wake and --unlock phases read what each session records: B's audit of
+# a remote action, A's wake progress and unlock history, A's account of an idle
+# hold. Those are info lines, which a session drops unless RUST_LOG asks for
+# them. greetd starts the session with the PAM environment, which pam_env
+# reads from /etc/environment, so both machines get it before their first
+# login. Only the log filter changes.
+if [ "$wake" = 1 ] || [ "$unlock" = 1 ]; then
+  log_filter='error,tilo::remote_actions=info,tilo::device_wake=info,tilo::power=info,tilo_shell::device_unlock=info'
+  for each_sudo in sudo_a sudo_b; do
+    "$each_sudo" "set -eu
+      sed -i '/^RUST_LOG=/d' /etc/environment
+      printf '%s\n' 'RUST_LOG=$log_filter' >>/etc/environment" \
+      || die "$each_sudo: could not set the login environment's log filter"
+  done
+fi
+
 # --- both reach first-use onboarding ------------------------------------------
 wait_onboarding() {
   local each=$1
@@ -250,6 +278,29 @@ vm_a keys tab ret
 identity="$(vm_a ssh 'od -An -v -tx1 /var/lib/tilo/user-identity/pubkey.bin' | tr -d ' \n')"
 [[ $identity =~ ^[0-9a-f]{64}$ ]] || die "VM A has no readable identity public key"
 note "VM A holds identity $identity"
+
+if [ "$wake" = 1 ] || [ "$unlock" = 1 ]; then
+  # From here on the gate drives A over ssh and, in the --wake and --unlock
+  # phases, over its control socket, for many minutes without touching its
+  # keyboard; A's session locks after its idle timeout like any other. A
+  # program on A holds an idle block lock as the person, the way a
+  # presentation tool does. The session honours it; the lock policy and its
+  # timeout stay as they are.
+  vm_a ssh "systemd-run --user --quiet --unit=tilo-nearby-idle-hold \
+      systemd-inhibit --what=idle --mode=block --who='nearby pairing gate' \
+        --why='drives this session over its control socket' sleep infinity" \
+    || die "A could not take an idle lock for the rest of the run"
+  for attempt in $(seq 1 60); do
+    session_log vm_a | grep -F 'kept awake by another program' | grep -F 'nearby pairing gate' \
+      > "$out/a-idle-hold.txt" && break
+    [ "$attempt" -lt 60 ] || {
+      vm_a ssh 'systemd-inhibit --list --no-pager' > "$out/a-inhibitors.txt" 2>&1 || true
+      die "A's session never counted the idle lock; see a-inhibitors.txt"
+    }
+    sleep 2
+  done
+  note "A's session is held awake for the rest of the run"
+fi
 
 # --- the image owns the enrollment layout --------------------------------------
 layout="$(vm_b ssh 'stat -c "%n %a %U %G" /var/lib/tilo/enrollment-staging /var/lib/tilo/enrollment-commits /var/lib/tilo/peers')"
@@ -344,6 +395,16 @@ for attempt in $(seq 1 30); do
 done
 vm_b ssh '! test -e /var/lib/tilo/device/cert.bin' \
   || die "a failed pairing left a device certificate on B"
+# Neither machine records a device whose enrollment never committed.
+personal_devices vm_b > "$out/b-personal-devices-refused.json"
+jq -e 'length == 0' "$out/b-personal-devices-refused.json" >/dev/null \
+  || die "a failed pairing recorded personal devices on B: $(cat "$out/b-personal-devices-refused.json")"
+if [ -s "$out/refused-device.txt" ]; then
+  personal_devices vm_a > "$out/a-personal-devices-refused.json"
+  jq -e --arg device "$(cat "$out/refused-device.txt")" 'index($device) == null' \
+    "$out/a-personal-devices-refused.json" >/dev/null \
+    || die "A recorded B as a personal device for a pairing B never committed"
+fi
 no_privileged_pairing
 vm_b shot negative-error >/dev/null && cp -f "$run_b/negative-error.png" "$out/"
 
@@ -384,6 +445,16 @@ fleet_lists_b < "$out/b-fleet.json" || die "B's fleet record does not list B"
 vm_a ssh "cat $identity_dir/fleets/$identity.json" > "$out/a-fleet.json" \
   || die "A has no fleet record for $identity"
 fleet_lists_b < "$out/a-fleet.json" || die "A's fleet record does not list B"
+# Both machines record each other, and themselves, as the person's devices:
+# without that, A's remote actions and wake requests refuse B as not enrolled.
+a_device="$(vm_a ssh 'tilo-enroll device-key' | jq -r .device_public_key)"
+[[ $a_device =~ ^[0-9a-f]{64}$ ]] || die "VM A did not report its device key"
+for each in vm_a vm_b; do
+  personal_devices "$each" > "$out/$each-personal-devices.json"
+  jq -e --arg a "$a_device" --arg b "$device" '(sort) == ([$a, $b] | sort)' \
+    "$out/$each-personal-devices.json" >/dev/null \
+    || die "$each does not record exactly A and B as personal devices: $(cat "$out/$each-personal-devices.json")"
+done
 
 vm_b ssh /usr/libexec/tilo/native-atspi-smoke.sh oobe-nearby-done
 no_privileged_pairing
@@ -413,7 +484,9 @@ for expected in \
   grep -qxF "$expected" <<<"$layout_after" \
     || die "joining changed the device-trust layout; expected '$expected' in: $layout_after"
 done
-joined="$(vm_b ssh 'find /var/lib/tilo/device/cert.bin /var/lib/tilo/device/certs /var/lib/tilo/user-identity/pubkey.bin -printf "%p %y %G\n"')"
+# find's %g is the group's name (%G would be its number, which never equals
+# a name), as stat's %G above is.
+joined="$(vm_b ssh 'find /var/lib/tilo/device/cert.bin /var/lib/tilo/device/certs /var/lib/tilo/user-identity/pubkey.bin /var/lib/tilo/peers/personal-device-peers.json -printf "%p %y %g\n"')"
 printf '%s\n' "$joined" > "$out/b-joined-files.txt"
 grep -q '^/var/lib/tilo/device/certs d ' <<<"$joined" || die "the join wrote no per-identity certificate directory: $joined"
 grep -q '^/var/lib/tilo/device/certs/.* f ' <<<"$joined" || die "the join wrote no per-identity certificate: $joined"
@@ -423,7 +496,7 @@ fi
 # Read as the session's own account, through the group, not as their owner.
 sudo_b "set -eu
   find /var/lib/tilo/device/cert.bin /var/lib/tilo/device/certs /var/lib/tilo/user-identity/pubkey.bin \
-    /var/lib/tilo/device-private/keypair.bin -type f \
+    /var/lib/tilo/peers/personal-device-peers.json /var/lib/tilo/device-private/keypair.bin -type f \
     -exec sudo -u '$TILO_USER' cat {} + >/dev/null
   find /var/lib/tilo/device/certs -type d -exec sudo -u '$TILO_USER' ls {} + >/dev/null" \
   || die "the session account cannot read what the join wrote"
