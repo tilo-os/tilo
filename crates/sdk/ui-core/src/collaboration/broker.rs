@@ -84,13 +84,6 @@ const HOST_IDENTITY_EXCHANGE_TIMEOUT: Duration = Duration::from_secs(5);
 /// This deliberately caps commands, rather than bytes, because the protocol
 /// already bounds its payloads at each broker boundary.
 const SDK_COMMAND_QUEUE: usize = 256;
-/// Queue slots document traffic never takes. Documents are bounded by their
-/// own byte budget, so a flood of small edits could otherwise fill every
-/// slot, and the next control command (a publication barrier, a join, an
-/// invocation result) would find the queue full, which fails the whole
-/// bridge. Only documents are refused as busy; control commands always have
-/// these slots.
-const SDK_CONTROL_HEADROOM: usize = 16;
 /// Maximum number of shovel-to-UI events waiting behind a busy event loop.
 const SDK_EVENT_QUEUE: usize = 256;
 /// Aggregate retained payload budget for each cross-thread queue. This is
@@ -1892,13 +1885,6 @@ fn try_enqueue_sdk_command(
             );
             return Err(TransportError::Busy);
         };
-        if tx.capacity() <= SDK_CONTROL_HEADROOM {
-            // Release before arming, or the reservation's own drop would
-            // spend the wake on a retry that finds the queue still full.
-            drop(reservation);
-            budget.arm_room_wake();
-            return Err(TransportError::Busy);
-        }
         return match tx.try_send(QueuedSdkCommand {
             command,
             _reservation: reservation,
@@ -8570,37 +8556,6 @@ mod tests {
         assert!(manager.send(CollabRequest::document_incremental(b"after".to_vec())));
         drop(manager);
         thread.join().unwrap();
-    }
-
-    /// Small edits are bounded by count, not bytes: once they stop being
-    /// admitted the queue must still have room for control commands, which
-    /// fail the bridge when it is full.
-    #[test]
-    fn small_edits_leave_queue_room_for_control_commands() {
-        let (tx, rx) = tokio_mpsc::channel(SDK_COMMAND_QUEUE);
-        let state = BridgeState::new();
-        let mut admitted = 0;
-        let refusal = loop {
-            let command = SdkCommand::Primary(CollabRequest::document_incremental(vec![0; 1]));
-            match try_enqueue_sdk_command(&tx, command, &state) {
-                Ok(()) => admitted += 1,
-                Err(error) => break error,
-            }
-        };
-        assert_eq!(refusal, TransportError::Busy);
-        assert_eq!(admitted, SDK_COMMAND_QUEUE - SDK_CONTROL_HEADROOM);
-        assert_eq!(rx.len(), admitted);
-        for _ in 0..SDK_CONTROL_HEADROOM {
-            assert!(
-                enqueue_sdk_command(
-                    &tx,
-                    SdkCommand::Primary(CollabRequest::RequestDocumentSnapshot),
-                    &state
-                ),
-                "a full document queue must not refuse a control command"
-            );
-        }
-        assert!(state.is_healthy());
     }
 
     #[cfg(unix)]
