@@ -18,7 +18,6 @@ path = "src/lib.rs"
 
 [dependencies]
 runtime-portal = { path = "../runtime-portal" }
-runtime-portal-xdg = { path = "../runtime-portal-xdg" }
 runtime-collab = { path = "../runtime-collab" }
 runtime-fs = { path = "../runtime-fs" }
 runtime-identity = { path = "../runtime-identity" }

@@ -7,7 +7,7 @@
     )
 )]
 
-use runtime::{collab, fs, identity, is_tilo_native, portal, portal_xdg};
+use runtime::{collab, fs, identity, is_tilo_native, portal};
 
 // Thin build only: pull the shared runtime SDK dylib
 // (`libruntime_dylib.so`) into the link graph. Without this reference
@@ -111,73 +111,16 @@ fn main() {
     }
     println!();
 
-    println!("== xdg portal probes ==");
-    // Cheap presence check first. If the bus isn't there, all the
-    // portal calls will surface `NotAvailable` — the whole point of
-    // the graceful-degradation contract.
-    println!(
-        "  is_portal_available: {}",
-        portal_xdg::is_portal_available()
-    );
+    println!("== xdg portals ==");
+    // The launcher proxies the session bus in only for the portals the
+    // manifest's `[sandbox.portals]` declares.
     println!(
         "  DBUS_SESSION_BUS_ADDRESS: {}",
         std::env::var("DBUS_SESSION_BUS_ADDRESS").unwrap_or_else(|_| "(unset)".into())
     );
-    // Notification: fire-and-forget — the portal returns as soon as
-    // the bubble is enqueued, so we can call it inline.
-    report_portal(
-        "notifications",
-        portal_xdg::Notification::send("tilo-hello reporting in"),
-    );
-    // Secret: this may prompt the user, so it can block on the portal
-    // frontend. Wrap in a short timeout so this probe never hangs the
-    // demo — a "timed-out" line still proves the bus is reachable.
-    report_portal(
-        "secret",
-        with_timeout(std::time::Duration::from_millis(750), || {
-            portal_xdg::Secret::retrieve().map(|_| ())
-        }),
-    );
     println!();
 
     println!("tilo-hello: done.");
-}
-
-/// Run a fallible closure on a worker thread with a deadline. If it
-/// finishes in time we return its result; otherwise we return
-/// `Cancelled` (the closest existing `PortalError` variant meaning
-/// "no answer from the portal") — the worker thread is left running,
-/// which is fine for a short-lived probe.
-fn with_timeout<F>(dur: std::time::Duration, f: F) -> Result<(), portal_xdg::PortalError>
-where
-    F: FnOnce() -> Result<(), portal_xdg::PortalError> + Send + 'static,
-{
-    let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let _ = tx.send(f());
-    });
-    match rx.recv_timeout(dur) {
-        Ok(r) => r,
-        Err(_) => Err(portal_xdg::PortalError::Cancelled),
-    }
-}
-
-fn report_portal(name: &str, result: Result<(), portal_xdg::PortalError>) {
-    match result {
-        Ok(()) => println!("  {name:14}: OK"),
-        Err(portal_xdg::PortalError::NotAvailable) => {
-            println!("  {name:14}: unavailable — graceful (no bus / launcher didn't plumb)");
-        }
-        Err(portal_xdg::PortalError::PortalNotFound) => {
-            println!("  {name:14}: bus reachable but no portal frontend installed");
-        }
-        Err(portal_xdg::PortalError::Cancelled) => {
-            println!(
-                "  {name:14}: no answer within timeout (portal likely blocking on user consent)"
-            );
-        }
-        Err(other) => println!("  {name:14}: error ({other})"),
-    }
 }
 
 /// Render a byte slice as lowercase hex. Used to print the loaded

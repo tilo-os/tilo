@@ -286,7 +286,6 @@ members = [
     "crates/runtime/runtime-fs",
     "crates/runtime/runtime-identity",
     "crates/runtime/runtime-portal",
-    "crates/runtime/runtime-portal-xdg",
     "crates/runtime/os-search",
     "crates/runtime/tilo-file-provider",
     "crates/runtime/tilo-identity-host",
