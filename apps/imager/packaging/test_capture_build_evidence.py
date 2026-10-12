@@ -30,7 +30,8 @@ class CaptureBuildEvidenceTests(unittest.TestCase):
                          'apps/imager/src/setup/home_capture/native_tests/signed_export.rs',
                          'apps/imager/packaging/qualify-capture-release.py',
                          'tools/ci/native-stores.sh', 'tools/ci/native-store-autoclear.py',
-                         'tools/apps/pack-runtime-package.sh', 'tools/apps/stage_sdk_services.py'):
+                         'tools/apps/pack-runtime-package.sh', 'tools/apps/stage_sdk_services.py',
+                         'scripts/headless-examples/_control.py'):
                 path = root / name
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text('before\n')
@@ -59,6 +60,10 @@ print(json.dumps({'reason':'build-finished','success':True}))
                                 (invocations[0] / 'source-after.json').read_bytes())
             self.assertEqual(list(invocations[0].glob('role-*.json')), [])
             self.assertEqual(list(invocations[0].glob('producer-*.json')), [])
+            before = json.loads((invocations[0] / 'source-before.json').read_text())
+            self.assertIn('scripts/headless-examples/_control.py', before)
+            self.assertEqual(before['scripts/headless-examples/_control.py'],
+                             PRODUCER.facts(root / 'scripts/headless-examples/_control.py'))
 
 
 if __name__ == '__main__':
