@@ -158,7 +158,11 @@ containerfile="$repo/os/Containerfile"
 # greeter through network.target (TIL-767).
 # The installer locale list is copied from the install-profile-model crate,
 # which compiles it in; the installed path is unchanged.
-expected_contract=034b3e3003b9077e17f816fdf1f4e466f0b2b86b38b74da7047d10ef1686c69e
+# Prepared migration adds the account capability verifier pair, the home-seed
+# and prepared extraction helpers, the prepared-setup component and the selected
+# runtime version marker. Atomic firstboot file provisioning adds one helper
+# to the existing libexec COPY. All previous payload mappings are retained.
+expected_contract=36dd54dcfc1fd314354e8d1ae2a43652ca5a9c30f1a22dbdc1b49ad5f1023853
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {
