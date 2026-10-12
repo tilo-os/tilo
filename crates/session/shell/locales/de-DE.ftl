@@ -2138,6 +2138,8 @@ capture-recording-audio-lost = Die Aufnahme läuft ohne Ton weiter
 capture-recording-audio-lost-body = { $path } · { $reason }
 capture-recent-audio-lost = Die Aufnahme der letzten Momente läuft ohne Ton weiter
 capture-failed = Aufnahme fehlgeschlagen
+settings-not-saved-title = Einstellung nicht gespeichert
+settings-not-saved-body = Tilo konnte eine Änderung an deinen Einstellungen nicht speichern, deshalb gilt wieder der vorherige Wert. Prüfe, ob auf dem Datenträger Platz frei ist, und versuche es dann erneut.
 idle-inhibit-unnamed-app = Eine App
 
 # Ein Bildschirmfoto an ein Gerät oder in die Dateien des Arbeitsbereichs senden

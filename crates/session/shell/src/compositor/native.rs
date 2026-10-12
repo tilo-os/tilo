@@ -10369,6 +10369,11 @@ pub fn run() {
         crate::shell::launcher::action_authority::tick(iter_t0);
         let injected_redraw = std::mem::take(&mut injected_redraw_pending);
         metrics.begin_tick(iter_t0);
+        // A setting this loop changed that the settings worker could not store
+        // went back to its previous value: say so (one atomic load when none did).
+        if settings_store::deferred_failure_pending() {
+            frame_builder.with_chrome(crate::shell::settings_failures::drain);
+        }
         if let Some(pipe) = present_pipe.as_ref() {
             for (serial, proof) in pipe.take_physical_results() {
                 state.presentation_feedback.completed(serial, proof);

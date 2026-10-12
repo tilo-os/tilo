@@ -166,8 +166,8 @@ impl SettingsSource for HostView {
         self.session.write_pending();
     }
 
-    fn take_deferred_failure(&self) -> Option<String> {
-        self.session.take_deferred_failure()
+    fn take_deferred_failures(&self) -> Vec<crate::DeferredFailure> {
+        self.session.take_deferred_failures()
     }
 
     fn changes(&self) -> &ChangeSignal {
