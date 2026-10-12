@@ -928,7 +928,7 @@ def audit(root: Path = ROOT) -> tuple[list[Violation], int]:
                         f"stale {rule} baseline path `{relative}` does not exist",
                     )
                 )
-    manifests = sorted(app.parent / "Cargo.toml" for app in (root / "apps").glob("*/tilo-app.toml"))
+    manifests = sorted((root / "apps").glob("*/Cargo.toml"))
     for manifest_path in manifests:
         with manifest_path.open("rb") as handle:
             manifest = tomllib.load(handle)

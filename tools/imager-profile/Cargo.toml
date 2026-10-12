@@ -19,7 +19,7 @@ serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.145"
 hex = "0.4.3"
 sha2 = "0.11"
-install-profile-model = { path = "../../apps/install-profile-model" }
+install-profile-model = { path = "../../crates/session/install-profile-model" }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2.177"
