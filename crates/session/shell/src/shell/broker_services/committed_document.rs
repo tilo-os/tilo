@@ -189,6 +189,66 @@ impl NativeDocumentReads for NativeOwnerCommitService {
             DocumentRead::CheckpointPending => NativeDocumentRead::Pending,
         })
     }
+    fn unchanged(
+        &self,
+        context: &NativeDocumentReadContext,
+        known_revision: Option<[u8; 32]>,
+    ) -> Result<Option<bool>, String> {
+        // After `Unavailable` only a capture can tell whether the
+        // checkpoint's body arrived.
+        let Some(known) = known_revision else {
+            return Ok(None);
+        };
+        self.authorize(context)?;
+        let route = context.route();
+        let room = super::super::state::RoomId::parse(&route.cluster_id)
+            .ok_or("invalid committed document room")?;
+        let owner = self
+            .owner
+            .as_ref()
+            .ok_or("native document owner unavailable")?;
+        owner.with_current(room, |view| {
+            view.holds_revision(
+                context.certificate().device_public_key,
+                &route.app_id,
+                &route.record_id,
+                known,
+                std::time::SystemTime::now(),
+            )
+        })
+    }
+    fn next_change(
+        &self,
+        context: &NativeDocumentReadContext,
+        after: u64,
+    ) -> Result<Option<u64>, String> {
+        let route = context.route();
+        let room = super::super::state::RoomId::parse(&route.cluster_id)
+            .ok_or("invalid committed document room")?;
+        let owner = self
+            .owner
+            .as_ref()
+            .ok_or("native document owner unavailable")?;
+        let second = tilo_action_broker::policy_schedule::second_at_or_after;
+        // The room's own governance (its grants' and capabilities' expiries)
+        // and this host's custody certificate (`check_native_custody`).
+        let committed = owner.with_current(room, |view| {
+            let grants = tilo_peer_state::owner_commit::PrivatePolicyBasis::from_peer(view.peer())?
+                .next_expiry_after(after);
+            let custody = view
+                .device()
+                .expires_at_ns
+                .map(second)
+                .filter(|at| *at > after);
+            Ok(grants.into_iter().chain(custody).min())
+        })?;
+        // The projection a steward reads for the same room: its grants and
+        // the certificates of the devices it admitted, the reader's among
+        // them.
+        let projected =
+            super::super::channel_policy::next_policy_change(&self.tree.read(), room, after, &[]);
+        Ok(committed.into_iter().chain(projected).min())
+    }
 }
 
 /// The bytes of one bounded capture, held until the broker has sent them.

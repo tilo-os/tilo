@@ -6997,6 +6997,14 @@ mod tests {
         committed_ack_reply: Option<runtime_collab::committed_document::Reply>,
         /// Refuse every committed Open, as a broker does for a revoked peer.
         committed_open_failure: Option<String>,
+        /// Hold committed-read `Await`s until this is notified, as a current
+        /// broker does until the read changes. Without it `Await` is refused,
+        /// as an older broker refuses a request it does not know.
+        committed_awaits: Option<Arc<tokio::sync::Notify>>,
+        /// End the next held `Await` though the read did not change, as a
+        /// broker does when an announced change leaves the reader's Open to
+        /// decide.
+        committed_await_stale: bool,
         /// Hold each next `join_channel` reply until its gate opens, as a
         /// starved broker does.
         join_gates: std::collections::VecDeque<tokio::sync::oneshot::Receiver<()>>,
@@ -7564,9 +7572,54 @@ mod tests {
             mut results: channel_handle::CommittedDocumentResults,
         ) -> Promise<(), capnp::Error> {
             use runtime_collab::committed_document::{Reply, Request};
+            let decoded = params
+                .get()
+                .and_then(|params| params.get_request())
+                .and_then(|bytes| {
+                    Request::decode(bytes).map_err(|error| capnp::Error::failed(error.into()))
+                });
+            if let Ok(Request::Await { known_revision }) = decoded {
+                let held = {
+                    let mut captures = self.captures.lock().unwrap();
+                    captures
+                        .committed_reads
+                        .push(Request::Await { known_revision });
+                    captures.committed_awaits.clone()
+                };
+                let Some(change) = held else {
+                    return Promise::err(capnp::Error::failed(
+                        "invalid committed read request".into(),
+                    ));
+                };
+                let captures = self.captures.clone();
+                return Promise::from_future(async move {
+                    loop {
+                        let notified = change.notified();
+                        tokio::pin!(notified);
+                        notified.as_mut().enable();
+                        let current = {
+                            let mut captures = captures.lock().unwrap();
+                            let stale = std::mem::take(&mut captures.committed_await_stale);
+                            (!stale
+                                && captures.committed_open_failure.is_none()
+                                && captures.committed_history_fixture.is_some())
+                            .then(|| captures.committed_revision.unwrap_or([7; 32]))
+                        };
+                        if current.is_none() || current != known_revision {
+                            break;
+                        }
+                        notified.await;
+                    }
+                    results.get().set_reply(
+                        &Reply::Stale
+                            .encode()
+                            .map_err(|error| capnp::Error::failed(error.into()))?,
+                    );
+                    Ok(())
+                });
+            }
             let result = (|| {
-                let request = Request::decode(params.get()?.get_request()?)
-                    .map_err(|error| capnp::Error::failed(error.into()))?;
+                let request = decoded?;
                 let mut captures = self.captures.lock().unwrap();
                 captures.committed_reads.push(request.clone());
                 if matches!(request, Request::Open { .. })
