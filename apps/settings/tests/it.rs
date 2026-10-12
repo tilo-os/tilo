@@ -109,3 +109,5 @@ mod published_surface;
 
 #[path = "accounts_mail_loop.rs"]
 mod accounts_mail_loop;
+#[path = "perf_budget.rs"]
+mod perf_budget;
