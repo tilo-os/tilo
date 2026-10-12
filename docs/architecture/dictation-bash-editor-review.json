@@ -1,0 +1,120 @@
+{
+  "schema": 1,
+  "status": "native editor feasibility qualified; production Terminal backend unavailable",
+  "compiled_input_base": "501082c83396068ab5fcf865e4d7f81d268ec46c",
+  "source": {
+    "path": "tools/release/fixtures/bash_editor_review.c",
+    "sha256": "641e2fad78fe585a984da79c513cab27a0bbcaddf18ad066f6214929b5e9b145",
+    "license": "AGPL-3.0-only"
+  },
+  "runner": {
+    "path": "tools/release/fixtures/bash_editor_journey.py",
+    "sha256": "113966640ea9e7ebf5eef84e5569fe3025b749f29071d297f884448f1f787334"
+  },
+  "native_binary": {
+    "sha256": "ae4ff2ce5a4cbfa5e4b9e4e151a8d0b4d36500492cbe86a2234c59ac99f68ca9",
+    "installed_bash_sha256": "379c1bfc53d08815975c647ad7da5d19d8e8a8566ce8097c50231c8b116e5e7b",
+    "bash_version": "GNU bash, version 5.3.9(1)-release (x86_64-redhat-linux-gnu)",
+    "compiler": "cc (GCC) 16.2.1 20260819 (Red Hat 16.2.1-2)",
+    "flags": [
+      "-shared",
+      "-fPIC",
+      "-O2",
+      "-Wall",
+      "-Wextra",
+      "-Werror"
+    ]
+  },
+  "header_packages": [
+    {
+      "file": "bash-devel-5.3.9-3.fc44.x86_64.rpm",
+      "bytes": 94870,
+      "sha256": "4fab3521ad5d6c5077637ec0ab695b8b94a207a50c5396c257df7ec8860a3e48",
+      "metadata": "bash-devel|5.3.9-3.fc44|x86_64|GPL-3.0-or-later",
+      "signature": "existing RPM trust verified"
+    },
+    {
+      "file": "readline-devel-8.3-4.fc44.x86_64.rpm",
+      "bytes": 224520,
+      "sha256": "8783653bdac9bedefaec2aa89fffd6923a73d83df70453336ecc08df10b29491",
+      "metadata": "readline-devel|8.3-4.fc44|x86_64|GPL-3.0-or-later AND GPL-2.0-or-later AND GFDL-1.3-no-invariants-or-later",
+      "signature": "existing RPM trust verified"
+    }
+  ],
+  "bash_source_package": {
+    "file": "bash-5.3.9-3.fc44.src.rpm",
+    "bytes": 11490419,
+    "sha256": "ea554d34d216233b55006303bf845d7806294576a01910954889d3b6b42b495e",
+    "signature": "existing RPM trust verified"
+  },
+  "primary_sources": [
+    "https://src.fedoraproject.org/rpms/bash",
+    "https://ftp.gnu.org/gnu/bash/bash-5.3.tar.gz",
+    "https://www.gnu.org/software/bash/manual/bash.html"
+  ],
+  "qualification": {
+    "status": "passed",
+    "checks": [
+      "startup read -e protected input unavailable",
+      "actual isolated Bash editor with controlling PTY available",
+      "Unicode insertion and real Readline Undo",
+      "native Unicode selection replacement and selection restoration",
+      "net-zero typing invalidates original lease",
+      "newline and escape cannot be inserted",
+      "duplicate old lease does not reapply",
+      "read -e protected input unavailable and next prompt renewed",
+      "silent read yields no editor response and fences prior lease",
+      "editor capability closes on arbitrary child exec"
+    ],
+    "isolated_network": true,
+    "user_home_bound": false,
+    "microphone_bound": false,
+    "production_terminal_integration": false,
+    "module_sha256": "ae4ff2ce5a4cbfa5e4b9e4e151a8d0b4d36500492cbe86a2234c59ac99f68ca9",
+    "runner_sha256": "113966640ea9e7ebf5eef84e5569fe3025b749f29071d297f884448f1f787334",
+    "installed_bash_sha256": "379c1bfc53d08815975c647ad7da5d19d8e8a8566ce8097c50231c8b116e5e7b",
+    "bash_version": "GNU bash, version 5.3.9(1)-release (x86_64-redhat-linux-gnu)"
+  },
+  "additional_check": "Python -O rejected before launching native fixture; no receipt created",
+  "privacy_regression": {
+    "failure": "The assertion requiring UNAVAILABLE at an actual startup read-e prompt failed. Source inspection showed that the top-level executing flag remained zero during startup builtin input.",
+    "fix": "Require no active builtin execution as well as no top-level command execution. Both actual startup and normal read-e refuse surrounding text.",
+    "failed_private_log": "dictation-bash-editor-startup-private-r2.log",
+    "passing_private_log": "dictation-bash-editor-journey-r11.log"
+  },
+  "prior_failed_reviews": [
+    "Installed Bubblewrap does not implement preserve-fds; unsupported-option invocation failed before Bash launch.",
+    "Idle event hook failed to consume actual typed input; replaced by the supported input-function hook, without patching Bash.",
+    "Hook installation before Readline initialization did not preserve input setup; actual Bash initialization now precedes hook capture.",
+    "Whitespace-scanning request header stripped leading text space; exact newline delimiter preserves payload.",
+    "Setting a Readline mark alone is not an active selection; the fixture uses the native exchange-point-and-mark command. No assertion was weakened."
+  ],
+  "isolation": {
+    "mounts": "System /usr read-only; exact module and synthetic rc read-only; private proc/dev/tmp; no personal home, microphone, display or clipboard",
+    "network": "unshared namespace",
+    "controlling_pty": true,
+    "editor_transport": "owned unnamed Unix SOCK_SEQPACKET pair, no ambient listener",
+    "child_fd": "actual child exec confirmed capability FD closed",
+    "receipt": "exclusive new file; never overwrite earlier run",
+    "cleanup": "owned child group and PTY/socket descriptors collected in finally; no compositor spawned"
+  },
+  "not_run": [
+    "ush managed producer launch and authenticated FD return",
+    "OS participant-private editable resource and shared IME/action route",
+    "Compositor focus/actor guards",
+    "Queryable idempotent receipts and uncertain delivery",
+    "System Undo and Redo through actual semantic actions",
+    "Remote/embedded/standalone Terminal surfaces",
+    "TUI transitions and malicious/malformed protocol corpus",
+    "Older device, Arm, accessibility and live microphone journeys"
+  ],
+  "not_provided": [
+    "Finite lease expiry",
+    "Authenticated producer identity",
+    "Stable versioned production protocol",
+    "Complete signal/unload lifecycle",
+    "Production install, catalogue activation or host-shell permission"
+  ],
+  "production_terminal_integration": false,
+  "no_persistent_access_or_package_install": true
+}

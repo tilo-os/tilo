@@ -341,6 +341,8 @@ fn spawn_relay(gate: &std::path::Path, port: u16) {
               return an error to"
 )]
 pub fn run_sandbox_exec(args: &[String]) -> ! {
+    // Bubblewrap's set-up is done once this runs inside the sandbox.
+    let entered = tilo_startup_metrics::handoff_entry("sandbox-entered");
     let parsed = match ShimArgs::parse(args) {
         Ok(p) => p,
         Err(e) => {
@@ -385,7 +387,7 @@ pub fn run_sandbox_exec(args: &[String]) -> ! {
         std::process::exit(126);
     }
 
-    exec_real_command(&parsed.command)
+    exec_real_command(&parsed.command, entered.as_deref())
 }
 
 #[allow(
@@ -394,7 +396,7 @@ pub fn run_sandbox_exec(args: &[String]) -> ! {
               command or terminate the process. There is no caller to \
               return an error to"
 )]
-fn exec_real_command(command: &[String]) -> ! {
+fn exec_real_command(command: &[String], entered: Option<&str>) -> ! {
     let Some(program) = command.first() else {
         eprintln!("tilo-sandbox-exec: empty command");
         std::process::exit(2);
@@ -422,7 +424,7 @@ fn exec_real_command(command: &[String]) -> ! {
         .chain(std::iter::once(std::ptr::null()))
         .collect();
 
-    let environment = mesa_environment();
+    let environment = exec_environment(entered);
     let env_ptrs: Option<Vec<*const libc::c_char>> = environment.as_ref().map(|env| {
         env.iter()
             .map(|value| value.as_ptr())
@@ -444,8 +446,49 @@ fn exec_real_command(command: &[String]) -> ! {
     std::process::exit(2);
 }
 
-fn mesa_environment() -> Option<Vec<CString>> {
+type Environment = std::collections::BTreeMap<std::ffi::OsString, std::ffi::OsString>;
+
+/// The app's environment when the shim changes it (the Mesa seed, the startup
+/// marks); `None` passes this process's own on unchanged.
+fn exec_environment(entered: Option<&str>) -> Option<Vec<CString>> {
     use std::os::unix::ffi::OsStrExt as _;
+    let mesa = mesa_environment();
+    let marks = std::env::var(tilo_startup_metrics::LAUNCHER_MARKS_ENV).ok();
+    if mesa.is_none() && marks.is_none() {
+        return None;
+    }
+    let mut env = mesa.unwrap_or_else(|| std::env::vars_os().collect());
+    if let Some(marks) = marks {
+        // The launcher asked for startup timing: say when the sandbox began
+        // and when it hands over, so the app can tell bubblewrap, this shim
+        // and its own loader apart.
+        env.insert(
+            tilo_startup_metrics::LAUNCHER_MARKS_ENV.into(),
+            with_shim_marks(marks, entered).into(),
+        );
+    }
+    env.into_iter()
+        .map(|(key, value)| {
+            let mut entry = key.as_bytes().to_vec();
+            entry.push(b'=');
+            entry.extend_from_slice(value.as_bytes());
+            CString::new(entry)
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .ok()
+}
+
+/// `marks` with the shim's `entered` mark and an exec mark for now appended.
+fn with_shim_marks(mut marks: String, entered: Option<&str>) -> String {
+    let exec = tilo_startup_metrics::handoff_entry("sandbox-exec");
+    for entry in [entered, exec.as_deref()].into_iter().flatten() {
+        marks.push(',');
+        marks.push_str(entry);
+    }
+    marks
+}
+
+fn mesa_environment() -> Option<Environment> {
     if std::env::var_os(crate::mesa_seed::CONSUME_ENV).as_deref() != Some(std::ffi::OsStr::new("1"))
     {
         return None;
@@ -459,8 +502,7 @@ fn mesa_environment() -> Option<Vec<CString>> {
         }
         return None;
     }
-    let mut env: std::collections::BTreeMap<std::ffi::OsString, std::ffi::OsString> =
-        std::env::vars_os().collect();
+    let mut env: Environment = std::env::vars_os().collect();
     for name in [
         "MESA_DISK_CACHE_SINGLE_FILE",
         "MESA_DISK_CACHE_MULTI_FILE",
@@ -477,18 +519,8 @@ fn mesa_environment() -> Option<Vec<CString>> {
     ] {
         env.insert(name.into(), value.into());
     }
-    let result = env
-        .into_iter()
-        .map(|(key, value)| {
-            let mut entry = key.as_bytes().to_vec();
-            entry.push(b'=');
-            entry.extend_from_slice(value.as_bytes());
-            CString::new(entry)
-        })
-        .collect::<Result<Vec<_>, _>>()
-        .ok()?;
     eprintln!("tilo-sandbox-exec: validated read-only Mesa seed in private bounded cache");
-    Some(result)
+    Some(env)
 }
 
 #[cfg(test)]
@@ -496,6 +528,29 @@ mod tests {
     use super::*;
     use crate::landlock::FS_ABI;
     use landlock::CompatLevel;
+
+    #[test]
+    fn the_shim_hands_the_app_its_entry_and_exec_marks() {
+        let marks = with_shim_marks(
+            "launcher-start@1,sandbox-argv-ready@2".into(),
+            Some("sandbox-entered@3"),
+        );
+        let names: Vec<_> = marks
+            .split(',')
+            .map(|entry| entry.split_once('@').unwrap().0)
+            .collect();
+        assert_eq!(
+            names,
+            [
+                "launcher-start",
+                "sandbox-argv-ready",
+                "sandbox-entered",
+                "sandbox-exec"
+            ]
+        );
+        let exec: u128 = marks.rsplit_once('@').unwrap().1.parse().unwrap();
+        assert!(exec >= 3);
+    }
 
     #[test]
     fn shim_command_line_parses_strictly() {

@@ -46,6 +46,12 @@ pub(crate) struct TabMenuLayer {
 }
 
 impl TabMenuLayer {
+    /// Every pixel the menu painted in its last draw, in the coordinates it
+    /// was drawn in; nothing while it is closed.
+    pub(crate) fn painted_bounds(&self, theme: &ui::theme::Theme) -> Vec<Rect> {
+        self.menu.painted_bounds(theme)
+    }
+
     /// Open for `target`, a tab in a group of `tab_count`, at the pointer.
     pub(crate) fn open(
         &mut self,

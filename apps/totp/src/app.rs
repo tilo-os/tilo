@@ -4,7 +4,7 @@
 //! The document holds account metadata (names, order and lifecycle
 //! collaborate without credentials entering history); this device's secret
 //! store holds each account's seed ([`Seeds`]). The surface joins the two into
-//! the accounts it shows and submits every metadata change as a [`TotpAction`]
+//! the accounts it shows and submits every metadata change as a field edit or verb
 //! through the framework's dispatcher. The window's header row, with its
 //! search and add buttons, belongs to the framework's navigation shell around
 //! this widget (see [`crate::resource`]); this widget paints what stands under
@@ -12,7 +12,7 @@
 //!
 //!  * the [`AccountList`] (main screen), with a banner above it when a
 //!    secret could not be saved on this device,
-//!  * a toast for what just happened,
+//!  * a [`Notice`] for what just happened, which the shell shows as a toast,
 //!  * the [`AddAccountPanel`] sheet (second screen), in the window's top layer.
 //!
 //! The list is painted from the root rect rather than through the taffy tree:
@@ -30,25 +30,25 @@ use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, KeyEvent, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use ui::a11y::{AccessNode, AccessState, Action as A11yAction, Politeness, Role};
+use ui::a11y::{AccessNode, AccessState, Action as A11yAction, Role};
 use ui::framework::Dispatcher;
 use ui::paint::PaintCtx;
-use ui::permissions::PermissionContext;
 use ui::portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
 use ui::presence::PresenceCtx;
 use ui::secrets::SecretStore;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind, paint_transient};
+use ui::widget::toast::ToastKind;
 use ui::widget::{Banner, BannerContent, BannerKind, TaffyTreeExt, Widget};
 
-use crate::actions::TotpAction;
 use crate::add_panel::{AddAccountPanel, AddPanelEvent};
 use crate::list::{AccountList, ListEvent};
-use crate::model::{Account, AccountId, Vault};
+use crate::model::{Account, AccountId, StoredAccount, Vault};
 use crate::resource::{Totp, TotpEffect};
 use crate::secrets::Seeds;
 use crate::totp;
+use ui::framework::Submit;
+use ui::tilo_resource::Edit;
 
 /// Seconds into a thirty-second period at which a capture shows its codes: the
 /// rings are about two thirds full.
@@ -57,8 +57,13 @@ const CAPTURE_ELAPSED: u64 = 11;
 /// few, when the rings turn to their warning tone.
 const CAPTURE_EXPIRING_ELAPSED: u64 = 27;
 
-/// How long a toast stays on screen.
-const TOAST_TTL: Duration = Duration::from_millis(1800);
+/// What the window's toast should do next, for the shell around the
+/// surface.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum Notice {
+    Show(String, ToastKind),
+    Clear,
+}
 
 fn qr_image_request() -> PickRequest {
     PickRequest::open("Choose a QR image", "Open")
@@ -110,7 +115,8 @@ pub struct AuthenticatorApp {
 
     last_mouse: Point,
     selected: Option<AccountId>,
-    toast: Option<(String, Instant, ToastKind)>,
+    /// Where the surface raises its notices; the shell shows them.
+    notice: ui::LocalState<Option<Notice>>,
     /// The exact code string most recently written to the clipboard by a copy
     /// action. Lets callers (and tests) observe what was copied without
     /// round-tripping the system clipboard, which is unavailable headless.
@@ -170,7 +176,7 @@ impl AuthenticatorApp {
             structure_dirty: false,
             last_mouse: Point::ZERO,
             selected: None,
-            toast: None,
+            notice: ui::LocalState::new(None),
             last_copied: None,
             pending_delete: None,
             list_dirty: false,
@@ -199,6 +205,13 @@ impl AuthenticatorApp {
         self
     }
 
+    /// Raise notices through `signal`, for the shell's toast.
+    #[must_use]
+    pub(crate) fn with_notice_signal(mut self, signal: ui::LocalState<Option<Notice>>) -> Self {
+        self.notice = signal;
+        self
+    }
+
     /// Edit through `dispatch`, with the seeds in `store`. A view that is not
     /// `live` (a past version, a screenshot) never writes or forgets one.
     pub(crate) fn attach_framework(
@@ -212,10 +225,10 @@ impl AuthenticatorApp {
     }
 
     /// Submit one account change through the framework: checked, applied,
-    /// undoable and replicated like the same action from the palette.
-    fn apply(&self, action: &TotpAction) {
+    /// undoable and replicated like the same edit or verb from the palette.
+    fn submit(&self, submit: impl Submit<Totp>) {
         if let Some(dispatch) = &self.dispatch {
-            dispatch.apply(action);
+            dispatch.submit(submit);
         }
     }
 
@@ -277,7 +290,7 @@ impl AuthenticatorApp {
         // A durable, actionable banner supersedes the transient toast. Keeping
         // both is noisy and obscures the account list, especially on narrow
         // windows.
-        self.toast = None;
+        self.notice.set(Some(Notice::Clear));
     }
 
     /// Try this device's secret store again, as the person asked.
@@ -319,8 +332,8 @@ impl AuthenticatorApp {
         }
     }
 
-    fn toast(&mut self, msg: impl Into<String>, kind: ToastKind) {
-        self.toast = Some((msg.into(), ui::time::now(), kind));
+    fn toast(&self, msg: impl Into<String>, kind: ToastKind) {
+        self.notice.set(Some(Notice::Show(msg.into(), kind)));
     }
 
     fn copy_account(&mut self, id: AccountId) {
@@ -425,8 +438,7 @@ impl AuthenticatorApp {
     }
 
     /// Apply one list interaction. Reorder and delete are document mutations,
-    /// submitted as the same [`TotpAction`] the published account actions
-    /// build; copy and select are presentation and never touch the document.
+    /// submitted as the vault's verbs the published accounts offer; copy and select are presentation and never touch the document.
     fn apply_list_event(&mut self, ev: ListEvent) {
         match ev {
             ListEvent::Copy(id) => {
@@ -442,13 +454,13 @@ impl AuthenticatorApp {
                 self.open_for(id);
             }
             ListEvent::Add => self.open_add(),
-            ListEvent::MoveUp(id) => self.apply(&crate::actions::move_up_action(id)),
-            ListEvent::MoveDown(id) => self.apply(&crate::actions::move_down_action(id)),
+            ListEvent::MoveUp(id) => self.submit(Totp::MOVE_UP.with(Totp::item(id))),
+            ListEvent::MoveDown(id) => self.submit(Totp::MOVE_DOWN.with(Totp::item(id))),
             ListEvent::Delete(id) => {
                 // Deleting asks first; the account (and with it this device's
                 // key) goes once the document drops it.
                 self.pending_delete = Some(id);
-                self.apply(&crate::actions::delete_account_action(id));
+                self.submit(Totp::DELETE.with(Totp::item(id)));
             }
         }
     }
@@ -472,7 +484,11 @@ impl AuthenticatorApp {
                     &acc.secret,
                     "The account was added, but its key isn\u{2019}t saved. Keep this window open, restore access, then retry.",
                 );
-                self.apply(&crate::actions::add_account_action(&acc, order));
+                self.submit(Totp::paths().accounts.insert_as(
+                    &Totp::item(id),
+                    usize::MAX,
+                    &StoredAccount::of(&acc),
+                ));
                 self.selected = Some(id);
                 if saved {
                     self.toast("Account added", ToastKind::Success);
@@ -494,11 +510,11 @@ impl AuthenticatorApp {
                         &acc.secret,
                         "The account changed, but its new key isn\u{2019}t saved on this device. Restore access, then retry.",
                     );
-                let edits = crate::actions::edit_actions(&before, &acc);
+                let edits = account_edits(&before, &acc);
                 if let Some(dispatch) = &self.dispatch {
                     dispatch.group(|| {
-                        for edit in &edits {
-                            dispatch.apply(edit);
+                        for edit in edits {
+                            dispatch.submit(edit);
                         }
                     });
                 }
@@ -749,7 +765,6 @@ impl AuthenticatorApp {
     /// holds their keys (all but the first for "provision" and
     /// "missing-secret"). Never called in a live window.
     pub(crate) fn stage_scenario(&mut self, scenario: Option<&str>) {
-        self.toast = None;
         self.stage_clock(scenario);
         match scenario {
             Some("add") => self.seed_open_add(),
@@ -770,10 +785,6 @@ impl AuthenticatorApp {
                     self.list.set_selected(self.selected);
                     self.list.stage_hover(1, true);
                     self.copy_account(id);
-                    // A capture is not on the toast's clock: it stays up.
-                    if let Some((_, shown, _)) = &mut self.toast {
-                        *shown = ui::time::now() + Duration::from_secs(60 * 60);
-                    }
                 }
             }
             _ => {}
@@ -785,7 +796,7 @@ impl AuthenticatorApp {
     pub(crate) fn perform_effect(&mut self, effect: TotpEffect) -> Result<(), String> {
         match effect {
             TotpEffect::AddAccount => self.open_add(),
-            TotpEffect::Open { account } => {
+            TotpEffect::OpenAccount { account } => {
                 let id = self.known_account(&account)?;
                 self.reveal(id);
             }
@@ -888,30 +899,6 @@ impl AuthenticatorApp {
             self.last_mouse,
         );
     }
-
-    fn draw_toast(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-    ) {
-        let Some((msg, when, kind)) = &self.toast else {
-            return;
-        };
-        if ui::widget::toast::transient_expired(*when, TOAST_TTL) {
-            return;
-        }
-        paint_transient(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            self.rect,
-            ToastAnchor::BottomCenter,
-            &ToastCard::new(msg, *kind),
-        );
-    }
 }
 
 /// The banner's retry button.
@@ -997,19 +984,12 @@ impl Widget for AuthenticatorApp {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        let x0 = origin.x + f64::from(layout.location.x);
-        let y0 = origin.y + f64::from(layout.location.y);
-        self.rect = Rect::new(
-            x0,
-            y0,
-            x0 + f64::from(layout.size.width),
-            y0 + f64::from(layout.size.height),
-        );
-        self.add_panel.set_window_height(layout.size.height);
+        self.rect = ui::widget::layout_rect(taffy, node, origin);
+        self.add_panel
+            .set_window_height(taffy.layout(node).map_or(0.0, |layout| layout.size.height));
         let layers = taffy.children(node).unwrap_or_default();
         if let (Some(sheet), Some(layer)) = (self.add_panel.widget_mut(), layers.first()) {
-            sheet.apply_layout(taffy, *layer, Point::new(x0, y0));
+            sheet.apply_layout(taffy, *layer, self.rect.origin());
         }
     }
 
@@ -1026,20 +1006,6 @@ impl Widget for AuthenticatorApp {
         self.place(&mut ctx);
         self.paint_banner(&mut ctx);
         self.list.draw(&mut ctx);
-        self.draw_toast(scene, transform, text_renderer, theme);
-    }
-
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        _permissions: &PermissionContext,
-    ) {
-        // Root rect is the whole pane — always paint.
-        self.draw(scene, transform, text_renderer, theme, presence);
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
@@ -1096,8 +1062,7 @@ impl Widget for AuthenticatorApp {
         }
 
         // Route to the list (hover / click-to-copy / reorder / scroll).
-        self.list
-            .handle_event(event, ctx.scale_factor, &mut *ctx.handled);
+        self.list.handle_event(event, ctx);
         let events = self.list.take_events();
         for ev in events {
             self.apply_list_event(ev);
@@ -1257,15 +1222,6 @@ impl Widget for AuthenticatorApp {
                 .with_bounds(self.rect)
                 .with_children(account_rows),
         );
-        if let Some((message, when, _)) = &self.toast
-            && when.elapsed() <= TOAST_TTL
-        {
-            children.push(
-                AccessNode::new(Role::StaticText)
-                    .with_name(message)
-                    .with_live(Politeness::Polite),
-            );
-        }
         Some(
             AccessNode::new(Role::Group)
                 .with_name("Authenticator")
@@ -1291,24 +1247,56 @@ impl Widget for AuthenticatorApp {
     /// one-second deadline instead, so the app remains current without a vsync
     /// loop.
     fn needs_animation_frame(&self) -> bool {
-        !self.reduce_motion
+        !self.reduce_motion || self.list.needs_animation_frame()
     }
 
     fn next_wake_deadline(&self) -> Option<Instant> {
         if !self.reduce_motion {
             return None;
         }
-        let now = ui::time::wall()
-            .duration_since(ui::time::UNIX_EPOCH)
-            .unwrap_or_default();
-        let until_next_second =
-            Duration::from_nanos(1_000_000_000_u64.saturating_sub(u64::from(now.subsec_nanos())));
-        Some(ui::time::now() + until_next_second)
+        let subsec_nanos = ui::time::unix_now_ns() % 1_000_000_000;
+        let until_next_second = Duration::from_nanos(1_000_000_000 - subsec_nanos);
+        let tick = ui::time::now() + until_next_second;
+        Some(
+            self.list
+                .next_wake_deadline()
+                .map_or(tick, |fade| fade.min(tick)),
+        )
+    }
+
+    fn wants_pointer_capture(&self) -> bool {
+        self.list.is_dragging()
     }
 
     fn set_motion_reduced(&mut self, reduced: bool) {
         self.reduce_motion = reduced;
     }
+}
+
+/// The field edits that turn `before` into `after`: identity, colour and
+/// code parameters, each at its path.
+fn account_edits(before: &Account, after: &Account) -> Vec<Edit<Totp>> {
+    let account = Totp::paths().accounts.item(&Totp::item(after.id));
+    let mut edits = Vec::new();
+    if before.issuer != after.issuer {
+        edits.push(account.issuer.replace(after.issuer.clone()));
+    }
+    if before.label != after.label {
+        edits.push(account.label.replace(after.label.clone()));
+    }
+    if before.color != after.color {
+        edits.push(account.color.set(after.color));
+    }
+    if before.algorithm != after.algorithm {
+        edits.push(account.algorithm.set(after.algorithm));
+    }
+    if before.digits != after.digits {
+        edits.push(account.digits.set(after.digits));
+    }
+    if before.period != after.period {
+        edits.push(account.period.set(after.period));
+    }
+    edits
 }
 
 #[cfg(test)]
@@ -1318,6 +1306,7 @@ mod tests {
     use crate::model::demo_accounts;
     use crate::resource::{Totp, TotpEffect};
     use crate::test_events::{named_press, no_mods};
+    use ui::a11y::Politeness;
     use ui::headless::Framed;
 
     /// The surface over the demo accounts, every seed on this device, as the
@@ -1411,10 +1400,9 @@ mod tests {
             app.apply_list_event(ListEvent::Copy(id));
             let after = totp::current_code(&acc);
             assert_eq!(app.selected, Some(id), "the copied row becomes selected");
-            let (msg, _, kind) = app
-                .toast
-                .clone()
-                .expect("copying shows a confirmation toast");
+            let Some(Notice::Show(msg, kind)) = app.notice.with(Clone::clone) else {
+                panic!("copying shows a confirmation toast");
+            };
             assert!(msg.starts_with("Copied"), "toast confirms the copy: {msg}");
             assert_eq!(kind, ToastKind::Success);
             // The copied string is the account's live TOTP code. It equals the
@@ -1445,7 +1433,9 @@ mod tests {
                 copied == before || copied == after,
                 "Enter copies the account's live TOTP code ({copied:?} vs {before:?}/{after:?})"
             );
-            let (msg, _, kind) = app.toast.clone().expect("Enter shows a copy toast");
+            let Some(Notice::Show(msg, kind)) = app.notice.with(Clone::clone) else {
+                panic!("Enter shows a copy toast");
+            };
             assert!(msg.starts_with("Copied"), "toast confirms the copy: {msg}");
             assert_eq!(kind, ToastKind::Success);
         }
@@ -1456,7 +1446,10 @@ mod tests {
             let id = app.vault.ordered()[0].id;
             app.apply_list_event(ListEvent::Copy(id));
             assert!(app.last_copied().is_none(), "no secret, no code");
-            assert_eq!(app.toast.as_ref().map(|t| t.2), Some(ToastKind::Error));
+            assert!(matches!(
+                app.notice.with(Clone::clone),
+                Some(Notice::Show(_, ToastKind::Error))
+            ));
         }
     }
 
@@ -1605,7 +1598,7 @@ mod tests {
         use ui::search::SearchProvider as _;
         use ui::tilo_resource::Resource as _;
         let mut app = hosted((1000, 800), None);
-        let count = app.state().len();
+        let count = app.state().list().len();
         let entries = Totp::search(&app.state());
         let provider = ui::framework::testing::search_source::<Totp>(entries);
         let matches = provider.search_page(&ui::search::SearchQuery::new("github"), None, 100, 100);
@@ -1659,7 +1652,7 @@ mod tests {
             Some("github")
         );
         assert_eq!(
-            app.state().len(),
+            app.state().list().len(),
             count,
             "system search does not filter or rewrite the shared vault"
         );
@@ -1679,7 +1672,7 @@ mod tests {
         let mut framed = Framed::new(state, app, (390, 720), Theme::dark());
         let (app, state) = Framed::split(&mut framed);
         assert!(
-            app.toast.is_none(),
+            app.notice.with(|notice| notice == &Some(Notice::Clear)),
             "durable banner replaces duplicate toast"
         );
         assert!(app.retry_rect.x0 >= app.rect.x0 && app.retry_rect.x1 <= app.rect.x1);

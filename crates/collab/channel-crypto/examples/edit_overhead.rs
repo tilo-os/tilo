@@ -56,7 +56,7 @@ fn main() {
         artifact,
         author,
         collab_types::AttestationId::default(),
-        collab_types::OpClass::Splice,
+        collab_types::OpKind::Change,
         std::time::SystemTime::UNIX_EPOCH,
         1,
     );
@@ -68,7 +68,7 @@ fn main() {
         artifact,
         author,
         collab_types::AttestationId::default(),
-        collab_types::OpClass::Splice,
+        collab_types::OpKind::Change,
         std::time::SystemTime::UNIX_EPOCH,
         1,
         metadata,

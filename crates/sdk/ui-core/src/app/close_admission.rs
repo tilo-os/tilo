@@ -26,7 +26,7 @@ impl App {
         self.actions.action_palette = None;
         self.bindings.clear();
         self.layout.node_map.clear();
-        self.layout.structure_dirty = true;
+        self.layout.request_rebuild();
         self.layout.layout_dirty = true;
     }
     /// Refusal keeps every live owner and wake scope available for editing.
@@ -343,9 +343,7 @@ impl App {
                     .insert(BrokerReply::Update(id), request_id);
                 self.collaboration.manager.send(
                     crate::collaboration::CollabRequest::RemoteAction {
-                        message: tilo_actions::remote::RemoteActionMessage::Observe {
-                            invocation: id,
-                        },
+                        message: tilo_actions::remote::RemoteActionMessage::observe(id),
                     },
                 );
             }
@@ -382,6 +380,7 @@ impl App {
                         let _ = self.dispatch_node(node, |widget, doc, path| {
                             widget.perform_action(
                                 &crate::a11y::Action::Activate,
+                                &[],
                                 &mut crate::widget::Edits::lend(doc),
                                 path,
                             )

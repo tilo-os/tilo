@@ -24,12 +24,12 @@ impl GovernedRoom {
         }
         let now = SystemTime::now();
         peer.check_document_read(device, app, record, now).ok()?;
-        let (role, caps, person) = peer.permissions(device, now).ok()?;
+        let standing = peer.permissions(device, now).ok()?.standing();
+        let sandbox = peer.governed_sandbox().ok()?;
         Some(ViewReadPolicy {
             room: self.room().to_owned(),
-            role,
-            caps,
-            person,
+            standing,
+            sandbox,
             unix_time: now.duration_since(SystemTime::UNIX_EPOCH).ok()?.as_secs(),
         })
     }

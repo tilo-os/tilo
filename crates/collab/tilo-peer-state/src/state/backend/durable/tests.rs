@@ -3,6 +3,7 @@ use crate::NeighbourMsg;
 use crate::TransportOrigin;
 use automerge::AutoCommit;
 use automerge::ROOT;
+use collab_types::CommitNamed as _;
 
 fn limits() -> OuterLimits {
     OuterLimits {
@@ -113,13 +114,13 @@ fn retained_durable_keeps_real_pending_input_after_the_original_is_dropped() {
     let mut doc = AutoCommit::load(&source.document("test.app", "tab:1").unwrap()).unwrap();
     let heads = doc.get_heads();
     doc.put(ROOT, "retained-predecessor", true).unwrap();
-    doc.commit();
+    doc.commit_edit("fixture", "retained-predecessor");
     source
         .publish_incremental("test.app", "tab:1", doc.save_after(&heads), &member, now)
         .unwrap();
     let heads = doc.get_heads();
     doc.put(ROOT, "retained-descendant", true).unwrap();
-    doc.commit();
+    doc.commit_edit("fixture", "retained-descendant");
     let descendant = source
         .publish_incremental("test.app", "tab:1", doc.save_after(&heads), &member, now)
         .unwrap();

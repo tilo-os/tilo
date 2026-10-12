@@ -4,6 +4,7 @@
 
 use std::collections::HashMap;
 
+use ui::advanced::{Affine, NodeId, Scene, TaffyTree};
 use ui::prelude::*;
 use ui::taffy::style_helpers::{length, percent};
 use ui::taffy::{Size as TaffySize, Style};
@@ -11,6 +12,7 @@ use ui::theme::ThemeDocument;
 use ui::tokens::PresenceHue;
 use ui::vello::kurbo::RoundedRect;
 use ui::vello::peniko::{BlendMode, Fill};
+use ui::widget::TaffyTreeExt;
 
 /// What a [`ThemePreview`] shows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -89,22 +91,11 @@ impl Widget for ThemePreview {
             flex_shrink: 0.0,
             ..Style::default()
         };
-        let Ok(node) = taffy.new_leaf(style) else {
-            return NodeId::from(0_u64);
-        };
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::from_origin_size(
-            (
-                origin.x + f64::from(layout.location.x),
-                origin.y + f64::from(layout.location.y),
-            ),
-            (f64::from(layout.size.width), f64::from(layout.size.height)),
-        );
+        self.rect = ui::widget::layout_rect(taffy, node, origin);
     }
 
     fn draw(

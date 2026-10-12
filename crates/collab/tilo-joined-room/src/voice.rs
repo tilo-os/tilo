@@ -28,8 +28,8 @@ use parking_lot::Mutex;
 use tilo_desktop_model::RoomId;
 use tilo_moq::client::{Client, ClientAuthority, Connection, ConnectionScope};
 use tilo_moq::relay::Direction;
-use tilo_relay::coedit::{RelayCoeditSession, VoiceEvent};
 use tilo_relay_protocol::voice::{CallOperation, Directions, PARTICIPATION_TTL, VoiceGrant};
+use tilo_relay_session::coedit::{RelayCoeditSession, VoiceEvent};
 
 use crate::{NativeCommittedView, NativeFenceSubscription, NativeWorkspaceOwner};
 

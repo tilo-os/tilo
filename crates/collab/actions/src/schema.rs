@@ -6,14 +6,11 @@
 //! snapshot: that would churn the publication revision on every caret move
 //! and would hide operations that another participant could use.
 //!
-//! Instead an app publishes its
-//! [`ResourceProvider::catalogue_schema`](crate::ResourceProvider::catalogue_schema):
-//! stable addresses whose
+//! Instead an app publishes its catalogue schema: stable addresses whose
 //! context-dependent preconditions are declared as flags
 //! ([`ContextRequirement`], carried in [`ActionContract::tags`]). At invoke
-//! time the host rebuilds the invoker's own tree
-//! ([`ResourceProvider::resources_for`](crate::ResourceProvider::resources_for));
-//! an operation whose precondition is not met there is refused with
+//! time the host rebuilds the invoker's own tree; an operation whose
+//! precondition is not met there is refused with
 //! [`ContextRequirement::refusal`].
 //!
 //! [`catalogue_schema`] reduces a surveyed catalogue to entries keyed by
@@ -192,14 +189,9 @@ pub fn catalogue_schema_bytes(entries: &[CatalogueSchemaEntry]) -> Vec<u8> {
 }
 
 #[cfg(test)]
-#[allow(
-    deprecated,
-    reason = "tests pin ResourceProvider behaviour while the trait stays re-exported"
-)]
 mod tests {
     use super::*;
-    use crate::{EncodedAction, Resource, ResourceProvider, door};
-    use automerge::AutoCommit;
+    use crate::{EncodedAction, Resource, door};
 
     fn encoded(tag: &str) -> EncodedAction {
         EncodedAction {
@@ -252,37 +244,33 @@ mod tests {
         vec![root]
     }
 
-    impl ResourceProvider for TwoViews {
-        fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
-            tree(&self.own.0, self.own.1, false)
-        }
-        fn resources_for(
-            &self,
-            participant: Option<&crate::ParticipantId>,
-            doc: &AutoCommit,
-        ) -> Vec<Resource> {
+    impl TwoViews {
+        /// The tree `participant` sees; `None` is the local window's.
+        fn resources_for(&self, participant: Option<&crate::ParticipantId>) -> Vec<Resource> {
             let Some(participant) = participant else {
-                return self.resources(doc);
+                return tree(&self.own.0, self.own.1, false);
             };
             self.views
                 .get(participant.as_str())
                 .map_or_else(Vec::new, |(caret, selected)| tree(caret, *selected, false))
         }
-        fn catalogue_schema(&self, _doc: &AutoCommit) -> Vec<Resource> {
-            let mut schema = tree("", false, true);
-            // The schema's go-to lives on the caret resource kind.
-            schema.push(
-                Resource::new("doc.caret", "fixture.caret", "Caret").with_action(
-                    ActionSpec::immediate_encoded(
-                        "go-to",
-                        "Go to",
-                        ExecutionLocus::ClientLocal,
-                        encoded(""),
-                    ),
+    }
+
+    /// The participant-independent schema every view publishes.
+    fn schema_tree() -> Vec<Resource> {
+        let mut schema = tree("", false, true);
+        // The schema's go-to lives on the caret resource kind.
+        schema.push(
+            Resource::new("doc.caret", "fixture.caret", "Caret").with_action(
+                ActionSpec::immediate_encoded(
+                    "go-to",
+                    "Go to",
+                    ExecutionLocus::ClientLocal,
+                    encoded(""),
                 ),
-            );
-            schema
-        }
+            ),
+        );
+        schema
     }
 
     fn provider(agent_caret: &str, agent_selected: bool) -> TwoViews {
@@ -321,31 +309,23 @@ mod tests {
 
     #[test]
     fn schema_is_stable_across_caret_moves_and_selection() {
-        let doc = AutoCommit::new();
         let before = provider("b1", false);
         let after = provider("b7", true);
         let participant = crate::ParticipantId::new("agent-task:t").unwrap();
         // The participant's own trees differ (caret-derived ids, selection).
         assert_ne!(
-            door::survey(&before.resources_for(Some(&participant), &doc)).len(),
-            door::survey(&after.resources_for(Some(&participant), &doc)).len()
+            door::survey(&before.resources_for(Some(&participant))).len(),
+            door::survey(&after.resources_for(Some(&participant))).len()
         );
-        // The published schema does not.
-        let schema_before = catalogue_schema(&door::survey(&before.catalogue_schema(&doc)));
-        let schema_after = catalogue_schema(&door::survey(&after.catalogue_schema(&doc)));
-        assert_eq!(schema_before, schema_after);
-        assert_eq!(
-            catalogue_schema_bytes(&schema_before),
-            catalogue_schema_bytes(&schema_after)
-        );
+        let schema = catalogue_schema(&door::survey(&schema_tree()));
         // Every operation a participant can reach has an entry in the schema,
         // whatever its caret: grants checked against the schema cover it.
         for provider in [&before, &after] {
-            for entry in catalogue_schema(&door::survey(
-                &provider.resources_for(Some(&participant), &doc),
-            )) {
+            for entry in
+                catalogue_schema(&door::survey(&provider.resources_for(Some(&participant))))
+            {
                 assert!(
-                    schema_before
+                    schema
                         .iter()
                         .any(|schema| schema.resource_kind == entry.resource_kind
                             && schema.action == entry.action
@@ -360,7 +340,6 @@ mod tests {
 
     #[test]
     fn schema_ignores_volatile_ids_labels_and_order() {
-        let doc = AutoCommit::new();
         let a = door::survey(&tree("b1", false, false));
         let mut b = door::survey(&tree("b99", false, false));
         b.reverse();
@@ -368,17 +347,15 @@ mod tests {
             descriptor.resource_label = "Renamed".into();
         }
         assert_eq!(catalogue_schema(&a), catalogue_schema(&b));
-        let _ = doc;
     }
 
     #[test]
     fn resolution_is_per_invoker() {
-        let doc = AutoCommit::new();
         let provider = provider("b7", true);
         let agent = crate::ParticipantId::new("agent-task:t").unwrap();
         let address = door::ActionAddress::new("doc", "type-text");
-        let agent_tree = provider.resources_for(Some(&agent), &doc);
-        let own_tree = provider.resources_for(None, &doc);
+        let agent_tree = provider.resources_for(Some(&agent));
+        let own_tree = provider.resources_for(None);
         assert_eq!(
             door::encode(&agent_tree, &address, None).unwrap().payload,
             b"type@b7".to_vec()
@@ -392,20 +369,8 @@ mod tests {
         let bold = door::ActionAddress::new("doc", "toggle-mark");
         assert!(door::resolve(&agent_tree, &bold).is_some());
         assert!(door::resolve(&own_tree, &bold).is_none());
-        // resource_for rebuilds the invoker's tree, not the default one.
-        assert_eq!(
-            provider
-                .resource_for(Some(&agent), &doc, "doc.caret:b7")
-                .map(|resource| resource.id.as_str().to_owned()),
-            Some("doc.caret:b7".into())
-        );
-        assert!(
-            provider
-                .resource_for(Some(&agent), &doc, "doc.caret:b1")
-                .is_none()
-        );
         // An unknown participant gets no tree at all, not the default view.
         let stranger = crate::ParticipantId::new("agent-task:other").unwrap();
-        assert!(provider.resources_for(Some(&stranger), &doc).is_empty());
+        assert!(provider.resources_for(Some(&stranger)).is_empty());
     }
 }

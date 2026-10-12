@@ -16,7 +16,6 @@ use crate::categories::{Category, Section};
 /// The id of the navigation list, for tests and inspection.
 pub const NAV_ID: &str = "settings.nav";
 pub const SIDEBAR_WIDTH: f64 = ui::tokens::Metrics::BASE.sidebar_width as f64;
-pub const SHELL_FIELD_INSET: f32 = ui::tokens::Spacing::BASE.s3;
 pub fn width_for_text_scale(scale: f32) -> f64 {
     SIDEBAR_WIDTH * f64::from(scale.clamp(0.5, 4.0))
 }

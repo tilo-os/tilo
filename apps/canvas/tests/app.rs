@@ -7,7 +7,7 @@
 )]
 
 use canvas::actions::NewStroke;
-use canvas::{App, ArtworkResource};
+use canvas::{App, Artwork};
 use serde_json::json;
 use ui::prelude::{TestApp, tilo_resource::ActionRef};
 
@@ -30,8 +30,12 @@ fn stroke(colour: &str) -> NewStroke {
 #[test]
 fn painting_is_undoable_and_viewers_cannot_paint() {
     let mut app = TestApp::<App>::new().expect("the app opens");
-    app.invoke(ArtworkResource::PAINT.with((None, vec![stroke("#204080")])))
-        .expect("paint");
+    app.invoke(Artwork::PAINT.with(canvas::actions::Paint {
+        layer: None,
+        strokes: vec![stroke("#204080")],
+        group: None,
+    }))
+    .expect("paint");
     assert_eq!(app.state().marks.len(), 1);
     assert!(app.undo(), "the passage is one undo step");
     assert!(app.state().marks.is_empty());
@@ -39,14 +43,18 @@ fn painting_is_undoable_and_viewers_cannot_paint() {
     let mut viewer = TestApp::<App>::with_role(ui::Role::Viewer).expect("the app opens");
     assert!(
         viewer
-            .invoke(ArtworkResource::PAINT.with((None, vec![stroke("#204080")])))
+            .invoke(Artwork::PAINT.with(canvas::actions::Paint {
+                layer: None,
+                strokes: vec![stroke("#204080")],
+                group: None
+            }))
             .is_err()
     );
     assert!(
         viewer
-            .effect(&canvas::resource::ViewOp::Look(
-                canvas::resource::Look::default()
-            ))
+            .effect(&canvas::resource::ViewOp::Look {
+                look: canvas::resource::Look::default()
+            })
             .is_ok(),
         "a viewer may look"
     );
@@ -58,10 +66,12 @@ fn painting_is_undoable_and_viewers_cannot_paint() {
 #[test]
 fn look_and_inspect_answer_through_the_host_door() {
     let mut app = TestApp::<App>::new().expect("the app opens");
-    let look = canvas::resource::ViewOp::Look(canvas::resource::Look {
-        size: Some(256),
-        ..Default::default()
-    });
+    let look = canvas::resource::ViewOp::Look {
+        look: canvas::resource::Look {
+            size: Some(256),
+            ..Default::default()
+        },
+    };
     let before = app.effect(&look).expect("a look finishes as a job");
     let value = before.value.clone().unwrap();
     assert_eq!(value["width"], 256, "{value}");
@@ -75,8 +85,12 @@ fn look_and_inspect_answer_through_the_host_door() {
     let jpeg = app.content().read(hash).expect("readable");
     assert!(jpeg.starts_with(&[0xff, 0xd8, 0xff]));
 
-    app.invoke(ArtworkResource::PAINT.with((None, vec![stroke("pigment:ultramarine")])))
-        .expect("paint");
+    app.invoke(Artwork::PAINT.with(canvas::actions::Paint {
+        layer: None,
+        strokes: vec![stroke("pigment:ultramarine")],
+        group: None,
+    }))
+    .expect("paint");
     let after = app.effect(&look).unwrap();
     assert_ne!(
         after.value.unwrap()["revision"],
@@ -84,7 +98,7 @@ fn look_and_inspect_answer_through_the_host_door() {
         "a new revision after painting"
     );
 
-    let inspect: ActionRef<ArtworkResource, ()> = ActionRef::new("inspect", &[]);
+    let inspect: ActionRef<Artwork, ()> = ActionRef::new("inspect", &[]);
     let listed = app
         .operate(inspect.invoke())
         .unwrap()
@@ -106,10 +120,13 @@ fn inspect_lists_the_newest_marks_within_a_limit() {
             ..stroke("#204080")
         })
         .collect();
-    app.invoke(ArtworkResource::PAINT.with((None, strokes)))
-        .expect("paint");
-    let inspect: ActionRef<ArtworkResource, (String, u32)> =
-        ActionRef::new("inspect", &["layer", "limit"]);
+    app.invoke(Artwork::PAINT.with(canvas::actions::Paint {
+        layer: None,
+        strokes,
+        group: None,
+    }))
+    .expect("paint");
+    let inspect: ActionRef<Artwork, (String, u32)> = ActionRef::new("inspect", &["layer", "limit"]);
     let listed = app
         .operate(inspect.with(("layer-1".into(), 2)))
         .unwrap()
@@ -160,7 +177,7 @@ fn inspect_lists_the_newest_marks_within_a_limit() {
 fn render_shows_the_whole_app_through_the_host_door() {
     let mut app = TestApp::<App>::new().expect("the app opens");
     app.harness().set_theme(ui::Theme::light());
-    let render: ActionRef<ArtworkResource, ()> = ActionRef::new("render", &[]);
+    let render: ActionRef<Artwork, ()> = ActionRef::new("render", &[]);
     let output = app
         .operate(render.invoke())
         .unwrap()
@@ -193,9 +210,9 @@ fn dragging_a_selection_handle_resizes_about_the_opposite_corner() {
     use canvas::actions::NewMark;
     use canvas::model::Shape;
     let mut app = TestApp::<App>::new().expect("the app opens");
-    app.invoke(ArtworkResource::DRAW.with((
-        None,
-        vec![NewMark {
+    app.invoke(Artwork::DRAW.with(canvas::actions::Draw {
+        layer: None,
+        marks: vec![NewMark {
             id: Some("box".into()),
             fill: Some("#336699".into()),
             ..NewMark::new(Shape::Rect {
@@ -206,7 +223,7 @@ fn dragging_a_selection_handle_resizes_about_the_opposite_corner() {
                 radius: 0.0,
             })
         }],
-    )))
+    }))
     .expect("draw");
     let targets = app.harness().targets();
     // V picks the select tool on the focused canvas.
@@ -258,14 +275,22 @@ fn the_native_app_contract_is_certified() {
 #[test]
 fn an_earlier_version_chosen_in_the_history_is_restored() {
     let mut app = TestApp::<App>::new().expect("the app opens");
-    app.invoke(ArtworkResource::PAINT.with((None, vec![stroke("#204080")])))
-        .expect("paint");
+    app.invoke(Artwork::PAINT.with(canvas::actions::Paint {
+        layer: None,
+        strokes: vec![stroke("#204080")],
+        group: None,
+    }))
+    .expect("paint");
     let second = NewStroke {
         id: Some("second".into()),
         ..stroke("#802040")
     };
-    app.invoke(ArtworkResource::PAINT.with((None, vec![second])))
-        .expect("paint");
+    app.invoke(Artwork::PAINT.with(canvas::actions::Paint {
+        layer: None,
+        strokes: vec![second],
+        group: None,
+    }))
+    .expect("paint");
     assert_eq!(app.state().marks.len(), 2);
 
     // The dock's third tab is history, after Layers and Objects.

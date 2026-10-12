@@ -1,6 +1,6 @@
 # Continuity and protocol interoperability
 
-Status: 2026-10-06. This inventory distinguishes code present in the repository
+Status: 2026-10-08. This inventory distinguishes code present in the repository
 from interoperability observed on physical devices. A simulator passing is not
 a claim that every receiver or phone works.
 
@@ -117,7 +117,7 @@ separates automated fixtures from physical-device observations.
 | Nearby transfer between certified Tilo devices | Files resources/actions and opaque connection/workspace-bound handles; approved source/destination descriptors; explicit receive consent; immutable file/folder staging; chunk transport, checkpoint hashes, collision-safe install, cancel/retry and policy teardown | Confirmed local decline of recovered partials; fresh-consent retry rebinding for an unchanged exact-source object | No further missing general-transfer code established in this assessment; additional gaps must come from the remaining journey checks. | Two-Iroh-endpoint resumed-byte fixture plus store/broker tests; physical paired-device disconnect/reconnect, grant revocation and large-file/folder journeys remain unobserved. |
 | Shared clipboard | Same-identity fabric snapshots, bounded shared history, sensitive-content exclusion, imported provenance and policy withdrawal; explicit history activation rather than remote writes replacing the live selection | Real-Iroh root-certified session fixture: runtime export/import, explicit activation, secret/primary exclusion, no imported re-export, and observed wrong-root frame rejection; no new clipboard engine | No established missing code for the current history-sharing contract. Apple Universal Clipboard interoperability is a separate, unimplemented adapter. | The paired fixture drives the compositor selection store and fabric pump, not two running Wayland clients. Physical copy → semantic activation → application paste and policy withdrawal remain unobserved. |
 | Resume work | Private continuity checkpoints, structural/generic app contracts and app-specific metadata; continuation suggestion/accept/dismiss; resource-position launch and preserved local focus | Real-Iroh same-root request/checkpoint fixture with exact Browser metadata, preserved local focus, semantic suggestion acceptance and real launcher consumption; no new app resume implementation | No established missing general transport code. App-specific semantic fidelity must be assessed against each app's declared contract; Music owns playback state. | The paired fixture verifies late-session catch-up, semantic acceptance and launcher staging. Two live compositor/app processes, durable restart and app-specific restored position remain to validate. |
-| AirPlay/Cast projection | Compositor-owned capture, receiver discovery/selection, existing encrypted AirPlay helper and PIN/password input, Cast/FCast control and disconnect | Explicit credential isolation/redaction with reject/retry/ready/disconnect subprocess regression | No second Cast/Spotify controller. Opt-in AirPlay receiver mode would be new code, outside the existing sender journey. | FCast socket and discovery fixtures exist; AirPlay helper regression uses a substitute child process. A native Cast TLS/HLS journey is recorded below; receiver authentication, decoded display output and physical receivers remain unqualified. The cached image encrypted AirPlay run failed the optional codec prerequisite. |
+| AirPlay/Cast projection | Compositor-owned capture, receiver discovery/selection, existing encrypted AirPlay helper and PIN/password input, Cast/FCast control and disconnect | Explicit credential isolation/redaction with reject/retry/ready/disconnect subprocess regression; required same-connection Cast DeviceAuth before control or media | No second Cast/Spotify controller. Opt-in AirPlay receiver mode would be new code, outside the existing sender journey. | FCast socket and discovery fixtures exist; AirPlay helper regression uses a substitute child process. The production Cast rejection journey proves the authentication gate; synthetic private-authority fixtures qualify successful verification. Manufacturer-authenticated hardware, selected compositor capture and decoded display output remain unqualified. The cached image encrypted AirPlay run failed the optional codec prerequisite. |
 | AirDrop interoperability | No release-enabled AirDrop feature or AWDL lifecycle | Debug-only Files action through its authenticated broker lane; immutable sealed staging, independently entered certificate pin on a compositor-owned consent sheet, scoped status/cancel and supervised helper; real TLS broker fixtures and pinned OpenDrop production receiver wire oracle | AWDL discovery/interface lifecycle; physical receiver verification method; per-chunk progress; secure optional receiving. Release availability remains false. | Nine mandatory OpenDrop wire/staging tests; native broker trust/revocation/rotation/cancellation and Files semantic-action fixtures. Six composed live compositor/signed Files/pinned OpenDrop journeys now observe consent, exact bytes, wrong pin, cancellation, decline/retry, certificate rotation and fresh-consent recovery. Physical Apple/AWDL interoperability remains unobserved; no Contacts Only credentials or network changes are attempted. |
 
 Acceptance for the retry slice: immutable peer/name/kind/size/hash must match;
@@ -145,6 +145,45 @@ inspectable failure through the existing semantic control surface. Negotiate a
 separate versioned adapter protocol when needed; never append variants to a
 stable postcard relay enum. Discovery, pairing, capture consent and filesystem
 consent are separate decisions with explicit revocation and expiry.
+
+### Receiver and source prerequisites for the next acceptance run
+
+The existing test endpoints are disposable loopback receivers, not identified
+physical devices. `cast-session-proof.py` binds `127.0.0.1` on an ephemeral port
+and supplies a DeviceAuth error to the production projector. Run its default
+mode to witness challenge-first rejection, no readiness/control/media URL, and
+clean disconnect. The legacy transport mode cannot qualify the current
+manufacturer-authenticated sender. A successful Cast run needs an explicitly
+selected receiver whose certificate proof and current signed revocation data
+satisfy the production verifier; synthetic test authorities are not a production
+receiver option.
+
+`airdrop-transfer-proof.py` starts the pinned OpenDrop wire receiver on loopback
+and drives signed Files through the native headless compositor. Its exact-byte,
+wrong-pin, cancellation, decline/retry and certificate-rotation witnesses remain
+separate from physical Apple/AWDL acceptance. It requires matching prebuilt Files,
+runtime and host binaries plus the pinned external receiver dependencies; it
+must not configure network interfaces or use an unattended receiver.
+
+The image contains `/usr/libexec/tilo-doubletake-test-receiver`, used by
+`os/tests/airplay-encrypted-session.sh` with synthetic sender input and an explicit
+fixture PIN. Its bounded phases are codec round trip, pairing/setup, encrypted
+media and teardown. The complete optional codec candidate still has no qualified
+image-trusted signature: sign-only run 73209 failed at STS credential acquisition
+before KMS public-key retrieval. No key mismatch was established. Signing,
+publication and device activation remain held; neither an unsigned candidate nor
+an independently upstream-authenticated loader diagnostic closes this gate.
+
+A selected-source journey additionally requires an attended, unlocked source
+session, its existing workspace and app publication, a functioning renderer, and
+explicit compositor-owned capture selection. Verify the semantic action is
+published and inspect the selected resource before connecting. Observe receiver
+output and teardown separately; transport counters alone cannot prove pixels.
+Coordinate device-specific workspace and renderer prerequisites with their
+owners before using a physical endpoint. No authorized physical receiver is
+recorded in this assessment, so device discovery or an old address cannot
+substitute for that prerequisite. This acceptance work changes no enrollment,
+persistent access grant, display configuration or playback controller.
 
 ### AirDrop wire adapter and lab prerequisites
 

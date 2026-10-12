@@ -3,7 +3,6 @@
 
 use crate::framework_support::{add_note, body, notes, open, surface, with_note};
 use notes::NotesEffect;
-use notes::actions::page_resource_id;
 use ui::portal::PortalOutcome;
 
 const IMAGE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/settings.png"));
@@ -22,12 +21,11 @@ fn a_chosen_markdown_file_becomes_a_shown_note() {
     let mut app = notes();
 
     recorder.respond_to_pick(PortalOutcome::Opened(file));
-    app.effect(&NotesEffect::ImportMarkdown).unwrap();
+    app.effect(&NotesEffect::ImportMarkdownFile).unwrap();
     app.settle();
 
     assert_eq!(recorder.pick_requests()[0].title(), "Import Markdown");
-    let page = app
-        .state()
+    let page = crate::framework_support::shown(&app)
         .pages()
         .iter()
         .find(|page| page.title == "Project brief")
@@ -36,7 +34,7 @@ fn a_chosen_markdown_file_becomes_a_shown_note() {
     assert_eq!(body(&app, page), ["Scope", "Fast"]);
     assert_eq!(shown(&mut app), Some(page), "and the note is shown");
     assert!(app.undo(), "the import is one undo step");
-    assert!(app.state().pages().is_empty());
+    assert!(crate::framework_support::shown(&app).pages().is_empty());
 }
 
 #[test]
@@ -47,7 +45,7 @@ fn a_cancelled_or_unreadable_choice_adds_no_note() {
     let oversized = dir.path().join("oversized.md");
     std::fs::write(
         &oversized,
-        "a".repeat(notes::actions::MAX_MARKDOWN_IMPORT_BYTES + 1),
+        "a".repeat(notes::notebook::MAX_MARKDOWN_IMPORT_BYTES + 1),
     )
     .unwrap();
     let (services, recorder) = ui::host::HostServices::recording();
@@ -55,18 +53,18 @@ fn a_cancelled_or_unreadable_choice_adds_no_note() {
     let mut app = notes();
 
     recorder.respond_to_pick(PortalOutcome::Cancelled);
-    app.effect(&NotesEffect::ImportMarkdown)
+    app.effect(&NotesEffect::ImportMarkdownFile)
         .expect("a cancelled choice is no failure");
     for file in [binary, oversized] {
         recorder.respond_to_pick(PortalOutcome::Opened(file.clone()));
         assert!(
-            app.effect(&NotesEffect::ImportMarkdown).is_err(),
+            app.effect(&NotesEffect::ImportMarkdownFile).is_err(),
             "{} is refused",
             file.display()
         );
     }
     app.settle();
-    assert!(app.state().pages().is_empty());
+    assert!(crate::framework_support::shown(&app).pages().is_empty());
 }
 
 #[test]
@@ -81,14 +79,17 @@ fn an_inserted_image_leaves_and_returns_inside_its_exported_note() {
     let asset = format!("asset:{}", blake3::hash(IMAGE).to_hex());
 
     recorder.respond_to_pick(PortalOutcome::Opened(image));
-    app.effect_on(&page_resource_id(page), &NotesEffect::InsertImage { page })
-        .unwrap();
+    app.effect_on(
+        &notes::actions::page_resource_id(page),
+        &NotesEffect::InsertImage { page },
+    )
+    .unwrap();
     app.settle();
     assert_eq!(body(&app, page), ["Intro", &format!("![photo]({asset})")]);
 
     recorder.respond_to_pick(PortalOutcome::Opened(exported.clone()));
     app.effect_on(
-        &page_resource_id(page),
+        &notes::actions::page_resource_id(page),
         &NotesEffect::ExportMarkdown { page },
     )
     .unwrap();
@@ -100,10 +101,9 @@ fn an_inserted_image_leaves_and_returns_inside_its_exported_note() {
     );
 
     recorder.respond_to_pick(PortalOutcome::Opened(exported));
-    app.effect(&NotesEffect::ImportMarkdown).unwrap();
+    app.effect(&NotesEffect::ImportMarkdownFile).unwrap();
     app.settle();
-    let again = app
-        .state()
+    let again = crate::framework_support::shown(&app)
         .pages()
         .iter()
         .find(|note| note.title == "guide")
@@ -135,8 +135,11 @@ fn a_chosen_file_that_is_no_image_is_refused() {
 
     recorder.respond_to_pick(PortalOutcome::Opened(text));
     assert!(
-        app.effect_on(&page_resource_id(page), &NotesEffect::InsertImage { page })
-            .is_err()
+        app.effect_on(
+            &notes::actions::page_resource_id(page),
+            &NotesEffect::InsertImage { page }
+        )
+        .is_err()
     );
     assert_eq!(body(&app, page), ["Intro"]);
 }
@@ -147,14 +150,17 @@ fn copying_a_note_link_copies_its_current_title() {
     let _host = ui::host::enter(&services);
     let (mut app, page) = with_note("Welcome", "Hello");
 
-    app.effect_on(&page_resource_id(page), &NotesEffect::CopyLink { page })
-        .unwrap();
+    app.effect_on(
+        &notes::actions::page_resource_id(page),
+        &NotesEffect::CopyLink { page },
+    )
+    .unwrap();
     assert_eq!(ui::clipboard_paste().as_deref(), Some("[[Welcome]]"));
 
     let gone = notes::PageId::new_v4();
     assert!(
         app.effect_on(
-            &page_resource_id(gone),
+            &notes::actions::page_resource_id(gone),
             &NotesEffect::CopyLink { page: gone }
         )
         .is_err(),
@@ -213,8 +219,7 @@ fn markdown_text_an_agent_hands_over_becomes_a_shown_note() {
     })
     .unwrap();
     app.settle();
-    let page = app
-        .state()
+    let page = crate::framework_support::shown(&app)
         .pages()
         .iter()
         .find(|page| page.title == "Plan")
@@ -222,4 +227,50 @@ fn markdown_text_an_agent_hands_over_becomes_a_shown_note() {
         .expect("the text became a note");
     assert_eq!(body(&app, page), ["Ship it"], "its title is not repeated");
     assert_eq!(shown(&mut app), Some(page));
+}
+
+/// What acts on one note is offered on that note, and opening a note or a
+/// tag on the item too; the notebook keeps only what is not about one note.
+#[test]
+fn a_notes_own_effects_are_offered_on_the_note() {
+    let (mut app, page) = with_note("Guide", "Intro");
+    let surface = app.agent_surface();
+    let rows = surface.as_array().unwrap();
+    let on = |resource: &str, action: &str| {
+        rows.iter()
+            .any(|row| row["resource"] == resource && row["action"] == action)
+    };
+    let note = notes::actions::page_resource_id(page);
+    for effect in [
+        "copy-link",
+        "export-markdown",
+        "insert-image",
+        "open-note",
+        "reveal-block-range",
+    ] {
+        assert!(on(&note, effect), "`{effect}` is on the note: {surface}");
+    }
+    for effect in [
+        "copy-link",
+        "export-markdown",
+        "insert-image",
+        "reveal-block-range",
+    ] {
+        assert!(
+            !on("notes.notebook", effect),
+            "`{effect}` is the note's, not the notebook's"
+        );
+    }
+    let opened = app
+        .agent_surface()
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["resource"] == note.as_str() && row["action"] == "open-note")
+        .map(|row| row["params"].clone())
+        .unwrap();
+    assert!(
+        !opened.to_string().contains("\"page\""),
+        "the note is bound, not asked: {opened}"
+    );
 }

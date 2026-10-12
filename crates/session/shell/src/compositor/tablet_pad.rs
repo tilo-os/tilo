@@ -819,9 +819,7 @@ pub fn dial_events(
             reason = "a handful of steps per event is exact in f32"
         )]
         PadDialAction::Scroll => vec![BackendEvent::Input(WindowEvent::MouseWheel {
-            // SAFETY: winit's device id is an opaque token with no
-            // invariants; the input adapters use the same inert zero value.
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             delta: MouseScrollDelta::LineDelta(0.0, steps as f32),
             phase: TouchPhase::Moved,
         })],

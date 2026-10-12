@@ -44,20 +44,14 @@
 #![cfg_attr(
     test,
     allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
         clippy::string_slice,
-        clippy::panic,
         clippy::unreachable,
         reason = "in a test these are the assertion, not a hazard"
     )
 )]
 
-pub mod actions;
 pub mod add_panel;
 pub mod app;
-pub mod doc;
 pub mod i18n;
 pub mod list;
 pub mod model;
@@ -76,5 +70,5 @@ pub use resource::{Totp, TotpEffect, TotpShell};
 
 /// The app as every host mounts it.
 pub fn definition() -> &'static ui::application::ApplicationDefinition {
-    ui::framework::definition::<TotpShell>()
+    ui::built_in_definition!(TotpShell)
 }

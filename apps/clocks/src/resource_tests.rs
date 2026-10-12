@@ -363,3 +363,86 @@ fn every_scenario_stages_its_scene_through_actions_and_view_state() {
     assert_eq!(ClocksShell::shot_viewport(Some("world-narrow")), (520, 820));
     assert_eq!(ClocksShell::shot_viewport(Some("world")), (1280, 800));
 }
+
+#[test]
+fn names_times_and_days_are_field_edits_held_to_the_invariants() {
+    let mut device = replica();
+    device
+        .apply(Clocks::ADD_ALARM.with(("Wake up".into(), 7, 0, Vec::new())))
+        .unwrap();
+    device
+        .apply(Clocks::ADD_WORLD_CLOCK.with(("Tokyo".into(), "Asia/Tokyo".into())))
+        .unwrap();
+    let state = device.state().unwrap();
+    let alarm = Clocks::paths().alarms.item(&only_id(&state.alarms));
+    let city = Clocks::paths()
+        .world_clocks
+        .item(&only_id(&state.world_clocks));
+    let edit = |device: &mut Replica<Clocks>, edit: &ui::tilo_resource::Edit<Clocks>| {
+        device.apply(Invoke::edit(edit).unwrap()).map(drop)
+    };
+    edit(&mut device, &alarm.hour.set(6)).unwrap();
+    edit(&mut device, &alarm.minute.set(30)).unwrap();
+    edit(&mut device, &alarm.label.replace("Early")).unwrap();
+    edit(&mut device, &city.city.replace("Home")).unwrap();
+    for refused in [
+        alarm.hour.set(24),
+        alarm.minute.set(60),
+        alarm.repeat.set(0x80),
+        alarm.label.replace(" "),
+        alarm.enabled.set(false),
+        city.timezone.set(Atom("Mars/Base".into())),
+    ] {
+        assert!(edit(&mut device, &refused).is_err(), "{refused:?}");
+    }
+    let state = device.state().unwrap();
+    let alarm = state.alarms.values().next().unwrap();
+    assert_eq!(
+        (
+            alarm.label.as_str(),
+            alarm.hour,
+            alarm.minute,
+            alarm.enabled
+        ),
+        ("Early", 6, 30, true)
+    );
+    assert_eq!(state.world_clocks.values().next().unwrap().city, "Home");
+}
+
+#[test]
+fn history_says_what_each_clock_did() {
+    let mut device = replica();
+    device
+        .apply(Clocks::ADD_ALARM.with(("Wake up".into(), 7, 0, Vec::new())))
+        .unwrap();
+    let alarm = only_id(&device.state().unwrap().alarms);
+    device
+        .apply(Invoke::edit(&Clocks::paths().alarms.item(&alarm).hour.set(6)).unwrap())
+        .unwrap();
+    device
+        .apply(Clocks::SET_ALARM_ENABLED.with((alarm, false)))
+        .unwrap();
+    device
+        .apply(Clocks::ADD_TIMER.with(("Tea".into(), 300)))
+        .unwrap();
+    device.apply(Clocks::START_STOPWATCH.invoke()).unwrap();
+    let catalogue = tilo_history::Catalogue::new("en-US", &[include_str!("../locales/en-US.ftl")]);
+    let reader = tilo_history::Reader::new("en-US").with_app(&catalogue);
+    let sentences: Vec<String> = device
+        .versions()
+        .into_iter()
+        .filter_map(|version| version.context)
+        .filter(|entry| entry.what.is_some())
+        .map(|entry| reader.sentence(&entry))
+        .collect();
+    assert_eq!(
+        sentences,
+        [
+            "Added the alarm Wake up",
+            "Set Wake up to ring at 6 o’clock",
+            "Turned off Wake up",
+            "Started the timer Tea",
+            "Started the stopwatch",
+        ]
+    );
+}

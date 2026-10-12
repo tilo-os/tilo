@@ -3,18 +3,12 @@ fn directory_sampled_permission(
     time: std::sync::Arc<std::sync::atomic::AtomicU64>,
     fail: std::sync::Arc<std::sync::atomic::AtomicBool>,
 ) -> crate::permissions::PermissionContext {
-    use crate::permissions::{Actor, CapOverride, PermissionContext, Scope, Subject, Verb};
     let now = time.load(std::sync::atomic::Ordering::Acquire);
-    PermissionContext::from_capabilities(
-        Actor::person(None, "fixture-user"),
-        vec![
-            CapOverride::grant(
-                Subject::person("fixture-user"),
-                Scope::Workspace,
-                Verb::Admin,
-            )
-            .with_expiry(110),
-        ],
+    crate::permissions::PermissionContext::granted(
+        "fixture-user",
+        &crate::permissions::TreePath::root(),
+        crate::permissions::policy::KindSet::ALL,
+        Some(110),
     )
     .at_unix_time(now)
     .with_policy_time_sampler(std::sync::Arc::new(move || {
@@ -54,13 +48,13 @@ fn directory_permission_fresh_sampler_and_seconds_preserve_actual_bound_revision
         fixture
             .app
             .resolve_action_directory(&revision, &alias, "follow-up"),
-        runtime_collab::ActionDirectoryResolution::Found(_)
+        runtime_collab::ActionDirectoryResolution::Found { .. }
     ));
 }
 
 #[test]
 fn directory_permission_retained_clock_expiry_invalidates_actual_bound_revision() {
-    use crate::permissions::{CapOverride, Scope, Subject, Verb};
+    use crate::permissions::{Answer, KindSet, TreePath, policy};
     use std::sync::{
         Arc,
         atomic::{AtomicBool, AtomicU64, Ordering},
@@ -69,16 +63,21 @@ fn directory_permission_retained_clock_expiry_invalidates_actual_bound_revision(
         let time = Arc::new(AtomicU64::new(100));
         let fail = Arc::new(AtomicBool::new(false));
         let mut fixture = ActionFixture::broker();
-        let mut cap = CapOverride::grant(
-            Subject::person("fixture-user"),
-            Scope::App("other".into()),
-            Verb::Write,
-        );
-        if restrict {
-            cap.effect = crate::permissions::Effect::Restrict;
-        }
+        let grant = policy::Grant::new(
+            "other",
+            policy::Subject::person("fixture-user"),
+            TreePath::room(crate::permissions::LOCAL_ROOM).app("other"),
+            KindSet::UNDOABLE,
+            if restrict {
+                Answer::Deny
+            } else {
+                Answer::Allow
+            },
+            policy::Subject::person("owner"),
+        )
+        .with_lifetime(policy::Lifetime::Until(105_000));
         *fixture.permissions.borrow_mut() =
-            directory_sampled_permission(time.clone(), fail).granting(cap.with_expiry(105));
+            directory_sampled_permission(time.clone(), fail).with_grant(grant);
         let revision = capture_bound_directory(&mut fixture);
         time.store(105, Ordering::Release);
         assert_ne!(
@@ -141,28 +140,31 @@ fn directory_permission_clock_failure_refuses_cached_resolution() {
         fixture
             .app
             .resolve_action_directory(&recovered, &alias, "follow-up"),
-        runtime_collab::ActionDirectoryResolution::Found(_)
+        runtime_collab::ActionDirectoryResolution::Found { .. }
     ));
 }
 
 #[test]
 fn directory_permission_actor_and_capability_semantics_invalidate_revision() {
-    use crate::permissions::{Actor, CapOverride, PermissionContext, Scope, Subject, Verb};
+    use crate::permissions::{
+        Access, Actor, CapOverride, PermissionContext, Scope, Standing, Subject,
+    };
     for actor_change in [false, true] {
         let mut fixture = ActionFixture::broker();
         let revision = capture_bound_directory(&mut fixture);
         let old = fixture.permissions.borrow().clone();
         *fixture.permissions.borrow_mut() = if actor_change {
-            PermissionContext::from_capabilities(
-                Actor::person(None, "other-user"),
+            PermissionContext::new(
+                Actor::person("other-user"),
                 old.capabilities().to_vec(),
+                Standing::person(old.standing().policy.clone(), "other-user"),
             )
             .at_unix_time(100)
         } else {
             old.granting(CapOverride::grant(
                 Subject::person("fixture-user"),
-                Scope::App("new".into()),
-                Verb::Read,
+                Scope::FsPath("/new".into()),
+                Access::Read,
             ))
         };
         assert_ne!(fixture.app.action_directory_revision(), revision);
@@ -207,29 +209,31 @@ fn directory_filtered_cache_expired_sole_grant_cannot_republish_old_rows() {
         fixture
             .app
             .resolve_action_directory(&revision, &alias, "follow-up"),
-        runtime_collab::ActionDirectoryResolution::Found(_)
+        runtime_collab::ActionDirectoryResolution::Found { .. }
     ));
 }
 
 #[test]
 fn directory_filtered_cache_expired_restriction_restores_republished_action() {
-    use crate::permissions::{CapOverride, Effect, Scope, Subject, Verb};
+    use crate::permissions::{Answer, KindSet, TreePath, policy};
     use std::sync::{
         Arc,
         atomic::{AtomicBool, AtomicU64, Ordering},
     };
     let time = Arc::new(AtomicU64::new(100));
-    let mut restriction = CapOverride::grant(
-        Subject::person("fixture-user"),
-        Scope::Workspace,
-        Verb::Read,
+    let restriction = policy::Grant::new(
+        "restriction",
+        policy::Subject::person("fixture-user"),
+        TreePath::room(crate::permissions::LOCAL_ROOM),
+        KindSet::ALL,
+        Answer::Deny,
+        policy::Subject::person("owner"),
     )
-    .with_expiry(105);
-    restriction.effect = Effect::Restrict;
+    .with_lifetime(policy::Lifetime::Until(105_000));
     let mut fixture = ActionFixture::broker();
     *fixture.permissions.borrow_mut() =
         directory_sampled_permission(time.clone(), Arc::new(AtomicBool::new(false)))
-            .granting(restriction);
+            .with_grant(restriction);
     let (old, resources) = republish_directory(&mut fixture);
     let alias = fixture
         .app
@@ -250,7 +254,7 @@ fn directory_filtered_cache_expired_restriction_restores_republished_action() {
         fixture
             .app
             .resolve_action_directory(&revision, &alias, "follow-up"),
-        runtime_collab::ActionDirectoryResolution::Found(_)
+        runtime_collab::ActionDirectoryResolution::Found { .. }
     ));
 }
 
@@ -303,31 +307,29 @@ fn hosted_directory_expiry_failure_and_owner_close_never_restore_old_revision() 
             fixture
                 .app
                 .resolve_action_directory(&old, &alias, "follow-up"),
-            runtime_collab::ActionDirectoryResolution::Found(_)
+            runtime_collab::ActionDirectoryResolution::Found { .. }
         ));
     }
 }
 
 #[test]
 fn directory_permission_action_authority_revoke_invalidates_actual_bound_revision() {
-    use crate::permissions::{Actor, PermissionContext, Role};
+    use crate::permissions::{PermissionContext, Role};
     use std::sync::{Arc, Mutex};
     let current = Arc::new(Mutex::new(Some(Role::Owner)));
     let source = current.clone();
     let mut fixture = ActionFixture::broker();
-    *fixture.permissions.borrow_mut() = PermissionContext::from_capabilities(
-        Actor::person(Some(Role::Editor), "fixture-user"),
-        vec![],
-    )
-    .with_action_authority(
-        "so.tilo.binding-probe".into(),
-        Arc::new(move || {
-            Ok(PermissionContext::from_capabilities(
-                Actor::person(*source.lock().unwrap(), "fixture-user"),
-                vec![],
-            ))
-        }),
-    );
+    *fixture.permissions.borrow_mut() =
+        crate::permissions::PermissionContext::member("fixture-user", Role::Editor)
+            .with_action_authority(
+                "so.tilo.binding-probe".into(),
+                Arc::new(move || {
+                    Ok(match *source.lock().unwrap() {
+                        Some(role) => PermissionContext::member("fixture-user", role),
+                        None => PermissionContext::stranger("fixture-user"),
+                    })
+                }),
+            );
     let revision = capture_bound_directory(&mut fixture);
     let alias = fixture
         .app
@@ -339,7 +341,7 @@ fn directory_permission_action_authority_revoke_invalidates_actual_bound_revisio
         fixture
             .app
             .resolve_action_directory(&revision, &alias, "follow-up"),
-        runtime_collab::ActionDirectoryResolution::Found(_)
+        runtime_collab::ActionDirectoryResolution::Found { .. }
     ));
     *current.lock().unwrap() = None;
     assert!(matches!(

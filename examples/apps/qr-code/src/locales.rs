@@ -2,12 +2,18 @@
 // Edit Fluent catalogs under locales/; tilo-app maintains this registry.
 // tilo-app:locale=en-US
 
-const CATALOG_0: &str = include_str!("../locales/en-US.ftl");
+ui::embedded_catalog!(pub static CATALOG, ["en-US"]);
 
-pub const IDS: &[&str] = &["en-US"];
-
-pub fn install() {
-    if let Err(error) = ui::i18n::I18nManager::install_system("en-US", &[("en-US", CATALOG_0)]) {
-        eprintln!("localization catalog: {error}");
-    }
+/// One constant per message of locales/en-US.ftl, for labels and placeholders.
+pub mod keys {
+    use ui::i18n::LabelKey;
+    pub const QR_CLEAR_BUTTON: LabelKey = LabelKey::new("qr-clear-button");
+    pub const QR_CODE_CLEAR: LabelKey = LabelKey::new("qr-code-clear");
+    pub const QR_CODE_CODE_PAYLOAD: LabelKey = LabelKey::new("qr-code-code-payload");
+    pub const QR_EMPTY_MESSAGE: LabelKey = LabelKey::new("qr-empty-message");
+    pub const QR_EMPTY_TITLE: LabelKey = LabelKey::new("qr-empty-title");
+    pub const QR_INPUT_LABEL: LabelKey = LabelKey::new("qr-input-label");
+    pub const QR_INPUT_PLACEHOLDER: LabelKey = LabelKey::new("qr-input-placeholder");
+    pub const QR_OUTPUT_ALT: LabelKey = LabelKey::new("qr-output-alt");
+    pub const QR_TITLE: LabelKey = LabelKey::new("qr-title");
 }
