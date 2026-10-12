@@ -89,7 +89,10 @@ impl ActionRegistry {
             .decoders
             .get(&encoded.type_id)
             .ok_or_else(|| ActionError::UnknownType(encoded.type_id.clone()))?;
-        decoder(&encoded.payload)
+        decoder(&crate::group_form::readable(
+            &encoded.type_id,
+            &encoded.payload,
+        ))
     }
 
     /// Read the large parts of recorded actions from `read` (the device's

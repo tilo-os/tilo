@@ -1379,10 +1379,10 @@ impl InputArea {
             }),
             document: cx.storage().settings_document().clone(),
             osk_always: cx
-                .settings::<crate::prefs::AccessibilityPrefs>()
+                .settings::<crate::accessibility_settings::AccessibilitySettings>()
                 .get()
                 .on_screen_keyboard
-                == crate::prefs::OnScreenKeyboard::Always,
+                == tilo_accessibility_settings::OnScreenKeyboard::Always,
         }
     }
 
