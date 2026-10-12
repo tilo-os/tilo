@@ -170,7 +170,7 @@ def opened_subject(state, window):
             "opened surface resource lifetime changed or is unobservable")
     require(worker.get("package_id") == window["package_id"]
             and type(worker.get("record_instance")) is int
-            and record == f'derived:default@tab:{worker["record_instance"]:016x}',
+            and record == worker.get("certified_checkout", {}).get("record"),
             "current native worker has a foreign record association")
     return tab, record, worker
 
@@ -188,7 +188,7 @@ def install_open(door, fixture, installed_before, out):
     require(verified.get("uid") == vm.slot_uid() and verified.get("files"),
             "canonical installed official runtime audit unavailable")
     (out / "official-runtime.json").write_text(json.dumps(verified, indent=2))
-    opened = door.call("open", {"app": package})
+    opened = door.call("open-app", {"app": package})
     launch = opened.get("launch") if isinstance(opened, dict) else None
     window = launch.get("adopted_window") if isinstance(launch, dict) else None
     require(isinstance(window, dict) and window.get("package_id") == package

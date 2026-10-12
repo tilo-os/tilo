@@ -219,7 +219,8 @@ class InstalledOpen(unittest.TestCase):
             tabs.append({"id": 8, "tile": {"Foreign": {"app_id": "so.tilo.calculator", "surface_id": 100, "adoption_id": "11111111-1111-4111-8111-111111111111"}}})
         state["chrome"] = {"native_window_provenance": {"method": "authenticated-wayland-peer", "omitted": 0,
             "windows": [{"room": "room", "tab_id": 8, "surface_id": 100, "package_id": "so.tilo.calculator",
-                         "adoption_id": "11111111-1111-4111-8111-111111111111", "record_instance": 12, "peer_pid": 222, "peer_start_time_ticks": "999"}] if opened else []}}
+                         "adoption_id": "11111111-1111-4111-8111-111111111111", "record_instance": 12, "peer_pid": 222, "peer_start_time_ticks": "999",
+                         "certified_checkout": {"application": "so.tilo.calculator", "room": "room", "record": "derived:default@tab:000000000000000c"}}] if opened else []}}
         return state
 
     def door(self):
@@ -233,7 +234,7 @@ class InstalledOpen(unittest.TestCase):
         door = Mock(vm=vm, bound=(driver.app.STORE, "room", "record", "resource"))
         door.settled.return_value = {"detail": {"installed": True}}
         def call(operation, *_):
-            if operation == "open":
+            if operation == "open-app":
                 opened.append(True)
                 return {"launch": {"adopted_window": {"package_id": "so.tilo.calculator", "room": "room", "surface_id": 100, "adoption_id": "11111111-1111-4111-8111-111111111111"}}}
         door.call.side_effect = call
@@ -247,7 +248,7 @@ class InstalledOpen(unittest.TestCase):
         self.assertEqual(value["window"], "new")
         self.assertEqual(value["record"], "derived:default@tab:000000000000000c")
         self.assertEqual([call.args[0] for call in door.call.call_args_list],
-                         ["install-imported-package", "open"])
+                         ["install-imported-package", "open-app"])
         self.assertEqual(mapped.call_args.args[1:4], ("calculator", {"signed-file": "sha"}, 1000))
         self.assertEqual(mapped.call_args.kwargs["selected"]["peer_pid"], 222)
         self.assertEqual(value["tab"], ("room", "8", "100"))
@@ -267,7 +268,7 @@ class InstalledOpen(unittest.TestCase):
                 with self.assertRaises(VmError):
                     driver.install_open(door, self.fixture, True, Path(directory))
             self.assertEqual([call.args[0] for call in door.call.call_args_list],
-                             ["install-imported-package", "open"])
+                             ["install-imported-package", "open-app"])
 
     def test_canonical_identity_failure_stops_before_open(self):
         door = self.door()
@@ -320,7 +321,7 @@ class InstalledOpen(unittest.TestCase):
                 patch.object(driver.app, "mapped", side_effect=lambda *_args, **_kwargs: altered.append(True)):
             with self.assertRaisesRegex(VmError, "association changed"):
                 driver.install_open(door, self.fixture, True, Path(directory))
-        self.assertEqual([call.args[0] for call in door.call.call_args_list], ["install-imported-package", "open"])
+        self.assertEqual([call.args[0] for call in door.call.call_args_list], ["install-imported-package", "open-app"])
 
 
 if __name__ == "__main__":

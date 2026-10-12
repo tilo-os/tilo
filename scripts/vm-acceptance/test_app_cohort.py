@@ -28,6 +28,9 @@ def polls(probe, timeout, **kwargs):
     return None
 
 
+ROOM = "room"
+
+
 def state(*tabs):
     return {"workspace_tree": {"local_app_records": {str(tab): {"room": "room",
             "app_id": app.BROWSER, "record_instance": tab + 10} for tab in tabs}, "workspaces": [{"room": "room", "strips": [{
