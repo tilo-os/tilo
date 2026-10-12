@@ -67,26 +67,47 @@ struct Native {
 
 impl Native {
     async fn pending_channel_start(&mut self) {
-        use automerge::{AutoCommit, ObjType, ROOT, ReadDoc, transaction::Transactable};
+        use automerge::AutoCommit;
         const LATE: &str = "late-governor-channel";
         let now = SystemTime::now();
-        let message = self
+        let (message, late) = self
             .owner
             .with_current(self.room, |view| {
                 let mut doc = AutoCommit::load(&view.peer().document(CHAT, "").unwrap()).unwrap();
                 let heads = doc.get_heads();
-                let channels = doc.get(ROOT, "channels").unwrap().unwrap().1;
-                let channel = doc.put_object(&channels, LATE, ObjType::Map).unwrap();
-                doc.put(&channel, "kind", "voice").unwrap();
-                doc.put(&channel, "workspace", "native").unwrap();
-                doc.commit();
-                view.peer().clone().publish_incremental(
-                    CHAT,
-                    "",
-                    doc.save_after(&heads),
-                    &self.identity.device_signing_key,
-                    now,
+                let workspace = chat::projection::read(&doc)
+                    .workspace_rows()
+                    .into_iter()
+                    .next()
+                    .expect("the governed chat has a workspace")
+                    .id;
+                chat::demo::apply_as(
+                    &mut doc,
+                    "fixture",
+                    chat::Chat::CREATE_CHANNEL.with(chat::record::chat::CreateChannel {
+                        workspace: workspace.into(),
+                        name: LATE.into(),
+                        category: None,
+                        kind: Some(chat::model::ChannelKind::Voice),
+                    }),
                 )
+                .unwrap();
+                let late = chat::projection::read(&doc)
+                    .channel_rows()
+                    .into_iter()
+                    .find(|channel| channel.name == LATE)
+                    .expect("the action created the late voice channel")
+                    .id;
+                view.peer()
+                    .clone()
+                    .publish_incremental(
+                        CHAT,
+                        "",
+                        doc.save_after(&heads),
+                        &self.identity.device_signing_key,
+                        now,
+                    )
+                    .map(|message| (message, late))
             })
             .unwrap();
         let NeighbourMsg::AppDocument { envelope, .. } = message else {
@@ -112,7 +133,7 @@ impl Native {
             &Channel {
                 app: CHAT.into(),
                 record: String::new(),
-                channel: LATE.into(),
+                channel: late,
             },
             &self.session,
             |_| Ok(()),
