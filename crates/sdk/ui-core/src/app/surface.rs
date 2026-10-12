@@ -892,6 +892,25 @@ impl App {
         .into_iter()
         .find_map(|(repaint, why)| repaint.then_some(why));
         let drawn = draw_frame_content(self, scene, size.width, size.height, scale_factor, None);
+        // Collaborators' marks over the widgets, for a host that shows the
+        // app as a window of its own does ([`SurfaceDamage::painting_peers`]).
+        let surface_rect = KurboRect::new(0.0, 0.0, f64::from(size.width), f64::from(size.height));
+        let mut peer_layer = damage.peers.take();
+        let peers = peer_layer.as_deref_mut().map(|peers| {
+            let changed = draw_presence_layer(
+                self,
+                &mut peers.layer,
+                drawn.transform,
+                drawn.window_rect,
+                crate::time::now(),
+            );
+            scene.append(peers.layer.scene(), None);
+            PeerFrame {
+                changed,
+                marks: peer_marks(&peers.layer, &mut peers.bounds, surface_rect),
+            }
+        });
+        let marks_unbounded = peers.as_ref().is_some_and(|peers| peers.marks.is_none());
         // A widget whose own damage this draw covers where its box was and is
         // (a block editor that grew by a paragraph) leaves its box to that
         // damage; its children's boxes still count.
@@ -938,7 +957,18 @@ impl App {
         };
         let copying = damage.copying;
         let scale = f64::from(scale_factor);
-        damage.frame(full, &drawn, scale, |regions| {
+        let full = full.or_else(|| {
+            peers
+                .as_ref()
+                .is_some_and(|peers| peers.changed.is_none())
+                .then_some("presence marks")
+        });
+        let plan_scale = (scale, damage.copy_scale);
+        let plan_size = (
+            device_extent(size.width, damage.copy_scale),
+            device_extent(size.height, damage.copy_scale),
+        );
+        damage.frame(full, &drawn, scale, peers.as_ref(), |regions| {
             let root = self.root_widget.as_ref();
             if !copying {
                 collect_submitted_widget_damage(root, regions);
@@ -952,8 +982,9 @@ impl App {
                 return crate::scroll_copy::CopyPlan::default();
             }
             // What is painted over the widgets (a menu, the palette, a
-            // tooltip) does not move with a scroll: the scrollers repaint.
-            if drawn.painted_over {
+            // tooltip, peer marks that cannot be bounded) does not move with
+            // a scroll: the scrollers repaint.
+            if drawn.painted_over || marks_unbounded {
                 regions.extend(moved.into_iter().flatten());
                 regions.extend(offers.iter().map(crate::scroll_copy::ScrollOffer::viewport));
                 return crate::scroll_copy::CopyPlan::default();
@@ -968,13 +999,17 @@ impl App {
                 .history
                 .as_deref()
                 .map(|history| history as &dyn Widget);
-            crate::scroll_copy::plan(
+            crate::scroll_copy::plan_scaled(
                 &offers,
                 &std::iter::once(root).chain(history).collect::<Vec<_>>(),
-                scale,
-                (size.width, size.height),
+                plan_scale,
+                plan_size,
             )
         });
+        if let Some(mut peers) = peer_layer {
+            peers.layer.presented();
+            damage.peers = Some(peers);
+        }
         complete_native_frame_content(self, |_| {});
         search_pending
             || self.needs_sync
@@ -1070,11 +1105,36 @@ fn changed_boxes(
     changed
 }
 
+/// `extent` scene pixels in device pixels at `scale` per scene pixel.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "a surface's extent at a display's scale is a small non-negative pixel count"
+)]
+fn device_extent(extent: u32, scale: f64) -> u32 {
+    (f64::from(extent) * scale).round().max(0.0) as u32
+}
+
+/// The collaborators' layer a surface paints over the widgets as a window
+/// of its own does ([`SurfaceDamage::painting_peers`]).
+#[derive(Default)]
+struct PeerLayer {
+    layer: crate::presence::PresenceLayer,
+    bounds: crate::scene_parts::DrawBounds,
+}
+
+/// What the collaborators' layer did in one frame: its damage against the
+/// frame before (`None` when it cannot be proven), and where it paints, on
+/// screen and now (`None` when that cannot be bounded), in scene pixels.
+struct PeerFrame {
+    changed: Option<Vec<KurboRect>>,
+    marks: Option<crate::presence::LayerMarks>,
+}
+
 /// Where an app's frames on a surface changed since its host last looked
 /// ([`Self::take`]), decided as a window of its own decides what to submit:
 /// the widgets' damage and the tooltip's bounds, unless something no damage
 /// describes changed, which repaints the surface.
-#[derive(Default)]
 pub struct SurfaceDamage {
     /// In the surface's scene coordinates. `None` once a frame since the
     /// last take could not describe its change, and before the first frame.
@@ -1091,9 +1151,31 @@ pub struct SurfaceDamage {
     /// Whether the host copies what a scroll keeps on screen
     /// ([`Self::copying`]).
     copying: bool,
-    /// The copies of the frames since the last take, in the surface's scene
-    /// coordinates, to make before repainting the damage.
+    /// The copies of the frames since the last take, in device pixels at
+    /// [`Self::copy_scale`] per scene pixel, to make before repainting the
+    /// damage.
     copies: Vec<crate::scroll_copy::DeviceCopy>,
+    /// How many pixels of the host's target one pixel of the surface's
+    /// scene is ([`Self::set_copy_scale`]).
+    copy_scale: f64,
+    /// The collaborators' layer, when the surface paints it.
+    peers: Option<Box<PeerLayer>>,
+}
+
+impl Default for SurfaceDamage {
+    fn default() -> Self {
+        Self {
+            pending: None,
+            top_layer_drawn: false,
+            tooltip: None,
+            widgets: None,
+            repainted: None,
+            copying: false,
+            copies: Vec::new(),
+            copy_scale: 1.0,
+            peers: None,
+        }
+    }
 }
 
 impl SurfaceDamage {
@@ -1113,16 +1195,60 @@ impl SurfaceDamage {
         self.copying
     }
 
+    /// Paint collaborators' pointers, names and activity over the widgets,
+    /// as a window of its own does, and damage only the marks that changed;
+    /// a scroll beneath them still copies, repainting the marks where they
+    /// are and where its copy took them. For a host that does not paint
+    /// them itself (an embedded app's host does).
+    #[must_use]
+    pub fn painting_peers(mut self) -> Self {
+        self.peers = Some(Box::default());
+        self
+    }
+
+    /// The host's target has `device_per_unit` pixels per pixel of the
+    /// surface's scene (an app drawn into a desktop's logical scene shown at
+    /// 200 % has 2): copies are planned in those pixels, so a step of half a
+    /// scene pixel there is a whole pixel and copies. The copies
+    /// [`Self::take_copying`] returns are in them.
+    pub fn set_copy_scale(&mut self, device_per_unit: f64) {
+        let scale = if device_per_unit.is_finite() && device_per_unit > 0.0 {
+            device_per_unit
+        } else {
+            1.0
+        };
+        if scale.to_bits() == self.copy_scale.to_bits() {
+            return;
+        }
+        // Copies not yet taken were planned at the old scale: they land as
+        // damage instead.
+        let copies = std::mem::take(&mut self.copies);
+        let unit = self.copy_scale;
+        if let Some(pending) = self.pending.as_mut() {
+            pending.extend(copies.iter().map(|copy| {
+                let to = copy.destination_rect();
+                KurboRect::new(to.x0 / unit, to.y0 / unit, to.x1 / unit, to.y1 / unit)
+            }));
+        }
+        self.copy_scale = scale;
+    }
+
+    /// How many pixels of the host's target one pixel of the surface's
+    /// scene is ([`Self::set_copy_scale`]).
+    pub fn copy_scale(&self) -> f64 {
+        self.copy_scale
+    }
+
     /// Where the frames since the last take changed, or `None` when they
     /// must be repainted whole. A copy is damage here: where it would land.
     pub fn take(&mut self) -> Option<Vec<KurboRect>> {
         let copies = std::mem::take(&mut self.copies);
         let mut pending = self.pending.replace(Vec::new())?;
-        pending.extend(
-            copies
-                .iter()
-                .map(crate::scroll_copy::DeviceCopy::destination_rect),
-        );
+        let unit = self.copy_scale;
+        pending.extend(copies.iter().map(|copy| {
+            let to = copy.destination_rect();
+            KurboRect::new(to.x0 / unit, to.y0 / unit, to.x1 / unit, to.y1 / unit)
+        }));
         Some(pending)
     }
 
@@ -1168,6 +1294,7 @@ impl SurfaceDamage {
         full: Option<&'static str>,
         drawn: &DrawnFrame,
         scale: f64,
+        peers: Option<&PeerFrame>,
         collect: impl FnOnce(&mut Vec<KurboRect>) -> crate::scroll_copy::CopyPlan,
     ) {
         let layer_shown = std::mem::replace(&mut self.top_layer_drawn, drawn.top_layer.is_some());
@@ -1185,20 +1312,48 @@ impl SurfaceDamage {
         };
         let mut regions = Vec::new();
         let planned = collect(&mut regions);
+        // Planned, carried and kept in the host's device pixels; pending in
+        // the scene's.
+        let unit = self.copy_scale;
+        let to_device = Affine::scale(unit);
         let mut changed: Vec<KurboRect> = regions
             .into_iter()
-            .map(|rect| Affine::scale(scale).transform_rect_bbox(rect))
+            .map(|rect| Affine::scale(scale * unit).transform_rect_bbox(rect))
             .collect();
         // The tooltip paints over the widgets: a label that changes in
-        // place has no other damage.
-        changed.extend(tooltip_shown);
-        changed.extend(drawn.tooltip);
+        // place has no other damage. Nor do the collaborators' marks.
+        let peer_changed = peers
+            .and_then(|peers| peers.changed.as_deref())
+            .unwrap_or_default()
+            .iter()
+            .map(|rect| rect.expand().inflate(1.0, 1.0));
+        changed.extend(
+            tooltip_shown
+                .into_iter()
+                .chain(drawn.tooltip)
+                .chain(peer_changed)
+                .map(|rect| to_device.transform_rect_bbox(rect)),
+        );
         changed.extend(planned.damage);
         // A copy reads the pixels the last take left. After another frame
         // since, those are not all there: that frame's damage is repainted
         // only once the host takes, so the copy lands as damage instead.
         if pending.is_empty() && self.copies.is_empty() {
             crate::scroll_copy::carry(&planned.copies, &mut changed);
+            if let Some(marks) = peers.and_then(|peers| peers.marks.as_ref()) {
+                let device = |rects: &[KurboRect]| -> Vec<KurboRect> {
+                    rects
+                        .iter()
+                        .map(|rect| to_device.transform_rect_bbox(*rect))
+                        .collect()
+                };
+                crate::scroll_copy::marks_over_copies(
+                    &planned.copies,
+                    &device(&marks.shown),
+                    &device(&marks.painted),
+                    &mut changed,
+                );
+            }
             changed.extend(planned.exposed);
             self.copies.extend(planned.copies);
         } else {
@@ -1210,7 +1365,12 @@ impl SurfaceDamage {
                     .map(crate::scroll_copy::DeviceCopy::destination_rect),
             );
         }
-        pending.extend(changed);
+        let to_scene = Affine::scale(unit.recip());
+        pending.extend(
+            changed
+                .into_iter()
+                .map(|rect| to_scene.transform_rect_bbox(rect)),
+        );
     }
 }
 

@@ -723,8 +723,11 @@ pub fn draw_peer_cursors(
     painted
 }
 
-/// Room around a pointer's centre that covers its halo, shadow and ring.
-const FADE_DOT_BOUNDS: f64 = 96.0;
+/// Room around a pointer's centre that covers its halo (the widest of what
+/// [`draw_peer_dot`] paints, `RING_R + 3`), shadow and ring, with two
+/// pixels for antialiasing: where the mark repaints when it moves, or when
+/// a scroll copies beneath it.
+const FADE_DOT_BOUNDS: f64 = 2.0 * (RING_R + 3.0 + 2.0);
 /// Room around a pill or tether for its stroke and shadow.
 const FADE_EDGE: f64 = 8.0;
 
