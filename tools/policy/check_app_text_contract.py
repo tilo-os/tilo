@@ -80,7 +80,7 @@ def line_number(text: str, offset: int) -> int:
 
 def audit(root: Path = ROOT) -> tuple[list[Violation], int, int]:
     apps = root / "apps"
-    manifests = sorted(apps.glob("*/Cargo.toml"))
+    manifests = sorted(app.parent / "Cargo.toml" for app in apps.glob("*/tilo-app.toml"))
     violations: list[Violation] = []
     shared_users: set[Path] = set()
 

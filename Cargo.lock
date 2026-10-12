@@ -6917,6 +6917,7 @@ dependencies = [
  "cap-std",
  "crc32fast",
  "hex",
+ "install-profile-model",
  "libc",
  "reqwest 0.13.4",
  "runtime-dylib",
@@ -6932,7 +6933,6 @@ dependencies = [
  "tilo-automerge-fork",
  "tilo-files",
  "tilo-identity-host",
- "tilo-install-profile",
  "tilo-net",
  "tilo-ntfs-protocol",
  "tilo-paths",
@@ -7075,12 +7075,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "install-profile-model"
+version = "0.1.0"
+
+[[package]]
 name = "installer"
 version = "0.1.0"
 dependencies = [
  "block-devices",
  "bounded-command",
  "console-control",
+ "install-profile-model",
  "libc",
  "os-actions",
  "serde",
@@ -7089,7 +7094,6 @@ dependencies = [
  "tempfile",
  "tilo-actions",
  "tilo-automerge-fork",
- "tilo-install-profile",
  "tilo-power-mgmt",
  "tilo-test-env",
  "tilo-ui",
@@ -17111,13 +17115,6 @@ dependencies = [
  "wayland-client",
  "wayland-scanner",
  "wayland-server",
- "workspace-hack",
-]
-
-[[package]]
-name = "tilo-install-profile"
-version = "0.1.0"
-dependencies = [
  "workspace-hack",
 ]
 

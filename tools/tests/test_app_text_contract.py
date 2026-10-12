@@ -21,6 +21,7 @@ class AppTextContractTests(unittest.TestCase):
         app = root / "apps" / "sample"
         (app / "src").mkdir(parents=True)
         (app / "Cargo.toml").write_text(cargo, encoding="utf-8")
+        (app / "tilo-app.toml").write_text("", encoding="utf-8")
         (app / "src" / "lib.rs").write_text(source, encoding="utf-8")
         return root
 

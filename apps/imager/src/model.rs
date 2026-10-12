@@ -732,7 +732,7 @@ impl InstallProfile {
     /// Returns a field-specific message when any transported value would be
     /// rejected by the live installer.
     pub fn validate_media_profile(&self) -> Result<(), String> {
-        use tilo_install_profile as rules;
+        use install_profile_model as rules;
         if !rules::valid_hostname(&self.hostname) {
             return Err(
                 "Hostname must be 1–63 letters, numbers or hyphens, without a hyphen at either end."

@@ -70,7 +70,7 @@ use ui::theme::Theme;
 use ui::tokens::typography::TextRole;
 use ui::widget::{Dropdown, Row, Scrollable, Spacer, Spinner, Text, TextInput, Widget};
 
-use tilo_install_profile::{
+use install_profile_model::{
     FILESYSTEMS, valid_full_name, valid_hostname, valid_locale, valid_timezone_name, valid_username,
 };
 
@@ -2721,7 +2721,9 @@ impl InstallerApp {
             ));
             children.push(Box::new(
                 Dropdown::from_state(
-                    tilo_install_profile::locales().map(str::to_owned).collect(),
+                    install_profile_model::locales()
+                        .map(str::to_owned)
+                        .collect(),
                     &self.locale,
                 )
                 .with_id("installer.locale")

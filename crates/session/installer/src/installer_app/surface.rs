@@ -632,7 +632,7 @@ impl InstallerApp {
                     "Choose language and locale",
                     vec![
                         ActionParam::required("locale", ParamType::Text, "Language and locale")
-                            .with_choices(tilo_install_profile::locales()),
+                            .with_choices(install_profile_model::locales()),
                     ],
                     |args| Operation::SetLocale {
                         locale: args.text("locale").unwrap_or_default().to_owned(),

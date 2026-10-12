@@ -25,7 +25,7 @@ host-media-writer = []
 flatpak-media-writer = ["dep:zbus", "block-devices/udisks"]
 
 [dependencies]
-tilo-install-profile = { path = "../../crates/session/install-profile" }
+install-profile-model = { path = "../install-profile-model" }
 uuid.workspace = true
 base64.workspace = true
 crc32fast.workspace = true

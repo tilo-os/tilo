@@ -321,7 +321,7 @@ mod tests {
         // Phase `ids_are_the_media_profile_keyboards`.
         {
             let ids: Vec<_> = LAYOUTS.iter().map(|l| l.id).collect();
-            assert_eq!(ids, tilo_install_profile::KEYBOARDS);
+            assert_eq!(ids, install_profile_model::KEYBOARDS);
         }
         // Phase `every_layout_has_expected_row_lengths`.
         {

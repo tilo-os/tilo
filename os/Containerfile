@@ -361,7 +361,6 @@ COPY tools/protocols/airdrop_sender.py /build/tools/protocols/airdrop_sender.py
 COPY tools/test-assets-build.rs /build/tools/test-assets-build.rs
 COPY tools/test-assets.py /build/tools/test-assets.py
 COPY tools/font-catalog.py /build/tools/font-catalog.py
-COPY os/usr/share/tilo/installer-locales.txt /build/os/usr/share/tilo/installer-locales.txt
 COPY os/legacy-guest-snapshot.env /build/os/legacy-guest-snapshot.env
 COPY scripts/browser/build-host.py scripts/browser/cef-lock.json /build/scripts/browser/
 COPY \
@@ -1660,7 +1659,7 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
     # glibc language pack so each accepted profile remains functional after first
     # boot; advertising languages backed by only glibc-langpack-en would silently
     # apply an unusable LANG value and fall back to English. Keep this curated set
-    # in lock-step with os/usr/share/tilo/installer-locales.txt rather than pulling
+    # in lock-step with apps/install-profile-model/locales.txt rather than pulling
     # the much larger all-locales archive into every download. libevdev is the
     # runtime library of joycond (see joycond-builder).
     && dnf install -y --setopt=reposdir=/repo \
@@ -2334,7 +2333,7 @@ COPY os/usr/share/xdg-desktop-portal/tilo-portals.conf /usr/share/xdg-desktop-po
 COPY os/etc/systemd/ /etc/systemd/
 COPY os/etc/locale.conf /etc/locale.conf
 COPY os/etc/chrony.conf /etc/chrony.conf
-COPY os/usr/share/tilo/installer-locales.txt /usr/share/tilo/installer-locales.txt
+COPY apps/install-profile-model/locales.txt /usr/share/tilo/installer-locales.txt
 
 # Bundled documentation (the README in the OS submodule, plus the
 # peer-sync transport and diagnostics doc).
