@@ -552,21 +552,6 @@ pub(crate) fn parse_sort_order(token: &str) -> SortOrder {
     }
 }
 
-/// A row the window publishes, as the framework carries it.
-fn live_row(resource: tilo_actions::Resource) -> LiveRow {
-    let mut row = LiveRow::new(resource.id.as_str(), resource.kind.as_str(), resource.label);
-    if let Some(presentation) = resource.presentation {
-        row = row.presentation(presentation);
-    }
-    for action in resource.actions {
-        row = row.operation(action);
-    }
-    for child in resource.children {
-        row = row.row(live_row(child));
-    }
-    row
-}
-
 /// Framework app: the files widget is the surface over [`FileExplorer`].
 pub struct FileExplorerShell;
 
@@ -860,11 +845,14 @@ impl ResourceSurface<FileExplorer, FilesEffect> for FileExplorerWidget {
     /// The listing's entries, remote accounts, nearby transfers and a
     /// failed listing's retry.
     fn live_rows(&self) -> Vec<LiveRow> {
-        self.published_rows().into_iter().map(live_row).collect()
+        self.published_rows()
+            .into_iter()
+            .map(LiveRow::from_resource)
+            .collect()
     }
 
     fn live_row(&self, id: &str) -> Option<LiveRow> {
-        self.published_row(id).map(live_row)
+        self.published_row(id).map(LiveRow::from_resource)
     }
 
     /// Rename, move and trash the entry a row shows, through the queue.

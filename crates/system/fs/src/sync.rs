@@ -427,6 +427,7 @@ pub async fn bind_dormant_endpoint_with_key(
         &endpoint,
         &iroh::endpoint::default_relay_mode().relay_map(),
         tokio::runtime::Handle::current(),
+        None,
     );
     Ok((endpoint, lookup, reachability))
 }

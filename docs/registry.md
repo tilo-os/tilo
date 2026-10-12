@@ -597,10 +597,29 @@ tilo-registry-server sign-delegated-snapshot \
   --valid-for-seconds 86400
 ```
 
-The collector reads a version from its own content-addressed store when it
+The collector selects pending runtime providers before apps within the same
+item bound, so a full page of deferred apps cannot keep its provider beyond the
+cutoff. It reads a version from its own content-addressed store when it
 already holds the bytes the publisher signed, and fetches only new versions.
 A submission it cannot collect completely stays pending and out of the staged
 batch; the others are staged, and the collector exits non-zero listing it.
+
+The signer checks every collected request and package before selecting complete
+requests whose new native versions have exact runtime providers in the resulting
+catalogue. A missing runtime defers that whole request, preserving its pending
+metadata, signatures and referenced package bytes. Independently installable
+requests and runtime providers can still publish. An entirely deferred batch
+reports `status = "deferred"` without signing or approving anything; a partial
+promotion reports its promoted and deferred counts. Signature, authority, byte,
+retention and recovery failures remain errors. The durable promotion journal and
+staged inventory contain only the selected requests, so crash recovery repeats
+the same verified transition. The next collector reconsiders pending requests.
+
+To resolve a deferred request, publish its exact verified runtime or have the
+original publisher replace its signed pending entry through normal publication.
+Publisher reconciliation may retire an unpublished missing-runtime version only
+after four newer offered releases of the same target and channel remain; it does
+not rewrite package identities or remove published rollback history.
 
 The store keeps each staged package once, as the payload blobs and thin form it
 serves for thin installs plus a record of the package root, and rebuilds and

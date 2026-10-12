@@ -378,6 +378,7 @@ pub(super) async fn run(
         identity: identity.clone(),
         endpoint: context.endpoint.clone(),
     };
+    let active_writer = active_reads::enroll_writer(&context, &authority, &receiving_custody).await;
     eprintln!("mounted journey: mounting both original Code roots");
     let mut mounted = vec![
         Mounted::new_observed(
@@ -434,7 +435,7 @@ pub(super) async fn run(
     finish_journey(
         &context,
         &authority,
-        &first,
+        active_writer.as_ref().unwrap_or(&first),
         &receipts.owner,
         &mut refreshes,
         &mut mounted,
@@ -450,6 +451,7 @@ pub(super) async fn run(
     }
     receipts.close().await;
     second.endpoint.close().await;
+    active_reads::close_writer(active_writer).await;
     if matches!(context.journey, Journey::PrivateAdmission) {
         assert!(
             private_routes.iter().all(Option::is_some),
@@ -518,9 +520,26 @@ async fn enroll_second(
     authority: &ActualAuthority,
     receiving_custody: &Arc<Mutex<Option<NativeWorkspaceOwner>>>,
 ) -> Device {
-    let key = ed25519_dalek::SigningKey::from_bytes(&[83; 32]);
+    Box::pin(enroll_device(
+        context,
+        authority,
+        receiving_custody,
+        83,
+        "Second mounted device",
+    ))
+    .await
+}
+
+async fn enroll_device(
+    context: &Context<'_>,
+    authority: &ActualAuthority,
+    receiving_custody: &Arc<Mutex<Option<NativeWorkspaceOwner>>>,
+    key_seed: u8,
+    label: &str,
+) -> Device {
+    let key = ed25519_dalek::SigningKey::from_bytes(&[key_seed; 32]);
     let root = ed25519_dalek::SigningKey::from_bytes(&[0xC2; 32]);
-    let certificate = tilo_joined_room::testing::certificate(&root, &key, "Second mounted device");
+    let certificate = tilo_joined_room::testing::certificate(&root, &key, label);
     let invitation = {
         let mut state = authority.lock().unwrap();
         let state = state.as_mut().unwrap();
@@ -537,7 +556,12 @@ async fn enroll_second(
     };
     let mut tree = crate::shell::state::WorkspaceTree::bootstrap_default();
     let slot = tree.desktop.active;
-    tree.persist_path = Some(context.directory.path().join("second-state.json"));
+    tree.persist_path = Some(
+        context
+            .directory
+            .path()
+            .join(format!("mounted-{key_seed}-state.json")),
+    );
     let owner = crate::shell::native_workspace_owner::open(tree.shared()).unwrap();
     *receiving_custody.lock().unwrap() = Some(owner.clone());
     let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
