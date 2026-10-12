@@ -976,7 +976,7 @@ impl LiveAppActionsProvider {
             self.directory_epoch.fetch_add(1, Ordering::Relaxed);
         }
         let mut ready = Vec::new();
-        let mut expired = false;
+        let mut retry_needed = false;
         let mut spent = Vec::new();
         self.directory_pending.borrow_mut().retain(|key, pending| {
             // The UI may have been idle after the reply arrived. The deadline
@@ -990,6 +990,7 @@ impl LiveAppActionsProvider {
                     false
                 }
                 PendingPoll::Ready(answer) => {
+                    retry_needed = true;
                     // A continuation the app no longer holds (each is
                     // spent once) cannot be asked for again: its chain
                     // starts over from the first page.
@@ -1008,12 +1009,13 @@ impl LiveAppActionsProvider {
                     false
                 }
                 PendingPoll::Abandoned => {
+                    retry_needed = true;
                     tracing::debug!(target: "tilo::listing", peer = key.0, "app directory page abandoned");
                     false
                 }
                 PendingPoll::Waiting if pending.deadline <= now => {
                     tracing::debug!(target: "tilo::listing", peer = key.0, "app directory page expired");
-                    expired = true;
+                    retry_needed = true;
                     false
                 }
                 PendingPoll::Waiting => true,
@@ -1026,9 +1028,10 @@ impl LiveAppActionsProvider {
                     .any(|key| existing.0 == key.0 && existing.1 == key.1 && existing.2 == key.2)
             });
         }
-        if expired || !spent.is_empty() {
-            // An empty projection must not prevent another bounded request
-            // after a stalled directory ticket has been cancelled.
+        if retry_needed {
+            // Refused, stale, abandoned and timed-out tickets are not exhausted
+            // directories. Release the projection so an identical query can
+            // retry, without discarding valid pages or replaying spent cursors.
             self.auxiliary_snapshot.borrow_mut().take();
             self.directory_epoch.fetch_add(1, Ordering::Relaxed);
         }
@@ -3511,6 +3514,66 @@ mod tests {
             provider.resolve(id, context("", &state, &doc)).is_none(),
             "the unchanged query must not retain the pre-edit Undo contract"
         );
+    }
+
+    #[test]
+    fn rejected_directory_ticket_releases_the_retained_empty_projection() {
+        for outcome in ["refused", "stale", "abandoned"] {
+            let provider = LiveAppActionsProvider::new(
+                crate::shell::collab_broker_capnp::CapnpBrokerState::test_broker_with_idle_directory_queue(),
+            );
+            let key: DirectoryCacheKey = (7, "actor".into(), "read".into(), Vec::new());
+            let retained: DirectoryCacheKey = (8, "actor".into(), "read".into(), Vec::new());
+            provider
+                .directory_pages
+                .borrow_mut()
+                .insert(retained.clone(), page(Vec::new(), Vec::new()));
+            let (sender, receiver) = pending();
+            let deadline = Instant::now() + Duration::from_secs(3);
+            provider.directory_pending.borrow_mut().insert(
+                key.clone(),
+                PendingDirectoryPage {
+                    receiver,
+                    deadline,
+                    initial_page: true,
+                },
+            );
+            *provider.auxiliary_snapshot.borrow_mut() = Some(AuxiliarySnapshot {
+                revision: "r1".into(),
+                query: "read".into(),
+                scope: String::new(),
+                resume: AuxiliaryResume {
+                    root_after: None,
+                    directory: None,
+                },
+                entries: Vec::new(),
+                pending_directory: Vec::new(),
+                next_resume: None,
+            });
+            match outcome {
+                "refused" => sender.complete(Err(ActionHostError::NotPermitted)),
+                "stale" => {
+                    let mut reply = page(Vec::new(), Vec::new());
+                    reply.stale_cursor = true;
+                    sender.complete(Ok(reply));
+                }
+                _ => drop(sender),
+            }
+            provider.poll_directory_pages_at(deadline.checked_sub(Duration::from_secs(1)).unwrap());
+            assert!(provider.directory_pending.borrow().is_empty());
+            assert!(!provider.directory_pages.borrow().contains_key(&key));
+            assert!(provider.directory_pages.borrow().contains_key(&retained));
+            assert!(
+                provider.auxiliary_snapshot.borrow().is_none(),
+                "same-query discovery must retry after {outcome}"
+            );
+            assert_eq!(
+                provider
+                    .directory_epoch
+                    .load(std::sync::atomic::Ordering::Relaxed),
+                1
+            );
+        }
     }
 
     #[test]
