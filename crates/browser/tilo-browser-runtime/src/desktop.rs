@@ -460,7 +460,12 @@ impl Tiles {
                 },
                 None,
             ),
-            None if definition.keeps_room_record() => (definition.unsaved_target(&store), None),
+            None if definition.keeps_room_record() => (
+                definition
+                    .unsaved_target(&store)
+                    .map_err(|error| error.to_string())?,
+                None,
+            ),
             None => self.unbound_target(definition, &store, tab.id)?,
         };
         let restore = self
