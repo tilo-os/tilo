@@ -62,7 +62,7 @@
 //!
 //! A second argument `focus` measures only the keyboard focus order: what an
 //! agent call adding one task costs end to end through the test harness, what
-//! each focus-order recomputation inside it costs, and what one recomputation
+//! one focus-order walk of the harness costs after it, and what one recomputation
 //! of the live window's order costs ([`tilo_app::App::refresh_focus_order`],
 //! timed as its `ui.focus_order` scope alone). Its rows sit outside a scroll
 //! view, so every row is mounted, and a row is about four widgets: 500 tasks
@@ -1083,14 +1083,18 @@ fn focus_cost(tasks: u32) -> Result<FocusCost, Box<dyn std::error::Error>> {
     let mut recompute_ms = Vec::new();
     for _ in 0..FOCUS_SAMPLES {
         let start = Instant::now();
-        let (called, phases) = observe(|| app.call("seed", add.clone()));
+        let called = app.call("seed", add.clone());
         add_ms.push(millis(start));
         called?;
-        let (calls, ms) = focus_order_phase(&phases);
-        if calls == 0 {
-            return Err("adding a task recomputed no focus order".into());
+        // The harness walks the order again within a call only while
+        // something can trap focus, as the live window does between
+        // rebuilds: the walk Tab takes over the grown window is timed here.
+        let start = Instant::now();
+        let order = app.harness().focus_order();
+        recompute_ms.push(millis(start));
+        if order.is_empty() {
+            return Err("the window has no focus order to time".into());
         }
-        recompute_ms.push(ms / f64::from(u32::try_from(calls)?));
     }
     let native_ms = drive_live_window::<Mounted, _>(|app| {
         app.init_layout();
