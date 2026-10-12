@@ -854,14 +854,6 @@ impl<T> Grid<T> {
         self.columns.ids()
     }
 
-    pub fn row_position(&self, row: &Id) -> Option<usize> {
-        self.rows.position(row)
-    }
-
-    pub fn column_position(&self, column: &Id) -> Option<usize> {
-        self.columns.position(column)
-    }
-
     pub fn cell(&self, row: &Id, column: &Id) -> Option<&T> {
         self.cells.get(row.as_str())?.get(column.as_str())
     }
@@ -918,14 +910,6 @@ impl<T> Grid<T> {
         }
         self.cells.retain(|_, cells| !cells.is_empty());
         self.columns.remove(column).is_some()
-    }
-
-    pub fn move_row(&mut self, row: &Id, at: usize) -> bool {
-        self.rows.move_to(row, at)
-    }
-
-    pub fn move_column(&mut self, column: &Id, at: usize) -> bool {
-        self.columns.move_to(column, at)
     }
 
     /// Every non-empty cell: row, column, value.

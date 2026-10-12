@@ -1487,13 +1487,6 @@ impl FrameHarness {
         Some(address)
     }
 
-    pub fn confirm_pending_history_control(
-        &mut self,
-        token: &crate::history_mode::pending_controls::ContinuationToken,
-    ) -> Option<crate::history_mode::pending_controls::PendingControlStatus> {
-        self.continue_pending_history_control_checked(token, true)
-    }
-
     /// Cancel one exact retained control without dispatching it.
     pub fn cancel_pending_history_control(
         &mut self,

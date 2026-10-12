@@ -213,14 +213,6 @@ impl RestoreStore {
         tilo_files::native::atomic::write_with_mode(path, &bytes, 0o600)
             .map_err(|error| format!("write restore records: {error}"))
     }
-
-    /// Revoke every restore authority for an app.  Package removal and the
-    /// shell's privacy controls call this rather than trying to guess tokens.
-    fn revoke_app(&mut self, app_id: &str) -> Result<(), String> {
-        self.memory.retain(|_, record| record.app_id != app_id);
-        self.durable.retain(|_, record| record.app_id != app_id);
-        self.persist_durable()
-    }
 }
 
 #[cfg(target_os = "linux")]
@@ -313,16 +305,6 @@ impl ScreenCastBackend {
             sessions: self.sessions.clone(),
             provisioner: self.ctx.screencast_provisioner.clone(),
         }
-    }
-
-    /// Remove durable and session restore records when an app is uninstalled,
-    /// its capture permission is revoked, or Tilo privacy controls disable
-    /// screen sharing.  Tokens remain app-bound even before this is called.
-    pub fn revoke_restore_tokens_for_app(&self, app_id: &str) -> Result<(), String> {
-        self.restore
-            .lock()
-            .map_err(|_| "restore-data store is unavailable".to_string())?
-            .revoke_app(app_id)
     }
 
     fn reset_starting(&self, key: &str) {
@@ -994,20 +976,6 @@ mod tests {
                         .starts_with("restore.corrupt-")),
                 "corrupt artifact is retained for diagnosis rather than overwritten"
             );
-            let _ = std::fs::remove_dir_all(root);
-        }
-        // Phase `revocation_removes_durable_restore_authority`.
-        {
-            let root = std::env::temp_dir().join(format!("tilo-sc-{}", uuid::Uuid::new_v4()));
-            let path = root.join("restore.json");
-            let token = uuid::Uuid::new_v4().to_string();
-            let mut store = RestoreStore::load_at(Some(path.clone()));
-            store
-                .insert(token.clone(), durable_record("org.example.share"))
-                .expect("durable write");
-            store.revoke_app("org.example.share").expect("revoke");
-            drop(store);
-            assert!(RestoreStore::load_at(Some(path)).get(&token).is_none());
             let _ = std::fs::remove_dir_all(root);
         }
     }

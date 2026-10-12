@@ -225,18 +225,6 @@ pub fn new_tag_action(id: TagId, name: &str) -> Action {
     ))
 }
 
-/// Rename tag `id`.
-#[must_use]
-pub fn rename_tag_action(id: TagId, name: &str) -> Action {
-    edit(
-        Notebook::paths()
-            .tags
-            .item(&page_id(id))
-            .name
-            .set(Atom(name.trim().to_owned())),
-    )
-}
-
 /// Delete tag `id` and take it off every note.
 #[must_use]
 pub fn delete_tag_action(id: TagId) -> Action {
@@ -254,15 +242,6 @@ pub fn set_tag_assignment_action(page: PageId, tag: TagId, assigned: bool) -> Ac
     } else {
         tags.remove(&page_id(tag))
     })
-}
-
-/// Give note `page` the tag named `name`, made when the notebook has none.
-#[must_use]
-pub fn tag_page_action(page: PageId, name: &str) -> Action {
-    stamped(NotebookAction::Tag(notebook::notebook::Tag {
-        page: page_id(page),
-        name: name.to_owned(),
-    }))
 }
 
 /// Serializable inline formatting of a Notes block, as tests and exports
