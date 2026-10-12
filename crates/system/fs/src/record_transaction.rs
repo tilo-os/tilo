@@ -61,6 +61,23 @@ pub struct RecordTransactionJournalEntry {
     pub phase: RecordTransactionPhase,
     /// Exact persisted namespace delta once `NamespaceCommitted` is reached.
     pub namespace_delta: Option<Vec<u8>>,
+    /// Local protected native intent, not an authority or observed-effect proof.
+    /// Generic record replay cannot complete it. No successful native adapter is
+    /// enrolled until the actual replacing FsJob receipt can be revalidated.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub external_native_effect: Option<ExternalNativeEffectBinding>,
+}
+
+/// Exact local coupling to a genuine native operation and admitted source map.
+/// These persisted identities describe the expected operation; they grant no
+/// access and cannot assert that any native syscall occurred.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExternalNativeEffectBinding {
+    pub(crate) operation_id: Uuid,
+    pub(crate) source_owner: [u8; 32],
+    pub(crate) source_identity: [u64; 2],
+    pub(crate) victim_identity: [u64; 2],
 }
 
 impl RecordTransactionJournalEntry {
@@ -79,6 +96,19 @@ impl RecordTransactionJournalEntry {
         self.transaction
             .verify()
             .map_err(|_| RecordTransactionJournalError::InvalidTransaction)?;
+        if let Some(native) = &self.external_native_effect
+            && (native.operation_id != self.transaction.manifest.transaction_id
+                || native.source_owner == [0; 32]
+                || native.source_identity[1] == 0
+                || native.victim_identity[1] == 0
+                || !matches!(
+                    self.transaction.manifest.operation,
+                    fs_protocol::FileMutationOperation::ReplacementRename { .. }
+                        | fs_protocol::FileMutationOperation::AtomicSave { .. }
+                ))
+        {
+            return Err(RecordTransactionJournalError::InvalidExternalNativeEffect);
+        }
         if self.participant_batches.len() != self.transaction.manifest.participants.len()
             || self
                 .participant_batches
@@ -451,6 +481,8 @@ pub enum RecordTransactionJournalError {
     InvalidParticipantSet,
     #[error("transaction participant envelope batch is inconsistent")]
     InvalidEnvelopeBatch,
+    #[error("external native effect binding differs from its replacement intent")]
+    InvalidExternalNativeEffect,
     #[error("namespace delta does not match the journal phase")]
     InvalidNamespaceDelta,
     #[error("a new transaction must begin in Prepared")]
@@ -605,6 +637,7 @@ mod tests {
             participant_batches,
             phase: RecordTransactionPhase::Prepared,
             namespace_delta: None,
+            external_native_effect: None,
         }
     }
 
@@ -801,5 +834,130 @@ mod tests {
                 .resize(MAX_RECORD_TRANSACTION_ENTRY_BYTES, 255);
             assert!(oversized.validate().is_err());
         }
+    }
+
+    fn external_entry() -> RecordTransactionJournalEntry {
+        let mut value = entry();
+        value.external_native_effect = Some(ExternalNativeEffectBinding {
+            operation_id: value.transaction_id(),
+            source_owner: [9; 32],
+            source_identity: [1, 2],
+            victim_identity: [1, 3],
+        });
+        value.validate().unwrap();
+        value
+    }
+
+    struct ExactAuthorizer {
+        actor: fs_protocol::FileActor,
+        records: Vec<FileRecordId>,
+    }
+    impl crate::record_replication::RecordAuthorizer for ExactAuthorizer {
+        fn actor_is_certified(&self, actor: &fs_protocol::FileActor) -> bool {
+            *actor == self.actor
+        }
+        fn allows(
+            &self,
+            actor: &fs_protocol::FileActor,
+            record: FileRecordId,
+            _: crate::record_replication::RecordAction,
+        ) -> bool {
+            *actor == self.actor && self.records.contains(&record)
+        }
+    }
+
+    #[test]
+    fn external_native_intent_never_replays_as_observed_effect() {
+        use crate::record_repository::{RecordRepository, RecordRepositoryError};
+        use crate::transaction_coordinator::{
+            RecordTransactionCoordinatorError, complete_replacement_transaction,
+            complete_replacement_transaction_after_repository,
+        };
+        use std::sync::{Arc, Mutex};
+        let disk = tempfile::tempdir().unwrap();
+        let value = external_entry();
+        let id = value.transaction_id();
+        let authorizer = ExactAuthorizer {
+            actor: value.transaction.manifest.actor,
+            records: value
+                .transaction
+                .manifest
+                .participants
+                .iter()
+                .map(|p| p.record_id)
+                .collect(),
+        };
+        let journal_path = disk.path().join("journal");
+        let mut journal = RecordTransactionJournal::open(&journal_path).unwrap();
+        journal.insert_prepared(value.clone()).unwrap();
+        drop(journal);
+        let mut journal = RecordTransactionJournal::open(&journal_path).unwrap();
+        assert_eq!(journal.get(id).unwrap(), &value);
+        let repository = RecordRepository::open(disk.path().join("records")).unwrap();
+        let history =
+            crate::history::FileHistoryStore::open(disk.path().join("history.bin")).unwrap();
+        let namespace = Arc::new(Mutex::new(
+            crate::namespace::Namespace::new("external-negative").unwrap(),
+        ));
+        let namespace_path = disk.path().join("namespace.bin");
+        let mut stripped = value.clone();
+        stripped.external_native_effect = None;
+        assert!(matches!(
+            journal.insert_prepared(stripped.clone()),
+            Err(RecordTransactionJournalError::TransactionIdCollision(pending)) if pending == id
+        ));
+        for supplied in [&value, &stripped] {
+            assert!(matches!(
+                repository.apply_transaction(&mut journal, supplied, &authorizer),
+                Err(RecordRepositoryError::ExternalNativeEffectPending(pending)) if pending == id
+            ));
+            assert!(matches!(
+                complete_replacement_transaction(
+                    &repository, &mut journal, &history, &namespace,
+                    &namespace_path, supplied, &authorizer, |_| panic!("unobserved native effect must never broadcast"),
+                ),
+                Err(RecordTransactionCoordinatorError::ExternalNativeEffectPending(pending)) if pending == id
+            ));
+            assert!(matches!(
+                complete_replacement_transaction_after_repository(
+                    &mut journal, &history, &namespace, &namespace_path,
+                    supplied, |_| panic!("unobserved native effect must never broadcast"),
+                ),
+                Err(RecordTransactionCoordinatorError::ExternalNativeEffectPending(pending)) if pending == id
+            ));
+        }
+        assert!(repository.is_empty());
+        assert!(!namespace_path.exists());
+        for participant in &value.transaction.manifest.participants {
+            assert!(history.snapshot(participant.record_id).is_none());
+        }
+        assert_eq!(journal.get(id).unwrap(), &value);
+    }
+
+    #[test]
+    fn legacy_signed_journal_has_no_native_binding_and_reopens_unchanged() {
+        let value = entry();
+        let bytes = serde_json::to_vec(&value).unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert!(json.get("external_native_effect").is_none());
+        let reopened: RecordTransactionJournalEntry = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(reopened, value);
+        reopened.validate().unwrap();
+    }
+
+    #[test]
+    fn signed_external_intent_rejects_different_native_operation_and_empty_owner() {
+        let mut value = external_entry();
+        value.external_native_effect.as_mut().unwrap().operation_id = Uuid::new_v4();
+        assert!(matches!(
+            value.validate(),
+            Err(RecordTransactionJournalError::InvalidExternalNativeEffect)
+        ));
+        let mut value = external_entry();
+        value.external_native_effect.as_mut().unwrap().source_owner = [0; 32];
+        assert!(matches!(
+            value.validate(),
+            Err(RecordTransactionJournalError::InvalidExternalNativeEffect)
+        ));
     }
 }

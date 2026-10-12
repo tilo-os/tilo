@@ -62,6 +62,12 @@ pub struct Request {
     /// Secret-free installer profile fields copied into the handoff.
     #[serde(default)]
     pub profile: serde_json::Map<String, serde_json::Value>,
+    /// Metadata-only consent tied to the retained Linux source volume.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub migration: Option<serde_json::Value>,
+    /// Exact caller-private encrypted setup; never plaintext credentials.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prepared_setup: Option<super::prepared_setup::PreparedArtifact>,
 }
 
 /// One line of `progress.jsonl`.
@@ -199,11 +205,25 @@ enum Which {
 struct Placeholders {
     handoff: Vec<Range>,
     record: Vec<Range>,
+    prepared: Vec<Range>,
+    receipt: Vec<Range>,
+    browser: Vec<Range>,
+    browser_receipt: Vec<Range>,
+    browser_selection: Vec<Range>,
 }
 
 impl Placeholders {
     fn all(&self) -> Vec<Range> {
-        self.handoff.iter().chain(&self.record).copied().collect()
+        self.handoff
+            .iter()
+            .chain(&self.record)
+            .chain(&self.prepared)
+            .chain(&self.receipt)
+            .chain(&self.browser)
+            .chain(&self.browser_receipt)
+            .chain(&self.browser_selection)
+            .copied()
+            .collect()
     }
 }
 
@@ -267,6 +287,37 @@ pub fn validate_request(request: &Request) -> Result<(), Refusal> {
     }) {
         return bad("a staging GUID names an existing partition");
     }
+    if let Some(raw) = &request.migration {
+        #[cfg(target_os = "linux")]
+        {
+            let bytes = serde_json::to_vec(raw)
+                .map_err(|e| Refusal::new(codes::REQUEST_INVALID, e.to_string()))?;
+            let migration = crate::setup::migration_handoff::Plan::parse(&bytes)
+                .map_err(|e| Refusal::new(codes::REQUEST_INVALID, e.to_string()))?;
+            if migration.operation_id != request.operation_id {
+                return bad("migration belongs to a different installation operation");
+            }
+            migration
+                .validate_for_install(&request.plan)
+                .map_err(|e| Refusal::new(codes::REQUEST_INVALID, e.to_string()))?;
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = raw;
+            return bad("Linux migration cannot be authorized on this host");
+        }
+    }
+    if let Some(prepared) = &request.prepared_setup {
+        if !prepared.valid() || request.plan.basis.host_os() != "linux" {
+            return bad("Prepared setup requires bounded private Linux staging custody");
+        }
+        if let Some(expected) = request.profile.get("prepared_setup") {
+            let claimed = serde_json::to_value(&prepared.expectation).map_err(io_refusal)?;
+            if expected != &claimed {
+                return bad("Prepared profile expectation differs from encrypted setup");
+            }
+        }
+    }
     handoff::validate_profile(&request.profile)
         .map_err(|m| Refusal::new(codes::REQUEST_INVALID, m))?;
     Ok(())
@@ -276,6 +327,15 @@ pub fn validate_request(request: &Request) -> Result<(), Refusal> {
 pub fn read_firmware(
     platform: &dyn Platform,
 ) -> super::platform::IoResult<super::plan::FirmwareFacts> {
+    if !platform.has_uefi() {
+        return Ok(super::plan::FirmwareFacts {
+            uefi: false,
+            secure_boot: false,
+            boot_current: None,
+            boot_order: Vec::new(),
+            boot_next: None,
+        });
+    }
     let number = |bytes: Option<Vec<u8>>| -> Result<Option<String>, String> {
         match bytes {
             None => Ok(None),
@@ -307,6 +367,7 @@ pub fn read_basis(platform: &dyn Platform) -> super::platform::IoResult<Basis> {
     Ok(Basis {
         disk: platform.system_disk()?,
         system_volume: platform.system_volume()?,
+        linux_btrfs_volume: platform.linux_btrfs_volume()?,
         firmware: read_firmware(platform)?,
     })
 }
@@ -414,6 +475,156 @@ struct Engine<'a> {
     placeholders: Option<Placeholders>,
     /// Write steps applied in this run (verified by the `verify` readback).
     written: Vec<Step>,
+}
+
+fn linux_binding(volume: &super::platform::LinuxBtrfsVolume) -> super::btrfs_resize::Binding {
+    super::btrfs_resize::Binding {
+        partition_guid: volume.partition_guid.clone(),
+        filesystem_uuid: volume.filesystem_uuid.clone(),
+        device_id: volume.device_id,
+        mount_id: volume.mount_id,
+        first_lba: volume.first_lba,
+        sector_bytes: volume.sector_bytes,
+    }
+}
+
+/// Mount IDs are invocation-local, not durable reboot identity. The canonical
+/// adapter pins the newly admitted mount/namespace for this invocation; only
+/// stable physical/filesystem facts compare against the protected old plan.
+fn same_linux_volume(
+    a: &super::platform::LinuxBtrfsVolume,
+    b: &super::platform::LinuxBtrfsVolume,
+) -> bool {
+    a.partition_guid == b.partition_guid
+        && a.filesystem_uuid == b.filesystem_uuid
+        && a.device_id == b.device_id
+        && a.first_lba == b.first_lba
+        && a.sector_bytes == b.sector_bytes
+}
+
+#[derive(Clone, Copy)]
+enum MigrationHandoffPurpose {
+    /// Reservation sizing only; prospective geometry is never delivered here.
+    Preflight,
+    Delivery,
+}
+
+struct JournaledBtrfsVolume<'a, 'b> {
+    engine: &'a mut Engine<'b>,
+}
+impl super::btrfs_resize::Volume for JournaledBtrfsVolume<'_, '_> {
+    fn observe(&mut self) -> super::platform::IoResult<super::btrfs_resize::Facts> {
+        let facts = self
+            .engine
+            .linux_volume()
+            .map_err(|error| error.to_string())?;
+        let minimum_bytes = super::plan::minimum_linux_btrfs_bytes(&facts)
+            .map_err(|error| format!("Btrfs shrink bound changed: {error:?}"))?;
+        Ok(super::btrfs_resize::Facts {
+            binding: linux_binding(&facts),
+            partition_bytes: facts.size_bytes,
+            kernel_partition_bytes: facts.kernel_partition_bytes,
+            filesystem_bytes: facts.filesystem_bytes,
+            minimum_bytes,
+            // The canonical native accessor admits only this exact supported layout.
+            single_direct_device: true,
+            mounted_writable: true,
+            exclusive_operation_clear: true,
+        })
+    }
+    fn record_intent(
+        &mut self,
+        phase: super::btrfs_resize::Phase,
+        bytes: u64,
+    ) -> super::platform::IoResult<()> {
+        use super::btrfs_resize::Phase;
+        let predecessor = match phase {
+            Phase::ShrinkPartition => Some(Phase::ShrinkFilesystem),
+            Phase::GrowFilesystem => Some(Phase::GrowPartition),
+            _ => None,
+        };
+        if let Some(predecessor) = predecessor {
+            let observed = self
+                .engine
+                .linux_volume()
+                .map_err(|error| error.to_string())?;
+            let exact = match predecessor {
+                Phase::ShrinkFilesystem => observed.filesystem_bytes == bytes,
+                Phase::GrowPartition => {
+                    observed.size_bytes == bytes && observed.kernel_partition_bytes == bytes
+                }
+                _ => false,
+            };
+            if !exact {
+                return Err("Btrfs preceding phase readback changed".into());
+            }
+            if predecessor == Phase::GrowPartition
+                && self
+                    .engine
+                    .record()
+                    .resize_checkpoint(predecessor)?
+                    .is_none()
+            {
+                // Filesystem-only shrink needs no GPT growth, but its exact
+                // original geometry still gets a durable intent/readback pair.
+                if [Step::RemoveRoot, Step::RemoveEsp]
+                    .iter()
+                    .any(|step| !self.engine.record().is_done(*step))
+                {
+                    return Err("Btrfs restore precedes owned partition retirement".into());
+                }
+                self.engine.record_mut().resize_intent(predecessor, bytes)?;
+                self.engine.save().map_err(|error| error.to_string())?;
+            }
+            self.engine
+                .finish_resize_phase(predecessor, bytes)
+                .map_err(|error| error.to_string())?;
+            if self
+                .engine
+                .record()
+                .resize_checkpoint(predecessor)?
+                .is_none_or(|checkpoint| checkpoint.state != StepState::Done)
+            {
+                return Err("Btrfs phase lacks durable preceding readback".into());
+            }
+        }
+        self.engine.record_mut().resize_intent(phase, bytes)?;
+        self.engine.save().map_err(|error| error.to_string())
+    }
+    fn record_done(
+        &mut self,
+        phase: super::btrfs_resize::Phase,
+        bytes: u64,
+    ) -> super::platform::IoResult<()> {
+        self.engine.record_mut().resize_done(phase, bytes)?;
+        self.engine.save().map_err(|error| error.to_string())
+    }
+    fn resize_filesystem(&mut self, bytes: u64) -> super::platform::IoResult<()> {
+        let guid = self
+            .engine
+            .plan()
+            .shrink
+            .as_ref()
+            .expect("reviewed shrink")
+            .partition_guid
+            .clone();
+        self.engine
+            .platform
+            .resize_linux_btrfs_filesystem(&guid, bytes)
+    }
+    fn resize_partition(&mut self, bytes: u64) -> super::platform::IoResult<()> {
+        let guid = self
+            .engine
+            .plan()
+            .shrink
+            .as_ref()
+            .expect("reviewed shrink")
+            .partition_guid
+            .clone();
+        self.engine
+            .platform
+            .resize_linux_btrfs_partition(&guid, bytes)
+    }
 }
 
 impl Engine<'_> {
@@ -547,7 +758,23 @@ impl Engine<'_> {
             .load(&self.request.operation_id)
             .map_err(|e| Refusal::new(codes::RECORD_FAILED, e))?;
         if let Some(r) = &record {
-            if r.plan_sha256 != self.request.plan_sha256 || r.release != self.request.release {
+            if r.plan_sha256 != self.request.plan_sha256
+                || r.release != self.request.release
+                || self
+                    .request
+                    .migration
+                    .as_ref()
+                    .is_some_and(|requested| Some(requested) != r.migration.as_ref())
+                || self
+                    .request
+                    .prepared_setup
+                    .as_ref()
+                    .is_some_and(|requested| {
+                        Some(&requested.expectation) != r.prepared_setup.as_ref()
+                            || requested.browser_expectation() != r.browser_expectation()
+                    })
+                || (!self.request.profile.is_empty() && self.request.profile != r.profile)
+            {
                 return Err(Refusal::new(
                     codes::REQUEST_INVALID,
                     "this operation ID belongs to a different plan",
@@ -592,6 +819,12 @@ impl Engine<'_> {
 
     fn firmware_preconditions(&self) -> Result<(), Refusal> {
         let firmware = read_firmware(&*self.platform).map_err(io_refusal)?;
+        if !firmware.uefi {
+            return Err(Refusal::new(
+                codes::REQUEST_INVALID,
+                "UEFI firmware is unavailable; preparation geometry does not admit installation",
+            ));
+        }
         if firmware.secure_boot {
             return Err(Refusal::new(
                 codes::SECURE_BOOT_ON,
@@ -651,6 +884,7 @@ impl Engine<'_> {
                     .clone_from(&expected.firmware.boot_next);
             }
         }
+        self.normalize_linux_btrfs_basis(&mut current)?;
         let (d, e) = (&current.disk, &expected.disk);
         if !super::same_guid(&d.guid, &e.guid)
             || d.size_bytes != e.size_bytes
@@ -676,6 +910,16 @@ impl Engine<'_> {
                 if super::same_guid(&c.partition_guid, &e.partition_guid)
                     && c.size_bytes == e.size_bytes => {}
             _ => return stale("the system volume changed since review".into()),
+        }
+        match (&current.linux_btrfs_volume, &expected.linux_btrfs_volume) {
+            (None, None) => {}
+            (Some(c), Some(e))
+                if same_linux_volume(c, e)
+                    && c.size_bytes == e.size_bytes
+                    && c.filesystem_bytes == e.filesystem_bytes
+                    && c.kernel_partition_bytes == e.kernel_partition_bytes
+                    && c.reserve_bytes == e.reserve_bytes => {}
+            _ => return stale("the retained Btrfs volume changed since review".into()),
         }
         let (cf, ef) = (&current.firmware, &expected.firmware);
         // The unprivileged Windows probe cannot read EFI variables, so its
@@ -1138,6 +1382,9 @@ impl Engine<'_> {
             Step::RemoveRoot => self.apply_remove(Which::Root),
             Step::RemoveEsp => self.apply_remove(Which::Esp),
             Step::RestoreShrink => {
+                if self.plan().basis.linux_btrfs_volume.is_some() {
+                    return self.apply_linux_btrfs_resize(true);
+                }
                 let s = self.plan().shrink.clone().expect("shrink planned");
                 self.platform
                     .grow_system_volume(&s.partition_guid, s.from_bytes)
@@ -1155,6 +1402,9 @@ impl Engine<'_> {
                 "no shrink planned".into(),
             )])));
         };
+        if self.plan().basis.linux_btrfs_volume.is_some() {
+            return self.check_linux_btrfs_resize(false);
+        }
         let volume = self.platform.system_volume().map_err(io_refusal)?;
         Ok(match volume {
             Some(v) if v.size_bytes == shrink.to_bytes => Actual::Done(Detail::new()),
@@ -1167,6 +1417,9 @@ impl Engine<'_> {
     }
 
     fn apply_shrink(&mut self) -> Result<(), Refusal> {
+        if self.plan().basis.linux_btrfs_volume.is_some() {
+            return self.apply_linux_btrfs_resize(false);
+        }
         let shrink = self.plan().shrink.clone().expect("planned");
         let volume = self
             .platform
@@ -1184,6 +1437,268 @@ impl Engine<'_> {
             .map_err(io_refusal)?;
         let disk = self.disk()?;
         self.platform.sync_disk(&disk).map_err(io_refusal)
+    }
+
+    fn linux_volume(&self) -> Result<super::platform::LinuxBtrfsVolume, Refusal> {
+        let expected = self
+            .plan()
+            .basis
+            .linux_btrfs_volume
+            .as_ref()
+            .ok_or_else(|| Refusal::new(codes::PLAN_STALE, "no reviewed Btrfs binding"))?;
+        let actual = self
+            .platform
+            .linux_btrfs_volume()
+            .map_err(io_refusal)?
+            .ok_or_else(|| {
+                Refusal::new(codes::STAGING_CHANGED, "retained Btrfs volume is absent")
+            })?;
+        if !same_linux_volume(&actual, expected) || actual.reserve_bytes != expected.reserve_bytes {
+            return Err(Refusal::new(
+                codes::STAGING_CHANGED,
+                "retained Btrfs binding changed",
+            ));
+        }
+        let disk = self.disk()?;
+        let partition = disk
+            .partitions
+            .iter()
+            .find(|partition| super::same_guid(&partition.guid, &actual.partition_guid))
+            .ok_or_else(|| {
+                Refusal::new(codes::STAGING_CHANGED, "retained Btrfs partition is absent")
+            })?;
+        let bytes = partition
+            .last_lba
+            .checked_sub(partition.first_lba)
+            .and_then(|span| span.checked_add(1))
+            .and_then(|span| span.checked_mul(disk.sector_bytes));
+        if partition.first_lba != actual.first_lba
+            || disk.sector_bytes != actual.sector_bytes
+            || bytes != Some(actual.size_bytes)
+            || actual.filesystem_bytes > actual.size_bytes
+            || actual.filesystem_bytes > actual.kernel_partition_bytes
+        {
+            return Err(Refusal::new(
+                codes::STAGING_CHANGED,
+                "retained Btrfs geometry disagrees",
+            ));
+        }
+        Ok(actual)
+    }
+
+    fn resize_authorized(&self, phase: super::btrfs_resize::Phase) -> Result<bool, Refusal> {
+        self.record
+            .as_ref()
+            .map(|record| {
+                record
+                    .resize_checkpoint(phase)
+                    .map(|checkpoint| checkpoint.is_some())
+            })
+            .transpose()
+            .map(|authorized| authorized.unwrap_or(false))
+            .map_err(io_refusal)
+    }
+
+    /// Normalize only exact journaled resize effects, never an arbitrary map.
+    fn normalize_linux_btrfs_basis(&self, current: &mut Basis) -> Result<(), Refusal> {
+        use super::btrfs_resize::Phase;
+        let Some(expected) = self.plan().basis.linux_btrfs_volume.as_ref() else {
+            return Ok(());
+        };
+        let Some(actual) = current.linux_btrfs_volume.as_mut() else {
+            return Err(Refusal::new(
+                codes::PLAN_STALE,
+                "retained Btrfs volume disappeared",
+            ));
+        };
+        if !same_linux_volume(actual, expected) || !matches!(actual.sector_bytes, 512 | 4096) {
+            return Err(Refusal::new(
+                codes::PLAN_STALE,
+                "retained Btrfs binding changed",
+            ));
+        }
+        let Some(shrink) = self.plan().shrink.as_ref() else {
+            return Ok(());
+        };
+        let (from, to) = (shrink.from_bytes, shrink.to_bytes);
+        if actual.filesystem_bytes == from
+            && actual.size_bytes == from
+            && actual.kernel_partition_bytes == from
+        {
+            return Ok(());
+        }
+        let filesystem = self.resize_authorized(Phase::ShrinkFilesystem)?;
+        let partition = self.resize_authorized(Phase::ShrinkPartition)?;
+        let growing = self.resize_authorized(Phase::GrowPartition)?;
+        let shrinking = actual.filesystem_bytes == to
+            && filesystem
+            && ((actual.size_bytes == from && actual.kernel_partition_bytes == from)
+                || (actual.size_bytes == to
+                    && [from, to].contains(&actual.kernel_partition_bytes)
+                    && partition)
+                || (actual.size_bytes == from && actual.kernel_partition_bytes == to && growing));
+        if !shrinking {
+            return Err(Refusal::new(
+                codes::PLAN_STALE,
+                "retained Btrfs size lacks exact resize intent",
+            ));
+        }
+        let entry = current
+            .disk
+            .partitions
+            .iter_mut()
+            .find(|partition| super::same_guid(&partition.guid, &shrink.partition_guid))
+            .ok_or_else(|| {
+                Refusal::new(codes::PLAN_STALE, "retained Btrfs GPT entry disappeared")
+            })?;
+        let actual_last = actual
+            .first_lba
+            .checked_add(actual.size_bytes / actual.sector_bytes)
+            .and_then(|end| end.checked_sub(1));
+        if entry.first_lba != actual.first_lba || Some(entry.last_lba) != actual_last {
+            return Err(Refusal::new(
+                codes::PLAN_STALE,
+                "retained Btrfs GPT readback differs",
+            ));
+        }
+        entry.last_lba = actual
+            .first_lba
+            .checked_add(from / actual.sector_bytes)
+            .and_then(|end| end.checked_sub(1))
+            .ok_or_else(|| Refusal::new(codes::PLAN_STALE, "retained Btrfs extent overflow"))?;
+        actual.size_bytes = from;
+        actual.filesystem_bytes = from;
+        actual.kernel_partition_bytes = from;
+        Ok(())
+    }
+
+    fn check_linux_btrfs_resize(&mut self, restoring: bool) -> Result<Actual, Refusal> {
+        use super::btrfs_resize::Phase;
+        let shrink = self.plan().shrink.clone().expect("reviewed shrink");
+        let volume = self.linux_volume()?;
+        let (from, to) = (shrink.from_bytes, shrink.to_bytes);
+        let fs_intent = self.resize_authorized(Phase::ShrinkFilesystem)?;
+        let part_intent = self.resize_authorized(Phase::ShrinkPartition)?;
+        if !restoring {
+            if volume.size_bytes == from
+                && volume.kernel_partition_bytes == from
+                && volume.filesystem_bytes == from
+            {
+                return Ok(Actual::Absent);
+            }
+            if volume.filesystem_bytes == to && fs_intent {
+                self.finish_resize_phase(Phase::ShrinkFilesystem, to)?;
+                if volume.size_bytes == to && volume.kernel_partition_bytes == to && part_intent {
+                    self.finish_resize_phase(Phase::ShrinkPartition, to)?;
+                    return Ok(Actual::Done(Detail::new()));
+                }
+                if (volume.size_bytes == from && volume.kernel_partition_bytes == from)
+                    || (volume.size_bytes == to
+                        && volume.kernel_partition_bytes == from
+                        && part_intent)
+                {
+                    return Ok(Actual::Absent);
+                }
+            }
+            return Err(Refusal::new(
+                codes::STAGING_CHANGED,
+                "Btrfs shrink requires explicit recovery",
+            ));
+        }
+        if volume.size_bytes == from
+            && volume.kernel_partition_bytes == from
+            && volume.filesystem_bytes == from
+        {
+            if self.resize_authorized(Phase::GrowPartition)? {
+                self.finish_resize_phase(Phase::GrowPartition, from)?;
+            }
+            if self.resize_authorized(Phase::GrowFilesystem)? {
+                self.finish_resize_phase(Phase::GrowFilesystem, from)?;
+            }
+            return Ok(Actual::Done(Detail::new()));
+        }
+        let growth = self.resize_authorized(Phase::GrowPartition)?;
+        let fs_growth = self.resize_authorized(Phase::GrowFilesystem)?;
+        if !fs_intent
+            || volume.filesystem_bytes < to
+            || volume.filesystem_bytes > from
+            || ![from, to].contains(&volume.size_bytes)
+            || ![from, to].contains(&volume.kernel_partition_bytes)
+            || (volume.size_bytes == to && !part_intent)
+            || (volume.size_bytes == from && volume.kernel_partition_bytes == to && !growth)
+            || (volume.filesystem_bytes > to && !fs_growth && volume.size_bytes != from)
+        {
+            return Err(Refusal::new(
+                codes::STAGING_CHANGED,
+                "Btrfs restore lacks journaled geometry",
+            ));
+        }
+        // Existing Remove ordering has already retired both owned staging entries.
+        let disk = self.disk()?;
+        let partition = disk
+            .partitions
+            .iter()
+            .find(|partition| super::same_guid(&partition.guid, &shrink.partition_guid))
+            .ok_or_else(|| {
+                Refusal::new(codes::STAGING_CHANGED, "retained partition disappeared")
+            })?;
+        let last = partition
+            .first_lba
+            .checked_add(from / disk.sector_bytes)
+            .and_then(|end| end.checked_sub(1))
+            .ok_or_else(|| Refusal::new(codes::STAGING_CHANGED, "restore extent overflow"))?;
+        if partition.last_lba < last
+            && disk
+                .partitions
+                .iter()
+                .any(|other| overlaps(other, partition.last_lba + 1, last))
+        {
+            return Err(Refusal::new(
+                codes::STAGING_CHANGED,
+                "retained restore extent is occupied",
+            ));
+        }
+        Ok(Actual::Absent)
+    }
+
+    fn finish_resize_phase(
+        &mut self,
+        phase: super::btrfs_resize::Phase,
+        bytes: u64,
+    ) -> Result<(), Refusal> {
+        if self
+            .record()
+            .resize_checkpoint(phase)
+            .map_err(io_refusal)?
+            .is_some_and(|checkpoint| checkpoint.state == StepState::Intended)
+        {
+            self.record_mut()
+                .resize_done(phase, bytes)
+                .map_err(io_refusal)?;
+            self.save()?;
+        }
+        Ok(())
+    }
+
+    fn apply_linux_btrfs_resize(&mut self, restoring: bool) -> Result<(), Refusal> {
+        // Re-admit stable reviewed identity, then pin the current invocation's
+        // actual mount ID throughout all mutation/readback steps.
+        let current = self.linux_volume()?;
+        let binding = linux_binding(&current);
+        let shrink = self.plan().shrink.clone().expect("reviewed shrink");
+        let mut volume = JournaledBtrfsVolume { engine: self };
+        if restoring {
+            super::btrfs_resize::restore(&mut volume, &binding, shrink.from_bytes, shrink.to_bytes)
+        } else {
+            super::btrfs_resize::shrink(
+                &mut volume,
+                &binding,
+                shrink.from_bytes,
+                shrink.to_bytes,
+                &|| false,
+            )
+        }
+        .map_err(io_refusal)
     }
 
     // ----- create --------------------------------------------------------------
@@ -1364,20 +1879,201 @@ impl Engine<'_> {
         .map_err(io_refusal)
     }
 
+    fn prepared_migration_handoff(
+        &mut self,
+        purpose: MigrationHandoffPurpose,
+    ) -> Result<Option<serde_json::Value>, Refusal> {
+        let Some(raw) = self.record().migration.clone() else {
+            return Ok(None);
+        };
+        #[cfg(target_os = "linux")]
+        {
+            if self.plan().shrink.is_some() {
+                if self.plan().basis.linux_btrfs_volume.is_none() {
+                    return Err(Refusal::new(
+                        codes::STAGING_CHANGED,
+                        "Migration resize lacks reviewed Btrfs binding",
+                    ));
+                }
+                if matches!(purpose, MigrationHandoffPurpose::Delivery)
+                    && (!self.record().is_done(Step::Shrink)
+                        || !matches!(self.check_linux_btrfs_resize(false)?, Actual::Done(_)))
+                {
+                    return Err(Refusal::new(
+                        codes::STAGING_CHANGED,
+                        "Migration geometry cannot be delivered before verified Btrfs shrink",
+                    ));
+                }
+                let original = crate::setup::migration_handoff::Plan::parse(
+                    &serde_json::to_vec(&raw).map_err(io_refusal)?,
+                )
+                .map_err(io_refusal)?;
+                let completed = original
+                    .for_completed_staging(self.plan())
+                    .map_err(io_refusal)?;
+                return serde_json::to_value(completed)
+                    .map(Some)
+                    .map_err(io_refusal);
+            }
+        }
+        #[cfg(not(target_os = "linux"))]
+        let _ = purpose;
+        Ok(Some(raw))
+    }
+
     fn handoff_bytes(&mut self, number: u16, len: u64) -> Result<Vec<u8>, Refusal> {
         let (_, esp) = self.require_staged(Which::Esp)?;
         let (_, root) = self.require_staged(Which::Root)?;
-        Handoff::for_plan(
+        let mut handoff = Handoff::for_plan(
             &self.request.operation_id,
             self.plan(),
             &esp.guid,
             &root.guid,
             &efi::format_boot_number(number),
             self.record().original_firmware.boot_order.clone(),
-            self.request.profile.clone(),
+            self.record().profile.clone(),
+        );
+        handoff.migration = self.prepared_migration_handoff(MigrationHandoffPurpose::Delivery)?;
+        if let Some(expected) = &self.record().prepared_setup {
+            handoff.profile.insert(
+                "prepared_setup".into(),
+                serde_json::to_value(expected).map_err(io_refusal)?,
+            );
+        }
+        handoff.validate().map_err(io_refusal)?;
+        handoff
+            .to_padded(len)
+            .map_err(|m| Refusal::new(codes::ESP_PLACEHOLDER, m))
+    }
+
+    fn retain_prepared_setup(&self) -> Result<(), Refusal> {
+        let Some(expected) = &self.record().prepared_setup else {
+            return Ok(());
+        };
+        let slots = self.placeholders.as_ref().ok_or_else(|| {
+            Refusal::new(codes::ESP_PLACEHOLDER, "Prepared setup slots unavailable")
+        })?;
+        let package_len = fat::ranges_len(&slots.prepared);
+        let receipt_len = fat::ranges_len(&slots.receipt);
+        if package_len < expected.sealed_bytes
+            || package_len > super::prepared_setup::SLOT_BYTES
+            || receipt_len != super::prepared_setup::RECEIPT_BYTES
+        {
+            return Err(Refusal::new(
+                codes::ESP_PLACEHOLDER,
+                "This installer bundle lacks bounded encrypted setup reservations; download a compatible installer",
+            ));
+        }
+        if let Some(artifact) = &self.request.prepared_setup {
+            let bytes = artifact
+                .read(super::prepared_setup::caller_uid().map_err(io_refusal)?)
+                .map_err(io_refusal)?;
+            self.store
+                .retain_prepared(&self.request.operation_id, &bytes, expected)
+                .map_err(io_refusal)?;
+        } else {
+            self.store
+                .read_prepared(&self.request.operation_id, expected)
+                .map_err(io_refusal)?;
+        }
+        Ok(())
+    }
+
+    fn prepared_payloads(
+        &self,
+        slots: &Placeholders,
+    ) -> Result<Option<(Vec<u8>, Vec<u8>)>, Refusal> {
+        let Some(expected) = &self.record().prepared_setup else {
+            return Ok(None);
+        };
+        let mut bytes = self
+            .store
+            .read_prepared(&self.request.operation_id, expected)
+            .map_err(io_refusal)?;
+        let package_len = fat::ranges_len(&slots.prepared);
+        if package_len < expected.sealed_bytes
+            || package_len > super::prepared_setup::SLOT_BYTES
+            || fat::ranges_len(&slots.receipt) != super::prepared_setup::RECEIPT_BYTES
+        {
+            return Err(Refusal::new(
+                codes::ESP_PLACEHOLDER,
+                "Prepared setup slot changed",
+            ));
+        }
+        bytes.resize(usize::try_from(package_len).map_err(io_refusal)?, b' ');
+        let receipt = handoff::pad_json(
+            &serde_json::to_vec(expected).map_err(io_refusal)?,
+            super::prepared_setup::RECEIPT_BYTES,
         )
-        .to_padded(len)
-        .map_err(|m| Refusal::new(codes::ESP_PLACEHOLDER, m))
+        .map_err(io_refusal)?;
+        Ok(Some((bytes, receipt)))
+    }
+
+    fn check_prepared_setup(&mut self, disk: &Disk, guid: &str) -> Result<bool, Refusal> {
+        let slots = self.placeholders(disk, guid)?;
+        #[cfg(target_os = "linux")]
+        if !self.check_browser(disk, guid, &slots)? {
+            return Ok(false);
+        }
+        let Some((bytes, receipt)) = self.prepared_payloads(&slots)? else {
+            return Ok(true);
+        };
+        Ok(self.read_ranges(disk, guid, &slots.prepared)? == bytes
+            && self.read_ranges(disk, guid, &slots.receipt)? == receipt)
+    }
+
+    fn deliver_prepared_setup(&mut self, disk: &Disk, guid: &str) -> Result<(), Refusal> {
+        let slots = self.placeholders(disk, guid)?;
+        let Some((bytes, receipt)) = self.prepared_payloads(&slots)? else {
+            return Ok(());
+        };
+        self.write_ranges(disk, guid, &slots.prepared, &bytes)?;
+        self.write_ranges(disk, guid, &slots.receipt, &receipt)?;
+        self.platform.sync_disk(disk).map_err(io_refusal)?;
+        if !self.check_prepared_setup(disk, guid)? {
+            return Err(Refusal::new(
+                codes::IO_FAILED,
+                "Prepared ciphertext failed target readback",
+            ));
+        }
+        Ok(())
+    }
+
+    fn preflight_migration_transport(&mut self) -> Result<(), Refusal> {
+        let placeholders = self.placeholders.as_ref().ok_or_else(|| {
+            Refusal::new(
+                codes::ESP_PLACEHOLDER,
+                "Verified ESP reservations are unavailable",
+            )
+        })?;
+        let len = placeholders
+            .handoff
+            .iter()
+            .try_fold(0u64, |total, range| total.checked_add(range.len))
+            .ok_or_else(|| {
+                Refusal::new(codes::ESP_PLACEHOLDER, "ESP reservation length overflow")
+            })?;
+        let mut handoff = Handoff::for_plan(
+            &self.request.operation_id,
+            self.plan(),
+            "00000000-0000-4000-8000-000000000001",
+            "00000000-0000-4000-8000-000000000002",
+            "FFFF",
+            self.record().original_firmware.boot_order.clone(),
+            self.record().profile.clone(),
+        );
+        handoff.migration = self.prepared_migration_handoff(MigrationHandoffPurpose::Preflight)?;
+        if let Some(expected) = &self.record().prepared_setup {
+            handoff.profile.insert(
+                "prepared_setup".into(),
+                serde_json::to_value(expected).map_err(io_refusal)?,
+            );
+        }
+        handoff.validate().map_err(io_refusal)?;
+        handoff
+            .to_padded(len)
+            .map_err(|message| Refusal::new(codes::ESP_PLACEHOLDER, message))?;
+        Ok(())
     }
 
     fn write_ranges(
@@ -1415,6 +2111,12 @@ impl Engine<'_> {
             return Ok(Actual::Absent);
         };
         let (disk, esp) = self.require_staged(Which::Esp)?;
+        if !self.check_prepared_setup(&disk, &esp.guid)? {
+            return Ok(Actual::Conflict(Refusal::new(
+                codes::STAGING_CHANGED,
+                "Prepared ciphertext delivery changed",
+            )));
+        }
         let ranges = self.placeholders(&disk, &esp.guid)?.handoff;
         let expected = self.handoff_bytes(number, fat::ranges_len(&ranges))?;
         Ok(
@@ -1432,6 +2134,9 @@ impl Engine<'_> {
     fn apply_handoff(&mut self) -> Result<(), Refusal> {
         let number = self.owned_number().expect("intent allocated the number");
         let (disk, esp) = self.require_staged(Which::Esp)?;
+        #[cfg(target_os = "linux")]
+        self.deliver_browser(&disk, &esp.guid)?;
+        self.deliver_prepared_setup(&disk, &esp.guid)?;
         let ranges = self.placeholders(&disk, &esp.guid)?.handoff;
         let bytes = self.handoff_bytes(number, fat::ranges_len(&ranges))?;
         self.write_ranges(&disk, &esp.guid, &ranges, &bytes)?;
@@ -1607,6 +2312,9 @@ impl Engine<'_> {
         if self.record().state(Step::Shrink).is_none() {
             return skipped("never shrunk");
         }
+        if self.plan().basis.linux_btrfs_volume.is_some() {
+            return self.check_linux_btrfs_resize(true);
+        }
         let Some(volume) = self.platform.system_volume().map_err(io_refusal)? else {
             return skipped("no system volume");
         };
@@ -1637,6 +2345,15 @@ impl Engine<'_> {
     fn stage(&mut self, authority: &dyn ReleaseAuthority) -> Result<(), Refusal> {
         self.resolve_release(authority)?;
         self.record = self.load_record()?;
+        if self.record.is_none()
+            && self.request.prepared_setup.is_none()
+            && self.request.profile.contains_key("prepared_setup")
+        {
+            return Err(Refusal::new(
+                codes::REQUEST_INVALID,
+                "Prepared profile requires actual encrypted setup custody",
+            ));
+        }
         if self.record.is_none() {
             self.check_no_other_pending()?;
         }
@@ -1658,7 +2375,7 @@ impl Engine<'_> {
                     entries.insert(n.clone(), hex::encode(&bytes));
                 }
             }
-            self.record = Some(Record::new(
+            let mut record = Record::new(
                 self.request.operation_id.clone(),
                 self.plan().clone(),
                 self.request.release.clone(),
@@ -1667,7 +2384,24 @@ impl Engine<'_> {
                     boot_next: firmware.boot_next,
                     entries,
                 },
-            ));
+            );
+            record.migration.clone_from(&self.request.migration);
+            record.profile.clone_from(&self.request.profile);
+            record.prepared_setup = self
+                .request
+                .prepared_setup
+                .as_ref()
+                .map(|artifact| artifact.expectation.clone());
+            #[cfg(target_os = "linux")]
+            {
+                record.prepared_browser = self
+                    .request
+                    .prepared_setup
+                    .as_ref()
+                    .and_then(|artifact| artifact.browser.as_ref())
+                    .map(|browser| browser.expectation.clone());
+            }
+            self.record = Some(record);
             self.save()?;
         }
         if self.record().bundle.is_none() {
@@ -1687,6 +2421,10 @@ impl Engine<'_> {
             self.record_mut().bundle = Some(bundle);
             self.save()?;
         }
+        self.retain_prepared_setup()?;
+        #[cfg(target_os = "linux")]
+        self.retain_browser()?;
+        self.preflight_migration_transport()?;
         if self.record().state(Step::RemoveEsp).is_some()
             || self.record().state(Step::RemoveRoot).is_some()
         {
@@ -1737,6 +2475,9 @@ impl Engine<'_> {
             Step::CreateEsp,
             Step::CreateRoot,
             Step::Verify,
+            // ESP component hashing masks declared setup reservations. Recheck
+            // their exact receipt/ciphertext and private custody before arming.
+            Step::Handoff,
             Step::BootEntry,
         ] {
             self.run(step, false)?;
@@ -1770,7 +2511,22 @@ fn find_placeholders(
         .map_err(placeholder)?;
     let record = fat::file_ranges(read, size, &format!("{dir}/{}", super::ESP_RECORD_FILE))
         .map_err(placeholder)?;
-    Ok(Placeholders { handoff, record })
+    let prepared =
+        fat::file_ranges(read, size, super::prepared_setup::PACKAGE_PATH).unwrap_or_default();
+    let receipt =
+        fat::file_ranges(read, size, super::prepared_setup::RECEIPT_PATH).unwrap_or_default();
+    Ok(Placeholders {
+        handoff,
+        record,
+        prepared,
+        receipt,
+        browser: fat::file_ranges(read, size, "/.tilo-installer/browser.sealed")
+            .unwrap_or_default(),
+        browser_receipt: fat::file_ranges(read, size, "/.tilo-installer/browser-receipt.json")
+            .unwrap_or_default(),
+        browser_selection: fat::file_ranges(read, size, "/.tilo-installer/browser-selection.json")
+            .unwrap_or_default(),
+    })
 }
 
 // ----- process boundary ------------------------------------------------------
@@ -1880,7 +2636,7 @@ impl Drop for Running {
 }
 
 /// The executable the elevated helper runs (the AppImage when packaged).
-fn helper_executable() -> std::io::Result<PathBuf> {
+pub(super) fn helper_executable() -> std::io::Result<PathBuf> {
     #[cfg(target_os = "linux")]
     if let Some(appimage) = std::env::var_os("TILO_IMAGER_APPIMAGE") {
         let path = PathBuf::from(appimage);
@@ -2118,6 +2874,37 @@ pub fn pending_records() -> Vec<super::record::Record> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn durable_btrfs_recovery_readmits_mount_but_keeps_stable_identity() {
+        let original = super::super::platform::LinuxBtrfsVolume {
+            partition_guid: "11111111-2222-3333-4444-555555555555".into(),
+            filesystem_uuid: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee".into(),
+            device_id: 1,
+            mount_id: 42,
+            first_lba: 2048,
+            sector_bytes: 512,
+            size_bytes: 128 << 30,
+            filesystem_bytes: 128 << 30,
+            kernel_partition_bytes: 128 << 30,
+            supported_min_bytes: 32 << 30,
+            reserve_bytes: 4 << 30,
+        };
+        let mut remounted = original.clone();
+        remounted.mount_id = 117;
+        assert!(super::same_linux_volume(&original, &remounted));
+        // Mutation still pins the newly held invocation, never the old mount.
+        assert_ne!(
+            super::linux_binding(&original),
+            super::linux_binding(&remounted)
+        );
+        assert_eq!(super::linux_binding(&remounted).mount_id, 117);
+        remounted.filesystem_uuid = "ffffffff-bbbb-cccc-dddd-eeeeeeeeeeee".into();
+        assert!(!super::same_linux_volume(&original, &remounted));
+        remounted = original.clone();
+        remounted.first_lba += 1;
+        assert!(!super::same_linux_volume(&original, &remounted));
+    }
+
     use super::*;
 
     /// Helper elevation, mode entry and progress polling.
@@ -2169,3 +2956,6 @@ mod tests {
         }
     }
 }
+
+#[cfg(target_os = "linux")]
+mod browser;

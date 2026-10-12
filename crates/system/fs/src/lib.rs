@@ -41,6 +41,8 @@ pub mod document_media;
 pub mod durable_backup;
 #[cfg(feature = "filesystem")]
 pub mod eviction;
+#[cfg(all(feature = "filesystem", target_os = "linux"))]
+pub mod external_history;
 #[cfg(feature = "filesystem")]
 pub mod file_watch;
 #[cfg(feature = "filesystem")]

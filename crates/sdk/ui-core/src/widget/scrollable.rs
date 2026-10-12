@@ -1612,23 +1612,34 @@ impl Widget for Scrollable {
         }
         // Flash the overlay bar the first frame content overflows.
         if self.reveal_focus {
-            fn focused(widget: &dyn Widget, path: &mut Vec<usize>) -> Option<(Vec<usize>, Rect)> {
+            fn focused(
+                widget: &dyn Widget,
+                path: &mut Vec<usize>,
+                viewport_height: f64,
+            ) -> Option<(Vec<usize>, Rect)> {
                 if widget.is_focusable() && widget.is_focused() {
                     return Some((path.clone(), widget.get_rect()));
                 }
                 for (index, child) in widget.children().into_iter().enumerate() {
                     path.push(index);
-                    if let Some(found) = focused(child, path) {
-                        return Some(found);
+                    if let Some((path, rect)) = focused(child, path, viewport_height) {
+                        let rect = widget
+                            .focus_reveal_context()
+                            .filter(|context| context.height() <= viewport_height)
+                            .unwrap_or(rect);
+                        return Some((path, rect));
                     }
                     path.pop();
                 }
                 None
             }
-            let focus = self
-                .child
-                .as_ref()
-                .and_then(|child| focused(child.as_ref(), &mut Vec::new()));
+            let focus = self.child.as_ref().and_then(|child| {
+                focused(
+                    child.as_ref(),
+                    &mut Vec::new(),
+                    f64::from(self.effective_viewport_h()),
+                )
+            });
             let path = focus.as_ref().map(|(path, _)| path.clone());
             if path != self.last_focus_path {
                 self.last_focus_path = path;
@@ -2332,6 +2343,108 @@ mod tests {
                 0.0,
                 "manual scrolling must not snap back to unchanged focus"
             );
+        }
+    }
+
+    #[test]
+    fn field_validation_focus_reveal_fits_context_or_prioritises_protected_input() {
+        use crate::headless::FrameHarness;
+        use crate::widget::{Field, TextInput, TextInputKind};
+        use crate::{LocalState, State};
+
+        fn named<'a>(root: &'a dyn Widget, id: &str) -> Option<&'a dyn Widget> {
+            if root.test_id() == Some(id) {
+                return Some(root);
+            }
+            root.children()
+                .into_iter()
+                .find_map(|child| named(child, id))
+        }
+        fn correction<'a>(root: &'a dyn Widget, message: &str) -> Option<&'a dyn Widget> {
+            if root.accessibility().is_some_and(|node| {
+                node.name.as_deref() == Some(message)
+                    && node.live == Some(crate::a11y::Politeness::Assertive)
+            }) {
+                return Some(root);
+            }
+            root.children()
+                .into_iter()
+                .find_map(|child| correction(child, message))
+        }
+        for scale in [1.0, 2.0] {
+            for oversized in [false, true] {
+                let message = if oversized {
+                    "Use a different password. ".repeat(80)
+                } else {
+                    "Use at least 15 characters.".to_string()
+                };
+                let value = LocalState::new("private sample password".to_string());
+                let mut input = TextInput::from_state(&value)
+                    .with_id("validation-password")
+                    .with_kind(TextInputKind::Password)
+                    .with_secret(true);
+                input.set_focus(true);
+                let field = Field::new("Password", input)
+                    .with_error_live(&message, crate::a11y::Politeness::Assertive);
+                let mut content = Column::new().with_intrinsic_height();
+                for _ in 0..20 {
+                    content = content.push(Box::new(Text::new("Earlier form content")));
+                }
+                content = content.push(Box::new(field));
+                let scroll = Scrollable::new_vertical()
+                    .fill_parent_height()
+                    .with_focus_reveal()
+                    .with_child(Box::new(content));
+                let mut harness = FrameHarness::new_with_theme(
+                    State::new(),
+                    Box::new(scroll),
+                    (400, 300),
+                    Theme::dark().with_ui_scale(scale).with_reduce_motion(true),
+                );
+                harness.with_widget_mut::<Scrollable, _>(|scroll| {
+                    let viewport = scroll.content_viewport_rect();
+                    let input = named(scroll, "validation-password").unwrap();
+                    let access = input.accessibility().unwrap();
+                    assert!(input.is_focused());
+                    assert!(access.state.invalid && access.state.protected);
+                    assert!(access.value.is_none(), "focus must not expose the password");
+                    let input = input.get_rect();
+                    let caption = correction(scroll, &message).unwrap().get_rect();
+                    let context_height = caption.y1 - input.y0;
+                    assert!(scroll.offset_y() > 0.0, "focus must reveal a field after earlier content");
+                    assert!(input.y0 >= viewport.y0 && input.y1 <= viewport.y1,
+                        "actual protected input remains fully visible: {input:?}, {viewport:?}");
+                    if oversized {
+                        assert!(context_height > viewport.height(),
+                            "fixture must exercise the too-tall context fallback: {context_height}, {viewport:?}");
+                        assert!(caption.y1 > viewport.y1,
+                            "oversized caption cannot displace the correction input");
+                    } else {
+                        assert!(context_height <= viewport.height(),
+                            "fixture must exercise fitting shared Field context");
+                        assert!(caption.y0 >= viewport.y0 && caption.y1 <= viewport.y1,
+                            "entire actual correction caption is revealed with input: {caption:?}, {viewport:?}");
+                    }
+                    scroll.set_offset_y(0.0);
+                }).unwrap();
+                // The harness ran the production layout after that deliberate
+                // scroll. Unchanged focus must not pull the person back down.
+                harness
+                    .with_widget_mut::<Scrollable, _>(|scroll| {
+                        assert_eq!(scroll.offset_y(), 0.0);
+                        let input = named(scroll, "validation-password").unwrap();
+                        assert!(input.is_focused());
+                        assert!(
+                            input.get_rect().y0 > scroll.content_viewport_rect().y1,
+                            "manual scrolling really moved the focused field out of view"
+                        );
+                    })
+                    .unwrap();
+                harness.with_widget_mut::<Scrollable, _>(|scroll| {
+                    assert_eq!(scroll.offset_y(), 0.0,
+                        "later layout must continue respecting manual scroll with unchanged focus");
+                }).unwrap();
+            }
         }
     }
 

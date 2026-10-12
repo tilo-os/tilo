@@ -5,6 +5,7 @@
 # `.cargo/config.toml` applies:
 # `crates/doc/tilo-doc-codec-markdown-wasm/build.sh`.
 exclude = [
+    "vendor/leveldb-sys",
     "vendor/buffa-build",
     "fuzz",
     "crates/doc/tilo-doc-codec-markdown-wasm",
@@ -36,6 +37,7 @@ exclude = [
 # Default builds cover core crates. CI checks affected packages and runs
 # the full workspace nightly.
 default-members = [
+    "crates/browser/browser-continuity",
     "crates/doc/tilo-doc",
     "crates/doc/tilo-doc-codecs",
     "crates/system/fs",
@@ -447,6 +449,7 @@ duration_suboptimal_units = "allow"
 must_use_candidate = "allow"
 
 [workspace.dependencies]
+browser-continuity = { path = "crates/browser/browser-continuity" }
 
 # ---------------------------------------------------------------------------
 # UI toolkit stack
@@ -938,6 +941,8 @@ debug-assertions = true
 # Vendored winit fork adds Wayland `zwp_pointer_gestures_v1` support and maps
 # pinch events to winit's existing `PinchGesture` API.
 [patch.crates-io]
+# Chromium origin storage reader: bundled engine provenance in vendor/leveldb-sys.
+leveldb-sys = { path = "vendor/leveldb-sys" }
 # Build outputs must not become Cargo inputs; see vendor/buffa-build/PROVENANCE.md.
 buffa-build = { path = "vendor/buffa-build" }
 # Verify Cast TLS handshake signatures and bound cancellation; identity

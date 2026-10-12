@@ -47,13 +47,21 @@ pub mod icloud;
 pub mod nextcloud;
 pub mod providers;
 #[cfg(feature = "custody")]
+pub mod service_sessions;
+#[cfg(feature = "custody")]
+mod spotify_identity;
+#[cfg(feature = "custody")]
 pub mod storage;
+#[cfg(feature = "custody")]
+pub use spotify_identity::{SpotifyIdentity, with_verified_spotify_access_token};
 
 pub use clients::{ClientEntry, ClientTable, Scopes};
 #[cfg(feature = "custody")]
 pub use custodian::{
-    Custodian, CustodyError, SIGN_IN_TIMEOUT, icloud_apple_id, icloud_secret, is_cloud_type,
-    oauth_secret,
+    Custodian, CustodyError, ImportedRegistration, SIGN_IN_TIMEOUT, copied_secret,
+    copied_source_matches, icloud_apple_id, icloud_secret, imported_oauth_matches,
+    imported_oauth_secret, is_cloud_type, is_copied_secret, oauth_secret, password_credential,
+    protected_grant_protocol, requires_protected_consumer,
 };
 pub use providers::{Capability, OAuthCloud, OAuthIssuer, OAuthUse};
 #[cfg(feature = "custody")]

@@ -120,7 +120,7 @@ pub(crate) const ACCOUNT_CHILD_FD: i32 = 42;
 /// Bwrap private-service namespace information, closed before app execution.
 pub(crate) const SERVICE_NAMESPACE_CHILD_FD: i32 = 43;
 /// Every fixed child slot; declared services are numbered around them.
-pub(crate) const RESERVED_CHILD_FDS: [i32; 8] = [
+pub(crate) const RESERVED_CHILD_FDS: [i32; 24] = [
     runtime_identity::broker::BROKER_CHILD_FD,
     BLOB_CHILD_FD,
     IDENTITY_CHILD_FD,
@@ -129,6 +129,22 @@ pub(crate) const RESERVED_CHILD_FDS: [i32; 8] = [
     BASELINE_SECCOMP_CHILD_FD,
     ACCOUNT_CHILD_FD,
     SERVICE_NAMESPACE_CHILD_FD,
+    crate::owned_service::capture::SOURCE_FD,
+    crate::owned_service::capture::SHIM_FD,
+    crate::owned_service::capture::OUTPUT_FD,
+    crate::owned_service::capture::executable::BWRAP_FD,
+    crate::owned_service::capture::executable::LOADER_FD,
+    crate::owned_service::capture::original::BOOTSTRAP_FD,
+    crate::owned_service::capture::original::CLAIM_FD,
+    crate::owned_service::target_projection::TOKEN_FD,
+    crate::owned_service::target_projection::FUSE_FD,
+    crate::owned_service::target_projection::READY_FD,
+    crate::retained_view::VIEW_FD,
+    crate::retained_view::ALIAS_VIEW_FD,
+    crate::retained_view::ALIAS_ARGS_FD,
+    crate::retained_view::SELECTED_PARENT_FD,
+    crate::owned_service::RETAINED_SELECTED_REPLACEMENT_PERMIT_FD,
+    crate::owned_service::RETAINED_NATIVE_HISTORY_VERIFIER_FD,
 ];
 const STORE_APP_ID: &str = "so.tilo.store";
 pub const APP_HOST_LAUNCH_MAGIC: [u8; 4] = *b"QAH1";
@@ -310,6 +326,35 @@ pub fn resolve_identity_bind(
     workspace_id: Option<&str>,
     no_services: bool,
 ) -> Result<Option<ResolvedService>, ServiceError> {
+    resolve_identity_bind_for_contract(app_id, workspace_id, no_services, None)
+}
+
+/// Validate a signed service requirement and use the canonical identity
+/// handshake. Profile metadata remains owned by the current identity broker.
+///
+/// # Errors
+///
+/// Returns [`ServiceError`] if serializing or sending the bounded handshake fails.
+/// A missing service or refused connection returns `Ok(None)`.
+pub fn resolve_identity_bind_for_contract(
+    app_id: &str,
+    workspace_id: Option<&str>,
+    no_services: bool,
+    requirement: Option<&str>,
+) -> Result<Option<ResolvedService>, ServiceError> {
+    let requirement = requirement
+        .map(|raw| {
+            ServiceReq::parse(raw)
+                .map_err(|error| ServiceError::BadRequirement(raw.to_owned(), error))
+        })
+        .transpose()?;
+    let presentation = matches!(
+        requirement,
+        Some(
+            ServiceReq::Required(runtime_identity::wire::PRESENTATION_SERVICE_VERSION)
+                | ServiceReq::Optional(runtime_identity::wire::PRESENTATION_SERVICE_VERSION)
+        )
+    );
     let Some(workspace_id) = workspace_id else {
         return Ok(None);
     };
@@ -328,7 +373,7 @@ pub fn resolve_identity_bind(
             return Ok(None);
         }
     };
-    write_identity_handshake(&mut stream, app_id, workspace_id)
+    write_identity_handshake_negotiated(&mut stream, app_id, workspace_id, presentation)
         .map_err(|source| ServiceError::OpenFailed { path, source })?;
     Ok(Some(ResolvedService {
         name: IDENTITY_SERVICE.to_string(),
@@ -349,10 +394,26 @@ pub fn write_identity_handshake(
     app_id: &str,
     workspace_id: &str,
 ) -> std::io::Result<()> {
-    let handshake = serde_json::json!({
-        "workspace_id": workspace_id,
-        "app_id": app_id,
-    });
+    write_identity_handshake_negotiated(stream, app_id, workspace_id, false)
+}
+
+fn write_identity_handshake_negotiated(
+    stream: &mut UnixStream,
+    app_id: &str,
+    workspace_id: &str,
+    presentation: bool,
+) -> std::io::Result<()> {
+    let handshake = runtime_identity::wire::PresentationHandshake {
+        handshake: runtime_identity::wire::Handshake {
+            workspace_id: workspace_id.to_owned(),
+            app_id: app_id.to_owned(),
+        },
+        presentation_version: if presentation {
+            runtime_identity::wire::PRESENTATION_VERSION
+        } else {
+            0
+        },
+    };
     let bytes = serde_json::to_vec(&handshake)
         .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
     runtime_identity::wire::HANDSHAKE_FRAMING
@@ -741,7 +802,7 @@ fn resolve_service_binds_inner(
     for (name, raw_req) in services {
         let req = ServiceReq::parse(raw_req)
             .map_err(|e| ServiceError::BadRequirement(raw_req.clone(), e))?;
-        if name == SYSTEM_SERVICE {
+        if name == SYSTEM_SERVICE || name == IDENTITY_SERVICE {
             continue;
         }
         let path = socket_for(name);
@@ -807,7 +868,9 @@ fn resolve_service_binds_inner(
         // proxy and the egress gate.
         let host = OwnedFd::from(stream);
 
-        while RESERVED_CHILD_FDS.contains(&next_child_fd) {
+        while RESERVED_CHILD_FDS.contains(&next_child_fd)
+            || crate::owned_service::capture::archive_reserved_fd(next_child_fd)
+        {
             next_child_fd = next_child_fd.saturating_add(1);
         }
         let child_fd = next_child_fd;
@@ -1003,6 +1066,72 @@ mod tests {
             "the fixture must actually refuse connections, or it proves nothing"
         );
         path
+    }
+
+    #[test]
+    fn identity_handshake_uses_only_current_canonical_bound_subjects() {
+        let (mut writer, mut reader) = UnixStream::pair().unwrap();
+        write_identity_handshake(&mut writer, "so.tilo.notes", "room-7").unwrap();
+        drop(writer);
+        let bytes = runtime_identity::wire::HANDSHAKE_FRAMING
+            .read(&mut reader)
+            .unwrap()
+            .unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "workspace_id": "room-7", "app_id": "so.tilo.notes"
+            })
+        );
+        let actual: runtime_identity::wire::Handshake = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(actual.workspace_id, "room-7");
+        assert_eq!(actual.app_id, "so.tilo.notes");
+    }
+
+    #[test]
+    fn identity_presentation_negotiation_preserves_legacy_default_bytes() {
+        for enabled in [false, true] {
+            let (mut writer, mut reader) = UnixStream::pair().unwrap();
+            write_identity_handshake_negotiated(&mut writer, "so.tilo.notes", "room-7", enabled)
+                .unwrap();
+            drop(writer);
+            let bytes = runtime_identity::wire::HANDSHAKE_FRAMING
+                .read(&mut reader)
+                .unwrap()
+                .unwrap();
+            let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            if enabled {
+                assert_eq!(
+                    value["presentation_version"],
+                    runtime_identity::wire::PRESENTATION_VERSION
+                );
+                assert_eq!(value.as_object().unwrap().len(), 3);
+            } else {
+                assert_eq!(
+                    bytes,
+                    serde_json::to_vec(&runtime_identity::wire::Handshake {
+                        workspace_id: "room-7".into(),
+                        app_id: "so.tilo.notes".into()
+                    })
+                    .unwrap()
+                );
+                assert_eq!(value.as_object().unwrap().len(), 2);
+            }
+        }
+    }
+
+    #[test]
+    fn malformed_identity_contract_refuses_without_opening_a_service() {
+        assert!(matches!(
+            resolve_identity_bind_for_contract(
+                "so.tilo.notes",
+                Some("room-7"),
+                true,
+                Some("required@not-a-version")
+            ),
+            Err(ServiceError::BadRequirement(_, _))
+        ));
     }
 
     /// Services are found under `$XDG_RUNTIME_DIR`; point it at `dir` for
@@ -1300,6 +1429,43 @@ mod tests {
         let mut bytes = Vec::new();
         service.read_to_end(&mut bytes).expect("read");
         bytes
+    }
+
+    #[test]
+    fn declared_services_cannot_replace_selected_parent_view_descriptor() {
+        let dir = tempfile::tempdir().unwrap();
+        let _env = runtime_dir_env(dir.path());
+        let root = ensure_services_root().unwrap();
+        let mut services = BTreeMap::new();
+        let mut listeners = Vec::new();
+        for index in 0..48 {
+            let name = format!("selected-parent-{index:02}");
+            listeners.push(
+                std::os::unix::net::UnixListener::bind(root.join(format!("{name}.sock"))).unwrap(),
+            );
+            services.insert(name, "required@1".to_string());
+        }
+        let resolved = resolve_service_binds(&services, false).unwrap();
+        assert_eq!(resolved.len(), listeners.len());
+        assert!(
+            resolved
+                .iter()
+                .any(|service| { service.child_fd > crate::retained_view::SELECTED_PARENT_FD })
+        );
+        assert!(
+            resolved
+                .iter()
+                .all(|service| { service.child_fd != crate::retained_view::SELECTED_PARENT_FD })
+        );
+        for reserved in [
+            crate::retained_view::ALIAS_VIEW_FD,
+            crate::retained_view::ALIAS_ARGS_FD,
+            crate::owned_service::RETAINED_SELECTED_REPLACEMENT_PERMIT_FD,
+            crate::owned_service::RETAINED_NATIVE_HISTORY_VERIFIER_FD,
+        ] {
+            assert!(resolved.iter().any(|service| service.child_fd > reserved));
+            assert!(resolved.iter().all(|service| service.child_fd != reserved));
+        }
     }
 
     #[test]

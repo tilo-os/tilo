@@ -1,9 +1,8 @@
 //! Read-only immutable history transport, independent of restore eligibility.
 use super::{Access, EBUSY, EINVAL, EIO, ENOENT, Hash, QuickFS};
 use fs_protocol::files::{
-    FileHistoryPageV1, FileHistoryReadErrorV1 as Error, FileHistoryReadQueryV1 as Query,
-    FileHistoryReadResponseV1, FileHistoryReadScopeV1 as Scope, FileHistoryReadValueV1 as Value,
-    MAX_HISTORY_PAGE_VERSIONS, MAX_HISTORY_READ_BYTES,
+    FileHistoryReadErrorV1 as Error, FileHistoryReadQueryV1 as Query,
+    FileHistoryReadScopeV1 as Scope, FileHistoryReadValueV1 as Value,
 };
 
 impl QuickFS {
@@ -96,77 +95,9 @@ impl QuickFS {
     /// stale history state, or a query this transport does not answer.
     pub fn read_file_history(&self, ino: u64, query: Query) -> Result<Value, Error> {
         let (scope, snapshot, current_revision) = self.history_read_snapshot(ino)?;
-        match query {
-            Query::Page { cursor } => {
-                let start = match cursor {
-                    None => 0,
-                    Some((expected, id)) => {
-                        if expected != scope.frontier {
-                            return Err(Error::Stale);
-                        }
-                        snapshot
-                            .versions
-                            .iter()
-                            .position(|v| v.id == id)
-                            .and_then(|i| i.checked_add(1))
-                            .ok_or(Error::InvalidRequest)?
-                    }
-                };
-                let remaining = snapshot
-                    .versions
-                    .get(start..)
-                    .ok_or(Error::InvalidRequest)?;
-                let mut count = remaining.len().min(MAX_HISTORY_PAGE_VERSIONS);
-                loop {
-                    let versions = remaining
-                        .get(..count)
-                        .ok_or(Error::InvalidRequest)?
-                        .to_vec();
-                    let next_after = if remaining.len() > count {
-                        versions.last().map(|v| v.id)
-                    } else {
-                        None
-                    };
-                    let value = Value::Page(FileHistoryPageV1 {
-                        scope,
-                        versions,
-                        total_versions: snapshot.versions.len() as u64,
-                        heads: snapshot.heads.clone(),
-                        current_revision,
-                        next_after,
-                    });
-                    let size = serde_json::to_vec(&FileHistoryReadResponseV1 {
-                        schema_version: 1,
-                        result: Ok(value.clone()),
-                    })
-                    .map_err(|_| Error::Unavailable)?
-                    .len();
-                    if size <= MAX_HISTORY_READ_BYTES {
-                        return Ok(value);
-                    }
-                    count = count
-                        .checked_sub(1)
-                        .filter(|count| *count > 0)
-                        .ok_or(Error::TooLarge)?;
-                }
-            }
-            Query::Version {
-                frontier: expected,
-                version_id,
-            } => {
-                if scope.frontier != expected {
-                    return Err(Error::Stale);
-                }
-                let version = snapshot
-                    .versions
-                    .into_iter()
-                    .find(|v| v.id == version_id)
-                    .ok_or(Error::MissingVersion)?;
-                Ok(Value::Version { scope, version })
-            }
-            Query::Preview { .. } => Err(Error::InvalidRequest),
-        }
+        snapshot.read_query(scope, current_revision, query)
     }
+
     /// Read a version preview, provided the history frontier still matches.
     ///
     /// # Errors

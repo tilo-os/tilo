@@ -42,6 +42,80 @@ pub(super) struct OriginalInvocationData {
     execution: Option<tilo_actions::remote::ExecutionLease>,
 }
 impl OriginalInvocationData {
+    pub(super) fn permits_selected_open_v2(
+        &self,
+        request: &runtime_collab::open_selected::v2::Request,
+    ) -> bool {
+        let needed = if request.request.access.editable() {
+            tilo_actions::ActionKind::Undoable
+        } else {
+            tilo_actions::ActionKind::Read
+        };
+        if !request.valid()
+            || self.spec.contract.kind < needed
+            || self.spec.kind != tilo_actions::OperationKind::Effect
+            || self
+                .execution
+                .as_ref()
+                .is_some_and(|lease| !lease.is_live())
+            || self.request.address.resource != request.resource
+        {
+            return false;
+        }
+        selected_open_v2_action_matches(
+            &self.request.address,
+            self.request.argument.as_deref(),
+            &self.spec.params,
+            &request.resource,
+            &request.request.app_id,
+            request.request.access,
+        )
+    }
+
+    pub(super) fn permits_selected_discovery(
+        &self,
+        scope: &runtime_collab::open_selected::discovery::InvocationScope,
+    ) -> bool {
+        let needed = if scope.access.editable() {
+            tilo_actions::ActionKind::Undoable
+        } else {
+            tilo_actions::ActionKind::Read
+        };
+        scope.valid()
+            && self.spec.kind == tilo_actions::OperationKind::Effect
+            && self.spec.contract.kind >= needed
+            && self.execution.as_ref().is_none_or(|lease| lease.is_live())
+            && selected_open_v2_action_matches(
+                &self.request.address,
+                self.request.argument.as_deref(),
+                &self.spec.params,
+                &scope.resource,
+                &scope.app_id,
+                scope.access,
+            )
+    }
+
+    pub(super) fn permits_selected_open(
+        &self,
+        request: &runtime_collab::open_selected::Request,
+    ) -> bool {
+        if self.spec.kind != tilo_actions::OperationKind::Effect
+            || self.request.address.resource != request.resource
+            || self.spec.contract.kind < tilo_actions::ActionKind::Read
+            || self
+                .execution
+                .as_ref()
+                .is_some_and(|lease| !lease.is_live())
+        {
+            return false;
+        }
+        selected_open_action_matches(
+            &self.request.address,
+            self.request.argument.as_deref(),
+            request,
+        )
+    }
+
     pub(super) fn display_caller(
         self: &Arc<Self>,
         state: &Arc<CapnpBrokerState>,
@@ -824,5 +898,246 @@ impl CapnpBrokerState {
                 .with_owner_token(original)
         });
         Ok((stream, authorize))
+    }
+}
+
+fn selected_open_v2_action_matches(
+    address: &tilo_actions::ActionAddress,
+    argument: Option<&str>,
+    params: &[tilo_actions::ActionParam],
+    resource: &str,
+    app_id: &str,
+    access: runtime_collab::open_selected::v2::SelectedAccess,
+) -> bool {
+    if address.resource != resource {
+        return false;
+    }
+    let mut access_params = params.iter().filter(|param| param.name == "access");
+    let Some(param) = access_params.next() else {
+        return false;
+    };
+    if access_params.next().is_some() || param.required || param.ty != tilo_actions::ParamType::Text
+    {
+        return false;
+    }
+    let Some(schema) = param.schema.as_ref() else {
+        return false;
+    };
+    let Some(default) = schema.get("default").and_then(serde_json::Value::as_str) else {
+        return false;
+    };
+    let arguments = match argument {
+        Some(raw) => match serde_json::from_str::<serde_json::Value>(
+            raw.strip_prefix(tilo_actions::ARGUMENTS_JSON_PREFIX)
+                .unwrap_or(raw),
+        ) {
+            Ok(value) if value.is_object() => Some(value),
+            _ => return false,
+        },
+        None => None,
+    };
+    let actual = arguments
+        .as_ref()
+        .and_then(|value| value.get("access"))
+        .map_or(Some(default), serde_json::Value::as_str);
+    if actual != Some(access.as_str())
+        || !param.choices.iter().any(|choice| choice == access.as_str())
+    {
+        return false;
+    }
+    if let Some(app) = address.action.strip_prefix("open-with-app:") {
+        return app == app_id
+            && arguments.as_ref().is_none_or(|value| {
+                value
+                    .as_object()
+                    .is_some_and(|values| values.keys().all(|key| key == "access"))
+            })
+            && schema.get("const").and_then(serde_json::Value::as_str) == Some(default)
+            && default == access.as_str()
+            && param.choices.len() == 1;
+    }
+    if address.action != "open-with" {
+        return false;
+    }
+    arguments.is_some_and(|value| {
+        value.get("app").and_then(serde_json::Value::as_str) == Some(app_id)
+            && value
+                .get("always")
+                .is_none_or(|always| always == &serde_json::Value::Bool(false))
+    })
+}
+fn selected_open_action_matches(
+    address: &tilo_actions::ActionAddress,
+    argument: Option<&str>,
+    request: &runtime_collab::open_selected::Request,
+) -> bool {
+    if address.resource != request.resource {
+        return false;
+    }
+    let action = &address.action;
+    if let Some(app) = action.strip_prefix("open-with-app:") {
+        return app == request.request.app_id;
+    }
+    // Changing a default is another effect, deliberately absent here.
+    if action != "open-with" {
+        return false;
+    }
+    argument
+        .and_then(|argument| serde_json::from_str::<serde_json::Value>(argument).ok())
+        .is_some_and(|value| {
+            value.get("app").and_then(serde_json::Value::as_str)
+                == Some(request.request.app_id.as_str())
+                && value
+                    .get("always")
+                    .is_none_or(|always| always == &serde_json::Value::Bool(false))
+        })
+}
+#[cfg(test)]
+mod selected_open_tests {
+    use super::selected_open_action_matches;
+    use runtime_collab::open_selected::{PROTOCOL, Request, RootRequest};
+    use tilo_actions::ActionAddress;
+    #[test]
+    fn selected_open_requires_the_exact_canonical_target_and_resource() {
+        let request = Request {
+            protocol: PROTOCOL.into(),
+            resource: "entry:chosen".into(),
+            request: RootRequest {
+                schema: 1,
+                request_id: "11111111-1111-4111-8111-111111111111".into(),
+                components: vec![b"selected.txt".to_vec()],
+                app_id: "so.tilo.text-editor".into(),
+                read_only: true,
+            },
+            selected_descriptor: 3,
+            parent_descriptor: 4,
+            proof_descriptor: 5,
+        };
+        let address = ActionAddress::new("entry:chosen", "open-with");
+        assert!(selected_open_action_matches(
+            &address,
+            Some(r#"{"app":"so.tilo.text-editor","always":false}"#),
+            &request
+        ));
+        assert!(!selected_open_action_matches(
+            &address,
+            Some(r#"{"app":"so.tilo.terminal"}"#),
+            &request
+        ));
+        assert!(!selected_open_action_matches(
+            &address,
+            Some(r#"{"app":"so.tilo.text-editor","always":true}"#),
+            &request
+        ));
+        assert!(!selected_open_action_matches(&address, None, &request));
+        assert!(!selected_open_action_matches(
+            &ActionAddress::new("entry:other", "open-with-app:so.tilo.text-editor"),
+            None,
+            &request
+        ));
+        assert!(!selected_open_action_matches(
+            &ActionAddress::new("entry:chosen", "always-open-with:so.tilo.text-editor"),
+            None,
+            &request
+        ));
+        assert!(!selected_open_action_matches(
+            &ActionAddress::new("entry:chosen", "copy-selection"),
+            None,
+            &request
+        ));
+        assert!(selected_open_action_matches(
+            &ActionAddress::new("entry:chosen", "open-with-app:so.tilo.text-editor"),
+            None,
+            &request
+        ));
+    }
+}
+
+#[cfg(test)]
+mod selected_open_v2_tests {
+    use super::selected_open_v2_action_matches;
+    use runtime_collab::open_selected::v2::{PROTOCOL, Request, RootRequest, SelectedAccess};
+    use tilo_actions::{ActionAddress, ActionParam, ParamType};
+    #[test]
+    fn original_bound_access_cannot_be_replaced_by_request_or_legacy_shorthand() {
+        let request = Request {
+            protocol: PROTOCOL.into(),
+            resource: "entry:report".into(),
+            request: RootRequest {
+                schema: 2,
+                request_id: "11111111-1111-4111-8111-111111111111".into(),
+                components: vec![b"report.txt".to_vec()],
+                app_id: "so.tilo.text-editor".into(),
+                access: SelectedAccess::EditInParent,
+            },
+            selected_descriptor: 3,
+            parent_descriptor: 4,
+            proof_descriptor: 5,
+        };
+        let param=ActionParam::optional("access",ParamType::Text,"Selected source access").with_choices(["edit-in-parent"]).with_schema(serde_json::json!({"type":"string","const":"edit-in-parent","default":"edit-in-parent"}));
+        let address = ActionAddress::new("entry:report", "open-with-app:so.tilo.text-editor");
+        assert!(selected_open_v2_action_matches(
+            &address,
+            None,
+            std::slice::from_ref(&param),
+            &request.resource,
+            &request.request.app_id,
+            request.request.access
+        ));
+        assert!(!selected_open_v2_action_matches(
+            &address,
+            None,
+            &[],
+            &request.resource,
+            &request.request.app_id,
+            request.request.access
+        ));
+        let readonly = ActionParam::optional("access", ParamType::Text, "Selected source access")
+            .with_choices(["read-only"])
+            .with_schema(
+                serde_json::json!({"type":"string","const":"read-only","default":"read-only"}),
+            );
+        assert!(!selected_open_v2_action_matches(
+            &address,
+            None,
+            &[readonly],
+            &request.resource,
+            &request.request.app_id,
+            request.request.access
+        ));
+        assert!(!selected_open_v2_action_matches(
+            &address,
+            Some(r#"{"access":"read-only"}"#),
+            std::slice::from_ref(&param),
+            &request.resource,
+            &request.request.app_id,
+            request.request.access
+        ));
+        let different = ActionAddress::new("entry:report", "open-with-app:so.tilo.terminal");
+        assert!(!selected_open_v2_action_matches(
+            &different,
+            None,
+            std::slice::from_ref(&param),
+            &request.resource,
+            &request.request.app_id,
+            request.request.access
+        ));
+        let generic = ActionAddress::new("entry:report", "open-with");
+        assert!(selected_open_v2_action_matches(
+            &generic,
+            Some(r#"{"app":"so.tilo.text-editor","always":false}"#),
+            std::slice::from_ref(&param),
+            &request.resource,
+            &request.request.app_id,
+            request.request.access
+        ));
+        assert!(!selected_open_v2_action_matches(
+            &generic,
+            Some(r#"{"app":"so.tilo.text-editor","always":true}"#),
+            &[param],
+            &request.resource,
+            &request.request.app_id,
+            request.request.access
+        ));
     }
 }

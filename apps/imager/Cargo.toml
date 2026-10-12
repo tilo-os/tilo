@@ -13,8 +13,26 @@ path = "src/lib.rs"
 name = "imager"
 path = "src/main.rs"
 
+[[bin]]
+name = "tilo-prepared-setup"
+path = "src/bin/tilo-prepared-setup.rs"
+
+[[bin]]
+name = "tilo-home-export"
+path = "src/bin/tilo-home-export.rs"
+required-features = ["capture-worker"]
+test = false
+
 [features]
 thin = ["dep:runtime-dylib"]
+capture-worker = ["runtime-fs/selected-fuse", "dep:fuser"]
+# Explicit new signed cohort; default capture-worker preserves shipped Home5.
+capture-worker-applications = ["capture-worker"]
+# Privileged acceptance tests require a disposable, observable native store.
+native-capture-qualification = ["dep:zbus", "launcher/native-home-alias-qualification"]
+native-current-device-qualification = []
+# Explicit isolated original-owner SecretService + pinned public Slack fixture.
+native-slack-qualification = ["dep:zbus"]
 # Host downloads opt into the narrowly elevated raw-media writer. The tapp
 # deliberately omits this feature because its sandbox has no raw-device portal.
 host-media-writer = []
@@ -25,6 +43,10 @@ host-media-writer = []
 flatpak-media-writer = ["dep:zbus", "block-devices/udisks"]
 
 [dependencies]
+blake3.workspace = true
+ed25519-dalek.workspace = true
+browser-continuity = { workspace = true, features = ["native"] }
+tilo-image-codec = { version = "0.1.0", path = "../../crates/platform/tilo-image-codec" }
 uuid.workspace = true
 base64.workspace = true
 crc32fast.workspace = true
@@ -48,6 +70,26 @@ cap-std = "3.4.6"
 tilo-paths = { path = "../../crates/platform/tilo-paths" }
 serde.workspace = true
 serde_json.workspace = true
+accounts = { path = "../../crates/system/accounts" }
+account-custody = { path = "../../crates/system/account-custody" }
+cloud-source-dav = { path = "../../crates/system/cloud-source-dav" }
+tilo-dav = { path = "../../crates/system/tilo-dav" }
+zeroize.workspace = true
+tilo-seal = { path = "../../crates/system/tilo-seal" }
+tilo-unlock-protocol = { path = "../../crates/collab/tilo-unlock-protocol" }
+tar.workspace = true
+runtime-fs = { path = "../../crates/runtime/runtime-fs" }
+tokio = { workspace = true, features = ["rt-multi-thread", "net", "io-util", "macros", "sync", "time"] }
+runtime-identity = { path = "../../crates/runtime/runtime-identity" }
+# Root retained actor shares the canonical native-person proof and frame codec.
+runtime-collab = { path = "../../crates/runtime/runtime-collab" }
+wire-frame = { path = "../../crates/system/wire-frame" }
+aes = { version = "0.9.3", features = ["zeroize"] }
+hmac.workspace = true
+pbkdf2.workspace = true
+sha1 = "0.11"
+ctr = "0.10.1"
+url.workspace = true
 hex.workspace = true
 sha2.workspace = true
 reqwest = { workspace = true, features = ["blocking"] }
@@ -68,6 +110,20 @@ workspace-hack = { version = "0.1" }
 libc.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
+fuser = { workspace = true, optional = true }
+glib = "=0.21.5"
+block-devices = { path = "../../crates/system/block-devices", features = ["udisks"] }
+desktop-entry = { package = "tilo-desktop-entry", path = "../../crates/system/desktop-entry" }
+fs-native = { path = "../../crates/system/fs-native" }
+launcher = { path = "../../crates/packaging/launcher" }
+runtime-portal = { path = "../../crates/runtime/runtime-portal", default-features = false }
+runtime-bundle = { path = "../../crates/packaging/runtime-bundle" }
+package-store = { path = "../../crates/packaging/package-store" }
+tilo-app-package = { path = "../../crates/packaging/tilo-app-package" }
+tilo-secrets.workspace = true
+rusqlite = { version = "0.37.0", features = ["bundled"] }
+# Read granted Chromium origin storage through LevelDB's recovery semantics.
+leveldb-sys = { version = "=2.0.9", features = ["snappy"] }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 
 [target.'cfg(not(target_os = "linux"))'.dependencies]
@@ -88,6 +144,13 @@ blake3 = { workspace = true, features = ["no_neon"] }
 ignored = ["blake3"]
 
 [dev-dependencies]
+tilo-desktop-model = { path = "../../crates/session/desktop-model" }
+vello_encoding.workspace = true
+# Installer transport must reach the canonical storage consumer, not only the vault.
+tilo-fs = { path = "../../crates/system/fs" }
+cloud-source-dav = { path = "../../crates/system/cloud-source-dav", features = ["fake-server"] }
+test-http = { path = "../../crates/dev/test-http" }
+tilo-oauth = { path = "../../crates/system/tilo-oauth", features = ["fake"] }
 tilo-test-env = { path = "../../crates/dev/test-env" }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 

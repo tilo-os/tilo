@@ -384,6 +384,35 @@ pub(crate) fn take_manager() -> Option<CollaborationManager> {
 pub(crate) fn capture_bridge() -> Option<InitialReadBridge> {
     current()?.bridge.clone()
 }
+/// Capture the component's already-bound route, while retaining the original worker.
+pub(crate) fn service_capture_bridge() -> Option<InitialReadBridge> {
+    let construction = current()?;
+    if construction.failure.borrow().is_some() {
+        return None;
+    }
+    let mut bridge = construction.bridge.clone()?;
+    let route = construction
+        .manager
+        .borrow()
+        .as_ref()?
+        .primary_route()?
+        .route
+        .clone();
+    if route.record.is_none()
+        || route.app_id != bridge.route.app_id
+        || route.cluster_id != bridge.route.cluster_id
+    {
+        return None;
+    }
+    bridge
+        .check_scope("so.tilo.browser", Some(&route.cluster_id.to_string()))
+        .ok()?;
+    if !bridge.publishable(&route.channel_id()) {
+        return None;
+    }
+    bridge.route = route;
+    Some(bridge)
+}
 pub(crate) fn fail(error: &str) {
     if let Some(state) = current() {
         state
@@ -418,6 +447,40 @@ pub(crate) struct InitialReadBridge {
 }
 #[cfg(feature = "broker-transport")]
 impl InitialReadBridge {
+    pub(crate) fn service_request(
+        &self,
+        command: runtime_collab::BrowserServiceSessionCommand,
+        wake: Option<crate::WakeHandle>,
+    ) -> Result<
+        std::sync::mpsc::Receiver<Result<runtime_collab::BrowserServiceSessionReply, String>>,
+        String,
+    > {
+        self.check_scope("so.tilo.browser", None)?;
+        if !command.valid() {
+            return Err("This account could not be opened".into());
+        }
+        if !self.publishable(&self.route.channel_id()) {
+            return Err("This account could not be opened".into());
+        }
+        let tx = self
+            .commands
+            .upgrade()
+            .ok_or("This account could not be opened")?;
+        let (reply, received) = std::sync::mpsc::sync_channel(1);
+        if !enqueue_sdk_command(
+            &tx,
+            SdkCommand::BrowserServiceSession {
+                route: self.route.clone(),
+                command,
+                wake,
+                reply,
+            },
+            &self.state,
+        ) {
+            return Err("This account could not be opened".into());
+        }
+        Ok(received)
+    }
     fn initialize(
         &self,
         request: runtime_collab::committed_document::Request,
@@ -662,6 +725,16 @@ impl InitialReadBridge {
         clippy::unnecessary_wraps,
         reason = "mirrors the broker-backed bridge's signature"
     )]
+    pub(crate) fn service_request(
+        &self,
+        _command: runtime_collab::BrowserServiceSessionCommand,
+        _wake: Option<crate::WakeHandle>,
+    ) -> Result<
+        std::sync::mpsc::Receiver<Result<runtime_collab::BrowserServiceSessionReply, String>>,
+        String,
+    > {
+        match self.never {}
+    }
     fn from_manager(_manager: &CollaborationManager) -> Result<Option<Self>, String> {
         Ok(None)
     }
@@ -721,6 +794,154 @@ mod tests {
         collections::BTreeMap,
         rc::Rc,
     };
+
+    struct BoundTransport;
+    impl crate::collaboration::CollabTransport for BoundTransport {
+        fn status(&self) -> crate::collaboration::TransportStatus {
+            crate::collaboration::TransportStatus::Ready
+        }
+        fn submit(
+            &mut self,
+            _: crate::collaboration::TransportCommand,
+        ) -> Result<(), crate::collaboration::TransportError> {
+            Ok(())
+        }
+        fn drain(&mut self, _: &mut Vec<crate::collaboration::CollabEvent>) {}
+        fn take_primary_route_result(&mut self) -> Option<Result<RouteSpec, String>> {
+            None
+        }
+        fn take_action_directory_requests(
+            &mut self,
+            _: &mut Vec<crate::collaboration::ActionDirectoryRequest>,
+        ) {
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn browser_session_private_receipt_stays_on_original_route_and_refuses_revoked_reads() {
+        let route = RouteSpec::record("so.tilo.browser", uuid::Uuid::new_v4(), "browser-original");
+        let state = BridgeState::new();
+        let ready = state.document_reads.close_for_test(&route.channel_id());
+        ready.store(true, std::sync::atomic::Ordering::Release);
+        let (sender, mut receiver) = tokio::sync::mpsc::channel(4);
+        let bridge = InitialReadBridge {
+            route: RouteSpec::app("so.tilo.browser", route.cluster_id),
+            commands: sender.downgrade(),
+            state: state.clone(),
+        };
+        let mut manager = CollaborationManager::with_transport(Box::new(BoundTransport));
+        manager.primary_route.announce(route.clone());
+        manager.primary_route.accept(Ok(route.clone())).unwrap();
+        assert_eq!(manager.primary_route().unwrap().route, route);
+        let construction = Rc::new(Construction {
+            manager: RefCell::new(Some(manager)),
+            bridge: Some(bridge.clone()),
+            primary: RefCell::new(None),
+            creation: RefCell::new(BTreeMap::new()),
+            failure: RefCell::new(None),
+            transferring: Cell::new(false),
+            component_scope: RefCell::new(None),
+        });
+        let previous =
+            super::CONSTRUCTION.with(|slot| slot.replace(Some(Rc::downgrade(&construction))));
+        let _construction = NativeConstruction {
+            state: construction,
+            previous,
+        };
+        let client = crate::collaboration::browser_service_sessions::Client::capture().unwrap();
+        let later_route = RouteSpec::record("so.tilo.browser", route.cluster_id, "later-record");
+        state
+            .document_reads
+            .close_for_test(&later_route.channel_id())
+            .store(true, std::sync::atomic::Ordering::Release);
+        {
+            let mut retained = _construction.state.manager.borrow_mut();
+            let manager = retained.as_mut().unwrap();
+            manager.primary_route.announce(later_route.clone());
+            manager
+                .primary_route
+                .accept(Ok(later_route.clone()))
+                .unwrap();
+            assert_eq!(manager.primary_route().unwrap().route, later_route);
+        }
+        let mut received = client
+            .request(runtime_collab::BrowserServiceSessionCommand::List, None)
+            .unwrap();
+        let queued = receiver.try_recv().unwrap();
+        let super::SdkCommand::BrowserServiceSession {
+            route: actual,
+            command,
+            reply,
+            ..
+        } = queued.command
+        else {
+            panic!("private request entered an ordinary document command");
+        };
+        assert_eq!(actual, route);
+        assert!(matches!(
+            command,
+            runtime_collab::BrowserServiceSessionCommand::List
+        ));
+        assert!(received.poll().is_none());
+        reply
+            .try_send(Ok(runtime_collab::BrowserServiceSessionReply::List {
+                sessions: vec![],
+            }))
+            .unwrap();
+        assert!(
+            matches!(received.poll().unwrap().unwrap(), runtime_collab::BrowserServiceSessionReply::List { sessions } if sessions.is_empty())
+        );
+        assert!(received.poll().is_none(), "private reply delivered twice");
+        let next = client
+            .request(runtime_collab::BrowserServiceSessionCommand::List, None)
+            .unwrap();
+        drop(received);
+        assert!(
+            client
+                .request(runtime_collab::BrowserServiceSessionCommand::List, None)
+                .is_err(),
+            "old receipt released new in-flight custody"
+        );
+        let _second_queued = receiver.try_recv().unwrap();
+        assert!(receiver.try_recv().is_err());
+        drop(next);
+        let scope = crate::WakeScope::new();
+        let retired = scope.handle();
+        drop(scope);
+        assert!(!retired.is_active());
+        assert!(
+            client
+                .request(
+                    runtime_collab::BrowserServiceSessionCommand::List,
+                    Some(retired)
+                )
+                .is_err()
+        );
+        assert!(
+            receiver.try_recv().is_err(),
+            "retired component queued a private request"
+        );
+        let other = InitialReadBridge {
+            route: RouteSpec::record("so.tilo.chat", route.cluster_id, "browser-original"),
+            commands: sender.downgrade(),
+            state: state.clone(),
+        };
+        assert!(
+            other
+                .service_request(runtime_collab::BrowserServiceSessionCommand::List, None)
+                .is_err()
+        );
+        state.document_reads.close_for_test(&route.channel_id());
+        assert!(
+            client
+                .request(runtime_collab::BrowserServiceSessionCommand::List, None)
+                .is_err()
+        );
+        assert!(
+            receiver.try_recv().is_err(),
+            "refused routes queued private requests"
+        );
+    }
 
     #[tokio::test(flavor = "current_thread")]
     async fn component_primary_read_retains_original_creation_receipt_without_eager_read() {

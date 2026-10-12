@@ -231,6 +231,13 @@ pub struct Package {
     pub version: String,
     /// One of the [`Kind`] variants.
     pub kind: Kind,
+    /// Signed service wire contract; absent for packages without a service.
+    #[serde(
+        default,
+        rename = "service-protocol",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub service_protocol: Option<ServiceProtocol>,
     /// `<runtime-name>/<version>` of the Tilo runtime this binds to;
     /// `None` for `kind = "runtime"`. Version must parse as semver.
     ///
@@ -281,6 +288,13 @@ pub struct Package {
     /// `tilo-install` refuses the install with a clear error.
     #[serde(default)]
     pub isa: IsaRequirements,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ServiceProtocol {
+    pub name: String,
+    pub version: u32,
 }
 
 impl Package {

@@ -336,6 +336,7 @@ files = [
   { from = "/usr/lib/tilo-runtime/", to = "/usr/lib/tilo-runtime/", tree = true },
   { from = "/usr/share/tilo/font-catalogs/", to = "/usr/share/tilo/font-catalogs/", tree = true },
   { from = "runtime-bundle-publisher.hex", to = "/usr/share/tilo/runtime-bundle-publisher.hex", mode = "0644" },
+  { from = "runtime-version", to = "/usr/share/tilo/runtime-version", mode = "0644" },
   { from = "browser-runtime-publisher.hex", to = "/usr/share/tilo/browser-runtime-publisher.hex", mode = "0644" },
   { from = "registry-runtime-publisher.hex", to = "/usr/share/tilo/registry-runtime-publisher.hex", mode = "0644" },
   { from = "/usr/share/tilo-apps/", to = "/usr/share/tilo-apps/", tree = true },
@@ -370,6 +371,22 @@ bins = ["tilo-account-credential"]
 layer = "desktop-binaries"
 files = [
   { from = "tilo-account-credential", to = "/usr/libexec/tilo-account-credential", mode = "0755" },
+  { from = "@manifest/scripts/verify-account-consumer-capability.py", to = "/usr/libexec/tilo-verify-account-consumer-capability", mode = "0755" },
+  { from = "@manifest/scripts/service-consumer-capability.py", to = "/usr/libexec/tilo-service-consumer-capability.py", mode = "0755" },
+]
+
+# Installed target-user setup consumer. First use and the retained launcher
+# authenticate this root-owned helper; elevated operations keep their existing
+# parent/descriptor admission rather than gaining a new installation grant.
+[[component]]
+name = "prepared-setup"
+kind = "userspace"
+scope = "session"
+packages = ["imager"]
+bins = ["tilo-prepared-setup"]
+layer = "desktop-binaries"
+files = [
+  { from = "tilo-prepared-setup", to = "/usr/libexec/tilo-prepared-setup", mode = "0755" },
 ]
 
 [[component]]
@@ -394,6 +411,8 @@ bins = ["tilo-installer"]
 layer = "desktop-binaries"
 files = [
   { from = "tilo-installer", to = "/usr/bin/tilo-installer", mode = "0755" },
+  { from = "@manifest/usr/libexec/tilo-firstboot-home-seeds.py", to = "/usr/libexec/tilo-firstboot-home-seeds.py", mode = "0755" },
+  { from = "@manifest/usr/libexec/tilo-installer-prepared-setup-extract.py", to = "/usr/libexec/tilo-installer-prepared-setup-extract.py", mode = "0755" },
 ]
 
 [[component]]

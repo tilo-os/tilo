@@ -129,6 +129,21 @@ impl Imager {
 #[derive(Clone, Debug, PartialEq, Eq, Effect)]
 #[effect(operation = "imager.write-plan")]
 pub enum ImagerEffect {
+    /// Prepare an explicitly selected original-source migration for this medium.
+    /// Reading requires local administrator approval; this does not erase media.
+    #[effect(job, cancellable, privileged)]
+    PrepareOfflineMigration {
+        #[param("Device path of the already reviewed external target drive")]
+        device: String,
+    },
+    /// Complete an authenticated pending migration from the explicitly selected medium.
+    #[effect(job, cancellable, privileged)]
+    CompleteOfflineMigration {
+        #[param("Device path of the explicitly selected Tilo installation medium")]
+        device: String,
+        #[param(secret, "Password chosen while preparing this Tilo installation")]
+        password: String,
+    },
     /// Erase drive and write image.
     #[effect(job, cancellable)]
     Write {
@@ -186,6 +201,24 @@ pub enum ImagerEffect {
         #[param("Kernel name of a removable drive, e.g. sdb")]
         drive: String,
     },
+    /// Choose a mounted folder on the verified installer medium for prepared setup.
+    #[effect(job, device_only)]
+    ChoosePreparedFilesystem,
+    /// Retry automatic delivery to the verified installer's EFI filesystem.
+    #[effect(returns, device_only)]
+    RetryPreparedDelivery,
+    /// Return to the preserved guided preparation and renew changed home contents.
+    #[effect(returns, device_only)]
+    ReviewChangedPreparedFiles,
+    /// Deliver authenticated prepared setup to the exact verified medium.
+    #[effect(returns, device_only)]
+    DeliverPreparedSetup {
+        #[param(secret, "Granted mounted root of the verified installer medium")]
+        mounted_root: String,
+    },
+    /// Cancel prepared setup delivery and wait for cleanup.
+    #[effect(device_only)]
+    CancelPreparedDelivery,
 }
 
 /// The imager: one binary, three flows over the one resource. A plain
@@ -193,18 +226,23 @@ pub enum ImagerEffect {
 /// `--import-folders` the later folder imports.
 pub struct ImagerShell;
 
+/// The device-local guided preparation over the same Imager resource.
+pub struct GuidedInstallerShell;
+
 /// Which flow a window shows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Flow {
     Wizard,
     Setup,
     Imports,
+    InstallerPreview,
 }
 
 impl Flow {
     /// The flow a screenshot scenario shows.
     fn of_scenario(scenario: Option<&str>) -> Self {
         match scenario {
+            Some(name) if name.starts_with("installer-") => Self::InstallerPreview,
             Some(name) if name.starts_with("setup-") => Self::Setup,
             Some(name) if name.starts_with("import-") => Self::Imports,
             _ => Self::Wizard,
@@ -233,6 +271,7 @@ const WIZARD_SCENARIOS: &[&str] = &[
 static SCENARIOS: std::sync::LazyLock<Vec<&'static str>> = std::sync::LazyLock::new(|| {
     WIZARD_SCENARIOS
         .iter()
+        .chain(crate::setup::journey::SCENARIOS)
         .chain(crate::setup::view::SCENARIOS)
         .chain(crate::setup::import_view::SCENARIOS)
         .copied()
@@ -266,7 +305,12 @@ impl ResourceApp for ImagerShell {
     const ID: &'static str = "so.tilo.imager";
     const TITLE: &'static str = "Tilo Installer";
     const ICON: Option<&'static str> = Some("imager");
-    const FLAGS: &'static [&'static str] = &["--setup", "--import-folders"];
+    const FLAGS: &'static [&'static str] = &[
+        "--setup",
+        "--import-folders",
+        "--installer",
+        "--installer-preview",
+    ];
     // Only hosts with a local workspace runtime can attach the imager.
     const ATTACHES_RUNTIME: bool = ui::collaboration::SESSION_RUNTIME_SUPPORTED;
 
@@ -319,7 +363,9 @@ impl ResourceApp for ImagerShell {
     fn view(cx: &mut ViewCx<Imager>) -> Element {
         let flow = cx.fixture::<Flow>().map_or_else(
             || {
-                if cx.launch_flag("--import-folders") {
+                if cx.launch_flag("--installer") || cx.launch_flag("--installer-preview") {
+                    Flow::InstallerPreview
+                } else if cx.launch_flag("--import-folders") {
                     Flow::Imports
                 } else if cx.launch_flag("--setup") {
                     Flow::Setup
@@ -330,10 +376,48 @@ impl ResourceApp for ImagerShell {
             |flow| *flow,
         );
         match flow {
+            Flow::InstallerPreview => crate::setup::journey::view(cx),
             Flow::Wizard => cx.surface(ImagerApp::new()),
             Flow::Setup => crate::setup::view::view(cx),
             Flow::Imports => crate::setup::import_view::view(cx),
         }
+    }
+}
+
+impl ResourceApp for GuidedInstallerShell {
+    type Resource = Imager;
+    const ID: &'static str = ImagerShell::ID;
+    const TITLE: &'static str = "Tilo Installer";
+    const ICON: Option<&'static str> = ImagerShell::ICON;
+    const FLAGS: &'static [&'static str] = ImagerShell::FLAGS;
+    const ATTACHES_RUNTIME: bool = false;
+
+    fn helpers() -> &'static [Helper] {
+        ImagerShell::helpers()
+    }
+
+    fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {
+        ImagerShell::catalog()
+    }
+
+    fn scenarios() -> &'static [&'static str] {
+        crate::setup::journey::SCENARIOS
+    }
+
+    fn shot_viewport(scenario: Option<&str>) -> (u32, u32) {
+        ImagerShell::shot_viewport(scenario)
+    }
+
+    fn fixture(fixture: &mut Fixture<Imager>) {
+        ImagerShell::fixture(fixture);
+    }
+
+    fn scenario(name: Option<&str>) -> Vec<Invoke<Imager>> {
+        ImagerShell::scenario(name)
+    }
+
+    fn view(cx: &mut ViewCx<Imager>) -> Element {
+        ImagerShell::view(cx)
     }
 }
 

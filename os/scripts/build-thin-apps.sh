@@ -11,6 +11,16 @@ INCLUDE_PACKAGES=" ${INCLUDE_PACKAGES:-} "
 BUILD_PACKAGES=" ${BUILD_PACKAGES:-} "
 APP_FEATURES="${APP_FEATURES:-}"
 PROFILE="${PROFILE:-thin-app}"
+BUILD_ROLE="${BUILD_ROLE:-apps}"
+BUILD_PHASE="${BUILD_PHASE:-all}"
+case "$BUILD_PHASE" in all|build|verify) ;; *) echo "invalid thin build phase" >&2; exit 1 ;; esac
+case "$BUILD_ROLE" in apps|home-capture) ;; *) echo "invalid thin build role" >&2; exit 1 ;; esac
+if [ "$BUILD_ROLE" = home-capture ]; then
+    case "$BUILD_PACKAGES" in
+        " imager "|" imager file-explorer word-processor ") ;;
+        *) echo "home capture selects the Imager worker and optional ordinary Files/Writer" >&2; exit 1 ;;
+    esac
+fi
 TARGET_DIR="${TARGET_DIR:-${CARGO_TARGET_DIR:-$REPO/target}}"
 
 packages=()
@@ -43,6 +53,10 @@ for manifest in "$REPO"/apps/*/tilo-app.toml; do
                    --config "profile.$PROFILE.package.\"$package\".codegen-units=1"
                    --config "profile.$PROFILE.package.\"$package\".strip=\"symbols\"")
     features+=("$package/thin")
+    if [ "$BUILD_ROLE" = home-capture ] && [ "$package" = imager ]; then
+        binary=tilo-home-export
+        features+=(imager/capture-worker)
+    fi
     binary_crates+=("${binary//-/_}")
     if [ "$BUILD_PACKAGES" = "  " ] || [[ "$BUILD_PACKAGES" == *" $package "* ]]; then
         binaries+=("$binary")
@@ -82,6 +96,10 @@ feature_csv="$(IFS=,; echo "${features[*]}")"
 if [ -n "$APP_FEATURES" ]; then
     feature_csv="$feature_csv,$APP_FEATURES"
 fi
+# The protected-grant probe must resolve the very SDK shipped for every app
+# selection; building it separately would permit a different unified graph.
+binary_crates+=(tilo_runtime_account_capability)
+build_targets+=(--bin tilo-runtime-account-capability)
 thin_crates="$(IFS=:; echo "${binary_crates[*]}")"
 
 # Keep every package and feature in resolution, but select only requested binary
@@ -117,17 +135,27 @@ if [[ ${RUSTC_WRAPPER:-} == */sccache || ${RUSTC_WRAPPER:-} == sccache ]]; then
                       --config "env.TILO_THIN_SCCACHE.value=$cache_config"
                       --config "env.TILO_THIN_SCCACHE.force=true")
 fi
-if [ -n "${SDK_COMPILER_UNITS:-}" ]; then
+if [ "$BUILD_PHASE" != verify ] && [ -n "${SDK_COMPILER_UNITS:-}" ]; then
     extra_cargo_args+=(--message-format=json-render-diagnostics)
     # Keep the actual unit identities on the producing machine; no runtime bytes change.
     exec 3>&1
     exec > >(tee "$SDK_COMPILER_UNITS" >&3)
     sdk_compiler_stream_pid=$!
 fi
+if [ "$BUILD_PHASE" != verify ]; then
 "${CARGO:-cargo}" build --locked --profile "$PROFILE" --features "$feature_csv" "${extra_cargo_args[@]}" \
     --config "build.rustc-workspace-wrapper=\"$REPO/tools/ci/rustc-thin-app-wrapper.sh\"" \
     --config "env.TILO_THIN_BIN_CRATES=\"$thin_crates\"" \
     "${app_profiles[@]}" -p runtime-dylib "${packages[@]}" "${build_targets[@]}"
+fi
+if [ "$BUILD_PHASE" = build ]; then
+    if [ -n "${SDK_COMPILER_UNITS:-}" ]; then
+        exec 1>&3 3>&-
+        wait "$sdk_compiler_stream_pid"
+    fi
+    printf 'thin graph compiled; native verification still required (%s)\n' "$BUILD_ROLE"
+    exit 0
+fi
 
 # A Rust dylib mismatch is not reliably rejected by the ELF linker: symbol
 # names include crate hashes, so an app built against a second feature-unified
@@ -163,12 +191,14 @@ for index in "${!binaries[@]}"; do
         echo "thin app was not compiled through rustc-thin-app-wrapper.sh: $binary" >&2
         exit 1
     }
+    loader_arguments=(--help)
+    [ "$binary" != tilo-home-export ] || loader_arguments=(--protocol)
     set +e
     # Every symbol bound at exec, whatever the app was linked with: the
     # runtime keeps only what something exported reaches, so a missing one
     # fails here rather than at first use.
     LD_BIND_NOW=1 LD_LIBRARY_PATH="$TARGET_DIR/$PROFILE:$rust_target_libdir" \
-        "$TARGET_DIR/$PROFILE/$binary" --help \
+        "$TARGET_DIR/$PROFILE/$binary" "${loader_arguments[@]}" \
         >/dev/null 2>"$TARGET_DIR/$PROFILE/.${crate}.loader-check.err"
     status=$?
     set -e
@@ -215,7 +245,7 @@ printf 'built %s thin tapp apps with %s and %s runtime engines\n' \
 
 # The producer may capture the unit stream immediately after this script exits.
 # Join its writer rather than exposing a still-being-written inventory.
-if [ -n "${SDK_COMPILER_UNITS:-}" ]; then
+if [ "$BUILD_PHASE" != verify ] && [ -n "${SDK_COMPILER_UNITS:-}" ]; then
     exec 1>&3 3>&-
     wait "$sdk_compiler_stream_pid"
 fi

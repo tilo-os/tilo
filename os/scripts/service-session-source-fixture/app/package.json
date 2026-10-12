@@ -1,0 +1,7 @@
+{
+  "name": "tilo-official-electron-session-source-fixture",
+  "productName": "Slack",
+  "version": "1.0.0",
+  "private": true,
+  "main": "main.cjs"
+}

@@ -402,3 +402,1114 @@ imager-install-profile-enroll-local-identity = { $new ->
 }
 imager-user-account-full-name = Changed the first user's full name
 imager-user-account-username = Changed the first user's username
+
+# Guided installer and explicit local migration.
+installer-preview-destination-heading = Welcome to Tilo
+
+installer-preview-destination-intro = Where would you like to install it?
+
+installer-preview-computer-title = On this computer
+
+installer-preview-computer-body = Use Tilo as your operating system, alongside your current one.
+
+installer-preview-computer-usb-body = Prepare a USB installer to install Tilo on this computer, alongside your current system.
+
+installer-preview-another-title = On another computer
+
+installer-preview-another-body = Prepare a USB installer to take Tilo to another device.
+
+installer-preview-desktop-title = As a desktop
+
+installer-preview-desktop-body = Use the Tilo desktop with your existing Linux system.
+
+installer-preview-migration-heading = Bring your things, or start fresh?
+
+installer-preview-migrate-title = Migrate from this computer
+
+installer-preview-migrate-body = Make your documents, supported apps and accounts accessible in Tilo. Your originals stay unchanged.
+
+installer-preview-fresh-title = Start fresh
+
+installer-preview-fresh-body = Start without importing your documents, apps or accounts. Your existing things stay unchanged.
+
+installer-preview-identity-heading = Have you used Tilo before?
+
+installer-preview-new-title = This is my first time
+
+installer-preview-new-body = Create your Tilo identity. Welcome!
+
+installer-preview-existing-title = I already use Tilo
+
+installer-preview-existing-body = Connect this device to your existing Tilo identity.
+
+installer-preview-profile-heading = Your profile
+
+installer-preview-profile-intro = This is how you'll appear across Tilo.
+
+installer-preview-name-label = Your name
+
+installer-preview-profile-avatar = Keep your initials or choose a picture. You can change it later.
+
+installer-preview-password-heading = Choose a password
+
+installer-preview-password-intro = You’ll use this to unlock Tilo.
+
+installer-preview-password-label = Password
+
+installer-preview-confirmation-label = Confirm password
+
+installer-preview-password-hint = Use at least 15 characters, ideally several unrelated words.
+
+installer-preview-connect-heading = Bring your Tilo identity
+
+installer-preview-device-title = Use another Tilo device
+
+installer-preview-device-body = Confirm the connection on a device you already use.
+
+installer-preview-backup-title = Restore an identity backup
+
+installer-preview-backup-body = Use your encrypted backup and its passphrase.
+
+installer-preview-devices-heading = Your devices
+
+installer-preview-devices-intro = Use this identity to manage all your Tilo devices.
+
+installer-preview-device-name-label = Name this device
+
+installer-preview-device-default = My computer
+
+installer-preview-more-devices = More devices
+
+installer-preview-existing-avatar = Your existing Tilo identity
+
+installer-preview-new-recovery = When you first log in, Tilo will help you make an encrypted identity backup.
+
+installer-preview-existing-recovery = Your existing identity stays yours. This device joins it; you don't create a second identity.
+
+installer-preview-belongings-heading = Your belongings
+
+installer-preview-belongings-intro = Choose what to bring. Your originals stay unchanged.
+
+installer-preview-files-title = Files and settings
+
+installer-preview-files-body = Your entire home folder, including hidden files, browser profiles, saved credentials, Flatpak apps and settings.
+
+installer-preview-accounts-title = Connect services in Tilo
+
+installer-preview-accounts-body = Choose saved connections or sign in on the next step.
+
+installer-preview-choose-belongings = Choose what comes over
+
+installer-preview-hide-details = Hide details
+
+installer-preview-bring-things = Bring my things
+
+installer-preview-bring-selected = Bring selected things
+
+installer-preview-storage-heading = Choose space for Tilo
+
+installer-preview-storage-intro = Keep your current system and install Tilo alongside it.
+
+installer-preview-storage-another = Choose a USB drive next. Its contents will be erased when you confirm the write.
+
+installer-preview-storage-desktop = Your existing Linux system and files stay in place.
+
+installer-preview-review-heading = Review your setup
+
+installer-preview-review-intro = Select an item to change it.
+
+installer-preview-review-migrate = Bring the selected belongings from this computer. Your originals stay unchanged.
+
+installer-preview-review-fresh = Nothing is imported from this computer.
+
+installer-preview-ready-heading = Your setup choices are ready
+
+installer-preview-ready-intro = Nothing has been installed.
+
+installer-preview-continue = Continue
+
+installer-preview-back = Back
+
+installer-preview-finish = Finish preview
+
+installer-preview-restart = Try another path
+
+installer-preview-choose-first = Choose an option to continue.
+
+installer-preview-name-required = Enter the name you'd like to use in Tilo.
+
+installer-preview-device-required = Give this device a name.
+
+installer-preview-password-short = Use at least 15 characters.
+
+installer-preview-password-spaces = Remove spaces at the beginning or end.
+
+installer-preview-password-common = Use several unrelated words.
+
+installer-preview-password-numeric = Use at least 20 digits, or add letters.
+
+installer-preview-password-repetitive = Avoid repeated characters or patterns.
+
+installer-preview-password-invalid = Choose a different password.
+
+installer-preview-password-mismatch = The passwords don't match.
+
+installer-preview-identity-busy = Wait for preparation to finish.
+
+installer-preview-identity-preparing = Preparing your identity…
+
+installer-preview-identity-prepare-failed = Your identity couldn't be prepared. Your existing account hasn't changed.
+
+installer-preview-accounts-not-prepared = Connect the accounts you'd like to bring first.
+
+installer-preview-identity-already-prepared = Your identity is already prepared. You can update its name and picture.
+
+installer-preview-identity-not-prepared = Prepare your identity first.
+
+installer-preview-identity-unavailable = Identity preparation isn't available on this system yet.
+
+installer-preview-identity-invalid-color = Choose a valid avatar color.
+
+installer-preview-invalid-choice = That choice isn't available on this page.
+
+installer-preview-wrong-page = This action isn't available on the current page.
+
+installer-preview-at-start = You're at the beginning of setup.
+
+installer-preview-finished = The preview is complete. You can try another path.
+
+installer-preview-avatar-change = Change picture…
+
+installer-preview-avatar-picker = Choose your Tilo picture
+
+installer-preview-avatar-choose = Choose picture
+
+installer-preview-avatar-filter = Pictures
+
+installer-preview-avatar-failed = That picture couldn’t be used. Choose another picture or keep your initials.
+
+installer-preview-avatar-capture = Picture selection is available in the interactive preview.
+
+installer-preview-storage-checking = Checking this computer’s storage…
+
+installer-preview-storage-capacity = { $capacity } disk
+
+installer-preview-storage-size-label = Space for Tilo
+
+installer-preview-storage-size-range = Tilo needs at least { $min } GiB. Up to { $max } GiB is available.
+
+installer-preview-storage-existing = Your current system
+
+installer-preview-storage-tilo = Tilo
+
+installer-preview-storage-temporary = Temporary installer space
+
+installer-preview-storage-shrink = Your current system’s partition will be resized. Its files stay in place.
+
+installer-preview-storage-shortfall = This installation needs { $needed }; { $available } is available.
+
+installer-preview-storage-unreadable = This disk cannot be prepared from your current system. You can use a USB installer instead.
+
+installer-preview-storage-release-blocked = Direct installation is not available in this build. You can install from USB instead.
+
+installer-preview-storage-unavailable = Direct installation is not available. Use a USB installer instead.
+
+installer-preview-storage-range-error = Choose a size within the available range.
+
+installer-preview-usb-heading = Prepare a USB installer
+
+installer-preview-usb-intro = Use it to start Tilo on your other computer.
+
+installer-preview-desktop-heading = Add Tilo as a desktop
+
+installer-preview-desktop-intro = Keep your existing Linux system.
+
+installer-preview-prepare-usb = Make a USB installer
+
+installer-preview-save = Save changes
+
+installer-preview-cancel = Cancel
+
+installer-preview-folders-checking = Looking for your folders…
+
+installer-preview-folders-none = No standard folders found on this computer.
+
+installer-preview-import-unavailable = Not available in this build.
+
+installer-preview-flatpak-title = Flatpak apps
+
+installer-preview-flatpak-body = Your installed apps, their data and settings.
+
+installer-preview-flatpak-found = { $count } installed apps, with their data and settings.
+
+installer-preview-flatpak-unavailable = Could not read installed Flatpak apps. Try again before transferring.
+
+installer-preview-home-unavailable = Could not locate your home folder.
+
+installer-preview-accounts-none = No supported accounts found.
+
+installer-preview-account-importable = Saved connection can be brought over.
+
+installer-preview-account-tilo = Saved Tilo connection
+
+installer-preview-account-reconnect = Sign in again to connect this service in Tilo.
+
+installer-preview-accounts-incomplete = Some account settings could not be read.
+
+installer-preview-belongings-check-failed = Could not finish checking your belongings. Try again.
+
+installer-preview-transfer-busy = A transfer is already being reviewed or running.
+
+installer-preview-transfer-needs-review = Review the transfer destination first.
+
+installer-preview-transfer-start-failed = Could not start the reviewed transfer.
+
+installer-preview-transfer-not-running = No transfer is running.
+
+installer-preview-account-action-failed = Could not connect this account. Check the account and destination, then try again.
+
+installer-preview-flatpak-system-title = System Flatpak apps
+
+installer-preview-flatpak-system-found = { $count } system-installed apps. Your user apps and app data are already included with your home folder.
+
+installer-preview-flatpak-system-body = Restore apps installed for all users. Your user apps and their data come with your home folder.
+
+installer-accounts-heading = Connect your accounts
+
+installer-accounts-source-label = { $service }: { $account }
+
+installer-accounts-source-identity = { $account } ({ $identity })
+
+installer-accounts-intro = Choose accounts to use in Tilo.
+
+installer-accounts-add-heading = Add an account
+
+installer-accounts-google-drive = Google Drive
+
+installer-accounts-onedrive = OneDrive
+
+installer-accounts-dropbox = Dropbox
+
+installer-accounts-spotify = Spotify
+
+installer-accounts-add = Connect an account
+
+installer-accounts-saved = Saved connection
+
+installer-accounts-left-out = Left out
+
+installer-accounts-sign-in = Sign in to connect
+
+installer-accounts-connected = Ready to bring over
+
+installer-accounts-import-heading = Bring this connection with you
+
+installer-accounts-import-intro = Use the saved connection in Tilo. Your existing account stays unchanged.
+
+installer-accounts-connect-heading = Connect { $service }
+
+installer-accounts-cloud-intro = Make your cloud files available in Tilo.
+
+installer-accounts-spotify-intro = Find your Spotify library in Tilo.
+
+installer-accounts-files-permission = Approve access to read and update your cloud files in your browser.
+
+installer-accounts-spotify-permission = Allow Tilo to read your saved music.
+
+installer-accounts-import = Bring connection
+
+installer-accounts-connect = Connect
+
+installer-accounts-importing-heading = Bringing your connection over
+
+installer-accounts-importing-intro = This usually takes a moment.
+
+installer-accounts-waiting-heading = Finish signing in
+
+installer-accounts-waiting-intro = Approve access in your browser. This page updates when you're done.
+
+installer-accounts-open-again = Open sign-in again
+
+installer-accounts-cancel = Cancel sign-in
+
+installer-accounts-cancelling-heading = Closing sign-in
+
+installer-accounts-cancelling-intro = Your account won't be added.
+
+installer-accounts-done-heading = Account connected
+
+installer-accounts-done-intro = { $service } is ready for Tilo.
+
+installer-accounts-another = Connect another account
+
+installer-accounts-failed-heading = Couldn't connect this account
+
+installer-accounts-retry = Try again
+
+installer-accounts-skip = Skip for now
+
+installer-accounts-browser-failed = Your browser didn't open. Open sign-in again to continue.
+
+installer-accounts-unavailable = This connection is currently unavailable.
+
+installer-accounts-connect-failed = Sign-in didn't finish. Try again or connect this account later.
+
+installer-accounts-import-failed = This saved connection couldn't be used. Connect the account again later.
+
+installer-accounts-save-failed = Your connection couldn't be saved. Try again.
+
+installer-accounts-remove-failed = Couldn't close this connection. Try again before continuing.
+
+installer-accounts-conflict = This connection already has different settings. Your saved connection wasn't replaced.
+
+installer-accounts-sources-changed = Your account settings changed. Check your belongings again.
+
+installer-accounts-invalid-action = Choose an account to continue.
+
+installer-accounts-profile-only = This app's profile comes with your other data. Connect it after starting Tilo.
+
+installer-accounts-busy = Finish or cancel this sign-in first.
+
+installer-accounts-already-prepared = These connections are already part of your installation.
+
+installer-accounts-continue = Continue
+
+installer-preview-account-handoff-unavailable = Your selected account connections could not be read. Return to accounts and try again.
+
+installer-accounts-nextcloud = Nextcloud
+
+installer-accounts-webdav = WebDAV
+
+installer-accounts-app-password-needed = Add with an app password
+
+installer-accounts-dav-server-heading = Where are your files?
+
+installer-accounts-dav-server-intro = Enter the server address for this account.
+
+installer-accounts-dav-server-label = Server address
+
+installer-accounts-dav-login-heading = Your account on this server
+
+installer-accounts-dav-login-intro = Enter the login name you use for your files.
+
+installer-accounts-dav-login-label = Login name
+
+installer-accounts-dav-password-heading = Add your app password
+
+installer-accounts-dav-password-intro = Use an app password for this service. Your existing account stays unchanged.
+
+installer-accounts-dav-password-label = App password
+
+installer-accounts-dav-save = Save connection
+
+installer-accounts-dav-required = Fill in this detail to continue.
+
+installer-accounts-dav-server-invalid = Enter a valid HTTPS server address.
+
+installer-accounts-dav-saved-heading = Your connection is saved
+
+installer-accounts-dav-saved-intro = Tilo will use these account details when you open your files.
+
+imager-setup-action-use-migration-intent = Use reviewed migration
+
+imager-setup-param-migration-intent = Private directory containing the reviewed migration
+
+imager-setup-error-migration-intent-unavailable = A reviewed migration can be attached on the Full Tilo review before installation starts.
+
+imager-setup-error-migration-intent-invalid = That migration could not be verified. Review your belongings again.
+
+installer-accounts-nextcloud-method-heading = Connect your Nextcloud account
+
+installer-accounts-nextcloud-method-intro = Sign in with your browser or use an app password you already have.
+
+installer-accounts-nextcloud-browser = Sign in with browser
+
+installer-accounts-nextcloud-app-password = Use an app password
+
+installer-accounts-nextcloud-add = Sign in to bring your files
+
+installer-accounts-starting-heading = Preparing your sign-in
+
+installer-accounts-starting-intro = Contacting your server. You can go back or cancel.
+
+installer-migration-home-picker = Allow access to your home folder: { $home }
+
+installer-migration-home-allow = Allow access
+
+installer-migration-prepare-failed = Your belongings couldn’t be prepared for this installation. Your original files have not changed.
+
+installer-migration-preparing = Preparing your belongings…
+
+installer-existing-picker = Choose your identity backup
+
+installer-existing-choose = Choose backup…
+
+installer-existing-file-body = Choose the identity backup you saved from Tilo.
+
+installer-existing-password-label = Backup passphrase
+
+installer-existing-password-required = Enter the passphrase for this backup.
+
+installer-existing-file-required = Choose your identity backup first.
+
+installer-existing-file-invalid = Choose a local identity backup file.
+
+installer-existing-busy = Your identity is being restored.
+
+installer-existing-restoring = Restoring your identity…
+
+installer-existing-connected = Your Tilo identity is ready for this computer.
+
+installer-existing-failed = We couldn’t restore this backup. Check its passphrase or choose another backup.
+
+installer-existing-pairing-unavailable = Connecting from another Tilo device is not available in this installer yet. You can restore an identity backup instead.
+
+installer-media-prepare-failed = Your setup couldn’t be prepared for the USB installer. Your identity and connected accounts are still saved here. Try again.
+
+installer-media-deliver-heading = Take your setup with you
+
+installer-media-deliver-body = The installer image is verified. Your encrypted setup and the belongings you selected still need to be added.
+
+installer-media-delivering = Adding your encrypted setup and selected belongings to the USB…
+
+installer-media-delivery-failed = Your setup couldn’t be added. Keep the USB connected and try again.
+
+installer-media-choose-filesystem = Choose the USB folder
+
+installer-media-filesystem-picker = Allow access to the verified USB installer
+
+installer-media-filesystem-allow = Add my setup
+
+installer-media-delivery-busy = Your setup is being added. Wait for it to finish or cancel.
+
+installer-media-not-prepared = Prepare your identity and accounts first.
+
+installer-media-not-written = Write and verify the installer medium first.
+
+installer-media-already-delivered = Your setup is already on this medium.
+
+installer-media-delivery-not-running = No setup delivery is running.
+
+installer-media-official-required = Choose a Tilo installer image to carry your prepared setup.
+
+installer-media-cancel = Cancel transfer
+
+installer-accounts-icloud = iCloud Drive
+
+installer-accounts-icloud-add = Connect with your Apple Account.
+
+installer-accounts-icloud-login-heading = Connect iCloud Drive
+
+installer-accounts-icloud-login-intro = Use the Apple Account you use for iCloud.
+
+installer-accounts-icloud-login-label = Apple Account
+
+installer-accounts-icloud-password-heading = Sign in to iCloud
+
+installer-accounts-icloud-password-intro = Your password is used to sign in and is not saved in Tilo.
+
+installer-accounts-icloud-password-label = Apple Account password
+
+installer-accounts-icloud-code-heading = Check your trusted device
+
+installer-accounts-icloud-code-intro = Enter the verification code Apple sent to your trusted devices.
+
+installer-accounts-icloud-code-label = Verification code
+
+installer-accounts-icloud-wait-heading = Connecting iCloud Drive…
+
+installer-accounts-icloud-wait-intro = Waiting for Apple to confirm your sign-in.
+
+installer-accounts-icloud-required = Fill in this field to continue.
+
+installer-accounts-icloud-login-invalid = Enter your Apple Account email address or phone number.
+
+installer-accounts-icloud-credentials-invalid = Your Apple Account or password was not accepted. Try again.
+
+installer-accounts-icloud-code-invalid = That code was not accepted. Enter a new code from your trusted device.
+
+installer-accounts-icloud-web-access = Allow access to iCloud data on the web in iCloud settings on your trusted device, then try again.
+
+installer-accounts-icloud-locked = Your Apple Account needs attention. Review it at account.apple.com, then try again.
+
+installer-accounts-icloud-offline = Apple could not be reached. Check your connection and try again.
+
+installer-media-retry = Try again
+
+installer-media-ready = Your installer and setup are verified. Eject the USB before removing it.
+
+installer-accounts-remove-heading = Leave { $service } out of this setup?
+
+installer-accounts-remove-intro = This connection will be removed from your Tilo setup. Your original account and files stay unchanged.
+
+installer-accounts-remove-confirm = Leave it out
+
+installer-accounts-remove-keep = Keep this connection
+
+installer-accounts-included = Included in this setup
+
+installer-accounts-import-done-heading = Your saved connection is ready
+
+installer-accounts-import-done-intro = This saved connection is included in your Tilo setup.
+
+installer-portable-source-busy = Your belongings are being reviewed.
+
+installer-portable-source-failed = Your home folder could not be checked. Your files and setup choices are kept. Try checking again.
+
+installer-portable-permission-failed = Access to this home folder was not available. Allow access to the home folder you reviewed, then try again.
+
+installer-portable-metadata-unsupported = Some file permissions or metadata cannot be transferred safely yet. Nothing has been left out or copied. Your setup choices are kept.
+
+installer-portable-mounted-source-unsupported = Your home includes mounted files or folders. Bringing the whole home across these locations is not supported yet. Nothing has been copied, and your setup choices are kept. Use “Choose what comes over” to change your selection. Continuing without Home will not transfer your full home.
+
+installer-mounted-home-locations = Mounted locations in your home
+
+installer-mounted-home-location-unavailable = This location cannot be transferred as part of your full home yet.
+
+installer-portable-applications-review-failed = Your selected apps and their data could not be checked. Check your belongings again before continuing.
+
+installer-portable-home-required = Bringing only system Flatpak apps to another computer is not available yet. Choose your home folder to bring your user apps and their data.
+
+installer-preview-belongings-shared-intro = Choose what to use in Tilo. Your files stay where they are.
+
+installer-preview-files-shared-title = Your files
+
+installer-preview-files-shared-body = Use the same files in both systems. Edits appear in both.
+
+installer-preview-migrate-shared-body = Use your existing files in Tilo and bring supported apps and accounts. Setup leaves your files in place; later edits to shared files appear in both systems.
+
+installer-preview-review-shared = Use your existing files in both systems. Edits appear in both. Bring the apps and accounts you selected.
+
+installer-preview-account-profile-only = App or browser profile found. This installer cannot connect its existing login to Tilo.
+
+imager-setup-internal-error-prepared-setup = Your prepared identity and accounts could not be read. Return to setup and try again.
+
+imager-setup-internal-error-guided-navigation = Use Back in the installer to change your setup.
+
+installer-preview-storage-app-estimate = Estimated space for your apps and their data: { $size }. Includes room for installation and updates.
+
+installer-preview-prepare-direct = Review installation
+
+installer-preview-install-profile-invalid = Your installation preferences need to be corrected before continuing.
+
+installer-preview-direct-review-unavailable = Installation could not be prepared for this computer. Your setup has been kept; you can try again or make a USB installer.
+
+installer-preview-install-preparing = Preparing your identity and accounts for this installation…
+
+installer-preview-device-invalid = Choose a shorter device name using a single line.
+
+installer-accounts-code-heading = Enter the code from Dropbox
+
+installer-accounts-code-intro = Finish signing in in your browser, then paste the code Dropbox gives you here.
+
+installer-accounts-code-label = Sign-in code
+
+installer-accounts-code-submit = Connect Dropbox
+
+installer-accounts-code-invalid = Paste the code from Dropbox before continuing.
+
+installer-accounts-tilo-saved = Saved Tilo connection. Review before bringing it over.
+
+installer-accounts-tilo-import-intro = Bring this saved Tilo connection into your new setup. If it cannot be unlocked here, you can connect the service again.
+
+installer-accounts-tilo-reconnect = This saved connection could not be unlocked. Choose a service to connect again; your original connection stays unchanged.
+
+installer-accounts-tilo-changed = This saved connection has changed since you reviewed it. Check your belongings again before bringing it over.
+
+installer-accounts-already-included = This connection is already included in your setup.
+
+installer-pairing-body = Open Tilo on your other device to approve this computer.
+
+installer-pairing-start = Connect to my Tilo device
+
+installer-pairing-waiting = Check that your other device shows the same code before approving.
+
+installer-pairing-cancel = Cancel pairing
+
+installer-pairing-cancelled = Pairing stopped here. If you already approved this device, it may still appear on your other device.
+
+installer-pairing-failed = We couldn’t connect this device. Try again or use your identity backup.
+
+installer-pairing-busy = Pairing is already in progress.
+
+installer-pairing-helper-unavailable = This installer cannot connect to another Tilo device. Use your identity backup or a supported native Linux installer.
+
+installer-pairing-label-locked = This device name was approved by your other Tilo device and cannot be changed here.
+
+installer-pairing-name-body = Choose the name your other Tilo device will see when you connect this computer.
+
+installer-pairing-name-heading = What will you call this computer?
+
+installer-pairing-not-running = Pairing is not running on this computer.
+
+installer-pairing-code-intro = Open Tilo on your other device. Check that it shows this same code before approving this computer.
+
+installer-pairing-code-pending = Getting a code to connect this computer…
+
+installer-restart-heading = Welcome back
+
+installer-restart-intro = Your unfinished preparation is still here. Would you like to continue?
+
+installer-restart-checking = Checking your saved preparation…
+
+installer-restart-incomplete = Your previous preparation did not finish. Continue to check whether its identity can be recovered, or start again.
+
+installer-restart-unavailable = We couldn't verify your saved preparation. Your saved identity files have been kept. Retry to check again.
+
+installer-restart-resuming = Checking your identity…
+
+installer-restart-retiring = Keeping your previous identity files and starting again…
+
+installer-restart-resume = Continue preparation
+
+installer-restart-new = Start again
+
+installer-restart-retry = Retry
+
+installer-restart-busy = Your saved preparation is being checked. Please wait.
+
+installer-restart-unlock-heading = Unlock your preparation
+
+installer-restart-unlock-intro = Enter the password you chose earlier to recover your prepared accounts.
+
+installer-restart-password-required = Enter the password you chose earlier.
+
+installer-restart-changed = Review the latest saved choices and accounts before continuing.
+
+installer-restart-changed-heading = Your setup has changed
+
+installer-restart-review-latest = Review latest setup
+
+installer-accounts-checkpoint-unlock-failed = Couldn’t unlock your saved connections. Check your password and try again.
+
+installer-accounts-provider-heading = Which account would you like to connect?
+
+installer-accounts-provider-intro = Choose a service to sign in.
+
+installer-accounts-spotify-done-heading = Your Spotify library is connected
+
+installer-accounts-spotify-done-intro = Your saved music is ready for Tilo.
+
+installer-preview-files-location = Your home folder: { $path }
+
+installer-preview-belongings-incomplete = Some belongings couldn’t be checked. You can check again, or continue with the available choices.
+
+installer-preview-storage-shared-files = Your documents stay on your current system’s partition and are shared with Tilo. This space is for Tilo, its updates, and separate copies of your apps’ data and settings.
+
+installer-preview-profiles-title = App and browser profiles
+
+installer-preview-profiles-body = Profile files stay with your other files. Connecting services in Tilo is a separate choice.
+
+installer-preview-storage-show-details = Disk details
+
+installer-preview-storage-usb-fallback-heading = Install Tilo from USB
+
+installer-preview-storage-usb-fallback-intro = Direct installation is not available in this build. Use a USB drive to install Tilo on this computer.
+
+installer-accounts-spotify-library = Spotify library
+
+installer-accounts-spotify-playback = Spotify playback
+
+installer-accounts-spotify-playback-intro = Connect Spotify to play your music in Tilo.
+
+installer-accounts-spotify-playback-permission = Allow Tilo to stream music with your Spotify account. Playback requires Spotify Premium.
+
+installer-accounts-spotify-playback-done-heading = Spotify playback is connected
+
+installer-accounts-spotify-playback-done-intro = You can play Spotify music after starting Tilo.
+
+installer-accounts-spotify-purpose-heading = What would you like to connect?
+
+installer-accounts-spotify-purpose-intro = Choose how you’ll use Spotify in Tilo.
+
+installer-accounts-spotify-library-choice = Your saved music
+
+installer-accounts-spotify-library-choice-intro = Find your Spotify library in Tilo.
+
+installer-accounts-spotify-playback-choice = Listen to music
+
+installer-accounts-spotify-playback-choice-intro = Play Spotify music in Tilo. Requires Spotify Premium.
+
+installer-accounts-spotify-library-saved = Saved Tilo library connection. Review before bringing it over.
+
+installer-accounts-spotify-playback-saved = Saved Tilo playback connection. Review before bringing it over.
+
+installer-browser-title = Your browsing
+
+installer-browser-bookmarks = Bookmarks
+
+installer-browser-history = Browsing history
+
+installer-browser-body = Bring your bookmarks and browsing history into Tilo’s browser.
+
+installer-browser-bookmarks-body = Bring your bookmarks into Tilo’s browser.
+
+installer-browser-history-body = Bring your browsing history into Tilo’s browser.
+
+installer-desktop-prepare = Set up Tilo Desktop
+
+installer-desktop-password-intro = Choose a password to protect your prepared Tilo identity and connections. Your computer’s login password stays the same.
+
+installer-desktop-unavailable = Tilo Desktop setup is unavailable on this computer.
+
+installer-desktop-enrolled-unavailable = This prepared device identity is for a new Tilo device. To use Tilo Desktop on this computer, use an identity backup.
+
+installer-desktop-delivering = Preparing your first Tilo session…
+
+installer-desktop-delivery-failed = Your Tilo session could not be prepared. Try again before signing in to Tilo.
+
+installer-desktop-ready = Tilo Desktop is ready. Sign out when you’re ready, then choose Tilo at login.
+
+installer-desktop-retry = Try again
+
+installer-desktop-resource = Tilo Desktop installation
+
+installer-desktop-install = Install Tilo Desktop
+
+installer-desktop-cancel = Cancel download
+
+installer-accounts-nextcloud-source-reconnect = Your saved Nextcloud sign-in could not be accessed. Connect this account again to bring it into Tilo.
+
+installer-accounts-reconnect = Connect again
+
+installer-accounts-import-saved = Bring my saved connections
+
+installer-accounts-review-saved = Choose what comes over
+
+installer-accounts-review-saved-heading = Your saved connections
+
+installer-accounts-review-saved-intro = Bring these connections into Tilo. Uncheck any you would rather leave out. Your existing sign-ins stay unchanged.
+
+installer-accounts-saved-summary =
+    { $count ->
+        [one] One saved connection found.
+       *[other] { $count } saved connections found.
+    }
+
+installer-accounts-saved-attention = Not included yet. Review how to connect this account.
+
+installer-accounts-skip-saved = Leave saved connections out
+
+installer-accounts-continue-without = Continue without accounts
+
+installer-accounts-continue-included = Continue with included accounts
+
+installer-accounts-saved-limit = Choose up to 64 connections to bring over.
+
+installer-accounts-bulk-heading = Bringing your saved connections
+
+installer-accounts-bulk-intro = Your existing sign-ins stay unchanged. You can leave out any connections that need attention.
+
+installer-accounts-bulk-working = Preparing the next connection…
+
+installer-source-changed = Your files changed while you were preparing Tilo. Review them again to include the latest version. Your identity and connected accounts are kept.
+
+installer-source-review = Review changed files
+
+installer-media-capacity-checking = Checking the image size before choosing a drive.
+
+installer-media-capacity-not-ready = The installation image size is not available yet. Go back and select a ready image, then try again.
+
+installer-media-capacity-invalid = The space needed for this installation could not be calculated. Go back and review the image and migration choices.
+
+installer-media-capacity-estimate = Allow at least { $required } for the installer and everything you selected. This estimate includes space for filesystem metadata.
+
+installer-media-capacity-required = Estimated space needed: { $required }. This drive has { $available }. Choose a drive with enough space.
+
+installer-media-source-checking = Checking your selected files before writing the drive.
+
+installer-media-source-failed = Your selected files could not be verified. The drive has not been written. Try again or return to your preparation.
+
+installer-media-plan-changed = Your image or drive selection changed during review. Review the plan again before writing.
+
+installer-accounts-rclone-source-reconnect = This saved connection could not be used. Sign in again to connect it to Tilo; your original connection stays unchanged.
+
+imager-setup-account-consumer-unavailable = This Tilo release cannot use your saved connections. Choose a newer release, or go back and leave these connections out.
+
+installer-source-unavailable = Your prepared files are no longer available. Review them again to prepare the latest version. Your identity and connected accounts are kept.
+
+installer-source-refresh = Review files again
+
+installer-belongings-files-unchecked = Your home folder couldn’t be found. Check again to include your files, or continue without them.
+
+installer-belongings-apps-unchecked = Your installed Flatpak apps couldn’t be checked. Check again to include them, or continue without them.
+
+installer-belongings-browser-unchecked = Your browser bookmarks and history couldn’t be checked. Check again to include them, or continue without them.
+
+installer-belongings-accounts-unchecked = Some saved connections couldn’t be read. Check again, or continue and connect those accounts later.
+
+imager-setup-home-consumer-unavailable = This Tilo release cannot bring your files and app data over. Choose a newer release before continuing.
+
+installer-service-sessions-title = Website sign-ins
+
+installer-service-sessions-body = Bring your Slack or Discord sign-ins from a browser you use. You may still need to sign in again.
+
+installer-review-service-session-body = You may need to sign in again.
+
+installer-service-source-slack = Slack — { $source }
+
+installer-service-source-discord = Discord — { $source }
+
+installer-service-source-changed = This browser source changed. Choose it again.
+
+installer-service-sources-unavailable = Browser sign-ins couldn’t be checked. You can connect to Slack or Discord after setting up Tilo.
+
+installer-service-session-reconnect = This browser sign-in couldn’t be brought over. Choose another browser source, or connect after setting up Tilo.
+
+installer-service-source-discord-origin = Discord app session — { $source }
+
+installer-media-not-preparing = Preparation is not running.
+
+installer-media-preparation-cancelled = Preparation stopped. Your choices are kept; you can try again.
+
+installer-media-phase-review = Checking your selected files
+
+installer-media-phase-filesystem = Preparing the drive for your files
+
+installer-media-phase-applications = Preparing your applications and their data
+
+installer-media-phase-browser = Preparing your browsing data
+
+installer-media-phase-identity = Preparing your identity
+
+installer-media-phase-accounts = Preparing your selected accounts
+
+installer-media-phase-setup = Encrypting your setup
+
+installer-media-phase-verify = Verifying your encrypted setup
+
+installer-media-phase-home = Encrypting and verifying your home files
+
+installer-media-phase-publish = Saving and verifying your setup on the drive
+
+installer-media-phase-cancelling = Stopping safely…
+
+installer-media-phase-archive = Encrypting your files
+
+installer-media-phase-archive-verify = Checking the encrypted files
+
+installer-media-phase-source-verify = Checking the original files
+
+installer-media-phase-ciphertext = Delivering the encrypted files
+
+installer-media-progress-bytes = { $size } processed
+
+installer-media-progress-bytes-total = { $size } of { $total } processed
+
+installer-accounts-goa-source-reconnect = This saved online account could not be brought over. Sign in again to connect it to Tilo.
+
+installer-migration-grant-failed = Allow access to the home folder shown in the request, then try again. Your setup choices are kept.
+
+installer-migration-source-replaced = The home folder you approved is no longer the same folder. Check your belongings and approve the recognized folder again. Your setup choices are kept.
+
+installer-migration-source-unsupported = This source disk or filesystem cannot be shared safely yet. Your files and setup choices are kept; nothing has been installed.
+
+installer-migration-state-unavailable = Tilo could not save your setup privately on this computer. Your original files have not changed.
+
+installer-migration-state-full = There is not enough space to save your setup on this computer. Free some space, then try again. Your original files have not changed.
+
+# Writer ownership and safe-close lifecycle.
+
+imager-write-stopping = Stopping safely… Keep the drive connected until cancellation finishes.
+
+imager-write-exit-unowned = The image writer's exit cannot be verified.
+
+imager-write-worker-stopped = The image writer stopped unexpectedly.
+
+imager-write-worker-start-failed = Could not start the image writer: { $error }
+
+installer-media-worker-stopped = Your setup transfer stopped unexpectedly.
+
+installer-media-cleanup-failed = Your setup transfer has not finished closing.
+
+installer-service-source-needs-access = Encrypted website data was found in { $source }. Choose it to try reading it with your current computer’s keychain. You may need to sign in again in Tilo.
+
+installer-service-slack-label = Slack
+
+installer-service-discord-label = Discord
+
+installer-service-sessions-overview = Selected: { $services }.
+
+installer-service-sessions-none-selected = No website sign-ins selected.
+
+installer-service-sessions-selected-needs-access = Permission is needed to read selected browser data for { $services }.
+
+installer-service-sessions-accounts-excluded = Website data is not included because Accounts is off. Turn Accounts on to restore your choices.
+
+installer-review-setup = Your setup
+
+installer-review-device = Device: { $device }
+
+installer-review-person-body = Your Tilo identity
+
+installer-review-device-body = This device in Tilo
+
+installer-review-device-enrolled = Approved on your existing Tilo device
+
+installer-review-belongings-heading = Your belongings
+
+installer-review-belongings = Bringing with you
+
+installer-review-start-fresh = Starting fresh
+
+installer-original-grant-required = Review the files you want to bring from this computer first.
+
+installer-original-permission-progress = Preparing access to your original files
+
+installer-original-prepare-failed = Your files could not be prepared. Nothing was written to the installation drive. Review your choices and try again.
+
+installer-original-output-unavailable = This installation drive cannot receive your prepared files yet. Nothing has been written to it.
+
+installer-original-preparing = Preparing…
+
+installer-original-retry = Try again
+
+installer-original-preparing-heading = Getting your files ready
+
+installer-original-preparing-body = Your files stay on this computer. We’re preparing the installation drive to receive them when you restart.
+
+installer-original-not-prepared = Your files are not ready for this installation drive yet. Try preparing them again.
+
+installer-original-boot-heading = Restart this computer from the Tilo drive
+
+installer-original-boot-body = Your setup is saved on the drive. Your files are still on this computer.
+
+installer-original-boot-step = Keep { $drive } connected. Restart this computer and choose it in the boot menu. Tilo will copy your selected files before you take the drive to your other computer.
+
+installer-original-boot-drive = the Tilo installation drive
+
+installer-original-ready-heading = Prepare your files for this drive
+
+installer-original-ready-body = We’ll prepare the installation drive to receive your files when you restart. Your files stay on this computer.
+
+installer-original-failed-heading = Your files aren’t ready yet
+
+installer-original-failed-body = Your files are still on this computer.
+
+installer-original-prepare-button = Prepare files
+
+installer-original-complete-progress = Bringing your files into Tilo
+
+installer-original-complete-failed = Your migration could not be completed. Your original files are unchanged.
+
+installer-identity-route-unavailable = This way of connecting your Tilo identity isn’t available for this installation.
+
+installer-review-usb-fallback = Installation on this computer needs a USB drive. Make the installer, then restart this computer from it.
+
+installer-review-usb-choice-required = Choose Make a USB installer to continue on this computer.
+
+installer-review-installation-unavailable = Installation is unavailable here. Your setup choices are kept.
+
+installer-flatpak-settings-note = These apps have custom access settings. You may need to set them again after moving.
+
+installer-flatpak-settings-unchecked = Custom app access settings couldn’t be checked.
+
+installer-flatpak-settings-folders = Folders
+
+installer-flatpak-settings-network = Connections
+
+installer-flatpak-settings-devices = Devices, sound and display
+
+installer-flatpak-settings-services = System services
+
+installer-flatpak-settings-environment = App settings
+
+installer-flatpak-settings-other = Other access settings
+
+installer-flatpak-settings-title = Custom app access
+
+installer-storage-check-capacity = Check available space…
+
+installer-storage-btrfs-resize = Your current system will keep { $after } of its { $before }. We keep at least { $reserve } above the filesystem’s required space. Your files stay in place.
+
+installer-files-source-home = From your home folder
+
+installer-files-show-location = Show location
+
+installer-files-hide-location = Hide location
+
+installer-mounted-home-grant-intro = Some files and folders in your home need separate permission. Allow access to each item shown here.
+
+installer-mounted-home-picker-title = Allow access to the file or folder shown in setup
+
+installer-mounted-home-grant = Allow access
+
+installer-mounted-home-granted = Access allowed
+
+installer-mounted-home-needs-grant = Needs permission
+
+installer-mounted-home-grants-required = Allow access to every listed item before continuing.
+
+installer-mounted-home-review = Continue
+
+installer-mounted-home-cancel = Cancel
+
+installer-mounted-home-restart = Review these files and folders again
+
+installer-mounted-home-all-granted = Access is allowed for all listed files and folders. Continue with your setup.
+
+installer-mounted-home-permission-heading = Allow access
+
+installer-original-image-unavailable = This installer image cannot bring your data over. Choose a newer Tilo installer.
+
+installer-flatpak-apps-heading = Your apps
+
+installer-flatpak-app-with-home = Included with your home folder
+
+installer-flatpak-app-selected = Included with your selected apps
+
+installer-flatpak-apps-existing-heading = Your installed apps
+
+installer-flatpak-app-existing = Already on this computer
+
+installer-flatpak-app-excluded = Not included
+
+installer-guided-host-unavailable = Prepare Tilo from a Linux computer. Installation setup isn’t available on this computer yet.
+
+installer-flatpak-app-needs-home = Bring your home folder to include this user-installed app and its settings.
+
+installer-flatpak-app-transfer-unavailable = This user-installed app is not transferred by this installation. Your original app and its settings stay in place.
+
+imager-setup-applications-consumer-unavailable = This Tilo release cannot bring your selected apps and their settings over. Choose a newer release before continuing.
+
+installer-preview-current-title = Use this computer’s identity
+
+installer-preview-current-body = Continue with the Tilo identity already used on this computer.
+
+installer-current-identity-unavailable = This computer’s identity is unavailable. Choose another way to connect.
+
+installer-current-device-name-locked = Keep this computer’s existing device name.
+
+installer-review-device-current = This computer’s existing name
+
+installer-desktop-belongings-intro = Your files and apps stay on this computer. Choose browser data and connections to use in Tilo.
+
+installer-desktop-files-in-place = Your files stay where they are.
+
+installer-desktop-apps-in-place = Your installed apps and their settings stay in place.
+
+installer-desktop-belongings-in-place = Your files and apps stay in place for Tilo Desktop. Choose browser data or account connections instead.
+
+installer-desktop-review-migrate = Keep your existing files and apps in place. Bring the browser data and connections you selected.
+
+installer-service-sessions-found-attention = Found sign-in data for { $services }.
+
+installer-service-source-reconnect-required = Encrypted sign-in data was found in { $source }. It cannot be copied yet. Sign in to Slack again in Tilo.
+
+installer-service-reconnect-required = This encrypted Slack sign-in cannot be copied yet. Sign in to Slack again in Tilo.
+
+installer-accounts-spotify-source-sign-in = Sign in to connect your Spotify library or playback.
+
+installer-accounts-spotify-source-reconnect = Sign in to use Spotify in Tilo. Your existing Spotify session won’t be moved.
+
+installer-accounts-dav-auth-refused = The server rejected these sign-in details.
+
+installer-accounts-dav-endpoint-unavailable = Couldn’t reach the server. Try again.
+
+installer-accounts-dav-files-unavailable = The server didn’t provide access to this files folder.
+
+# Same-computer app state is copied separately from shared original documents.
+
+installer-preview-flatpak-computer-found = { $count } apps available to copy, with their selected data and settings.
+
+installer-preview-flatpak-computer-body = Copy selected apps, their data and settings into Tilo. Later app changes stay in Tilo; edits to shared files appear in both systems.

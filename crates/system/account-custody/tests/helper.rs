@@ -152,3 +152,28 @@ fn helper_exit_codes_reach_the_daemon_as_typed_errors() {
         .unwrap();
     assert_eq!(status.code(), Some(accounts::handoff::exit::FAILED));
 }
+
+#[test]
+fn capability_probe_runs_without_creating_custody_and_rejects_extra_arguments() {
+    let directory = tempfile::tempdir().unwrap();
+    let output = std::process::Command::new(HELPER)
+        .arg("capabilities")
+        .env("HOME", directory.path())
+        .env("XDG_CONFIG_HOME", directory.path().join("config"))
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert!(output.stderr.is_empty());
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&output.stdout).unwrap(),
+        serde_json::json!({"schema":1,"protected_grant_protocol":1}),
+    );
+    assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 0);
+    let refused = std::process::Command::new(HELPER)
+        .args(["capabilities", "--config-root", "ignored"])
+        .output()
+        .unwrap();
+    assert_eq!(refused.status.code(), Some(64));
+    assert!(refused.stdout.is_empty());
+    assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 0);
+}

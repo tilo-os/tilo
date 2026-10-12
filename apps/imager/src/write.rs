@@ -130,6 +130,24 @@ pub struct WriteRequest {
     /// setup machine before elevation; the privileged writer only copies it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub handoff_stage: Option<std::path::PathBuf>,
+    /// Provision a distinct migration data filesystem after verified imaging.
+    #[serde(default)]
+    pub provision_migration_data: bool,
+    /// Public expectation only: the writer independently recomputes every byte
+    /// of the planned geometry using its authorized descriptors before writing.
+    #[cfg(target_os = "linux")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub offline_layout: Option<OfflineLayout>,
+}
+#[cfg(target_os = "linux")]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OfflineLayout {
+    pub binding: crate::media_layout::MediaPartitionBinding,
+    pub reserved_bytes: u64,
+    pub setup: crate::model::PreparedSetupExpectation,
+    pub source_plans: Vec<Vec<u8>>,
+    pub target_number: u64,
 }
 
 impl WriteRequest {
@@ -162,6 +180,25 @@ impl WriteRequest {
 /// device. The live app hands a `Started` request to [`spawn_job`], which
 /// chooses the backend; with the allow-gate off the request is refused.
 pub fn begin_job(req: &WriteRequest, typed_confirmation: &str) -> JobStart {
+    if req.provision_migration_data
+        && (!cfg!(target_os = "linux")
+            || !req.source.installable
+            || req.handoff_stage.is_some()
+            || req.target.stable_id.as_ref().is_none_or(String::is_empty))
+    {
+        return JobStart::InvalidProfile("Migration media requires Linux, stable device custody and encrypted prepared setup without legacy tail handoff".into());
+    }
+    #[cfg(target_os = "linux")]
+    if let Some(pending) = &req.offline_layout
+        && (!req.provision_migration_data
+            || pending.reserved_bytes == 0
+            || req.profile.prepared_setup.as_ref() != Some(&pending.setup)
+            || req.target.stable_id.as_deref() != Some(pending.binding.target_stable_id.as_str()))
+    {
+        return JobStart::InvalidProfile(
+            "Pending export differs from authorized media/setup selection".into(),
+        );
+    }
     if req.source.size == 0 || req.target.name.is_empty() {
         return JobStart::Incomplete;
     }
@@ -218,13 +255,162 @@ impl JobResult {
 #[derive(Clone, Debug)]
 pub struct JobControl {
     cancelled: Arc<AtomicBool>,
+    worker: Arc<NativeWorker>,
 }
 
+#[derive(Debug, Default)]
+struct NativeWorker {
+    joined: std::sync::Mutex<Option<std::thread::JoinHandle<()>>>,
+    monitor: std::sync::Mutex<Option<ui::rt::JoinHandle<()>>>,
+    bound: AtomicBool,
+    stopped: AtomicBool,
+    failed: AtomicBool,
+    wake: std::sync::Condvar,
+}
+impl NativeWorker {
+    fn take_finished(&self) -> Option<std::thread::JoinHandle<()>> {
+        let mut held = match self.joined.try_lock() {
+            Ok(held) => held,
+            Err(std::sync::TryLockError::Poisoned(error)) => error.into_inner(),
+            Err(std::sync::TryLockError::WouldBlock) => return None,
+        };
+        if held
+            .as_ref()
+            .is_some_and(std::thread::JoinHandle::is_finished)
+        {
+            held.take()
+        } else {
+            None
+        }
+    }
+    fn mark_stopped(&self, failed: bool) {
+        let _held = self
+            .joined
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.failed.store(failed, Ordering::Relaxed);
+        self.stopped.store(true, Ordering::Release);
+        self.wake.notify_all();
+    }
+}
 impl JobControl {
     pub(crate) fn new() -> Self {
         Self {
             cancelled: Arc::new(AtomicBool::new(false)),
+            worker: Arc::new(NativeWorker::default()),
         }
+    }
+
+    fn bind_worker(&self, joined: std::thread::JoinHandle<()>) {
+        *self
+            .worker
+            .joined
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(joined);
+        self.worker.bound.store(true, Ordering::Release);
+        if let Ok(runtime) = ui::rt::try_app() {
+            let worker = self.worker.clone();
+            let monitor = runtime.spawn(async move {
+                loop {
+                    if worker.stopped.load(Ordering::Acquire) {
+                        return;
+                    }
+                    let finished = worker.take_finished();
+                    if let Some(finished) = finished {
+                        let failed = finished.join().is_err();
+                        worker.mark_stopped(failed);
+                        return;
+                    }
+                    ui::rt::sleep(std::time::Duration::from_millis(25)).await;
+                }
+            });
+            *self
+                .worker
+                .monitor
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(monitor);
+        }
+    }
+    /// Capture presentation owns an idle worker, never a device writer. Its
+    /// exit is observed through the same join used by live worker teardown.
+    pub(crate) fn bind_capture_worker(&self) -> io::Result<()> {
+        let cancelled = Arc::downgrade(&self.cancelled);
+        let joined = std::thread::Builder::new()
+            .name("imager-capture-progress".into())
+            .spawn(move || {
+                while cancelled
+                    .upgrade()
+                    .is_some_and(|flag| !flag.load(Ordering::Acquire))
+                {
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+            })?;
+        self.bind_worker(joined);
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn owned_fixture(joined: std::thread::JoinHandle<()>) -> Self {
+        let control = Self::new();
+        control.bind_worker(joined);
+        control
+    }
+
+    #[cfg(test)]
+    pub(crate) fn finished_fixture() -> Self {
+        let control = Self::new();
+        control.bind_worker(std::thread::spawn(|| {}));
+        control
+            .wait_stopped()
+            .expect("actual fixture writer must stop");
+        control
+    }
+
+    /// Positive native completion evidence; terminal progress is not this witness.
+    pub(crate) fn observed_stopped(&self) -> bool {
+        self.worker.stopped.load(Ordering::Acquire)
+    }
+    /// Exit and outcome are distinct: a panic releases native ownership but
+    /// must never turn an earlier success progress packet into a success result.
+    pub(crate) fn observed_failure(&self) -> bool {
+        self.observed_stopped() && self.worker.failed.load(Ordering::Relaxed)
+    }
+    fn stopped_result(&self) -> io::Result<()> {
+        if self.observed_failure() {
+            Err(io::Error::other(crate::setup::strings::t(
+                "imager-write-worker-stopped",
+            )))
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Host teardown only, after frames stopped. Never called by sync/close admission.
+    pub(crate) fn wait_stopped(&self) -> io::Result<()> {
+        if !self.worker.bound.load(Ordering::Acquire) {
+            return Err(io::Error::other(crate::setup::strings::t(
+                "imager-write-exit-unowned",
+            )));
+        }
+        let mut held = self
+            .worker
+            .joined
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(joined) = held.take() {
+            drop(held);
+            let result = joined.join();
+            self.worker.mark_stopped(result.is_err());
+            return self.stopped_result();
+        }
+        while !self.observed_stopped() {
+            held = self
+                .worker
+                .wake
+                .wait(held)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+        }
+        self.stopped_result()
     }
 
     pub fn cancel(&self) {
@@ -277,6 +463,22 @@ fn try_lock_file(path: &Path) -> io::Result<TargetWriteLock> {
         ),
         advisory_lock::TryLockError::Error(error) => error,
     })
+}
+
+/// Keep the existing privileged writer lock through reviewed mounted output.
+/// This grants no raw descriptor or filesystem authority to its callback.
+#[cfg(target_os = "linux")]
+pub(crate) fn with_locked_media_root<T>(
+    target: &TargetDrive,
+    callback: impl FnOnce() -> io::Result<T>,
+) -> io::Result<T> {
+    // SAFETY: credential getters observe only this process.
+    if unsafe { libc::getuid() } != 0 || unsafe { libc::geteuid() } != 0 {
+        return Err(io::ErrorKind::PermissionDenied.into());
+    }
+    let _lock = acquire_target_write_lock(target)?;
+    revalidate_target(target)?;
+    callback()
 }
 
 #[cfg(unix)]
@@ -718,12 +920,11 @@ fn run_job_paths_bound(
 /// Run the same exact write, digest, read-back and profile pipeline against an
 /// already-authorized device descriptor. `UDisks2` uses this seam so raw-device
 /// authority never has to be represented by a sandbox-visible path.
-#[cfg(any(test, all(target_os = "linux", feature = "flatpak-media-writer")))]
+#[cfg(any(test, target_os = "linux"))]
 #[allow(
     clippy::too_many_lines,
     reason = "the descriptor stays borrowed through one linear write, verify, and profile transaction; splitting ownership across helpers would obscure the destructive-I/O lifecycle"
 )]
-#[cfg(any(test, all(target_os = "linux", feature = "flatpak-media-writer")))]
 fn run_job_file_bound(
     req: &WriteRequest,
     device: &mut std::fs::File,
@@ -767,6 +968,43 @@ fn run_job_file_bound(
                 "source image no longer matches its signed release catalog".into(),
             );
         }
+    }
+    #[cfg(target_os = "linux")]
+    let layout = if req.provision_migration_data {
+        if let Err(error) = validate_pending_descriptor(req, device) {
+            return JobResult::WriteFailed(error.to_string());
+        }
+        if !req.source.installable || req.handoff_stage.is_some() {
+            return JobResult::WriteFailed("Migration layout refuses legacy tail handoff".into());
+        }
+        let prepared = if let Some(pending) = &req.offline_layout {
+            crate::media_layout::prepare_expected(
+                &source,
+                device,
+                req.source.size,
+                req.target.size,
+                &pending.binding,
+                pending.reserved_bytes,
+            )
+        } else {
+            crate::media_layout::prepare(
+                &source,
+                device,
+                req.source.size,
+                req.target.size,
+                req.target.stable_id.as_deref().unwrap_or(""),
+            )
+        };
+        match prepared {
+            Ok(layout) => Some(layout),
+            Err(error) => return JobResult::WriteFailed(error.to_string()),
+        }
+    } else {
+        None
+    };
+    #[cfg(not(target_os = "linux"))]
+    if req.provision_migration_data {
+        return JobResult::WriteFailed("Migration data provisioning requires Linux".into());
     }
     if let Err(error) = source.seek(SeekFrom::Start(0)) {
         return JobResult::WriteFailed(error.to_string());
@@ -865,12 +1103,38 @@ fn run_job_file_bound(
             error: None,
         });
     }
+    #[cfg(target_os = "linux")]
+    let profile_offset = match layout {
+        Some(layout) => match layout.commit(device, should_cancel) {
+            Ok(binding) => {
+                if req
+                    .offline_layout
+                    .as_ref()
+                    .is_some_and(|pending| pending.binding != binding)
+                {
+                    return JobResult::VerifyFailed(
+                        "Committed migration layout differs from sealed expectation".into(),
+                    );
+                }
+                Some(binding.profile_offset)
+            }
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => {
+                return JobResult::Cancelled;
+            }
+            Err(error) => return JobResult::VerifyFailed(error.to_string()),
+        },
+        None => None,
+    };
+    #[cfg(not(target_os = "linux"))]
+    let profile_offset: Option<u64> = None;
     if req.source.installable {
         let block = match encode_profile_block(&req.profile) {
             Ok(block) => block,
             Err(error) => return JobResult::VerifyFailed(error.to_string()),
         };
-        let Some(offset) = req.target.size.checked_sub(PROFILE_BLOCK_SIZE as u64) else {
+        let Some(offset) =
+            profile_offset.or_else(|| req.target.size.checked_sub(PROFILE_BLOCK_SIZE as u64))
+        else {
             return JobResult::VerifyFailed("target is too small for installation profile".into());
         };
         if let Err(error) = device
@@ -893,6 +1157,29 @@ fn run_job_file_bound(
     JobResult::Verified
 }
 
+/// Bind an already-open block descriptor to the freshly reviewed device node.
+#[cfg(target_os = "linux")]
+pub(crate) fn attest_target_descriptor(
+    target: &TargetDrive,
+    file: &std::fs::File,
+) -> io::Result<()> {
+    use std::os::unix::fs::{FileTypeExt, MetadataExt};
+    revalidate_target(target)?;
+    let held = file.metadata()?;
+    let current = std::fs::symlink_metadata(target.dev_path())?;
+    if !held.file_type().is_block_device()
+        || !current.file_type().is_block_device()
+        || held.rdev() != current.rdev()
+        || held.ino() != current.ino()
+        || held.dev() != current.dev()
+    {
+        return Err(io::Error::other(
+            "opened descriptor does not identify the reviewed block device",
+        ));
+    }
+    revalidate_target(target)
+}
+
 /// Run the real job for `req` (source file → target device), streaming
 /// [`Progress`] over `tx`. Only ever called on a worker thread when the
 /// allow-gate selected [`WriteBackend::System`].
@@ -900,6 +1187,7 @@ fn run_system_job(
     req: &WriteRequest,
     should_cancel: &impl Fn() -> bool,
     mut on_progress: impl FnMut(Progress),
+    authenticated_caller: Option<u32>,
 ) -> JobResult {
     let src = std::path::PathBuf::from(&req.source.path);
     let dst = std::path::PathBuf::from(req.target.dev_path());
@@ -915,7 +1203,20 @@ fn run_system_job(
         verify_frac = progress.verify_frac;
         on_progress(progress);
     };
-    let mut result = if should_cancel() {
+    #[cfg(target_os = "linux")]
+    let output_preflight = match &req.offline_layout {
+        Some(layout) => authenticated_caller
+            .ok_or_else(|| {
+                io::Error::other("Original migration requires authenticated helper custody")
+            })
+            .and_then(|uid| crate::setup::media_setup::validate_pending_caller(layout, uid)),
+        None => Ok(()),
+    };
+    #[cfg(not(target_os = "linux"))]
+    let output_preflight: io::Result<()> = Ok(());
+    let mut result = if output_preflight.is_err() {
+        JobResult::WriteFailed("Original migration requires authenticated helper custody".into())
+    } else if should_cancel() {
         JobResult::Cancelled
     } else if let Err(error) = revalidate_target(&req.target) {
         JobResult::WriteFailed(format!(
@@ -925,12 +1226,45 @@ fn run_system_job(
         target_lock = Some(lock);
     }) {
         JobResult::WriteFailed(format!("could not exclusively reserve the drive: {error}"))
+    } else if let Err(error) = validate_pending_source_disks(req) {
+        JobResult::WriteFailed(error.to_string())
     } else if let Err(error) = prepare_target(&req.target) {
         JobResult::WriteFailed(format!(
             "the drive is still in use and could not be prepared: {error}"
         ))
     } else {
         prepared = true;
+        #[cfg(target_os = "linux")]
+        if req.provision_migration_data {
+            use std::os::unix::fs::OpenOptionsExt;
+            match OpenOptions::new()
+                .read(true)
+                .write(true)
+                .custom_flags(libc::O_EXCL | libc::O_SYNC | libc::O_NOFOLLOW)
+                .open(&dst)
+            {
+                Ok(mut device) => match attest_target_descriptor(&req.target, &device) {
+                    Ok(()) => {
+                        run_job_file_bound(req, &mut device, should_cancel, &mut relay_progress)
+                    }
+                    Err(error) => JobResult::WriteFailed(format!(
+                        "the opened drive no longer matches review: {error}"
+                    )),
+                },
+                Err(error) => JobResult::WriteFailed(error.to_string()),
+            }
+        } else {
+            run_job_paths_bound(
+                &src,
+                &dst,
+                req.source.size,
+                req.source.identity,
+                req.source.expected_sha256.as_deref(),
+                should_cancel,
+                &mut relay_progress,
+            )
+        }
+        #[cfg(not(target_os = "linux"))]
         run_job_paths_bound(
             &src,
             &dst,
@@ -942,7 +1276,7 @@ fn run_system_job(
         )
     };
     if prepared {
-        if result.is_success() && req.source.installable {
+        if result.is_success() && req.source.installable && !req.provision_migration_data {
             // The profile is written through a second open because the
             // pathname backend's streaming verifier owns and then closes its
             // descriptor.  Revalidate immediately before that open so a
@@ -978,6 +1312,30 @@ fn run_system_job(
         if result.is_success() && should_cancel() {
             result = JobResult::Cancelled;
         }
+        #[cfg(target_os = "linux")]
+        if result.is_success()
+            && let Some(pending) = &req.offline_layout
+        {
+            let provisioning = authenticated_caller
+                .ok_or_else(|| io::Error::other("Original migration caller custody missing"))
+                .and_then(|uid| {
+                    crate::setup::media_setup::provision_after_write(
+                        &req.target,
+                        pending,
+                        uid,
+                        should_cancel,
+                    )
+                });
+            if let Err(error) = provisioning {
+                result = if error.kind() == io::ErrorKind::Interrupted {
+                    JobResult::Cancelled
+                } else {
+                    JobResult::VerifyFailed(
+                        "Protected migration output provisioning refused".into(),
+                    )
+                };
+            }
+        }
         finish_target(&req.target, &result);
     }
     release_handoff_stage(req);
@@ -1012,7 +1370,13 @@ fn run_system_job(
     result
 }
 
-#[cfg(all(target_os = "linux", feature = "flatpak-media-writer"))]
+#[cfg(all(
+    target_os = "linux",
+    any(
+        feature = "flatpak-media-writer",
+        all(test, feature = "native-capture-qualification")
+    )
+))]
 fn unmount_udisks_filesystems(
     udisks: &block_devices::udisks::Udisks,
     target: &TargetDrive,
@@ -1045,7 +1409,13 @@ fn unmount_udisks_filesystems(
 /// Ask the host's root-owned `UDisks2` daemon for one descriptor to the exact
 /// reviewed device. Polkit owns user authentication; `O_EXCL` prevents a
 /// mounted or concurrently opened device from being written.
-#[cfg(all(target_os = "linux", feature = "flatpak-media-writer"))]
+#[cfg(all(
+    target_os = "linux",
+    any(
+        feature = "flatpak-media-writer",
+        all(test, feature = "native-capture-qualification")
+    )
+))]
 fn open_udisks_device(target: &TargetDrive) -> io::Result<std::fs::File> {
     use std::collections::HashMap;
     use zbus::zvariant::{OwnedFd, Value};
@@ -1071,6 +1441,25 @@ fn open_udisks_device(target: &TargetDrive) -> io::Result<std::fs::File> {
     Ok(std::fs::File::from(std_fd))
 }
 
+/// Qualification uses the actual canonical UDisks writer open, under the
+/// same root-owned target lock. No fabricated target or raw path grant.
+#[cfg(all(test, target_os = "linux", feature = "native-capture-qualification"))]
+pub(crate) fn with_qualification_udisks_target<T>(
+    target: &TargetDrive,
+    callback: impl FnOnce(std::fs::File) -> io::Result<T>,
+) -> io::Result<T> {
+    if !target.is_media_target() {
+        return Err(io::ErrorKind::PermissionDenied.into());
+    }
+    with_locked_media_root(target, || {
+        let device = open_udisks_device(target)?;
+        attest_target_descriptor(target, &device)?;
+        let result = callback(device);
+        revalidate_target(target)?;
+        result
+    })
+}
+
 #[cfg(all(target_os = "linux", feature = "flatpak-media-writer"))]
 fn run_udisks_job(
     req: &WriteRequest,
@@ -1084,6 +1473,9 @@ fn run_udisks_job(
         verify_frac = progress.verify_frac;
         on_progress(progress);
     };
+    if let Err(error) = validate_pending_source_disks(req) {
+        return JobResult::WriteFailed(error.to_string());
+    }
     let mut device = match open_udisks_device(&req.target) {
         Ok(device) => device,
         Err(error) => {
@@ -1103,7 +1495,7 @@ fn run_udisks_job(
         && let Some(stage) = req.handoff_stage.as_deref()
     {
         if let Err(error) = apply_handoff_stage_to_device(
-            std::path::Path::new(req.target.dev_path()),
+            std::path::Path::new(&req.target.dev_path()),
             stage,
             req.source.size,
             req.target.size,
@@ -1327,13 +1719,27 @@ pub fn maybe_run_write_helper(args: &[String]) -> Result<Option<i32>, Box<dyn st
     // redirect root's append into an arbitrary file.
     let mut progress_file = create_progress_output(Path::new(progress_path))?;
     let mut terminal_sent = false;
-    let result = run_system_job(&request, &|| Path::new(cancel_path).exists(), |progress| {
-        terminal_sent |= matches!(progress.phase, JobPhase::Success | JobPhase::Failed);
-        if serde_json::to_writer(&mut progress_file, &progress).is_ok() {
-            let _ = progress_file.write_all(b"\n");
-            let _ = progress_file.flush();
-        }
-    });
+    let result = run_system_job(
+        &request,
+        &|| Path::new(cancel_path).exists(),
+        |progress| {
+            terminal_sent |= matches!(progress.phase, JobPhase::Success | JobPhase::Failed);
+            if serde_json::to_writer(&mut progress_file, &progress).is_ok() {
+                let _ = progress_file.write_all(b"\n");
+                let _ = progress_file.flush();
+            }
+        },
+        {
+            #[cfg(target_os = "linux")]
+            {
+                Some(caller_uid)
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                None
+            }
+        },
+    );
     if !terminal_sent {
         serde_json::to_writer(
             &mut progress_file,
@@ -1359,7 +1765,7 @@ fn read_helper_request(path: &Path) -> io::Result<Vec<u8>> {
 }
 
 #[cfg(target_os = "linux")]
-fn read_linux_helper_request(request_path: &Path) -> io::Result<(Vec<u8>, u32)> {
+pub(crate) fn read_linux_helper_request(request_path: &Path) -> io::Result<(Vec<u8>, u32)> {
     use std::ffi::CString;
     use std::os::fd::{AsRawFd, FromRawFd};
     use std::os::unix::fs::OpenOptionsExt;
@@ -1785,7 +2191,7 @@ fn elevated_helper_command(
     ))
 }
 
-fn revalidate_target(selected: &TargetDrive) -> io::Result<()> {
+pub(crate) fn revalidate_target(selected: &TargetDrive) -> io::Result<()> {
     let current = crate::probe::probe()
         .and_then(|drives| drives.into_iter().find(|drive| drive.name == selected.name))
         .ok_or_else(|| io::Error::other("the selected device is no longer present"))?;
@@ -1969,13 +2375,18 @@ pub fn spawn_job(
     let (tx, rx) = std::sync::mpsc::channel();
     let control = JobControl::new();
     let worker_control = control.clone();
-    let _ = std::thread::Builder::new()
+    let spawned = std::thread::Builder::new()
         .name("imager-write".into())
         .spawn(move || match backend {
             WriteBackend::System => {
-                let _ = run_system_job(&req, &|| worker_control.is_cancelled(), |p| {
-                    let _ = tx.send(p);
-                });
+                let _ = run_system_job(
+                    &req,
+                    &|| worker_control.is_cancelled(),
+                    |p| {
+                        let _ = tx.send(p);
+                    },
+                    None,
+                );
             }
             WriteBackend::PrivilegedHelper => {
                 spawn_privileged_helper(req, &worker_control, &tx);
@@ -1994,6 +2405,20 @@ pub fn spawn_job(
             }
             WriteBackend::Disabled => {}
         });
+    let joined = match spawned {
+        Ok(joined) => joined,
+        Err(error) => {
+            return (
+                JobStart::InvalidProfile(crate::setup::strings::t_args(
+                    "imager-write-worker-start-failed",
+                    &[("error", error.to_string().as_str().into())],
+                )),
+                None,
+                None,
+            );
+        }
+    };
+    control.bind_worker(joined);
     (JobStart::Started, Some(rx), Some(control))
 }
 
@@ -2109,6 +2534,9 @@ mod tests {
             action: Action::Flash,
             profile: InstallProfile::default(),
             handoff_stage: None,
+            provision_migration_data: false,
+            #[cfg(target_os = "linux")]
+            offline_layout: None,
         }
     }
 
@@ -2779,7 +3207,8 @@ mod tests {
             request.target.name = "tilo-test-device-that-cannot-exist".into();
             let mut updates = Vec::new();
 
-            let result = run_system_job(&request, &|| false, |progress| updates.push(progress));
+            let result =
+                run_system_job(&request, &|| false, |progress| updates.push(progress), None);
 
             assert!(matches!(result, JobResult::WriteFailed(_)));
             let terminal = updates.last().expect("terminal progress event");
@@ -3180,4 +3609,89 @@ mod tests {
         }
         assert_eq!(std::fs::read(device.path()).unwrap(), before);
     }
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn descriptor_writer_provisions_large_home_media_and_embeds_profile_in_gpt_gap() {
+        use std::os::unix::fs::FileExt;
+        let (_source_dir, source_path, source) = crate::media_layout::tests::disk();
+        source
+            .set_len(4 * 1024 * 1024)
+            .expect("exact installer fixture");
+        let mut target = tempfile::tempfile().expect("target fixture");
+        target
+            .set_len(64 * 1024 * 1024)
+            .expect("large media fixture");
+        let mut request = req();
+        request.source.path = source_path.to_string_lossy().into_owned();
+        request.source.size = 4 * 1024 * 1024;
+        request.source.identity = None;
+        request.source.expected_sha256 = None;
+        request.source.installable = true;
+        request.target.size = 64 * 1024 * 1024;
+        request.target.stable_id = Some("usb:fixture".into());
+        request.provision_migration_data = true;
+        assert_eq!(
+            run_job_file_bound(&request, &mut target, &|| false, |_| {}),
+            JobResult::Verified
+        );
+        let binding = crate::media_layout::binding(&target, request.target.size, "usb:fixture")
+            .expect("actual writer GPT");
+        let mut profile = vec![0; PROFILE_BLOCK_SIZE];
+        target
+            .read_exact_at(&mut profile, binding.profile_offset)
+            .expect("profile gap");
+        assert_eq!(
+            profile,
+            encode_profile_block(&request.profile).expect("canonical profile")
+        );
+        let mut boot = vec![0; 19];
+        target
+            .read_exact_at(&mut boot, 2048 * 512)
+            .expect("boot payload");
+        assert_eq!(boot, b"signed boot payload");
+        let mut old = vec![0; PROFILE_BLOCK_SIZE];
+        target
+            .read_exact_at(&mut old, request.target.size - PROFILE_BLOCK_SIZE as u64)
+            .expect("relocated backup");
+        assert_ne!(old, profile);
+    }
+}
+
+fn validate_pending_source_disks(req: &WriteRequest) -> io::Result<()> {
+    #[cfg(target_os = "linux")]
+    if let Some(pending) = &req.offline_layout {
+        use std::os::unix::fs::{FileTypeExt, MetadataExt};
+        revalidate_target(&req.target)?;
+        let target = std::fs::symlink_metadata(req.target.dev_path())?;
+        if !target.file_type().is_block_device() || target.rdev() != pending.target_number {
+            return Err(io::Error::other("Pending raw media identity changed"));
+        }
+        crate::setup::migration_handoff::validate_offline_source_disks(
+            &pending.source_plans,
+            target.rdev(),
+        )?;
+        revalidate_target(&req.target)?;
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = req;
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn validate_pending_descriptor(req: &WriteRequest, device: &std::fs::File) -> io::Result<()> {
+    if let Some(pending) = &req.offline_layout {
+        use std::os::unix::fs::{FileTypeExt, MetadataExt};
+        attest_target_descriptor(&req.target, device)?;
+        let held = device.metadata()?;
+        if !held.file_type().is_block_device() || held.rdev() != pending.target_number {
+            return Err(io::Error::other(
+                "Opened pending raw media identity changed",
+            ));
+        }
+        crate::setup::migration_handoff::validate_offline_source_disks(
+            &pending.source_plans,
+            held.rdev(),
+        )?;
+    }
+    Ok(())
 }

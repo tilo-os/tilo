@@ -6,6 +6,7 @@ fixture staging ESP, fixture lsblk output and a fake efibootmgr. Nothing here
 touches a real disk or firmware variable, so it runs unprivileged anywhere.
 """
 import copy
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -330,6 +331,32 @@ class InternalModeGuardTests(unittest.TestCase):
             self.assertRefused(self.fixture.check(**{'root-size-bytes': shorter}),
                                'end exactly where the staged installer begins')
 
+    def test_device_label_strict_utf8_bound_and_legacy_omission(self):
+        document = handoff_document()
+        document['profile']['device_label'] = 'Quinten’s computer'
+        self.fixture.set_handoff(document)
+        result = self.fixture.check()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        for invalid in ('a' * 65, 'é' * 33, 'bad\nlabel', 'bad\x7flabel', None):
+            document['profile']['device_label'] = invalid
+            self.fixture.set_handoff(document)
+            self.assertRefused(self.fixture.check(), 'device label')
+
+    def test_prepared_setup_expectation_is_preserved_and_invalid_fields_refused(self):
+        document = handoff_document()
+        receipt = {'schema': 1, 'sealed_bytes': 1000, 'ciphertext_sha256': 'a' * 64}
+        document['profile']['prepared_setup'] = receipt
+        self.fixture.set_handoff(document)
+        result = self.fixture.check()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        for invalid in ({**receipt, 'schema': True}, {**receipt, 'sealed_bytes': 0},
+                        {**receipt, 'ciphertext_sha256': 'A' * 64},
+                        {**receipt, 'password': 'must not be public'}):
+            with self.subTest(expectation=invalid):
+                document['profile']['prepared_setup'] = invalid
+                self.fixture.set_handoff(document)
+                self.assertNotEqual(self.fixture.check().returncode, 0)
+
     def test_refuses_esp_or_mount_mismatch(self):
         with self.subTest(phase="handoff_naming_a_different_esp_than_the_booted_one_is_refused"):
             self.fixture.set_loader('dddddddd-0000-4000-8000-000000000004')
@@ -379,6 +406,35 @@ class DetectTests(unittest.TestCase):
     def detect(self):
         result = self.fixture.run('detect', '--out', str(self.out), '--error', str(self.error))
         self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_boot_selected_prepared_setup_is_verified_delivered_and_retained(self):
+        document = handoff_document()
+        sealed = b'TILOMIG1' + b'opaque reviewed ciphertext' * 128
+        receipt = {'schema': 1, 'sealed_bytes': len(sealed),
+                   'ciphertext_sha256': hashlib.sha256(sealed).hexdigest()}
+        document['profile']['prepared_setup'] = receipt
+        self.fixture.set_handoff(document)
+        directory = self.fixture.esp / '.tilo-installer'
+        directory.mkdir()
+        package = directory / 'prepared-setup.sealed'
+        package.write_bytes(sealed + b' ' * 8192)
+        (directory / 'receipt.json').write_bytes(json.dumps(receipt).encode().ljust(1024, b' '))
+        self.detect()
+        self.assertFalse(self.error.exists(), self.error.read_text() if self.error.exists() else '')
+        self.assertEqual((self.out.parent / 'prepared-setup.sealed').read_bytes(), sealed)
+        self.assertEqual((self.out.parent / 'prepared-setup.sealed').stat().st_mode & 0o777, 0o600)
+        self.assertEqual(json.loads((self.out.parent / 'profile.json').read_text()), document['profile'])
+        self.detect()  # Exact private custody is independently checked on retry.
+        self.assertTrue(self.out.exists())
+        self.assertFalse(self.error.exists())
+        package.write_bytes(b'TILOMIG1' + b'changed reviewed bytes')
+        # Remove only fixture runtime custody so the changed boot medium is read.
+        (self.out.parent / 'prepared-setup.sealed').unlink()
+        (self.out.parent / 'receipt.json').unlink()
+        self.detect()
+        self.assertFalse(self.out.exists())
+        self.assertIn('delivery failed', self.error.read_text())
+        self.assertFalse((self.out.parent / 'prepared-setup.sealed').exists())
 
     def test_detect_publishes_only_matching_handoff(self):
         with self.subTest(phase="publishes_a_normalized_copy_for_the_unprivileged_ui"):
@@ -494,6 +550,197 @@ class ReclaimRecordTests(unittest.TestCase):
             self.assertEqual(record['target_root']['last_lba'] + 1, STAGING_ESP[0])
             short = fixture.run(*argv, '--target-root-size-bytes', str(root_size - 1024 * 1024))
             self.assertEqual(short.returncode, 1, 'a root that does not end at staging is not reclaimable')
+
+
+class MigrationHandoffTests(unittest.TestCase):
+    def document(self):
+        handoff = handoff_document()
+        handoff['host_os'] = 'linux'
+        handoff['migration'] = {
+            'schema': 1, 'operation_id': handoff['operation_id'],
+            'categories': {'home': True, 'flatpak': True, 'accounts': True},
+            'home': {
+                'volume': {'disk_guid': DISK_GUID, 'disk_bytes': DISK_SECTORS * 512,
+                    'sector_bytes': 512, 'partition_guid': '00000000-0000-4000-8000-00000000000b',
+                    'first_lba': WINDOWS[0], 'last_lba': WINDOWS[1],
+                    'filesystem_uuid': '33333333-3333-4333-8333-333333333333', 'filesystem': 'ext4'},
+                'relative': {'platform': 'Unix', 'units': list(b'home/person')},
+                'inode': 123, 'original_uid': 1000, 'subvolume': None,
+            },
+        }
+        handoff['migration']['flatpak_inventory'] = {'schema': 1, 'inventory': {'refs': [], 'remotes': []}, 'selected': [], 'installations': []}
+        return handoff
+
+    def test_retained_policy_is_strict_and_forwarded_without_changing_legacy_copy(self):
+        for policy in ('copy', 'access-read-only', 'access-read-write', None):
+            with self.subTest(policy=policy), tempfile.TemporaryDirectory() as temporary:
+                fixture = Fixture(temporary)
+                document = self.document()
+                if policy is not None:
+                    document['migration']['home_policy'] = policy
+                fixture.set_handoff(document)
+                devices = lsblk_document()
+                source = devices['blockdevices'][0]['children'][1]
+                source['uuid'] = document['migration']['home']['volume']['filesystem_uuid']
+                source['fstype'] = 'ext4'
+                fixture.set_lsblk(devices)
+                result = fixture.check()
+                self.assertEqual(result.returncode, 0, result.stderr)
+                # Exercise production root seed publication, not only parsing.
+                var = Path(temporary) / 'policy-target-var'
+                result = fixture.run('write-reclaim-record', '--handoff', str(fixture.copy),
+                    '--target-var', str(var), '--target-root-partuuid',
+                    'eeeeeeee-0000-4000-8000-000000000005', '--target-esp-partuuid', TARGET_ESP_UUID,
+                    '--target-root-start-bytes', str(TARGET[0] * 512),
+                    '--target-root-size-bytes', str((TARGET[1] - TARGET[0] + 1) * 512), '--sector-size', '512')
+                self.assertEqual(result.returncode, 0, result.stderr)
+                saved = json.loads((var / 'lib/tilo/migration-plan.json').read_text())
+                self.assertEqual(saved.get('home_policy'), policy)
+        for policy, home in [('access-read-write', False), ('unknown', True), (False, True), ({}, True)]:
+            with self.subTest(policy=policy, home=home), tempfile.TemporaryDirectory() as temporary:
+                fixture = Fixture(temporary)
+                document = self.document()
+                document['migration']['home_policy'] = policy
+                document['migration']['categories']['home'] = home
+                fixture.set_handoff(document)
+                result = fixture.check()
+                self.assertEqual(result.returncode, 1)
+                self.assertIn('home policy', result.stderr)
+
+    def test_authenticated_pending_apps_route_is_privately_preserved_not_completed(self):
+        import io
+        import runpy
+        from types import SimpleNamespace
+        helper = runpy.run_path(str(HELPER), run_name='tilo_staging_codec_test')
+        main = self.document()['migration']
+        main['home_policy'] = 'access-read-write'
+        main['categories']['flatpak'] = False
+        main.pop('flatpak_inventory', None)
+        scope = {'schema': 1, 'source_operation': main['operation_id'],
+                 'applications_operation': '22222222-2222-4222-8222-222222222222',
+                 'staging_operation': '33333333-3333-4333-8333-333333333333',
+                 'staging_plan_sha256': 'ab' * 32, 'setup_binding': 'bound',
+                 'identity_public_key': [3] * 32}
+        receipt = {'schema': 1, 'setup_binding': 'bound', 'identity_public_key': [3] * 32,
+                   'retained_home': main, 'pending_computer_applications_scope': scope}
+        def parse(value):
+            return helper['authenticated_retained_plan'](SimpleNamespace(buffer=io.BytesIO(json.dumps(value).encode())))
+        before = copy.deepcopy(receipt)
+        delivered = parse(receipt)
+        self.assertEqual(receipt, before)
+        self.assertEqual(delivered, dict(main, pending_computer_applications_scope=scope))
+        self.assertEqual(helper['validate_migration'](delivered), delivered)
+        for field, bad in [('source_operation', scope['staging_operation']), ('schema', True),
+                           ('staging_plan_sha256', 'AB' * 32), ('identity_public_key', [True] * 32),
+                           ('source_path', '/caller/source')]:
+            changed = copy.deepcopy(receipt)
+            changed['pending_computer_applications_scope'][field] = bad
+            with self.subTest(field=field), self.assertRaises(helper['Refusal']):
+                parse(changed)
+        completed = dict(receipt, completed_applications_only=True)
+        with self.assertRaises(helper['Refusal']):
+            parse(completed)
+        # Exercise the real parser's delivery bound with a valid main plan
+        # that fits, but whose authenticated scope crosses the same bound.
+        parser_globals = helper['authenticated_retained_plan'].__globals__
+        parser_globals['HANDOFF_MAX_BYTES'] = len(helper['canonical'](main))
+        self.assertEqual(parse(dict(receipt, pending_computer_applications_scope=None)), main)
+        with self.assertRaises(helper['Refusal']):
+            parse(receipt)
+
+    def test_source_is_revalidated_before_install_and_metadata_is_privately_forwarded(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            fixture = Fixture(temporary)
+            document = self.document()
+            fixture.set_handoff(document)
+            devices = lsblk_document()
+            source = devices['blockdevices'][0]['children'][1]
+            source['uuid'] = document['migration']['home']['volume']['filesystem_uuid']
+            source['fstype'] = 'ext4'
+            fixture.set_lsblk(devices)
+            result = fixture.check()
+            self.assertEqual(result.returncode, 0, result.stderr)
+            source['uuid'] = '44444444-4444-4444-8444-444444444444'
+            fixture.set_lsblk(devices)
+            result = fixture.check()
+            self.assertEqual(result.returncode, 1)
+            self.assertIn('retained migration source identity', result.stderr)
+            var = Path(temporary) / 'target-var'
+            var.mkdir()
+            root_start = TARGET[0] * 512 + 3 * GIB
+            result = fixture.run('write-reclaim-record', '--handoff', str(fixture.copy),
+                '--target-var', str(var), '--target-root-partuuid', 'EEEEEEEE-0000-4000-8000-000000000005',
+                '--target-esp-partuuid', TARGET_ESP_UUID, '--target-root-start-bytes', str(root_start),
+                '--target-root-size-bytes', str((TARGET[1]+1)*512-root_start), '--sector-size', '512')
+            self.assertEqual(result.returncode, 0, result.stderr)
+            plan = var / 'lib/tilo/migration-plan.json'
+            self.assertEqual(plan.stat().st_mode & 0o777, 0o600)
+            self.assertEqual(json.loads(plan.read_text()), document['migration'])
+
+    def test_firstboot_metadata_delivery_is_private_idempotent_and_never_follows_links(self):
+        self.assertNotEqual(os.geteuid(), 0, 'fixture injection requires an unprivileged test runner')
+        with tempfile.TemporaryDirectory() as temporary:
+            fixture = Fixture(temporary)
+            home = Path(temporary) / 'user-home'
+            home.mkdir(mode=0o700)
+            seed = Path(temporary) / 'private-seed'
+            seed.mkdir(mode=0o700)
+            raw = self.document()['migration']
+            raw['flatpak_inventory'] = {'schema': 1, 'inventory': {'refs': [], 'remotes': []}, 'selected': [], 'installations': []}
+            original = json.dumps(raw).encode()
+            seed_file = seed / 'migration-plan.json'
+            seed_file.write_bytes(original)
+            seed_file.chmod(0o600)
+            argv = ['deliver-user-plan', '--username', 'fixture', '--test-home', str(home),
+                '--test-uid', str(os.geteuid()), '--test-gid', str(os.getegid()), '--test-seed-dir', str(seed)]
+            result = fixture.run(*argv)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            directory = home / '.local/state/tilo/migration-handoff'
+            target = directory / (raw['operation_id'] + '.migration.json')
+            self.assertEqual(target.stat().st_mode & 0o777, 0o600)
+            self.assertEqual(target.stat().st_uid, os.geteuid())
+            self.assertEqual(directory.stat().st_mode & 0o777, 0o700)
+            self.assertEqual(json.loads(target.read_text()), raw)
+            self.assertEqual(seed_file.read_bytes(), original)
+            self.assertEqual(fixture.run(*argv).returncode, 0)
+            changed = copy.deepcopy(raw)
+            changed['categories']['accounts'] = False
+            target.write_text(json.dumps(changed))
+            result = fixture.run(*argv)
+            self.assertEqual(result.returncode, 1)
+            self.assertIn('refusing replacement', result.stderr)
+            target.unlink()
+            outside = Path(temporary) / 'outside'
+            outside.write_text('untouched')
+            target.symlink_to(outside)
+            self.assertEqual(fixture.run(*argv).returncode, 1)
+            self.assertEqual(outside.read_text(), 'untouched')
+            target.unlink()
+            directory.rmdir()
+            directory.symlink_to(Path(temporary))
+            self.assertEqual(fixture.run(*argv).returncode, 1)
+            self.assertFalse((Path(temporary) / target.name).exists())
+            self.assertEqual(seed_file.read_bytes(), original)
+
+    def test_credential_traversal_and_overlapping_source_are_rejected(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            fixture = Fixture(temporary)
+            for change in ('credential', 'traversal', 'overlap', 'wrong-operation'):
+                with self.subTest(change=change):
+                    document = self.document()
+                    home = document['migration']['home']
+                    if change == 'credential':
+                        home['password'] = 'not allowed'
+                    elif change == 'traversal':
+                        home['relative']['units'] = list(b'home/../person')
+                    elif change == 'overlap':
+                        home['volume']['last_lba'] = TARGET[0]
+                    else:
+                        document['migration']['operation_id'] = 'different'
+                    fixture.set_handoff(document)
+                    result = fixture.check()
+                    self.assertEqual(result.returncode, 1)
+                    self.assertIn('migration', result.stderr)
 
 
 class BackendWiringTests(unittest.TestCase):

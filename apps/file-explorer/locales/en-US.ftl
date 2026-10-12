@@ -627,3 +627,14 @@ file-explorer-revert = Took back a change to files
 
 files-native-trash-delete-unavailable = These items can be restored. Permanent deletion is unavailable here.
 files-user-trash-unavailable = Your Trash isn’t available in this workspace.
+
+files-open-with-access-param = Access to the original file
+files-open-with-launch-unavailable = This application cannot open the original file right now.
+
+files-open-with-busy = Wait for the current file to open before opening another.
+files-open-with-action-unavailable = Choose Open with again from the current file.
+files-open-with-write-required = You need permission to edit the original file.
+files-open-with-default-unavailable = Open this original file once without changing its default application.
+files-open-with-access-unavailable = This application cannot use the selected access to the original file.
+files-open-with-selection-changed = The selected file is no longer available. Choose it again.
+files-open-with-timeout = Opening the original file took too long. Try again.

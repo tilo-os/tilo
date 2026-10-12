@@ -7,8 +7,18 @@
 use ui::framework::Helper;
 
 /// Every helper, in the order they are asked.
-pub(crate) const HELPERS: [Helper; 9] = [
+pub(crate) const HELPERS: [Helper; 13] = [
     Helper { run: native_copy },
+    Helper {
+        run: |args| crate::setup::staging::capacity_probe::maybe_run(args),
+    },
+    Helper {
+        run: read_selected_media,
+    },
+    Helper { run: home_capture },
+    Helper {
+        run: home_capture_host,
+    },
     Helper {
         run: |args| crate::setup::desktop_worker::maybe_run_desktop_helper(args),
     },
@@ -32,6 +42,26 @@ pub(crate) const HELPERS: [Helper; 9] = [
         run: flatpak_probe_smoke,
     },
 ];
+
+#[cfg(target_os = "linux")]
+fn home_capture(args: &[String]) -> Result<Option<i32>, String> {
+    crate::setup::home_capture_helper::maybe_run(args)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn home_capture(_args: &[String]) -> Result<Option<i32>, String> {
+    Ok(None)
+}
+
+#[cfg(target_os = "linux")]
+fn home_capture_host(args: &[String]) -> Result<Option<i32>, String> {
+    crate::setup::home_capture::maybe_run_host(args)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn home_capture_host(_args: &[String]) -> Result<Option<i32>, String> {
+    Ok(None)
+}
 
 /// The native migration copy and its resumption.
 #[cfg(target_os = "linux")]
@@ -100,6 +130,15 @@ mod tests {
             Some(1),
             "an incomplete customization is refused before GUI startup"
         );
+        #[cfg(target_os = "linux")]
+        assert_eq!(
+            ui::framework::run_helper::<ImagerShell>(&args(&[
+                "--tilo-home-capture-host",
+                "unexpected",
+            ])),
+            Some(1),
+            "a malformed capture host command must exit before starting the app"
+        );
         for app in [&[][..], &["--setup"], &["--import-folders"]] {
             assert_eq!(
                 ui::framework::run_helper::<ImagerShell>(&args(app)),
@@ -108,4 +147,13 @@ mod tests {
             );
         }
     }
+}
+
+#[cfg(target_os = "linux")]
+fn read_selected_media(args: &[String]) -> Result<Option<i32>, String> {
+    crate::setup::read_media::maybe_run(args)
+}
+#[cfg(not(target_os = "linux"))]
+fn read_selected_media(_args: &[String]) -> Result<Option<i32>, String> {
+    Ok(None)
 }

@@ -107,6 +107,7 @@ version = "0.1.0"
 dependencies = [
  "accounts",
  "base64",
+ "browser-continuity",
  "cloud-source",
  "cloud-source-dropbox",
  "cloud-source-gdrive",
@@ -115,6 +116,7 @@ dependencies = [
  "reqwest 0.13.4",
  "serde",
  "serde_json",
+ "sha2 0.11.0",
  "tempfile",
  "test-http",
  "tilo-clock",
@@ -1377,15 +1379,20 @@ dependencies = [
 name = "browser"
 version = "0.1.0"
 dependencies = [
+ "account-custody",
+ "accounts",
  "base64",
  "blake3",
  "bounded-zip",
+ "browser-continuity",
  "fnv",
  "hex",
  "host-info",
  "private-fs",
  "reqwest 0.13.4",
  "runtime-dylib",
+ "rusqlite",
+ "rustix 1.1.4",
  "serde",
  "serde_json",
  "sha2 0.11.0",
@@ -1406,7 +1413,23 @@ dependencies = [
  "url",
  "uuid",
  "workspace-hack",
+ "zeroize",
  "zip",
+]
+
+[[package]]
+name = "browser-continuity"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "cap-fs-ext",
+ "cap-primitives",
+ "ed25519-dalek 3.0.0",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tilo-files",
+ "zeroize",
 ]
 
 [[package]]
@@ -2272,6 +2295,15 @@ dependencies = [
  "uuid",
  "workspace-hack",
  "zeroize",
+]
+
+[[package]]
+name = "cmake"
+version = "0.1.58"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c0f78a02292a74a88ac736019ab962ece0bc380e3f977bf72e376c5d78ff0678"
+dependencies = [
+ "cc",
 ]
 
 [[package]]
@@ -4304,6 +4336,12 @@ dependencies = [
  "rand_core 0.10.0",
  "subtle",
 ]
+
+[[package]]
+name = "ffi-opaque"
+version = "2.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ec54ac60a7f2ee9a97cad9946f9bf629a3bc6a7ae59e68983dc9318f5a54b81a"
 
 [[package]]
 name = "fiat-crypto"
@@ -6908,42 +6946,81 @@ dependencies = [
 name = "imager"
 version = "0.1.0"
 dependencies = [
+ "account-custody",
+ "accounts",
+ "aes 0.9.3",
  "base64",
  "blake3",
  "block-devices",
  "bounded-command",
+ "browser-continuity",
  "cap-fs-ext",
  "cap-primitives",
  "cap-std",
+ "cloud-source-dav",
  "crc32fast",
+ "ctr 0.10.1",
+ "ed25519-dalek 3.0.0",
+ "fs-native",
+ "fuser",
+ "glib",
  "hex",
+ "hmac 0.13.0",
+ "launcher",
+ "leveldb-sys",
  "libc",
+ "package-store",
+ "pbkdf2 0.13.0",
  "reqwest 0.13.4",
+ "runtime-bundle",
+ "runtime-collab",
  "runtime-dylib",
+ "runtime-fs",
+ "runtime-identity",
+ "runtime-portal",
+ "rusqlite",
  "ruzstd",
  "serde",
  "serde_json",
+ "sha1 0.11.0",
  "sha2 0.11.0",
  "taffy",
+ "tar",
  "tempfile",
+ "test-http",
  "tilo-actions",
  "tilo-advisory-lock",
  "tilo-app",
+ "tilo-app-package",
  "tilo-automerge-fork",
+ "tilo-dav",
+ "tilo-desktop-entry",
+ "tilo-desktop-model",
  "tilo-files",
+ "tilo-fs",
  "tilo-identity-host",
+ "tilo-image-codec",
  "tilo-net",
  "tilo-ntfs-protocol",
+ "tilo-oauth",
  "tilo-paths",
  "tilo-relay-protocol",
+ "tilo-seal",
+ "tilo-secrets",
  "tilo-test-env",
+ "tilo-unlock-protocol",
  "tilo-user-identity",
  "tilo-vello",
+ "tilo-vello-encoding",
  "tilo-winit",
+ "tokio",
+ "url",
  "uuid",
  "windows-sys 0.61.2",
+ "wire-frame",
  "workspace-hack",
  "zbus",
+ "zeroize",
 ]
 
 [[package]]
@@ -7911,6 +7988,7 @@ dependencies = [
  "ash",
  "blake3",
  "bounded-command",
+ "browser-continuity",
  "clap",
  "collab-types",
  "ed25519-dalek 3.0.0",
@@ -7928,14 +8006,17 @@ dependencies = [
  "runtime-portal",
  "serde",
  "serde_json",
+ "sha2 0.11.0",
  "tempfile",
  "thiserror 2.0.21",
  "threshold-identity",
  "tilo-action-policy",
+ "tilo-actions",
  "tilo-advisory-lock",
  "tilo-app-package",
  "tilo-clock",
  "tilo-desktop-entry",
+ "tilo-files",
  "tilo-paths",
  "tilo-rt",
  "tilo-sandbox-core",
@@ -8057,6 +8138,16 @@ dependencies = [
  "tokio",
  "tokio-rustls",
  "url",
+]
+
+[[package]]
+name = "leveldb-sys"
+version = "2.0.9"
+dependencies = [
+ "cmake",
+ "ffi-opaque",
+ "libc",
+ "num_cpus",
 ]
 
 [[package]]
@@ -13002,9 +13093,11 @@ dependencies = [
 name = "runtime-collab"
 version = "0.1.0"
 dependencies = [
+ "browser-continuity",
  "capnp",
  "capnp-rpc",
  "collab-types",
+ "ed25519-dalek 3.0.0",
  "libc",
  "postcard",
  "runtime-portal",
@@ -13014,8 +13107,11 @@ dependencies = [
  "tilo-actions",
  "tilo-clock",
  "tilo-test-env",
+ "tilo-user-identity",
  "tokio",
+ "uuid",
  "workspace-hack",
+ "zeroize",
 ]
 
 [[package]]
@@ -13071,6 +13167,10 @@ dependencies = [
  "cap-std",
  "capnp",
  "capnp-rpc",
+ "ed25519-dalek 3.0.0",
+ "fs-protocol",
+ "fuser",
+ "libc",
  "postcard",
  "runtime-portal",
  "rustix 1.1.4",
@@ -13081,6 +13181,7 @@ dependencies = [
  "tilo-files",
  "tilo-test-env",
  "tokio",
+ "tokio-util",
  "uuid",
  "wire-frame",
  "workspace-hack",
@@ -13127,7 +13228,9 @@ dependencies = [
  "rustix 1.1.4",
  "serde",
  "serde_json",
+ "sha2 0.11.0",
  "thiserror 2.0.21",
+ "tilo-files",
  "tilo-test-env",
  "tokio",
  "tokio-util",
@@ -14240,6 +14343,7 @@ name = "shell"
 version = "0.1.0"
 dependencies = [
  "accesskit_unix",
+ "account-custody",
  "accounts",
  "agent-provider-config",
  "ash",
@@ -14247,6 +14351,7 @@ dependencies = [
  "blake3",
  "bounded-command",
  "browser",
+ "browser-continuity",
  "bytes",
  "capnp",
  "capnp-rpc",
@@ -15868,6 +15973,7 @@ dependencies = [
  "wire-frame",
  "word-processor",
  "workspace-hack",
+ "zeroize",
 ]
 
 [[package]]
@@ -16609,6 +16715,10 @@ dependencies = [
 name = "tilo-desktop-entry"
 version = "0.1.0"
 dependencies = [
+ "blake3",
+ "libc",
+ "serde",
+ "serde_json",
  "serial_test",
  "tempfile",
  "thiserror 2.0.21",
@@ -16902,6 +17012,8 @@ dependencies = [
  "bao-tree",
  "blake3",
  "bytes",
+ "capnp",
+ "capnp-rpc",
  "clap",
  "cloud-source",
  "cloud-source-dav",
@@ -16932,7 +17044,9 @@ dependencies = [
  "rand 0.10.1",
  "redb",
  "ref-cast",
+ "runtime-collab",
  "runtime-fs",
+ "runtime-portal",
  "serde",
  "serde_bytes",
  "serde_json",
@@ -16954,6 +17068,7 @@ dependencies = [
  "tilo-thumbnail",
  "tilo-user-identity",
  "tokio",
+ "tokio-util",
  "toml 1.0.6+spec-1.1.0",
  "tracing",
  "uuid",
@@ -17036,6 +17151,7 @@ dependencies = [
  "postcard",
  "private-fs",
  "rand_core 0.10.0",
+ "runtime-identity",
  "rustls",
  "serde",
  "serde_bytes",
@@ -17069,6 +17185,7 @@ dependencies = [
  "runtime-identity",
  "serde",
  "serde_json",
+ "sha2 0.11.0",
  "tempfile",
  "threshold-identity",
  "tilo-action-policy",
@@ -17087,6 +17204,7 @@ dependencies = [
  "tracing",
  "wire-frame",
  "workspace-hack",
+ "zeroize",
 ]
 
 [[package]]
@@ -18333,6 +18451,7 @@ dependencies = [
  "ash",
  "base64",
  "blake3",
+ "browser-continuity",
  "capnp",
  "capnp-rpc",
  "channel-crypto",
@@ -18409,6 +18528,7 @@ dependencies = [
  "tilo-process",
  "tilo-resource",
  "tilo-rt",
+ "tilo-sandbox-core",
  "tilo-search",
  "tilo-spellcheck",
  "tilo-startup-metrics",

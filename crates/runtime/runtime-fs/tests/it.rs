@@ -11,3 +11,12 @@ pub mod native_grants;
 pub mod native_operations;
 #[path = "workspace_server.rs"]
 pub mod workspace_server;
+
+#[path = "workspace_file_server.rs"]
+pub mod workspace_file_server;
+
+#[path = "workspace_directory_server.rs"]
+pub mod workspace_directory_server;
+
+#[path = "directory_connection.rs"]
+pub mod directory_connection;

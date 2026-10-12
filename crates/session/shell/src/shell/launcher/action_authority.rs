@@ -6,7 +6,7 @@ use collab_types::action_authority::{AppActionAuthorityProjection, MAX_PROJECTIO
 use collab_types::caps::CapOverride;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
-use std::sync::{LazyLock, Mutex};
+use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
 #[cfg(target_os = "linux")]
@@ -258,6 +258,9 @@ pub(super) fn attach(
         capabilities: Vec::new(),
         pid: None,
         capabilities_file: None,
+        retained_projection: None,
+        #[cfg(target_os = "linux")]
+        selected_target: None,
     })
 }
 
@@ -283,8 +286,26 @@ pub(crate) struct Lease {
     capabilities: Vec<CapOverride>,
     pid: Option<u32>,
     capabilities_file: Option<tempfile::NamedTempFile>,
+    retained_projection: Option<tempfile::TempDir>,
+    #[cfg(target_os = "linux")]
+    selected_target: Option<Arc<super::retained_home::selected_target::TargetLifetime>>,
 }
 impl Lease {
+    #[cfg(target_os = "linux")]
+    pub(super) fn retain_selected_target(
+        mut self,
+        target: Arc<super::retained_home::selected_target::TargetLifetime>,
+    ) -> Self {
+        self.selected_target = Some(target);
+        self
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(super) fn retain_home_projection(mut self, projection: tempfile::TempDir) -> Self {
+        self.retained_projection = Some(projection);
+        self
+    }
+
     pub(super) fn with_sandbox_capabilities(
         mut self,
         capabilities: Vec<CapOverride>,
@@ -293,6 +314,23 @@ impl Lease {
         self.capabilities = capabilities;
         self.capabilities_file = file;
         self
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(super) fn retained_release(
+        &mut self,
+        pid: u32,
+        room: RoomId,
+        package: &str,
+        person: &str,
+    ) -> std::io::Result<()> {
+        if self.pid != Some(pid) || self.binding != (room, package.to_owned(), person.to_owned()) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "retained launch differs from accepted ordinary policy lease",
+            ));
+        }
+        self.register_sandbox(pid)
     }
 
     #[cfg(target_os = "linux")]
@@ -716,6 +754,9 @@ mod tests {
             capabilities,
             pid: None,
             capabilities_file: None,
+            retained_projection: None,
+            #[cfg(target_os = "linux")]
+            selected_target: None,
         };
 
         let first = sleeper();

@@ -59,6 +59,8 @@ pub enum ManifestError {
     RuntimeEntrypoint(String),
     #[error("only kind=runtime packages declare `package.provides`")]
     ProvidesOnNonRuntime,
+    #[error("package.service-protocol requires a bounded canonical name and positive version")]
+    BadServiceProtocol,
     #[error(
         "a native kind=runtime package (one with `[package.isa]`) requires `package.provides`, \
          the runtime it is, e.g. `tilo-runtime/<release>+native.<32 hex>`"
@@ -238,6 +240,26 @@ pub fn validate_manifest(m: &Manifest) -> Result<(), ManifestError> {
         }
     }
     validate_provides(m)?;
+    if m.package.service_protocol.as_ref().is_some_and(|protocol| {
+        protocol.version == 0
+            || protocol.name.is_empty()
+            || protocol.name.len() > 128
+            || !protocol.name.bytes().all(|byte| {
+                byte.is_ascii_lowercase() || byte.is_ascii_digit() || b"._-".contains(&byte)
+            })
+            || protocol
+                .name
+                .as_bytes()
+                .first()
+                .is_none_or(|byte| !byte.is_ascii_lowercase())
+            || !protocol
+                .name
+                .as_bytes()
+                .last()
+                .is_some_and(u8::is_ascii_alphanumeric)
+    }) {
+        return Err(ManifestError::BadServiceProtocol);
+    }
 
     match m.package.kind {
         Kind::App => {
@@ -717,6 +739,50 @@ mode = "off"
         m.package.kind = Kind::FormatProvider;
         m.providers.mime = vec!["text/markdown".into()];
         m
+    }
+
+    #[test]
+    fn service_wire_contract_is_bounded_and_preserves_legacy_packages() {
+        let mut manifest = minimal_runtime_manifest();
+        assert!(manifest.package.service_protocol.is_none());
+        assert_eq!(validate_manifest(&manifest), Ok(()));
+        manifest.package.service_protocol = Some(crate::manifest::ServiceProtocol {
+            name: "tilo.home-capture".into(),
+            version: 6,
+        });
+        assert_eq!(validate_manifest(&manifest), Ok(()));
+        let encoded = toml::to_string(&manifest).unwrap();
+        let parsed = Manifest::from_toml_str(&encoded).unwrap();
+        assert_eq!(
+            parsed.package.service_protocol,
+            manifest.package.service_protocol
+        );
+        for name in [
+            "",
+            "Tilo.home-capture",
+            "../capture",
+            "tilo/capture",
+            "tilo.capture-",
+            &"a".repeat(129),
+        ] {
+            manifest.package.service_protocol.as_mut().unwrap().name = name.into();
+            assert_eq!(
+                validate_manifest(&manifest),
+                Err(ManifestError::BadServiceProtocol)
+            );
+        }
+        manifest.package.service_protocol.as_mut().unwrap().name = "tilo.home-capture".into();
+        manifest.package.service_protocol.as_mut().unwrap().version = 0;
+        assert_eq!(
+            validate_manifest(&manifest),
+            Err(ManifestError::BadServiceProtocol)
+        );
+        assert!(
+            toml::from_str::<crate::manifest::ServiceProtocol>(
+                "name='tilo.home-capture'\nversion=6\nauthority=true"
+            )
+            .is_err()
+        );
     }
 
     #[test]

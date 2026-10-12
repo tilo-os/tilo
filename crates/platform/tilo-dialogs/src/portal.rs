@@ -415,6 +415,7 @@ pub struct PickRequest {
     pub(crate) filters: Vec<FileFilter>,
     pub(crate) kind: PickKind,
     pub(crate) max_contents_bytes: Option<usize>,
+    pub(crate) initial_directory: Option<PathBuf>,
 }
 
 impl PickRequest {
@@ -455,7 +456,21 @@ impl PickRequest {
             filters: Vec::new(),
             kind,
             max_contents_bytes: None,
+            initial_directory: None,
         }
+    }
+
+    /// Suggest the folder shown when the host chooser opens. This is a
+    /// navigation hint, never a file-access grant. Hosts may ignore it;
+    /// callers must still validate the actual chosen directory.
+    #[must_use]
+    pub fn initial_directory(mut self, directory: impl Into<PathBuf>) -> Self {
+        self.initial_directory = Some(directory.into());
+        self
+    }
+
+    pub fn directory_hint(&self) -> Option<&Path> {
+        self.initial_directory.as_deref()
     }
 
     /// Bound the total contents returned across all chosen files. Oversized
@@ -1092,6 +1107,20 @@ mod tests {
         assert!(!request.is_multiple());
         assert_eq!(request.suggested_name(), None);
         assert!(matches!(request.kind, PickKind::Directory));
+    }
+
+    #[test]
+    fn directory_hint_preserves_the_requested_folder_without_granting_it() {
+        let home = local_path("/Users/Recognized home");
+        let request =
+            PickRequest::directory("Allow this folder", "Allow").initial_directory(home.clone());
+        assert_eq!(request.directory_hint(), Some(home.as_path()));
+        assert!(request.is_directory());
+        assert_eq!(request.suggested_name(), None);
+        assert_eq!(
+            PickRequest::directory("Choose", "Allow").directory_hint(),
+            None
+        );
     }
 
     // ---- the security rule -------------------------------------------

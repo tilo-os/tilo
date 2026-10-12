@@ -208,6 +208,40 @@ pub fn directory(path: &Path) -> io::Result<()> {
 pub fn read(path: &Path) -> io::Result<File> {
     platform::open(path, false, false, false)
 }
+/// Read an existing current-user encrypted regular file without changing it.
+/// Unix ciphertext may retain inherited read permissions; this API is only for
+/// authenticated ciphertext, never plaintext credentials or encryption keys.
+/// Other platforms retain the canonical private-file ACL requirements.
+///
+/// # Errors
+/// Rejects symbolic links, special files and foreign owners, or native ACL failures.
+#[cfg(unix)]
+pub fn read_ciphertext(path: &Path) -> io::Result<File> {
+    use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _};
+    let file = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK)
+        .open(path)?;
+    let metadata = file.metadata()?;
+    // SAFETY: geteuid has no input pointers or preconditions.
+    if !metadata.is_file() || metadata.uid() != unsafe { libc::geteuid() } {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "encrypted file is not a user-owned regular file",
+        ));
+    }
+    Ok(file)
+}
+
+/// Read authenticated ciphertext using the canonical native ACL checks.
+///
+/// # Errors
+/// Returns the same errors as [`read`].
+#[cfg(not(unix))]
+pub fn read_ciphertext(path: &Path) -> io::Result<File> {
+    read(path)
+}
+
 /// Exclusively create a file with user-only access from the moment of creation.
 ///
 /// # Errors

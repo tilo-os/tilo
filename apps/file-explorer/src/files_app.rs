@@ -44,6 +44,8 @@ use vello::kurbo::Point;
 use vello::peniko::ImageData as PenikoImage;
 
 mod clipboard_client;
+mod native_open_with;
+mod selected_open;
 pub use clipboard_client::Receipt as ClipboardReceipt;
 pub(crate) use clipboard_client::UndoRequest;
 mod selection_actions;
@@ -530,6 +532,7 @@ pub struct FileExplorerWidget {
     shown_selection: shown_selection::ShownSelection,
     shown_folder: Option<Arc<host_fs::RetainedObject>>,
     local_clipboard: clipboard_client::Client,
+    selected_open: selected_open::Client,
     error: Option<String>,
     is_loading: bool,
     last_click: Option<(usize, Instant)>,
@@ -1613,6 +1616,7 @@ impl FileExplorerWidget {
             merge_preflight_pending: None,
             effect_reply: None,
             local_clipboard: clipboard_client::Client::new(),
+            selected_open: selected_open::Client::default(),
             accounts_root: None,
             accounts_cache: Vec::new(),
             host_intent: None,
@@ -1979,7 +1983,46 @@ impl FileExplorerWidget {
                 self.create_from_template(&target)?;
                 None
             }
-            FilesEffect::OpenWith { entry, app, always } => {
+            FilesEffect::OpenWith {
+                entry,
+                app,
+                always,
+                access,
+            } => {
+                if let Some(access) = access {
+                    if !self.retained_selected_open_available() && !self.native_selected_discovery()
+                    {
+                        return Err(t("files-open-with-launch-unavailable"));
+                    }
+                    let access = match access.as_str() {
+                        "read-only" => {
+                            ui::collaboration::open_selected::v2::SelectedAccess::ReadOnly
+                        }
+                        "edit-in-parent" => {
+                            ui::collaboration::open_selected::v2::SelectedAccess::EditInParent
+                        }
+                        _ => return Err(t("files-open-with-access-unavailable")),
+                    };
+                    return self.begin_selected_open_v2(
+                        &entry,
+                        &app,
+                        invocation,
+                        always.unwrap_or(false),
+                        access,
+                    );
+                }
+                if self.retained_selected_open_available()
+                    && self
+                        .visible_entry_path(&entry)
+                        .is_some_and(|path| path.starts_with("/run/tilo/retained-home"))
+                {
+                    return self.begin_selected_open(
+                        &entry,
+                        &app,
+                        invocation,
+                        always.unwrap_or(false),
+                    );
+                }
                 self.invoke_open_with(&entry, &app, always.unwrap_or(false))?;
                 None
             }
@@ -2216,6 +2259,7 @@ impl FileExplorerWidget {
         {
             self.effect_reply.take();
             self.local_clipboard.abandon();
+            self.selected_open.abandon();
             self.status = Some(t("files-clipboard-cancelled"));
             self.structure_dirty = true;
         }
@@ -8730,7 +8774,10 @@ impl Collaborative for FileExplorerWidget {
         self.shortcut_menu.poll_if_due(now);
         let mut requests = self.nearby_send.take_requests();
         requests.extend(self.shortcut_menu.take_requests());
+        self.poll_selected_open();
         requests.extend(self.local_clipboard.take_request());
+        requests.extend(self.selected_open.take_request());
+        requests.extend(self.selected_open.discovery.take_request());
         requests
     }
 
@@ -8739,6 +8786,12 @@ impl Collaborative for FileExplorerWidget {
         if let Some(result) = self.local_clipboard.event(event) {
             self.complete_clipboard_publication(result);
         }
+        if self.selected_open.discovery.event(event) {
+            self.invalidate_open_with();
+            self.structure_dirty = true;
+        }
+        self.selected_open.event(event);
+        self.poll_selected_open();
         let mut changed = self.handle_shortcut_event(event);
         for effect in self.nearby_send.handle_event(event) {
             match effect {
@@ -9445,6 +9498,9 @@ impl FileExplorerWidget {
 
 impl ui::widget::controls::ActionControls for FileExplorerWidget {
     fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
+        if let Some(invocation) = self.selected_open.control.take() {
+            return Some(invocation);
+        }
         if let Some(invocation) = self.app_chooser.take_control_invocation() {
             return Some(invocation);
         }

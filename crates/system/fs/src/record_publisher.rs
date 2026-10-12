@@ -208,6 +208,7 @@ impl RecordPublisher {
             transaction,
             phase: crate::record_transaction::RecordTransactionPhase::Prepared,
             namespace_delta: None,
+            external_native_effect: None,
         })
     }
 
@@ -234,6 +235,39 @@ impl RecordPublisher {
             .publish_lock
             .lock()
             .map_err(|_| RecordPublisherError::PublicationUnavailable)?;
+        let entry = self.prepare_replacement_transaction(manifest)?;
+        let authorizer = LocalTransactionAuthorizer {
+            actor: self.actor,
+            records: entry
+                .transaction
+                .manifest
+                .participants
+                .iter()
+                .map(|participant| participant.record_id)
+                .collect(),
+        };
+        crate::transaction_coordinator::complete_replacement_transaction(
+            &self.repository,
+            journal,
+            history,
+            namespace,
+            namespace_path,
+            &entry,
+            &authorizer,
+            broadcast,
+        )?;
+        Ok(())
+    }
+
+    /// Build exactly the canonical signed intent while this publisher's
+    /// mutation lease is held. A future external coordinator must separately
+    /// retain certified source admission and observed native-effect custody;
+    /// this private signing extraction does not bypass external replay fences.
+    pub(crate) fn prepare_replacement_transaction(
+        &self,
+        manifest: FileMutationTransactionManifest,
+    ) -> Result<crate::record_transaction::RecordTransactionJournalEntry, RecordPublisherError>
+    {
         if manifest.workspace_id != self.workspace_id || manifest.actor != self.actor {
             return Err(RecordPublisherError::TransactionScopeMismatch);
         }
@@ -279,33 +313,18 @@ impl RecordPublisher {
                 },
             );
         }
-        let authorizer = LocalTransactionAuthorizer {
-            actor: self.actor,
-            records: transaction
-                .manifest
-                .participants
-                .iter()
-                .map(|participant| participant.record_id)
-                .collect(),
-        };
         let entry = crate::record_transaction::RecordTransactionJournalEntry {
             schema_version: crate::record_transaction::RECORD_TRANSACTION_JOURNAL_VERSION,
             transaction,
             participant_batches,
             phase: crate::record_transaction::RecordTransactionPhase::Prepared,
             namespace_delta: None,
+            external_native_effect: None,
         };
-        crate::transaction_coordinator::complete_replacement_transaction(
-            &self.repository,
-            journal,
-            history,
-            namespace,
-            namespace_path,
-            &entry,
-            &authorizer,
-            broadcast,
-        )?;
-        Ok(())
+        entry
+            .validate()
+            .map_err(|_| RecordPublisherError::InvalidTransaction)?;
+        Ok(entry)
     }
 
     /// Resume every journaled transaction before a mount becomes visible.

@@ -5,7 +5,9 @@
 )]
 mod protocol;
 pub mod runtime;
+mod service_session_probe;
 mod shared;
+pub use service_session_probe::service_session_capability;
 pub use shared::serve_shared_until_idle;
 
 use crate::time::Duration;
@@ -358,6 +360,8 @@ struct Runtime {
     server: std::sync::OnceLock<Arc<shared::Server>>,
     /// Set when another process's host runs this profile.
     link: Option<shared::ClientLink>,
+    service_session: Option<String>,
+    exited: Arc<AtomicBool>,
 }
 impl Runtime {
     /// Reserves a tab within the host's shared capacity and asks the host to
@@ -569,8 +573,10 @@ fn spawn_command_writer(
 ) -> std::io::Result<std::thread::JoinHandle<()>> {
     spawn_named("chromium-commands", move || {
         let mut writer = stdin;
-        while let Some(command) = rx.pop() {
-            if let Err(error) = protocol::write_json(&mut writer, &command) {
+        while let Some(mut command) = rx.pop() {
+            let result = protocol::write_json(&mut writer, &command);
+            wipe_service_wire(&mut command);
+            if let Err(error) = result {
                 writer_shared.fail(format!("Chromium command channel closed: {error}"));
                 fail_routes(
                     &writer_routes,
@@ -649,42 +655,40 @@ fn supervise_child(
     supervisor_shared: &Shared,
     supervisor_queue: &CommandQueue,
     supervisor_private_root: Option<&Path>,
-) {
+) -> bool {
     let mut shutdown_started = None;
-    loop {
+    let exited = loop {
         match child.try_wait() {
             Ok(Some(_)) => {
                 supervisor_shared.fail("Chromium engine exited".into());
-                break;
+                break true;
             }
             Err(error) => {
                 supervisor_shared.fail(format!("Chromium process status: {error}"));
                 let _ = child.kill();
-                let _ = child.wait();
-                break;
+                break child.wait().is_ok();
             }
             Ok(None) => {}
         }
         if supervisor_shared.failed.load(Ordering::Acquire) {
             supervisor_queue.close();
             let _ = child.kill();
-            let _ = child.wait();
-            break;
+            break child.wait().is_ok();
         }
         if supervisor_shared.stopping.load(Ordering::Acquire) {
             let began = shutdown_started.get_or_insert_with(crate::time::now);
             if began.elapsed() >= Duration::from_secs(35) {
                 let _ = child.kill();
-                let _ = child.wait();
-                break;
+                break child.wait().is_ok();
             }
         }
         std::thread::sleep(Duration::from_millis(100));
-    }
+    };
     supervisor_queue.close();
-    if let Some(root) = supervisor_private_root {
+    if exited && let Some(root) = supervisor_private_root {
         cleanup_private_root(root);
     }
+    exited
 }
 
 fn validated_extension_paths(extensions: &[PathBuf]) -> Result<Vec<String>, String> {
@@ -710,22 +714,57 @@ fn validated_extension_paths(extensions: &[PathBuf]) -> Result<Vec<String>, Stri
 /// it. Nor does the hardened allocator the launcher preloads into the app:
 /// Chromium brings its own (PartitionAlloc) and frees through glibc's
 /// internals, so a preloaded allocator aborts the host at start.
-fn host_command(host: &Path) -> Command {
+fn host_command(host: &Path) -> std::io::Result<Command> {
     let mut command = Command::new(host);
     command.env_remove("LD_LIBRARY_PATH");
     command.env_remove("LD_PRELOAD");
-    command
+    #[cfg(target_os = "linux")]
+    exclude_migration_from_engine(
+        &mut command,
+        Path::new(browser_continuity::PROJECTION_DIRECTORY),
+    )?;
+    Ok(command)
 }
+
+#[cfg(target_os = "linux")]
+fn exclude_migration_from_engine(command: &mut Command, projection: &Path) -> std::io::Result<()> {
+    use std::os::unix::process::CommandExt;
+    match std::fs::symlink_metadata(projection) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+        Ok(metadata) if metadata.is_dir() => {}
+        Ok(_) => {
+            return Err(std::io::Error::other(
+                "Invalid browser migration projection",
+            ));
+        }
+    }
+    let policy = sandbox_core::read_exclusion::PreparedReadExclusion::prepare(projection)?;
+    // SAFETY: all policy construction happens above. The callback performs only
+    // integer-only kernel calls; no allocations, locks, paths or shared state.
+    unsafe {
+        command.pre_exec(move || policy.install_before_exec());
+    }
+    Ok(())
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod engine_exclusion_tests;
 
 fn launch_host(
     host: &Path,
     profile: &Path,
     extensions: &[String],
     private_root: Option<&Path>,
+    service_session: Option<&str>,
 ) -> Result<std::process::Child, String> {
-    let mut command = host_command(host);
+    let mut command =
+        host_command(host).map_err(|error| format!("Could not confine Chromium: {error}"))?;
     if private_root.is_some() {
         command.arg("--private");
+    }
+    if let Some(session) = service_session {
+        command.arg(format!("--service-session={session}"));
     }
     if !extensions.is_empty() {
         command.arg(format!("--load-extension={}", extensions.join(",")));
@@ -790,7 +829,7 @@ impl ChromiumEngine {
             .map(PathBuf::from)
             .or_else(|| tilo_paths::data_dir().map(|path| path.join("tilo-browser/chromium")))
             .ok_or("Cannot locate Chromium profile directory")?;
-        Self::with_host_extensions(&host_path()?, &profile, extensions, None)
+        Self::with_host_extensions(&host_path()?, &profile, extensions, None, None)
     }
 
     ///
@@ -816,7 +855,7 @@ impl ChromiumEngine {
         profile: &Path,
         extensions: &[PathBuf],
     ) -> Result<Arc<Self>, String> {
-        Self::with_host_extensions(&host_path()?, profile, extensions, None)
+        Self::with_host_extensions(&host_path()?, profile, extensions, None, None)
     }
 
     /// Explicit runtime/profile paths for packaging and isolated live tests.
@@ -825,7 +864,7 @@ impl ChromiumEngine {
     ///
     /// Returns an error if the profile cannot be prepared or the helper cannot start and initialize.
     pub fn with_host(host: &Path, profile: &Path) -> Result<Arc<Self>, String> {
-        Self::with_host_extensions(host, profile, &[], None)
+        Self::with_host_extensions(host, profile, &[], None, None)
     }
 
     /// Start an incognito helper whose complete installation root is removed
@@ -838,7 +877,68 @@ impl ChromiumEngine {
         if !owned_private_root(root) {
             return Err("Private Chromium root is not owned by Browser".into());
         }
-        Self::with_host_extensions(host, &root.join("chromium"), &[], Some(root.to_owned()))
+        Self::with_host_extensions(
+            host,
+            &root.join("chromium"),
+            &[],
+            Some(root.to_owned()),
+            None,
+        )
+    }
+
+    /// A dedicated persistent profile for one explicitly consented service session.
+    /// The caller owns a private, identity-bound profile directory; this never
+    /// changes the normal Browser profile or accepts an unbound import.
+    pub fn with_service_session(profile: &Path, session_id: &str) -> Result<Arc<Self>, String> {
+        if !browser_continuity::sessions::valid_id(session_id) {
+            return Err("Selected website session is unavailable".into());
+        }
+        Self::with_host_extensions(&host_path()?, profile, &[], None, Some(session_id))
+    }
+
+    /// Admit private credentials only to the exact dedicated session host.
+    pub fn import_service_session(
+        &self,
+        request: super::ServiceSessionRequest,
+    ) -> Result<(), String> {
+        if self.runtime.service_session.as_deref() != Some(request.session.session_id.as_str())
+            || self.runtime.link.is_some()
+            || self.tab != 1
+            || !request.valid()
+        {
+            return Err("Selected website session cannot be imported into this profile".into());
+        }
+        let mut command = request
+            .encode()
+            .ok_or("Selected website session is unavailable")?;
+        command["tab"] = json!(self.tab);
+        self.tx.push(command).map_err(str::to_owned)
+    }
+
+    /// Stop this dedicated service host and confirm its actual child was reaped.
+    /// Unrelated shared/default Browser hosts are never eligible for this operation.
+    pub fn shutdown_service_session(&self) -> Result<(), String> {
+        if self.runtime.service_session.is_none() || self.runtime.link.is_some() {
+            return Err("This engine does not own a selected service profile".into());
+        }
+        self.runtime.process.stopping.store(true, Ordering::Release);
+        let _ = self.tx.push(json!({"op":"shutdown"}));
+        self.tx.close();
+        if let Some(supervisor) = self
+            .runtime
+            .supervisor
+            .lock()
+            .map_err(|_| "Engine process ownership unavailable")?
+            .take()
+        {
+            supervisor
+                .join()
+                .map_err(|_| "Engine shutdown could not be confirmed")?;
+        }
+        if !self.runtime.exited.load(Ordering::Acquire) {
+            return Err("Engine shutdown could not be confirmed".into());
+        }
+        Ok(())
     }
 
     fn with_host_extensions(
@@ -846,26 +946,37 @@ impl ChromiumEngine {
         profile: &Path,
         extensions: &[PathBuf],
         private_root: Option<PathBuf>,
+        service_session: Option<&str>,
     ) -> Result<Arc<Self>, String> {
         let extensions = validated_extension_paths(extensions)?;
         let mut cleanup_on_error = PrivateRootCleanup(private_root.clone());
         // A host needs its profile to itself: join the host already running
         // it, or become the process that runs it.
         let profile = &prepare_profile(profile)?;
-        let claim = match shared::claim(profile)? {
-            shared::Role::Owner(claim) => Some(claim),
-            shared::Role::Alone => None,
-            shared::Role::Client(stream) => {
-                cleanup_on_error.disarm();
-                return shared::connect(stream);
-            }
-            shared::Role::Busy(error) => {
-                // Another process may still be using the private root.
-                cleanup_on_error.disarm();
-                return Err(error);
+        let claim = if service_session.is_some() {
+            None
+        } else {
+            match shared::claim(profile)? {
+                shared::Role::Owner(claim) => Some(claim),
+                shared::Role::Alone => None,
+                shared::Role::Client(stream) => {
+                    cleanup_on_error.disarm();
+                    return shared::connect(stream);
+                }
+                shared::Role::Busy(error) => {
+                    // Another process may still be using the private root.
+                    cleanup_on_error.disarm();
+                    return Err(error);
+                }
             }
         };
-        let mut child = launch_host(host, profile, &extensions, private_root.as_deref())?;
+        let mut child = launch_host(
+            host,
+            profile,
+            &extensions,
+            private_root.as_deref(),
+            service_session,
+        )?;
         let Some(stdin) = child.stdin.take() else {
             let _ = child.kill();
             let _ = child.wait();
@@ -889,6 +1000,8 @@ impl ChromiumEngine {
             download_events: download_events.clone(),
             server: std::sync::OnceLock::new(),
             link: None,
+            service_session: service_session.map(str::to_owned),
+            exited: Arc::new(AtomicBool::new(false)),
         });
         let hub = Arc::new(shared::Hub::default());
         let rx = tx.clone();
@@ -946,20 +1059,22 @@ impl ChromiumEngine {
         let supervisor_child = child.clone();
         let supervisor_shared = shared.clone();
         let supervisor_queue = tx.clone();
-        let wait_for_private_cleanup = private_root.is_some();
+        let wait_for_private_cleanup = private_root.is_some() || service_session.is_some();
         let supervisor_private_root = private_root;
+        let supervisor_exited = runtime.exited.clone();
         let supervisor = spawn_named("chromium-supervisor", move || {
             let Some(child) = take_supervisor_child(&supervisor_child) else {
                 supervisor_shared.fail("Chromium supervisor lost process ownership".into());
                 supervisor_queue.close();
                 return;
             };
-            supervise_child(
+            let exited = supervise_child(
                 child,
                 &supervisor_shared,
                 &supervisor_queue,
                 supervisor_private_root.as_deref(),
             );
+            supervisor_exited.store(exited, Ordering::Release);
             if let Some(claim) = claim {
                 claim.release_after_exit(server.as_ref());
             }
@@ -1118,6 +1233,20 @@ impl WebViewEngine for ChromiumEngine {
 
     fn send(&self, command: WebViewCommand) {
         match command {
+            WebViewCommand::ImportServiceSession(request) => {
+                let reply = super::ServiceSessionReply {
+                    request_id: request.request_id,
+                    session_id: request.session.session_id.clone(),
+                    service: request.session.service,
+                    imported: false,
+                    cookie_count: 0,
+                    origin_storage_count: 0,
+                };
+                if self.import_service_session(request).is_err() {
+                    self.shared.event(WebViewEvent::ServiceSessionResult(reply));
+                }
+                return;
+            }
             WebViewCommand::ScopedNavigation {
                 request_id,
                 command,
@@ -1528,6 +1657,7 @@ fn validate_event(value: &Value) -> Result<(), &'static str> {
     let text = |key: &str| value.get(key).is_some_and(Value::is_string);
     let valid = match event {
         "credential_result" => super::CredentialReply::decode(value).is_some(),
+        "service_session_result" => super::ServiceSessionReply::decode(value).is_some(),
         "site_status" | "site_result" => valid_site_event(value, event),
         "context_closed" | "permission_closed" => valid_id(value),
         "context_menu" => valid_context_menu(value),
@@ -1659,6 +1789,7 @@ fn command_within_limits(command: &WebViewCommand) -> bool {
             super::navigation_request_id(*request_id)
         }
         WebViewCommand::Credentials(request) => request.valid(),
+        WebViewCommand::ImportServiceSession(request) => request.valid(),
         WebViewCommand::SetSiteExceptions(origins) => {
             origins.len() <= 1024 && origins.iter().all(|s| !s.is_empty() && s.len() <= 8192)
         }
@@ -1740,13 +1871,33 @@ fn command_within_limits(command: &WebViewCommand) -> bool {
     }
 }
 
+fn wipe_service_wire(value: &mut Value) {
+    if value.get("op").and_then(Value::as_str) != Some("service_session_import") {
+        return;
+    }
+    for field in ["cookies", "origin_storage"] {
+        if let Some(entries) = value.get_mut(field).and_then(Value::as_array_mut) {
+            for entry in entries {
+                if let Some(Value::String(secret)) = entry.get_mut("value") {
+                    zeroize::Zeroize::zeroize(secret);
+                }
+            }
+        }
+    }
+}
+
 #[derive(Default)]
 struct CommandQueue {
     state: Mutex<(VecDeque<(Value, usize)>, usize, bool)>,
     ready: Condvar,
 }
 impl CommandQueue {
-    fn push(&self, value: Value) -> Result<(), &'static str> {
+    fn push(&self, mut value: Value) -> Result<(), &'static str> {
+        let result = self.push_owned(&mut value);
+        wipe_service_wire(&mut value);
+        result
+    }
+    fn push_owned(&self, value: &mut Value) -> Result<(), &'static str> {
         // Count encoded bytes without allocating a second command buffer.
         struct Counter(usize);
         impl std::io::Write for Counter {
@@ -1806,7 +1957,7 @@ impl CommandQueue {
             .1
             .checked_add(count.0)
             .ok_or("command byte count overflow")?;
-        state.0.push_back((value, count.0));
+        state.0.push_back((std::mem::take(value), count.0));
         drop(state);
         self.ready.notify_one();
         Ok(())
@@ -1834,10 +1985,25 @@ impl CommandQueue {
     }
 }
 
+impl Drop for CommandQueue {
+    fn drop(&mut self) {
+        let state = self
+            .state
+            .get_mut()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for (command, _) in &mut state.0 {
+            wipe_service_wire(command);
+        }
+    }
+}
+
 fn decode_event(value: &Value) -> Option<WebViewEvent> {
     Some(match value["event"].as_str()? {
         "credential_result" => {
             WebViewEvent::CredentialResult(super::CredentialReply::decode(value)?)
+        }
+        "service_session_result" => {
+            WebViewEvent::ServiceSessionResult(super::ServiceSessionReply::decode(value)?)
         }
         "closed" => WebViewEvent::TabClosed,
         "tab_detached" => WebViewEvent::TabDetached,
@@ -1993,6 +2159,7 @@ fn decode_base64_bounded(input: &str, limit: usize) -> Option<Vec<u8>> {
 fn encode_command(command: WebViewCommand) -> Option<Value> {
     Some(match command {
         WebViewCommand::Credentials(request) => request.encode()?,
+        WebViewCommand::ImportServiceSession(request) => request.encode()?,
         WebViewCommand::Navigate(url) => json!({"op":"navigate","url":url}),
         WebViewCommand::ScopedNavigation {
             request_id,

@@ -1768,6 +1768,37 @@ impl file_explorer::fileops::TransferObserver for Admission<'_> {
 }
 
 impl FileClipboardServices for NativeFileClipboard {
+    fn discover_selected(
+        &self,
+        context: tilo_action_broker::services::SelectedDiscoveryContext,
+        request: runtime_collab::open_selected::discovery::Request,
+    ) -> tilo_action_broker::services::SelectedDiscoveryFuture {
+        super::super::launcher::retained_home::discovery::begin(self.tree.clone(), context, request)
+    }
+
+    fn open_selected_v2(
+        &self,
+        context: tilo_action_broker::services::OpenSelectedContext,
+        request: runtime_collab::open_selected::v2::Request,
+    ) -> tilo_action_broker::services::OpenSelectedV2Future {
+        super::super::launcher::retained_home::selected_target::begin_v2(
+            self.tree.clone(),
+            context,
+            request,
+        )
+    }
+    fn open_selected(
+        &self,
+        context: tilo_action_broker::services::OpenSelectedContext,
+        request: runtime_collab::open_selected::Request,
+    ) -> tilo_action_broker::services::OpenSelectedFuture {
+        super::super::launcher::retained_home::selected_target::begin(
+            self.tree.clone(),
+            context,
+            request,
+        )
+    }
+
     fn command(&self, context: &FileClipboardContext, command: Command) -> Result<Reply, String> {
         if !command.valid() {
             return Err("invalid clipboard command".into());

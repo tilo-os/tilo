@@ -94,6 +94,9 @@ enum Cmd {
         /// its tree under `lib/<name>/`, as the browser engine does.
         #[arg(long = "include", value_name = "PATH")]
         include: Vec<PathBuf>,
+        /// Native service executable included in the signed runtime payload.
+        #[arg(long = "include-bin", value_name = "PATH")]
+        include_bin: Vec<PathBuf>,
     },
     /// Verify an existing bundle by recomputing hashes (and, when
     /// signed, checking the signature).
@@ -156,12 +159,14 @@ fn main() -> ExitCode {
             arch,
             identity,
             include,
+            include_bin,
         } => {
             let opts = BuildOptions {
                 from: from.as_deref(),
                 arch: arch.as_deref(),
                 identity: identity.as_deref(),
                 extra_libs: &include,
+                extra_bins: &include_bin,
             };
             let built = match (release, out_root, version, out) {
                 (Some(release), Some(root), _, _) => build_abi_bundle(&root, &release, &opts),

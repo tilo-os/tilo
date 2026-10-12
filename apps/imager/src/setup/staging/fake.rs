@@ -21,6 +21,7 @@ pub(crate) struct FakePlatform {
     pub disk: Disk,
     pub volume: Option<SystemVolume>,
     pub vars: BTreeMap<String, Vec<u8>>,
+    pub firmware_available: bool,
     /// Absolute disk bytes, in `BLOCK`-sized pieces; missing blocks read 0.
     blocks: HashMap<u64, Vec<u8>>,
     pub mutations: usize,
@@ -41,6 +42,7 @@ impl FakePlatform {
             disk,
             volume,
             vars,
+            firmware_available: true,
             blocks: HashMap::new(),
             mutations: 0,
             faults: Faults::default(),
@@ -144,6 +146,10 @@ impl FakePlatform {
 }
 
 impl Platform for FakePlatform {
+    fn has_uefi(&self) -> bool {
+        self.firmware_available
+    }
+
     fn system_disk(&self) -> IoResult<Disk> {
         let mut disk = self.disk.clone();
         disk.partitions.sort_by_key(|p| p.first_lba);
@@ -351,6 +357,35 @@ mod tests {
         FakePlatform::new(basis.disk, None)
     }
 
+    #[test]
+    fn flatpak_metadata_transport_overflow_refuses_before_any_disk_or_firmware_mutation() {
+        let mut platform = linux_platform();
+        let mut world = world(&platform);
+        let disk = &world.request.plan.basis.disk;
+        let source = disk.partitions.first().unwrap();
+        let mut migration = serde_json::json!({"schema":1,"operation_id":world.request.operation_id,
+            "categories":{"home":true,"flatpak":true,"accounts":false},
+            "home":{"volume":{"disk_guid":disk.guid,"disk_bytes":disk.size_bytes,"sector_bytes":disk.sector_bytes,
+                "partition_guid":source.guid,"first_lba":source.first_lba,"last_lba":source.last_lba,
+                "filesystem_uuid":"33333333-3333-4333-8333-333333333333","filesystem":"ext4"},
+                "relative":{"platform":"Unix","units":b"home/person"},"inode":123,"original_uid":1000,"subvolume":null}});
+        let refs: Vec<_> = (0..48).map(|index| serde_json::json!({"reference":format!("app/org.example.App{index}/x86_64/stable"),"origin":"flathub","installation":"User","name":"n".repeat(256)})).collect();
+        let deployments: Vec<_> = refs.iter().map(|item| serde_json::json!({"reference":item["reference"],"commit":"a".repeat(64),"deploy_sha256":(vec![0u8;32])})).collect();
+        let inventory = serde_json::json!({"schema":1,"inventory":{"refs":refs,"remotes":[]},"selected":[],"installations":[{
+            "installation":"User","source_plan":serde_json::to_vec(&migration).unwrap(),"repositories":[],"deployments":deployments,"config_sha256":(vec![0u8;32])}]});
+        crate::setup::flatpak_transfer::HandoffInventory::parse(
+            &serde_json::to_vec(&inventory).unwrap(),
+        )
+        .unwrap();
+        migration["flatpak_inventory"] = inventory;
+        world.request.migration = Some(migration);
+        assert_eq!(
+            run(&mut platform, &world, Action::Stage).unwrap_err().code,
+            codes::ESP_PLACEHOLDER
+        );
+        assert_eq!(platform.mutations, 0);
+    }
+
     fn windows_platform() -> FakePlatform {
         let basis = plan::tests::windows_basis(128, 100, 30, true);
         FakePlatform::new(basis.disk, basis.system_volume)
@@ -430,6 +465,8 @@ mod tests {
             plan_sha256: plan.digest(),
             plan,
             profile,
+            migration: None,
+            prepared_setup: None,
         };
         World {
             store: RecordStore::at(dir.path()),
@@ -553,6 +590,270 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
+    fn with_prepared(world: &mut World) -> Vec<u8> {
+        use std::os::unix::fs::PermissionsExt;
+        // Match PreparedMedia's production owner-private ciphertext custody;
+        // tempfile's default directory mode is not the preparation contract.
+        std::fs::set_permissions(world._dir.path(), std::fs::Permissions::from_mode(0o700))
+            .unwrap();
+        let bytes = [b"TILOMIG1".as_slice(), &[7u8; 2048]].concat();
+        let path = world._dir.path().join("private-prepared.sealed");
+        std::fs::write(&path, &bytes).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        world.request.prepared_setup = Some(super::super::prepared_setup::PreparedArtifact {
+            #[cfg(target_os = "linux")]
+            browser: None,
+            source_path: path.to_str().unwrap().into(),
+            expectation: crate::model::PreparedSetupExpectation {
+                schema: 1,
+                sealed_bytes: bytes.len() as u64,
+                ciphertext_sha256: sha(&bytes),
+            },
+        });
+        bytes
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn prepared_ciphertext_stage_delivers_exact_slots_and_arm_uses_private_custody() {
+        let mut platform = linux_platform();
+        let mut world = world_with_esp(
+            &platform,
+            fat::tests::staging_esp_image_with_slots(false, 8192, 512, 8192),
+        );
+        let original = with_prepared(&mut world);
+        run(&mut platform, &world, Action::Stage).unwrap();
+        let (esp_guid, _) = staged_guids(&platform, &world.request.plan);
+        let image = platform.partition_bytes(&esp_guid, world.esp.len());
+        let mut read = |offset: u64, bytes: &mut [u8]| {
+            bytes.copy_from_slice(&image[offset as usize..offset as usize + bytes.len()]);
+            Ok(())
+        };
+        let gather = |ranges: &[fat::Range]| {
+            ranges
+                .iter()
+                .flat_map(|range| {
+                    image[range.offset as usize..(range.offset + range.len) as usize].to_vec()
+                })
+                .collect::<Vec<_>>()
+        };
+        let package = gather(
+            &fat::file_ranges(
+                &mut read,
+                image.len() as u64,
+                super::super::prepared_setup::PACKAGE_PATH,
+            )
+            .unwrap(),
+        );
+        assert_eq!(package.get(..original.len()).unwrap(), original);
+        assert!(
+            package
+                .get(original.len()..)
+                .unwrap()
+                .iter()
+                .all(|byte| *byte == b' ')
+        );
+        let handoff = Handoff::parse(&gather(
+            &fat::file_ranges(
+                &mut read,
+                image.len() as u64,
+                "/EFI/tilo-staging/handoff.json",
+            )
+            .unwrap(),
+        ))
+        .unwrap();
+        let expected = world
+            .request
+            .prepared_setup
+            .as_ref()
+            .unwrap()
+            .expectation
+            .clone();
+        assert_eq!(
+            handoff.profile.get("prepared_setup"),
+            Some(&serde_json::to_value(&expected).unwrap())
+        );
+        let source = world.request.prepared_setup.take().unwrap().source_path;
+        std::fs::remove_file(source).unwrap();
+        run(&mut platform, &world, Action::Arm).unwrap();
+        run(&mut platform, &world, Action::Stage).unwrap();
+        let record = world
+            .store
+            .load(&world.request.operation_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(record.prepared_setup, Some(expected.clone()));
+        assert_eq!(
+            world
+                .store
+                .read_prepared(&world.request.operation_id, &expected)
+                .unwrap(),
+            original
+        );
+        let custody = world
+            .store
+            .prepared_path(&world.request.operation_id)
+            .unwrap();
+        std::fs::write(custody, [b"TILOMIG1".as_slice(), &[9u8; 2048]].concat()).unwrap();
+        assert!(run(&mut platform, &world, Action::Arm).is_err());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn prepared_ciphertext_refuses_legacy_slots_and_changed_source_before_disk_writes() {
+        for variant in 0..3 {
+            let mut platform = linux_platform();
+            let mut world = if variant == 0 {
+                world(&platform)
+            } else {
+                world_with_esp(
+                    &platform,
+                    fat::tests::staging_esp_image_with_slots(false, 8192, 512, 8192),
+                )
+            };
+            with_prepared(&mut world);
+            let source = &world.request.prepared_setup.as_ref().unwrap().source_path;
+            if variant == 1 {
+                std::fs::write(source, b"changed").unwrap();
+            }
+            if variant == 2 {
+                let link = world._dir.path().join("linked-prepared.sealed");
+                std::os::unix::fs::symlink(source, &link).unwrap();
+                world.request.prepared_setup.as_mut().unwrap().source_path =
+                    link.to_str().unwrap().into();
+            }
+            assert!(run(&mut platform, &world, Action::Stage).is_err());
+            assert_eq!(platform.mutations, 0);
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn with_browser(world: &mut World) -> Vec<u8> {
+        use sha2::Digest;
+        use std::os::unix::fs::PermissionsExt;
+        let bytes = [b"TILOMIG1".as_slice(), &[9u8; 2048]].concat();
+        let operation = uuid::Uuid::new_v4().to_string();
+        let filename = format!("browser-{operation}.sealed");
+        let path = world._dir.path().join(&filename);
+        std::fs::write(&path, &bytes).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        world.request.prepared_setup.as_mut().unwrap().browser =
+            Some(super::super::browser::BrowserArtifact {
+                source_path: path.to_str().unwrap().into(),
+                expectation: crate::setup::browser_transfer::Expectation {
+                    schema: 1,
+                    operation,
+                    filename,
+                    purpose: crate::setup::portable_transfer::Purpose::BrowserProfiles,
+                    setup_binding: "staging-browser".into(),
+                    sealed_bytes: bytes.len() as u64,
+                    plaintext_bytes: 1024,
+                    entries: 1,
+                    ciphertext_sha256: sha2::Sha256::digest(&bytes).into(),
+                    plan_sha256: [1; 32],
+                    limits: crate::setup::portable_transfer::Limits {
+                        plaintext_bytes: 4096,
+                        entries: 8,
+                        metadata_bytes: 1024,
+                    },
+                },
+            });
+        bytes
+    }
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn browser_ciphertext_stage_delivers_slots_and_arm_uses_protected_custody() {
+        let mut platform = linux_platform();
+        let mut world = world_with_esp(
+            &platform,
+            fat::tests::staging_esp_image_with_browser_slots(false, 8192, 512, 8192, 8192),
+        );
+        with_prepared(&mut world);
+        let original = with_browser(&mut world);
+        let artifact = world
+            .request
+            .prepared_setup
+            .as_ref()
+            .unwrap()
+            .browser
+            .as_ref()
+            .unwrap()
+            .clone();
+        run(&mut platform, &world, Action::Stage).unwrap();
+        let (guid, _) = staged_guids(&platform, &world.request.plan);
+        let image = platform.partition_bytes(&guid, world.esp.len());
+        let mut read = |offset: u64, bytes: &mut [u8]| {
+            bytes.copy_from_slice(&image[offset as usize..offset as usize + bytes.len()]);
+            Ok(())
+        };
+        let ranges = fat::file_ranges(
+            &mut read,
+            image.len() as u64,
+            super::super::browser::PACKAGE_PATH,
+        )
+        .unwrap();
+        let payload = ranges
+            .iter()
+            .flat_map(|range| {
+                image[range.offset as usize..(range.offset + range.len) as usize].to_vec()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(&payload[..original.len()], original);
+        assert!(payload[original.len()..].iter().all(|byte| *byte == b' '));
+        let record = world
+            .store
+            .load(&world.request.operation_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            record.prepared_browser.as_ref(),
+            Some(&artifact.expectation)
+        );
+        assert_eq!(
+            world
+                .store
+                .read_browser(&world.request.operation_id, &artifact.expectation)
+                .unwrap(),
+            original
+        );
+        std::fs::remove_file(&artifact.source_path).unwrap();
+        let prepared = world.request.prepared_setup.take().unwrap();
+        std::fs::remove_file(prepared.source_path).unwrap();
+        run(&mut platform, &world, Action::Arm).unwrap();
+    }
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn browser_stage_refuses_missing_slots_and_changed_ciphertext_before_disk_writes() {
+        for missing_slots in [true, false] {
+            let mut platform = linux_platform();
+            let esp = if missing_slots {
+                fat::tests::staging_esp_image_with_slots(false, 8192, 512, 8192)
+            } else {
+                fat::tests::staging_esp_image_with_browser_slots(false, 8192, 512, 8192, 8192)
+            };
+            let mut world = world_with_esp(&platform, esp);
+            with_prepared(&mut world);
+            with_browser(&mut world);
+            if !missing_slots {
+                std::fs::write(
+                    &world
+                        .request
+                        .prepared_setup
+                        .as_ref()
+                        .unwrap()
+                        .browser
+                        .as_ref()
+                        .unwrap()
+                        .source_path,
+                    b"changed browser",
+                )
+                .unwrap();
+            }
+            assert!(run(&mut platform, &world, Action::Stage).is_err());
+            assert_eq!(platform.mutations, 0);
+        }
+    }
     /// Linux, 4Kn and Windows stages and requirements.
     #[test]
     #[allow(
@@ -718,6 +1019,33 @@ mod tests {
         assert!(record.steps.iter().any(|s| s.state == StepState::Failed));
         run(&mut p, &w, Action::Stage).unwrap();
         assert_staged(&p, &w);
+    }
+
+    #[test]
+    fn unavailable_firmware_keeps_geometry_but_refuses_stage_before_mutation() {
+        let mut p = linux_platform();
+        p.firmware_available = false;
+        // Invalid boot variables must not be read as accessible firmware on
+        // this host, nor mistaken for an implicit UEFI installation offer.
+        p.vars.insert("BootCurrent".into(), vec![1]);
+        let observed = helper::read_basis(&p).unwrap();
+        assert_eq!(observed.disk, p.system_disk().unwrap());
+        assert!(!observed.firmware.uefi);
+        assert!(!observed.firmware.secure_boot);
+        assert!(observed.firmware.boot_current.is_none());
+        assert!(observed.firmware.boot_order.is_empty());
+        assert!(observed.firmware.boot_next.is_none());
+        // The existing World computes a real Plan from these observed facts;
+        // execute still takes the full production Engine's refusal path.
+        let w = world(&p);
+        assert!(!w.request.plan.basis.firmware.uefi);
+        assert_eq!(
+            run(&mut p, &w, Action::Stage).unwrap_err().code,
+            codes::REQUEST_INVALID
+        );
+        assert_eq!(p.mutations, 0);
+        assert!(p.log.is_empty());
+        assert!(w.store.load(&w.request.operation_id).unwrap().is_none());
     }
 
     /// Digest, host, request, boot-next, plan and ESP refusals.

@@ -287,7 +287,18 @@ impl ResourceApp for BrowserShell {
             if let Err(error) = crate::storage::prepare_window(mode.is_private()) {
                 tracing::error!(%error, "Cannot prepare browser storage");
             }
-            BrowserWidget::new_with_mode(mode)
+            BrowserWidget::new_with_mode(mode).with_service_client(
+                if !mode.is_private()
+                    && cx
+                        .me()
+                        .and_then(crate::service_sessions::identity)
+                        .is_some()
+                {
+                    ui::collaboration::browser_service_sessions::Client::capture()
+                } else {
+                    None
+                },
+            )
         } else {
             BrowserWidget::new_headless()
         };
@@ -311,8 +322,22 @@ impl ResourceApp for BrowserShell {
         });
         // A history or download hit opens its page or shows the download.
         let index = widget.search_index();
+        let personal_open = widget.personal_open_handle();
         let dispatch = cx.dispatcher();
         cx.on_open(move |anchor: &str| -> Result<(), Refusal> {
+            if let Some((session_id, destination)) =
+                crate::service_destinations::parse_anchor(anchor)
+            {
+                if destination.is_some() {
+                    return Err(Refusal::new("Open a channel by its ordinary URL"));
+                }
+                dispatch.effect(&BrowserEffect::OpenServiceSession { session_id });
+                return Ok(());
+            }
+            if let Some(url) = personal_open.with(|rows| rows.get(anchor).cloned()) {
+                dispatch.effect(&BrowserEffect::Open { url });
+                return Ok(());
+            }
             let effect = index
                 .opened(anchor)
                 .ok_or_else(|| Refusal::new(format!("`{anchor}` is no longer in the history")))?;
@@ -330,7 +355,16 @@ impl ResourceSurface<Browser, BrowserEffect> for BrowserWindow {
 
     fn attach(&mut self, cx: SurfaceCx<Browser>) {
         self.attach_dispatcher(cx.dispatcher());
+        self.service_cx = Some(cx.clone());
         if cx.mode().is_live() {
+            if !cx.is_private()
+                && cx
+                    .me()
+                    .and_then(crate::service_sessions::identity)
+                    .is_some()
+            {
+                self.page_mut().attach_service_catalog(cx.waker());
+            }
             // Visits and addresses are the person's own: they follow them to
             // their other devices and never reach a collaborator. A private
             // window keeps none.
@@ -339,9 +373,21 @@ impl ResourceSurface<Browser, BrowserEffect> for BrowserWindow {
                 self.attach_downloads(cx.storage().settings());
             }
             if !cx.is_private()
+                && let Some(bookmarks) = cx.person::<crate::personal_bookmarks::PersonalBookmarks>()
+            {
+                self.attach_personal_bookmarks(bookmarks);
+            }
+            if !cx.is_private()
                 && let Some(history) = cx.person::<crate::history::BrowsingHistory>()
             {
                 self.attach_history(history);
+            }
+            #[cfg(target_os = "linux")]
+            if !cx.is_private()
+                && let Some(person) = cx.me()
+            {
+                self.page_mut()
+                    .attach_continuity(person, cx.files(), cx.waker());
             }
             if !cx.is_private()
                 && let Some(book) = cx.person::<crate::autofill::AddressBook>()
@@ -352,6 +398,7 @@ impl ResourceSurface<Browser, BrowserEffect> for BrowserWindow {
             // threads; each wakes the window so pages paint and finish
             // loading without waiting for input.
             let waker = cx.waker();
+            self.page_mut().attach_service_waker(waker.clone());
             self.engine_handle()
                 .set_waker(Box::new(move || waker.wake()));
         }
@@ -364,6 +411,23 @@ impl ResourceSurface<Browser, BrowserEffect> for BrowserWindow {
     /// Every effect acts on the window's page; one that waits (a page
     /// loading, the engine answering) is answered once it settles.
     fn effect(&mut self, effect: BrowserEffect, cx: &mut EffectCx<Browser, Self>) -> EffectAnswer {
+        #[cfg(target_os = "linux")]
+        if let BrowserEffect::OpenServiceSession { session_id } = &effect {
+            let source = self
+                .service_cx
+                .as_ref()
+                .ok_or("This account could not be opened")?;
+            let person = source
+                .me()
+                .and_then(crate::service_sessions::identity)
+                .ok_or("This account needs to be connected again")?;
+            let waker = source.waker();
+            self.page_mut()
+                .begin_service_session(session_id, person, waker)?;
+            return Ok(Effected::value(
+                serde_json::json!({"status":"opening", "authenticated":false}),
+            ));
+        }
         let invocation = cx.invocation().unwrap_or_default();
         match self.page_mut().admit(invocation, effect.operation())? {
             Effected::Pending => {

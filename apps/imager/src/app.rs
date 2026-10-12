@@ -76,6 +76,15 @@ use ui::tilo_resource::Effect as _;
 
 const DROP_TITLE: &str = "Choose a disk image";
 const DROP_MESSAGE: &str = "Drop an ISO, IMG or RAW file here";
+#[cfg(target_os = "linux")]
+struct SourceCheckActivity(std::sync::Arc<std::sync::atomic::AtomicBool>);
+#[cfg(target_os = "linux")]
+impl Drop for SourceCheckActivity {
+    fn drop(&mut self) {
+        self.0.store(false, std::sync::atomic::Ordering::Release);
+    }
+}
+
 const DROP_ACTION: &str = "Browse…";
 const EMPTY_DRIVES: &str = "Insert a USB drive or SD card";
 const NO_RELEASES: &str = "No Tilo releases are stored on this computer.";
@@ -98,6 +107,7 @@ pub(crate) enum Command {
     Station(usize),
     Next,
     StartWrite,
+    PrepareOriginalFiles,
     CancelWrite,
     WriteAnother,
     /// The typed device-name confirmation changed.
@@ -108,6 +118,10 @@ pub(crate) enum Command {
     WriteSetup(SetupField, String),
     /// Enrolling the new device as one of yours was switched.
     Enroll(bool),
+    PrepareMedium,
+    RetryPreparedMedium,
+    ReviewChangedPreparedFiles,
+    CancelPreparedMedium,
 }
 
 /// Where the controls of the composed page leave their requests.
@@ -142,6 +156,19 @@ pub struct ImagerApp {
     selected: Option<usize>,
     action: Action,
     progress: Progress,
+    #[cfg(target_os = "linux")]
+    prepared_delivery: crate::setup::journey::prepared_media::Delivery,
+    #[cfg(target_os = "linux")]
+    written_target: Option<TargetDrive>,
+    #[cfg(target_os = "linux")]
+    write_preflight: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    #[cfg(target_os = "linux")]
+    preparation_navigation: Option<crate::setup::journey::prepared_media::Navigation>,
+    #[cfg(target_os = "linux")]
+    original_source: Option<std::sync::Arc<crate::setup::journey::portable_source::OriginalSource>>,
+    #[cfg(target_os = "linux")]
+    offline_media_review:
+        Option<std::sync::Arc<crate::setup::journey::prepared_media::offline::OfflineMediaReview>>,
     /// Peer-local destructive-write arming text. This must never replicate:
     /// a collaborator may review the plan, but cannot type consent for us.
     confirm_text: String,
@@ -152,6 +179,9 @@ pub struct ImagerApp {
     step: Step,
     // ---- transient job / portal plumbing (not in the doc) ----
     job_control: Option<JobControl>,
+    pending_writer_result: Option<Option<Progress>>,
+    close_requested: bool,
+    close_intent: bool,
     write_mark: Option<(u64, ui::time::Instant)>,
     write_reply: Option<EffectReply>,
     release_download: Option<ReleaseDownload>,
@@ -210,7 +240,7 @@ impl ImagerApp {
     pub fn new() -> Self {
         Self {
             source: None,
-            recent: Vec::new(),
+            recent: Default::default(),
             targets: Vec::new(),
             releases: Vec::new(),
             selected: None,
@@ -219,11 +249,26 @@ impl ImagerApp {
             wifi_psk: String::new(),
             ssh_public_key: String::new(),
             progress: Progress::default(),
+            #[cfg(target_os = "linux")]
+            prepared_delivery: crate::setup::journey::prepared_media::Delivery::default(),
+            #[cfg(target_os = "linux")]
+            written_target: None,
+            #[cfg(target_os = "linux")]
+            write_preflight: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            #[cfg(target_os = "linux")]
+            preparation_navigation: None,
+            #[cfg(target_os = "linux")]
+            original_source: None,
+            #[cfg(target_os = "linux")]
+            offline_media_review: None,
             confirm_text: String::new(),
             status: String::new(),
             status_is_error: false,
             step: Step::Source,
             job_control: None,
+            pending_writer_result: None,
+            close_requested: false,
+            close_intent: false,
             write_mark: None,
             write_reply: None,
             release_download: None,
@@ -250,6 +295,80 @@ impl ImagerApp {
 
     pub(crate) fn target(&self) -> Option<&TargetDrive> {
         self.selected.and_then(|i| self.targets.get(i))
+    }
+    #[cfg(target_os = "linux")]
+    pub(crate) fn with_prepared_media(
+        mut self,
+        prepared: Option<std::sync::Arc<crate::setup::journey::prepared_media::PreparedMedia>>,
+    ) -> Self {
+        if let Some(prepared) = prepared {
+            self.prepared_delivery =
+                crate::setup::journey::prepared_media::Delivery::with_artifact(prepared);
+        }
+        if let Err(reason) = self.restore_prepared_profile() {
+            self.fail(&reason);
+        }
+        self
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn with_original_source(
+        mut self,
+        source: Option<std::sync::Arc<crate::setup::journey::portable_source::OriginalSource>>,
+    ) -> Self {
+        self.original_source = source;
+        self
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn with_preparation_navigation(
+        mut self,
+        navigation: crate::setup::journey::prepared_media::Navigation,
+    ) -> Self {
+        self.preparation_navigation = Some(navigation);
+        self
+    }
+
+    #[cfg(target_os = "linux")]
+    fn renew_prepared_artifact(&mut self) {
+        if self.prepared_delivery.busy() {
+            return;
+        }
+        if let Some(artifact) = self
+            .preparation_navigation
+            .as_ref()
+            .and_then(|navigation| navigation.artifact.get())
+            && !self.prepared_delivery.has_artifact(&artifact)
+        {
+            self.prepared_delivery =
+                crate::setup::journey::prepared_media::Delivery::with_artifact(artifact);
+            self.written_target = None;
+            self.goto(Step::Source);
+        }
+    }
+    #[cfg(all(test, target_os = "linux"))]
+    pub(crate) fn start_changed_home_fixture(&mut self, root: PathBuf) {
+        self.prepared_delivery.start_changed_home_fixture(root);
+    }
+    #[cfg(all(test, target_os = "linux"))]
+    pub(crate) fn review_media_inputs_fixture(
+        &mut self,
+        image: PathBuf,
+        inventory: &serde_json::Value,
+    ) -> EffectAnswer {
+        self.take_chosen_image(Some(image))?;
+        self.apply_drive_inventory(
+            crate::probe::parse_lsblk(inventory).ok_or("Invalid fixture block inventory")?,
+        );
+        self.goto(Step::Drive);
+        Ok(Effected::done())
+    }
+    #[cfg(all(test, target_os = "linux"))]
+    pub(crate) fn validate_prepared_source_fixture(&self) -> std::io::Result<()> {
+        self.prepared_delivery
+            .artifact()
+            .ok_or_else(|| std::io::Error::other("No prepared source"))?
+            .validate_for_write(&std::sync::atomic::AtomicBool::new(false))
     }
 
     /// The releases the document actually knows about — empty on the live
@@ -286,7 +405,7 @@ impl ImagerApp {
     fn can_advance_with_writer(&self, from: Step, writer_available: bool) -> bool {
         match from {
             Step::Source => self.source.is_some(),
-            Step::Drive => self.selected.is_some(),
+            Step::Drive => self.selected.is_some() && self.image_fits(),
             Step::Customize => true,
             // Confirm advances into the (destructive) write only once armed.
             Step::Confirm => {
@@ -294,6 +413,7 @@ impl ImagerApp {
                     && self.confirm_matches()
                     && self.image_fits()
                     && writer_available
+                    && self.original_files_ready()
             }
             // Write is in-progress and Done is terminal — neither advances.
             Step::Write | Step::Done => false,
@@ -306,6 +426,47 @@ impl ImagerApp {
         self.source
             .as_ref()
             .is_some_and(|source| self.source_is_official(source))
+    }
+
+    fn has_prepared_install_profile(&self) -> bool {
+        #[cfg(target_os = "linux")]
+        {
+            self.prepared_delivery
+                .artifact()
+                .is_some_and(|prepared| prepared.install_profile().is_some())
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            false
+        }
+    }
+
+    /// Guided setup already owns these choices in its authenticated manifest.
+    /// Legacy preparation without a public profile still uses customization.
+    fn needs_manual_customization(&self) -> bool {
+        self.customizable() && !self.has_prepared_install_profile()
+    }
+
+    fn effective_install_profile(&self) -> Result<InstallProfile, String> {
+        #[cfg(target_os = "linux")]
+        if let Some(prepared) = self.prepared_delivery.artifact()
+            && let Some(public) = prepared.install_profile()
+        {
+            let mut profile = public.to_draft().map_err(|_| {
+                crate::setup::strings::t("installer-preview-install-profile-invalid")
+            })?;
+            // These are separate operator choices on Confirm, not identity fields.
+            profile.wifi_ssid.clone_from(&self.profile.wifi_ssid);
+            profile.enroll_local_identity = self.profile.enroll_local_identity;
+            profile.prepared_setup = Some(prepared.expectation().clone());
+            return Ok(profile);
+        }
+        Ok(self.profile.clone())
+    }
+
+    fn restore_prepared_profile(&mut self) -> Result<(), String> {
+        self.profile = self.effective_install_profile()?;
+        Ok(())
     }
 
     /// Confirm can collect Wi-Fi and enrollment for any selected image. Official
@@ -339,6 +500,115 @@ impl ImagerApp {
             })
     }
 
+    #[cfg(target_os = "linux")]
+    fn require_media_account_protocol(
+        &self,
+        source: &Source,
+        required: Option<u32>,
+    ) -> Result<(), String> {
+        let Some(protocol) = required else {
+            return Ok(());
+        };
+        let admitted = self.source_is_official(source)
+            && self.releases().iter().any(|release| {
+                release.image_sha256 == source.expected_sha256.as_deref().unwrap_or_default()
+                    && release.size == source.size
+                    && format!("{} {}", release.name, release.version) == source.name
+                    && release.account_custody.as_ref().is_some_and(|proof| {
+                        proof.validate().is_ok() && proof.protected_grant_protocol == protocol
+                    })
+            });
+        if !admitted {
+            return Err(crate::setup::strings::t(
+                "imager-setup-account-consumer-unavailable",
+            ));
+        }
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    fn require_media_service_session_protocol(
+        &self,
+        source: &Source,
+        required: Option<u32>,
+    ) -> Result<(), String> {
+        let Some(protocol) = required else {
+            return Ok(());
+        };
+        let admitted = self.source_is_official(source)
+            && self.releases().iter().any(|release| {
+                release.image_sha256 == source.expected_sha256.as_deref().unwrap_or_default()
+                    && release.size == source.size
+                    && format!("{} {}", release.name, release.version) == source.name
+                    && release
+                        .account_custody
+                        .as_ref()
+                        .is_some_and(|proof| proof.supports_service_session_protocol(protocol))
+            });
+        if !admitted {
+            return Err(crate::setup::strings::t(
+                "imager-setup-account-consumer-unavailable",
+            ));
+        }
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    fn require_media_applications_protocol(
+        &self,
+        source: &Source,
+        required: Option<u32>,
+    ) -> Result<(), String> {
+        if required.is_none() {
+            return Ok(());
+        }
+        let admitted = self.source_is_official(source)
+            && self.releases().iter().any(|release| {
+                release.matches_source(source)
+                    && source.expected_sha256.as_deref() == Some(release.image_sha256.as_str())
+                    && source.size == release.size
+                    && crate::setup::applications_admission::require(
+                        release.applications.as_ref(),
+                        required,
+                    )
+                    .is_ok()
+            });
+        if !admitted {
+            return Err(crate::setup::strings::t(
+                "imager-setup-applications-consumer-unavailable",
+            ));
+        }
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    fn require_media_home_protocol(
+        &self,
+        source: &Source,
+        required: Option<u32>,
+    ) -> Result<(), String> {
+        let Some(protocol) = required else {
+            return Ok(());
+        };
+        let admitted = self.source_is_official(source)
+            && self.releases().iter().any(|release| {
+                release.image_sha256 == source.expected_sha256.as_deref().unwrap_or_default()
+                    && release.size == source.size
+                    && format!("{} {}", release.name, release.version) == source.name
+                    && crate::setup::home_admission::require(
+                        release.home_archive.as_ref(),
+                        Some(protocol),
+                    )
+                    .is_ok()
+            });
+        if !admitted {
+            return Err(crate::setup::strings::t(
+                "imager-setup-home-consumer-unavailable",
+            ));
+        }
+        Ok(())
+    }
+
     /// The last profile [`EncodedAction`](tilo_actions::EncodedAction) an
     /// on-screen control dispatched, for the affordance == `ActionSpec` covenant
     /// test.
@@ -364,6 +634,9 @@ impl ImagerApp {
         self.source.clone_from(&state.source);
         self.recent = state.recent_sources();
         self.profile = state.profile.clone();
+        if let Err(reason) = self.restore_prepared_profile() {
+            self.fail(&reason);
+        }
 
         self.dirty = true;
     }
@@ -413,9 +686,16 @@ impl ImagerApp {
                     rate_bps: 176_000_000,
                     error: None,
                 };
-                // A running write can be cancelled; the posed frame shows the
-                // control as it is while the helper runs.
-                self.job_control = Some(JobControl::new());
+                // The posed progress worker performs no I/O, but owns a real
+                // thread whose cancellation and exit host teardown can observe.
+                let control = JobControl::new();
+                if let Err(error) = control.bind_capture_worker() {
+                    self.progress.phase = JobPhase::Failed;
+                    self.progress.error = Some(error.to_string());
+                    // Keep the unbound control: teardown must refuse to claim
+                    // an observed worker exit when spawning failed.
+                }
+                self.job_control = Some(control);
             }
             "done" => {
                 self.selected = Some(0);
@@ -456,15 +736,53 @@ impl ImagerApp {
         !confirm.is_empty() && (confirm == want || confirm == format!("/dev/{want}"))
     }
 
-    fn image_fits(&self) -> bool {
-        match (&self.source, self.target()) {
-            (Some(s), Some(t)) => t.fits(s.size),
-            _ => false,
+    fn required_capacity(&self) -> Option<u64> {
+        let source = self.source.as_ref()?;
+        if source.size == 0 {
+            return None;
         }
+        #[cfg(target_os = "linux")]
+        {
+            crate::media_capacity::required(
+                source.size,
+                self.prepared_delivery.reserved_data_bytes(),
+                self.prepared_delivery.requires_data_partition(),
+                self.source_is_official(source),
+            )
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            source.size.checked_add(if self.source_is_official(source) {
+                crate::profile::PROFILE_BLOCK_SIZE as u64
+            } else {
+                0
+            })
+        }
+    }
+    fn capacity_message(&self, drive: &TargetDrive) -> String {
+        use crate::setup::strings::{t, t_args};
+        self.required_capacity().map_or_else(
+            || t("installer-media-capacity-checking"),
+            |required| {
+                t_args(
+                    "installer-media-capacity-required",
+                    &[
+                        ("required", fmt_size(required).into()),
+                        ("available", fmt_size(drive.size).into()),
+                    ],
+                )
+            },
+        )
+    }
+    fn image_fits(&self) -> bool {
+        self.required_capacity()
+            .zip(self.target())
+            .is_some_and(|(bytes, drive)| drive.fits(bytes))
     }
 }
 
-/// The step titles the stepper shows.
+/// The complete legacy route, retained by unguided station regressions.
+#[cfg(test)]
 fn stepper_labels() -> [&'static str; 6] {
     Step::all().map(|step| step.title())
 }
@@ -497,6 +815,14 @@ impl ImagerApp {
                 self.profile.enroll_local_identity
             ),
         };
+        #[cfg(target_os = "linux")]
+        let profile = format!(
+            "{profile}|{}|{}",
+            self.prepared_delivery.projection(),
+            self.write_preflight
+                .load(std::sync::atomic::Ordering::Acquire)
+        );
+        let profile = format!("{profile}|guided:{}", self.has_prepared_install_profile());
         let download = self
             .release_progress()
             .and_then(|progress| progress.completed.zip(progress.total))
@@ -547,13 +873,24 @@ impl ImagerApp {
         }
     }
 
-    /// The station the stepper marks: every step before it is done. A
-    /// verified result completes the last station too.
+    /// The guided handoff omits choices already sealed by the installer.
+    fn visible_steps(&self) -> Vec<Step> {
+        Step::all()
+            .into_iter()
+            .filter(|step| *step != Step::Customize || !self.has_prepared_install_profile())
+            .collect()
+    }
+
+    /// The current visible station; verified success completes the last too.
     fn stepper_current(&self) -> usize {
+        let steps = self.visible_steps();
         if self.step == Step::Done && self.progress.phase == JobPhase::Success {
-            Step::all().len()
+            steps.len()
         } else {
-            self.step.index()
+            steps
+                .iter()
+                .filter(|step| step.index() < self.step.index())
+                .count()
         }
     }
 
@@ -566,14 +903,20 @@ impl ImagerApp {
             Step::Write => self.write_body(),
             Step::Done => self.done_body(),
         };
+        #[cfg(target_os = "linux")]
+        let body = if self.prepared_delivery.needs_source_review() {
+            self.prepared_body()
+        } else {
+            body
+        };
         let notice = (self.status_is_error && !self.status.is_empty())
             .then(|| Box::new(Banner::error(self.status.clone())) as Box<dyn Widget>);
         // Before the write, a done step's station takes the person back to
         // it; once writing, the stepper only says where it is.
         let mut stepper = ui::widget::Stepper::new(
-            stepper_labels()
+            self.visible_steps()
                 .iter()
-                .map(|step| (*step).to_string())
+                .map(|step| step.title().to_string())
                 .collect(),
         )
         .with_id("imager.stepper")
@@ -584,16 +927,29 @@ impl ImagerApp {
                 sink.borrow_mut().push(Command::Station(index));
             });
         }
-        Frame::new(body)
+        let frame = Frame::new(body)
             .stepper_widget(stepper)
             .offset(Rc::clone(&self.scroll))
             .notice(notice)
-            .actions(self.footer())
-            .build()
+            .actions(self.footer());
+        let frame = if self.step == Step::Confirm && !self.original_files_ready() {
+            frame.with_content_actions()
+        } else {
+            frame
+        };
+        frame.build()
     }
 
     /// Back at the leading edge, the step's main action at the trailing one.
     fn footer(&self) -> Row {
+        #[cfg(target_os = "linux")]
+        if self.prepared_delivery.awaiting_original_boot() {
+            return Row::new().no_wrap();
+        }
+        #[cfg(target_os = "linux")]
+        if self.prepared_delivery.needs_source_review() {
+            return Row::new().no_wrap();
+        }
         let mut row = Row::new().no_wrap();
         if matches!(self.step, Step::Drive | Step::Customize | Step::Confirm) {
             row = row.push(Box::new(
@@ -603,6 +959,25 @@ impl ImagerApp {
             ));
         }
         row = row.push(Box::new(Spacer::new()));
+        if self.step == Step::Confirm && !self.original_files_ready() {
+            let preparing = self.original_files_preparing();
+            return row.push(Box::new(
+                self.button(
+                    "imager.prepare-original-files",
+                    &crate::setup::strings::t(if preparing {
+                        "installer-original-preparing"
+                    } else if self.status_is_error && !self.status.is_empty() {
+                        "installer-original-retry"
+                    } else {
+                        "installer-original-prepare-button"
+                    }),
+                    Command::PrepareOriginalFiles,
+                )
+                .role(ButtonRole::Primary)
+                .control_size(ControlSize::Large)
+                .with_enabled(!preparing),
+            ));
+        }
         let primary = match self.step {
             Step::Source | Step::Drive => self
                 .button("imager.next", "Continue", Command::Next)
@@ -834,7 +1209,17 @@ impl ImagerApp {
                     .control_size(ControlSize::Small)
                     .with_accessible_name("Rescan drives"),
             ));
-        let body = page::body_with(Box::new(header));
+        let body = page::body_with(Box::new(header)).push(Box::new(Text::new(
+            &self.required_capacity().map_or_else(
+                || crate::setup::strings::t("installer-media-capacity-checking"),
+                |required| {
+                    crate::setup::strings::t_args(
+                        "installer-media-capacity-estimate",
+                        &[("required", fmt_size(required).into())],
+                    )
+                },
+            ),
+        )));
         let visible = self.visible_targets();
         if visible.is_empty() {
             return body.push(Box::new(
@@ -847,6 +1232,10 @@ impl ImagerApp {
                 let sink = Rc::clone(&self.commands);
                 Box::new(
                     ListRow::new(format!("imager.drive.{}", drive.name), &drive.model)
+                        .with_enabled(
+                            self.required_capacity()
+                                .is_some_and(|required| drive.fits(required)),
+                        )
                         .icon(drive.icon())
                         .secondary(format!(
                             "{}, {}",
@@ -881,7 +1270,7 @@ impl ImagerApp {
                 Button::new("imager.export-config", "Preview embedded setup").on_action(binding),
             ));
         }
-        if !self.customizable() {
+        if !self.needs_manual_customization() {
             return body.push(Box::new(Text::new(PLAIN_BODY).dimmed()));
         }
         body.push(page::form_block(crate::customize::form(
@@ -913,18 +1302,8 @@ impl ImagerApp {
         if let Some(drive) = self.target() {
             rows.push(("Device", drive.dev_path()));
         }
-        if let (Some(src), Some(tgt)) = (&self.source, self.target()) {
-            rows.push((
-                "Space",
-                if tgt.fits(src.size) {
-                    format!(
-                        "{} left on the drive afterwards",
-                        fmt_size(tgt.size.saturating_sub(src.size))
-                    )
-                } else {
-                    "The image is larger than the drive".into()
-                },
-            ));
+        if let Some(target) = self.target() {
+            rows.push(("Space", self.capacity_message(target)));
         }
         rows.push(("Setup", self.review_setup()));
         rows
@@ -982,6 +1361,27 @@ impl ImagerApp {
     }
 
     fn confirm_body(&self) -> Column {
+        if !self.original_files_ready() {
+            use crate::setup::strings::t;
+            let (heading, body) = if self.original_files_preparing() {
+                (
+                    "installer-original-preparing-heading",
+                    "installer-original-preparing-body",
+                )
+            } else if self.status_is_error && !self.status.is_empty() {
+                (
+                    "installer-original-failed-heading",
+                    "installer-original-failed-body",
+                )
+            } else {
+                (
+                    "installer-original-ready-heading",
+                    "installer-original-ready-body",
+                )
+            };
+            return page::body(&t(heading))
+                .push(Box::new(Text::new(&t(body)).with_role(TextRole::Body)));
+        }
         let title = match self.action {
             Action::Install => "Review and install",
             Action::Flash => "Review and write",
@@ -1095,6 +1495,13 @@ impl ImagerApp {
 
     /// The success hero's headline and explanation.
     fn done_ok_copy(&self) -> (&'static str, String) {
+        #[cfg(target_os = "linux")]
+        if self.action == Action::Flash && self.prepared_delivery.expectation().is_some() {
+            return (
+                "The drive is ready",
+                crate::setup::strings::t("installer-media-ready"),
+            );
+        }
         let image = self
             .source
             .as_ref()
@@ -1116,7 +1523,89 @@ impl ImagerApp {
         }
     }
 
+    #[cfg(target_os = "linux")]
+    fn prepared_body(&self) -> Column {
+        use crate::setup::strings::t;
+        if self.prepared_delivery.awaiting_original_boot() {
+            let drive = self
+                .prepared_delivery
+                .original_boot_drive()
+                .unwrap_or_else(|| t("installer-original-boot-drive"));
+            return page::body(&t("installer-original-boot-heading"))
+                .push(Box::new(Text::new(&t("installer-original-boot-body"))))
+                .push(Box::new(Text::new(&crate::setup::strings::t_args(
+                    "installer-original-boot-step",
+                    &[("drive", drive.as_str().into())],
+                ))));
+        }
+        let busy = self.prepared_delivery.busy();
+        let mut body = page::stack()
+            .push(Box::new(
+                Self::centred(&t("installer-media-deliver-heading"), TextRole::Title)
+                    .with_heading_level(1),
+            ))
+            .push(Box::new(Self::centred(
+                &t(if busy {
+                    "installer-media-delivering"
+                } else {
+                    "installer-media-deliver-body"
+                }),
+                TextRole::Body,
+            )));
+        if busy {
+            if let Some(phase) = self.prepared_delivery.projection()["phase"].as_str() {
+                body = body.push(Box::new(Text::new(&t(phase))));
+                if let Some(bytes) = self.prepared_delivery.progress_label() {
+                    body = body.push(Box::new(Text::new(&bytes).with_role(TextRole::Caption)));
+                }
+            }
+        }
+        if let Some(reason) = self.prepared_delivery.review_reason() {
+            return body
+                .push(Box::new(Text::new(&t(reason.error_key()))))
+                .push(Box::new(
+                    command_button(
+                        &self.commands,
+                        "imager.review-changed-files",
+                        &t(reason.button_key()),
+                        Command::ReviewChangedPreparedFiles,
+                    )
+                    .role(ButtonRole::Primary),
+                ));
+        }
+        if self.prepared_delivery.failed() {
+            body = body.push(Box::new(Text::new(&t("installer-media-delivery-failed"))));
+        }
+        if busy {
+            return body.push(Box::new(command_button(
+                &self.commands,
+                "imager.cancel-prepared-medium",
+                &t("installer-media-cancel"),
+                Command::CancelPreparedMedium,
+            )));
+        }
+        body = body.push(Box::new(command_button(
+            &self.commands,
+            "imager.retry-prepared-medium",
+            &t("installer-media-retry"),
+            Command::RetryPreparedMedium,
+        )));
+        body.push(Box::new(
+            command_button(
+                &self.commands,
+                "imager.prepared-medium",
+                &t("installer-media-choose-filesystem"),
+                Command::PrepareMedium,
+            )
+            .with_enabled(!busy),
+        ))
+    }
+
     fn done_body(&self) -> Column {
+        #[cfg(target_os = "linux")]
+        if self.progress.phase == JobPhase::Success && self.prepared_delivery.pending() {
+            return self.prepared_body();
+        }
         let ok = self.progress.phase == JobPhase::Success;
         let (ring, headline, detail) = if ok {
             let (headline, detail) = self.done_ok_copy();
@@ -1335,6 +1824,15 @@ impl ImagerApp {
             self.dirty = true;
             return;
         }
+        if self
+            .required_capacity()
+            .is_none_or(|required| !drive.fits(required))
+        {
+            let message = self.capacity_message(drive);
+            self.set_status(&message);
+            self.dirty = true;
+            return;
+        }
         self.selected = Some(idx);
         self.confirm_text.clear();
         self.dirty = true;
@@ -1342,8 +1840,99 @@ impl ImagerApp {
     fn set_status(&mut self, s: &str) {
         self.status = s.to_string();
     }
+    fn original_files_ready(&self) -> bool {
+        #[cfg(target_os = "linux")]
+        {
+            self.original_source.is_none() || self.prepared_delivery.requires_offline_export()
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            true
+        }
+    }
+    fn original_files_preparing(&self) -> bool {
+        #[cfg(target_os = "linux")]
+        {
+            self.write_preflight
+                .load(std::sync::atomic::Ordering::Acquire)
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            false
+        }
+    }
+    #[cfg(target_os = "linux")]
+    fn original_preparation_inputs(
+        &mut self,
+        device: &str,
+    ) -> Result<
+        (
+            std::sync::Arc<crate::setup::journey::portable_source::OriginalSource>,
+            Source,
+            TargetDrive,
+            std::sync::Arc<crate::setup::journey::prepared_media::PreparedMedia>,
+        ),
+        String,
+    > {
+        let original = self
+            .original_source
+            .clone()
+            .ok_or_else(|| crate::setup::strings::t("installer-original-grant-required"))?;
+        self.choose_for_write(device);
+        self.write_refusal(device)?;
+        let source = self
+            .source
+            .clone()
+            .ok_or_else(|| crate::setup::strings::t("installer-media-plan-changed"))?;
+        if !self.source_is_official(&source) {
+            return Err(crate::setup::strings::t(
+                "installer-media-official-required",
+            ));
+        }
+        if original.applications_only() {
+            self.require_media_applications_protocol(&source, Some(2))?;
+            crate::setup::original_admission::ReviewedOriginalImage::review(
+                &source,
+                &self.releases,
+            )
+            .and_then(|image| image.require_applications())
+            .map_err(|_| crate::setup::strings::t("installer-original-image-unavailable"))?;
+        }
+        let target = self
+            .target()
+            .cloned()
+            .ok_or_else(|| crate::setup::strings::t("installer-media-plan-changed"))?;
+        let artifact = self
+            .prepared_delivery
+            .artifact()
+            .ok_or_else(|| crate::setup::strings::t("installer-preview-identity-not-prepared"))?;
+        if self.prepared_delivery.busy() {
+            return Err(crate::setup::strings::t("installer-media-delivery-busy"));
+        }
+        Ok((original, source, target, artifact))
+    }
+    fn prepare_original_files(&mut self) {
+        #[cfg(target_os = "linux")]
+        if self.step == Step::Confirm
+            && !self.original_files_ready()
+            && !self.original_files_preparing()
+            && let (Some(dispatcher), Some(target)) = (&self.dispatcher, self.target())
+        {
+            let device = target.dev_path();
+            let dispatcher = dispatcher.clone();
+            // Availability can refuse before the effect handler is entered.
+            // Present the same canonical input refusal on this automatic UI path.
+            if let Err(reason) = self.original_preparation_inputs(&device) {
+                self.fail(&reason);
+            }
+            dispatcher.effect(&ImagerEffect::PrepareOfflineMigration { device });
+        }
+    }
     fn goto(&mut self, s: Step) {
         self.step = s;
+        if s == Step::Confirm {
+            self.prepare_original_files();
+        }
         self.scroll.set((0.0, 0.0));
 
         self.dirty = true;
@@ -1353,7 +1942,11 @@ impl ImagerApp {
             Step::Source if self.can_advance(Step::Source) => self.goto(Step::Drive),
             Step::Drive if self.can_advance(Step::Drive) => {
                 self.action = Action::Flash;
-                if self.customizable() {
+                if let Err(reason) = self.restore_prepared_profile() {
+                    self.fail(&reason);
+                    return;
+                }
+                if self.needs_manual_customization() {
                     self.goto(Step::Customize);
                 } else {
                     self.goto(Step::Confirm);
@@ -1371,7 +1964,7 @@ impl ImagerApp {
     }
     fn back(&mut self) {
         match self.step {
-            Step::Confirm if self.customizable() => self.goto(Step::Customize),
+            Step::Confirm if self.needs_manual_customization() => self.goto(Step::Customize),
             Step::Confirm | Step::Customize => self.goto(Step::Drive),
             Step::Drive => self.goto(Step::Source),
             // No going back from the source, an in-flight write, or the outcome.
@@ -1393,8 +1986,24 @@ impl ImagerApp {
         }
     }
     fn writer_refusal(&self) -> Result<(), (&'static str, String)> {
+        if self.close_requested {
+            return Err((
+                "window_closing",
+                crate::setup::strings::t("imager-write-stopping"),
+            ));
+        }
         if !self.startup_write_state_reconciled {
             return Err(("restoring_write_state", "Restoring the previous image-write state; wait for drive review before starting another write".into()));
+        }
+        #[cfg(target_os = "linux")]
+        if self
+            .write_preflight
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            return Err((
+                "checking_source",
+                crate::setup::strings::t("installer-media-source-checking"),
+            ));
         }
         if self.job_control.is_some() {
             return Err((
@@ -1429,37 +2038,152 @@ impl ImagerApp {
         }
     }
     fn write_refusal(&self, device: &str) -> Result<(), String> {
-        self.writer_refusal().map_err(|(_, reason)| reason)?;
-        if self.media_target(device).is_none() {
-            return Err("Select an image source and target drive before writing".into());
+        let target = self
+            .media_target(device)
+            .and_then(|index| self.targets.get(index))
+            .ok_or("Select an image source and target drive before writing")?;
+        #[cfg(target_os = "linux")]
+        Self::require_stopped_target(target)?;
+        let required = self.required_capacity().ok_or_else(|| {
+            crate::setup::strings::t(
+                if self.source.as_ref().is_none_or(|source| source.size == 0) {
+                    "installer-media-capacity-not-ready"
+                } else {
+                    "installer-media-capacity-invalid"
+                },
+            )
+        })?;
+        if !target.fits(required) {
+            return Err(self.capacity_message(target));
         }
+        self.writer_refusal().map_err(|(_, reason)| reason)?;
         Ok(())
+    }
+    #[cfg(target_os = "linux")]
+    fn start_prepared_delivery(&mut self) -> Result<(), &'static str> {
+        if self.prepared_delivery.requires_offline_export() {
+            let review = self
+                .offline_media_review
+                .clone()
+                .ok_or("installer-original-grant-required")?;
+            self.prepared_delivery
+                .start_awaiting_offline_export_automatic(review)
+        } else {
+            self.prepared_delivery.start_automatic()
+        }
     }
     fn cancel_write(&mut self) -> Result<(), String> {
         let Some(control) = self.job_control.clone() else {
             return Err("No image write is currently running".into());
         };
         control.cancel();
-        self.set_status("Stopping safely… Keep the drive connected until cancellation finishes.");
+        self.set_status(&crate::setup::strings::t("imager-write-stopping"));
         self.dirty = true;
         Ok(())
     }
+    pub(crate) fn write_request(
+        &self,
+        source: Source,
+        target: TargetDrive,
+        handoff_stage: Option<PathBuf>,
+    ) -> Result<WriteRequest, String> {
+        let request_profile = self.effective_install_profile()?;
+        if self.source_is_official(&source) {
+            request_profile.validate_media_profile()?;
+        }
+        #[cfg(target_os = "linux")]
+        let request_profile = {
+            let mut profile = request_profile;
+            profile.prepared_setup = self.prepared_delivery.expectation().cloned();
+            profile
+        };
+        Ok(WriteRequest {
+            source,
+            target,
+            action: self.action,
+            profile: request_profile,
+            handoff_stage,
+            #[cfg(target_os = "linux")]
+            offline_layout: None,
+            provision_migration_data: {
+                #[cfg(target_os = "linux")]
+                {
+                    self.prepared_delivery.requires_data_partition()
+                }
+                #[cfg(not(target_os = "linux"))]
+                {
+                    false
+                }
+            },
+        })
+    }
+
     fn begin_write(&mut self, device: &str, confirmation: &str) -> Result<(), String> {
+        if !self.original_files_ready() {
+            return Err(crate::setup::strings::t("installer-original-not-prepared"));
+        }
+        #[cfg(target_os = "linux")]
+        if self.prepared_delivery.busy() {
+            return Err(crate::setup::strings::t("installer-media-delivery-busy"));
+        }
         if !self.startup_write_state_reconciled {
             return Err("Restoring the previous image-write state; wait for drive review before starting another write".into());
         }
         let (Some(mut src), Some(tgt)) = (self.source.clone(), self.target().cloned()) else {
             return Err("Select a source and drive first.".into());
         };
+        #[cfg(target_os = "linux")]
+        Self::require_stopped_target(&tgt)?;
         // Treat the collaborative source record as a claim, never as trust.
         // Only an exact bundled-catalog match may transport a setup profile.
         src.installable = self.source_is_official(&src);
+        #[cfg(target_os = "linux")]
+        if self.prepared_delivery.pending() && !src.installable {
+            return Err(crate::setup::strings::t(
+                "installer-media-official-required",
+            ));
+        }
         if !src.installable {
             src.kind = SourceKind::IsoFile;
             src.expected_sha256 = None;
         }
+        #[cfg(target_os = "linux")]
+        self.require_media_account_protocol(
+            &src,
+            self.prepared_delivery
+                .artifact()
+                .and_then(|artifact| artifact.account_custody_protocol()),
+        )?;
+        #[cfg(target_os = "linux")]
+        self.require_media_service_session_protocol(
+            &src,
+            self.prepared_delivery
+                .artifact()
+                .and_then(|artifact| artifact.service_session_protocol()),
+        )?;
+        #[cfg(target_os = "linux")]
+        self.require_media_home_protocol(
+            &src,
+            self.prepared_delivery
+                .artifact()
+                .and_then(|artifact| artifact.home_archive_protocol()),
+        )?;
+        #[cfg(target_os = "linux")]
+        self.require_media_applications_protocol(
+            &src,
+            self.prepared_delivery
+                .artifact()
+                .and_then(|artifact| artifact.applications_protocol()),
+        )?;
         if src.installable {
+            self.restore_prepared_profile()?;
             self.profile.validate_media_profile()?;
+        }
+        if self
+            .required_capacity()
+            .is_none_or(|required| !tgt.fits(required))
+        {
+            return Err(self.capacity_message(&tgt));
         }
         if device != tgt.dev_path() {
             return Err("The selected target changed; review the write plan again.".into());
@@ -1470,6 +2194,7 @@ impl ImagerApp {
             return Err("A Wi-Fi password is required when a network name is set.".into());
         }
         crate::handoff::validate_bringup_ssh_key(&self.ssh_public_key)?;
+        self.writer_refusal().map_err(|(_, reason)| reason)?;
         // Stage Wi-Fi, the owner SSH key, and enrollment for any image the
         // operator configured on Confirm. Official media still embeds only the
         // secret-free profile block; the passphrase, key, and new device key
@@ -1497,13 +2222,21 @@ impl ImagerApp {
             .map(|stage| stage.root)
         };
         let src_size = src.size;
-        let req = WriteRequest {
-            source: src,
-            target: tgt.clone(),
-            action: self.action,
-            profile: self.profile.clone(),
-            handoff_stage: handoff_stage.clone(),
-        };
+        let mut req = self.write_request(src, tgt.clone(), handoff_stage.clone())?;
+        #[cfg(target_os = "linux")]
+        if self.prepared_delivery.requires_offline_export() {
+            let review = self
+                .offline_media_review
+                .as_ref()
+                .ok_or_else(|| crate::setup::strings::t("installer-original-grant-required"))?;
+            let artifact = self
+                .prepared_delivery
+                .artifact()
+                .ok_or_else(|| crate::setup::strings::t("installer-media-not-prepared"))?;
+            review
+                .attach_request(&artifact, &mut req)
+                .map_err(|_| crate::setup::strings::t("installer-media-plan-changed"))?;
+        }
         let (start, rx, control) = spawn_job(req, confirmation, self.writer());
         let refuse = |message: String| -> Result<(), String> {
             if let Some(stage) = handoff_stage.as_ref() {
@@ -1513,6 +2246,11 @@ impl ImagerApp {
         };
         match start {
             crate::write::JobStart::Started => {
+                #[cfg(target_os = "linux")]
+                {
+                    self.prepared_delivery.writing();
+                    self.written_target = Some(tgt.clone());
+                }
                 let (Some(rx), Some(control), Some(jobs)) = (rx, control, self.jobs.clone()) else {
                     return refuse("The writer could not start in this window.".into());
                 };
@@ -1569,30 +2307,66 @@ impl ImagerApp {
         control: JobControl,
         size: u64,
     ) {
+        // The guard exists before the future is first polled: cancelling a
+        // newly scheduled canonical job must also cancel its native writer.
+        struct WriteJobCustody(JobControl);
+        impl Drop for WriteJobCustody {
+            fn drop(&mut self) {
+                if !self.0.observed_stopped() {
+                    self.0.cancel();
+                }
+            }
+        }
         jobs.start::<Self>(WRITE_JOB, move |cx| {
-            Ok(cx.thread(
+            Ok(cx.spawn(
                 move |progress| {
-                    let mut last = None;
-                    for event in &events {
-                        if progress.is_cancelled() {
-                            control.cancel();
-                        }
-                        let fraction = match event.phase {
-                            JobPhase::Verifying => event.verify_frac,
-                            _ => event.write_frac,
-                        };
-                        progress.report(
-                            event.phase.key(),
-                            Some((fraction.clamp(0.0, 1.0) * size as f64) as u64),
-                            Some(size),
-                        );
-                        let ended = matches!(event.phase, JobPhase::Success | JobPhase::Failed);
-                        last = Some(event);
-                        if ended {
-                            break;
+                    let custody = WriteJobCustody(control);
+                    async move {
+                        let mut last = None;
+                        let mut ended = false;
+                        let mut disconnected = false;
+                        loop {
+                            if progress.is_cancelled() {
+                                custody.0.cancel();
+                            }
+                            // std receivers are polled, never waited on by the UI or
+                            // the bounded blocking pool. Limit each runtime turn.
+                            if !ended && !disconnected {
+                                for _ in 0..64 {
+                                    let event = match events.try_recv() {
+                                        Ok(event) => event,
+                                        Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                                        Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                                            disconnected = true;
+                                            break;
+                                        }
+                                    };
+                                    let fraction = match event.phase {
+                                        JobPhase::Verifying => event.verify_frac,
+                                        _ => event.write_frac,
+                                    };
+                                    progress.report(
+                                        event.phase.key(),
+                                        Some((fraction.clamp(0.0, 1.0) * size as f64) as u64),
+                                        Some(size),
+                                    );
+                                    ended =
+                                        matches!(event.phase, JobPhase::Success | JobPhase::Failed);
+                                    last = Some(event);
+                                    if ended {
+                                        break;
+                                    }
+                                }
+                            }
+                            // Progress is not completion. The canonical job only
+                            // delivers its callback after the same native stop witness
+                            // that guards UI state, prepared delivery and close.
+                            if (ended || disconnected) && custody.0.observed_stopped() {
+                                return last;
+                            }
+                            ui::rt::sleep(std::time::Duration::from_millis(25)).await;
                         }
                     }
-                    last
                 },
                 |app: &mut Self, last, _| {
                     app.finish_write(last);
@@ -1602,6 +2376,15 @@ impl ImagerApp {
         });
     }
     fn drain_job(&mut self) {
+        if self
+            .job_control
+            .as_ref()
+            .is_some_and(JobControl::observed_stopped)
+            && let Some(last) = self.pending_writer_result.take()
+        {
+            self.finish_write(last);
+        }
+
         if self
             .write_reply
             .as_ref()
@@ -1664,10 +2447,27 @@ impl ImagerApp {
         self.dirty = true;
     }
     fn finish_write(&mut self, last: Option<Progress>) {
+        // A terminal progress packet can precede helper wait and native exit.
+        // Keep the cancellation channel and authority until that owned witness.
+        if self
+            .job_control
+            .as_ref()
+            .is_some_and(|control| !control.observed_stopped())
+        {
+            self.pending_writer_result = Some(last);
+            self.dirty = true;
+            return;
+        }
+        self.pending_writer_result = None;
+
         let cancelled = self
             .job_control
             .as_ref()
             .is_some_and(JobControl::is_cancelled);
+        let failed = self
+            .job_control
+            .as_ref()
+            .is_some_and(JobControl::observed_failure);
         self.job_control = None;
         self.write_mark = None;
         let mut outcome = last
@@ -1680,6 +2480,12 @@ impl ImagerApp {
                 ),
                 ..self.progress.clone()
             });
+        if failed {
+            if outcome.phase == JobPhase::Success || outcome.error.is_none() {
+                outcome.error = Some(crate::setup::strings::t("imager-write-worker-stopped"));
+            }
+            outcome.phase = JobPhase::Failed;
+        }
         // Cancellation may race with a terminal helper event already in
         // the pipe. Honour the user's stop request conservatively: never
         // turn that race into a claim that the medium is ready to use.
@@ -1695,7 +2501,7 @@ impl ImagerApp {
             .as_ref()
             .map(|s| s.name.clone())
             .unwrap_or_default();
-        let message = if outcome.phase == JobPhase::Success {
+        let mut message = if outcome.phase == JobPhase::Success {
             format!("Done — {name} {} and verified", self.action.past())
         } else {
             outcome.error.clone().unwrap_or_else(|| {
@@ -1706,6 +2512,15 @@ impl ImagerApp {
             })
         };
         self.progress = outcome;
+        #[cfg(target_os = "linux")]
+        if self.progress.phase == JobPhase::Success && self.prepared_delivery.pending() {
+            if let Some(target) = self.written_target.take() {
+                self.prepared_delivery.written(target);
+                if let Err(error) = self.start_prepared_delivery() {
+                    message = crate::setup::strings::t(error);
+                }
+            }
+        }
         self.set_status(&message);
         self.goto(Step::Done);
         self.dirty = true;
@@ -1724,11 +2539,23 @@ impl ImagerApp {
         }
     }
     fn status_value(&self) -> serde_json::Value {
-        serde_json::json!({
+        let status = serde_json::json!({
             "phase": self.progress.phase.key(),
             "progress": self.progress.overall(),
             "message": self.status,
-        })
+        });
+        #[cfg(target_os = "linux")]
+        let status = {
+            let mut status = status;
+            status["prepared_setup"] = self.prepared_delivery.projection();
+            status["capacity"] = serde_json::json!({"state":if self.required_capacity().is_some(){"ready"}else{"checking"},"required":self.required_capacity(),"available":self.target().map(|drive|drive.size),"estimated":true});
+            status["source_checking"] = self
+                .write_preflight
+                .load(std::sync::atomic::Ordering::Acquire)
+                .into();
+            status
+        };
+        status
     }
     fn write_another(&mut self) {
         if self.progress.phase == JobPhase::Failed {
@@ -1813,12 +2640,380 @@ impl ImagerApp {
         cx: &mut EffectCx<Imager, Self>,
     ) -> EffectAnswer {
         match effect {
+            ImagerEffect::CompleteOfflineMigration { device, password } => {
+                #[cfg(target_os = "linux")]
+                {
+                    if self
+                        .write_preflight
+                        .load(std::sync::atomic::Ordering::Acquire)
+                        || self.prepared_delivery.busy()
+                    {
+                        return Err(crate::setup::strings::t("installer-media-delivery-busy"));
+                    }
+                    let password = zeroize::Zeroizing::new(password.into_bytes());
+                    if password.is_empty() || password.len() > 4096 {
+                        return Err(crate::setup::strings::t(
+                            "installer-original-complete-failed",
+                        ));
+                    }
+                    let target = crate::probe::probe()
+                        .and_then(|drives| {
+                            drives
+                                .into_iter()
+                                .find(|target| target.dev_path() == device)
+                        })
+                        .ok_or_else(|| crate::setup::strings::t("installer-media-plan-changed"))?;
+                    self.write_preflight
+                        .store(true, std::sync::atomic::Ordering::Release);
+                    let activity = SourceCheckActivity(self.write_preflight.clone());
+                    self.dirty = true;
+                    return Ok(cx.thread(
+                        move |progress| {
+                            let _activity = activity;
+                            progress.report("installer-original-complete-progress", None, None);
+                            let cancel = progress.cancellation_signal();
+                            let medium = progress
+                                .with_effect(|| {
+                                    Ok(crate::setup::read_media::admit_boot(&target, &cancel))
+                                })
+                                .map_err(std::io::Error::other)??;
+                            let extraction_password = zeroize::Zeroizing::new(password.to_vec());
+                            let completed = progress
+                                .with_effect(|| Ok(medium.complete_original(password, &cancel)))
+                                .map_err(std::io::Error::other)?;
+                            drop(medium);
+                            let stable_id = target
+                                .stable_id
+                                .as_deref()
+                                .ok_or(std::io::ErrorKind::InvalidData)?;
+                            crate::setup::journey::prepared_media::finish_target(stable_id)?;
+                            completed?;
+                            // Completion retires its exact helper first. A new
+                            // authenticated readonly grant adopts the committed
+                            // generation into the standard running installer.
+                            let medium = progress
+                                .with_effect(|| {
+                                    Ok(crate::setup::read_media::admit_boot(&target, &cancel))
+                                })
+                                .map_err(std::io::Error::other)??;
+                            let extracted = progress
+                                .with_effect(|| {
+                                    Ok(medium.extract_completed(extraction_password, &cancel))
+                                })
+                                .map_err(std::io::Error::other)?;
+                            drop(medium);
+                            crate::setup::journey::prepared_media::finish_target(stable_id)?;
+                            extracted
+                        },
+                        move |app: &mut Self, result, _cx| {
+                            app.write_preflight
+                                .store(false, std::sync::atomic::Ordering::Release);
+                            app.dirty = true;
+                            result.map_err(|_| {
+                                crate::setup::strings::t("installer-original-complete-failed")
+                            })?;
+                            Ok(Effected::value(app.status_value()))
+                        },
+                    ));
+                }
+                #[cfg(not(target_os = "linux"))]
+                {
+                    let _ = (device, password);
+                    Err(crate::setup::strings::t(
+                        "installer-preview-import-unavailable",
+                    ))
+                }
+            }
+            ImagerEffect::PrepareOfflineMigration { device } => {
+                #[cfg(target_os = "linux")]
+                {
+                    let (original, source, target, artifact) =
+                        match self.original_preparation_inputs(&device) {
+                            Ok(inputs) => inputs,
+                            Err(reason) => {
+                                self.fail(&reason);
+                                return Err(reason);
+                            }
+                        };
+                    let expected_source = source.clone();
+                    let expected_target = target.clone();
+                    let retained = artifact.clone();
+                    let expected_original = original.clone();
+                    let image_review =
+                        match crate::setup::original_admission::ReviewedOriginalImage::review(
+                            &source,
+                            &self.releases,
+                        ) {
+                            Ok(review) => review,
+                            Err(_) => {
+                                let reason = crate::setup::strings::t(
+                                    "installer-original-image-unavailable",
+                                );
+                                self.fail(&reason);
+                                return Err(reason);
+                            }
+                        };
+                    self.write_preflight
+                        .store(true, std::sync::atomic::Ordering::Release);
+                    let activity = SourceCheckActivity(self.write_preflight.clone());
+                    self.status_is_error = false;
+                    self.set_status("");
+                    self.dirty = true;
+                    return Ok(cx.thread(
+                        move |progress| {
+                            let _activity = activity;
+                            progress.report("installer-original-permission-progress", None, None);
+                            let cancellation = progress.cancellation_signal();
+                            progress
+                                .with_effect(|| {
+                                    Ok(artifact.prepare_original_on_media(
+                                        &image_review,
+                                        &target,
+                                        &original,
+                                        &cancellation,
+                                    ))
+                                })
+                                .map_err(std::io::Error::other)?
+                        },
+                        move |app: &mut Self, result, _cx| {
+                            app.write_preflight
+                                .store(false, std::sync::atomic::Ordering::Release);
+                            app.dirty = true;
+                            let prepared = match result {
+                                Ok(prepared) => prepared,
+                                Err(_) => {
+                                    let reason = crate::setup::strings::t(
+                                        "installer-original-prepare-failed",
+                                    );
+                                    app.fail(&reason);
+                                    return Err(reason);
+                                }
+                            };
+                            if app.source.as_ref() != Some(&expected_source)
+                                || !app.target().is_some_and(|actual| {
+                                    Self::same_rescanned_target(&expected_target, actual)
+                                })
+                                || !app.prepared_delivery.has_artifact(&retained)
+                                || !app.original_source.as_ref().is_some_and(|actual| {
+                                    std::sync::Arc::ptr_eq(actual, &expected_original)
+                                })
+                            {
+                                let reason =
+                                    crate::setup::strings::t("installer-media-plan-changed");
+                                app.fail(&reason);
+                                return Err(reason);
+                            }
+                            if let Some(navigation) = &app.preparation_navigation {
+                                navigation.artifact.set(Some(prepared.artifact.clone()));
+                            }
+                            app.prepared_delivery =
+                                crate::setup::journey::prepared_media::Delivery::with_artifact(
+                                    prepared.artifact,
+                                );
+                            app.offline_media_review = Some(prepared.review);
+                            Ok(Effected::value(app.status_value()))
+                        },
+                    ));
+                }
+                #[cfg(not(target_os = "linux"))]
+                {
+                    let _ = device;
+                    Err(crate::setup::strings::t(
+                        "installer-preview-import-unavailable",
+                    ))
+                }
+            }
+            ImagerEffect::ReviewChangedPreparedFiles => {
+                #[cfg(target_os = "linux")]
+                {
+                    if self.prepared_delivery.busy()
+                        || !self.prepared_delivery.needs_source_review()
+                    {
+                        return Err(crate::setup::strings::t("installer-preview-wrong-page"));
+                    }
+                    let navigation = self
+                        .preparation_navigation
+                        .as_ref()
+                        .ok_or_else(|| crate::setup::strings::t("installer-preview-wrong-page"))?;
+                    let reason = self
+                        .prepared_delivery
+                        .review_reason()
+                        .ok_or_else(|| crate::setup::strings::t("installer-preview-wrong-page"))?;
+                    navigation.review_home(reason);
+                    self.dirty = true;
+                    Ok(Effected::done())
+                }
+                #[cfg(not(target_os = "linux"))]
+                Err(crate::setup::strings::t(
+                    "installer-preview-import-unavailable",
+                ))
+            }
+            ImagerEffect::RetryPreparedDelivery => {
+                #[cfg(target_os = "linux")]
+                {
+                    if self.step != Step::Done || self.progress.phase != JobPhase::Success {
+                        return Err(crate::setup::strings::t("installer-media-not-written"));
+                    }
+                    self.start_prepared_delivery()
+                        .map_err(crate::setup::strings::t)?;
+                    self.dirty = true;
+                    Ok(Effected::value(self.status_value()))
+                }
+                #[cfg(not(target_os = "linux"))]
+                Err(crate::setup::strings::t(
+                    "installer-preview-import-unavailable",
+                ))
+            }
+            ImagerEffect::ChoosePreparedFilesystem => {
+                #[cfg(target_os = "linux")]
+                {
+                    if self.step != Step::Done
+                        || self.progress.phase != JobPhase::Success
+                        || !self.prepared_delivery.pending()
+                        || self.prepared_delivery.busy()
+                    {
+                        return Err(crate::setup::strings::t("installer-media-not-written"));
+                    }
+                    Ok(cx.choose_path(
+                        PickRequest::directory(
+                            &crate::setup::strings::t("installer-media-filesystem-picker"),
+                            &crate::setup::strings::t("installer-media-filesystem-allow"),
+                        ),
+                        |app: &mut Self, path, _| {
+                            let Some(path) = path else {
+                                return Ok(Effected::done());
+                            };
+                            if app.step != Step::Done || app.progress.phase != JobPhase::Success {
+                                return Err(crate::setup::strings::t(
+                                    "installer-media-not-written",
+                                ));
+                            }
+                            app.prepared_delivery
+                                .start(path)
+                                .map_err(crate::setup::strings::t)?;
+                            app.dirty = true;
+                            Ok(Effected::value(app.status_value()))
+                        },
+                    ))
+                }
+                #[cfg(not(target_os = "linux"))]
+                Err(crate::setup::strings::t(
+                    "installer-preview-import-unavailable",
+                ))
+            }
+            ImagerEffect::DeliverPreparedSetup { mounted_root } => {
+                #[cfg(target_os = "linux")]
+                {
+                    if self.step != Step::Done || self.progress.phase != JobPhase::Success {
+                        return Err(crate::setup::strings::t("installer-media-not-written"));
+                    }
+                    self.prepared_delivery
+                        .start(mounted_root.into())
+                        .map_err(crate::setup::strings::t)?;
+                    self.dirty = true;
+                    Ok(Effected::value(self.status_value()))
+                }
+                #[cfg(not(target_os = "linux"))]
+                {
+                    let _ = mounted_root;
+                    Err(crate::setup::strings::t(
+                        "installer-preview-import-unavailable",
+                    ))
+                }
+            }
+            ImagerEffect::CancelPreparedDelivery => {
+                #[cfg(target_os = "linux")]
+                {
+                    self.prepared_delivery
+                        .cancel()
+                        .map_err(crate::setup::strings::t)?;
+                    Ok(Effected::done())
+                }
+                #[cfg(not(target_os = "linux"))]
+                Err(crate::setup::strings::t(
+                    "installer-preview-import-unavailable",
+                ))
+            }
             ImagerEffect::Write {
                 device,
                 confirmation,
             } => {
                 self.choose_for_write(&device);
                 self.write_refusal(&device)?;
+                #[cfg(target_os = "linux")]
+                if let Some(artifact) = self.prepared_delivery.artifact() {
+                    let source = self.source.clone();
+                    let target = self.target().cloned();
+                    self.write_preflight
+                        .store(true, std::sync::atomic::Ordering::Release);
+                    self.set_status(&crate::setup::strings::t("installer-media-source-checking"));
+                    self.dirty = true;
+                    let retained = artifact.clone();
+                    let activity = SourceCheckActivity(self.write_preflight.clone());
+                    return Ok(cx.thread(
+                        move |progress| {
+                            let _activity = activity;
+                            if progress.is_cancelled() {
+                                return Err(std::io::Error::other("Source review cancelled"));
+                            }
+                            let cancellation = progress.cancellation_signal();
+                            let result = artifact.refreshed_for_transfer(&cancellation);
+                            if progress.is_cancelled() {
+                                return Err(std::io::Error::other("Source review cancelled"));
+                            }
+                            result
+                        },
+                        move |app: &mut Self, result, cx| {
+                            app.write_preflight
+                                .store(false, std::sync::atomic::Ordering::Release);
+                            app.dirty = true;
+                            let refreshed = match result {
+                                Ok(prepared) => prepared,
+                                Err(error) => {
+                                    if let Some(key) =
+                                        crate::setup::portable_home_media::source_review_error(
+                                            &error,
+                                        )
+                                    {
+                                        if crate::setup::portable_home_media::source_changed(&error)
+                                        {
+                                            app.prepared_delivery.mark_source_changed();
+                                        } else {
+                                            app.prepared_delivery.mark_source_unavailable();
+                                        }
+                                        return Err(crate::setup::strings::t(key));
+                                    }
+                                    return Err(crate::setup::strings::t(
+                                        "installer-media-source-failed",
+                                    ));
+                                }
+                            };
+                            if app.source != source
+                                || !app.target().zip(target.as_ref()).is_some_and(
+                                    |(actual, expected)| {
+                                        Self::same_rescanned_target(expected, actual)
+                                    },
+                                )
+                                || !app.prepared_delivery.has_artifact(&retained)
+                            {
+                                return Err(crate::setup::strings::t(
+                                    "installer-media-plan-changed",
+                                ));
+                            }
+                            if let Some(navigation) = &app.preparation_navigation {
+                                navigation.artifact.set(Some(refreshed.clone()));
+                            }
+                            app.prepared_delivery =
+                                crate::setup::journey::prepared_media::Delivery::with_artifact(
+                                    refreshed,
+                                );
+                            app.write_refusal(&device)?;
+                            app.begin_write(&device, &confirmation)?;
+                            app.write_reply = Some(cx.reply());
+                            Ok(Effected::Pending)
+                        },
+                    ));
+                }
                 self.begin_write(&device, &confirmation)?;
                 self.write_reply = Some(cx.reply());
                 Ok(Effected::Pending)
@@ -1919,6 +3114,20 @@ impl ImagerApp {
     }
     pub(crate) fn effect_statuses(&self) -> Vec<EffectStatus> {
         let mut statuses = Vec::new();
+        #[cfg(target_os = "linux")]
+        if self.original_source.is_none()
+            || self.prepared_delivery.artifact().is_none()
+            || self.prepared_delivery.busy()
+            || self
+                .write_preflight
+                .load(std::sync::atomic::Ordering::Acquire)
+        {
+            statuses.push(EffectStatus::unavailable(
+                ImagerEffect::PREPARE_OFFLINE_MIGRATION,
+                "original_source_unavailable",
+                crate::setup::strings::t("installer-original-grant-required"),
+            ));
+        }
         if let Err((code, reason)) = self.writer_refusal() {
             statuses.push(EffectStatus::unavailable(ImagerEffect::WRITE, code, reason));
         }
@@ -2004,7 +3213,10 @@ impl ImagerApp {
         self.adopt_resource_state(state);
     }
     fn go_to_station(&mut self, index: usize) {
-        if let Some(step) = Step::all().get(index).copied() {
+        if let Some(step) = self.visible_steps().get(index).copied() {
+            if step == Step::Customize && !self.needs_manual_customization() {
+                return;
+            }
             if step.index() < self.step.index() && self.step != Step::Write {
                 self.goto(step);
             }
@@ -2012,6 +3224,26 @@ impl ImagerApp {
     }
     fn apply_command(&mut self, command: Command) {
         match command {
+            Command::ReviewChangedPreparedFiles => {
+                if let Some(dispatcher) = &self.dispatcher {
+                    dispatcher.effect(&ImagerEffect::ReviewChangedPreparedFiles);
+                }
+            }
+            Command::RetryPreparedMedium => {
+                if let Some(dispatcher) = &self.dispatcher {
+                    dispatcher.effect(&ImagerEffect::RetryPreparedDelivery);
+                }
+            }
+            Command::CancelPreparedMedium => {
+                if let Some(dispatcher) = &self.dispatcher {
+                    dispatcher.effect(&ImagerEffect::CancelPreparedDelivery);
+                }
+            }
+            Command::PrepareMedium => {
+                if let Some(dispatcher) = &self.dispatcher {
+                    dispatcher.effect(&ImagerEffect::ChoosePreparedFilesystem);
+                }
+            }
             Command::PickFile => {
                 if let Some(dispatcher) = &self.dispatcher {
                     dispatcher.effect(&ImagerEffect::ChooseImage);
@@ -2049,6 +3281,7 @@ impl ImagerApp {
             Command::Back => self.back(),
             Command::Station(index) => self.go_to_station(index),
             Command::Next => self.advance(),
+            Command::PrepareOriginalFiles => self.prepare_original_files(),
             Command::StartWrite => self.start_write(),
             Command::CancelWrite => {
                 let _ = self.cancel_write();
@@ -2060,7 +3293,7 @@ impl ImagerApp {
                 }
             }
             Command::Profile(field, shown) => {
-                if self.step == Step::Customize && self.customizable() {
+                if self.step == Step::Customize && self.needs_manual_customization() {
                     match crate::customize::profile_value(field, &shown) {
                         Some(value) => match crate::customize::field_edit(field, value) {
                             Some(edit) => self.submit(edit),
@@ -2101,6 +3334,7 @@ impl ImagerApp {
     fn fail(&mut self, message: &str) {
         self.status_is_error = true;
         self.set_status(message);
+        self.dirty = true;
     }
     fn drain_commands(&mut self) -> bool {
         let commands = std::mem::take(&mut *self.commands.borrow_mut());
@@ -2114,8 +3348,125 @@ impl ImagerApp {
         self.seed_local_shot_state(scenario);
     }
 }
+impl ImagerApp {
+    #[cfg(target_os = "linux")]
+    pub(crate) fn require_stopped_target(target: &TargetDrive) -> Result<(), String> {
+        if target
+            .stable_id
+            .as_deref()
+            .is_some_and(crate::setup::journey::prepared_media::pending_target)
+        {
+            return Err(crate::setup::strings::t("installer-media-delivery-busy"));
+        }
+        Ok(())
+    }
+    fn close_work_active(&self) -> bool {
+        if self.job_control.is_some() {
+            return true;
+        }
+        #[cfg(target_os = "linux")]
+        {
+            if self
+                .write_preflight
+                .load(std::sync::atomic::Ordering::Acquire)
+                || self.prepared_delivery.busy()
+            {
+                return true;
+            }
+            for target in self
+                .target()
+                .into_iter()
+                .chain(self.written_target.as_ref())
+            {
+                if target
+                    .stable_id
+                    .as_deref()
+                    .is_some_and(crate::setup::journey::prepared_media::pending_target)
+                {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+}
+impl ui::component_lifecycle::ComponentLifecycle for ImagerApp {
+    fn on_window_close_requested(&mut self) -> ui::widget::WindowCloseAdmission {
+        if !self.close_work_active() {
+            return ui::widget::WindowCloseAdmission::Allow;
+        }
+        self.close_requested = true;
+        self.close_intent = false;
+        if let Some(control) = &self.job_control {
+            control.cancel();
+        }
+        #[cfg(target_os = "linux")]
+        if self.prepared_delivery.busy() {
+            let _ = self.prepared_delivery.cancel();
+        }
+        self.set_status(&crate::setup::strings::t("imager-write-stopping"));
+        self.dirty = true;
+        ui::widget::WindowCloseAdmission::Defer
+    }
+    fn take_window_close_intent(&mut self) -> bool {
+        let intent = std::mem::take(&mut self.close_intent);
+        if intent {
+            self.close_requested = false;
+        }
+        intent
+    }
+    fn close_components(&mut self) -> Vec<ui::application::ComponentCloseReport> {
+        // Host teardown has stopped frames. This synchronous path also serves
+        // headless component removal; normal close first defers above.
+        self.close_requested = true;
+        let mut errors = Vec::new();
+        if let Some(control) = self.job_control.take() {
+            control.cancel();
+            if let Err(error) = control.wait_stopped() {
+                errors.push(error.to_string());
+            }
+        }
+        #[cfg(target_os = "linux")]
+        if let Err(error) = self.prepared_delivery.finish_close() {
+            errors.push(error.to_string());
+        }
+        #[cfg(target_os = "linux")]
+        for target in self
+            .target()
+            .into_iter()
+            .chain(self.written_target.as_ref())
+        {
+            if let Some(id) = target.stable_id.as_deref()
+                && let Err(error) = crate::setup::journey::prepared_media::finish_target(id)
+            {
+                errors.push(error.to_string());
+            }
+        }
+        let mut reports: Vec<_> = self
+            .children_mut()
+            .into_iter()
+            .flat_map(ui::component_lifecycle::close_components)
+            .collect();
+        for error in errors {
+            reports.push(ui::application::ComponentCloseReport {
+                recovery: None,
+                view_error: None,
+                view_retry: None,
+                record_error: None,
+                record_retry: None,
+                record_retry_target: None,
+                teardown_error: Some(error),
+            });
+        }
+        reports
+    }
+}
 impl Widget for ImagerApp {
+    ui::provides!(dyn ui::component_lifecycle::ComponentLifecycle);
+
     fn sync(&mut self, _state: &AppModel, _path: &ModelPath) {
+        #[cfg(target_os = "linux")]
+        self.renew_prepared_artifact();
         if !self.seeded {
             // Start genuinely blank. In the live app a real `lsblk` probe
             // fills the drive list; if it finds nothing (or is unavailable)
@@ -2147,6 +3498,14 @@ impl Widget for ImagerApp {
             self.status = Self::download_status(&progress);
         }
         self.drain_job();
+        #[cfg(target_os = "linux")]
+        {
+            self.dirty |= self.prepared_delivery.poll();
+        }
+
+        if self.close_requested && !self.close_work_active() {
+            self.close_intent = true;
+        }
 
         self.action = Action::Flash;
         self.selected = self.selected.filter(|i| {
@@ -2314,7 +3673,12 @@ impl Widget for ImagerApp {
     /// Keep the event loop ticking while a job or file picker is in flight, so
     /// the progress shows and the portal result is drained promptly.
     fn needs_animation_frame(&self) -> bool {
-        self.job_control.is_some()
+        #[cfg(target_os = "linux")]
+        if self.prepared_delivery.busy() {
+            return true;
+        }
+        self.close_requested
+            || self.job_control.is_some()
             || false
             || self.release_download.is_some()
             || self
@@ -2324,7 +3688,14 @@ impl Widget for ImagerApp {
     }
 
     fn needs_idle_sync(&self) -> bool {
-        self.job_control.is_some() || false || self.release_download.is_some()
+        #[cfg(target_os = "linux")]
+        if self.prepared_delivery.busy() {
+            return true;
+        }
+        self.close_requested
+            || self.job_control.is_some()
+            || false
+            || self.release_download.is_some()
     }
 }
 
@@ -2706,6 +4077,7 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn step_rail_keeps_six_stations_inside_the_viewport() {
+        assert_eq!(ImagerApp::new().visible_steps(), Step::all());
         assert_eq!(stepper_labels().len(), 6);
         assert_eq!(stepper_labels().first(), Some(&"Source"));
         assert_eq!(stepper_labels().last(), Some(&"Done"));
@@ -2828,6 +4200,346 @@ mod tests {
         }
     }
 
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn begin_write_refuses_actual_protected_preparation_before_handoff_or_writer() {
+        use std::os::unix::fs::PermissionsExt;
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set(runtime_identity::FILE_SECRETS_ENV, "1");
+        let root = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        let (prepared, artifact) =
+            crate::setup::journey::prepared_media::protected_account_media_fixture(root.path());
+        assert_eq!(prepared.account_custody_protocol(), Some(1));
+        let original_artifact = std::fs::read(&artifact.source_path).unwrap();
+        let handoffs = root.path().join("handoffs");
+        std::fs::create_dir(&handoffs).unwrap();
+        env.set("TMPDIR", &handoffs);
+        let image = root.path().join("image.img");
+        std::fs::write(&image, b"reviewed image bytes").unwrap();
+        let (mut app, _) = seeded_app();
+        app.releases[0].size = std::fs::metadata(&image).unwrap().len();
+        app.releases[0].local_path = image.display().to_string();
+        app.source = Some(app.releases[0].to_source());
+        assert!(app.source_is_official(app.source.as_ref().unwrap()));
+        app = app.with_prepared_media(Some(prepared));
+        app.select_target(0);
+        app.goto(Step::Confirm);
+        app.startup_write_state_reconciled = true;
+        app.profile.wifi_ssid = "Chosen network".into();
+        app.wifi_psk = "private wifi password".into();
+        let error = app.begin_write("/dev/sdb", "sdb").unwrap_err();
+        assert_eq!(
+            error,
+            crate::setup::strings::t("imager-setup-account-consumer-unavailable")
+        );
+        assert_eq!(app.step, Step::Confirm);
+        assert!(app.job_control.is_none());
+        assert!(std::fs::read_dir(&handoffs).unwrap().next().is_none());
+        assert_eq!(std::fs::read(image).unwrap(), b"reviewed image bytes");
+        assert_eq!(
+            std::fs::read(artifact.source_path).unwrap(),
+            original_artifact
+        );
+        assert!(app.prepared_delivery.artifact().is_some());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn media_account_admission_requires_exact_authenticated_release_before_writer() {
+        let (mut app, _) = seeded_app();
+        let source = app.source.clone().unwrap();
+        app.require_media_account_protocol(&source, None).unwrap();
+        assert!(
+            app.require_media_account_protocol(&source, Some(1))
+                .is_err()
+        );
+        let proof = crate::setup::account_admission::ConsumerCapability {
+            schema: 1,
+            protected_grant_protocol: 1,
+            credential_helper_sha256: "1".repeat(64),
+            runtime_root_hash: "2".repeat(64),
+            runtime_probe_sha256: "3".repeat(64),
+            runtime_library_sha256: "4".repeat(64),
+            runtime_version: "test-1".into(),
+            runtime_library: "lib/libruntime_dylib.so".into(),
+            service_sessions: None,
+        };
+        app.releases[0].account_custody = Some(proof);
+        app.require_media_account_protocol(&source, Some(1))
+            .unwrap();
+        app.require_media_service_session_protocol(&source, None)
+            .unwrap();
+        assert!(
+            app.require_media_service_session_protocol(&source, Some(1))
+                .is_err()
+        );
+        assert!(
+            app.require_media_account_protocol(&source, Some(2))
+                .is_err()
+        );
+        let mut replaced = source.clone();
+        replaced.expected_sha256 = Some("9".repeat(64));
+        assert!(
+            app.require_media_account_protocol(&replaced, Some(1))
+                .is_err()
+        );
+        replaced = source.clone();
+        replaced.size = replaced.size.checked_add(1).unwrap();
+        assert!(
+            app.require_media_account_protocol(&replaced, Some(1))
+                .is_err()
+        );
+        replaced = source.clone();
+        replaced.kind = SourceKind::IsoFile;
+        assert!(
+            app.require_media_account_protocol(&replaced, Some(1))
+                .is_err()
+        );
+        app.releases[0]
+            .account_custody
+            .as_mut()
+            .unwrap()
+            .runtime_library = "other.so".into();
+        assert!(
+            app.require_media_account_protocol(&source, Some(1))
+                .is_err()
+        );
+        assert!(app.job_control.is_none());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn begin_write_refuses_actual_selected_apps_before_handoff_or_writer() {
+        use std::os::unix::fs::PermissionsExt;
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set(runtime_identity::FILE_SECRETS_ENV, "1");
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().canonicalize().unwrap();
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let artifact =
+            crate::setup::journey::prepared_media::selected_applications_media_fixture(&root);
+        let handoffs = root.join("handoffs");
+        std::fs::create_dir(&handoffs).unwrap();
+        env.set("TMPDIR", &handoffs);
+        let image = root.join("image.img");
+        std::fs::write(&image, b"reviewed selected-app image bytes").unwrap();
+        let (mut app, _) = seeded_app();
+        app.releases[0].size = std::fs::metadata(&image).unwrap().len();
+        app.releases[0].local_path = image.display().to_string();
+        app.source = Some(app.releases[0].to_source());
+        app = app.with_prepared_media(Some(artifact));
+        app.select_target(0);
+        app.goto(Step::Confirm);
+        app.startup_write_state_reconciled = true;
+        assert_eq!(
+            app.begin_write("/dev/sdb", "sdb").unwrap_err(),
+            crate::setup::strings::t("imager-setup-applications-consumer-unavailable")
+        );
+        assert!(app.job_control.is_none());
+        assert_eq!(app.step, Step::Confirm);
+        assert!(std::fs::read_dir(&handoffs).unwrap().next().is_none());
+        assert_eq!(
+            std::fs::read(&image).unwrap(),
+            b"reviewed selected-app image bytes"
+        );
+        assert!(app.prepared_delivery.artifact().is_some());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn begin_write_refuses_actual_home_before_handoff_or_writer() {
+        use std::os::unix::fs::PermissionsExt;
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set(runtime_identity::FILE_SECRETS_ENV, "1");
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path().canonicalize().unwrap();
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let prepared = crate::setup::journey::prepared_media::home_media_fixture(&root);
+        assert_eq!(prepared.home_archive_protocol(), Some(2));
+        let handoffs = root.join("handoffs");
+        std::fs::create_dir(&handoffs).unwrap();
+        env.set("TMPDIR", &handoffs);
+        let image = root.join("image.img");
+        std::fs::write(&image, b"reviewed image bytes").unwrap();
+        let (mut app, _) = seeded_app();
+        app.releases[0].size = std::fs::metadata(&image).unwrap().len();
+        app.releases[0].local_path = image.display().to_string();
+        app.source = Some(app.releases[0].to_source());
+        app = app.with_prepared_media(Some(prepared));
+        app.select_target(0);
+        app.goto(Step::Confirm);
+        app.startup_write_state_reconciled = true;
+        let error = app.begin_write("/dev/sdb", "sdb").unwrap_err();
+        assert_eq!(
+            error,
+            crate::setup::strings::t("imager-setup-home-consumer-unavailable")
+        );
+        assert_eq!(app.step, Step::Confirm);
+        assert!(app.job_control.is_none());
+        assert!(std::fs::read_dir(&handoffs).unwrap().next().is_none());
+        assert_eq!(std::fs::read(image).unwrap(), b"reviewed image bytes");
+        assert_eq!(
+            std::fs::read(root.join("original-home/document")).unwrap(),
+            b"unchanged original document"
+        );
+        assert!(app.prepared_delivery.artifact().is_some());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn media_home_admission_matches_exact_selected_image_and_preserves_fresh_install() {
+        let (mut app, _) = seeded_app();
+        let source = app.source.clone().unwrap();
+        app.require_media_home_protocol(&source, None).unwrap();
+        assert!(app.require_media_home_protocol(&source, Some(2)).is_err());
+        // Proof is selected catalog evidence, never an exporter declaration.
+        app.releases[0].home_archive = Some(crate::setup::home_admission::ConsumerCapability {
+            schema: 1,
+            archive_protocol: 2,
+            seed_protocol: 1,
+            firstboot_user_sha256: "1".repeat(64),
+            seed_helper_sha256: "2".repeat(64),
+            prepared_helper_sha256: "3".repeat(64),
+            tar_sha256: "4".repeat(64),
+        });
+        app.require_media_home_protocol(&source, Some(2)).unwrap();
+        for changed in ["digest", "size", "kind"] {
+            let mut replaced = source.clone();
+            match changed {
+                "digest" => replaced.expected_sha256 = Some("9".repeat(64)),
+                "size" => replaced.size = replaced.size.checked_add(1).unwrap(),
+                _ => replaced.kind = SourceKind::IsoFile,
+            }
+            assert!(app.require_media_home_protocol(&replaced, Some(2)).is_err());
+        }
+        app.releases[0].home_archive.as_mut().unwrap().seed_protocol = 0;
+        assert!(app.require_media_home_protocol(&source, Some(2)).is_err());
+        assert!(app.job_control.is_none());
+    }
+
+    #[cfg(target_os = "linux")]
+    fn guided_profile_media_fixture(
+        root: &std::path::Path,
+    ) -> (
+        std::sync::Arc<crate::setup::journey::prepared_media::PreparedMedia>,
+        crate::setup::prepared_setup::PublicInstallProfile,
+    ) {
+        use crate::setup::{prepared_identity::PreparedIdentity, prepared_setup};
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let identity = PreparedIdentity::create(
+            &root.join("identity"),
+            "Ada",
+            [20, 80, 140],
+            tilo_identity_host::provisioning::IdentityStorage::for_session(),
+        )
+        .unwrap();
+        let mut draft = InstallProfile::default();
+        draft.user.username = "ada".into();
+        draft.user.full_name = "Ada Lovelace".into();
+        draft.hostname = "adas-computer".into();
+        draft.device_label = "Ada’s computer".into();
+        draft.locale = "de_DE.UTF-8".into();
+        draft.keyboard = "de".into();
+        draft.timezone = "Europe/Berlin".into();
+        let public = prepared_setup::PublicInstallProfile::from_draft(&draft).unwrap();
+        let password = "a sufficiently long private password";
+        let prepared =
+            crate::setup::journey::prepared_media::PreparedMedia::prepare_profiled_for_test(
+                &identity,
+                zeroize::Zeroizing::new(password.into()),
+                "guided-usb-profile".into(),
+                public.clone(),
+            )
+            .unwrap();
+        let review = prepared_setup::PreparedSetupReview::open(
+            &prepared.package(),
+            password.as_bytes(),
+            &root.join("review"),
+            &std::sync::atomic::AtomicBool::new(false),
+        )
+        .unwrap();
+        assert_eq!(review.manifest().install_profile.as_ref(), Some(&public));
+        assert_eq!(review.manifest().identity_public_key, identity.public_key());
+        (prepared, public)
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn prepared_guided_drive_continues_with_authenticated_profile_without_customize() {
+        use crate::setup::prepared_setup;
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set(runtime_identity::FILE_SECRETS_ENV, "1");
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().canonicalize().unwrap();
+        let (prepared, public) = guided_profile_media_fixture(&root);
+        let ciphertext = std::fs::read(prepared.package()).unwrap();
+        let mut app = ImagerApp::new().with_prepared_media(Some(prepared.clone()));
+        // A catalog-matched test source and discovered target exercise the same
+        // navigation gate without opening a real device or launching a writer.
+        app.releases = crate::model::sample_releases();
+        app.targets = crate::model::sample_targets();
+        let source = app.releases[0].to_source();
+        assert!(app.source_is_official(&source));
+        let mut state = Imager {
+            source: Some(source.clone()),
+            ..Default::default()
+        };
+        state.profile.hostname = "stale-resource-host".into();
+        state.profile.wifi_ssid = "Chosen network".into();
+        state.profile.enroll_local_identity = true;
+        app.adopt_resource_state(&state);
+        app.goto(Step::Drive);
+        app.select_target(0);
+        app.advance();
+        assert_eq!(app.step, Step::Confirm);
+        assert!(app.customizable());
+        assert!(!app.needs_manual_customization());
+        assert!(app.review_setup().contains("ada on adas-computer"));
+        assert_eq!(
+            app.visible_steps()
+                .iter()
+                .map(Step::title)
+                .collect::<Vec<_>>(),
+            ["Source", "Drive", "Confirm", "Write", "Done"]
+        );
+        assert_eq!(app.stepper_current(), 2);
+        app.go_to_station(2);
+        assert_eq!(app.step, Step::Confirm);
+        app.go_to_station(1);
+        assert_eq!(app.step, Step::Drive);
+        app.advance();
+        app.back();
+        assert_eq!(app.step, Step::Drive);
+        app.advance();
+        assert_eq!(app.step, Step::Confirm);
+        // Resource hydration and direct request formation cannot replace the
+        // authenticated choices with the legacy resource's placeholder values.
+        app.adopt_resource_state(&state);
+        app.profile.hostname = "bad host".into();
+        let request = app
+            .write_request(source, app.target().unwrap().clone(), None)
+            .unwrap();
+        assert_eq!(
+            prepared_setup::PublicInstallProfile::from_draft(&request.profile).unwrap(),
+            public
+        );
+        assert_eq!(
+            request.profile.prepared_setup.as_ref(),
+            Some(prepared.expectation())
+        );
+        assert_eq!(request.profile.wifi_ssid, "Chosen network");
+        assert!(request.profile.enroll_local_identity);
+        assert!(request.profile.user.password.is_empty());
+        assert!(app.job_control.is_none());
+        assert_eq!(std::fs::read(prepared.package()).unwrap(), ciphertext);
+        app.goto(Step::Done);
+        assert_eq!(app.stepper_current(), 4);
+        app.progress.phase = JobPhase::Success;
+        assert_eq!(app.stepper_current(), 5);
+    }
+
     /// Selection, capability, profile validity and confirmation gating.
     #[test]
     #[allow(
@@ -2881,13 +4593,17 @@ mod tests {
             assert_eq!(app.step, Step::Customize);
             assert!(app.status.contains("Hostname"));
 
-            // A direct operation dispatch must repeat the gate rather than relying
-            // only on wizard navigation.
+            // Actual request formation repeats profile validation independently
+            // of an unavailable backend masking the error during UI preflight.
             app.goto(Step::Confirm);
             app.confirm_text = String::from("sdb");
             let error = app
-                .begin_write("/dev/sdb", "sdb")
-                .expect_err("an invalid profile refuses the write");
+                .write_request(
+                    app.source.clone().unwrap(),
+                    app.target().unwrap().clone(),
+                    None,
+                )
+                .expect_err("an invalid profile refuses the write request");
             assert_eq!(app.step, Step::Confirm);
             assert!(app.job_control.is_none());
             assert!(error.contains("Hostname"));
@@ -2926,51 +4642,27 @@ mod tests {
             assert!(app.customizable());
         }
 
-        // Phase `official_installable_write_stages_handoff_instead_of_refusing`.
-        // Catalog-authenticated images used to refuse Wi-Fi / enrollment on
-        // Confirm. They must stage the same handoff local images do; tests
-        // then stop at the disabled write backend, never at an installer-stick
-        // refusal.
-        {
-            let (mut app, _doc) = seeded_app();
-            assert!(app.customizable(), "seeded source is official");
-            assert!(
-                app.offers_write_setup(),
-                "official Confirm must collect Wi-Fi and enrollment"
-            );
-            app.select_target(0);
-            app.goto(Step::Confirm);
-            app.confirm_text = String::from("sdb");
-            app.profile.wifi_ssid = "studio".into();
-            app.wifi_psk = "correct-horse".into();
-            let err = app
-                .begin_write("/dev/sdb", "sdb")
-                .expect_err("privileged writer is off in unit tests");
-            assert!(
-                !err.to_lowercase().contains("installer stick"),
-                "official installable write must not refuse handoff: {err}"
-            );
-            assert!(
-                err.to_lowercase().contains("disabled") || err.to_lowercase().contains("backend"),
-                "expected write-disabled after staging handoff, got: {err}"
-            );
-            assert!(app.job_control.is_none());
-            assert_eq!(app.step, Step::Confirm);
-        }
-
         // Phase `write_refused_without_matching_confirmation`.
         {
             let (mut app, _doc) = seeded_app();
             app.select_target(0); // sdb
             app.goto(Step::Confirm);
             app.confirm_text = String::from("wrong");
-            let error = app
-                .begin_write("/dev/sdb", "wrong")
-                .expect_err("a mistyped device name refuses the write");
+            let request = app
+                .write_request(
+                    app.source.clone().unwrap(),
+                    app.target().unwrap().clone(),
+                    None,
+                )
+                .unwrap();
+            let (start, receiver, control) =
+                crate::write::spawn_job(request, "wrong", crate::write::WriteBackend::Disabled);
+            assert_eq!(start, crate::write::JobStart::ConfirmationMismatch);
+            assert!(receiver.is_none());
+            assert!(control.is_none());
             assert_eq!(app.progress.phase, JobPhase::Idle, "no job started");
             assert!(app.job_control.is_none());
             assert_eq!(app.step, Step::Confirm, "stays on the Confirm station");
-            assert!(error.to_lowercase().contains("confirm"));
         }
     }
 
@@ -3073,6 +4765,60 @@ mod tests {
         assert_eq!(app.profile.wifi_ssid, "studio");
         assert!(app.job_control.is_none());
         assert_eq!(app.step, Step::Confirm);
+    }
+
+    #[test]
+    fn official_installable_request_preserves_real_handoff_and_disabled_writer_gate() {
+        let (mut app, _doc) = seeded_app();
+        assert!(app.customizable(), "selected source is catalog-matched");
+        assert!(app.offers_write_setup(), "official Confirm offers setup");
+        app.select_target(0);
+        app.goto(Step::Confirm);
+        app.profile.wifi_ssid = "studio".into();
+        app.wifi_psk = "correct-horse".into();
+        let mut env = tilo_test_env::ScopedEnv::new();
+        let local_root = tempfile::tempdir().unwrap();
+        let staging = local_root.path().join("staging");
+        std::fs::create_dir(&staging).unwrap();
+        env.set("TMPDIR", &staging);
+        env.set("TEMP", &staging);
+        env.set("TMP", &staging);
+        let identity_dir = local_root.path().join("identity");
+        let system = tilo_user_identity::IdentityPaths::under(local_root.path().join("system"));
+        let home_peers = local_root.path().join("home-peers.json");
+        let local = crate::handoff::LocalIdentity {
+            identity_dir: &identity_dir,
+            system: &system,
+            home_peers: &home_peers,
+        };
+        let staged = crate::handoff::stage_setup_handoff(&app.profile, &app.wifi_psk, &local)
+            .expect("official install profile must allow real Wi-Fi handoff")
+            .expect("a selected network produces actual staged data");
+        let network = staged
+            .path()
+            .join("etc/NetworkManager/system-connections/tilo-setup.nmconnection");
+        let contents = std::fs::read_to_string(&network).unwrap();
+        assert!(contents.contains("ssid=\"studio\""));
+        assert!(contents.contains("psk=\"correct-horse\""));
+        let request = app
+            .write_request(
+                app.source.clone().unwrap(),
+                app.target().unwrap().clone(),
+                Some(staged.root.clone()),
+            )
+            .unwrap();
+        assert!(request.source.installable);
+        assert_eq!(request.profile.wifi_ssid, "studio");
+        assert_eq!(request.handoff_stage.as_deref(), Some(staged.path()));
+        let (start, receiver, control) =
+            crate::write::spawn_job(request, "sdb", crate::write::WriteBackend::Disabled);
+        assert_eq!(start, crate::write::JobStart::WriteDisabled);
+        assert!(receiver.is_none());
+        assert!(control.is_none());
+        assert!(app.job_control.is_none());
+        assert_eq!(app.step, Step::Confirm);
+        assert_eq!(std::fs::read_to_string(network).unwrap(), contents);
+        std::fs::remove_dir_all(staged.root).unwrap();
     }
 
     /// Release download job presentation.
@@ -3378,6 +5124,371 @@ mod tests {
         }
     }
 
+    #[test]
+    fn capture_progress_owns_worker_until_actual_host_teardown() {
+        let mut host = ui::framework::testing::TestApp::<crate::resource::ImagerShell>::capture_at(
+            Some("progress"),
+            (1180, 820),
+        )
+        .unwrap();
+        let control = host
+            .surface_mut::<ImagerApp>()
+            .job_control
+            .as_ref()
+            .expect("progress capture owns its worker")
+            .clone();
+        assert!(!control.is_cancelled());
+        assert!(!control.observed_stopped());
+        host.harness().close_components();
+        assert!(control.is_cancelled());
+        assert!(control.observed_stopped(), "actual worker must be joined");
+        assert!(!control.observed_failure());
+        assert!(!host.harness().component_close_reports().is_empty());
+        assert!(
+            host.harness()
+                .component_close_reports()
+                .iter()
+                .all(|report| {
+                    report.view_error.is_none()
+                        && report.record_error.is_none()
+                        && report.teardown_error.is_none()
+                })
+        );
+
+        let unbound = JobControl::new();
+        unbound.cancel();
+        assert!(unbound.wait_stopped().is_err());
+        assert!(!unbound.observed_stopped());
+    }
+
+    struct HeldWriterJobsApp;
+    impl ui::framework::ResourceApp for HeldWriterJobsApp {
+        type Resource = Imager;
+        const ID: &'static str = "so.tilo.imager";
+        const TITLE: &'static str = "Disk Imager";
+        fn view(cx: &mut ui::framework::ViewCx<Imager>) -> ui::widget::Element {
+            cx.surface(ImagerApp::sample())
+        }
+    }
+
+    fn held_semantic_job_fixture(cancel: bool, panic_after_success: bool) {
+        use std::{
+            sync::mpsc,
+            time::{Duration, Instant},
+        };
+        let mut host = ui::framework::testing::TestApp::<HeldWriterJobsApp>::new().unwrap();
+        let (release, held) = mpsc::sync_channel(1);
+        let (ready, started) = mpsc::sync_channel(1);
+        let (send, events) = mpsc::channel();
+        let control = JobControl::owned_fixture(std::thread::spawn(move || {
+            send.send(Progress {
+                phase: JobPhase::Success,
+                write_frac: 1.0,
+                verify_frac: 1.0,
+                ..Progress::default()
+            })
+            .unwrap();
+            ready.send(()).unwrap();
+            held.recv_timeout(Duration::from_secs(5)).unwrap();
+            assert!(!panic_after_success, "fixture panic after queued success");
+        }));
+        started.recv_timeout(Duration::from_secs(2)).unwrap();
+        let jobs = {
+            let app = host.surface_mut::<ImagerApp>();
+            app.goto(Step::Write);
+            app.job_control = Some(control.clone());
+            let jobs = app.jobs.clone().expect("canonical surface jobs");
+            ImagerApp::start_write_job(&jobs, events, control.clone(), 4096);
+            jobs
+        };
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            host.settle();
+            if jobs
+                .progress(WRITE_JOB)
+                .is_some_and(|progress| progress.phase == JobPhase::Success.key())
+            {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "terminal progress was not delivered"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(
+            jobs.is_running(WRITE_JOB),
+            "semantic job completed from progress alone"
+        );
+        assert!(!control.observed_stopped());
+        assert!(host.surface_mut::<ImagerApp>().job_control.is_some());
+        assert_eq!(host.surface_mut::<ImagerApp>().step, Step::Write);
+        if cancel {
+            control.cancel();
+        }
+        assert!(
+            jobs.is_running(WRITE_JOB),
+            "cancellation request was treated as native completion"
+        );
+        release.send(()).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while jobs.is_running(WRITE_JOB) {
+            host.settle();
+            assert!(
+                Instant::now() < deadline,
+                "semantic job did not observe writer exit"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(control.observed_stopped());
+        assert_eq!(control.observed_failure(), panic_after_success);
+        assert_eq!(
+            control.wait_stopped().is_err(),
+            panic_after_success,
+            "async native join failure was lost"
+        );
+        let app = host.surface_mut::<ImagerApp>();
+        assert!(app.job_control.is_none());
+        assert_eq!(
+            app.progress.phase,
+            if cancel || panic_after_success {
+                JobPhase::Failed
+            } else {
+                JobPhase::Success
+            }
+        );
+        assert_eq!(app.step, Step::Done);
+        if panic_after_success {
+            assert_eq!(
+                app.progress.error.as_deref(),
+                Some(crate::setup::strings::t("imager-write-worker-stopped").as_str())
+            );
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn paint_original_preparation_refusal(
+        host: &mut ui::framework::testing::TestApp<HeldWriterJobsApp>,
+    ) {
+        for (tag, theme) in [
+            ("dark", Theme::dark()),
+            ("light", Theme::light()),
+            ("high-contrast", Theme::high_contrast()),
+        ] {
+            for (viewport, scale) in [((480, 800), 1.0), ((1180, 820), 1.0), ((2560, 1440), 2.0)] {
+                host.harness()
+                    .set_theme(theme.clone().with_ui_scale(scale).with_reduce_motion(true));
+                host.harness().resize(viewport).unwrap();
+                let targets = host.harness().targets();
+                assert!(targets.contains_key("imager.prepare-original-files"));
+                assert!(!targets.contains_key("imager.confirm"));
+                assert!(!targets.contains_key("imager.write"));
+                let pixels = host.harness().render_rgba();
+                assert_eq!(pixels.len(), viewport.0 as usize * viewport.1 as usize * 4);
+                let ground = &pixels[..4];
+                assert!(
+                    pixels
+                        .chunks_exact(4)
+                        .filter(|pixel| *pixel != ground)
+                        .count()
+                        > 200
+                );
+                if let Some(directory) = std::env::var_os("TILO_UI_SCREENSHOT_DIR") {
+                    let directory =
+                        std::path::PathBuf::from(directory).join("installer-usb-preparation");
+                    std::fs::create_dir_all(&directory).unwrap();
+                    host.harness().render_png(&directory.join(format!(
+                        "original-preparation-refused-{tag}-{}x{}.png",
+                        viewport.0, viewport.1
+                    )));
+                }
+            }
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn original_preparation_uses_headless_action_and_blocks_unprepared_write() {
+        use std::os::unix::fs::PermissionsExt;
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().canonicalize().unwrap();
+        let home = root.join("home");
+        std::fs::create_dir(&home).unwrap();
+        std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let mut host = ui::framework::testing::TestApp::<HeldWriterJobsApp>::new().unwrap();
+        {
+            let app = host.surface_mut::<ImagerApp>();
+            app.original_source = Some(
+                crate::setup::journey::portable_source::OriginalSource::granted_folder_fixture(
+                    &home,
+                ),
+            );
+            app.selected = Some(0);
+            app.goto(Step::Confirm);
+            assert!(!app.original_files_ready());
+            assert!(!app.can_advance_with_writer(Step::Confirm, true));
+            // The canonical writer entry refuses before profile staging or
+            // spawning, including a direct semantic call that bypasses a button.
+            assert_eq!(
+                app.begin_write("/dev/unknown", "unknown"),
+                Err(crate::setup::strings::t("installer-original-not-prepared"))
+            );
+        }
+        host.settle();
+        // Entering Confirm attempts the nondestructive semantic preparation;
+        // this unsupported fixture refuses without showing an erase control.
+        let targets = host.harness().targets();
+        assert!(targets.contains_key("imager.prepare-original-files"));
+        assert!(!targets.contains_key("imager.confirm"));
+        assert!(!targets.contains_key("imager.write"));
+        let door = host.agent_surface();
+        assert!(
+            door.as_array()
+                .unwrap()
+                .iter()
+                .any(|row| row["action"] == ImagerEffect::PREPARE_OFFLINE_MIGRATION.id)
+        );
+        let (device, confirmation) = {
+            let app = host.surface_mut::<ImagerApp>();
+            assert_eq!(app.step, Step::Confirm);
+            assert!(!app.original_files_preparing());
+            assert!(app.status_is_error);
+            assert!(!app.status.is_empty());
+            let target = app.target().unwrap();
+            (target.dev_path(), target.name.clone())
+        };
+        // Even a correct erasedrive name cannot substitute for authenticated
+        // preparation, and the public write effect must refuse this fixture.
+        {
+            let app = host.surface_mut::<ImagerApp>();
+            app.confirm_text = confirmation.clone();
+            assert!(app.confirm_matches());
+            assert!(!app.can_advance_with_writer(Step::Confirm, true));
+            assert_eq!(
+                app.begin_write(&device, &confirmation),
+                Err(crate::setup::strings::t("installer-original-not-prepared"))
+            );
+        }
+        assert!(
+            host.effect(&ImagerEffect::Write {
+                device: device.clone(),
+                confirmation
+            })
+            .is_err()
+        );
+        assert!(
+            host.effect(&ImagerEffect::PrepareOfflineMigration { device })
+                .is_err()
+        );
+        // The same preparation action is present on the headless public door;
+        // missing authenticated parent custody must refuse, never prompt root.
+        assert!(
+            host.effect(&ImagerEffect::PrepareOfflineMigration {
+                device: "/dev/unknown".into()
+            })
+            .is_err()
+        );
+        for _ in 0..2 {
+            host.harness()
+                .perform_named("imager.prepare-original-files", &ui::a11y::Action::Activate)
+                .unwrap();
+            host.settle();
+            let targets = host.harness().targets();
+            assert!(targets.contains_key("imager.prepare-original-files"));
+            assert!(!targets.contains_key("imager.confirm"));
+            assert!(!targets.contains_key("imager.write"));
+            let app = host.surface_mut::<ImagerApp>();
+            assert!(!app.original_files_ready());
+            assert!(!app.original_files_preparing());
+            assert!(app.status_is_error);
+            assert!(!app.status.is_empty());
+            assert_eq!(app.status_value()["message"], app.status);
+            assert!(!app.prepared_delivery.requires_offline_export());
+            assert!(!app.prepared_delivery.awaiting_original_boot());
+            assert!(app.prepared_delivery.artifact().is_none());
+        }
+        let reason = host.surface_mut::<ImagerApp>().status.clone();
+        assert_eq!(
+            reason,
+            crate::setup::strings::t("installer-media-capacity-not-ready")
+        );
+        let inspection = host.harness().inspection_json().unwrap();
+        assert!(inspection.contains(&serde_json::to_string(&reason).unwrap()));
+        assert!(inspection.contains(&crate::setup::strings::t(
+            "installer-original-failed-heading"
+        )));
+        assert!(!inspection.contains(&crate::setup::strings::t(
+            "installer-original-preparing-body"
+        )));
+        paint_original_preparation_refusal(&mut host);
+        let app = host.surface_mut::<ImagerApp>();
+        assert_eq!(app.step, Step::Confirm);
+        assert!(app.job_control.is_none());
+        assert!(app.offline_media_review.is_none());
+        assert!(!app.original_files_preparing());
+    }
+
+    #[test]
+    fn semantic_write_job_stays_running_after_terminal_event_until_owned_exit() {
+        held_semantic_job_fixture(false, false);
+        held_semantic_job_fixture(true, false);
+    }
+
+    #[test]
+    fn semantic_write_job_reports_native_panic_after_queued_success() {
+        held_semantic_job_fixture(false, true);
+    }
+
+    #[test]
+    fn terminal_progress_defers_close_until_owned_writer_exits() {
+        use std::{
+            sync::mpsc,
+            time::{Duration, Instant},
+        };
+        use ui::component_lifecycle::ComponentLifecycle;
+        let (release, held) = mpsc::sync_channel(1);
+        let control = JobControl::owned_fixture(std::thread::spawn(move || {
+            held.recv_timeout(Duration::from_secs(5)).unwrap();
+        }));
+        let (mut app, _) = seeded_app();
+        app.goto(Step::Write);
+        app.job_control = Some(control.clone());
+        app.finish_write(Some(Progress {
+            phase: JobPhase::Success,
+            ..Progress::default()
+        }));
+        assert_eq!(
+            app.step,
+            Step::Write,
+            "terminal progress released the writer"
+        );
+        let started = Instant::now();
+        assert!(matches!(
+            app.on_window_close_requested(),
+            ui::widget::WindowCloseAdmission::Defer
+        ));
+        assert!(started.elapsed() < Duration::from_millis(500));
+        assert!(control.is_cancelled());
+        assert!(!app.take_window_close_intent());
+        assert!(app.writer_refusal().is_err());
+        release.send(()).unwrap();
+        control.wait_stopped().unwrap();
+        app.drain_job();
+        assert!(app.job_control.is_none());
+        assert_eq!(
+            app.progress.phase,
+            JobPhase::Failed,
+            "cancelled close raced into success"
+        );
+        assert!(!app.close_work_active());
+        // Exercise the real retained sync and one-shot close admission.
+        let doc = document(&Imager::default());
+        present(&mut app, &doc);
+        assert!(app.take_window_close_intent());
+        present(&mut app, &doc);
+        assert!(!app.take_window_close_intent());
+    }
+
     /// Write another, failure, cancellation and cancel races.
     #[test]
     #[allow(
@@ -3413,7 +5524,7 @@ mod tests {
                 rate_bps: 0,
                 error: None,
             };
-            app.job_control = Some(JobControl::new());
+            app.job_control = Some(JobControl::finished_fixture());
             app.finish_write(Some(Progress {
                 phase: JobPhase::Failed,
                 write_frac: 0.4,
@@ -3479,7 +5590,7 @@ mod tests {
             assert!((app.progress.write_frac - 1.0).abs() < 1e-9);
             assert!((app.progress.verify_frac - 0.5).abs() < 1e-9);
 
-            app.job_control = Some(JobControl::new());
+            app.job_control = Some(JobControl::finished_fixture());
             app.finish_write(None);
             assert_eq!(app.progress.phase, JobPhase::Failed);
             assert!(app.status.contains("stopped unexpectedly"));
@@ -3489,7 +5600,7 @@ mod tests {
         // Phase `cancel_wins_a_race_with_an_already_queued_success`.
         {
             let (mut app, _doc) = seeded_app();
-            let control = JobControl::new();
+            let control = JobControl::finished_fixture();
             control.cancel();
             app.job_control = Some(control);
             app.progress.phase = JobPhase::Verifying;

@@ -223,6 +223,7 @@ struct ParamOptions {
     name: Option<String>,
     example: Option<Expr>,
     content: bool,
+    secret: bool,
     flatten: bool,
     /// A place inside the record (`#[param(place)] at: Option<Place>`).
     place: bool,
@@ -256,9 +257,22 @@ impl syn::parse::Parse for ParamOptions {
             input.parse::<Token![,]>()?;
         }
         while !input.is_empty() {
+            if input.peek(syn::LitStr) {
+                let text = input.parse::<syn::LitStr>()?;
+                if options.description.replace(text.value()).is_some() {
+                    return Err(syn::Error::new(text.span(), "one parameter description"));
+                }
+                if input.is_empty() {
+                    break;
+                }
+                input.parse::<Token![,]>()?;
+                continue;
+            }
             let key: syn::Ident = input.parse()?;
-            if key == "content" || key == "flatten" || key == "place" {
-                if key == "content" {
+            if key == "content" || key == "flatten" || key == "place" || key == "secret" {
+                if key == "secret" {
+                    options.secret = true;
+                } else if key == "content" {
                     options.content = true;
                 } else if key == "place" {
                     options.place = true;
@@ -282,7 +296,7 @@ impl syn::parse::Parse for ParamOptions {
             } else {
                 return Err(syn::Error::new(
                     key.span(),
-                    "expected `\"description\"`, `name = \"...\"`, `example = ...`, `place = \"field\"`, `content`, `place` or `flatten`",
+                    "expected `\"description\"`, `name = \"...\"`, `example = ...`, `place = \"field\"`, `content`, `place`, `flatten` or `secret`",
                 ));
             }
             if input.is_empty() {
@@ -301,6 +315,8 @@ struct Param {
     by_ref: bool,
     description: String,
     example: Option<Expr>,
+    /// The host must retain the secret argument variant and redact diagnostics.
+    secret: bool,
     /// What part the parameter plays beyond carrying a value.
     role: Role,
     /// The collection a place parameter's items come from, when named.
@@ -367,6 +383,18 @@ struct Verb {
 /// The rules a verb's parameters keep: a content or flattened parameter is
 /// the only one.
 fn check_params(params: &[Param], span: Span) -> syn::Result<()> {
+    for param in params.iter().filter(|param| param.secret) {
+        if param.role != Role::Plain
+            || !last_ident(crate::schema_param_type(&param.ty))
+                .is_some_and(|(name, _)| name == "String")
+            || param.example.is_some()
+        {
+            return Err(syn::Error::new(
+                span,
+                "a secret parameter is String or Option<String>, without a public example, content, place or flatten",
+            ));
+        }
+    }
     if params.iter().any(|param| param.role == Role::Content)
         && !(params.len() == 1
             && params.first().is_some_and(|param| {
@@ -421,6 +449,7 @@ fn item_param(ident: &syn::Ident) -> Param {
         by_ref: true,
         description: format!("The {} it acts on", humanize(&name)),
         example: None,
+        secret: false,
         role: Role::Plain,
         place_in: None,
     }
@@ -504,6 +533,7 @@ fn read_verb(method: &mut syn::ImplItemFn, attr: &Attribute) -> syn::Result<Verb
                     by_ref,
                     description: param_options.description.unwrap_or_else(|| humanize(&name)),
                     example: param_options.example,
+                    secret: param_options.secret,
                     role,
                     place_in: param_options.place_in,
                 });
@@ -537,15 +567,19 @@ fn param_decl(param: &Param, krate: &Tokens) -> Tokens {
     let description = &param.description;
     let flat = param.role == Role::Flatten;
     let (known, optional) = crate::known_param_type(ty);
-    let param_ty = known.map_or_else(
-        || {
-            let schema_ty = crate::schema_param_type(ty);
-            quote!(#krate::__private::ParamTypeOf::Schema(
-                <#schema_ty as #krate::JsonSchema>::json_schema
-            ))
-        },
-        |known| quote!(#krate::__private::ParamTypeOf::Known(#known)),
-    );
+    let param_ty = if param.secret {
+        quote!(#krate::__private::ParamTypeOf::Known(#krate::__private::ParamType::Secret))
+    } else {
+        known.map_or_else(
+            || {
+                let schema_ty = crate::schema_param_type(ty);
+                quote!(#krate::__private::ParamTypeOf::Schema(
+                    <#schema_ty as #krate::JsonSchema>::json_schema
+                ))
+            },
+            |known| quote!(#krate::__private::ParamTypeOf::Known(#known)),
+        )
+    };
     let example = param.example.as_ref().map_or_else(
         || quote!(::core::option::Option::None),
         |example| {

@@ -19,6 +19,7 @@ fn refused(message: &str) -> io::Error {
 pub struct ExecutingPeer {
     credentials: UCred,
     pidfd: OwnedFd,
+    supplementary_groups: io::Result<Vec<u32>>,
 }
 impl AsFd for ExecutingPeer {
     fn as_fd(&self) -> std::os::fd::BorrowedFd<'_> {
@@ -26,6 +27,26 @@ impl AsFd for ExecutingPeer {
     }
 }
 impl ExecutingPeer {
+    /// UID/GID are from the already matched kernel sender/socket creator.
+    #[must_use]
+    pub fn uid(&self) -> u32 {
+        self.credentials.uid.as_raw()
+    }
+    #[must_use]
+    pub fn gid(&self) -> u32 {
+        self.credentials.gid.as_raw()
+    }
+    /// Kernel socket-creator supplementary groups, never a destination NSS lookup.
+    #[must_use]
+    pub fn supplementary_groups(&self) -> io::Result<&[u32]> {
+        self.supplementary_groups.as_deref().map_err(|error| {
+            io::Error::new(
+                error.kind(),
+                "native supplementary group evidence unavailable",
+            )
+        })
+    }
+
     /// Kernel process ID, meaningful only while the retained pidfd is current.
     #[must_use]
     pub fn pid(&self) -> u32 {
@@ -42,6 +63,78 @@ impl ExecutingPeer {
         // SAFETY: one initialized pollfd and an owned pidfd; nonblocking query.
         unsafe { libc::poll(&raw mut poll, 1, 0) == 0 }
     }
+    /// Borrow the exact attested kernel handle for private proof transport.
+    /// This conveys process identity, never role or filesystem authority.
+    #[must_use]
+    pub fn pidfd(&self) -> std::os::fd::BorrowedFd<'_> {
+        self.pidfd.as_fd()
+    }
+
+    /// Match a privately transferred kernel pidfd to this authenticated task.
+    /// This checks kernel fdinfo and liveness, never a serialized PID claim.
+    /// # Errors
+    /// Refuses non-pidfds, exited or different tasks, and unavailable evidence.
+    pub fn matches_transferred_pidfd(
+        &self,
+        descriptor: std::os::fd::BorrowedFd<'_>,
+    ) -> io::Result<()> {
+        let start = self.start_time()?;
+        let mut poll = libc::pollfd {
+            fd: descriptor.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        if unsafe { libc::poll(&raw mut poll, 1, 0) } != 0 {
+            return Err(refused("transferred task stopped or unavailable"));
+        }
+        let mut bytes = Vec::new();
+        std::fs::File::open(format!("/proc/self/fdinfo/{}", descriptor.as_raw_fd()))?
+            .take(4097)
+            .read_to_end(&mut bytes)?;
+        if bytes.len() > 4096 {
+            return Err(refused("transferred kernel facts exceed bound"));
+        }
+        let facts = std::str::from_utf8(&bytes)
+            .map_err(|_| refused("transferred kernel facts malformed"))?;
+        let mut process = None;
+        for line in facts.lines() {
+            if let Some(value) = line.strip_prefix("Pid:") {
+                if process.is_some() {
+                    return Err(refused("duplicate transferred kernel process"));
+                }
+                process = Some(
+                    value
+                        .trim()
+                        .parse::<u32>()
+                        .map_err(|_| refused("transferred process unavailable"))?,
+                );
+            }
+        }
+        if process != Some(self.pid())
+            || unsafe { libc::poll(&raw mut poll, 1, 0) } != 0
+            || self.start_time()? != start
+        {
+            return Err(refused("transferred pidfd differs from authenticated task"));
+        }
+        Ok(())
+    }
+
+    /// Read the pinned live task's kernel launch time; refuse unavailable facts.
+    ///
+    /// # Errors
+    /// Returns permission denied if the task exited or its facts cannot be read.
+    pub fn start_time(&self) -> io::Result<u64> {
+        if !self.current() {
+            return Err(refused("executing task exited"));
+        }
+        let (_, start) =
+            process_stat(self.pid()).ok_or_else(|| refused("task facts unavailable"))?;
+        if !self.current() {
+            return Err(refused("executing task exited"));
+        }
+        Ok(start)
+    }
+
     /// Retain the kernel handle after the host has admitted its process facts.
     #[must_use]
     pub fn into_pidfd(self) -> OwnedFd {
@@ -101,7 +194,15 @@ impl ExecutingPeer {
 
 /// Kernel ancestry and start time, not an application-provided process claim.
 fn process_stat(pid: u32) -> Option<(u32, u64)> {
-    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    let mut stat = String::new();
+    std::fs::File::open(format!("/proc/{pid}/stat"))
+        .ok()?
+        .take(4097)
+        .read_to_string(&mut stat)
+        .ok()?;
+    if stat.len() > 4096 {
+        return None;
+    }
     let fields: Vec<_> = stat.rsplit_once(") ")?.1.split_whitespace().collect();
     if fields.first() == Some(&"Z") {
         return None;
@@ -219,11 +320,34 @@ pub fn receive(socket: &impl AsFd, challenge: &[u8; 32], uid: u32) -> io::Result
     }
 }
 
+/// Pin an executing non-root task for a root-owned private authentication
+/// exchange whose identity is verified separately. This observes kernel facts
+/// only: it grants no file access, session, package or identity authority.
+/// Unlike `receive`, its caller must verify the returned task against the
+/// installed certified session before admitting any operation.
+/// # Errors
+/// Refuses a non-root controller, root sender, malformed frame or dead task.
+pub fn receive_nonroot_for_authentication(
+    socket: &impl AsFd,
+    challenge: &[u8; 32],
+) -> io::Result<ExecutingPeer> {
+    if unsafe { libc::getuid() } != 0 || unsafe { libc::geteuid() } != 0 {
+        return Err(refused("native unclassified authentication requires root"));
+    }
+    let mut receiver = Receiver::new(*challenge, 0);
+    receiver.uid = None;
+    loop {
+        if let Some(peer) = receiver.receive(socket)? {
+            return Ok(peer);
+        }
+    }
+}
+
 /// Bounded incremental receiver, suitable for a reactor-owned nonblocking socket.
 /// An incomplete frame retains only its own proof descriptor until dropped.
 pub struct Receiver {
     challenge: [u8; 32],
-    uid: u32,
+    uid: Option<u32>,
     answer: [u8; 32],
     offset: usize,
     sender: Option<UCred>,
@@ -235,7 +359,7 @@ impl Receiver {
     pub fn new(challenge: [u8; 32], uid: u32) -> Self {
         Self {
             challenge,
-            uid,
+            uid: Some(uid),
             answer: [0; 32],
             offset: 0,
             sender: None,
@@ -258,8 +382,9 @@ impl Receiver {
         let credentials = chunk
             .credentials
             .ok_or_else(|| refused("native proof has no kernel sender"))?;
-        if credentials.uid.as_raw() != self.uid
-            || self.sender.is_some_and(|sender| sender != credentials)
+        if self.uid.map_or(credentials.uid.as_raw() == 0, |uid| {
+            credentials.uid.as_raw() != uid
+        }) || self.sender.is_some_and(|sender| sender != credentials)
         {
             return Err(refused(
                 "native proof sender changed or belongs to another user",
@@ -322,7 +447,10 @@ fn pin_sender(proof: OwnedFd, sender: UCred) -> io::Result<ExecutingPeer> {
     }
     // SAFETY: successful SO_PEERPIDFD transfers this fresh descriptor.
     let pidfd = unsafe { OwnedFd::from_raw_fd(fd) };
-    // The kernel task is pinned now; the temporary proof is no longer needed.
+    // Optional evidence for the source-certification caller. An unsupported
+    // group query never rejects unrelated existing native app admission.
+    let supplementary_groups = peer_groups(&proof);
+    // The kernel task and original socket-creator credentials are pinned now.
     drop(proof);
     if length as usize != std::mem::size_of::<libc::c_int>() {
         return Err(refused("native peer pidfd length mismatch"));
@@ -330,11 +458,45 @@ fn pin_sender(proof: OwnedFd, sender: UCred) -> io::Result<ExecutingPeer> {
     let peer = ExecutingPeer {
         credentials: sender,
         pidfd,
+        supplementary_groups,
     };
     if !peer.current() {
         return Err(refused("native executing process exited before binding"));
     }
     Ok(peer)
+}
+
+fn peer_groups(proof: &OwnedFd) -> io::Result<Vec<u32>> {
+    let mut groups = vec![0u32; 65_536];
+    let mut length = libc::socklen_t::try_from(groups.len() * std::mem::size_of::<u32>())
+        .map_err(io::Error::other)?;
+    // SAFETY: owned proof socket and live bounded buffer. SO_PEERGROUPS returns
+    // the socket creator's immutable kernel credentials, not NSS or request IDs.
+    let result = unsafe {
+        libc::getsockopt(
+            proof.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_PEERGROUPS,
+            groups.as_mut_ptr().cast(),
+            &raw mut length,
+        )
+    };
+    if result != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let length = usize::try_from(length).map_err(io::Error::other)?;
+    if length > groups.len() * std::mem::size_of::<u32>()
+        || !length.is_multiple_of(std::mem::size_of::<u32>())
+    {
+        return Err(refused("native supplementary group length mismatch"));
+    }
+    groups.truncate(length / std::mem::size_of::<u32>());
+    if groups.contains(&u32::MAX) {
+        return Err(refused("native supplementary group is invalid"));
+    }
+    groups.sort_unstable();
+    groups.dedup();
+    Ok(groups)
 }
 
 #[cfg(test)]

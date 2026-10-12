@@ -15,6 +15,11 @@ name = "runtime_dylib"
 path = "src/lib.rs"
 crate-type = ["dylib"]
 
+# Executed against this actual thin SDK by the signed runtime publisher.
+[[bin]]
+name = "tilo-runtime-account-capability"
+path = "src/bin/tilo-runtime-account-capability.rs"
+
 # What belongs here: the SDK an app links (the toolkit, `tilo-app`, the CLI
 # kit), crates several shipped apps share, and, until each moves to an engine
 # library of its own, engines too heavy for the one app that uses them to

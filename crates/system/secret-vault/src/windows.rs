@@ -77,6 +77,16 @@ fn transform(entropy: &[u8], bytes: &[u8], protect: bool) -> io::Result<Zeroizin
     }))
 }
 
+pub(super) fn read_existing_key(
+    format: &VaultFormat,
+    dir: &Path,
+) -> io::Result<Zeroizing<[u8; KEY_LEN]>> {
+    decode_key(
+        format.dpapi_entropy,
+        &read_private(&dir.join("vault.key.dpapi"))?,
+    )
+}
+
 fn read_private(path: &Path) -> io::Result<Zeroizing<Vec<u8>>> {
     let mut bytes = Zeroizing::new(Vec::new());
     private_fs::read(path)?

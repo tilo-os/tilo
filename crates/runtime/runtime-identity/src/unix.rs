@@ -197,6 +197,7 @@ pub struct IdentitySummary {
 /// certified device key for signatures.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct IdentityMetadata {
+    pub profile_photo: Option<crate::ProfilePhoto>,
     pub display_name: String,
     pub avatar_color: [u8; 3],
     pub group_public_key: [u8; 32],
@@ -241,6 +242,33 @@ fn valid_identity_id(id: &str) -> bool {
                 || b.is_ascii_digit() && i > 0
                 || matches!(b, b'_' | b'-') && i > 0
         })
+}
+
+/// Strictly interpret an already held active-selector record. Only absence
+/// permits the legacy primary record; corruption is never a new identity choice.
+///
+/// # Errors
+/// Refuses oversized, non-UTF8 or invalid canonical identity identifiers.
+pub fn selected_identity_id_from_bytes(bytes: Option<&[u8]>) -> io::Result<String> {
+    let Some(bytes) = bytes else {
+        return Ok("primary".to_owned());
+    };
+    if bytes.len() > 128 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Identity selector exceeds its bound",
+        ));
+    }
+    let id = std::str::from_utf8(bytes)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "Identity selector is not UTF-8"))?
+        .trim();
+    if !valid_identity_id(id) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Identity selector is invalid",
+        ));
+    }
+    Ok(id.to_owned())
 }
 
 fn identity_path(dir: &std::path::Path, id: &str) -> io::Result<PathBuf> {
@@ -621,6 +649,7 @@ fn secure_record_with_provider_unlocked(
     // record. The key buffer is zeroized after the provider consumes it.
     identity_from_record(
         ondisk::IdentityRecord {
+            profile_photo: record.profile_photo.clone(),
             display_name: record.display_name.clone(),
             avatar_color: record.avatar_color,
             threshold_identity: ondisk::SerializableIdentity {
@@ -689,6 +718,135 @@ pub fn set_active_identity(dir: &std::path::Path, id: &str) -> io::Result<()> {
         )
     })?;
     write_private_atomic(&dir.join(ACTIVE_FILE), format!("{id}\n").as_bytes())
+}
+
+/// Change an owned identity's public profile without replacing its signing key
+/// or provider custody. The lifecycle lock and private atomic publication are
+/// shared with import, activation and removal.
+///
+/// # Errors
+///
+/// Refuses an invalid id/name, unavailable identity custody, unsafe metadata,
+/// or a failed private publication. No secret is exported to the caller.
+pub fn update_identity_profile(
+    dir: &std::path::Path,
+    id: &str,
+    display_name: &str,
+    avatar_color: [u8; 3],
+) -> io::Result<IdentityMetadata> {
+    let display_name = display_name.trim();
+    if display_name.is_empty()
+        || display_name.len() > 1024
+        || display_name.chars().any(char::is_control)
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "identity display name must be nonempty, bounded and free of control characters",
+        ));
+    }
+    let _lock = IdentityLock::acquire(dir)?;
+    let path = identity_path(dir, id)?;
+    secure_record_unlocked(dir, &path)?;
+    let mut record = read_record(&path)?;
+    if !record.threshold_identity.secret_bytes.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "identity profile updates require secured metadata",
+        ));
+    }
+    display_name.clone_into(&mut record.display_name);
+    record.avatar_color = avatar_color;
+    let bytes = serde_json::to_vec(&record)?;
+    if bytes.len() as u64 > MAX_RECORD_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "identity profile exceeds the metadata size bound",
+        ));
+    }
+    write_private_atomic(&path, &bytes)?;
+    load_metadata_from_path(&path)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))
+}
+
+/// Publish name, colour and canonical pixels together under the identity lifecycle
+/// lock, preserving signing/provider custody. A failed durability acknowledgement
+/// must still be treated as a failed save by the caller.
+///
+/// # Errors
+/// Refuses invalid presentation, unavailable custody or failed publication.
+pub fn update_identity_presentation(
+    dir: &std::path::Path,
+    id: &str,
+    display_name: &str,
+    avatar_color: [u8; 3],
+    photo: Option<crate::ProfilePhoto>,
+) -> io::Result<IdentityMetadata> {
+    let display_name = display_name.trim();
+    if display_name.is_empty()
+        || display_name.len() > 1024
+        || display_name.chars().any(char::is_control)
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "identity display name must be nonempty, bounded and free of control characters",
+        ));
+    }
+    let _lock = IdentityLock::acquire(dir)?;
+    let path = identity_path(dir, id)?;
+    secure_record_unlocked(dir, &path)?;
+    let mut record = read_record(&path)?;
+    if !record.threshold_identity.secret_bytes.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "identity profile updates require secured metadata",
+        ));
+    }
+    display_name.clone_into(&mut record.display_name);
+    record.avatar_color = avatar_color;
+    record.profile_photo = photo;
+    let bytes = serde_json::to_vec(&record)?;
+    if bytes.len() as u64 > MAX_RECORD_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "identity profile exceeds the metadata size bound",
+        ));
+    }
+    write_private_atomic(&path, &bytes)?;
+    load_metadata_from_path(&path)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))
+}
+
+/// Change the canonical public photo while preserving identity and provider custody.
+/// `None` restores the initials/colour presentation. The caller must normalize
+/// a consented source image before constructing the bounded `ProfilePhoto`.
+///
+/// # Errors
+/// Refuses unsafe identity paths, unavailable custody or a failed private publication.
+pub fn update_identity_photo(
+    dir: &std::path::Path,
+    id: &str,
+    photo: Option<crate::ProfilePhoto>,
+) -> io::Result<IdentityMetadata> {
+    let _lock = IdentityLock::acquire(dir)?;
+    let path = identity_path(dir, id)?;
+    secure_record_unlocked(dir, &path)?;
+    let mut record = read_record(&path)?;
+    if !record.threshold_identity.secret_bytes.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "photo updates require secured metadata",
+        ));
+    }
+    record.profile_photo = photo;
+    let bytes = serde_json::to_vec(&record)?;
+    if bytes.len() as u64 > MAX_RECORD_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "identity metadata exceeds its bound",
+        ));
+    }
+    write_private_atomic(&path, &bytes)?;
+    load_metadata_from_path(&path).map_err(|error| io::Error::other(error.to_string()))
 }
 
 /// Remove a non-active identity.  The active identity and final remaining
@@ -761,6 +919,8 @@ mod ondisk {
 
     #[derive(Debug, Deserialize, Serialize)]
     pub struct IdentityRecord {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub profile_photo: Option<crate::ProfilePhoto>,
         pub display_name: String,
         pub avatar_color: [u8; 3],
         pub threshold_identity: SerializableIdentity,
@@ -947,6 +1107,7 @@ impl LoadFailure {
 /// **Never** serialise or log this struct — it holds the raw Ed25519
 /// secret. `Debug` deliberately omits `signing_key`.
 pub struct SigningIdentity {
+    profile_photo: Option<crate::ProfilePhoto>,
     display_name: String,
     avatar_color: [u8; 3],
     group_public_key: [u8; 32],
@@ -1108,6 +1269,11 @@ impl SigningIdentity {
     /// Human-picked display name (chrome, presence pills); may be empty.
     pub fn display_name(&self) -> &str {
         &self.display_name
+    }
+
+    /// Normalized public photo loaded from canonical identity custody.
+    pub fn profile_photo(&self) -> Option<&crate::ProfilePhoto> {
+        self.profile_photo.as_ref()
     }
 
     /// Avatar-accent RGB the user picked at first boot.
@@ -1325,6 +1491,7 @@ impl SigningIdentity {
         signing_key: Option<SigningKey>,
     ) -> Self {
         Self {
+            profile_photo: None,
             display_name,
             avatar_color,
             group_public_key,
@@ -1348,6 +1515,7 @@ impl SigningIdentity {
         let total_shares = identity.total_shares;
         let share_index = identity.this_share_index;
         Self {
+            profile_photo: None,
             display_name,
             avatar_color,
             group_public_key,
@@ -1407,6 +1575,34 @@ pub fn load_metadata() -> Result<IdentityMetadata, NotAvailable> {
     }
     let identity = load()?;
     Ok(IdentityMetadata {
+        profile_photo: identity.profile_photo().cloned(),
+        display_name: identity.display_name().to_owned(),
+        avatar_color: identity.avatar_color(),
+        group_public_key: identity.group_public_key(),
+        threshold: identity.threshold(),
+        total_shares: identity.total_shares(),
+        share_index: identity.share_index(),
+    })
+}
+
+/// Public metadata from the actually inherited broker only. This never falls
+/// back to an environment/config record path or unlocks a local signing share.
+///
+/// # Errors
+/// Refuses absence of a bound broker, malformed metadata or service refusal.
+pub fn load_bound_metadata() -> Result<IdentityMetadata, NotAvailable> {
+    if runtime_portal::service_fd(IDENTITY_SERVICE).is_none()
+        && std::env::var_os(broker::BROKER_ENV_VAR).is_none()
+    {
+        return Err(NotAvailable::ServiceFdMissing);
+    }
+    let identity = if let Some(fd) = runtime_portal::service_fd(IDENTITY_SERVICE) {
+        load_from_service(fd)?
+    } else {
+        broker::connect_from_env()?
+    };
+    Ok(IdentityMetadata {
+        profile_photo: identity.profile_photo().cloned(),
         display_name: identity.display_name().to_owned(),
         avatar_color: identity.avatar_color(),
         group_public_key: identity.group_public_key(),
@@ -1420,6 +1616,7 @@ fn load_from_service(fd: std::os::fd::RawFd) -> Result<SigningIdentity, NotAvail
     let identity = shared_service_connection(fd)?;
     let metadata = identity.metadata();
     Ok(SigningIdentity {
+        profile_photo: metadata.profile_photo().cloned(),
         display_name: metadata.display_name().to_owned(),
         avatar_color: metadata.avatar_color(),
         group_public_key: metadata.group_public_key(),
@@ -1484,6 +1681,23 @@ pub fn load_from_path(path: PathBuf) -> Result<SigningIdentity, NotAvailable> {
     let bytes =
         read_record_bytes(&path).map_err(|e| LoadFailure::ReadFailed(e).into_not_available())?;
     load_record(&path, parse_record(&bytes)?)
+}
+
+/// Load exact already-admitted record bytes using the canonical secret provider
+/// for their retained identity namespace. The record itself is never reopened.
+/// Callers own admission and must reattest the namespace around this operation.
+///
+/// # Errors
+/// As the canonical path loader: refuses malformed records, unavailable or
+/// mismatched providers, and secret/public identity inconsistencies.
+pub fn load_from_admitted_bytes(
+    bytes: &[u8],
+    identity_directory: &std::path::Path,
+) -> Result<SigningIdentity, NotAvailable> {
+    load_record(
+        &identity_directory.join("primary.json"),
+        parse_record(bytes)?,
+    )
 }
 
 fn load_record(
@@ -1551,9 +1765,19 @@ pub fn load_for_launch(path: &std::path::Path) -> Result<SigningIdentity, NotAva
 pub fn load_metadata_from_path(path: &std::path::Path) -> Result<IdentityMetadata, NotAvailable> {
     let bytes = read_record_bytes(path)
         .map_err(|error| LoadFailure::ReadFailed(error).into_not_available())?;
-    let record = parse_record(&bytes)?;
+    load_metadata_from_bytes(&bytes)
+}
+
+/// Decode bounded canonical public identity metadata from an already-held read.
+/// This does not unlock a signing share or change source custody.
+///
+/// # Errors
+/// Returns an error when the canonical record or bounded profile is invalid.
+pub fn load_metadata_from_bytes(bytes: &[u8]) -> Result<IdentityMetadata, NotAvailable> {
+    let record = parse_record(bytes)?;
     let identity = record.threshold_identity;
     Ok(IdentityMetadata {
+        profile_photo: record.profile_photo,
         display_name: record.display_name,
         avatar_color: record.avatar_color,
         group_public_key: identity.group_public_key,
@@ -1591,7 +1815,21 @@ pub fn public_member_record(
     avatar_color: [u8; 3],
     group_public_key: [u8; 32],
 ) -> io::Result<Vec<u8>> {
+    public_member_record_with_presentation(display_name, avatar_color, group_public_key, None)
+}
+
+/// Encode public member presentation without exporting a share/provider locator.
+///
+/// # Errors
+/// Returns a serialization failure; photo construction already enforces bounds.
+pub fn public_member_record_with_presentation(
+    display_name: &str,
+    avatar_color: [u8; 3],
+    group_public_key: [u8; 32],
+    photo: Option<crate::ProfilePhoto>,
+) -> io::Result<Vec<u8>> {
     let record = ondisk::IdentityRecord {
+        profile_photo: photo,
         display_name: display_name.trim().to_owned(),
         avatar_color,
         threshold_identity: ondisk::SerializableIdentity {
@@ -1610,6 +1848,12 @@ pub fn public_member_record(
 }
 
 fn parse_record(bytes: &[u8]) -> Result<ondisk::IdentityRecord, NotAvailable> {
+    if bytes.len() as u64 > MAX_RECORD_BYTES {
+        return Err(NotAvailable::ConnectionFailed(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "identity record exceeds the size limit",
+        )));
+    }
     let record: ondisk::IdentityRecord = serde_json::from_slice(bytes)
         .map_err(|e| LoadFailure::JsonMalformed(e).into_not_available())?;
 
@@ -1668,6 +1912,16 @@ fn read_record(path: &std::path::Path) -> io::Result<ondisk::IdentityRecord> {
 }
 
 fn identity_from_record(
+    record: ondisk::IdentityRecord,
+    external_secret: Option<&[u8]>,
+) -> Result<SigningIdentity, NotAvailable> {
+    let photo = record.profile_photo.clone();
+    let mut identity = identity_from_record_parts(record, external_secret)?;
+    identity.profile_photo = photo;
+    Ok(identity)
+}
+
+fn identity_from_record_parts(
     record: ondisk::IdentityRecord,
     external_secret: Option<&[u8]>,
 ) -> Result<SigningIdentity, NotAvailable> {
@@ -1770,6 +2024,154 @@ fn is_public_member_projection(record: &ondisk::IdentityRecord) -> bool {
 mod tests {
     use super::*;
     use getrandom::{SysRng, rand_core::UnwrapErr};
+
+    #[test]
+    fn bound_presentation_refuses_environment_record_without_a_broker() {
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.remove("TILO_SVC_IDENTITY_FD")
+            .remove(broker::BROKER_ENV_VAR);
+        env.set(IDENTITY_ENV_VAR, "/must-not-be-read/identity.json");
+        assert!(matches!(
+            load_bound_metadata(),
+            Err(NotAvailable::ServiceFdMissing)
+        ));
+    }
+
+    #[test]
+    fn public_profile_edits_preserve_signer_and_provider_custody() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = import_identity(dir.path(), "personal", &record_bytes("Ada", 31)).unwrap();
+        let signer = load_from_path(path.clone()).unwrap();
+        let before: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        let signature = signer.sign(b"profile-edit-proof").unwrap();
+        let changed =
+            update_identity_profile(dir.path(), "personal", "  Quinten  ", [9, 8, 7]).unwrap();
+        assert_eq!(changed.display_name, "Quinten");
+        assert_eq!(changed.avatar_color, [9, 8, 7]);
+        assert_eq!(changed.group_public_key, signer.group_public_key());
+        let after: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        for field in [
+            "secret_ref",
+            "threshold_identity",
+            "created_at",
+            "schema_version",
+        ] {
+            assert_eq!(after[field], before[field], "profile edit changed {field}");
+        }
+        assert_eq!(
+            load_from_path(path.clone())
+                .unwrap()
+                .sign(b"profile-edit-proof")
+                .unwrap(),
+            signature
+        );
+        let accepted = fs::read(&path).unwrap();
+        for invalid in ["", "\n", "Ada\nOther"] {
+            assert!(update_identity_profile(dir.path(), "personal", invalid, [0; 3]).is_err());
+            assert_eq!(fs::read(&path).unwrap(), accepted);
+        }
+        assert!(update_identity_profile(dir.path(), "../personal", "Name", [0; 3]).is_err());
+        assert_eq!(fs::read(&path).unwrap(), accepted);
+    }
+
+    #[test]
+    fn complete_presentation_publication_preserves_signer_and_refuses_invalid_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = import_identity(dir.path(), "personal", &record_bytes("Ada", 37)).unwrap();
+        let signer = load_from_path(path.clone()).unwrap();
+        let proof = signer.sign(b"complete-presentation").unwrap();
+        let before: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        let photo = crate::ProfilePhoto::new(1, 1, vec![25, 90, 210, 255]).unwrap();
+        let metadata = update_identity_presentation(
+            dir.path(),
+            "personal",
+            "Grace",
+            [1, 2, 3],
+            Some(photo.clone()),
+        )
+        .unwrap();
+        assert_eq!(metadata.display_name, "Grace");
+        assert_eq!(metadata.profile_photo, Some(photo));
+        assert_eq!(metadata.group_public_key, signer.group_public_key());
+        assert_eq!(
+            load_from_path(path.clone())
+                .unwrap()
+                .sign(b"complete-presentation")
+                .unwrap(),
+            proof
+        );
+        let after: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        for field in [
+            "secret_ref",
+            "threshold_identity",
+            "created_at",
+            "schema_version",
+        ] {
+            assert_eq!(after[field], before[field]);
+        }
+        let saved = fs::read(&path).unwrap();
+        assert!(update_identity_presentation(dir.path(), "personal", "", [0; 3], None).is_err());
+        assert_eq!(fs::read(&path).unwrap(), saved);
+    }
+
+    #[test]
+    fn canonical_photo_updates_preserve_custody_and_invalid_imports_write_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = import_identity(dir.path(), "personal", &record_bytes("Ada", 32)).unwrap();
+        let signer = load_from_path(path.clone()).unwrap();
+        assert!(signer.profile_photo().is_none());
+        let proof = signer.sign(b"photo-custody-proof").unwrap();
+        let before: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        let photo = crate::ProfilePhoto::new(2, 1, vec![255, 0, 0, 255, 0, 255, 0, 255]).unwrap();
+        let changed = update_identity_photo(dir.path(), "personal", Some(photo.clone())).unwrap();
+        assert_eq!(changed.profile_photo.as_ref(), Some(&photo));
+        let loaded = load_from_path(path.clone()).unwrap();
+        assert_eq!(loaded.profile_photo(), Some(&photo));
+        assert_eq!(loaded.sign(b"photo-custody-proof").unwrap(), proof);
+        let after: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        for field in [
+            "display_name",
+            "avatar_color",
+            "secret_ref",
+            "threshold_identity",
+            "schema_version",
+        ] {
+            assert_eq!(before[field], after[field]);
+        }
+        update_identity_profile(dir.path(), "personal", "Quinten", [1, 2, 3]).unwrap();
+        assert_eq!(
+            load_metadata_from_path(&path)
+                .unwrap()
+                .profile_photo
+                .as_ref(),
+            Some(&photo)
+        );
+        let original = fs::read(&path).unwrap();
+        for invalid in [
+            serde_json::json!({"width": 129, "height": 1, "rgba": [0, 0, 0, 255]}),
+            serde_json::json!({"width": 1, "height": 1, "rgba": [0]}),
+            serde_json::json!({"width": 0, "height": 1, "rgba": []}),
+            serde_json::json!({"width": 1, "height": 1, "rgba": vec![0; crate::MAX_PHOTO_BYTES + 1]}),
+        ] {
+            let mut record: serde_json::Value =
+                serde_json::from_slice(&record_bytes("Invalid", 33)).unwrap();
+            record["profile_photo"] = invalid;
+            assert!(
+                import_identity(dir.path(), "invalid", &serde_json::to_vec(&record).unwrap())
+                    .is_err()
+            );
+            assert!(!dir.path().join("invalid.json").exists());
+            assert_eq!(fs::read(&path).unwrap(), original);
+        }
+        update_identity_photo(dir.path(), "personal", None).unwrap();
+        assert!(
+            load_metadata_from_path(&path)
+                .unwrap()
+                .profile_photo
+                .is_none()
+        );
+        assert!(update_identity_photo(dir.path(), "../personal", Some(photo)).is_err());
+    }
 
     // Only the external keyring transport is emulated. Both its provider
     // storage and all identity metadata publication use real files.

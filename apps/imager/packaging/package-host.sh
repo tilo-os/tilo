@@ -258,6 +258,7 @@ case "$host" in
     chmod +x "$bundle/tilo-imager" "$bundle/tilo-imager-bin"
     cp apps/imager/packaging/linux/tilo-imager.desktop "$bundle/"
     cp docs/installer-walkthrough.md "$bundle/README.md"
+    apps/imager/packaging/stage-capture-sidecar.sh target/release/imager "$bundle"
     tar -C "$out" -czf "$out/$artifact_base.tar.gz" "$artifact_base"
     write_digest "$out/$artifact_base.tar.gz"
     sign_linux_artifact "$out/$artifact_base.tar.gz"
@@ -267,6 +268,7 @@ case "$host" in
       "$appdir/usr/share/metainfo" \
       "$appdir/usr/share/icons/hicolor/scalable/apps"
     cp target/release/imager "$appdir/usr/bin/tilo-imager-bin"
+    apps/imager/packaging/stage-capture-sidecar.sh target/release/imager "$appdir/usr"
     cp apps/imager/packaging/linux/tilo-imager "$appdir/usr/bin/tilo-imager"
     cp apps/imager/packaging/linux/tilo-imager.desktop \
       "$appdir/usr/share/applications/org.tilo.Imager.desktop"

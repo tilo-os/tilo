@@ -90,6 +90,7 @@ impl Env {
                 arch: None,
                 identity: Some(runtime_key),
                 extra_libs: &[toolkit],
+                extra_bins: &[],
             },
         )
         .unwrap();
@@ -542,6 +543,7 @@ fn signed_engine_runtime_preserves_executable_permissions_on_install() {
             arch: Some(runtime_bundle::host_arch()),
             identity: Some(&runtime_identity),
             extra_libs: &[engine],
+            extra_bins: &[],
         },
     )
     .unwrap();

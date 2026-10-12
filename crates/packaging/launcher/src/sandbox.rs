@@ -384,6 +384,24 @@ pub fn push_trusted_identities_bind(argv: &mut Vec<String>, host_path: &Path) {
         Path::new(SANDBOX_TRUSTED_IDENTITIES_DIR),
     );
 }
+/// Session-owned retained file locations, separate from filesystem grants.
+pub const SANDBOX_RETAINED_FILES_DIR: &str = "/run/tilo/retained-files";
+pub const SANDBOX_RETAINED_FILES_PATH: &str = "/run/tilo/retained-files/locations.json";
+
+pub fn push_retained_files_bind(argv: &mut Vec<String>, host_path: &Path) {
+    push_bind(
+        argv,
+        "--ro-bind",
+        host_path.parent().unwrap_or(host_path),
+        Path::new(SANDBOX_RETAINED_FILES_DIR),
+    );
+    argv.extend([
+        "--setenv".to_owned(),
+        "TILO_RETAINED_FILES".to_owned(),
+        SANDBOX_RETAINED_FILES_PATH.to_owned(),
+    ]);
+}
+
 /// Only the selected app/person policy directory is visible to the child.
 pub const SANDBOX_ACTION_AUTHORITY_DIR: &str = "/run/tilo/action-authority";
 

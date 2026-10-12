@@ -86,6 +86,7 @@ fn verified_snapshot_cannot_follow_later_mutation_of_the_selected_sdk() {
             arch: Some(std::env::consts::ARCH),
             identity: Some(&key),
             extra_libs: &[extra],
+            extra_bins: &[],
         },
     )
     .unwrap();

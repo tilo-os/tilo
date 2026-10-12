@@ -83,12 +83,15 @@ pub fn disk_from_sfdisk(json: &str, size_bytes: u64, sector_bytes: u64) -> Resul
         if size == 0 {
             return Err("zero-size partition".into());
         }
+        let last_lba = start
+            .checked_add(size - 1)
+            .ok_or("partition extent overflows")?;
         partitions.push(Partition {
             number: node_number(node).ok_or("partition node has no number")?,
             guid: text("uuid")?,
             type_guid: text("type")?,
             first_lba: start,
-            last_lba: start + size - 1,
+            last_lba,
         });
     }
     Ok(Disk {
@@ -357,6 +360,25 @@ mod tests {
       ]
    }
 }"#;
+
+    #[test]
+    fn sfdisk_partition_extent_overflow_refuses_instead_of_wrapping() {
+        let mut dump: serde_json::Value = serde_json::from_str(SFDISK).unwrap();
+        dump["partitiontable"]["partitions"][0]["start"] = u64::MAX.into();
+        dump["partitiontable"]["partitions"][0]["size"] = 2.into();
+        assert_eq!(
+            disk_from_sfdisk(&dump.to_string(), 1000215216 * 512, 512).unwrap_err(),
+            "partition extent overflows"
+        );
+        dump["partitiontable"]["partitions"][0]["size"] = 1.into();
+        assert_eq!(
+            disk_from_sfdisk(&dump.to_string(), 1000215216 * 512, 512)
+                .unwrap()
+                .partitions[0]
+                .last_lba,
+            u64::MAX
+        );
+    }
 
     /// sfdisk, lsblk/sysfs, mountinfo and LUKS/LVM backing disks.
     #[test]

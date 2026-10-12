@@ -209,6 +209,7 @@ fn basis(observed: &Observed, uefi: bool, secure_boot: bool) -> Option<Basis> {
     let disk = resolve_disk(observed).ok()?;
     let system_volume = resolve_system_volume(&disk, snapshot, observed.volume_space).ok()?;
     Some(Basis {
+        linux_btrfs_volume: None,
         disk,
         system_volume: Some(system_volume),
         firmware: basis_firmware(uefi, secure_boot),

@@ -8,6 +8,7 @@
 # and the account password on **stdin** (a single line). Optional flags:
 #
 #     --filesystem <btrfs|ext4|xfs>   root filesystem (default: btrfs)
+#     --device-label <label>         friendly name for this device (optional)
 #     --hostname <name>               hostname for the installed system (default: tilo)
 #     --timezone <Area/City>          IANA time zone (default: system default / UTC)
 #     --keymap <xkb-layout>           keyboard layout, e.g. us, de (default: us)
@@ -303,13 +304,71 @@ PY
   exit 0
 fi
 
+# Resolve one native-issued generation for every setup consumer in this run.
+# A completed generation never selects itself through a caller path or env var.
+PREPARED_SETUP_RUN="$(python3 /usr/libexec/tilo-installer-prepared-setup-extract.py selected-generation)" \
+  || die "native installer generation is unavailable"
+
 # --- parse args --------------------------------------------------------------
+authenticate_prepared_setup() {
+  local prepared_run="$PREPARED_SETUP_RUN" auth_root auth_status authenticated_receipt validated_receipt
+  local source_verify=()
+  [ "${1:-}" != --verify-retained-source ] || source_verify+=(--verify-retained-source)
+  [ -x /usr/libexec/tilo-prepared-setup ] || return 1
+  python3 /usr/libexec/tilo-installer-prepared-setup-extract.py preflight \
+    --source-dir "$prepared_run" --receipt "$(cat "$prepared_run/receipt.json")" >/dev/null || return 1
+  auth_root="$(mktemp -d /run/tilo-installer/auth.XXXXXXXX)" || return 1
+  chmod 0700 "$auth_root" || return 1
+  if authenticated_receipt="$(printf '%s' "$PASSWORD" | /usr/libexec/tilo-prepared-setup --authenticate-install \
+    --package "$prepared_run/prepared-setup.sealed" --receipt "$prepared_run/receipt.json" \
+    --quarantine "$auth_root/quarantine" "${source_verify[@]}")" \
+    && validated_receipt="$(printf '%s' "$authenticated_receipt" | python3 /usr/libexec/tilo-installer-prepared-setup-extract.py \
+      preflight-authenticated --source-dir "$prepared_run")"; then
+    auth_status=0
+  else
+    auth_status=1
+  fi
+  rm -rf -- "$auth_root"
+  # Preserve the entire validated native receipt, including coexistence scope;
+  # never strip a declaration to make an older consumer accept it.
+  if [ "$auth_status" -eq 0 ]; then
+    printf '%s' "$validated_receipt"
+  fi
+  return "$auth_status"
+}
+install_prepared_device_identity() {
+  local source_dir="$1" target_var="$2" import_root import_status
+  [ -x /usr/libexec/tilo-prepared-setup ] || return 1
+  import_root="$(mktemp -d /run/tilo-installer/device.XXXXXXXX)" || return 1
+  chmod 0700 "$import_root" || return 1
+  # This privileged phase publishes only an already-certified device. The
+  # target-user consumer later adopts its public identity and selected accounts.
+  # Legacy single-device backups authenticate here without publishing a key.
+  if printf '%s' "$PASSWORD" | /usr/libexec/tilo-prepared-setup --install-enrolled-device \
+    --package "$source_dir/prepared-setup.sealed" --quarantine "$import_root/quarantine" \
+    --system-root "$target_var/lib/tilo" >/dev/null; then
+    import_status=0
+  else
+    import_status=1
+  fi
+  rm -rf -- "$import_root"
+  return "$import_status"
+}
+if [ "${1:-}" = --authenticate-prepared-setup ]; then
+  [ "$#" -eq 1 ] || die "invalid prepared setup authentication arguments"
+  IFS= read -r PASSWORD || true
+  [ -n "$PASSWORD" ] && [ "${#PASSWORD}" -le 4096 ] || die "prepared setup could not be authenticated"
+  authenticate_prepared_setup || die "prepared setup could not be authenticated"
+  unset PASSWORD
+  exit 0
+fi
 DISK=""
 USERNAME=""
 ASSUME_YES=0
 # New, optional options (UI passes these; older UIs omit them → defaults).
 FILESYSTEM="btrfs"   # btrfs | ext4 | xfs
 HOSTNAME_VAL="tilo"
+DEVICE_LABEL=""
 FULL_NAME=""
 LOCALE_VAL="en_US.UTF-8"
 TIMEZONE_VAL=""      # empty → leave system default (UTC)
@@ -352,6 +411,7 @@ NEW_BOOT_PARTUUID=""
 NEW_ROOT_PARTUUID=""
 CONFIRM_FREE_SPACE=""
 INTERNAL_HANDOFF=""
+PREPARED_SETUP_RECEIPT=""
 EXPECTED_PARTITIONS=()
 PIN=""
 while [ $# -gt 0 ]; do
@@ -359,6 +419,7 @@ while [ $# -gt 0 ]; do
     --disk) DISK="${2:-}"; shift 2 ;;
     --user) USERNAME="${2:-}"; shift 2 ;;
     --filesystem) FILESYSTEM="${2:-}"; shift 2 ;;
+    --device-label) DEVICE_LABEL="${2:-}"; shift 2 ;;
     --hostname) HOSTNAME_VAL="${2:-}"; shift 2 ;;
     --full-name) FULL_NAME="${2:-}"; shift 2 ;;
     --locale) LOCALE_VAL="${2:-}"; shift 2 ;;
@@ -414,6 +475,7 @@ while [ $# -gt 0 ]; do
     --confirm-free-space) CONFIRM_FREE_SPACE="${2:-}"; shift 2 ;;
     --yes|-y) ASSUME_YES=1; shift ;;
     --internal-handoff) INTERNAL_HANDOFF="${2:-}"; shift 2 ;;
+    --prepared-setup-receipt) PREPARED_SETUP_RECEIPT="${2:-}"; shift 2 ;;
     -h|--help) sed -n '2,54p' "$0"; exit 0 ;;
     *) die "unknown argument: $1" ;;
   esac
@@ -530,6 +592,21 @@ if [ -n "$INTERNAL_HANDOFF" ]; then
     || die "--internal-handoff is not a regular file"
 fi
 
+# A public delivery receipt grants no identity adoption authority. Verify its
+# expected encrypted artifact before any partitioning/formatting/install work.
+python3 /usr/libexec/tilo-installer-prepared-setup-extract.py preflight-profile \
+  --source-dir "$PREPARED_SETUP_RUN" \
+  || die "prepared setup profile expectation is missing or changed"
+python3 /usr/libexec/tilo-installer-prepared-setup-extract.py preflight-home \
+  --source-dir "$PREPARED_SETUP_RUN" \
+  || die "selected portable Home ciphertext is missing or changed"
+if [ -n "$PREPARED_SETUP_RECEIPT" ]; then
+  python3 /usr/libexec/tilo-installer-prepared-setup-extract.py preflight \
+    --source-dir "$PREPARED_SETUP_RUN" \
+    --receipt "$PREPARED_SETUP_RECEIPT" \
+    || die "expected encrypted prepared setup is missing or changed"
+fi
+
 # Use the portable Linux login-name subset accepted consistently by useradd
 # across the distributions Tilo targets. It also keeps the colon-delimited
 # first-boot seed file unambiguous.
@@ -562,6 +639,15 @@ esac
 # normal, stronger disk passphrase.
 [ "$WANT_PIN" -eq 1 ] \
   || die "native Tilo requires --pin for its encrypted startup boundary"
+
+# Validate the friendly name before touching the target disk.
+python3 - "$DEVICE_LABEL" <<'PY_DEVICE_LABEL'
+import sys
+value = sys.argv[1]
+if len(value.encode('utf-8')) > 64 or any(ord(char) < 32 or 127 <= ord(char) <= 159 for char in value):
+    sys.exit('Invalid device label')
+PY_DEVICE_LABEL
+[ "$?" -eq 0 ] || die "invalid --device-label"
 
 # Validate hostname (RFC-1123 label: letters/digits/hyphens, no edge hyphen).
 [ -n "$HOSTNAME_VAL" ] || die "missing --hostname <name>"
@@ -846,6 +932,34 @@ mark_alongside_tilo_root() {
     || die "Tilo root GPT type did not persist"
 }
 
+# The encrypted Home and its extraction coexist on installed /var. Budget the
+# selected actual root before guided GPT creation, formatting or bootc writes.
+validate_home_target_capacity() {
+  local home_bytes target_bytes
+  local capacity_args=(--source-dir "$PREPARED_SETUP_RUN")
+  home_bytes="$(python3 /usr/libexec/tilo-installer-prepared-setup-extract.py home-required-bytes "${capacity_args[@]}")" \
+    || die "could not read selected portable Home space requirements"
+  case "$home_bytes" in ''|*[!0-9]*) die "portable Home space requirement is invalid" ;; esac
+  [ "$home_bytes" != 0 ] || return 0
+  if [ "$GUIDED_ALONGSIDE" -eq 1 ]; then
+    capacity_args+=(--root-bytes "$ROOT_SIZE_BYTES")
+  elif [ "$ALONGSIDE" -eq 1 ]; then
+    target_bytes="$(blockdev --getsize64 "$ROOT_PARTITION")" \
+      || die "could not inspect selected root capacity for portable Home"
+    [ "$target_bytes" = "$EXPECT_ROOT_SIZE_BYTES" ] \
+      || die "selected root capacity changed before portable Home space preflight"
+    capacity_args+=(--root-bytes "$target_bytes")
+  else
+    target_bytes="$(blockdev --getsize64 "$DISK")" \
+      || die "could not inspect selected disk capacity for portable Home"
+    capacity_args+=(--disk-bytes "$target_bytes")
+  fi
+  [ "$ENCRYPT" -eq 0 ] || capacity_args+=(--encrypted)
+  python3 /usr/libexec/tilo-installer-prepared-setup-extract.py check-home-capacity "${capacity_args[@]}" >/dev/null \
+    || die "selected target cannot hold Tilo, encrypted Home and authenticated extraction; refusing further target writes"
+}
+validate_home_target_capacity
+
 # Read-only UI preflight. It intentionally traverses the same disk/partition
 # identity and live-medium checks above and the same prepared-partition
 # validator used again immediately before destructive installation. The
@@ -857,6 +971,61 @@ if [ "$PREFLIGHT_ALONGSIDE" -eq 1 ]; then
   log "Prepared storage check passed: the EFI partition is clean FAT32 with $ALONGSIDE_EFI_AVAILABLE_BYTES bytes free."
   exit 0
 fi
+
+# --- read the password (now that we are root) --------------------------------
+IFS= read -r PASSWORD || true
+[ -n "$PASSWORD" ] || die "no password received on stdin"
+if [ -e "$PREPARED_SETUP_RUN/prepared-setup.sealed" ]; then
+  AUTHENTICATED_PREPARED="$(authenticate_prepared_setup --verify-retained-source)" \
+    || die "prepared setup could not be authenticated; disk remains unchanged"
+  printf '%s' "$AUTHENTICATED_PREPARED" | python3 -c '
+import json,sys
+value=json.load(sys.stdin)
+assert value["schema"] == 1
+profile=value["install_profile"]
+if profile is not None:
+    assert (profile["username"],profile["full_name"]) == tuple(sys.argv[1:3]), "prepared account differs from authenticated choices"
+    assert profile.get("device_label", "") == sys.argv[3], "prepared device label differs from authenticated choices"
+' "$USERNAME" "$FULL_NAME" "$DEVICE_LABEL" || die "prepared account differs from authenticated choices; disk remains unchanged"
+  RETAINED_TARGET_ARGS=(--disk "$DISK")
+  if [ "$GUIDED_ALONGSIDE" -eq 1 ]; then
+    RETAINED_TARGET_ARGS+=(--write-start "$FREE_START_BYTES" --write-size "$FREE_SIZE_BYTES")
+  elif [ "$ALONGSIDE" -eq 1 ]; then
+    for retained_partition in "$ROOT_PARTITION" "$BOOT_PARTITION" "$EFI_PARTITION"; do
+      [ -n "$retained_partition" ] || continue
+      retained_start="$(lsblk -dnbro START "$retained_partition")"
+      retained_size="$(blockdev --getsize64 "$retained_partition")"
+      RETAINED_TARGET_ARGS+=(--write-start "$((retained_start * 512))" --write-size "$retained_size")
+    done
+  else
+    RETAINED_TARGET_ARGS+=(--write-start 0 --write-size "$(blockdev --getsize64 "$DISK")")
+  fi
+  printf '%s' "$AUTHENTICATED_PREPARED" | "$STAGING_HANDOFF" preflight-retained "${RETAINED_TARGET_ARGS[@]}" \
+    || die "retained files source overlaps or differs from reviewed installation; disk remains unchanged"
+fi
+# Second stdin line is the disk-encryption passphrase (when the legacy --pin
+# transport flag is present). Kept off argv so it never shows in process
+# listings.
+if [ "$WANT_PIN" -eq 1 ]; then
+  IFS= read -r PIN || true
+  [ -n "$PIN" ] || die "--pin set but no disk passphrase received on stdin (line 2)"
+  if [ -n "${AUTHENTICATED_PREPARED:-}" ]; then
+    [ "$PIN" = "$PASSWORD" ] || die "prepared setup requires its original startup passphrase"
+  fi
+  SECRET_POLICY=/usr/libexec/tilo-startup-secret-policy
+  [ -x "$SECRET_POLICY" ] || die "startup-secret policy helper is missing"
+  POLICY_MODE=()
+  REQUIRE_TPM_PREDICTION=0
+  if [ -z "${AUTHENTICATED_PREPARED:-}" ] && [ -x /usr/libexec/tilo-verified-boot-install-preflight ] \
+     && /usr/libexec/tilo-verified-boot-install-preflight >/dev/null 2>&1 \
+     && { [ -c /dev/tpmrm0 ] || [ -c /dev/tpm0 ]; }; then
+    POLICY_MODE=(--tpm-pin)
+    REQUIRE_TPM_PREDICTION=1
+  fi
+  POLICY_ERROR="$(printf '%s\n' "$PIN" | "$SECRET_POLICY" "${POLICY_MODE[@]}" 2>&1)" \
+    || die "$POLICY_ERROR"
+fi
+
 
 # Bind the reviewed disk immediately before guided GPT mutation.
 validate_disk_identity
@@ -942,28 +1111,6 @@ elif lsblk -nro MOUNTPOINT "$DISK" 2>/dev/null | grep -q .; then
   die "$DISK (or one of its partitions) is currently mounted — unmount it first"
 fi
 
-# --- read the password (now that we are root) --------------------------------
-IFS= read -r PASSWORD || true
-[ -n "$PASSWORD" ] || die "no password received on stdin"
-# Second stdin line is the disk-encryption passphrase (when the legacy --pin
-# transport flag is present). Kept off argv so it never shows in process
-# listings.
-if [ "$WANT_PIN" -eq 1 ]; then
-  IFS= read -r PIN || true
-  [ -n "$PIN" ] || die "--pin set but no disk passphrase received on stdin (line 2)"
-  SECRET_POLICY=/usr/libexec/tilo-startup-secret-policy
-  [ -x "$SECRET_POLICY" ] || die "startup-secret policy helper is missing"
-  POLICY_MODE=()
-  REQUIRE_TPM_PREDICTION=0
-  if [ -x /usr/libexec/tilo-verified-boot-install-preflight ] \
-     && /usr/libexec/tilo-verified-boot-install-preflight >/dev/null 2>&1 \
-     && { [ -c /dev/tpmrm0 ] || [ -c /dev/tpm0 ]; }; then
-    POLICY_MODE=(--tpm-pin)
-    REQUIRE_TPM_PREDICTION=1
-  fi
-  POLICY_ERROR="$(printf '%s\n' "$PIN" | "$SECRET_POLICY" "${POLICY_MODE[@]}" 2>&1)" \
-    || die "$POLICY_ERROR"
-fi
 
 log "Tilo installer"
 log "  target disk : $DISK"
@@ -1185,6 +1332,8 @@ fi
 # copy now follows preparation so its scratch cannot fill the live staging root.
 validate_disk_identity
 
+validate_home_target_capacity
+
 # --- 2. install the base system ----------------------------------------------
 # Unencrypted: `bootc install to-disk` owns the whole layout.
 # Encrypted: we build the layout ourselves (tilo-disk-encrypt prepare) and hand
@@ -1399,10 +1548,12 @@ if [ "$ENCRYPT" -eq 1 ]; then
     ENROL_ARGS+=(--pin-file "$PIN_FILE")
     TILO_GENERATION="$(cat /usr/lib/tilo/generation 2>/dev/null || true)"
     case "$TILO_GENERATION" in ''|*[!0-9]*) die "installed image has no valid generation" ;; esac
-    ENROL_ARGS+=(--predictions "$ENC_MNT/boot/efi/tilo-target/predictions")
-    ENROL_ARGS+=(--generation "$TILO_GENERATION")
-    ENROL_ARGS+=(--rollback-state "$ENC_MNT/var/lib/tilo/rollback/state.json")
-    [ "${REQUIRE_TPM_PREDICTION:-0}" -eq 0 ] || ENROL_ARGS+=(--require-tpm-prediction)
+    if [ -z "${AUTHENTICATED_PREPARED:-}" ]; then
+      ENROL_ARGS+=(--predictions "$ENC_MNT/boot/efi/tilo-target/predictions")
+      ENROL_ARGS+=(--generation "$TILO_GENERATION")
+      ENROL_ARGS+=(--rollback-state "$ENC_MNT/var/lib/tilo/rollback/state.json")
+      [ "${REQUIRE_TPM_PREDICTION:-0}" -eq 0 ] || ENROL_ARGS+=(--require-tpm-prediction)
+    fi
   fi
   # The helper logs to stderr; fold it into our stdout so the UI sees the
   # recovery key it has to show the user.
@@ -1483,7 +1634,7 @@ label_installed_tilo_path() {
   local staged="$1" installed="$2" context
   context="$(/usr/sbin/matchpathcon -n -- "$installed")" \
     || die "could not resolve SELinux label for $installed"
-  chcon -- "$context" "$staged" \
+  chcon --no-dereference -- "$context" "$staged" \
     || die "could not label installed $installed"
 }
 # A signed offline target can predate the installer. First-boot account
@@ -1491,11 +1642,21 @@ label_installed_tilo_path() {
 # payload. Stage the reviewed helper and its sandbox in writable /etc, without
 # mutating the immutable OS or requiring a network image replacement.
 stage_installed_firstboot_runtime() {
-  local source_root="$1" target_etc="$2" helper unit tmp service name
+  local source_root="$1" target_etc="$2" helper seeds unit tmp service name
   helper="$source_root/usr/libexec/tilo-firstboot-user"
+  seeds="$source_root/usr/libexec/tilo-firstboot-home-seeds.py"
   unit="$source_root/usr/lib/systemd/system/tilo-firstboot-user.service"
-  [ -f "$helper" ] && [ ! -L "$helper" ] && [ -f "$unit" ] && [ ! -L "$unit" ] \
+  [ -f "$helper" ] && [ ! -L "$helper" ] && [ -f "$seeds" ] && [ ! -L "$seeds" ] && [ -f "$unit" ] && [ ! -L "$unit" ] \
     || die "installer is missing its first-boot account runtime"
+  [ -f "$source_root/usr/libexec/tilo-installer-prepared-setup-extract.py" ] \
+    && [ ! -L "$source_root/usr/libexec/tilo-installer-prepared-setup-extract.py" ] \
+    || die "installer is missing its prepared setup transport runtime"
+  if [ -e "$PREPARED_SETUP_RUN/receipt.json" ]; then
+    [ -f "$source_root/usr/libexec/tilo-prepared-setup" ] \
+      && [ ! -L "$source_root/usr/libexec/tilo-prepared-setup" ] \
+      && [ -x "$source_root/usr/libexec/tilo-prepared-setup" ] \
+      || die "installer is missing its native prepared setup import runtime"
+  fi
   for name in tilo-firstboot-autologin-cleanup tilo-session-recovery; do
     [ -f "$source_root/usr/libexec/$name" ] && [ ! -L "$source_root/usr/libexec/$name" ] \
       && [ -f "$source_root/usr/lib/systemd/system/$name.service" ] \
@@ -1510,6 +1671,25 @@ stage_installed_firstboot_runtime() {
   install -m 0644 "$helper" "$tmp"
   label_installed_tilo_path "$tmp" /etc/tilo/firstboot-user
   mv -f -- "$tmp" "$target_etc/tilo/firstboot-user"
+  tmp="$(mktemp "$target_etc/tilo/.firstboot-home-seeds.XXXXXX")"
+  install -m 0644 "$seeds" "$tmp"
+  label_installed_tilo_path "$tmp" /etc/tilo/firstboot-home-seeds.py
+  mv -f -- "$tmp" "$target_etc/tilo/firstboot-home-seeds.py"
+  helper="$source_root/usr/libexec/tilo-installer-prepared-setup-extract.py"
+  [ -f "$helper" ] && [ ! -L "$helper" ] \
+    || die "installer is missing its prepared setup transport runtime"
+  tmp="$(mktemp "$target_etc/tilo/.prepared-setup-transport.XXXXXX")"
+  install -m 0644 "$helper" "$tmp"
+  label_installed_tilo_path "$tmp" /etc/tilo/prepared-setup-transport.py
+  mv -f -- "$tmp" "$target_etc/tilo/prepared-setup-transport.py"
+  if [ -e "$PREPARED_SETUP_RUN/receipt.json" ]; then
+    tmp="$(mktemp "$target_etc/tilo/.prepared-setup.XXXXXX")"
+    install -m 0755 "$source_root/usr/libexec/tilo-prepared-setup" "$tmp"
+    # This is reviewed installer code, never an executable imported from the
+    # user's home or medium. Retain the canonical executable policy label.
+    label_installed_tilo_path "$tmp" /usr/libexec/tilo-prepared-setup
+    mv -f -- "$tmp" "$target_etc/tilo/prepared-setup"
+  fi
   tmp="$(mktemp "$target_etc/systemd/system/.firstboot-user.XXXXXX")"
   sed 's|^ExecStart=/usr/libexec/tilo-firstboot-user$|ExecStart=/usr/bin/bash /etc/tilo/firstboot-user|' "$unit" > "$tmp"
   chmod 0644 "$tmp"
@@ -1728,6 +1908,41 @@ printf '%s\n' "$HOSTNAME_VAL" > "$DEPLOY_ETC/hostname"
 chmod 0644 "$DEPLOY_ETC/hostname"
 log "  wrote $DEPLOY_ETC/hostname"
 
+# Keep the display name separate from the network hostname. machine-info is
+# the canonical system display-name metadata; enrollment uses the authenticated profile.
+if [ -n "$DEVICE_LABEL" ]; then
+  python3 - "$DEPLOY_ETC/machine-info" "$DEVICE_LABEL" <<'PY_MACHINE_INFO'
+import os
+from pathlib import Path
+import sys
+import tempfile
+path = Path(sys.argv[1])
+if path.is_symlink():
+    sys.exit('machine-info is a symbolic link')
+lines = path.read_text().splitlines() if path.exists() else []
+lines = [line for line in lines if not line.lstrip().startswith('PRETTY_HOSTNAME=')]
+label = sys.argv[2]
+for character in ('\\', '"', '$', '`'):
+    label = label.replace(character, '\\' + character)
+lines.append('PRETTY_HOSTNAME="' + label + '"')
+with tempfile.NamedTemporaryFile(mode='w', dir=path.parent, delete=False) as output:
+    temporary = Path(output.name)
+    try:
+        output.write('\n'.join(lines) + '\n')
+        output.flush()
+        os.fchmod(output.fileno(), 0o644)
+        os.fsync(output.fileno())
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+try:
+    os.fsync(directory)
+finally:
+    os.close(directory)
+PY_MACHINE_INFO
+fi
+
 printf 'LANG=%s\n' "$LOCALE_VAL" > "$DEPLOY_ETC/locale.conf"
 chmod 0644 "$DEPLOY_ETC/locale.conf"
 log "  set locale to $LOCALE_VAL"
@@ -1817,9 +2032,9 @@ for EXTENSION_ID in $EXTENSIONS; do
   log "  wrote $SEED_DIR/$EXTENSION_ID (installed on first boot once online)"
 done
 
-if [ -d "${TILO_INSTALLER_PROFILE_OUT_DIR:-/run/tilo-installer}/setup-handoff" ]; then
+if [ -d /run/tilo-installer/setup-handoff ]; then
   step "Copying Wi-Fi and identity from the setup machine"
-  HANDOFF_SRC="${TILO_INSTALLER_PROFILE_OUT_DIR:-/run/tilo-installer}/setup-handoff"
+  HANDOFF_SRC=/run/tilo-installer/setup-handoff
   [ -n "$DEPLOY_ETC" ] || die "setup handoff is present but the installed /etc was not found"
   HANDOFF_VAR="$(find "$MNT/state/os" "$MNT/ostree/deploy" -mindepth 2 -maxdepth 2 -type d -name var -print -quit 2>/dev/null || true)"
   [ -n "$HANDOFF_VAR" ] || die "setup handoff is present but the installed /var was not found"
@@ -1877,6 +2092,50 @@ if [ -d "${TILO_INSTALLER_PROFILE_OUT_DIR:-/run/tilo-installer}/setup-handoff" ]
     rm -f "$DEPLOY_ETC/tilo/bringup-ssh.pub"
     log "  enabled owner-key SSH independently of desktop onboarding"
   fi
+fi
+
+if [ -e "$PREPARED_SETUP_RUN/prepared-setup.error" ] || [ -L "$PREPARED_SETUP_RUN/prepared-setup.error" ]; then
+  die "prepared setup extraction failed; refusing to silently lose the selected setup"
+fi
+if [ -e "$PREPARED_SETUP_RUN/prepared-setup.sealed" ] || [ -L "$PREPARED_SETUP_RUN/prepared-setup.sealed" ]; then
+  mapfile -t PREPARED_TARGET_VARS < <(find "$MNT/state/os" "$MNT/ostree/deploy" \
+    -mindepth 2 -maxdepth 2 -type d -name var 2>/dev/null)
+  [ "${#PREPARED_TARGET_VARS[@]}" -eq 1 ] \
+    || die "could not locate exactly one installed /var for encrypted prepared setup"
+  printf '%s' "$AUTHENTICATED_PREPARED" | "$STAGING_HANDOFF" deliver-retained --target-var "${PREPARED_TARGET_VARS[0]}" \
+    || die "could not retain authenticated original-files access intent"
+  python3 /usr/libexec/tilo-installer-prepared-setup-extract.py retain \
+    --source-dir "$PREPARED_SETUP_RUN" --target-var "${PREPARED_TARGET_VARS[0]}" \
+    || die "could not retain encrypted prepared setup in the installed system"
+  printf '%s' "$AUTHENTICATED_PREPARED" | python3 /usr/libexec/tilo-installer-prepared-setup-extract.py retain-authenticated-binding \
+    --source-dir "$PREPARED_SETUP_RUN" --target-var "${PREPARED_TARGET_VARS[0]}" \
+    || die "could not retain the authenticated target first-use binding"
+  python3 /usr/libexec/tilo-installer-prepared-setup-extract.py retain-home \
+    --source-dir "$PREPARED_SETUP_RUN" --target-var "${PREPARED_TARGET_VARS[0]}" \
+    || die "could not stream selected portable Home ciphertext into the installed system"
+  install_prepared_device_identity "${PREPARED_TARGET_VARS[0]}/lib/tilo/prepared-setup" "${PREPARED_TARGET_VARS[0]}" \
+    || die "could not install the approved device identity"
+  for prepared_identity_path in device-private device-private/keypair.bin device device/cert.bin \
+    device/certs user-identity user-identity/pubkey.bin peers peers/home-peers.json; do
+    prepared_identity_file="${PREPARED_TARGET_VARS[0]}/lib/tilo/$prepared_identity_path"
+    if [ -e "$prepared_identity_file" ] && [ ! -L "$prepared_identity_file" ]; then
+      label_installed_tilo_path "$prepared_identity_file" "/var/lib/tilo/$prepared_identity_path"
+    fi
+  done
+  if [ -d "${PREPARED_TARGET_VARS[0]}/lib/tilo/device/certs" ]; then
+    while IFS= read -r -d '' prepared_certificate; do
+      label_installed_tilo_path "$prepared_certificate" "/var/lib/tilo/device/certs/${prepared_certificate##*/}"
+    done < <(find "${PREPARED_TARGET_VARS[0]}/lib/tilo/device/certs" -mindepth 1 -maxdepth 1 -type f -user root -print0)
+  fi
+  for prepared_payload in prepared-home prepared-applications prepared-browser; do
+    [ -d "${PREPARED_TARGET_VARS[0]}/lib/tilo/$prepared_payload" ] || continue
+    label_installed_tilo_path "${PREPARED_TARGET_VARS[0]}/lib/tilo/$prepared_payload" "/var/lib/tilo/$prepared_payload"
+    while IFS= read -r -d '' prepared_home_file; do
+      label_installed_tilo_path "$prepared_home_file" "/var/lib/tilo/$prepared_payload/${prepared_home_file##*/}"
+    done < <(find "${PREPARED_TARGET_VARS[0]}/lib/tilo/$prepared_payload" -mindepth 1 -maxdepth 1 -type f -print0)
+  done
+  label_installed_tilo_path "${PREPARED_TARGET_VARS[0]}/lib/tilo/prepared-setup" /var/lib/tilo/prepared-setup
+  label_installed_tilo_path "${PREPARED_TARGET_VARS[0]}/lib/tilo/prepared-setup/prepared-setup.sealed" /var/lib/tilo/prepared-setup/prepared-setup.sealed
 fi
 
 sync

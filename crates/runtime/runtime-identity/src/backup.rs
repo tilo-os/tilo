@@ -319,6 +319,7 @@ fn portable_record(path: &Path) -> io::Result<(Zeroizing<Vec<u8>>, [u8; 32])> {
 /// `Zeroizing` buffer owned by the caller.
 fn record_for_validation(record: &super::ondisk::IdentityRecord) -> super::ondisk::IdentityRecord {
     super::ondisk::IdentityRecord {
+        profile_photo: record.profile_photo.clone(),
         display_name: record.display_name.clone(),
         avatar_color: record.avatar_color,
         threshold_identity: super::ondisk::SerializableIdentity {
@@ -654,6 +655,41 @@ mod tests {
         let provider = super::super::BrokerFileProvider::new(dir);
         super::super::import_identity_with_provider(dir, id, &bytes, &provider).expect("import");
         dir.join(format!("{id}.json"))
+    }
+
+    #[test]
+    fn canonical_photo_survives_authenticated_backup_and_provider_reseal() {
+        let source = tempfile::tempdir().unwrap();
+        let path = secured_identity(source.path(), "personal", 75);
+        let photo = crate::ProfilePhoto::new(1, 1, vec![21, 22, 23, 255]).unwrap();
+        super::super::update_identity_photo(source.path(), "personal", Some(photo.clone()))
+            .unwrap();
+        let original = fs::read(&path).unwrap();
+        let signer = super::super::load_from_path(path.clone()).unwrap();
+        let proof = signer.sign(b"portable-photo-proof").unwrap();
+        let backup_dir = tempfile::tempdir().unwrap();
+        let backup = backup_dir.path().join("photo.sealed");
+        let password = b"a sufficient photo passphrase";
+        export_portable_backup(&path, &backup, password).unwrap();
+        let target = tempfile::tempdir().unwrap();
+        assert!(
+            import_portable_backup(&backup, b"wrong photo password", target.path(), "personal")
+                .is_err()
+        );
+        assert!(!target.path().join("personal.json").exists());
+        let restored =
+            import_portable_backup(&backup, password, target.path(), "personal").unwrap();
+        assert_eq!(
+            super::super::load_metadata_from_path(&restored)
+                .unwrap()
+                .profile_photo
+                .as_ref(),
+            Some(&photo)
+        );
+        let restored = super::super::load_from_path(restored).unwrap();
+        assert_eq!(restored.profile_photo(), Some(&photo));
+        assert_eq!(restored.sign(b"portable-photo-proof").unwrap(), proof);
+        assert_eq!(fs::read(&path).unwrap(), original);
     }
 
     #[test]

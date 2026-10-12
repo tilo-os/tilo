@@ -187,6 +187,12 @@ pub fn write_preserving_target(path: &Path, bytes: &[u8]) -> io::Result<()> {
                 "atomic document save cannot preserve multiple hard links",
             ));
         }
+        #[cfg(target_os = "linux")]
+        {
+            publication::save_with_mode(&target, bytes, metadata.permissions().mode() & 0o7777)
+                .map_err(PublicationError::into_io_error)
+        }
+        #[cfg(not(target_os = "linux"))]
         write_with_mode(&target, bytes, metadata.permissions().mode() & 0o7777)
     }
     #[cfg(not(unix))]
@@ -949,3 +955,6 @@ mod document_target_tests {
         }
     }
 }
+
+#[cfg(target_os = "linux")]
+pub mod save_marker;

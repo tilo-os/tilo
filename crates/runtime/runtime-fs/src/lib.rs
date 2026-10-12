@@ -90,7 +90,10 @@ pub use grants::{
     GrantedEntry, PageCursor,
 };
 #[cfg(unix)]
-pub use native::{FsSession, NativeGrantAuthority};
+pub use native::{
+    FsAppendHandle, FsDirectoryCursor, FsSession, NativeFileAccess, NativeGrantAuthority,
+    NativeHistoryReadObservation, NativeHistoryReadSubject, SelectedReplacementAuthority,
+};
 
 #[cfg(unix)]
 pub mod operations;
@@ -106,6 +109,23 @@ pub mod cloud;
 pub mod blobs;
 
 #[cfg(unix)]
+pub mod directory;
+#[cfg(unix)]
+pub mod directory_backend;
+#[cfg(unix)]
+pub mod directory_client;
+#[cfg(unix)]
+pub mod directory_connection;
+#[cfg(all(target_os = "linux", feature = "selected-fuse"))]
+pub mod directory_fuse;
+pub mod native_reply;
+#[cfg(unix)]
+pub mod selected_client;
+#[cfg(unix)]
+pub mod selected_file;
+#[cfg(all(target_os = "linux", feature = "selected-fuse"))]
+pub mod selected_fuse;
+#[cfg(unix)]
 pub mod workspace_server;
 
 pub use fs_capnp::workspace_fs::Client as WorkspaceFsClient;
@@ -113,6 +133,9 @@ pub use fs_capnp::workspace_fs::Client as WorkspaceFsClient;
 /// Byte cap the server-side `FileHandle` applies to a single `read`; larger
 /// requests are truncated. Mirrors the FUSE driver's 1 MiB readahead.
 pub const MAX_READ_CHUNK: u32 = 1 << 20;
+
+/// Upper bound of one in-place held-file write syscall. Larger requests refuse.
+pub const MAX_WRITE_CHUNK: u32 = 1 << 20;
 
 /// Try to dial the Tilo workspace-fs proxy via the launcher-supplied service
 /// fd. Returns [`NotAvailable`] when the env var is unset (e.g. running as
@@ -138,8 +161,17 @@ pub fn try_connect() -> Result<FsClient, NotAvailable> {
 /// Returns [`NotAvailable::ConnectionFailed`] when nothing serves `socket`.
 #[cfg(unix)]
 pub fn connect(socket: &std::path::Path) -> Result<FsClient, NotAvailable> {
-    use std::os::fd::IntoRawFd as _;
     let stream = std::os::unix::net::UnixStream::connect(socket)?;
+    connect_stream(stream)
+}
+
+/// Connect the existing filesystem protocol over an already-admitted stream.
+/// The trusted host supplies the live endpoint; this function does not mint a grant.
+/// # Errors
+/// Refuses a disconnected descriptor or protocol initialization failure.
+#[cfg(unix)]
+pub fn connect_stream(stream: std::os::unix::net::UnixStream) -> Result<FsClient, NotAvailable> {
+    use std::os::fd::IntoRawFd as _;
     let unix = runtime_portal::UnixCapnpClient::from_connected_fd(
         stream.into_raw_fd(),
         capnp_rpc::rpc_twoparty_capnp::Side::Client,
@@ -157,6 +189,10 @@ pub enum OpenMode {
     Write,
     /// Append. Creates the file if missing.
     Append,
+    /// Read and positioned write of an existing file; never create or truncate.
+    ReadWriteExisting,
+    /// Positioned write of an existing inode; never create, truncate or read.
+    WriteExisting,
 }
 
 impl From<OpenMode> for fs_capnp::OpenMode {
@@ -165,6 +201,8 @@ impl From<OpenMode> for fs_capnp::OpenMode {
             OpenMode::Read => fs_capnp::OpenMode::Read,
             OpenMode::Write => fs_capnp::OpenMode::Write,
             OpenMode::Append => fs_capnp::OpenMode::Append,
+            OpenMode::ReadWriteExisting => fs_capnp::OpenMode::ReadWriteExisting,
+            OpenMode::WriteExisting => fs_capnp::OpenMode::WriteExisting,
         }
     }
 }
@@ -240,6 +278,21 @@ impl FsClient {
         Self {
             inner: Rc::new(client),
         }
+    }
+
+    /// Request independently admitted native directory custody, preserving raw names.
+    /// # Errors
+    /// Refuses backends without a directory grant and lost or revoked connections.
+    #[cfg(unix)]
+    #[allow(
+        clippy::future_not_send,
+        reason = "capnp-rpc's Rc-based client is inherently !Send; callers run inside a single-threaded LocalSet, per this crate's module docs"
+    )]
+    pub async fn directory(&self) -> Result<directory_client::DirectoryClient, NotAvailable> {
+        let reply = self.inner.directory_request().send().promise.await?;
+        Ok(directory_client::DirectoryClient::from_raw(
+            reply.get()?.get_handle()?,
+        ))
     }
 
     /// Open a file; `path` is workspace-relative, a leading `/` is tolerated.
@@ -358,6 +411,16 @@ pub struct FileHandle {
 }
 
 impl FileHandle {
+    /// # Errors
+    /// Refuses absent authentic scope checking, revocation or transport failure.
+    #[allow(
+        clippy::future_not_send,
+        reason = "capnp-rpc's Rc-based client is inherently !Send; callers run inside a single-threaded LocalSet, per this crate's module docs"
+    )]
+    pub async fn check_scope(&self) -> Result<(), NotAvailable> {
+        self.inner.check_scope_request().send().promise.await?;
+        Ok(())
+    }
     /// Read up to `max_len` bytes at `offset`; the server caps it at [`MAX_READ_CHUNK`].
     ///
     /// # Errors
@@ -376,7 +439,18 @@ impl FileHandle {
             b.set_max_len(max_len);
         }
         let reply = req.send().promise.await?;
-        Ok(reply.get()?.get_bytes()?.to_vec())
+        crate::native_reply::check_payload(
+            reply
+                .get()?
+                .get_status()
+                .map_err(|_| capnp::Error::failed("unknown native result status".into()))?,
+            reply.get()?.get_bytes()?.is_empty(),
+        )?;
+        let bytes = reply.get()?.get_bytes()?;
+        if bytes.len() > MAX_READ_CHUNK as usize || bytes.len() > max_len as usize {
+            return Err(capnp::Error::failed("read reply exceeds requested bound".into()).into());
+        }
+        Ok(bytes.to_vec())
     }
 
     /// Read the whole file in [`MAX_READ_CHUNK`]-sized reads until EOF; for
@@ -421,7 +495,42 @@ impl FileHandle {
             b.set_bytes(bytes);
         }
         let reply = req.send().promise.await?;
+        crate::native_reply::check_payload(
+            reply
+                .get()?
+                .get_status()
+                .map_err(|_| capnp::Error::failed("unknown native result status".into()))?,
+            reply.get()?.get_written() == 0,
+        )?;
         Ok(reply.get()?.get_written())
+    }
+
+    /// Append one bounded chunk atomically. Never retry an unknown RPC outcome.
+    /// # Errors
+    /// Refuses non-append handles, oversized chunks, revocation, or transport loss.
+    #[allow(
+        clippy::future_not_send,
+        reason = "capnp-rpc's Rc-based client is inherently !Send; callers run inside a single-threaded LocalSet, per this crate's module docs"
+    )]
+    pub async fn append(&self, bytes: &[u8]) -> Result<u32, NotAvailable> {
+        if bytes.len() > MAX_WRITE_CHUNK as usize {
+            return Err(capnp::Error::failed("append exceeds byte bound".into()).into());
+        }
+        let mut req = self.inner.append_request();
+        req.get().set_bytes(bytes);
+        let reply = req.send().promise.await?;
+        crate::native_reply::check_payload(
+            reply
+                .get()?
+                .get_status()
+                .map_err(|_| capnp::Error::failed("unknown native result status".into()))?,
+            reply.get()?.get_written() == 0,
+        )?;
+        let written = reply.get()?.get_written();
+        if written as usize > bytes.len() {
+            return Err(capnp::Error::failed("invalid append count".into()).into());
+        }
+        Ok(written)
     }
 
     /// Persist any buffered writes. Idempotent.
@@ -436,7 +545,13 @@ impl FileHandle {
     )]
     pub async fn flush(&self) -> Result<(), NotAvailable> {
         let req = self.inner.flush_request();
-        req.send().promise.await?;
+        let reply = req.send().promise.await?;
+        crate::native_reply::check(
+            reply
+                .get()?
+                .get_status()
+                .map_err(|_| capnp::Error::failed("unknown native result status".into()))?,
+        )?;
         Ok(())
     }
 
@@ -453,6 +568,13 @@ impl FileHandle {
     pub async fn metadata(&self) -> Result<Metadata, NotAvailable> {
         let req = self.inner.metadata_request();
         let reply = req.send().promise.await?;
+        crate::native_reply::check_payload(
+            reply
+                .get()?
+                .get_status()
+                .map_err(|_| capnp::Error::failed("unknown native result status".into()))?,
+            !reply.get()?.has_metadata(),
+        )?;
         Ok(Metadata::from_reader(reply.get()?.get_metadata()?))
     }
 }
@@ -505,3 +627,5 @@ mod tests {
         ));
     }
 }
+
+pub mod external_history;

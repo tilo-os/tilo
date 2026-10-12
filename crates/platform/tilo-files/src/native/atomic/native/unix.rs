@@ -135,6 +135,24 @@ impl Directory {
         }
     }
 
+    #[cfg(target_os = "linux")]
+    pub(crate) fn validate_observed_owner(&self, owner: u32, privacy: Privacy) -> io::Result<()> {
+        if rustix::process::getuid().as_raw() != 0 || rustix::process::geteuid().as_raw() != 0 {
+            return Err(io::ErrorKind::PermissionDenied.into());
+        }
+        self.validate_permission_profile()?;
+        let metadata = self.file.metadata()?;
+        let forbidden = if privacy == Privacy::OwnerOnly {
+            0o077
+        } else {
+            0o022
+        };
+        if !metadata.is_dir() || metadata.uid() != owner || metadata.mode() & forbidden != 0 {
+            return Err(io::ErrorKind::PermissionDenied.into());
+        }
+        Ok(())
+    }
+
     pub(crate) fn validate_namespace_control(&self) -> io::Result<()> {
         self.validate_permission_profile()?;
         let metadata = self.file.metadata()?;
@@ -508,6 +526,23 @@ pub(crate) fn publish(
         exact_mode,
     )
 }
+#[cfg(target_os = "linux")]
+pub(crate) fn publish_atomic_save(
+    directory: &Directory,
+    target: &OsStr,
+    bytes: &[u8],
+    permissions: u32,
+) -> Result<(), PublicationError> {
+    publish_intent(
+        directory,
+        target,
+        bytes,
+        PublishMode::Replace,
+        FilePolicy::Ordinary(Privacy::Inherit),
+        Some(permissions),
+        true,
+    )
+}
 pub(crate) fn publish_policy(
     directory: &Directory,
     target: &OsStr,
@@ -515,6 +550,17 @@ pub(crate) fn publish_policy(
     mode: PublishMode,
     privacy: FilePolicy,
     exact_mode: Option<u32>,
+) -> Result<(), PublicationError> {
+    publish_intent(directory, target, bytes, mode, privacy, exact_mode, false)
+}
+fn publish_intent(
+    directory: &Directory,
+    target: &OsStr,
+    bytes: &[u8],
+    mode: PublishMode,
+    privacy: FilePolicy,
+    exact_mode: Option<u32>,
+    atomic_save: bool,
 ) -> Result<(), PublicationError> {
     validate_component(target).map_err(not_published)?;
     let parent = directory.try_clone().map_err(not_published)?;
@@ -534,6 +580,16 @@ pub(crate) fn publish_policy(
         .map_err(not_published)?;
     checkpoint_with_stage(CheckpointKind::DataFlushed, &stage).map_err(not_published)?;
     checkpoint_with_stage(CheckpointKind::BeforePublish, &stage).map_err(not_published)?;
+    #[cfg(target_os = "linux")]
+    if atomic_save {
+        crate::native::atomic::save_marker::arm(
+            stage.file().map_err(not_published)?,
+            target.as_bytes(),
+        )
+        .map_err(not_published)?;
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = atomic_save;
 
     // From this point a simulated or native publication result may be
     // ambiguous, so Drop must never unlink the object automatically.

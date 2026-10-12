@@ -39,3 +39,14 @@ browser-address-profile-city = Changed the city of the address { $item }
 browser-address-profile-region = Changed the region of the address { $item }
 browser-address-profile-postal-code = Changed the postal code of the address { $item }
 browser-address-profile-country = Changed the country of the address { $item }
+
+## Personal migration library and recovery
+browser-personal-bookmarks-back = Back
+browser-personal-bookmarks-previous = Previous
+browser-personal-bookmarks-next = Next
+browser-personal-bookmarks-empty = No bookmarks here
+browser-personal-bookmarks-remove = Remove bookmark item
+browser-personal-bookmarks-unnamed-folder = Untitled folder
+browser-workspace-bookmarks = Workspace bookmarks
+browser-continuity-failed = We couldn’t finish bringing your browsing over.
+browser-continuity-retry = Try again

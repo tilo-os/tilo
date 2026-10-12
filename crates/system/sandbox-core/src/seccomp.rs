@@ -463,6 +463,65 @@ pub fn install(program: &BpfProgram) -> Result<(), SeccompError> {
     seccompiler::apply_filter_all_threads(program).map_err(|e| SeccompError::Install(e.to_string()))
 }
 
+/// Decode the exact native-endian `sock_filter` bytes used by Bubblewrap.
+/// Shape validation precedes the irreversible installation on every thread.
+///
+/// # Errors
+///
+/// Refuses empty, partial or oversized arrays, and kernel installation failures.
+#[cfg(target_os = "linux")]
+pub fn install_bytes(bytes: &[u8]) -> Result<(), SeccompError> {
+    install(&decode_program_bytes(bytes)?)
+}
+
+#[cfg(target_os = "linux")]
+fn decode_program_bytes(bytes: &[u8]) -> Result<BpfProgram, SeccompError> {
+    if bytes.is_empty() || bytes.len() > 4096 * 8 || !bytes.len().is_multiple_of(8) {
+        return Err(SeccompError::Io(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Seccomp instruction array shape differs",
+        )));
+    }
+    Ok(bytes
+        .chunks_exact(8)
+        .map(|word| seccompiler::sock_filter {
+            code: u16::from_ne_bytes([word[0], word[1]]),
+            jt: word[2],
+            jf: word[3],
+            k: u32::from_ne_bytes([word[4], word[5], word[6], word[7]]),
+        })
+        .collect())
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod byte_codec_tests {
+    use super::*;
+    #[test]
+    fn native_compiled_policy_roundtrips_without_changing_instructions() {
+        for profile in [
+            SeccompProfile::TiloDefault,
+            SeccompProfile::TiloJit,
+            SeccompProfile::TiloWebEngine,
+        ] {
+            let program = baseline_program(profile).unwrap();
+            let bytes = program_bytes(&program);
+            assert_eq!(program_bytes(&decode_program_bytes(&bytes).unwrap()), bytes);
+        }
+        let word = [0x12, 0x34, 5, 6, 0x78, 0x9a, 0xbc, 0xde];
+        let decoded = decode_program_bytes(&word).unwrap();
+        assert_eq!(decoded[0].code, u16::from_ne_bytes([0x12, 0x34]));
+        assert_eq!((decoded[0].jt, decoded[0].jf), (5, 6));
+        assert_eq!(decoded[0].k, u32::from_ne_bytes([0x78, 0x9a, 0xbc, 0xde]));
+    }
+    #[test]
+    fn incomplete_and_oversized_arrays_refuse_before_installation() {
+        for bytes in [Vec::new(), vec![0; 7], vec![0; 9], vec![0; 4097 * 8]] {
+            assert!(install_bytes(&bytes).is_err());
+        }
+        assert!(decode_program_bytes(&vec![0; 4096 * 8]).is_ok());
+    }
+}
+
 /// Compile the baseline policy to a raw BPF blob.
 ///
 /// Takes the profile explicitly rather than defaulting, so every call

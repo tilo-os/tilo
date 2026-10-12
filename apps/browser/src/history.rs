@@ -243,6 +243,26 @@ impl History {
         history
     }
 
+    pub(crate) fn from_imported_entries(entries: Vec<HistoryEntry>) -> History {
+        let mut history = History {
+            entries,
+            ..History::new()
+        };
+        history.trim_to(crate::continuity::MAX_BUNDLE_ENTRIES.saturating_add(MAX_HISTORY_ENTRIES));
+        history
+    }
+    fn trim_to(&mut self, limit: usize) {
+        if self.entries.len() <= limit {
+            return;
+        }
+        self.entries.sort_by(|a, b| {
+            b.last_visit
+                .cmp(&a.last_visit)
+                .then_with(|| b.visit_count.cmp(&a.visit_count))
+                .then_with(|| a.url.cmp(&b.url))
+        });
+        self.entries.truncate(limit);
+    }
     fn trim_to_limit(&mut self) {
         if self.entries.len() <= MAX_HISTORY_ENTRIES {
             return;
@@ -262,7 +282,7 @@ impl History {
 /// Copy at most `limit` bytes without splitting a UTF-8 code point.  Labels
 /// cross the accessibility and global-search boundaries, so this protects
 /// more than the on-disk representation.
-fn bounded_text(value: &str, limit: usize) -> String {
+pub(crate) fn bounded_text(value: &str, limit: usize) -> String {
     if value.len() <= limit {
         return value.to_string();
     }
@@ -330,14 +350,89 @@ pub struct Visit {
 /// It follows them to their other devices and never reaches a
 /// collaborator.
 #[derive(Model, Clone, Debug, Default, PartialEq)]
+#[model(check = BrowsingHistory::valid_imports)]
 pub struct BrowsingHistory {
     /// Visited pages, by URL. Only visiting and forgetting change them.
     #[model(readonly)]
     pub visits: BTreeMap<String, Visit>,
+    /// Immutable imported contributions, keyed by source and URL. Import receipts
+    /// and tombstones stay in the person's record when visits are forgotten.
+    #[model(readonly)]
+    pub imported: BTreeMap<String, ImportedVisit>,
+    #[model(readonly)]
+    pub import_receipts: BTreeMap<String, Atom>,
+    #[model(readonly)]
+    pub forgotten_imports: tilo_resource::Set<String>,
+}
+
+#[derive(Model, Clone, Debug, Default, PartialEq)]
+#[model(check = ImportedVisit::valid)]
+pub struct ImportedVisit {
+    pub url: Atom,
+    pub title: Atom,
+    pub last: u64,
+    pub count: u32,
+}
+
+impl ImportedVisit {
+    fn valid(&self) -> Result<(), Refusal> {
+        if crate::actions::normalized_bookmark_url(&self.url.0).as_deref()
+            != Some(self.url.0.as_str())
+            || self.title.0.len() > MAX_HISTORY_TITLE_BYTES
+            || self.count == 0
+        {
+            return Err(Refusal::new("Invalid imported private visit"));
+        }
+        Ok(())
+    }
+}
+
+impl BrowsingHistory {
+    fn valid_imports(&self) -> Result<(), Refusal> {
+        let hash = |value: &str| {
+            value.len() == 64
+                && value
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        };
+        if self.imported.len() > crate::continuity::MAX_BUNDLE_ENTRIES
+            || self.import_receipts.len() > 1024
+            || self
+                .forgotten_imports
+                .iter()
+                .any(|key| !self.imported.contains_key(key))
+        {
+            return Err(Refusal::new("Invalid private history import ledger"));
+        }
+        for (key, row) in &self.imported {
+            let Some((source, url)) = key.split_once(':') else {
+                return Err(Refusal::new("Invalid imported visit identity"));
+            };
+            if !hash(source)
+                || url != blake3::hash(row.url.0.as_bytes()).to_hex().as_str()
+                || !self.import_receipts.contains_key(source)
+            {
+                return Err(Refusal::new("Invalid imported visit receipt"));
+            }
+        }
+        if self.import_receipts.iter().any(|(key, digest)| {
+            !hash(key.strip_prefix("bundle:").unwrap_or(key)) || !hash(&digest.0)
+        }) {
+            return Err(Refusal::new("Invalid private history receipt"));
+        }
+        Ok(())
+    }
 }
 
 #[resource(kind = "browser.browsing-history", label = "Browsing history")]
 impl BrowsingHistory {
+    pub fn entries(&self) -> Vec<HistoryEntry> {
+        History::of(self).entries().to_vec()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.entries().is_empty()
+    }
+
     /// Record a visit to a page.
     ///
     /// Recording a visit is the browser keeping its history, not an edit of
@@ -374,13 +469,113 @@ impl BrowsingHistory {
         }
         // Keep the most useful pages; the rest fall off.
         if self.visits.len() > MAX_HISTORY_ENTRIES {
-            let kept: std::collections::BTreeSet<String> = History::of(self)
-                .entries
-                .into_iter()
-                .map(|entry| entry.url)
-                .collect();
+            let kept: std::collections::BTreeSet<String> = History::from_entries(
+                self.visits
+                    .iter()
+                    .map(|(url, visit)| HistoryEntry {
+                        url: url.clone(),
+                        title: visit.title.0.clone(),
+                        last_visit: visit.last,
+                        visit_count: u32::try_from(visit.count.get()).unwrap_or(u32::MAX),
+                    })
+                    .collect(),
+            )
+            .entries
+            .into_iter()
+            .map(|entry| entry.url)
+            .collect();
             self.visits.retain(|url, _| kept.contains(url));
         }
+        Ok(())
+    }
+
+    /// Import a complete reviewed private history snapshot. All conflicts and
+    /// capacity checks precede edits; an identical retry never recounts visits.
+    #[action]
+    pub fn import_history_bundle(
+        &mut self,
+        #[param(secret, "Reviewed private history snapshot")] bundle: String,
+    ) -> Result<(), Refusal> {
+        let bundle = crate::continuity::ImportBundle::decode(&bundle)
+            .map_err(|_| Refusal::new("Invalid private history import"))?;
+        if bundle.imported_tree.is_some()
+            || bundle
+                .chunks
+                .iter()
+                .any(|chunk| !chunk.bookmarks.is_empty())
+        {
+            return Err(Refusal::new("Bookmarks belong to their private library"));
+        }
+        let bundle_key = format!("bundle:{}", blake3::Hash::from(bundle.source).to_hex());
+        let bundle_digest = blake3::hash(
+            &serde_json::to_vec(&bundle)
+                .map_err(|_| Refusal::new("Invalid private history import"))?,
+        )
+        .to_hex()
+        .to_string();
+        if let Some(receipt) = self.import_receipts.get(&bundle_key) {
+            return if receipt.0 == bundle_digest {
+                Ok(())
+            } else {
+                Err(Refusal::new(
+                    "Browser source receipt conflicts with this import",
+                ))
+            };
+        }
+        let mut pending = Vec::new();
+        let mut added = 0usize;
+        for chunk in &bundle.chunks {
+            let source = blake3::Hash::from(chunk.source).to_hex().to_string();
+            let digest = blake3::hash(
+                &serde_json::to_vec(chunk)
+                    .map_err(|_| Refusal::new("Invalid private history import"))?,
+            )
+            .to_hex()
+            .to_string();
+            if let Some(receipt) = self.import_receipts.get(&source) {
+                if receipt.0 != digest {
+                    return Err(Refusal::new(
+                        "Browser source receipt conflicts with this import",
+                    ));
+                }
+                continue;
+            }
+            added = added.saturating_add(chunk.history.len());
+            pending.push((source, digest, chunk));
+        }
+        if self
+            .import_receipts
+            .len()
+            .saturating_add(pending.len())
+            .saturating_add(1)
+            > 1024
+            || self
+                .imported
+                .len()
+                .saturating_add(added)
+                .saturating_add(self.visits.len())
+                > crate::continuity::MAX_BUNDLE_ENTRIES
+        {
+            return Err(Refusal::new(
+                "Private history import exceeds its bounded capacity",
+            ));
+        }
+        for (source, digest, chunk) in pending {
+            for row in &chunk.history {
+                let key = format!("{source}:{}", blake3::hash(row.url.as_bytes()).to_hex());
+                self.imported.insert(
+                    key,
+                    ImportedVisit {
+                        url: Atom(row.url.clone()),
+                        title: Atom(row.title.clone()),
+                        last: row.last_visit,
+                        count: row.visit_count,
+                    },
+                );
+            }
+            self.import_receipts.insert(source, Atom(digest));
+        }
+        self.import_receipts.insert(bundle_key, Atom(bundle_digest));
         Ok(())
     }
 
@@ -388,36 +583,144 @@ impl BrowsingHistory {
     #[action]
     pub fn forget(&mut self, #[param("The page's address")] url: String) {
         self.visits.remove(&url);
+        for (key, row) in &self.imported {
+            if row.url.0 == url {
+                self.forgotten_imports.insert(key.clone());
+            }
+        }
     }
 
     /// Forget every page.
     #[action]
     pub fn clear_history(&mut self) {
         self.visits.clear();
+        for key in self.imported.keys() {
+            self.forgotten_imports.insert(key.clone());
+        }
     }
 }
 
 impl History {
     /// The history the person's record holds.
     pub fn of(record: &BrowsingHistory) -> History {
-        History::from_entries(
-            record
-                .visits
-                .iter()
-                .map(|(url, visit)| HistoryEntry {
-                    url: url.clone(),
-                    title: visit.title.0.clone(),
-                    last_visit: visit.last,
-                    visit_count: u32::try_from(visit.count.get()).unwrap_or(u32::MAX),
+        let mut rows: BTreeMap<String, HistoryEntry> = record
+            .visits
+            .iter()
+            .map(|(url, visit)| {
+                (
+                    url.clone(),
+                    HistoryEntry {
+                        url: url.clone(),
+                        title: visit.title.0.clone(),
+                        last_visit: visit.last,
+                        visit_count: u32::try_from(visit.count.get()).unwrap_or(u32::MAX),
+                    },
+                )
+            })
+            .collect();
+        for (key, row) in &record.imported {
+            if record.forgotten_imports.contains(key) {
+                continue;
+            }
+            rows.entry(row.url.0.clone())
+                .and_modify(|entry| {
+                    entry.visit_count = entry.visit_count.saturating_add(row.count);
+                    if row.last > entry.last_visit {
+                        entry.last_visit = row.last;
+                        if !row.title.0.trim().is_empty() {
+                            entry.title.clone_from(&row.title.0);
+                        }
+                    }
                 })
-                .collect(),
-        )
+                .or_insert_with(|| HistoryEntry {
+                    url: row.url.0.clone(),
+                    title: row.title.0.clone(),
+                    last_visit: row.last,
+                    visit_count: row.count,
+                });
+        }
+        History::from_imported_entries(rows.into_values().collect())
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn typed_import_preserves_complete_corpus_retry_receipts_and_forgotten_rows() {
+        use ui::tilo_resource::Replica;
+        let batch = crate::continuity::ImportBatch {
+            source: [3; 32],
+            bookmarks: vec![],
+            history: (0..=MAX_HISTORY_ENTRIES)
+                .map(|i| crate::continuity::HistoryImport {
+                    url: format!("https://import{i}.test/"),
+                    title: format!("Page {i}"),
+                    last_visit: i as u64 + 1,
+                    visit_count: 7,
+                })
+                .collect(),
+        };
+        let bundle = crate::continuity::ImportBundle::from_batch(batch).unwrap();
+        let bundle = bundle.history_bundle();
+        let encoded = serde_json::to_string(&bundle).unwrap();
+        let mut replica = Replica::<BrowsingHistory>::new();
+        replica
+            .apply(BrowsingHistory::IMPORT_HISTORY_BUNDLE.with(encoded.clone()))
+            .unwrap();
+        assert_eq!(
+            History::of(&replica.state().unwrap()).len(),
+            MAX_HISTORY_ENTRIES + 1
+        );
+        replica
+            .apply(BrowsingHistory::IMPORT_HISTORY_BUNDLE.with(encoded.clone()))
+            .unwrap();
+        assert!(
+            replica
+                .state()
+                .unwrap()
+                .entries()
+                .iter()
+                .all(|row| row.visit_count == 7)
+        );
+        replica
+            .apply(BrowsingHistory::FORGET.with("https://import0.test/".to_owned()))
+            .unwrap();
+        replica
+            .apply(BrowsingHistory::IMPORT_HISTORY_BUNDLE.with(encoded))
+            .unwrap();
+        assert!(
+            !replica
+                .state()
+                .unwrap()
+                .entries()
+                .iter()
+                .any(|row| row.url == "https://import0.test/")
+        );
+        let mut changed = bundle.clone();
+        changed.chunks[0].history[0].title = "Changed source".into();
+        let before = replica.state().unwrap();
+        assert!(
+            replica
+                .apply(
+                    BrowsingHistory::IMPORT_HISTORY_BUNDLE
+                        .with(serde_json::to_string(&changed).unwrap())
+                )
+                .is_err()
+        );
+        assert_eq!(before, replica.state().unwrap());
+        replica
+            .apply(BrowsingHistory::CLEAR_HISTORY.with(()))
+            .unwrap();
+        replica
+            .apply(
+                BrowsingHistory::IMPORT_HISTORY_BUNDLE
+                    .with(serde_json::to_string(&bundle).unwrap()),
+            )
+            .unwrap();
+        assert!(replica.state().unwrap().is_empty());
+    }
 
     fn entry(url: &str, title: &str, last_visit: u64, visit_count: u32) -> HistoryEntry {
         HistoryEntry {

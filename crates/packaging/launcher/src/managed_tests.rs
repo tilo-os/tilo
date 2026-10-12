@@ -339,6 +339,7 @@ fn runtime(root: &std::path::Path) -> ManagedRuntime {
             arch: Some(std::env::consts::ARCH),
             identity: Some(&identity),
             extra_libs: &[],
+            extra_bins: &[],
         },
     )
     .unwrap();

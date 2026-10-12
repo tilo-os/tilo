@@ -32,6 +32,14 @@ stage="$work/manifest"
 mkdir -p "$stage" "$out"
 cp "$repo/apps/imager/packaging/flatpak/org.tilo.Imager.yml" "$stage/"
 cp "$repo/target/release/imager" "$stage/tilo-imager-bin"
+"$repo/apps/imager/packaging/stage-capture-sidecar.sh" "$repo/target/release/imager" "$stage/capture-prefix"
+if [ -d "$stage/capture-prefix/share/tilo-imager/capture" ]; then
+  tar -C "$stage/capture-prefix" -cf "$stage/tilo-capture-sidecar.tar" share/tilo-imager/capture
+else
+  # Flatpak keeps a fixed manifest; fresh-install builds carry an empty archive.
+  mkdir -p "$stage/empty-capture"
+  tar -C "$stage/empty-capture" -cf "$stage/tilo-capture-sidecar.tar" --files-from /dev/null
+fi
 sed 's/^Icon=tilo-imager$/Icon=org.tilo.Imager/' \
   "$repo/apps/imager/packaging/linux/tilo-imager.desktop" \
   >"$stage/org.tilo.Imager.desktop"

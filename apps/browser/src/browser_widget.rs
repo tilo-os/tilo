@@ -18,6 +18,7 @@
 //!    displays.
 
 use automerge::{AutoCommit, ObjId};
+use std::rc::Rc;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 #[cfg(test)]
 use ui::widget::Edits;
@@ -54,7 +55,9 @@ use crate::settings::{Settings, SettingsActionBindings, SettingsPane, SettingsPr
 use ui::tilo_resource::Invoke;
 use ui::tilo_resource::Resource as _;
 
+mod continuity;
 mod library;
+pub(crate) mod personal;
 mod toolbar;
 
 const PIP_ID: &str = "browser.media-pip";
@@ -225,6 +228,29 @@ fn bounded_library_filter(query: &str) -> String {
 
 #[derive(Clone, Debug)]
 pub(crate) enum BrowserOperation {
+    BookmarkPersonalPage {
+        url: String,
+        title: String,
+    },
+    ImportPersonalBookmarks {
+        bundle: String,
+    },
+    ReadContinuity,
+    OpenServiceSession,
+    ReadServiceSession,
+    RetryContinuity,
+    RemovePersonalBookmark {
+        url: String,
+    },
+    RemovePersonalImportedNode {
+        source: String,
+        id: String,
+    },
+    ShowPersonalBookmarkFolder {
+        source: String,
+        id: Option<String>,
+        offset: u32,
+    },
     Back,
     Forward,
     Reload,
@@ -326,6 +352,15 @@ struct PendingHistory {
 pub struct BrowserWidget {
     rect: Rect,
     engine: SharedEngine,
+    service_selections: Vec<crate::service_sessions::Selection>,
+    service_destination: Option<crate::service_destinations::Destination>,
+    service_redirect: Option<String>,
+    service_client: Option<ui::collaboration::browser_service_sessions::Client>,
+    service_catalog_pending: Option<ui::collaboration::browser_service_sessions::Pending>,
+    #[cfg(target_os = "linux")]
+    service_pending: Option<crate::service_sessions::PendingView>,
+    #[cfg(target_os = "linux")]
+    service_view: Option<crate::service_sessions::ServiceView>,
     browsing_mode: BrowsingMode,
     composed: ui::widget::Composed,
     bootstrap_done: bool,
@@ -400,7 +435,15 @@ pub struct BrowserWidget {
     history_clear_error: Option<String>,
     /// The person's browsing history, which this window records its visits
     /// in; `None` keeps them nowhere (a private window, a screenshot).
+    person_bookmarks:
+        Option<ui::framework::PersonRecord<crate::personal_bookmarks::PersonalBookmarks>>,
+    personal_bookmarks: Rc<crate::personal_bookmarks::PersonalBookmarkState>,
+    personal_bookmarks_revision: Option<u64>,
+    personal_open: ui::LocalState<std::collections::BTreeMap<String, String>>,
+    personal_bookmark_location: crate::personal_bookmark_view::Location,
     person_history: Option<ui::framework::PersonRecord<crate::history::BrowsingHistory>>,
+    #[cfg(target_os = "linux")]
+    continuity: Option<crate::continuity_handoff::Controller>,
     /// The person's address book, which new tabs fill forms from too.
     address_book: Option<ui::framework::PersonRecord<crate::autofill::AddressBook>>,
     /// The record's revision [`Self::history`] shows.
@@ -519,11 +562,240 @@ impl BrowserWidget {
         w
     }
 
+    pub(crate) fn attach_service_waker(&mut self, waker: ui::WakeHandle) {
+        #[cfg(target_os = "linux")]
+        {
+            if let Some(view) = self.service_view.as_mut() {
+                view.attach_waker(waker.clone());
+            }
+            if let Some(view) = self.service_pending.as_mut() {
+                view.attach_waker(waker);
+            }
+        }
+        #[cfg(not(target_os = "linux"))]
+        let _ = waker;
+    }
+    pub(crate) fn request_service_close(&mut self) -> bool {
+        #[cfg(target_os = "linux")]
+        {
+            if let Some(view) = self.service_pending.as_mut() {
+                return view.request_close();
+            }
+            if let Some(view) = self.service_view.as_mut() {
+                return view.request_close();
+            }
+        }
+        true
+    }
+    pub(crate) fn service_close_complete(&self) -> bool {
+        #[cfg(target_os = "linux")]
+        {
+            if let Some(view) = self.service_pending.as_ref() {
+                return view.close_complete();
+            }
+            if let Some(view) = self.service_view.as_ref() {
+                return view.close_complete();
+            }
+        }
+        true
+    }
+    pub(crate) fn finish_service_close(&mut self) -> Result<(), String> {
+        #[cfg(target_os = "linux")]
+        {
+            if let Some(view) = self.service_pending.as_mut() {
+                return view.finish_close();
+            }
+            if let Some(view) = self.service_view.as_mut() {
+                return view.finish_close();
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn with_service_client(
+        mut self,
+        client: Option<ui::collaboration::browser_service_sessions::Client>,
+    ) -> Self {
+        self.service_client = client;
+        self
+    }
+    #[cfg(target_os = "linux")]
+    pub(crate) fn begin_service_session(
+        &mut self,
+        id: &str,
+        person: [u8; 32],
+        waker: ui::WakeHandle,
+    ) -> Result<(), String> {
+        if self.service_pending.is_some() || self.service_view.is_some() {
+            return Err("An account is already opening or open in this window".into());
+        }
+        let selected = self
+            .service_selection(id)
+            .ok_or("This account needs to be connected again")?;
+        let destination = self
+            .service_destination
+            .clone()
+            .filter(|value| value.service == selected.service);
+        let anchor = crate::service_destinations::anchor(id, destination.as_ref());
+        let client = self
+            .service_client
+            .clone()
+            .ok_or("This account needs to be connected again")?;
+        let mut pending = crate::service_sessions::PendingView::new(id.to_owned(), person, client)
+            .with_destination(destination);
+        pending.attach_waker(waker);
+        pending.opening.set(Some(anchor));
+        self.install_pending_service(pending);
+        Ok(())
+    }
+
+    pub(crate) fn service_selection(
+        &self,
+        id: &str,
+    ) -> Option<&crate::service_sessions::Selection> {
+        self.service_selections.iter().find(|value| value.id == id)
+    }
+    pub(crate) fn begin_service_destination(
+        &mut self,
+        destination: crate::service_destinations::Destination,
+    ) {
+        self.service_destination = Some(destination);
+        self.explicit_navigation_requested = true;
+        self.initial_url = "about:blank".into();
+        self.structure_dirty = true;
+    }
+    pub(crate) fn service_open_anchor(
+        &self,
+        selected: &crate::service_sessions::Selection,
+    ) -> String {
+        crate::service_destinations::anchor(
+            &selected.id,
+            self.service_destination
+                .as_ref()
+                .filter(|value| value.service == selected.service),
+        )
+    }
+    pub(crate) fn take_service_redirect(&mut self) -> Option<String> {
+        self.service_redirect.take()
+    }
+    pub(crate) fn accept_service_catalog(
+        &mut self,
+        sessions: Vec<ui::collaboration::browser_service_sessions::BrowserServiceSessionDescriptor>,
+    ) {
+        if !(ui::collaboration::browser_service_sessions::BrowserServiceSessionReply::List {
+            sessions: sessions.clone(),
+        })
+        .valid()
+        {
+            return;
+        }
+        self.service_selections = sessions
+            .into_iter()
+            .map(crate::service_sessions::selection)
+            .collect();
+        if let Some(destination) = &self.service_destination {
+            let matching: Vec<_> = self
+                .service_selections
+                .iter()
+                .filter(|value| value.service == destination.service)
+                .collect();
+            match matching.as_slice() {
+                [selected] => self.service_redirect = Some(self.service_open_anchor(selected)),
+                [] => {
+                    // No approved session exists: ordinary sign-in remains available.
+                    self.engine
+                        .send(WebViewCommand::Navigate(destination.uri.clone()));
+                    self.service_destination = None;
+                }
+                _ => {} // Existing selected-account actions require an explicit choice.
+            }
+        }
+        self.structure_dirty = true;
+    }
+    pub(crate) fn attach_service_catalog(&mut self, waker: ui::WakeHandle) {
+        if let Some(client) = &self.service_client {
+            self.service_catalog_pending = client
+                .request(
+                    ui::collaboration::browser_service_sessions::BrowserServiceSessionCommand::List,
+                    Some(waker),
+                )
+                .ok();
+            if self.service_catalog_pending.is_none() {
+                self.accept_service_catalog(Vec::new());
+            }
+        }
+    }
+    #[cfg(target_os = "linux")]
+    /// Install the pending native credential request selected by the canonical
+    /// account action, before the polling pass resolves it into a fresh engine.
+    fn install_pending_service(&mut self, pending: crate::service_sessions::PendingView) {
+        self.explicit_navigation_requested = true;
+        self.service_pending = Some(pending);
+        self.structure_dirty = true;
+    }
+    fn poll_service_admission(&mut self) {
+        if let Some(reply) = self
+            .service_catalog_pending
+            .as_mut()
+            .and_then(|pending| pending.poll())
+        {
+            self.service_catalog_pending = None;
+            if let Ok(
+                ui::collaboration::browser_service_sessions::BrowserServiceSessionReply::List {
+                    sessions,
+                },
+            ) = reply
+            {
+                self.accept_service_catalog(sessions);
+            } else {
+                self.accept_service_catalog(Vec::new());
+            }
+        }
+        #[cfg(target_os = "linux")]
+        if let Some(reply) = self
+            .service_catalog_pending
+            .is_none()
+            .then(|| {
+                self.service_pending
+                    .as_mut()
+                    .and_then(|pending| pending.poll(&self.service_selections))
+            })
+            .flatten()
+        {
+            self.service_pending = None;
+            match reply {
+                Ok(mut view) => {
+                    self.engine = view.engine();
+                    view.opening.set(Some(view.anchor()));
+                    let _ = view.poll_open();
+                    self.service_view = Some(view);
+                    self.bootstrap_done = false;
+                }
+                Err(error) => self.engine = ui::webview::chromium::UnavailableEngine::new(error),
+            }
+            self.structure_dirty = true;
+        }
+    }
+
+    #[cfg(all(test, target_os = "linux"))]
+    pub(crate) fn with_service_view(mut self, view: crate::service_sessions::ServiceView) -> Self {
+        self.explicit_navigation_requested = true;
+        self.service_view = Some(view);
+        self
+    }
+
     /// Set the first URI loaded before the widget bootstraps. The binary uses
     /// this only after validating the URI against Browser's declared schemes.
     #[must_use]
     pub fn with_initial_uri(mut self, uri: String) -> Self {
-        self.initial_url = uri;
+        if !self.browsing_mode.is_private()
+            && self.service_client.is_some()
+            && let Some(destination) = crate::service_destinations::Destination::parse(&uri)
+        {
+            self.begin_service_destination(destination);
+        } else {
+            self.initial_url = uri;
+        }
         self
     }
 
@@ -539,6 +811,11 @@ impl BrowserWidget {
     pub fn engine_handle(&self) -> SharedEngine {
         self.engine.clone()
     }
+    #[cfg(test)]
+    pub(crate) fn observed_page_uri(&self) -> &str {
+        &self.current_uri
+    }
+
     pub(crate) fn content_fullscreen(&self) -> bool {
         self.content_fullscreen
     }
@@ -631,6 +908,48 @@ impl BrowserWidget {
         self.history_revision = None;
     }
 
+    pub(crate) fn personal_open_handle(
+        &self,
+    ) -> ui::LocalState<std::collections::BTreeMap<String, String>> {
+        self.personal_open.clone()
+    }
+
+    pub(crate) fn attach_personal_bookmarks(
+        &mut self,
+        record: ui::framework::PersonRecord<crate::personal_bookmarks::PersonalBookmarks>,
+    ) {
+        self.person_bookmarks = Some(record);
+        self.personal_bookmarks_revision = None;
+    }
+    fn follow_personal_bookmarks(&mut self) {
+        let Some(record) = &self.person_bookmarks else {
+            return;
+        };
+        let revision = record.revision();
+        if self.personal_bookmarks_revision != Some(revision) {
+            self.personal_bookmarks_revision = Some(revision);
+            self.personal_bookmarks = record.get();
+            let mut opened = std::collections::BTreeMap::new();
+            for entry in self.personal_bookmarks.bookmarks.entries() {
+                opened.insert(
+                    crate::personal_bookmarks::flat_id(&entry.url),
+                    entry.url.clone(),
+                );
+            }
+            for tree in &self.personal_bookmarks.imported_trees {
+                for node in &tree.nodes {
+                    if let crate::imported_folders::NodeKind::Bookmark { url } = &node.kind {
+                        opened.insert(
+                            crate::personal_bookmarks::node_id(&tree.source, &node.id),
+                            url.clone(),
+                        );
+                    }
+                }
+            }
+            self.personal_open.set(opened);
+            self.structure_dirty = true;
+        }
+    }
     /// Fill forms from, and edit, the person's address book.
     pub(crate) fn attach_address_book(
         &mut self,
@@ -690,6 +1009,15 @@ impl BrowserWidget {
             browsing_mode,
             composed: ui::widget::Composed::default(),
             bootstrap_done: false,
+            service_selections: Vec::new(),
+            service_destination: None,
+            service_redirect: None,
+            service_client: None,
+            service_catalog_pending: None,
+            #[cfg(target_os = "linux")]
+            service_pending: None,
+            #[cfg(target_os = "linux")]
+            service_view: None,
             headless,
             dispatch: None,
             site_exceptions: std::collections::BTreeSet::new(),
@@ -736,7 +1064,14 @@ impl BrowserWidget {
             history_paused: std::sync::Arc::default(),
             observed_history_paused: false,
             history_clear_error: None,
+            person_bookmarks: None,
+            personal_bookmarks: Rc::default(),
+            personal_bookmarks_revision: None,
+            personal_open: ui::LocalState::new(std::collections::BTreeMap::new()),
+            personal_bookmark_location: crate::personal_bookmark_view::Location::default(),
             person_history: None,
+            #[cfg(target_os = "linux")]
+            continuity: None,
             address_book: None,
             history_revision: None,
             history,
@@ -866,7 +1201,7 @@ impl BrowserWidget {
     pub(crate) fn page_declarations(
         &self,
     ) -> Vec<ui::tilo_resource::ActionDecl<crate::resource::Browser>> {
-        if self.page_bookmark_action().is_none() {
+        if self.person_bookmarks.is_some() || self.page_bookmark_action().is_none() {
             return Vec::new();
         }
         let params = browser::AddBookmark::paths();
@@ -1155,6 +1490,8 @@ impl BrowserWidget {
             });
         }
         self.explicit_navigation_requested = true;
+        self.service_destination = None;
+        self.service_redirect = None;
         Ok(())
     }
 
@@ -1178,6 +1515,15 @@ impl BrowserWidget {
             self.structure_dirty |= self.daily.navigation_started(&self.engine);
         }
         match operation {
+            BrowserOperation::OpenServiceSession => {
+                return Err("Open this account through its resource view action".into());
+            }
+            BrowserOperation::ReadServiceSession => {
+                return Err("Account status must use its resource action".into());
+            }
+            BrowserOperation::ReadContinuity | BrowserOperation::RetryContinuity => {
+                return Err("Browser migration must use its resource action".into());
+            }
             BrowserOperation::Back => {
                 self.address_navigation_value = Some(self.address.with(Clone::clone));
                 self.clear_address_error();
@@ -1270,6 +1616,13 @@ impl BrowserWidget {
                 self.show_settings = false;
                 self.show_library = false;
                 self.structure_dirty = true;
+            }
+            operation @ (BrowserOperation::BookmarkPersonalPage { .. }
+            | BrowserOperation::ImportPersonalBookmarks { .. }
+            | BrowserOperation::RemovePersonalBookmark { .. }
+            | BrowserOperation::RemovePersonalImportedNode { .. }
+            | BrowserOperation::ShowPersonalBookmarkFolder { .. }) => {
+                self.perform_personal_bookmark_operation(operation)?;
             }
             BrowserOperation::ClearHistory => {
                 self.clear_history_durably()?;
@@ -2036,6 +2389,18 @@ impl BrowserWidget {
         // first part of the page.
         let on_page = self.show_settings || self.show_library;
         let mut notices: Vec<crate::notice::Notice> = Vec::new();
+        #[cfg(target_os = "linux")]
+        if let Some(pending) = &self.service_pending {
+            notices.push(pending.notice());
+        }
+        #[cfg(target_os = "linux")]
+        if let Some(notice) = self
+            .service_view
+            .as_ref()
+            .and_then(crate::service_sessions::ServiceView::notice)
+        {
+            notices.push(notice);
+        }
         if self.browsing_mode.is_private() {
             notices.push(
                 crate::notice::Notice::neutral("Private window")
@@ -2242,6 +2607,12 @@ impl BrowserWidget {
             self.download_save_due = None;
         }
         self.poll_download_picker();
+        #[cfg(target_os = "linux")]
+        if let Some(view) = self.service_view.as_mut()
+            && view.poll_timeout()
+        {
+            self.structure_dirty = true;
+        }
         let editing = self.url_input_focused();
         for event in self
             .engine
@@ -2259,6 +2630,16 @@ impl BrowserWidget {
                 event => event,
             };
             match event {
+                WebViewEvent::ServiceSessionResult(reply) => {
+                    #[cfg(target_os = "linux")]
+                    if let Some(view) = self.service_view.as_mut()
+                        && view.apply(reply)
+                    {
+                        self.structure_dirty = true;
+                    }
+                    #[cfg(not(target_os = "linux"))]
+                    let _ = reply;
+                }
                 WebViewEvent::CredentialResult(reply) => {
                     let requests = self.credentials.apply(reply);
                     crate::credentials::Credentials::send(&self.engine, requests);
@@ -2465,6 +2846,7 @@ impl BrowserWidget {
                             tracing::warn!(%error, "browser visit was not recorded");
                         }
                         self.follow_history();
+                        self.follow_personal_bookmarks();
                     }
                     self.page_navigation_settled(None);
                 }
@@ -2991,6 +3373,10 @@ impl BrowserWidget {
                 WKey::Character(c) if c == "-" => Some(Action::Zoom(-1)),
                 WKey::Character(c) if c == "0" => Some(Action::Zoom(0)),
                 WKey::Character(c) if c.eq_ignore_ascii_case("d") => {
+                    if self.person_bookmarks.is_some() {
+                        self.queue_unit_operation("browser.page", "bookmark-personal-page");
+                        return true;
+                    }
                     if let Some(action) = self.page_bookmark_action() {
                         self.submit(action);
                     }
@@ -3449,6 +3835,28 @@ impl FloatingSurfaceProvider for BrowserWidget {
 }
 
 impl Widget for BrowserWidget {
+    fn has_pending_visual_work(&self) -> bool {
+        self.service_catalog_pending.is_some()
+            || {
+                #[cfg(target_os = "linux")]
+                {
+                    self.service_pending.is_some()
+                        || self
+                            .service_view
+                            .as_ref()
+                            .is_some_and(|view| view.is_preparing())
+                }
+                #[cfg(not(target_os = "linux"))]
+                {
+                    false
+                }
+            }
+            || self
+                .composed
+                .element()
+                .is_some_and(|view| view.has_pending_visual_work())
+    }
+
     ui::provides!(
         dyn ui::widget::Continuable,
         dyn ui::widget::FloatingSurfaceProvider,
@@ -4099,13 +4507,18 @@ impl BrowserWidget {
 
     /// Every history page and download as a search entry.
     pub(crate) fn search_entries(&self) -> Vec<ui::tilo_resource::SearchEntry> {
-        self.search_index.entries()
+        let mut entries = self.search_index.entries();
+        entries.extend(crate::personal_bookmarks::search(&self.personal_bookmarks));
+        entries
     }
 
     /// The row a history or download hit opens, beyond the published page
     /// of rows too.
     pub(crate) fn search_row(&self, id: &str) -> Option<ui::framework::LiveRow> {
-        self.search_index.resource(id).map(live_row)
+        self.search_index
+            .resource(id)
+            .or_else(|| crate::personal_bookmarks::resolve(&self.personal_bookmarks, id))
+            .map(live_row)
     }
 
     /// What only this window knows, as rows beneath the browser resource:
@@ -4140,6 +4553,21 @@ impl BrowserWidget {
                 &self.title
             },
         );
+        if self.person_bookmarks.is_some()
+            && !self.current_uri.trim().is_empty()
+            && !self
+                .personal_bookmarks
+                .bookmarks
+                .contains(&self.current_uri)
+        {
+            page.actions.push(
+                E::BookmarkPersonalPage {
+                    url: self.current_uri.clone(),
+                    title: self.title.clone(),
+                }
+                .bound(),
+            );
+        }
         let back = E::Back.bound();
         page.actions.push(if self.can_go_back {
             back
@@ -4404,6 +4832,26 @@ impl BrowserWidget {
             page, session, history, bookmarks, downloads, extensions, library, settings,
         ];
         browser.children.extend(bookmark_rows);
+        for selection in &self.service_selections {
+            browser.children.push(selection.resource());
+        }
+        #[cfg(target_os = "linux")]
+        if self.service_view.is_some() {
+            browser.children.push(
+                Resource::new(
+                    "browser.service-status",
+                    "browser.service-status",
+                    "Account",
+                )
+                .with_action(E::ReadServiceSession.bound()),
+            );
+        }
+        if self.person_bookmarks.is_some() {
+            browser.children.push(self.personal_bookmark_resources());
+        }
+        if let Some(resource) = self.continuity_resource() {
+            browser.children.push(resource);
+        }
         browser
     }
 }
@@ -4537,6 +4985,24 @@ impl BrowserWidget {
 
     fn sync_frame(&mut self, state: &AppModel, path: &ModelPath) {
         let (state, path) = ui::doc::document_ref(state, path);
+        self.poll_service_admission();
+        #[cfg(target_os = "linux")]
+        if let Some(engine) = self
+            .service_view
+            .as_mut()
+            .and_then(|view| view.poll_engine())
+        {
+            self.engine = engine;
+            self.composed.invalidate();
+            self.bootstrap_done = false;
+            self.structure_dirty = true;
+        }
+        #[cfg(target_os = "linux")]
+        if let Some(view) = self.service_view.as_mut()
+            && view.poll_open()
+        {
+            self.structure_dirty = true;
+        }
         if self.private_window_request.get() {
             self.private_window_request.set(false);
             self.private_window_notice = crate::private_window::launch(None).err();
@@ -4594,7 +5060,9 @@ impl BrowserWidget {
             self.site.close();
         }
         self.tick_back_hold(ui::time::now());
+        self.poll_continuity();
         self.follow_history();
+        self.follow_personal_bookmarks();
         self.apply_engine_events();
         self.apply_panel_events();
         self.structure_dirty |= self.run_pending_commands();
@@ -4619,6 +5087,22 @@ impl BrowserWidget {
         invocation: ui::tilo_actions::InvocationId,
         operation: BrowserOperation,
     ) -> Result<ui::framework::Effected, String> {
+        if matches!(operation, BrowserOperation::ReadServiceSession) {
+            #[cfg(target_os = "linux")]
+            if let Some(view) = &self.service_view {
+                let mut status = view.report();
+                status["destination_navigation_observed"] =
+                    serde_json::json!(view.destination_navigation_observed(&self.current_uri));
+                return Ok(ui::framework::Effected::value(status));
+            }
+            if let Some(view) = &self.service_pending {
+                return Ok(ui::framework::Effected::value(view.report()));
+            }
+            return Err("This window does not show a connected service".into());
+        }
+        if let Some(result) = self.continuity_operation(&operation) {
+            return result;
+        }
         if let BrowserOperation::Page(request) = operation {
             self.start_page_operation(invocation, request)?;
             return Ok(ui::framework::Effected::Pending);
@@ -4654,6 +5138,12 @@ impl BrowserWidget {
                 matches!(&operation, BrowserOperation::ToggleHistoryPause);
             let output = match &operation {
                 BrowserOperation::ClearHistory => local_output("Browsing history cleared."),
+                BrowserOperation::BookmarkPersonalPage { .. }
+                | BrowserOperation::ImportPersonalBookmarks { .. }
+                | BrowserOperation::RemovePersonalBookmark { .. }
+                | BrowserOperation::RemovePersonalImportedNode { .. } => {
+                    local_output("Personal bookmark library updated.")
+                }
                 // WebKit exposes no completion event for this command. The
                 // result deliberately says only what the executor can prove:
                 // the request was accepted by the local engine.

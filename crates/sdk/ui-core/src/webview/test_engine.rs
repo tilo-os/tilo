@@ -406,6 +406,18 @@ impl WebViewEngine for TestEngine {
             }
             // Owned navigation returned before locking; input/filter commands
             // are recorded above but have no observable page effect here.
+            WebViewCommand::ImportServiceSession(request) => {
+                inner.events.push(WebViewEvent::ServiceSessionResult(
+                    super::ServiceSessionReply {
+                        request_id: request.request_id,
+                        session_id: request.session.session_id.clone(),
+                        service: request.session.service,
+                        imported: false,
+                        cookie_count: 0,
+                        origin_storage_count: 0,
+                    },
+                ));
+            }
             WebViewCommand::ScopedNavigation { .. }
             | WebViewCommand::SetBlockingScripts(_)
             | WebViewCommand::SetSiteExceptions(_)

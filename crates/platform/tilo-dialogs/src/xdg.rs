@@ -219,14 +219,16 @@ async fn run(req: PickRequest) -> Result<Vec<url::Url>, PortalFailure> {
             }
             r.send().await.and_then(|r| r.response())
         }
-        PickKind::Directory => SelectedFiles::open_file()
-            .title(req.title.as_str())
-            .accept_label(req.accept_label.as_str())
-            .modal(true)
-            .directory(true)
-            .send()
-            .await
-            .and_then(|r| r.response()),
+        PickKind::Directory => {
+            let r = SelectedFiles::open_file()
+                .title(req.title.as_str())
+                .accept_label(req.accept_label.as_str())
+                .modal(true)
+                .directory(true)
+                .current_folder::<&std::path::Path>(req.directory_hint())
+                .map_err(|error| PortalFailure::Failed(error.to_string()))?;
+            r.send().await.and_then(|r| r.response())
+        }
         PickKind::Save { suggested_name } => {
             let mut r = SelectedFiles::save_file()
                 .title(req.title.as_str())

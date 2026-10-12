@@ -1,5 +1,8 @@
 //! Retained, process-local UI for the guided setup flow.
 
+#[cfg(target_os = "linux")]
+mod guided_desktop;
+
 use std::cell::{Ref, RefCell};
 use std::collections::HashMap;
 use std::fmt::Write as _;
@@ -31,6 +34,8 @@ use super::folders::{self, FolderScan, SkipReason, SkippedEntry};
 use super::import_view::ImportApp;
 #[cfg(any(target_os = "linux", windows, all(test, unix)))]
 use super::internal_download_flow::InternalDownloadFlow;
+#[cfg(target_os = "linux")]
+pub(crate) use super::internal_install_flow::ReviewedFullOs;
 #[cfg(any(target_os = "linux", windows, all(test, unix)))]
 use super::internal_install_flow::{
     self as install_flow, HostCommand, InternalInstall, Readiness, RunState,
@@ -165,6 +170,11 @@ pub struct SetupApp {
     starts_when_live: bool,
     actions: Option<ui::framework::Actions<Imager>>,
     usb: Option<LocalState<bool>>,
+    guided_mode: bool,
+    #[cfg(target_os = "linux")]
+    guided_navigation: LocalState<bool>,
+    #[cfg(target_os = "linux")]
+    guided_desktop: Option<guided_desktop::DesktopPreparation>,
     desktop_flow: DesktopFlow,
     desktop_revision: u64,
     review_saver: fn(&[super::controller::FolderChoice]) -> Result<(), String>,
@@ -191,6 +201,64 @@ impl Default for SetupApp {
 }
 
 impl SetupApp {
+    /// Continue the guided journey using the existing gated Full-OS review and
+    /// semantic actions. No duplicate experience/folder setup or helper launch.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn from_guided_review(reviewed: ReviewedFullOs) -> Result<Self, String> {
+        let mut app = Self::new();
+        app.adopt_guided_review(reviewed)?;
+        Ok(app)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn adopt_guided_review(&mut self, reviewed: ReviewedFullOs) -> Result<(), String> {
+        let has_release = self
+            .internal_download_flow
+            .as_ref()
+            .is_some_and(|flow| flow.offered_selection().is_some());
+        self.internal_install
+            .adopt_reviewed(reviewed, has_release)?;
+        self.apply_install_capability();
+        {
+            let mut controller = self.controller.borrow_mut();
+            if !controller.choose_experience(Experience::FullOs) {
+                return Err(super::strings::t("imager-setup-internal-error-unavailable"));
+            }
+            controller.next()?;
+            controller.next()?;
+        }
+        self.chosen_experience = Some(Experience::FullOs);
+        self.starts_when_live = false;
+        self.guided_mode = true;
+        self.refresh_guided_navigation();
+        self.status.clear();
+        self.status_is_error = false;
+        self.composed.invalidate();
+        Ok(())
+    }
+
+    /// The same live navigation decision used by the outer guided controls.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn guided_navigation_guard(&self) -> LocalState<bool> {
+        self.guided_navigation.clone()
+    }
+
+    #[cfg(target_os = "linux")]
+    fn refresh_guided_navigation(&self) {
+        let allowed = self.guided_mode
+            && self.guided_desktop_can_navigate()
+            && !self.internal_install.is_running()
+            && !self.internal_install.can_restart()
+            && self.internal_install.pending().is_none()
+            && !self.internal_install.is_probing()
+            && self.host_command_pending.is_none()
+            && self
+                .internal_download_flow
+                .as_ref()
+                .is_none_or(|flow| !flow.has_pending_operation());
+        self.guided_navigation.set(allowed);
+    }
+
     /// Live setup with only capabilities backed by actual adapters.
     /// Platform identity alone never enables Desktop or Full Tilo. Full Tilo
     /// becomes available only after the host probe passes, the catalog offers
@@ -235,6 +303,15 @@ impl SetupApp {
     pub fn start_live(&mut self) {
         self.starts_when_live = false;
         self.desktop_flow = DesktopFlow::new_live();
+        #[cfg(target_os = "linux")]
+        if let Some(preparation) = &self.guided_desktop {
+            self.desktop_flow
+                .require_account_protocol(preparation.prepared.account_custody_protocol());
+            self.desktop_flow
+                .require_service_session_protocol(preparation.prepared.service_session_protocol());
+            self.refresh_guided_navigation();
+            return;
+        }
         self.start_known_folder_lookup();
         #[cfg(any(target_os = "linux", windows, all(test, unix)))]
         self.start_host_probe();
@@ -307,6 +384,11 @@ impl SetupApp {
             starts_when_live: false,
             actions: None,
             usb: None,
+            guided_mode: false,
+            #[cfg(target_os = "linux")]
+            guided_navigation: LocalState::new(false),
+            #[cfg(target_os = "linux")]
+            guided_desktop: None,
             desktop_flow,
             desktop_revision: 0,
             review_saver: super::desktop_continuation::persist_review,
@@ -555,11 +637,12 @@ impl SetupApp {
                     && self.capabilities.platform.supports(Experience::FullOs),
                 connected: on_folder_choices && self.capabilities.connected_folders,
                 next,
-                back: page != SetupPage::Experience,
+                back: !self.guided_mode && page != SetupPage::Experience,
                 folder_policies: on_folder_choices,
                 folder_edits: on_folder_choices && folder_count > 0,
                 help: page == SetupPage::Folders,
-                open_imports: matches!(page, SetupPage::Experience | SetupPage::Review),
+                open_imports: !self.guided_mode
+                    && matches!(page, SetupPage::Experience | SetupPage::Review),
                 choose_folder: on_folder_choices && self.folder_selection_settled(),
             },
             #[cfg(any(target_os = "linux", windows, all(test, unix)))]
@@ -593,6 +676,45 @@ impl SetupApp {
             | SetupEffect::CancelDesktopDownload
             | SetupEffect::RecheckDesktop
             | SetupEffect::OpenUsbWizard => return self.answer_desktop(effect),
+            SetupEffect::RetryDesktop => {
+                if !self.guided_delivery_retry_available() || !self.retry_guided_desktop() {
+                    return Err(super::strings::t("installer-desktop-unavailable"));
+                }
+                #[cfg(target_os = "linux")]
+                self.refresh_guided_navigation();
+                return Ok(self.setup_projection().value());
+            }
+            SetupEffect::UseMigrationIntent { directory } => {
+                #[cfg(target_os = "linux")]
+                {
+                    if self.controller().plan().experience != Experience::FullOs
+                        || self.controller().page() != SetupPage::Review
+                        || self.internal_install.is_running()
+                        || self.internal_install.pending().is_some()
+                        || !matches!(self.internal_install.run_state(), RunState::Idle)
+                    {
+                        return Err(super::strings::t(
+                            "imager-setup-error-migration-intent-unavailable",
+                        ));
+                    }
+                    let directory = zeroize::Zeroizing::new(directory);
+                    let intent = super::migration_intent::MigrationIntent::load(
+                        std::path::Path::new(directory.as_str()),
+                    )
+                    .map_err(|_| {
+                        super::strings::t("imager-setup-error-migration-intent-invalid")
+                    })?;
+                    self.internal_install.set_migration_intent(Some(intent))?;
+                    return Ok(self.setup_projection().value());
+                }
+                #[cfg(not(target_os = "linux"))]
+                {
+                    let _ = directory;
+                    return Err(super::strings::t(
+                        "imager-setup-error-migration-intent-unavailable",
+                    ));
+                }
+            }
             SetupEffect::ChooseExperience { experience } => {
                 if self.controller().page() != SetupPage::Experience {
                     return Err("Experience choices are available on the first setup page.".into());
@@ -693,12 +815,22 @@ impl SetupApp {
                 SetupCommand::Next
             }
             SetupEffect::GoBackInSetup => {
+                if self.guided_mode {
+                    return Err(super::strings::t(
+                        "imager-setup-internal-error-guided-navigation",
+                    ));
+                }
                 if self.controller().page() == SetupPage::Experience {
                     return Err("Setup is already on its first page.".into());
                 }
                 SetupCommand::Back
             }
             SetupEffect::OpenImports => {
+                if self.guided_mode {
+                    return Err(super::strings::t(
+                        "imager-setup-internal-error-guided-navigation",
+                    ));
+                }
                 if self.controller().page() == SetupPage::Folders {
                     return Err(
                         "Folder imports are available on the experience and review pages.".into(),
@@ -756,19 +888,49 @@ impl SetupApp {
             _ => unreachable!("validated Desktop effect"),
         }
         self.composed.invalidate();
+        #[cfg(target_os = "linux")]
+        self.refresh_guided_navigation();
         if self.status_is_error {
             return Err(self.status.clone());
         }
         Ok(self.setup_projection().value())
     }
 
+    fn guided_delivery_retry_available(&self) -> bool {
+        #[cfg(target_os = "linux")]
+        {
+            self.guided_desktop
+                .as_ref()
+                .is_some_and(|p| p.failed && p.pending.is_none())
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            false
+        }
+    }
+    fn retry_guided_desktop(&mut self) -> bool {
+        #[cfg(target_os = "linux")]
+        if let Some(preparation) = &mut self.guided_desktop
+            && preparation.failed
+            && preparation.pending.is_none()
+        {
+            preparation.failed = false;
+            self.status_is_error = false;
+            self.poll_guided_desktop();
+            return true;
+        }
+        false
+    }
     fn start_desktop_install(&mut self) {
         if !self.folder_selection_settled() {
             return;
         }
-        match (self.review_saver)(self.controller.borrow().folders())
-            .and_then(|()| self.desktop_flow.start_install())
-        {
+        let continuation = if self.guided_mode {
+            Ok(())
+        } else {
+            (self.review_saver)(self.controller.borrow().folders())
+        };
+        match continuation.and_then(|()| self.desktop_flow.start_install()) {
             Ok(()) => self.status = "Rechecking this host before download…".into(),
             Err(error) => {
                 self.status = error;
@@ -878,6 +1040,7 @@ impl SetupApp {
                     self.status = "Cancelling the package download…".into();
                 }
             }
+            SetupCommand::RetryDesktop if self.retry_guided_desktop() => {}
             SetupCommand::RetryDesktop => match self.desktop_flow.retry() {
                 Ok(()) => self.status = "Rechecking this host before retry…".into(),
                 Err(error) => {
@@ -968,6 +1131,8 @@ impl SetupApp {
             | SetupCommand::RecheckInternal => self.apply_internal_install_command(command),
         }
         self.composed.invalidate();
+        #[cfg(target_os = "linux")]
+        self.refresh_guided_navigation();
     }
 
     #[cfg(any(target_os = "linux", windows, all(test, unix)))]
@@ -1232,6 +1397,11 @@ impl SetupApp {
         {
             changed |= self.poll_internal_install();
         }
+        #[cfg(target_os = "linux")]
+        {
+            changed |= self.poll_guided_desktop();
+            self.refresh_guided_navigation();
+        }
         changed
     }
 
@@ -1248,6 +1418,9 @@ impl SetupApp {
         let effect = match command {
             SetupCommand::InstallDesktop => Some(SetupEffect::InstallDesktop),
             SetupCommand::CancelDesktopDownload => Some(SetupEffect::CancelDesktopDownload),
+            SetupCommand::RetryDesktop if self.guided_delivery_retry_available() => {
+                Some(SetupEffect::RetryDesktop)
+            }
             SetupCommand::RetryDesktop => Some(SetupEffect::RecheckDesktop),
             SetupCommand::OpenUsbWizard => Some(SetupEffect::OpenUsbWizard),
             _ => None,
@@ -1741,10 +1914,22 @@ impl SetupApp {
             DesktopFlowState::Verifying(selection) => {
                 format!("Checking the installed Tilo session on {}.", selection.host)
             }
-            DesktopFlowState::Installed { selection, result } => format!(
-                "Tilo Desktop {} is installed and verified on {}. Save your work and sign out when you are ready, then choose Tilo on the login screen. Your current session stays the default.",
-                result.version, selection.host
-            ),
+            DesktopFlowState::Installed { selection, result } => {
+                #[cfg(target_os = "linux")]
+                if self.guided_desktop.is_some() {
+                    self.status.clone()
+                } else {
+                    format!(
+                        "Tilo Desktop {} is installed and verified on {}. Save your work and sign out when you are ready, then choose Tilo on the login screen. Your current session stays the default.",
+                        result.version, selection.host
+                    )
+                }
+                #[cfg(not(target_os = "linux"))]
+                format!(
+                    "Tilo Desktop {} is installed and verified on {}. Save your work and sign out when you are ready, then choose Tilo on the login screen. Your current session stays the default.",
+                    result.version, selection.host
+                )
+            }
             DesktopFlowState::Failed { kind, message, .. } => {
                 let what = match kind {
                     DesktopFailureKind::DownloadCancelled => "The download was cancelled.",
@@ -1872,11 +2057,15 @@ impl SetupApp {
                 self.desktop_flow.state(),
                 DesktopFlowState::Installed { .. }
             );
-        let mut body = page::body(if installed {
-            "Tilo Desktop is installed"
+        let mut body = if self.guided_mode {
+            page::stack()
         } else {
-            "Review Tilo setup"
-        });
+            page::body(if installed {
+                "Tilo Desktop is installed"
+            } else {
+                "Review Tilo setup"
+            })
+        };
         if experience == Experience::Desktop {
             body = body.push(Box::new(self.desktop_install_card()));
         }
@@ -1904,7 +2093,11 @@ impl SetupApp {
                 .with_header(SectionHeader::heading("Before installing")),
             ));
         }
-        body.push(Box::new(self.review_folders(experience)))
+        if self.guided_mode {
+            body
+        } else {
+            body.push(Box::new(self.review_folders(experience)))
+        }
     }
 
     /// Hand the window to folder imports once they were asked for: the
@@ -1935,7 +2128,7 @@ impl SetupApp {
                 "Add folders now…",
                 SetupCommand::OpenImports,
             )));
-        } else {
+        } else if !self.guided_mode {
             nav = nav.push(Box::new(
                 self.button("setup.back", "Back", SetupCommand::Back)
                     .with_icon(Icon::ChevronLeft),
@@ -1986,6 +2179,16 @@ impl SetupApp {
                             true,
                         ))
                     }
+                    DesktopFlowState::Installed { .. }
+                        if self.guided_delivery_retry_available() =>
+                    {
+                        Some((
+                            "setup.retry-desktop",
+                            "Try again",
+                            SetupCommand::RetryDesktop,
+                            true,
+                        ))
+                    }
                     DesktopFlowState::Installed { .. } => None,
                     _ => Some((
                         "setup.install",
@@ -2017,8 +2220,11 @@ impl SetupApp {
             ));
         }
 
-        Frame::new(body)
-            .stepper(
+        let frame = Frame::new(body);
+        let frame = if self.guided_mode {
+            frame
+        } else {
+            frame.stepper(
                 &["Experience", "Folders", "Review"],
                 match current {
                     SetupPage::Experience => 0,
@@ -2026,6 +2232,8 @@ impl SetupApp {
                     SetupPage::Review => 2,
                 },
             )
+        };
+        frame
             .notice(page::notice(&self.status, self.status_is_error))
             .actions(nav)
             .build()
@@ -3020,6 +3228,7 @@ fn fixture_desktop_release() -> DesktopRelease {
         url: "https://code.tilo.so/tilo/releases/fixture.rpm".into(),
         byte_size: 7,
         sha256: sha256.clone(),
+        account_custody: None,
         verified_runtime: Some(RuntimeEvidence {
             schema: 1,
             reference: "nonproduction screenshot fixture".into(),
@@ -3112,6 +3321,18 @@ impl Widget for SetupApp {
             || self.picker_rx.is_some()
             || self.desktop_flow.has_pending_operation()
             || {
+                #[cfg(target_os = "linux")]
+                {
+                    self.guided_desktop
+                        .as_ref()
+                        .is_some_and(|p| p.pending.is_some())
+                }
+                #[cfg(not(target_os = "linux"))]
+                {
+                    false
+                }
+            }
+            || {
                 #[cfg(any(target_os = "linux", windows, all(test, unix)))]
                 {
                     self.internal_download_flow
@@ -3174,11 +3395,21 @@ impl ResourceSurface<Imager, SetupEffect> for SetupApp {
     }
 
     fn effects(&self) -> Vec<EffectStatus> {
-        super::actions::statuses(&self.setup_projection())
+        let mut statuses = super::actions::statuses(&self.setup_projection());
+        statuses.push(super::actions::desktop_preparation_status(
+            self.guided_delivery_retry_available(),
+        ));
+        statuses
     }
 
     fn live_rows(&self) -> Vec<LiveRow> {
-        vec![super::actions::row(&self.setup_projection())]
+        let mut rows = vec![super::actions::row(&self.setup_projection())];
+        if self.guided_mode && self.controller().plan().experience == Experience::Desktop {
+            rows.push(super::actions::desktop_preparation_row(
+                self.guided_delivery_retry_available(),
+            ));
+        }
+        rows
     }
 }
 
@@ -3278,6 +3509,50 @@ mod tests {
     const TEST_SYSTEM_ROOT: &str = "/etc";
 
     include!("desktop_journey_tests.rs");
+
+    #[test]
+    fn migration_intent_cannot_be_attached_outside_full_os_review() {
+        let mut app = SetupApp::new();
+        let before = app.setup_projection().value();
+        assert!(
+            app.answer(SetupEffect::UseMigrationIntent {
+                directory: "/must-not-be-opened".into()
+            })
+            .is_err()
+        );
+        assert_eq!(app.setup_projection().value(), before);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn guided_navigation_follows_actual_download_and_staging_and_refuses_legacy_back() {
+        let mut fixture = gated_app(install_flow::tests::Fakes::new(Vec::new()), HostOs::Linux);
+        let app = &mut fixture.app;
+        open_full_review(app);
+        app.guided_mode = true;
+        app.refresh_guided_navigation();
+        let guard = app.guided_navigation_guard();
+        assert!(guard.get());
+        assert!(!app.setup_projection().availability.back);
+        assert!(app.answer(SetupEffect::GoBackInSetup).is_err());
+        assert!(app.answer(SetupEffect::OpenImports).is_err());
+        assert!(retained_name(app.build_composition().as_ref(), "setup.back").is_none());
+        invoke_internal(app, "start-internal-download").unwrap();
+        assert!(!guard.get());
+        wait_for_app(app, "download ready", SetupApp::internal_download_ready);
+        assert!(guard.get());
+        invoke_internal(app, "install-internal").unwrap();
+        assert!(!guard.get());
+        wait_for_app(app, "staged", |app| {
+            matches!(
+                app.internal_install.run_state(),
+                RunState::Succeeded {
+                    action: HelperAction::Stage
+                }
+            )
+        });
+        assert!(!guard.get());
+    }
 
     fn supported_fixture() -> SetupApp {
         SetupApp::with_capabilities(SetupCapabilities {

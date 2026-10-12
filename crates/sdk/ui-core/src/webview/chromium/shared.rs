@@ -765,6 +765,8 @@ pub(super) fn connect(connection: Connection) -> Result<Arc<ChromiumEngine>, Str
         download_events,
         server: OnceLock::new(),
         link: Some(link),
+        service_session: None,
+        exited: Arc::new(std::sync::atomic::AtomicBool::new(false)),
     });
     let shared = Arc::new(Shared::default());
     let tab = runtime

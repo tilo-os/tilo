@@ -16,6 +16,8 @@ path = "src/lib.rs"
 [features]
 # Compiles the throwaway test identity into a release build (dev images only).
 throwaway-test-identity = []
+# Real root-owned current-device custody with an original-user qualification child.
+native-current-device-qualification = []
 
 [dependencies]
 tilo-advisory-lock = { path = "../../system/advisory-lock" }
@@ -25,10 +27,12 @@ tilo-action-policy = { path = "../../collab/action-policy" }
 ed25519-dalek = { workspace = true, features = ["rand_core"] }
 getrandom.workspace = true
 hex.workspace = true
+zeroize.workspace = true
 libc.workspace = true
 postcard = { workspace = true, features = ["alloc"] }
 rand_core.workspace = true
 runtime-identity = { path = "../runtime-identity" }
+sha2.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 threshold-identity = { path = "../../collab/threshold-identity" }

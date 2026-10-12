@@ -75,7 +75,7 @@ class ArtifactTests(unittest.TestCase):
                 artifact.inventory(self.root, self.inputs)
         restart_fixture(self)
         with self.subTest(phase="security_tools_are_required"):
-            for name in ('tilo-crypto', 'tilo-image-trust', 'tilo-device-key-init'):
+            for name in ('tilo-crypto', 'tilo-image-trust', 'tilo-device-key-init', 'tilo-prepared-setup'):
                 with self.subTest(name=name):
                     path = self.root / 'out' / name
                     data = path.read_bytes()

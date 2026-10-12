@@ -848,6 +848,159 @@ impl ResourceSurface<Mailbox, TallyEffect> for Tally {
 
 struct TallyApp;
 
+thread_local! {
+    static NESTED_VISIBLE: RefCell<Option<LocalState<bool>>> = const { RefCell::new(None) };
+    static NESTED_CHILD_CONTEXT: RefCell<Option<SurfaceCx<Mailbox>>> = const { RefCell::new(None) };
+    static NESTED_REPLY: RefCell<Option<tilo_app::framework::EffectReply>> = const { RefCell::new(None) };
+}
+
+#[derive(Default)]
+struct NestedChild {
+    tally: Tally,
+}
+impl tilo_app::widget::Decorator for NestedChild {
+    type Inner = Tally;
+    fn inner(&self) -> &Tally {
+        &self.tally
+    }
+    fn inner_mut(&mut self) -> &mut Tally {
+        &mut self.tally
+    }
+}
+impl ResourceSurface<Mailbox, TallyEffect> for NestedChild {
+    fn present(&mut self, _: &std::rc::Rc<Mailbox>) {}
+    fn attach(&mut self, cx: SurfaceCx<Mailbox>) {
+        NESTED_CHILD_CONTEXT.with(|saved| *saved.borrow_mut() = Some(cx));
+    }
+    fn effect(
+        &mut self,
+        effect: TallyEffect,
+        cx: &mut EffectCx<Mailbox, Self>,
+    ) -> Result<Effected, String> {
+        match effect {
+            TallyEffect::Count { by } => {
+                self.tally.counted = self.tally.counted.saturating_add(by);
+                Ok(Effected::done())
+            }
+            TallyEffect::Tally => {
+                let reply = cx.reply_then(|_, _, cx| {
+                    cx.submit(Mailbox::FETCHED.with("retired child changed document".into()));
+                    Ok(Effected::done())
+                });
+                NESTED_REPLY.with(|saved| *saved.borrow_mut() = Some(reply));
+                Ok(Effected::Pending)
+            }
+        }
+    }
+    fn live_rows(&self) -> Vec<LiveRow> {
+        self.tally.live_rows()
+    }
+}
+
+struct NestedParent {
+    body: Column,
+    cx: Option<SurfaceCx<Mailbox>>,
+}
+impl Default for NestedParent {
+    fn default() -> Self {
+        Self {
+            body: Column::new(),
+            cx: None,
+        }
+    }
+}
+impl tilo_app::widget::Decorator for NestedParent {
+    type Inner = Column;
+    fn inner(&self) -> &Column {
+        &self.body
+    }
+    fn inner_mut(&mut self) -> &mut Column {
+        &mut self.body
+    }
+}
+impl ResourceSurface<Mailbox> for NestedParent {
+    fn present(&mut self, _: &std::rc::Rc<Mailbox>) {}
+    fn attach(&mut self, cx: SurfaceCx<Mailbox>) {
+        self.body = Column::new().push(cx.surface(NestedChild::default()).unwrap());
+        self.cx = Some(cx);
+    }
+}
+struct NestedSurfaceApp;
+impl ResourceApp for NestedSurfaceApp {
+    type Resource = Mailbox;
+    const ID: &'static str = "so.tilo.test-nested-surfaces";
+    const TITLE: &'static str = "Nested surfaces";
+    fn view(cx: &mut ViewCx<Mailbox>) -> Element {
+        let visible = LocalState::new(true);
+        NESTED_VISIBLE.with(|saved| *saved.borrow_mut() = Some(visible.clone()));
+        cx.switch(&visible, |cx, visible| {
+            if *visible {
+                cx.surface(NestedParent::default())
+            } else {
+                Box::new(Column::new())
+            }
+        })
+    }
+}
+
+#[test]
+fn nested_surface_dispatch_and_publication_retire_only_the_removed_child() {
+    let mut app = TestApp::<NestedSurfaceApp>::new().unwrap();
+    app.effect(&TallyEffect::Count { by: 4 }).unwrap();
+    assert_eq!(app.surface_mut::<NestedChild>().tally.counted, 4);
+    app.call_on("row:5", "count", serde_json::json!({}))
+        .unwrap();
+    app.effect(&TallyEffect::Count { by: 1 }).unwrap();
+    assert_eq!(app.surface_mut::<NestedChild>().tally.counted, 10);
+    let child = NESTED_CHILD_CONTEXT.with(|saved| saved.borrow().clone().unwrap());
+    let parent = app.surface_mut::<NestedParent>();
+    parent.body = Column::new();
+    app.settle();
+    assert!(effect(&app.agent_surface(), "tally").is_none());
+    assert!(child.surface(NestedChild::default()).is_err());
+    let parent = app.surface_mut::<NestedParent>();
+    parent.body = Column::new().push(
+        parent
+            .cx
+            .as_ref()
+            .unwrap()
+            .surface(NestedChild::default())
+            .unwrap(),
+    );
+    app.settle();
+    app.effect(&TallyEffect::Count { by: 2 }).unwrap();
+    assert_eq!(app.surface_mut::<NestedChild>().tally.counted, 2);
+}
+
+#[test]
+fn retiring_parent_cancels_and_unpublishes_even_a_retained_child_host() {
+    let mut app = TestApp::<NestedSurfaceApp>::new().unwrap();
+    let instance_id = app.harness().component_instance_id().unwrap();
+    let address = tilo_app::bound_dispatch::BoundActionAddress {
+        instance_id,
+        address: tilo_actions::ActionAddress::new("test.mailbox", "tally"),
+    };
+    let (_, started) = app
+        .harness()
+        .start_bound_job_for(None, &address, &serde_json::Map::new(), true)
+        .unwrap();
+    assert!(started.completed().is_none());
+    let reply = NESTED_REPLY.with(|saved| saved.borrow_mut().take().unwrap());
+    let child = NESTED_CHILD_CONTEXT.with(|saved| saved.borrow().clone().unwrap());
+    let parent = app.surface_mut::<NestedParent>();
+    let held = std::mem::replace(&mut parent.body, Column::new());
+    NESTED_VISIBLE.with(|saved| saved.borrow().as_ref().unwrap().set(false));
+    app.settle();
+    assert!(reply.is_cancelled());
+    assert!(child.surface(NestedChild::default()).is_err());
+    assert!(effect(&app.agent_surface(), "tally").is_none());
+    assert!(app.effect(&TallyEffect::Count { by: 1 }).is_err());
+    reply.finish(Ok(tilo_actions::ActionOutput::default()));
+    app.settle();
+    assert!(app.state().fetched.is_empty());
+    drop(held);
+}
+
 impl ResourceApp for TallyApp {
     type Resource = Mailbox;
     const ID: &'static str = "so.tilo.test-tally";

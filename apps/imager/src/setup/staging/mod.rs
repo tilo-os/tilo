@@ -5,7 +5,12 @@
 //! (`--tilo-staging-helper`) mutates disks or firmware, and it revalidates the
 //! reviewed plan against a fresh probe before every mutation.
 
+#[cfg(target_os = "linux")]
+pub mod browser;
+// Pure journal/ordering contract is shared with cross-platform records.
+pub(super) mod btrfs_resize;
 pub mod bundle;
+pub(crate) mod capacity_probe;
 pub mod cli;
 pub mod efi;
 pub mod fat;
@@ -19,6 +24,7 @@ pub mod linux;
 pub mod linux_parse;
 pub mod plan;
 pub mod platform;
+pub mod prepared_setup;
 pub mod probe;
 pub mod record;
 #[cfg(any(windows, test))]
@@ -33,6 +39,9 @@ pub const ALIGN_BYTES: u64 = 1 << 20;
 pub const MIN_TARGET_BYTES: u64 = 35 << 30;
 /// Default Tilo size offered on Review.
 pub const DEFAULT_TARGET_BYTES: u64 = 64 << 30;
+/// Conservative staging sizes until a verified bundle supplies its requirements.
+pub(crate) const PROVISIONAL_STAGING_ESP_BYTES: u64 = 2 << 30;
+pub(crate) const PROVISIONAL_STAGING_ROOT_BYTES: u64 = 40 << 30;
 /// GPT type of the staging ESP.
 pub const ESP_TYPE: &str = "c12a7328-f81f-11d2-ba4b-00a0c93ec93b";
 /// GPT type of the staging root: the Tilo staging root. The live installer UKI

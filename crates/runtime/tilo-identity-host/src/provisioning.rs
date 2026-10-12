@@ -15,6 +15,7 @@ use threshold_identity::ThresholdIdentity;
 use tilo_identity_ceremony::IdentityRecord;
 use tilo_user_identity::persist::DeviceKeyCustody;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, IdentityPaths, persist};
+use zeroize::{Zeroize, Zeroizing};
 
 /// Where a newly provisioned personal identity's private share is kept.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -216,6 +217,57 @@ pub fn ensure_primary_identity(
     )
 }
 
+/// Create the personal identity explicitly chosen during installer preparation.
+/// Unlike automatic first-login provisioning, an existing identity is refused.
+/// The signing share immediately enters the canonical platform secret provider.
+///
+/// # Errors
+///
+/// Refuses an empty name, an existing primary identity, or unavailable custody.
+pub fn create_primary_identity(
+    identity_dir: &Path,
+    display_name: &str,
+    avatar_color: [u8; 3],
+    storage: IdentityStorage,
+) -> io::Result<ProvisionOutcome> {
+    if display_name.trim().is_empty()
+        || display_name.trim().len() > 1024
+        || display_name.trim().chars().any(char::is_control)
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "An identity needs a bounded display name without control characters.",
+        ));
+    }
+    create_named_primary_identity(identity_dir, display_name.trim(), avatar_color, storage)
+}
+
+fn create_named_primary_identity(
+    identity_dir: &Path,
+    display_name: &str,
+    avatar_color: [u8; 3],
+    storage: IdentityStorage,
+) -> io::Result<ProvisionOutcome> {
+    let mut rng = UnwrapErr(SysRng);
+    let identity = ThresholdIdentity::bootstrap_single_device(&mut rng)
+        .map_err(|error| io::Error::other(error.to_string()))?;
+    let pubkey_hex = hex::encode(identity.group_public_key().as_bytes());
+    let mut record = IdentityRecord::from_threshold_identity(
+        &identity,
+        display_name,
+        avatar_color,
+        std::time::SystemTime::now(),
+    )
+    .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?;
+    let encoded = record.to_json_bytes();
+    record.threshold_identity.secret_bytes.zeroize();
+    let bytes = Zeroizing::new(
+        encoded.map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?,
+    );
+    import_primary_identity(identity_dir, &bytes, storage)?;
+    Ok(ProvisionOutcome::Created { pubkey_hex })
+}
+
 fn ensure_primary_identity_in_context(
     identity_dir: &Path,
     context: IdentityProvisioningContext,
@@ -283,6 +335,35 @@ pub fn ensure_collaboration_identity(
         IdentityProvisioningContext::NativeTilo,
         storage,
         DeviceClass::Native,
+        None,
+    )
+}
+
+/// Provision the native chain with the installer's approved device label.
+/// Existing verified certificates and their labels remain unchanged.
+///
+/// # Errors
+/// Refuses empty, oversized or control-containing labels before provisioning,
+/// and all canonical identity/key/certificate/provider failures.
+pub fn ensure_collaboration_identity_with_device_label(
+    identity_dir: &Path,
+    paths: &IdentityPaths,
+    storage: IdentityStorage,
+    label: &str,
+) -> Result<ProvisionOutcome, io::Error> {
+    if label.trim().is_empty() || label.len() > 64 || label.chars().any(char::is_control) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "device label must contain 1 to 64 bytes without control characters",
+        ));
+    }
+    ensure_collaboration_identity_in_context(
+        identity_dir,
+        paths,
+        IdentityProvisioningContext::NativeTilo,
+        storage,
+        DeviceClass::Native,
+        Some(label),
     )
 }
 
@@ -305,6 +386,7 @@ pub fn ensure_foreign_collaboration_identity(
         IdentityProvisioningContext::NativeTilo,
         storage,
         DeviceClass::Foreign,
+        None,
     )
 }
 
@@ -332,6 +414,7 @@ pub fn ensure_collaboration_identity_for_legacy_linux_host(
         IdentityProvisioningContext::LegacyLinuxHost,
         storage,
         DeviceClass::Native,
+        None,
     )
 }
 
@@ -370,6 +453,34 @@ pub fn install_joined_device(
     now_ns: u64,
     sign: impl FnOnce(&[u8]) -> Result<[u8; 64], String>,
 ) -> Result<DeviceCert, io::Error> {
+    install_joined_device_presented(
+        layout,
+        user_public_key,
+        JoinedPresentation {
+            display_name,
+            color: [88, 101, 242],
+            photo: None,
+        },
+        device_label,
+        now_ns,
+        sign,
+    )
+}
+
+struct JoinedPresentation<'a> {
+    display_name: &'a str,
+    color: [u8; 3],
+    photo: Option<runtime_identity::ProfilePhoto>,
+}
+
+fn install_joined_device_presented(
+    layout: &JoinedDeviceLayout<'_>,
+    user_public_key: [u8; 32],
+    presentation: JoinedPresentation<'_>,
+    device_label: &str,
+    now_ns: u64,
+    sign: impl FnOnce(&[u8]) -> Result<[u8; 64], String>,
+) -> Result<DeviceCert, io::Error> {
     if !safe_account_name(layout.username) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -402,14 +513,15 @@ pub fn install_joined_device(
         .join(".config/tilo/identity");
     prepare_identity_directory(&identity_dir)?;
     let record_id = public_record_id(&identity_id);
-    let record = runtime_identity::public_member_record(
-        if display_name.trim().is_empty() {
+    let record = runtime_identity::public_member_record_with_presentation(
+        if presentation.display_name.trim().is_empty() {
             "My Tilo identity"
         } else {
-            display_name.trim()
+            presentation.display_name.trim()
         },
-        [88, 101, 242],
+        presentation.color,
         user_public_key,
+        presentation.photo,
     )?;
     tilo_files::native::atomic::write_with_mode(
         &identity_dir.join(format!("{record_id}.json")),
@@ -504,10 +616,14 @@ pub fn enroll_from_local_identity(
         ));
     }
     let user_public_key = identity.group_public_key();
-    install_joined_device(
+    install_joined_device_presented(
         layout,
         user_public_key,
-        display_name,
+        JoinedPresentation {
+            display_name,
+            color: identity.avatar_color(),
+            photo: identity.profile_photo().cloned(),
+        },
         device_label,
         now_ns,
         |digest| identity.sign(digest).map_err(|error| error.to_string()),
@@ -802,6 +918,7 @@ fn mint_throwaway_test_identity(
         IdentityProvisioningContext::ThrowawayTest,
         storage,
         DeviceClass::Native,
+        None,
     )
 }
 
@@ -843,6 +960,7 @@ fn ensure_collaboration_identity_in_context(
     context: IdentityProvisioningContext,
     storage: IdentityStorage,
     class: DeviceClass,
+    approved_label: Option<&str>,
 ) -> Result<ProvisionOutcome, io::Error> {
     prepare_identity_directory(identity_dir)?;
 
@@ -884,6 +1002,13 @@ fn ensure_collaboration_identity_in_context(
     // identity-keyed certificate for the same device key.
     let device_owner = claim_device_owner(&paths.user_pubkey, &root_public)?;
 
+    let mut device_label = approved_label
+        .unwrap_or(if device_owner {
+            "Primary device"
+        } else {
+            "Shared device"
+        })
+        .to_owned();
     let (device, _) =
         persist::load_or_create_device_key(paths).map_err(|e| io::Error::other(e.to_string()))?;
     if device_owner && paths.device_cert.exists() {
@@ -899,6 +1024,7 @@ fn ensure_collaboration_identity_in_context(
                 "device certificate does not match the provisioned identity keys",
             ));
         }
+        device_label.clone_from(&cert.device_label);
         if class.must_reissue(&cert) {
             let cert = issue_device_certificate(
                 &signer,
@@ -913,7 +1039,7 @@ fn ensure_collaboration_identity_in_context(
         let cert = issue_device_certificate(
             &signer,
             device.verifying_key().to_bytes(),
-            "Primary device",
+            &device_label,
             class,
         )?;
         persist::write_device_cert(&paths.device_cert, &cert)
@@ -923,16 +1049,7 @@ fn ensure_collaboration_identity_in_context(
     // Keep an identity-keyed copy as well. A device has one keypair, but it
     // needs a separate root-signed certificate for every identity it may
     // present in a workspace.
-    ensure_device_certificate_for_identity(
-        &signer,
-        paths,
-        if device_owner {
-            "Primary device"
-        } else {
-            "Shared device"
-        },
-        class,
-    )?;
+    ensure_device_certificate_for_identity(&signer, paths, &device_label, class)?;
 
     // Register the primary record in the multi-identity registry. A registry
     // write failure is a provisioning failure: silently creating a key that no
@@ -1109,7 +1226,7 @@ fn ensure_device_certificate_for_identity(
         persist::load_or_create_device_key(paths).map_err(|e| io::Error::other(e.to_string()))?;
     let user_public_key = identity.group_public_key();
     let cert_path = paths.device_cert_for_user(&user_public_key);
-    if cert_path.exists() {
+    let label = if cert_path.exists() {
         let cert = persist::read_device_cert(&cert_path)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
         tilo_user_identity::verify_device_cert(&cert)
@@ -1125,14 +1242,13 @@ fn ensure_device_certificate_for_identity(
         if !class.must_reissue(&cert) {
             return Ok(cert_path);
         }
-    }
+        cert.device_label
+    } else {
+        device_label.to_owned()
+    };
 
-    let cert = issue_device_certificate(
-        identity,
-        device.verifying_key().to_bytes(),
-        device_label,
-        class,
-    )?;
+    let cert =
+        issue_device_certificate(identity, device.verifying_key().to_bytes(), &label, class)?;
     persist::write_device_cert(&cert_path, &cert).map_err(|e| io::Error::other(e.to_string()))?;
     Ok(cert_path)
 }
@@ -1321,6 +1437,85 @@ mod tests {
     use super::*;
 
     const FILES: IdentityStorage = IdentityStorage::Files;
+
+    #[test]
+    fn installer_device_label_is_signed_once_and_existing_custody_is_unchanged() {
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set(runtime_identity::FILE_SECRETS_ENV, "1");
+        let temp = tempfile::tempdir().unwrap();
+        let identity = temp.path().join("identity");
+        let paths = IdentityPaths::under(temp.path().join("system"));
+        for label in ["".to_owned(), "bad\nlabel".into(), "x".repeat(65)] {
+            assert!(
+                ensure_collaboration_identity_with_device_label(&identity, &paths, FILES, &label)
+                    .is_err()
+            );
+            assert!(!identity.exists());
+            assert!(!paths.device_privkey.exists());
+        }
+        ensure_collaboration_identity_with_device_label(&identity, &paths, FILES, "Ada's laptop")
+            .unwrap();
+        let cert = persist::read_device_cert(&paths.device_cert).unwrap();
+        tilo_user_identity::verify_device_cert_at(&cert, tilo_clock::unix_now_ns()).unwrap();
+        assert_eq!(cert.device_label, "Ada's laptop");
+        let keyed_path = paths.device_cert_for_user(&cert.user_public_key);
+        assert_eq!(
+            persist::read_device_cert(&keyed_path).unwrap().device_label,
+            "Ada's laptop"
+        );
+        let originals: Vec<_> = [
+            identity.join("primary.json"),
+            paths.device_privkey.clone(),
+            paths.user_pubkey.clone(),
+            paths.device_cert.clone(),
+            keyed_path,
+        ]
+        .into_iter()
+        .map(|path| {
+            let bytes = fs::read(&path).unwrap();
+            (path, bytes)
+        })
+        .collect();
+        assert_eq!(
+            ensure_collaboration_identity_with_device_label(
+                &identity,
+                &paths,
+                FILES,
+                "Replacement name"
+            )
+            .unwrap(),
+            ProvisionOutcome::Existing
+        );
+        for (path, bytes) in originals {
+            assert_eq!(fs::read(path).unwrap(), bytes);
+        }
+    }
+
+    #[test]
+    fn explicit_prepared_identity_creation_refuses_existing_and_invalid_names() {
+        let root = tempfile::tempdir().unwrap();
+        assert!(matches!(
+            create_primary_identity(root.path(), "Ada", [1, 2, 3], IdentityStorage::Files).unwrap(),
+            ProvisionOutcome::Created { .. }
+        ));
+        let path = root.path().join(PRIMARY_IDENTITY_FILE);
+        let original = std::fs::read(&path).unwrap();
+        let metadata = runtime_identity::load_metadata_from_path(&path).unwrap();
+        assert_eq!(metadata.display_name, "Ada");
+        assert_eq!(metadata.avatar_color, [1, 2, 3]);
+        for name in ["Replacement", "", "Ada\nOther"] {
+            assert!(
+                create_primary_identity(root.path(), name, [9; 3], IdentityStorage::Files).is_err()
+            );
+            assert_eq!(std::fs::read(&path).unwrap(), original);
+        }
+        assert_eq!(
+            runtime_identity::load_metadata_from_path(&path)
+                .unwrap()
+                .group_public_key,
+            metadata.group_public_key
+        );
+    }
 
     #[test]
     fn prejoined_device_keeps_the_setup_identity() {
@@ -1603,6 +1798,16 @@ mod tests {
         let local_identity = dir.path().join("local-identity");
         let local_system = IdentityPaths::under(dir.path().join("local-system"));
         ensure_collaboration_identity(&local_identity, &local_system).unwrap();
+        let photo = runtime_identity::ProfilePhoto::new(1, 1, vec![15, 80, 210, 255]).unwrap();
+        runtime_identity::update_identity_presentation(
+            &local_identity,
+            "primary",
+            "Quinten",
+            [3, 4, 5],
+            Some(photo.clone()),
+        )
+        .unwrap();
+        let source_record = std::fs::read(local_identity.join("primary.json")).unwrap();
         let local_cert = persist::read_device_cert(&local_system.device_cert).unwrap();
         let identity_id = hex::encode(local_cert.user_public_key);
         let peers = dir.path().join("home-peers.json");
@@ -1646,6 +1851,23 @@ mod tests {
         );
         assert!(!target_system.user_privkey.exists());
         assert!(cert.capabilities.can_read_all_workspaces);
+        let target_identity = dir.path().join("var/home/quser/.config/tilo/identity");
+        let target_record = runtime_identity::resolve_active_identity(&target_identity).unwrap();
+        let presentation = runtime_identity::load_metadata_from_path(&target_record).unwrap();
+        assert_eq!(presentation.profile_photo, Some(photo));
+        assert_eq!(presentation.avatar_color, [3, 4, 5]);
+        assert_eq!(presentation.group_public_key, local_cert.user_public_key);
+        assert_eq!(
+            std::fs::read(local_identity.join("primary.json")).unwrap(),
+            source_record
+        );
+        let record: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(target_record).unwrap()).unwrap();
+        assert_eq!(
+            record["threshold_identity"]["secret_bytes"],
+            serde_json::json!([])
+        );
+        assert!(record.get("secret_ref").is_none());
     }
     fn ensure_primary_identity(identity_dir: &Path) -> Result<ProvisionOutcome, io::Error> {
         super::ensure_primary_identity(identity_dir, FILES)

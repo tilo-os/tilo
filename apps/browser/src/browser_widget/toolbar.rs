@@ -224,7 +224,13 @@ impl BrowserWidget {
         }
         row = row.push(Box::new(address));
         if !self.compact_chrome {
-            let bookmarked = self.bookmarks.contains(&self.current_uri);
+            let bookmarked = if self.person_bookmarks.is_some() {
+                self.personal_bookmarks
+                    .bookmarks
+                    .contains(&self.current_uri)
+            } else {
+                self.bookmarks.contains(&self.current_uri)
+            };
             let label = if bookmarked {
                 "Page bookmarked"
             } else {
@@ -234,15 +240,31 @@ impl BrowserWidget {
                 .is_framework_hosted()
                 .then(|| self.page_bookmark_action())
                 .flatten();
-            row = row.push(Box::new(
-                self.route_document_button(
-                    Button::icon_only("browser.bookmark", Icon::Star, label)
-                        .with_enabled(!self.current_uri.trim().is_empty()),
-                    "browser.page",
-                    "bookmark",
-                    hosted,
-                ),
-            ));
+            if self.person_bookmarks.is_some() {
+                row = row.push(Box::new(
+                    self.bind_button(
+                        Button::icon_only("browser.bookmark", Icon::Star, label).with_enabled(
+                            !self.current_uri.trim().is_empty()
+                                && !self
+                                    .personal_bookmarks
+                                    .bookmarks
+                                    .contains(&self.current_uri),
+                        ),
+                        "browser.page",
+                        "bookmark-personal-page",
+                    ),
+                ));
+            } else {
+                row = row.push(Box::new(
+                    self.route_document_button(
+                        Button::icon_only("browser.bookmark", Icon::Star, label)
+                            .with_enabled(!self.current_uri.trim().is_empty()),
+                        "browser.page",
+                        "bookmark",
+                        hosted,
+                    ),
+                ));
+            }
             let (resource, action) = self.library_command();
             row = row.push(Box::new(
                 self.bind_button(

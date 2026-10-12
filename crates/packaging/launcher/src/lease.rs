@@ -271,6 +271,7 @@ mod tests {
                 arch: Some(std::env::consts::ARCH),
                 identity: Some(identity),
                 extra_libs: &[dylib],
+                extra_bins: &[],
             },
         )
         .unwrap();

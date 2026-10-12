@@ -754,6 +754,26 @@ jobs:
             fi
           fi
           capnp --version
+      - name: Install native capture assembly prerequisites
+        # This explicit release lane owns the GPGME C probe and signed runtime
+        # assembly. Ordinary commits do not rebuild or alter the CI images.
+        run: |
+          set -euo pipefail
+          if ! command -v pkg-config >/dev/null || ! pkg-config --exists gpgme \
+             || ! command -v cc >/dev/null || ! command -v bwrap >/dev/null \
+             || [ ! -x /usr/bin/ostree ]; then
+            if command -v apt-get >/dev/null; then
+              apt-get update
+              apt-get install -y --no-install-recommends \
+                gcc pkg-config libgpgme-dev gnupg bubblewrap binutils tar ostree
+            elif command -v dnf >/dev/null; then
+              dnf install -y gcc pkgconf-pkg-config gpgme-devel gnupg2 bubblewrap binutils tar ostree
+            else
+              printf 'cannot install capture dependencies: unsupported Linux runner image\n' >&2
+              exit 1
+            fi
+          fi
+          apps/imager/packaging/capture-native-preflight.sh
       - name: Configure release signing
         env:
           CREDENTIAL_BROKER: ${{ vars.IMAGER_LINUX_CREDENTIAL_BROKER }}

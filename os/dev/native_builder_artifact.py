@@ -25,7 +25,7 @@ ANCESTORS = {'usr', 'usr/lib', 'usr/share'}
 IMAGE_TREE = re.compile(r'usr/share/tilo-apps/pkgs/[0-9a-f]{64}/.+')
 PURPOSE = 'tilo-development-native-builder'
 REQUIRED = ('shell fs tilo-model-manager tilo-speech-worker tilo-model-gateway '
-            'tilo-relay tilo-relay-admin tilo-enroll tilo-home-peer-control tilo-greeter tilo-installer '
+            'tilo-relay tilo-relay-admin tilo-enroll tilo-home-peer-control tilo-greeter tilo-installer tilo-prepared-setup '
             'tilo-runtime-mcp tilo-runtime-bundle tilo-launcher tilo-app-host tilo-unlock-helper tilo-rollback tilo-crypto tilo-image-trust tilo-device-key-init '
             'tilo tilo-app-package tilo-install tilo-cli-shim tilo-ush ush-editor/bash-editor.so tilo-system-extension-manager '
             'tilo-projector tilo-windows-vm-control tilo-windows-rail tilo-windows-runtime').split()

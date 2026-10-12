@@ -19,6 +19,8 @@
 )]
 #![deny(clippy::too_many_arguments)]
 
+pub(crate) mod authentication_actions;
+
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, LazyLock, Mutex};
 
@@ -371,7 +373,9 @@ enum PendingDialog {
         reply: oneshot::Sender<UsbDeviceDecision>,
     },
     Authentication {
-        request: AuthenticationRequest,
+        request: Arc<AuthenticationRequest>,
+        generation: uuid::Uuid,
+        owner_uid: libc::uid_t,
         reply: oneshot::Sender<AuthenticationDecision>,
     },
     NetworkSecrets {
@@ -395,6 +399,7 @@ enum PendingDialog {
 #[derive(Default)]
 struct DialogQueueInner {
     order: VecDeque<String>,
+    active: Option<String>,
     pending: HashMap<String, PendingDialog>,
 }
 
@@ -542,17 +547,12 @@ impl PortalDialogQueue {
             return Err("no identity can authorise this request".into());
         }
         self.enqueue_reply(request.handle.clone(), |reply| {
-            PendingDialog::Authentication { request, reply }
-        })
-    }
-
-    fn finish_authentication(&self, handle: &str, decision: AuthenticationDecision) -> bool {
-        self.finish_pending(handle, |pending| match pending {
-            PendingDialog::Authentication { reply, .. } => {
-                let _ = reply.send(decision);
-                Ok(())
+            PendingDialog::Authentication {
+                request: Arc::new(request),
+                generation: uuid::Uuid::new_v4(),
+                owner_uid: unsafe { libc::geteuid() },
+                reply,
             }
-            other => Err(other),
         })
     }
 
@@ -772,6 +772,7 @@ impl PortalDialogQueue {
         let mut inner = self.inner.lock().ok()?;
         while let Some(handle) = inner.order.pop_front() {
             if inner.pending.contains_key(&handle) {
+                inner.active = Some(handle.clone());
                 return Some(handle);
             }
         }
@@ -1492,6 +1493,7 @@ pub struct DialogLayout {
 pub struct PortalDialogController {
     queue: PortalDialogQueue,
     active: Option<String>,
+    active_authentication_generation: Option<uuid::Uuid>,
     selected: usize,
     launcher_name: String,
     launcher_icon: usize,
@@ -1526,6 +1528,7 @@ impl PortalDialogController {
         Self {
             queue,
             active: None,
+            active_authentication_generation: None,
             selected: 0,
             launcher_name: String::new(),
             launcher_icon: 0,
@@ -1554,6 +1557,10 @@ impl PortalDialogController {
         }
         if self.active.is_none() {
             self.active = self.queue.next_handle();
+            self.active_authentication_generation = self
+                .active
+                .as_deref()
+                .and_then(|handle| self.queue.authentication_generation(handle));
             self.selected = 0;
             self.launcher_icon = 0;
             self.launcher_field = 0;
@@ -1607,9 +1614,14 @@ impl PortalDialogController {
         }
     }
     pub fn view(&self) -> Option<DialogView> {
-        self.active
-            .as_deref()
-            .and_then(|handle| self.queue.view(handle))
+        let handle = self.active.as_deref()?;
+        let view = self.queue.view(handle)?;
+        if matches!(view, DialogView::Authentication { .. })
+            && self.queue.authentication_generation(handle) != self.active_authentication_generation
+        {
+            return None;
+        }
+        Some(view)
     }
     pub fn selected(&self) -> usize {
         self.selected
@@ -1711,11 +1723,17 @@ impl PortalDialogController {
                 } else {
                     self.selected
                 };
+                let Some(ticket) = self.queue.current_authentication().filter(|ticket| {
+                    Some(ticket.generation) == self.active_authentication_generation
+                        && self.active.as_deref() == Some(ticket.request().handle.as_str())
+                }) else {
+                    return false;
+                };
+                let Some(offered) = ticket.request().identities.get(identity) else {
+                    return false;
+                };
                 let secret = take_text(&mut self.secret);
-                self.queue.finish_authentication(
-                    view.handle(),
-                    AuthenticationDecision::Answered { identity, secret },
-                )
+                self.queue.answer_authentication(&ticket, offered, secret)
             }
             DialogView::NetworkSecrets { .. } => {
                 let (fields, _) = self.queue.network_fields(view.handle());
@@ -1783,9 +1801,14 @@ impl PortalDialogController {
                 self.queue.finish_window_transfer(view.handle(), None)
             }
             DialogView::Authentication { .. } => {
+                let Some(ticket) = self.queue.current_authentication().filter(|ticket| {
+                    Some(ticket.generation) == self.active_authentication_generation
+                        && self.active.as_deref() == Some(ticket.request().handle.as_str())
+                }) else {
+                    return false;
+                };
                 self.forget_secret();
-                self.queue
-                    .finish_authentication(view.handle(), AuthenticationDecision::Cancelled)
+                self.queue.cancel_authentication(&ticket)
             }
             DialogView::NetworkSecrets { .. } => {
                 self.forget_secret();

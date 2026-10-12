@@ -21,6 +21,9 @@ pub struct NativeDocumentReadContext {
 #[cfg(test)]
 #[path = "committed_document/initialization_tests.rs"]
 mod initialization_tests;
+#[cfg(test)]
+#[path = "committed_document/service_session_tests.rs"]
+mod service_session_tests;
 impl NativeDocumentReadContext {
     /// Bind a read to a source record while retaining the original channel's
     /// launcher custody and live admission check. Only the broker can do so.

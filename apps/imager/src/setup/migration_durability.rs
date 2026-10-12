@@ -9,6 +9,27 @@ pub(super) struct Identity {
     inode: u64,
 }
 
+impl Identity {
+    /// Match a live filesystem UUID without accepting boot-local device IDs.
+    #[cfg(target_os = "linux")]
+    pub(super) fn binds_filesystem(&self, filesystem_uuid: &str) -> bool {
+        let durable = (self.volume.len() == 17 && self.volume[0] == 1)
+            || (self.volume.len() == 41 && self.volume[0] == 3);
+        durable
+            && uuid::Uuid::parse_str(filesystem_uuid)
+                .is_ok_and(|id| self.volume[1..17] == *id.as_bytes())
+    }
+
+    /// Validate a persisted Btrfs source binding before using it as a hint.
+    pub(super) fn binds_btrfs(&self, filesystem_uuid: &str, inode: u64) -> bool {
+        self.inode == inode
+            && self.volume.len() == 41
+            && self.volume[0] == 3
+            && uuid::Uuid::parse_str(filesystem_uuid)
+                .is_ok_and(|id| self.volume[1..17] == *id.as_bytes())
+    }
+}
+
 pub(super) fn supported() -> io::Result<()> {
     if cfg!(any(target_os = "macos", target_os = "linux")) {
         Ok(())
@@ -24,6 +45,21 @@ pub(super) fn identity(file: &File) -> io::Result<Identity> {
     let metadata = cap_primitives::fs::Metadata::from_file(file)?;
     Ok(Identity {
         volume: volume(file)?,
+        inode: metadata.ino(),
+    })
+}
+
+/// A literal link uses its containing volume identity and its own inode. The
+/// link is inspected without opening or following the referent.
+#[cfg(target_os = "linux")]
+pub(super) fn link_identity(directory: &File, name: &std::ffi::OsStr) -> io::Result<Identity> {
+    use cap_fs_ext::MetadataExt;
+    let metadata = super::nofollow::metadata_nofollow(directory, std::path::Path::new(name))?;
+    if !metadata.is_symlink() {
+        return Err(io::Error::other("Expected a literal symbolic link."));
+    }
+    Ok(Identity {
+        volume: volume(&readable_directory(directory)?)?,
         inode: metadata.ino(),
     })
 }

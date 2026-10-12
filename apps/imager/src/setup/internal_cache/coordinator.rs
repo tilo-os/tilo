@@ -38,6 +38,12 @@ fn next_operation(counter: &AtomicU64) -> Result<u64, String> {
 )]
 pub(in crate::setup) struct Cancellation<'a>(&'a AtomicBool);
 impl Cancellation<'_> {
+    /// Borrow the same owned worker cancellation flag for blocking native I/O.
+    /// The flag remains read-only and cannot outlive this consumption scope.
+    pub(in crate::setup) fn signal(&self) -> &AtomicBool {
+        self.0
+    }
+
     #[allow(
         dead_code,
         reason = "the live download flow does not consume verified cache entries yet"

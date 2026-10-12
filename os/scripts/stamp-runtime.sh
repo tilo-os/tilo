@@ -24,3 +24,6 @@ grep -Eq "^runtime[[:space:]]*=[[:space:]]*\"${release//./\\.}\"[[:space:]]*$" "
 }
 sed -i -E "s|^runtime[[:space:]]*=[[:space:]]*\"${release//./\\.}\"[[:space:]]*$|runtime = \"$runtime\"|" "$manifest"
 grep -Fqx "runtime = \"$runtime\"" "$manifest"
+# This checkout built the linked SDK. Its metadata decoder supports negotiated
+# public profile presentation; declare that before the staged manifest is signed.
+python3 "$(dirname "${BASH_SOURCE[0]}")/../../tools/apps/stage_sdk_services.py" "$manifest"

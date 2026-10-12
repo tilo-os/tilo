@@ -134,6 +134,7 @@ OUT_DIR="$out/runtime" RUNTIME_RELEASE="$runtime_release" FROM=/ \
     ARCH="$(uname -m)" IDENTITY_JSON="$runtime_identity" \
     BUNDLE_BIN="$release_dir/tilo-runtime-bundle" \
     FONT_CATALOG_ROOT="$runtime_fonts" \
+    ACCOUNT_CAPABILITY_PROBE="$thin_app_dir/tilo-runtime-account-capability" \
     EXTRA_LIBS="$runtime_dylib ${runtime_engines[*]} $rust_libstd $keyboard_library" \
     "$repo_root/os/scripts/bake-runtime-bundle.sh"
 # Every app below links this exact runtime build and names it.

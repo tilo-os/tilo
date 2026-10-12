@@ -372,6 +372,26 @@ pub(crate) fn existing_identity_at(path: &Path) -> Result<MintedIdentity, String
     })
 }
 
+/// Resume transport only for the exact durable identity and certified device.
+/// This grants no app access; native owner/session admission remains separate.
+pub(crate) fn canonical_native_identity_ready(minted: &MintedIdentity) -> bool {
+    if existing_identity_at(&minted.path).map_or(true, |current| current != *minted) {
+        return false;
+    }
+    let Ok(bytes) = hex::decode(&minted.fingerprint) else {
+        return false;
+    };
+    let Ok(person) = <[u8; 32]>::try_from(bytes) else {
+        return false;
+    };
+    let room = collab_types::person_room(&person);
+    tilo_identity_host::broker::trusted_current_device(&room.to_string()).is_ok_and(
+        |(_, certificate)| {
+            certificate.user_public_key == person && !certificate.capabilities.foreign
+        },
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -487,6 +507,51 @@ mod tests {
             assert_eq!(again.fingerprint, minted.fingerprint);
 
             let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
+    #[test]
+    fn native_identity_readiness_requires_real_identity_device_and_certificate() {
+        const CHILD: &str = "TILO_ONBOARDING_READINESS_TEST_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let fixture = tempfile::tempdir().unwrap();
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["onboarding::tests::native_identity_readiness_requires_real_identity_device_and_certificate", "--exact"])
+                .env(CHILD, "1")
+                .env("HOME", fixture.path())
+                .env("XDG_CONFIG_HOME", fixture.path().join("config"))
+                .env("XDG_STATE_HOME", fixture.path().join("state"))
+                .env("TILO_IDENTITY_ROOT", fixture.path().join("system"))
+                .env(runtime_identity::FILE_SECRETS_ENV, "1")
+                .status().unwrap();
+            assert!(status.success());
+            return;
+        }
+        let directory = runtime_identity::identity_dir_from_env().unwrap();
+        let minted = mint_into(&directory).unwrap();
+        let mut flow = Onboarding::new();
+        assert!(!flow.is_done());
+        flow.resume_created(minted.clone());
+        assert!(flow.is_done());
+        assert!(canonical_native_identity_ready(&minted));
+        let mut mismatch = minted.clone();
+        mismatch.fingerprint = "00".repeat(32);
+        assert!(!canonical_native_identity_ready(&mismatch));
+        let person: [u8; 32] = hex::decode(&minted.fingerprint)
+            .unwrap()
+            .try_into()
+            .unwrap();
+        let paths = crate::firstboot::collaboration_identity_paths();
+        for path in [
+            paths.device_cert_for_user(&person),
+            paths.device_privkey.clone(),
+            minted.path.clone(),
+        ] {
+            let held = path.with_extension("readiness-held");
+            std::fs::rename(&path, &held).unwrap();
+            assert!(!canonical_native_identity_ready(&minted));
+            std::fs::rename(&held, &path).unwrap();
+            assert!(canonical_native_identity_ready(&minted));
         }
     }
 

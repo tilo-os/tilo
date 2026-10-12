@@ -25,6 +25,7 @@ default = ["rpc"]
 rpc = ["dep:capnp", "dep:capnp-rpc", "dep:tokio", "dep:tokio-util"]
 
 [dependencies]
+sha2.workspace = true
 # Pinned: capnp 0.26 ships with capnp-rpc 0.26 and capnpc 0.26. The
 # whole 0.26 line shares a generator + RPC ABI.
 capnp = { workspace = true, optional = true }
@@ -39,6 +40,8 @@ serde.workspace = true
 serde_json.workspace = true
 
 [target.'cfg(unix)'.dependencies]
+# Caller-private atomic publication through the existing canonical file API.
+tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }
 libc.workspace = true
 # `fcntl(F_GETFD)` probes whether a fd is open before handing it to tokio.
 rustix = { workspace = true, features = ["net"] }

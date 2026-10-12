@@ -64,7 +64,7 @@ impl BrowserWidget {
             .collect()
     }
 
-    fn bookmark_rows(&self) -> Vec<Element> {
+    pub(super) fn bookmark_rows(&self) -> Vec<Element> {
         self.bookmarks
             .entries()
             .iter()
@@ -293,6 +293,9 @@ impl BrowserWidget {
                 &self.library_filter.get(),
             );
         }
+        if self.library_section == LibrarySection::Bookmarks && self.person_bookmarks.is_some() {
+            return self.personal_bookmark_body(theme);
+        }
         let list = match self.library_section {
             LibrarySection::History => {
                 let rows = self.history_rows();
@@ -402,8 +405,15 @@ impl BrowserWidget {
                     .with_padding(0.0, 0.0)
                     .push(Box::new(tabs)),
             ),
-            self.library_body(theme),
         ]);
+        if matches!(
+            self.library_section,
+            LibrarySection::Bookmarks | LibrarySection::History
+        ) && let Some(notice) = self.continuity_notice()
+        {
+            parts.push(notice);
+        }
+        parts.push(self.library_body(theme));
         crate::settings::page(parts)
     }
 }

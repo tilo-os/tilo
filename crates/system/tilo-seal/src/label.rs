@@ -22,6 +22,8 @@ pub enum Label {
     DeviceFabricSecret,
     /// A password-protected portable identity backup.
     IdentityBackup,
+    /// A password-protected installer migration package and its content chunks.
+    MigrationPackage,
     /// A delegation secret held by the invite-redemption authority.
     InviteRedemption,
     /// A sealed local secret vault (accounts, authenticator, ...).
@@ -54,12 +56,13 @@ pub enum Label {
 
 impl Label {
     /// Every registered label, for uniqueness checks and documentation.
-    pub const ALL: [Self; 18] = [
+    pub const ALL: [Self; 19] = [
         Self::RelayEnrollOffer,
         Self::RelayEnrollRequest,
         Self::RelayEnrollResponse,
         Self::DeviceFabricSecret,
         Self::IdentityBackup,
+        Self::MigrationPackage,
         Self::InviteRedemption,
         Self::SecretVault,
         Self::PortalSecretStore,
@@ -84,6 +87,7 @@ impl Label {
             Self::RelayEnrollResponse => "tilo-seal/v1/relay-enroll-response",
             Self::DeviceFabricSecret => "tilo-seal/v1/device-fabric-secret",
             Self::IdentityBackup => "tilo-seal/v1/identity-backup",
+            Self::MigrationPackage => "tilo-seal/v1/migration-package",
             Self::InviteRedemption => "tilo-seal/v1/invite-redemption",
             Self::SecretVault => "tilo-seal/v1/secret-vault",
             Self::PortalSecretStore => "tilo-seal/v1/portal-secret-store",
@@ -108,6 +112,48 @@ impl Label {
 #[cfg(test)]
 mod tests {
     use super::Label;
+
+    #[test]
+    fn migration_cannot_be_opened_as_an_identity_backup() {
+        use crate::{Context, SymmetricKey, envelope};
+        let key = SymmetricKey::generate().unwrap();
+        let bytes = envelope::seal(
+            &key,
+            Context::new(Label::MigrationPackage, b"package"),
+            b"data",
+        )
+        .unwrap();
+        assert_eq!(
+            envelope::open(
+                &key,
+                Context::new(Label::MigrationPackage, b"package"),
+                &bytes
+            )
+            .unwrap()
+            .as_slice(),
+            b"data"
+        );
+        assert!(
+            envelope::open(
+                &key,
+                Context::new(Label::IdentityBackup, b"package"),
+                &bytes
+            )
+            .is_err()
+        );
+        assert!(
+            envelope::open(
+                &key,
+                Context::new(Label::MigrationPackage, b"different-package"),
+                &bytes
+            )
+            .is_err()
+        );
+        assert_eq!(
+            Label::MigrationPackage.as_str(),
+            "tilo-seal/v1/migration-package"
+        );
+    }
 
     #[test]
     fn labels_are_unique_and_prefix_free() {

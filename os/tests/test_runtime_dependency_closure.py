@@ -82,7 +82,7 @@ class RuntimeDependencies(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'existing ELF'):
             COLLECTOR.collect([self.directory / 'absent'], [self.directory])
 
-    def bake(self):
+    def bake(self, probe=None):
         # Record the actual production bake's arguments, without a signer or
         # authority. Real signing/verification is qualified separately using
         # the canonical runtime-bundle binary and an ephemeral fixture key.
@@ -105,6 +105,8 @@ elif args[0]=='build':
                            EXTRA_LIBS=f'{self.directory}/libruntime_dylib.so '
                                       f'{self.directory}/libstd-fixture.so',
                            TRUST_LIST='')
+        if probe is not None:
+            environment['ACCOUNT_CAPABILITY_PROBE'] = str(probe)
         return subprocess.run(['bash', str(ROOT / 'os/scripts/bake-runtime-bundle.sh')],
                               env=environment, capture_output=True, text=True)
 
@@ -118,6 +120,19 @@ elif args[0]=='build':
         self.assertIn(str(self.directory / 'liblazy.so'), includes)
         self.assertIn(str(self.directory / 'libdeep.so'), includes)
         self.assertTrue(any(Path(path).name == 'libc.so.6' for path in includes))
+
+    def test_production_bake_includes_probe_and_observed_dependency_closure(self):
+        probe = self.directory / 'tilo-runtime-account-capability'
+        shutil.copyfile(self.directory / 'app', probe)
+        probe.chmod(0o700)
+        result = self.bake(probe)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        arguments = json.loads((self.directory / 'record.json').read_text())
+        binaries = [arguments[i + 1] for i, value in enumerate(arguments) if value == '--include-bin']
+        includes = [arguments[i + 1] for i, value in enumerate(arguments) if value == '--include']
+        self.assertIn(str(probe), binaries)
+        self.assertIn(str(self.directory / 'libbridge.so'), includes)
+        self.assertIn(str(self.directory / 'libleaf.so'), includes)
 
     def test_production_bake_never_signs_an_incomplete_closure(self):
         (self.directory / 'libleaf.so').unlink()

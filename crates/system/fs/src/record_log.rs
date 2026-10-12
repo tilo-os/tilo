@@ -10,6 +10,11 @@
 //! Envelopes are stored as their canonical wire bytes and verified once, at
 //! ingest; reopening trusts the log (`storage.md` §8.1).
 
+mod external_reservation;
+pub(crate) use external_reservation::{
+    ExternalCanonicalIds, ExternalReservationInput, PreviousCanonicalIds,
+};
+
 use std::path::Path;
 use std::sync::Mutex;
 

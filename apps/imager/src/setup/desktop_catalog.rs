@@ -54,6 +54,9 @@ pub struct DesktopRelease {
     pub byte_size: u64,
     pub sha256: String,
     pub verified_runtime: Option<RuntimeEvidence>,
+    /// Consumer proof extracted from these exact package bytes by the signed catalog producer.
+    #[serde(default)]
+    pub account_custody: Option<super::account_admission::ConsumerCapability>,
 }
 
 impl DesktopRelease {
@@ -109,6 +112,44 @@ impl DesktopRelease {
                         .into(),
                 );
             }
+        }
+        if let Some(capability) = &self.account_custody {
+            capability
+                .validate()
+                .map_err(|_| "Invalid Desktop account consumer proof.".to_string())?;
+        }
+        Ok(())
+    }
+
+    pub(super) fn require_account_protocol(&self, required: Option<u32>) -> Result<(), String> {
+        self.validate_metadata()?;
+        if let Some(protocol) = required {
+            if !self
+                .account_custody
+                .as_ref()
+                .is_some_and(|proof| proof.protected_grant_protocol == protocol)
+            {
+                return Err(super::strings::t(
+                    "imager-setup-account-consumer-unavailable",
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    pub(super) fn require_service_session_protocol(
+        &self,
+        required: Option<u32>,
+    ) -> Result<(), String> {
+        self.validate_metadata()?;
+        if required.is_some_and(|protocol| {
+            self.account_custody
+                .as_ref()
+                .is_none_or(|proof| !proof.supports_service_session_protocol(protocol))
+        }) {
+            return Err(super::strings::t(
+                "imager-setup-account-consumer-unavailable",
+            ));
         }
         Ok(())
     }
@@ -252,6 +293,37 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn desktop_catalog_authenticates_strict_package_consumer_declaration() {
+        let mut entry = release_json();
+        entry["account_custody"] = json!({"schema":1,"protected_grant_protocol":1,
+            "credential_helper_sha256":"1".repeat(64),"runtime_root_hash":"2".repeat(64),
+            "runtime_probe_sha256":"3".repeat(64),"runtime_library_sha256":"4".repeat(64),
+            "runtime_version":"fixture-1","runtime_library":"lib/libruntime_dylib.so"});
+        let parsed = parse_catalog(&catalog(vec![entry.clone()]))
+            .unwrap()
+            .remove(0);
+        parsed.require_account_protocol(Some(1)).unwrap();
+        parsed.require_service_session_protocol(None).unwrap();
+        assert!(parsed.require_service_session_protocol(Some(1)).is_err());
+        assert!(parsed.require_account_protocol(Some(2)).is_err());
+        for (field, value) in [
+            ("schema", json!(2)),
+            ("protected_grant_protocol", json!(2)),
+            ("runtime_library", json!("../libruntime_dylib.so")),
+            ("unknown", json!(true)),
+        ] {
+            let mut altered = entry.clone();
+            altered["account_custody"][field] = value;
+            assert!(parse_catalog(&catalog(vec![altered])).is_err());
+        }
+        let legacy = parse_catalog(&catalog(vec![release_json()]))
+            .unwrap()
+            .remove(0);
+        legacy.require_account_protocol(None).unwrap();
+        assert!(legacy.require_account_protocol(Some(1)).is_err());
     }
 
     /// Rejected catalogs.

@@ -2,12 +2,52 @@
 //!
 //! The binary is the framework app [`imager::ImagerShell`]: the write wizard,
 //! the guided setup with `--setup`, the folder imports with
-//! `--import-folders`, and the standard `--shots`, `--shots-dir` and
-//! `--headless` modes over its scenarios. Started with a helper's own command
+//! `--import-folders`, the guided `--installer` (`--installer-preview` alias),
+//! and the standard `--shots`, `--shots-dir` and
+//! `--headless-drive` semantic actions on the production app. Shots render its
+//! scenarios. Started with a helper's own command
 //! line it is that helper instead (the privileged writer, the staging steps,
 //! the packaging probes), which the app declares as its helpers.
 
 #[cfg(feature = "thin")]
 extern crate runtime_dylib;
 
-ui::main!(imager::ImagerShell);
+fn main() {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        if guided_installer(std::env::args().skip(1)) {
+            ui::framework::run::<imager::resource::GuidedInstallerShell>();
+        } else {
+            ui::framework::run::<imager::ImagerShell>();
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn guided_installer(args: impl IntoIterator<Item = String>) -> bool {
+    args.into_iter()
+        .any(|arg| matches!(arg.as_str(), "--installer" | "--installer-preview"))
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests {
+    #[test]
+    fn only_guided_installation_switches_choose_the_installer_presentation() {
+        for args in [
+            vec!["--installer"],
+            vec!["--installer-preview", "--headless"],
+        ] {
+            assert!(super::guided_installer(args.into_iter().map(str::to_owned)));
+        }
+        for args in [
+            vec![],
+            vec!["--setup"],
+            vec!["--import-folders"],
+            vec!["--write"],
+        ] {
+            assert!(!super::guided_installer(
+                args.into_iter().map(str::to_owned)
+            ));
+        }
+    }
+}

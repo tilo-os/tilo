@@ -25,3 +25,7 @@ mod support;
 
 #[path = "managed.rs"]
 mod managed;
+
+#[cfg(target_os = "linux")]
+#[path = "capture_service.rs"]
+mod capture_service;

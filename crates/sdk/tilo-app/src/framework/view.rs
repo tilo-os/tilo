@@ -25,7 +25,7 @@ use super::reactive::{Reads, Updaters};
 use super::scenario::Run;
 use super::settings::ViewStorage;
 use super::stage::Stages;
-use super::surface::{ResourceSurface, SurfaceCx, SurfaceHost};
+use super::surface::{ResourceSurface, SurfaceCx};
 use super::switch::Switch;
 
 fn disabled(mut button: Button) -> Button {
@@ -507,34 +507,19 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
     /// Host a custom widget or renderer that takes part through the
     /// [`ResourceSurface`] contract, answering its effect vocabulary `E`
     /// (none unless it implements `ResourceSurface<R, E>`).
-    pub fn surface<S, E>(&self, mut surface: S) -> Element
+    pub fn surface<S, E>(&self, surface: S) -> Element
     where
         S: ResourceSurface<R, E> + 'static,
         E: Effect,
     {
-        let jobs = self.effects.surface_jobs();
-        surface.attach(SurfaceCx {
+        SurfaceCx {
             env: self.env.clone(),
-            jobs: jobs.clone(),
+            jobs: self.effects.surface_jobs(),
             actions: self.actions(),
-        });
-        surface.present(&self.live.get());
-        let host = SurfaceHost::new(
-            self.live.clone(),
-            self.dispatch.clone(),
-            &self.effects,
-            jobs,
-            self.alive.clone(),
-            surface,
-        );
-        let pending = host.staging();
-        self.stages.push(
-            self.alive.clone(),
-            Box::new(move |scenario| {
-                *pending.borrow_mut() = Some(scenario.map(str::to_owned));
-            }),
-        );
-        super::surface::HostedSurface::element(Box::new(host))
+            stages: self.stages.clone(),
+            scope: None,
+        }
+        .host_surface(surface)
     }
 
     /// Answer the effect vocabulary `E` — work with no document delta that a

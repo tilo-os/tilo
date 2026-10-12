@@ -83,6 +83,14 @@ struct MediaRelease {
     archive_size: u64,
     image_sha256: String,
     image_size: u64,
+    #[serde(default)]
+    account_custody: Option<crate::setup::account_admission::ConsumerCapability>,
+    #[serde(default)]
+    home_archive: Option<crate::setup::home_admission::ConsumerCapability>,
+    #[serde(default)]
+    applications: Option<crate::setup::applications_admission::ConsumerCapability>,
+    #[serde(default)]
+    original_source: Option<crate::setup::original_admission::ConsumerCapability>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -266,18 +274,26 @@ fn parse_catalog(raw: &str) -> Result<Catalog, String> {
     {
         let shape: serde_json::Value =
             serde_json::from_str(raw).map_err(|error| error.to_string())?;
-        let valid = shape.is_object()
-            && shape
-                .get("releases")
-                .and_then(serde_json::Value::as_array)
-                .is_some_and(|entries| {
-                    entries.iter().all(|entry| {
-                        entry.is_object()
+        let valid =
+            shape.is_object()
+                && shape
+                    .get("releases")
+                    .and_then(serde_json::Value::as_array)
+                    .is_some_and(|entries| {
+                        entries.iter().all(|entry| {
+                            entry.is_object()
+                            && entry
+                                .get("home_archive")
+                                .is_none_or(serde_json::Value::is_object)
+                            && entry.get("applications").is_none_or(serde_json::Value::is_object)
+                            && entry.get("original_source").is_none_or(
+                                crate::setup::original_admission::ConsumerCapability::wire_shape,
+                            )
                             && ["purpose", "layout"]
                                 .iter()
                                 .all(|key| entry.get(*key).is_none_or(serde_json::Value::is_string))
-                    })
-                });
+                        })
+                    });
         if !valid {
             return Err(
                 "Catalog records must be JSON objects with string purpose/layout tags.".into(),
@@ -325,6 +341,32 @@ fn parse_catalog(raw: &str) -> Result<Catalog, String> {
                 }
                 if media.purpose.is_some() != media.layout.is_some() {
                     return Err("Incomplete media purpose/layout.".into());
+                }
+                if let Some(proof) = &media.account_custody {
+                    proof
+                        .validate()
+                        .map_err(|_| "Invalid media account consumer proof.".to_string())?;
+                }
+                if let Some(proof) = &media.applications {
+                    proof
+                        .validate()
+                        .map_err(|_| "Application consumer proof is invalid".to_string())?;
+                }
+                if let Some(proof) = &media.home_archive {
+                    proof
+                        .validate()
+                        .map_err(|_| "Invalid media Home consumer proof.".to_string())?;
+                }
+                if let Some(proof) = &media.original_source {
+                    proof
+                        .validate()
+                        .map_err(|_| "Invalid media original-source consumer proof.".to_string())?;
+                    if proof.capture_pins.arch != media.arch {
+                        return Err(
+                            "Original-source proof architecture differs from selected image."
+                                .into(),
+                        );
+                    }
                 }
                 validate_digest(&media.archive_sha256)?;
                 validate_digest(&media.image_sha256)?;
@@ -377,6 +419,10 @@ fn media_releases(catalog: Catalog, host_arch: &str) -> Vec<TiloRelease> {
                 archive_sha256: release.archive_sha256,
                 archive_size: release.archive_size,
                 image_sha256: release.image_sha256,
+                account_custody: release.account_custody,
+                home_archive: release.home_archive,
+                applications: release.applications,
+                original_source: release.original_source,
             })
         })
         .collect()
@@ -1220,6 +1266,10 @@ mod tests {
                 archive_sha256: "a".repeat(64),
                 archive_size: 1,
                 image_sha256: "b".repeat(64),
+                account_custody: None,
+                home_archive: None,
+            applications: None,
+                original_source: None,
             };
 
             let source = source_for(&release, image.path()).unwrap();
@@ -1566,6 +1616,44 @@ mod internal_catalog_tests {
             assert!(release.verify_manifest(&bytes).is_ok());
         }
     }
+    #[test]
+    fn media_catalog_retains_strict_account_consumer_proof_bound_to_image() {
+        let mut value = media();
+        value["account_custody"] = json!({"schema":1,"protected_grant_protocol":1,
+            "credential_helper_sha256":"1".repeat(64),"runtime_root_hash":"2".repeat(64),
+            "runtime_probe_sha256":"3".repeat(64),"runtime_library_sha256":"4".repeat(64),
+            "runtime_version":"test-1","runtime_library":"lib/libruntime_dylib.so"});
+        let selected = media_releases(parse_catalog(&catalog(value.clone())).unwrap(), "x86_64");
+        assert_eq!(selected.len(), 1);
+        assert_eq!(
+            selected[0].image_sha256,
+            value["image_sha256"].as_str().unwrap()
+        );
+        assert_eq!(
+            selected[0]
+                .account_custody
+                .as_ref()
+                .unwrap()
+                .protected_grant_protocol,
+            1
+        );
+        for (key, invalid) in [
+            ("schema", json!(2)),
+            ("protected_grant_protocol", json!(2)),
+            ("runtime_library", json!("../libruntime_dylib.so")),
+            ("unexpected", json!(true)),
+        ] {
+            let mut altered = value.clone();
+            altered["account_custody"][key] = invalid;
+            assert!(parse_catalog(&catalog(altered)).is_err());
+        }
+        assert!(
+            media_releases(parse_catalog(&catalog(media())).unwrap(), "x86_64")[0]
+                .account_custody
+                .is_none()
+        );
+    }
+
     fn internal(manifest: &[u8]) -> Value {
         json!({"purpose":"tilo-internal-installer","layout":"internal-bundle-v2",
             "release_id":"fixture-only","arch":"x86_64",
@@ -1778,5 +1866,121 @@ mod internal_catalog_tests {
                 .read(&mut chunk)
                 .is_err()
         );
+    }
+    #[test]
+    fn media_catalog_home_proof_is_strict_and_bound_to_selected_image() {
+        let mut value = media();
+        let legacy = media_releases(parse_catalog(&catalog(value.clone())).unwrap(), "x86_64");
+        assert!(
+            crate::setup::home_admission::require(legacy[0].home_archive.as_ref(), None).is_ok()
+        );
+        assert!(
+            crate::setup::home_admission::require(legacy[0].home_archive.as_ref(), Some(2))
+                .is_err()
+        );
+        value["home_archive"] = json!({"schema":1,"archive_protocol":2,"seed_protocol":1,
+            "firstboot_user_sha256":"c".repeat(64),"seed_helper_sha256":"d".repeat(64),
+            "prepared_helper_sha256":"a".repeat(64),"tar_sha256":"b".repeat(64)});
+        let selected = media_releases(parse_catalog(&catalog(value.clone())).unwrap(), "x86_64");
+        assert_eq!(
+            selected[0].image_sha256,
+            value["image_sha256"].as_str().unwrap()
+        );
+        assert!(
+            crate::setup::home_admission::require(selected[0].home_archive.as_ref(), Some(2))
+                .is_ok()
+        );
+        for bad in [
+            json!(null),
+            json!([]),
+            json!(true),
+            json!([
+                1,
+                2,
+                1,
+                "c".repeat(64),
+                "d".repeat(64),
+                "a".repeat(64),
+                "b".repeat(64)
+            ]),
+        ] {
+            let mut altered = value.clone();
+            altered["home_archive"] = bad;
+            assert!(parse_catalog(&catalog(altered)).is_err());
+        }
+        for key in ["firstboot_user_sha256", "seed_helper_sha256"] {
+            let mut altered = value.clone();
+            altered["home_archive"][key] = json!("X".repeat(64));
+            assert!(parse_catalog(&catalog(altered)).is_err());
+        }
+        let mut altered = value.clone();
+        altered["home_archive"]["seed_protocol"] = json!(2);
+        assert!(parse_catalog(&catalog(altered)).is_err());
+        value["home_archive"]["archive_protocol"] = json!(1);
+        assert!(parse_catalog(&catalog(value)).is_err());
+    }
+    #[test]
+    fn media_catalog_applications_proof_is_closed_and_exact_selected_image_bound() {
+        let mut value = media();
+        let legacy = media_releases(parse_catalog(&catalog(value.clone())).unwrap(), "x86_64");
+        assert!(
+            crate::setup::applications_admission::require(legacy[0].applications.as_ref(), None)
+                .is_ok()
+        );
+        assert!(
+            crate::setup::applications_admission::require(legacy[0].applications.as_ref(), Some(2))
+                .is_err()
+        );
+        value["applications"] = json!({"schema":1,"subset_protocol":2,"prepared_helper_sha256":"a".repeat(64),"qualification_script_sha256":"b".repeat(64),"native_qualification_sha256":"c".repeat(64)});
+        let selected = media_releases(parse_catalog(&catalog(value.clone())).unwrap(), "x86_64");
+        assert!(
+            crate::setup::applications_admission::require(
+                selected[0].applications.as_ref(),
+                Some(2)
+            )
+            .is_ok()
+        );
+        assert_eq!(
+            selected[0].image_sha256,
+            value["image_sha256"].as_str().unwrap()
+        );
+        for bad in [json!(null), json!([]), json!(true)] {
+            let mut changed = value.clone();
+            changed["applications"] = bad;
+            assert!(parse_catalog(&catalog(changed)).is_err());
+        }
+        for field in [
+            "prepared_helper_sha256",
+            "qualification_script_sha256",
+            "native_qualification_sha256",
+        ] {
+            let mut changed = value.clone();
+            changed["applications"][field] = json!("X".repeat(64));
+            assert!(parse_catalog(&catalog(changed)).is_err());
+        }
+        value["applications"]["subset_protocol"] = json!(1);
+        assert!(parse_catalog(&catalog(value)).is_err());
+    }
+
+    #[test]
+    fn media_catalog_original_syntax_is_closed_and_bound_to_selected_architecture() {
+        let mut entry = media();
+        let legacy = media_releases(parse_catalog(&catalog(entry.clone())).unwrap(), "x86_64");
+        assert!(legacy[0].original_source.is_none());
+        assert!(crate::setup::original_admission::require(None, Some(5)).is_err());
+        let proof = crate::setup::original_admission::syntax_fixture();
+        entry["original_source"] = serde_json::to_value(&proof).unwrap();
+        let selected = media_releases(parse_catalog(&catalog(entry.clone())).unwrap(), "x86_64");
+        assert_eq!(selected[0].original_source.as_ref(), Some(&proof));
+        for bad in [json!(null), json!([]), json!(true)] {
+            let mut changed = entry.clone();
+            changed["original_source"] = bad;
+            assert!(parse_catalog(&catalog(changed)).is_err());
+        }
+        let mut changed = entry.clone();
+        changed["original_source"]["capture_pins"]["arch"] = json!("aarch64");
+        assert!(parse_catalog(&catalog(changed)).is_err());
+        entry["original_source"]["qualified"] = json!(true);
+        assert!(parse_catalog(&catalog(entry)).is_err());
     }
 }

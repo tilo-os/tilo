@@ -311,6 +311,9 @@ pub struct TextInput {
     compact_multiline: bool,
     /// What the field's text is; its 1× size is the role's.
     text_role: TextRole,
+    /// Latest theme role size with accessibility text scale removed; shaping
+    /// applies that scale separately while retaining authored UI/type scale.
+    themed_role_size: Option<(TextRole, f32)>,
     /// A document editor built on this field (a heading block, a code view)
     /// sets its own 1× base size instead of a role's.
     font_size_override: Option<f32>,
@@ -594,6 +597,7 @@ impl TextInput {
             model_layout_dirty: false,
             external_buffer: None,
             text_role: TextRole::Body,
+            themed_role_size: None,
             font_size_override: None,
             layout_text_scale: None,
             gutter_text_scale: 1.0,
@@ -1580,8 +1584,14 @@ impl TextInput {
     }
 
     fn effective_font_size(&self) -> f32 {
-        self.font_size_override
-            .unwrap_or_else(|| crate::tokens::typography::stock().size(self.text_role))
+        self.font_size_override.unwrap_or_else(|| {
+            self.themed_role_size
+                .filter(|(role, _)| *role == self.text_role)
+                .map_or_else(
+                    || crate::tokens::typography::stock().size(self.text_role),
+                    |(_, size)| size,
+                )
+        })
     }
 
     fn line_height(&self) -> f64 {
@@ -2193,6 +2203,7 @@ impl TextInput {
         tr: &mut TextRenderer,
         theme: &Theme,
     ) -> f32 {
+        self.prepare_theme(theme);
         self.gutter_text_scale = f64::from(self.scale_for(theme.text_scale));
         let available = (f64::from(width) - self.ml_left() - self.ml_pad_x()).max(1.0);
         let style = self.multiline_style(self.scale_for(theme.text_scale));
@@ -3529,11 +3540,22 @@ impl TextInput {
         }
     }
 
+    fn font_size_in(&self, theme: &Theme) -> f32 {
+        self.font_size_override
+            .unwrap_or_else(|| theme.tokens.typography.size(self.text_role) / theme.text_scale)
+    }
+
+    /// Prepare fields whose compound owner supplies their external geometry.
+    pub(super) fn prepare_theme(&mut self, theme: &Theme) {
+        self.capture_layout_text_scale(self.scale_for(theme.text_scale));
+        self.adopt_field_theme(theme);
+    }
+
     /// The single-line band at `scale`: the control height, grown with the
     /// line plus `spacing.s1` above and below at large text.
     pub(crate) fn band_in(&self, theme: &Theme) -> f64 {
         let line_px = f64::from(
-            self.effective_font_size() * self.scale_for(theme.text_scale) * LINE_HEIGHT_RATIO,
+            self.font_size_in(theme) * self.scale_for(theme.text_scale) * LINE_HEIGHT_RATIO,
         );
         let grown = (line_px + 2.0 * f64::from(theme.tokens.spacing.s1)).ceil();
         self.control_size.height(theme).max(grown)
@@ -3541,6 +3563,14 @@ impl TextInput {
 
     /// Adopt the theme's field geometry.
     fn adopt_field_theme(&mut self, theme: &Theme) {
+        let role_size = (
+            self.text_role,
+            theme.tokens.typography.size(self.text_role) / theme.text_scale,
+        );
+        if self.themed_role_size != Some(role_size) {
+            self.themed_role_size = Some(role_size);
+            self.model_layout_dirty |= self.multiline || self.single_attributes.is_some();
+        }
         let pad = f64::from(theme.padding_standard);
         let band = self.band_in(theme);
         if (pad - self.field_pad_x).abs() > f64::EPSILON || (band - self.band_height).abs() > 0.01 {
@@ -4651,6 +4681,11 @@ fn paint_field_chrome(
                 crate::tokens::colors::NON_TEXT_MIN_CONTRAST,
             ),
         )
+    } else if theme.colors_are_forced() {
+        // Accessibility deliberately collapses surface levels. Keep the
+        // declared contrast edge instead of deriving a decorative hairline;
+        // disabled fields keep this edge under the existing group opacity.
+        (1.0, colors.border_standard)
     } else {
         (1.0, crate::surface::edge_on(rest))
     };
@@ -4853,8 +4888,7 @@ impl Widget for TextInput {
         theme: &Theme,
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        self.capture_layout_text_scale(self.scale_for(theme.text_scale));
-        self.adopt_field_theme(theme);
+        self.prepare_theme(theme);
         self.adopt_layout_syntax(theme);
         // Multiline is measured (grows with content, see `measure`). Single-
         // line is the control band of its size (Regular, 32, by default), so
@@ -5027,7 +5061,7 @@ impl Widget for TextInput {
     ) {
         self.last_caret_width = theme.caret_width;
         self.gutter_text_scale = f64::from(self.scale_for(theme.text_scale));
-        self.adopt_field_theme(theme);
+        self.prepare_theme(theme);
         if self.holds_secret() && (!self.text.is_empty() || self.core.has_preedit()) {
             crate::secret_paint::note_secret_painted();
         }

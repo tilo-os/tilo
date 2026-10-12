@@ -648,3 +648,269 @@ fn narrowed_scope_metadata_survives_a_refresh_that_omits_scope() {
         Some("read-only")
     );
 }
+
+#[test]
+fn imported_cloud_clients_remain_per_grant_and_detach_never_revokes_source_sessions() {
+    for cloud in [
+        OAuthCloud::GoogleDrive,
+        OAuthCloud::OneDrive,
+        OAuthCloud::Dropbox,
+    ] {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("custody");
+        let issuer = FakeAuthorizationServer::start();
+        issuer.require_client_secret("original-public-client-secret");
+        issuer.accept_refresh_token("original-refresh-token");
+        let mut client = crate::Registration::public("original-public-client-id");
+        client.client_secret = Some("original-public-client-secret".into());
+        let registration =
+            crate::ImportedRegistration::new(cloud, client, "consented-source".into()).unwrap();
+        let tokens = tilo_oauth::TokenSet {
+            refresh_token: "original-refresh-token".into(),
+            ..Default::default()
+        };
+        let id = AccountId::new(format!("imported-{}", cloud.type_id()));
+        save(
+            &root,
+            &id,
+            cloud.type_id(),
+            &crate::imported_oauth_secret(&tokens, &registration),
+            serde_json::json!({}),
+        );
+        let custodian = Custodian::for_root(Some(root.clone())).with_provider(
+            cloud,
+            issuer.provider(),
+            "different-current-client",
+        );
+        custodian
+            .oauth_access_token(&id, cloud.oauth_use(), true)
+            .unwrap();
+        custodian
+            .oauth_access_token(&id, cloud.oauth_use(), true)
+            .unwrap();
+        assert_eq!(issuer.refreshes(), 2);
+        for request in issuer.requests() {
+            let body = request.body_text();
+            let form: std::collections::BTreeMap<_, _> =
+                url::form_urlencoded::parse(body.as_bytes()).collect();
+            assert_eq!(
+                form.get("client_id").map(|value| value.as_ref()),
+                Some("original-public-client-id")
+            );
+            assert_eq!(
+                form.get("client_secret").map(|value| value.as_ref()),
+                Some("original-public-client-secret")
+            );
+        }
+        let secret = SecretVault::open_in(&root).get(&id).unwrap();
+        assert!(crate::imported_oauth_matches(&secret, &registration));
+        let account = AccountStore::load_in(&root).get(&id).cloned().unwrap();
+        custodian.revoke(&account, &secret);
+        assert!(issuer.revoked().is_empty());
+        issuer.accept_refresh_token("original-refresh-token");
+        assert!(
+            custodian
+                .refresh_imported_cloud(cloud, &tokens, &registration)
+                .is_ok()
+        );
+    }
+}
+
+#[test]
+fn copied_password_and_icloud_grants_preserve_credentials_and_detach_provenance() {
+    let password = Secret::password("existing-nextcloud-app-password");
+    let account = Account::new(AccountId::new("source-nextcloud"), "nextcloud");
+    let copied = crate::copied_secret(&account, &password);
+    assert!(copied.password.is_empty());
+    assert_eq!(
+        crate::password_credential(&copied).as_str(),
+        password.password
+    );
+    assert!(crate::is_copied_secret(&copied));
+    assert_eq!(crate::copied_secret(&account, &copied), copied);
+    assert!(!crate::is_copied_secret(&password));
+    let session = ICloudSessionState(Zeroizing::new("original-private-session".into()));
+    let original = icloud_secret("ada@example.test", &session);
+    let copied = crate::copied_secret(&account, &original);
+    assert_eq!(
+        crate::icloud_apple_id(&copied).as_deref(),
+        Some("ada@example.test")
+    );
+    assert!(crate::is_copied_secret(&copied));
+    assert_eq!(crate::copied_secret(&account, &copied), copied);
+    assert!(!crate::is_copied_secret(&original));
+}
+
+#[test]
+fn invalid_grant_clearing_cannot_satisfy_imported_or_copied_source_retry() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path().join("custody");
+    let cloud = OAuthCloud::GoogleDrive;
+    let issuer = FakeAuthorizationServer::start();
+    issuer.accept_refresh_token("source-refresh");
+    let registration = crate::ImportedRegistration::new(
+        cloud,
+        crate::Registration::public("original-client"),
+        "source-binding".into(),
+    )
+    .unwrap();
+    let source_tokens = tilo_oauth::TokenSet {
+        refresh_token: "source-refresh".into(),
+        ..Default::default()
+    };
+    let custodian = Custodian::for_root(Some(root.clone())).with_provider(
+        cloud,
+        issuer.provider(),
+        "tilo-client",
+    );
+    for (name, source) in [
+        (
+            "original-client",
+            crate::imported_oauth_secret(&source_tokens, &registration),
+        ),
+        ("copied-tilo", oauth_secret(&source_tokens)),
+    ] {
+        let id = AccountId::new(name);
+        let account = Account::new(id.clone(), cloud.type_id());
+        let expected = crate::copied_secret(&account, &source);
+        save(
+            &root,
+            &id,
+            cloud.type_id(),
+            &expected,
+            serde_json::json!({}),
+        );
+        issuer.accept_refresh_token("source-refresh");
+        custodian
+            .oauth_access_token(&id, cloud.oauth_use(), true)
+            .unwrap();
+        assert!(crate::copied_source_matches(
+            &SecretVault::open_in(&root).get(&id).unwrap(),
+            &expected
+        ));
+        issuer.revoke_all_refresh_tokens();
+        assert_eq!(
+            custodian.oauth_access_token(&id, cloud.oauth_use(), true),
+            Err(CustodyError::NeedsAuthentication)
+        );
+        let cleared = SecretVault::open_in(&root).get(&id).unwrap();
+        assert!(crate::is_copied_secret(&cleared));
+        assert!(!crate::copied_source_matches(&cleared, &expected));
+        assert!(!crate::imported_oauth_matches(&cleared, &registration));
+    }
+}
+
+#[test]
+fn protected_copies_refuse_legacy_decoders_but_canonical_dav_custody_still_publishes() {
+    #[derive(serde::Deserialize)]
+    #[serde(tag = "kind", rename_all = "snake_case")]
+    enum LegacyGrant {
+        Oauth2 { tokens: crate::TokenSet },
+        Icloud { apple_id: String, session: String },
+    }
+    let tokens = crate::TokenSet {
+        access_token: "source-access".into(),
+        refresh_token: "source-refresh".into(),
+        expires_in: 3600,
+        obtained_at: 0,
+        scope: None,
+    };
+    let fresh = oauth_secret(&tokens);
+    let LegacyGrant::Oauth2 { tokens: parsed } =
+        serde_json::from_str::<LegacyGrant>(fresh.token.as_deref().unwrap()).unwrap()
+    else {
+        panic!("fresh OAuth changed its legacy wire kind")
+    };
+    assert_eq!(parsed.refresh_token, tokens.refresh_token);
+    let session = ICloudSessionState(Zeroizing::new("source-session".into()));
+    let fresh_icloud = icloud_secret("ada@example.test", &session);
+    let LegacyGrant::Icloud {
+        apple_id,
+        session: parsed,
+    } = serde_json::from_str::<LegacyGrant>(fresh_icloud.token.as_deref().unwrap()).unwrap()
+    else {
+        panic!("fresh iCloud changed its legacy wire kind")
+    };
+    assert_eq!(apple_id, "ada@example.test");
+    assert_eq!(parsed, "source-session");
+    let account = Account::new("source-cloud", GOOGLE_DRIVE_TYPE);
+    let registration = crate::ImportedRegistration::new(
+        OAuthCloud::GoogleDrive,
+        tilo_oauth::Registration::public("original-client"),
+        "source-binding".into(),
+    )
+    .unwrap();
+    for protected in [
+        crate::copied_secret(&account, &fresh),
+        crate::imported_oauth_secret(&tokens, &registration),
+        crate::copied_secret(&account, &fresh_icloud),
+    ] {
+        let raw = protected.token.as_deref().unwrap();
+        assert!(serde_json::from_str::<LegacyGrant>(raw).is_err());
+        assert!(serde_json::from_str::<crate::TokenSet>(raw).is_err());
+    }
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path().join("target");
+    for type_id in [WEBDAV_TYPE, crate::providers::NEXTCLOUD_TYPE] {
+        let id = AccountId::new(type_id);
+        let mut account = Account::new(id.clone(), type_id);
+        account.config = serde_json::json!({"username":"ada", "app_password":true});
+        let original = Secret::password("source-private-password");
+        let copy = crate::copied_secret(&account, &original);
+        assert!(copy.password.is_empty()); // Old Basic/revoke consumers refuse it.
+        let raw = copy.token.as_deref().unwrap();
+        assert!(serde_json::from_str::<LegacyGrant>(raw).is_err());
+        assert!(serde_json::from_str::<crate::TokenSet>(raw).is_err());
+        assert_eq!(
+            crate::password_credential(&copy).as_str(),
+            original.password
+        );
+        save(&root, &id, type_id, &copy, account.config.clone());
+        Custodian::for_root(Some(root.clone()))
+            .publish(&id, false)
+            .unwrap();
+        let Some(HandoffCredential::Basic { username, password }) =
+            HandoffStore::open_in(&root).read(&id).unwrap()
+        else {
+            panic!("protected DAV grant was not consumed")
+        };
+        assert_eq!(username, "ada");
+        assert_eq!(password.as_str(), original.password);
+        assert_eq!(original, Secret::password("source-private-password"));
+    }
+    let ordinary = Secret::password("ordinary-mail-password");
+    assert_eq!(
+        crate::copied_secret(&Account::new("mail", "imap"), &ordinary).password,
+        ordinary.password,
+    );
+}
+
+#[test]
+fn unknown_tag_cannot_fall_back_to_bare_oauth_tokens() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path().join("target");
+    let id = AccountId::new("future-grant");
+    let secret = Secret {
+        password: String::new(),
+        token: Some(
+            serde_json::json!({
+                "kind":"future_protected_grant", "access_token":"private-access",
+                "refresh_token":"private-refresh", "expires_in":3600,
+            })
+            .to_string(),
+        ),
+    };
+    save(
+        &root,
+        &id,
+        GOOGLE_DRIVE_TYPE,
+        &secret,
+        serde_json::json!({}),
+    );
+    assert!(matches!(
+        Custodian::for_root(Some(root.clone())).publish(&id, false),
+        Err(CustodyError::NeedsAuthentication),
+    ));
+    assert!(HandoffStore::open_in(&root).read(&id).unwrap().is_none());
+    assert_eq!(SecretVault::open_in(&root).get(&id).unwrap(), secret);
+}

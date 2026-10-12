@@ -5,6 +5,83 @@ use runtime_collab::file_clipboard::{Command, MAX_WIRE_BYTES};
 use tilo_actions::{ActionKind, InvocationId};
 
 impl CapnpChannelHandle {
+    #[cfg(target_os = "linux")]
+    pub(super) fn selected_discovery_dispatch(
+        self: Rc<Self>,
+        bytes: &[u8],
+        parent: &[u8],
+    ) -> Result<crate::services::SelectedDiscoveryFuture, capnp::Error> {
+        let failed = capnp::Error::failed;
+        let request = runtime_collab::open_selected::discovery::decode_request(bytes)
+            .map_err(|e| failed(e.to_string()))?;
+        let parent = super::observed_launch::launch_parent(parent)?;
+        if parent.is_some() != request.invocation.is_some() {
+            return Err(failed(
+                "selected discovery continuation scope differs".into(),
+            ));
+        }
+        let original = if let Some(scope) = &request.invocation {
+            let held = self
+                .clipboard_original(parent)
+                .map_err(failed)?
+                .ok_or_else(|| failed("original selected discovery absent".into()))?;
+            if held
+                .original
+                .as_ref()
+                .is_none_or(|data| !data.permits_selected_discovery(scope))
+            {
+                return Err(failed(
+                    "original OpenWith does not permit discovered access".into(),
+                ));
+            }
+            Some(
+                self.launch_original_context(parent, &scope.app_id, None)
+                    .map_err(failed)?
+                    .ok_or_else(|| {
+                        failed("original selected discovery certificate absent".into())
+                    })?,
+            )
+        } else {
+            None
+        };
+        let clipboard = self
+            .file_clipboard_context(parent, "open-with", &Command::Snapshot)
+            .map_err(failed)?;
+        let executing = self.selected_open_peer().map_err(failed)?;
+        let certificate = if let Some(original) = &original {
+            original.certificate().map_err(failed)?
+        } else {
+            self.state
+                .revalidate_admission(&self.route(), &self.verified_identity)?
+                .certificate
+                .ok_or_else(|| failed("native Files certificate unavailable".into()))?
+        };
+        let needed = if request
+            .invocation
+            .as_ref()
+            .is_some_and(|scope| scope.access.editable())
+        {
+            ActionKind::Undoable
+        } else {
+            ActionKind::Read
+        };
+        let context = crate::services::SelectedDiscoveryContext {
+            clipboard,
+            executing,
+            certificate,
+            original,
+            needed,
+        };
+        context.authorize().map_err(failed)?;
+        let service = self
+            .state
+            .services
+            .file_clipboard
+            .as_ref()
+            .ok_or_else(|| failed("selected discovery unavailable".into()))?;
+        Ok(service.discover_selected(context, request))
+    }
+
     fn clipboard_original(
         &self,
         parent: Option<InvocationId>,
@@ -136,6 +213,142 @@ impl CapnpChannelHandle {
         })
     }
 
+    #[cfg(target_os = "linux")]
+    pub(super) fn selected_open_dispatch(
+        self: Rc<Self>,
+        bytes: &[u8],
+        parent: &[u8],
+    ) -> Result<crate::services::OpenSelectedFuture, capnp::Error> {
+        let failed = |message: String| capnp::Error::failed(message);
+        let request = runtime_collab::open_selected::decode_request(bytes)
+            .map_err(|e| failed(e.to_string()))?;
+        let parent = super::observed_launch::launch_parent(parent)?;
+        let original = self
+            .clipboard_original(parent)
+            .map_err(failed)?
+            .ok_or_else(|| failed("OpenWith requires its admitted semantic invocation".into()))?;
+        if original
+            .original
+            .as_ref()
+            .is_none_or(|data| !data.permits_selected_open(&request))
+        {
+            return Err(failed(
+                "original invocation does not authorize this OpenWith selection".into(),
+            ));
+        }
+        let local = self
+            .native_media_context(false)
+            .map_err(|e| failed(e.to_string()))?;
+        if local.app_id() != "so.tilo.file-explorer" {
+            return Err(failed("OpenWith descriptors belong only to Files".into()));
+        }
+        let launch = self
+            .launch_original_context(parent, &request.request.app_id, None)
+            .map_err(failed)?
+            .ok_or_else(|| {
+                failed("OpenWith target requires its certified original launch caller".into())
+            })?;
+        let executing = self.selected_open_peer().map_err(failed)?;
+        let duplicate = self.clipboard_descriptor_source().map_err(failed)?;
+        let route = self.route();
+        let workspace = route.cluster_id.clone();
+        let state = Arc::downgrade(&self.state);
+        let peer = self.peer_id;
+        let expected = request.clone();
+        let custody = SelectedOpenCustody {
+            local,
+            state,
+            original,
+            expected,
+            v2: None,
+            route,
+            peer,
+        };
+        let check = Arc::new(move || custody.check());
+        let context = crate::services::OpenSelectedContext {
+            launch,
+            workspace,
+            duplicate,
+            executing,
+            check,
+        };
+        context.authorize().map_err(failed)?;
+        let service = self
+            .state
+            .services
+            .file_clipboard
+            .as_ref()
+            .ok_or_else(|| failed("selected-open transport unavailable".into()))?;
+        Ok(service.open_selected(context, request))
+    }
+    #[cfg(target_os = "linux")]
+    pub(super) fn selected_open_v2_dispatch(
+        self: Rc<Self>,
+        bytes: &[u8],
+        parent: &[u8],
+    ) -> Result<crate::services::OpenSelectedV2Future, capnp::Error> {
+        let failed = |message: String| capnp::Error::failed(message);
+        let request = runtime_collab::open_selected::v2::decode_request(bytes)
+            .map_err(|e| failed(e.to_string()))?;
+        let parent = super::observed_launch::launch_parent(parent)?;
+        let original = self
+            .clipboard_original(parent)
+            .map_err(failed)?
+            .ok_or_else(|| failed("OpenWith requires its admitted semantic invocation".into()))?;
+        if original
+            .original
+            .as_ref()
+            .is_none_or(|data| !data.permits_selected_open_v2(&request))
+        {
+            return Err(failed(
+                "original invocation does not authorize this OpenWith selection".into(),
+            ));
+        }
+        let local = self
+            .native_media_context(false)
+            .map_err(|e| failed(e.to_string()))?;
+        if local.app_id() != "so.tilo.file-explorer" {
+            return Err(failed("OpenWith descriptors belong only to Files".into()));
+        }
+        let launch = self
+            .launch_original_context(parent, &request.request.app_id, None)
+            .map_err(failed)?
+            .ok_or_else(|| {
+                failed("OpenWith target requires its certified original launch caller".into())
+            })?;
+        let executing = self.selected_open_peer().map_err(failed)?;
+        let duplicate = self.clipboard_descriptor_source().map_err(failed)?;
+        let route = self.route();
+        let workspace = route.cluster_id.clone();
+        let state = Arc::downgrade(&self.state);
+        let peer = self.peer_id;
+        let expected = request.clone();
+        let custody = SelectedOpenCustody {
+            local,
+            state,
+            original,
+            expected: expected.navigation(),
+            v2: Some(expected),
+            route,
+            peer,
+        };
+        let check = Arc::new(move || custody.check());
+        let context = crate::services::OpenSelectedContext {
+            launch,
+            workspace,
+            duplicate,
+            executing,
+            check,
+        };
+        context.authorize().map_err(failed)?;
+        let service = self
+            .state
+            .services
+            .file_clipboard
+            .as_ref()
+            .ok_or_else(|| failed("selected-open transport unavailable".into()))?;
+        Ok(service.open_selected_v2(context, request))
+    }
     pub(super) fn file_clipboard_dispatch(
         self: Rc<Self>,
         bytes: &[u8],
@@ -229,4 +442,101 @@ fn clipboard_actor(
             .broker_actor()
     };
     Ok(actor)
+}
+
+#[cfg(target_os = "linux")]
+struct SelectedOpenCustody {
+    local: super::native_media::NativeMediaRequestContext,
+    state: std::sync::Weak<super::CapnpBrokerState>,
+    original: super::PendingInvocation,
+    expected: runtime_collab::open_selected::Request,
+    v2: Option<runtime_collab::open_selected::v2::Request>,
+    route: super::CrdtRoute,
+    peer: u64,
+}
+#[cfg(target_os = "linux")]
+impl SelectedOpenCustody {
+    fn check(&self) -> Result<(), String> {
+        self.local.revalidate()?;
+        let state = self.state.upgrade().ok_or("OpenWith broker retired")?;
+        if !state.is_accepting() {
+            return Err("OpenWith broker retired".into());
+        }
+        let data = self
+            .original
+            .original
+            .as_ref()
+            .ok_or("original OpenWith custody absent")?;
+        data.revalidate_clipboard_origin(&state)?;
+        if match &self.v2 {
+            Some(request) => !data.permits_selected_open_v2(request),
+            None => !data.permits_selected_open(&self.expected),
+        } {
+            return Err("original OpenWith authority lapsed".into());
+        }
+        let registry = state
+            .pending_invocations
+            .lock()
+            .map_err(|_| "invocation registry unavailable")?;
+        let live = registry.values().any(|pending| {
+            pending.peer_id == self.peer
+                && pending.update.invocation() == self.original.update.invocation()
+                && pending.cancellation_requested_at.is_none()
+                && !pending.cancellation_fence.load(super::Ordering::Acquire)
+        });
+        drop(registry);
+        if !live
+            || self
+                .original
+                .cancellation_fence
+                .load(super::Ordering::Acquire)
+        {
+            return Err("original OpenWith invocation ended".into());
+        }
+        let caller = self
+            .original
+            .caller
+            .as_ref()
+            .and_then(|caller| caller.current(&state))
+            .ok_or("original OpenWith caller unavailable")?;
+        if caller.execution_id().is_some() && !caller.execution_is_live() {
+            return Err("original OpenWith execution ended".into());
+        }
+        let actor = state.caller_actor(&caller, &self.route.cluster_id);
+        let now = state
+            .checked_policy_time(self.original.policy_time.as_ref())?
+            .1
+            / 1_000_000_000;
+        let membership = state
+            .membership
+            .as_ref()
+            .ok_or("OpenWith workspace authority unavailable")?;
+        let needed = if self
+            .v2
+            .as_ref()
+            .is_some_and(|request| request.request.access.editable())
+        {
+            ActionKind::Undoable
+        } else {
+            ActionKind::Read
+        };
+        membership
+            .decide_in_room(&self.route.cluster_id, |space| {
+                let space = space.ok_or("OpenWith workspace ended")?;
+                let node = tilo_actions::action_node(
+                    &space.node(),
+                    &self.route.app_id,
+                    data.clipboard_resource_kind(),
+                    data.clipboard_resource(),
+                    None,
+                    data.clipboard_action(),
+                );
+                if !actor.may_in(space, &node, needed, now) {
+                    return Err("OpenWith caller no longer has requested permission");
+                }
+                Ok(())
+            })?
+            .map_err(str::to_owned)?;
+        Ok(())
+    }
 }

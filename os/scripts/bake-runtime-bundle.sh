@@ -41,6 +41,8 @@
 #                       must exist -- a typo is an error, not a silent skip,
 #                       because a bundle missing the toolkit produces a thin
 #                       app that dies at exec with an unresolved soname.
+#   ACCOUNT_CAPABILITY_PROBE actual SDK-linked protected-grant executable to
+#                       include in signed bin/ and native dependency closure.
 #   FONT_CATALOG_ROOT   verified product catalog directory to include as
 #                       lib/fonts in this signed SDK (optional).
 #
@@ -63,6 +65,7 @@ TRUST_LIST="${TRUST_LIST:-}"
 BUNDLE_BIN="${BUNDLE_BIN:-}"
 EXTRA_LIBS="${EXTRA_LIBS:-}"
 FONT_CATALOG_ROOT="${FONT_CATALOG_ROOT:-}"
+ACCOUNT_CAPABILITY_PROBE="${ACCOUNT_CAPABILITY_PROBE:-}"
 VERSION_OUT="${VERSION_OUT:-$OUT_DIR/runtime-version}"
 
 msg() { printf '[bake-runtime-bundle] %s\n' "$*" >&2; }
@@ -117,6 +120,16 @@ for lib in $EXTRA_LIBS; do
     dependency_dirs+=(--library-dir "$(dirname "$lib")")
     msg "including shared object: $lib"
 done
+if [ -n "$ACCOUNT_CAPABILITY_PROBE" ]; then
+    [ -f "$ACCOUNT_CAPABILITY_PROBE" ] && [ ! -L "$ACCOUNT_CAPABILITY_PROBE" ] \
+        && [ -x "$ACCOUNT_CAPABILITY_PROBE" ] \
+        || die "account capability probe must be the actual native executable"
+    [ "$(basename "$ACCOUNT_CAPABILITY_PROBE")" = tilo-runtime-account-capability ] \
+        || die "account capability probe has a different entrypoint"
+    INCLUDE_ARGS+=(--include-bin "$ACCOUNT_CAPABILITY_PROBE")
+    dependency_objects+=("$ACCOUNT_CAPABILITY_PROBE")
+    dependency_dirs+=(--library-dir "$(dirname "$ACCOUNT_CAPABILITY_PROBE")")
+fi
 if [ "${#dependency_objects[@]}" -gt 0 ]; then
     # Capture the exit status before consuming output: process substitution
     # would hide an ldd failure and let an incomplete runtime be signed.

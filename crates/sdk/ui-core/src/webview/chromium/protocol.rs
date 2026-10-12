@@ -22,7 +22,7 @@ fn invalid(message: &str) -> io::Error {
 }
 
 pub(super) fn write_json(writer: &mut impl Write, value: &serde_json::Value) -> io::Result<()> {
-    let bytes = serde_json::to_vec(value)?;
+    let bytes = zeroize::Zeroizing::new(serde_json::to_vec(value)?);
     let prefix = bytes
         .len()
         .checked_add(1)
@@ -76,7 +76,7 @@ pub(super) fn read_packet(reader: &mut impl Read) -> io::Result<Option<Packet>> 
             let payload_size = length
                 .checked_sub(1)
                 .ok_or_else(|| invalid("Invalid Chromium packet length"))?;
-            let mut bytes = vec![0; payload_size as usize];
+            let mut bytes = zeroize::Zeroizing::new(vec![0; payload_size as usize]);
             reader.read_exact(&mut bytes)?;
             Ok(Some(Packet::Json(serde_json::from_slice(&bytes)?)))
         }

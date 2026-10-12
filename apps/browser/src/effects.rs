@@ -20,6 +20,21 @@ const PAGE_SETTLE_TIMEOUT_MS: u32 = 10_000;
 #[derive(Clone, Debug, PartialEq, Effect)]
 #[effect(operation = "browser.effect", device_only)]
 pub enum BrowserEffect {
+    /// Read browser migration progress
+    #[effect(row, returns, kind = "read")]
+    ReadContinuity,
+    /// Open account
+    #[effect(row, returns)]
+    OpenServiceSession {
+        #[param("Selected account")]
+        session_id: String,
+    },
+    /// Read account connection
+    #[effect(row, returns, kind = "read")]
+    ReadServiceSession,
+    /// Retry bringing your browsing into Tilo
+    #[effect(row, returns)]
+    RetryContinuity,
     /// Go back
     ///
     /// Answers with the address once the previous page loaded.
@@ -263,6 +278,44 @@ pub enum BrowserEffect {
         #[param("Allow sending the form to another site than the page's own (default false)")]
         cross_origin: Option<bool>,
     },
+    /// Bookmark this page personally
+    #[effect(row, returns, idempotent)]
+    BookmarkPersonalPage {
+        #[param("Current page URL")]
+        url: String,
+        #[param("Current page title")]
+        title: String,
+    },
+    /// Import personal bookmarks
+    #[effect(row, returns)]
+    ImportPersonalBookmarks {
+        #[param(secret, "Authenticated reviewed personal bookmark bundle")]
+        bundle: String,
+    },
+    /// Remove personal bookmark
+    #[effect(row, returns)]
+    RemovePersonalBookmark {
+        #[param("Personal bookmark URL")]
+        url: String,
+    },
+    /// Remove personal bookmark item
+    #[effect(row, returns)]
+    RemovePersonalImportedNode {
+        #[param("Reviewed source snapshot")]
+        source: String,
+        #[param("Exact folder or placement")]
+        id: String,
+    },
+    /// Show personal bookmark folder
+    #[effect(view, row)]
+    ShowPersonalBookmarkFolder {
+        #[param("Reviewed source snapshot; empty for overview")]
+        source: String,
+        #[param("Folder; absent for source roots")]
+        id: Option<String>,
+        #[param("First displayed ordered item")]
+        offset: u32,
+    },
 }
 
 impl BrowserEffect {
@@ -270,6 +323,25 @@ impl BrowserEffect {
     pub(crate) fn operation(self) -> BrowserOperation {
         let page = BrowserOperation::Page;
         match self {
+            Self::ReadContinuity => BrowserOperation::ReadContinuity,
+            Self::OpenServiceSession { .. } => BrowserOperation::OpenServiceSession,
+            Self::ReadServiceSession => BrowserOperation::ReadServiceSession,
+            Self::RetryContinuity => BrowserOperation::RetryContinuity,
+            Self::BookmarkPersonalPage { url, title } => {
+                BrowserOperation::BookmarkPersonalPage { url, title }
+            }
+            Self::ImportPersonalBookmarks { bundle } => {
+                BrowserOperation::ImportPersonalBookmarks { bundle }
+            }
+            Self::RemovePersonalBookmark { url } => {
+                BrowserOperation::RemovePersonalBookmark { url }
+            }
+            Self::RemovePersonalImportedNode { source, id } => {
+                BrowserOperation::RemovePersonalImportedNode { source, id }
+            }
+            Self::ShowPersonalBookmarkFolder { source, id, offset } => {
+                BrowserOperation::ShowPersonalBookmarkFolder { source, id, offset }
+            }
             Self::Back => BrowserOperation::Back,
             Self::Forward => BrowserOperation::Forward,
             Self::Reload => BrowserOperation::Reload,

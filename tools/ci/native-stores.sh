@@ -57,11 +57,17 @@ up() {
             echo "$0: $dir/$name is already mounted; run '$0 down $dir' first" >&2
             exit 1
         fi
-        truncate -s "$size" "$dir/$name.img"
-        loop=$(losetup --find --show "$dir/$name.img")
-        mkfs.btrfs -q -f "$loop" >/dev/null
-        mkdir -p -- "$dir/$name"
-        mount -t btrfs "$loop" "$dir/$name"
+        if [[ ${TILO_NATIVE_STORE_AUTOCLEAR:-0} = 1 ]]; then
+            python3 "$(dirname -- "${BASH_SOURCE[0]}")/native-store-autoclear.py" create \
+                --directory "$dir" --name "$name" --size "$size" \
+                --journal-directory "${TILO_NATIVE_STORE_ASSOCIATIONS:?root-owned association directory required}"
+        else
+            truncate -s "$size" "$dir/$name.img"
+            loop=$(losetup --find --show "$dir/$name.img")
+            mkfs.btrfs -q -f "$loop" >/dev/null
+            mkdir -p -- "$dir/$name"
+            mount -t btrfs "$loop" "$dir/$name"
+        fi
     done
     trap - ERR
     echo "TILO_FS_NATIVE_STORES=$dir/a:$dir/b"

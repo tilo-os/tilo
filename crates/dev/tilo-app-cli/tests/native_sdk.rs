@@ -143,6 +143,7 @@ fn prepare_fixture(temp: &Path) -> NativeFixture {
             arch: Some(std::env::consts::ARCH),
             identity: Some(&key),
             extra_libs: &extra,
+            extra_bins: &[],
         },
     )
     .unwrap();
@@ -198,6 +199,7 @@ fn assert_refusals(fixture: &NativeFixture) {
             arch: Some(std::env::consts::ARCH),
             identity: Some(&fixture.key),
             extra_libs: &wrong_extra,
+            extra_bins: &[],
         },
     )
     .unwrap();

@@ -20,6 +20,9 @@
     )
 )]
 
+mod profile;
+pub use profile::{MAX_PHOTO_BYTES, MAX_PHOTO_DIMENSION, ProfilePhoto};
+
 mod client;
 #[cfg(unix)]
 pub mod connected;
@@ -83,6 +86,22 @@ pub mod wire {
         pub workspace_id: String,
         pub app_id: String,
     }
+
+    /// Additive JSON negotiation; zero serializes exactly the legacy handshake.
+    /// Old hosts ignore the optional field and return legacy Metadata.
+    #[derive(Debug, Serialize, Deserialize)]
+    pub struct PresentationHandshake {
+        #[serde(flatten)]
+        pub handshake: Handshake,
+        #[serde(default, skip_serializing_if = "is_zero")]
+        pub presentation_version: u16,
+    }
+    fn is_zero(version: &u16) -> bool {
+        *version == 0
+    }
+    pub const PRESENTATION_VERSION: u16 = 1;
+    /// The signed manifest identity service version that understands presentation.
+    pub const PRESENTATION_SERVICE_VERSION: u32 = 2;
 
     #[derive(Debug, Serialize, Deserialize)]
     pub enum Request {
@@ -159,6 +178,18 @@ pub mod wire {
             generation: u64,
             keys: Vec<u8>,
         },
+        /// Negotiated public presentation; appended to preserve all old encodings.
+        MetadataWithPresentation {
+            display_name: String,
+            avatar_color: [u8; 3],
+            group_public_key: [u8; 32],
+            signing_public_key: [u8; 32],
+            device_certificate: Option<Vec<u8>>,
+            threshold: u16,
+            total_shares: u16,
+            share_index: u16,
+            photo: Option<crate::ProfilePhoto>,
+        },
     }
 
     /// A decoded [`Response::ChannelKeys`].
@@ -168,5 +199,76 @@ pub mod wire {
         pub generation: u64,
         /// Encoded content keys; `None` when unchanged or not ready.
         pub keys: Option<Vec<u8>>,
+    }
+}
+
+#[cfg(all(test, unix))]
+mod presentation_wire_tests {
+    use super::wire::*;
+
+    #[test]
+    fn presentation_negotiation_preserves_legacy_handshake_and_old_host_decode() {
+        let legacy = Handshake {
+            workspace_id: "room".into(),
+            app_id: "app".into(),
+        };
+        let legacy_bytes = serde_json::to_vec(&legacy).unwrap();
+        let compatibility = PresentationHandshake {
+            handshake: legacy,
+            presentation_version: 0,
+        };
+        assert_eq!(serde_json::to_vec(&compatibility).unwrap(), legacy_bytes);
+        let enabled = PresentationHandshake {
+            handshake: compatibility.handshake,
+            presentation_version: PRESENTATION_VERSION,
+        };
+        let old_host: Handshake =
+            serde_json::from_slice(&serde_json::to_vec(&enabled).unwrap()).unwrap();
+        assert_eq!(old_host.workspace_id, "room");
+        assert_eq!(old_host.app_id, "app");
+        let new_host: PresentationHandshake = serde_json::from_slice(&legacy_bytes).unwrap();
+        assert_eq!(new_host.presentation_version, 0);
+        assert_eq!(postcard::to_allocvec(&Request::Metadata).unwrap(), [0]);
+        assert_eq!(
+            postcard::to_allocvec(&Response::Signature(vec![1, 2])).unwrap(),
+            [1, 2, 1, 2]
+        );
+    }
+    #[test]
+    fn negotiated_response_keeps_legacy_metadata_tuple_encoding() {
+        let fields = (
+            "Ada",
+            [1_u8, 2, 3],
+            [4_u8; 32],
+            [5_u8; 32],
+            Some(vec![6_u8; 4]),
+            1_u16,
+            1_u16,
+            0_u16,
+        );
+        let expected = [vec![0], postcard::to_allocvec(&fields).unwrap()].concat();
+        let legacy = Response::Metadata {
+            display_name: fields.0.into(),
+            avatar_color: fields.1,
+            group_public_key: fields.2,
+            signing_public_key: fields.3,
+            device_certificate: fields.4.clone(),
+            threshold: fields.5,
+            total_shares: fields.6,
+            share_index: fields.7,
+        };
+        assert_eq!(postcard::to_allocvec(&legacy).unwrap(), expected);
+        let extended = Response::MetadataWithPresentation {
+            display_name: fields.0.into(),
+            avatar_color: fields.1,
+            group_public_key: fields.2,
+            signing_public_key: fields.3,
+            device_certificate: fields.4,
+            threshold: fields.5,
+            total_shares: fields.6,
+            share_index: fields.7,
+            photo: None,
+        };
+        assert_eq!(postcard::to_allocvec(&extended).unwrap().first(), Some(&5));
     }
 }

@@ -83,6 +83,8 @@ pub(crate) struct Frame {
     offset: Option<Rc<Cell<(f32, f32)>>>,
     notice: Option<Box<dyn Widget>>,
     actions: Option<Row>,
+    actions_in_body: bool,
+    center_short_body: bool,
 }
 
 impl Frame {
@@ -93,6 +95,8 @@ impl Frame {
             offset: None,
             notice: None,
             actions: None,
+            actions_in_body: false,
+            center_short_body: false,
         }
     }
 
@@ -135,11 +139,48 @@ impl Frame {
         self
     }
 
-    pub(crate) fn build(self) -> Box<dyn Widget> {
+    /// Keep a short explanation, its problem and recovery controls together.
+    /// They still scroll as one region when large text needs more room.
+    #[must_use]
+    pub(crate) fn with_content_actions(mut self) -> Self {
+        self.actions_in_body = true;
+        self
+    }
+
+    /// Centre a short body in its measured scrolling viewport. Long content
+    /// keeps its intrinsic extent and starts at the scrolling edge; navigation
+    /// stays outside that viewport in either case.
+    #[must_use]
+    pub(crate) fn center_short_body(mut self) -> Self {
+        self.center_short_body = true;
+        self
+    }
+
+    pub(crate) fn build(mut self) -> Box<dyn Widget> {
+        if self.actions_in_body {
+            if let Some(notice) = self.notice.take() {
+                self.body = self.body.push(notice);
+            }
+            if let Some(actions) = self.actions.take() {
+                self.body = self.body.push(Box::new(actions));
+            }
+        }
         let mut scroll = Scrollable::new_vertical()
             .fill_parent_height()
-            .with_focus_reveal()
-            .with_child(Box::new(self.body));
+            .with_focus_reveal();
+        let body: Box<dyn Widget> = if self.center_short_body {
+            scroll = scroll.with_content_min_viewport_height();
+            Box::new(
+                Row::new()
+                    .no_wrap()
+                    .with_padding_rhythm(None, None)
+                    .with_align_items(taffy::AlignItems::Center)
+                    .push(Box::new(self.body)),
+            )
+        } else {
+            Box::new(self.body)
+        };
+        scroll = scroll.with_child(body);
         if let Some(offset) = self.offset {
             scroll = scroll.with_persisted_offset(offset);
         }

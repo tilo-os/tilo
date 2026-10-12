@@ -1,0 +1,33 @@
+#!/usr/bin/bash
+# Disposable signed fixture. Success requires real sandbox execution and migrated data.
+set -euo pipefail
+[[ ${FLATPAK_ID-} == org.tilo.Fixture ]] || exit 41
+[[ -r /.flatpak-info ]] || exit 42
+found=0
+instance=
+while IFS= read -r line || [[ -n $line ]]; do
+    [[ $line != 'name=org.tilo.Fixture' ]] || found=1
+    [[ $line != instance-id=* ]] || instance=${line#instance-id=}
+done < /.flatpak-info
+[[ $found == 1 && $instance =~ ^[0-9]{1,20}$ ]] || exit 43
+[[ ${XDG_DATA_HOME-} == "$HOME/.var/app/org.tilo.Fixture/data" ]] || exit 44
+[[ ! -e $XDG_DATA_HOME/launch-result.json && ! -e $XDG_DATA_HOME/launch-ack ]] || exit 45
+umask 077
+# read -d NUL retains newlines and refuses embedded NUL instead of trimming bytes.
+value=''
+if IFS= read -r -d '' value < "$XDG_DATA_HOME/selected-document"; then exit 46; fi
+[[ $value == 'genuine selected application state' ]] || exit 47
+[[ ! -e $HOME/owner-document && ! -e $HOME/.var/app/org.tilo.Excluded/data/document ]] || exit 48
+[[ ${TILO_WORKSPACE_ID-} == '' && ${TILO_APP_DIR-} == '' ]] || exit 49
+# No producer/importer writes this result. Its first appearance is inside this app.
+set -o noclobber
+printf '{"schema":1,"app_id":"org.tilo.Fixture","selected_state_read":true,"flatpak_info_read":true,"uid":%s,"instance_id":"%s"}\n' "$UID" "$instance" > "$XDG_DATA_HOME/launch-result.json"
+# Hold this actual app until the observer has retained the kernel pidfd.
+finish=$((SECONDS + 30))
+while [[ ! -e $XDG_DATA_HOME/launch-ack ]]; do
+    ((SECONDS < finish)) || exit 50
+    /usr/bin/sleep 0.02
+done
+ack=''
+if IFS= read -r -d '' ack < "$XDG_DATA_HOME/launch-ack"; then exit 51; fi
+[[ $ack == "$instance" ]] || exit 52
