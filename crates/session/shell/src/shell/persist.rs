@@ -403,6 +403,7 @@ pub fn queue_save_or_report(
 /// Wait until every save queued so far is on disk: before the session ends
 /// or sleeps, and before anything reads the files back.
 pub fn wait_for_saves() {
+    settings_store::flush_pending_writes();
     super::durable_writer::global().flush();
 }
 
@@ -410,6 +411,7 @@ pub fn wait_for_saves() {
 /// of the session. Returns whether every save made it.
 pub fn wait_for_saves_within(limit: std::time::Duration) -> bool {
     let started = std::time::Instant::now();
+    settings_store::flush_pending_writes();
     let saved = super::durable_writer::global().flush_timeout(limit);
     if !saved {
         tracing::error!(
