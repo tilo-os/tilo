@@ -46,7 +46,7 @@ Each adapter reads what a benchmark already prints and emits records through
   every listed value one sample, with sizes written `50k`.
 - `framework-open LOG...`: the `FRAMEWORK-OPEN tasks=<n> samples_ms=<a,b,...>
   allocations=<x> heap_per_task=<y>` lines of
-  `crates/sdk/tilo-app/examples/framework-scaling.rs` (TIL-758), one per list
+  `crates/sdk/tilo-app/examples/framework-scaling.rs`, one per list
   size: opening a framework app over a record holding `n` items, to its first
   laid-out frame. Each size becomes `render.framework_open.ms.<size>` (every
   open is a sample), `.allocations.<size>` and `.heap_per_item.<size>` (one
