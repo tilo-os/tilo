@@ -214,7 +214,14 @@ impl Desktop {
         let _ = std::fs::remove_dir_all(&runtime_dir);
         std::fs::create_dir_all(&runtime_dir).expect("create the private runtime dir");
         let state_path = runtime_dir.join("state.json");
-        shell::shell::persist::save_tree_to(tree, &state_path).expect("seed the saved session");
+        // Through a writer of its own, dropped here: the writer that saves a
+        // state file keeps its exclusive lease, and the compositor must own
+        // its session's file. Holding it here refused every save the
+        // compositor made ("file lease is busy").
+        let mut seed = tree.clone();
+        drop(std::mem::take(&mut seed.native_runtime));
+        shell::shell::persist::save_tree_to(&seed, &state_path).expect("seed the saved session");
+        drop(seed);
         seed_tab_records(&runtime_dir, tree);
         let identity_root = seed_identity(&runtime_dir);
         let control = runtime_dir.join("ctl");
@@ -306,7 +313,7 @@ impl Desktop {
     }
 
     /// Whether the compositor has printed a line containing `needle`.
-    fn logged(&self, needle: &str) -> bool {
+    pub(crate) fn logged(&self, needle: &str) -> bool {
         self.log
             .lock()
             .is_ok_and(|log| log.iter().any(|(_, line)| line.contains(needle)))

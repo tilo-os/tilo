@@ -450,6 +450,32 @@ p99_tolerance = 2.0
 min_delta = 0.5
 source = "KPI document: MCP tool call <= local invoke + 2 ms"
 
+# Pipelined invokes (apps/agent `pipelined_task_benchmark`, a release test
+# on `runner`): the agent's own task loop with a scripted model and a broker
+# whose applications take 100 ms per step, one turn of three steps on three
+# records, timed for the whole task. `pipelined` is the plan as the model
+# marks it (independent steps run alongside each other), `sequential` the
+# same plan unmarked (each step waits for the one before to settle). The
+# floor is one step's 100 ms when pipelined and three steps' 300 ms in
+# order; the pipelined ceiling allows the loop 50 ms of its own on top of
+# one step. Reported, not enforced, until three nightly records exist.
+[kpi."agent.task.pipelined.wall"]
+unit = "ms"
+p50 = 150.0
+p99 = 200.0
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 20.0
+source = "floor: one 100 ms step, plus 50 ms of the agent loop's own"
+
+[kpi."agent.task.sequential.wall"]
+unit = "ms"
+p50 = 400.0
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 20.0
+source = "the same plan in order, for comparison: three 100 ms steps, plus the loop's own"
+
 # Latency, compositor side (scripts/perf/latency_bench.py): a headless dev
 # build on the shared `runner` class, input through the control socket,
 # lavapipe. The ceilings are the KPI document's 60 Hz targets ("Input→photon
