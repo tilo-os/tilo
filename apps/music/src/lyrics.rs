@@ -12,7 +12,7 @@
 //! populated, highlightable lyrics view with zero network. The **live** fetch
 //! from [LRCLIB](https://lrclib.net) (`GET https://lrclib.net/api/get` keyed
 //! on track + artist + album + duration, returning `syncedLyrics` /
-//! `plainLyrics`) is gated behind the `lyrics` cargo feature and runs as a
+//! `plainLyrics`) is gated behind the `live` cargo feature and runs as a
 //! task on the app runtime (`tilo_net`), so the UI never blocks. The pure LRC parser below is always
 //! compiled and unit-tested, so the contract is exercised even offline.
 
@@ -131,7 +131,7 @@ pub struct TrackMeta {
 
 /// Resolve lyrics for a track. Tries the bundled library first (always
 /// present for the seed tracks + offline), then the live source when the
-/// `lyrics` feature is enabled. Returns `None` when nothing is available.
+/// `live` feature is enabled. Returns `None` when nothing is available.
 ///
 /// This is the resolution seam the worker ([`LyricsWorker`]) runs on the app
 /// runtime; the bundled path makes it usable offline / in `--shots` with no
@@ -143,10 +143,10 @@ pub async fn resolve(meta: &TrackMeta) -> Option<Lyrics> {
     live_fetch(meta).await
 }
 
-/// The live LRCLIB fetch. Without an HTTP stack (`lyrics` or `live` feature —
-/// both pull `tilo-net`) this is a stub that documents the request it *would*
+/// The live LRCLIB fetch. Without an HTTP stack (the `live` feature pulls
+/// `tilo-net`) this is a stub that documents the request it *would*
 /// make and returns `None` (the worker treats this as "no lyrics right now").
-#[cfg(not(any(feature = "lyrics", feature = "live")))]
+#[cfg(not(feature = "live"))]
 #[allow(clippy::unused_async, reason = "the same signature as the live fetch")]
 async fn live_fetch(meta: &TrackMeta) -> Option<Lyrics> {
     let _ = lrclib_url(meta);
@@ -154,7 +154,7 @@ async fn live_fetch(meta: &TrackMeta) -> Option<Lyrics> {
 }
 
 /// Real synced-or-plain lyrics from LRCLIB. Compiled whenever an HTTP stack is
-/// available (`lyrics` or the `live` build), so `--features live,audio` fetches
+/// available (the `live` build), so `--features live,audio` fetches
 /// real lyrics for the playing track.
 ///
 /// - **normalisation** — `YouTube` titles/artists carry noise (`(Official Music
@@ -169,7 +169,7 @@ async fn live_fetch(meta: &TrackMeta) -> Option<Lyrics> {
 ///   identity, so a revisit / prefetch is instant and never re-hammers LRCLIB.
 /// - **fallback** — an exact `/api/get` miss (`YouTube` durations rarely match
 ///   to the second) falls back to `/api/search`.
-#[cfg(any(feature = "lyrics", feature = "live"))]
+#[cfg(feature = "live")]
 async fn live_fetch(meta: &TrackMeta) -> Option<Lyrics> {
     let key = cache_key(meta);
     match cache_get(&key) {
@@ -183,7 +183,7 @@ async fn live_fetch(meta: &TrackMeta) -> Option<Lyrics> {
 }
 
 /// The shared LRCLIB client.
-#[cfg(any(feature = "lyrics", feature = "live"))]
+#[cfg(feature = "live")]
 fn lrclib_client() -> Option<&'static tilo_net::Client> {
     static CLIENT: std::sync::OnceLock<Option<tilo_net::Client>> = std::sync::OnceLock::new();
     CLIENT
@@ -197,7 +197,7 @@ fn lrclib_client() -> Option<&'static tilo_net::Client> {
         .as_ref()
 }
 
-#[cfg(any(feature = "lyrics", feature = "live"))]
+#[cfg(feature = "live")]
 async fn live_fetch_uncached(meta: &TrackMeta) -> Option<Lyrics> {
     let client = lrclib_client()?;
     // 1. Exact match by (normalised) track/artist/album/duration.
@@ -214,7 +214,7 @@ async fn live_fetch_uncached(meta: &TrackMeta) -> Option<Lyrics> {
 /// *transient* failure (a network error, a 429 rate-limit, or a 5xx). A 404 or
 /// any other definitive non-success returns `None` immediately so the caller
 /// moves on to the next strategy rather than burning retries on a real miss.
-#[cfg(any(feature = "lyrics", feature = "live"))]
+#[cfg(feature = "live")]
 async fn get_text_retry(client: &tilo_net::Client, url: &str) -> Option<String> {
     use tilo_net::StatusCode;
     const MAX_LYRICS_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
@@ -247,7 +247,7 @@ async fn get_text_retry(client: &tilo_net::Client, url: &str) -> Option<String> 
 
 /// Parse a single LRCLIB record (from `/api/get`) into [`Lyrics`], preferring
 /// synced over plain. `None` on a 404 / empty record.
-#[cfg(any(feature = "lyrics", feature = "live"))]
+#[cfg(feature = "live")]
 async fn lrclib_from_object(client: &tilo_net::Client, url: &str) -> Option<Lyrics> {
     let body = get_text_retry(client, url).await?;
     let json: serde_json::Value = serde_json::from_str(&body).ok()?;
@@ -255,7 +255,7 @@ async fn lrclib_from_object(client: &tilo_net::Client, url: &str) -> Option<Lyri
 }
 
 /// Search LRCLIB by track + artist and return the best candidate's lyrics.
-#[cfg(any(feature = "lyrics", feature = "live"))]
+#[cfg(feature = "live")]
 async fn lrclib_from_search(client: &tilo_net::Client, meta: &TrackMeta) -> Option<Lyrics> {
     let url = lrclib_search_url(meta);
     let body = get_text_retry(client, &url).await?;
@@ -280,7 +280,7 @@ async fn lrclib_from_search(client: &tilo_net::Client, meta: &TrackMeta) -> Opti
 }
 
 /// Extract synced-then-plain lyrics from one LRCLIB JSON record.
-#[cfg(any(feature = "lyrics", feature = "live"))]
+#[cfg(feature = "live")]
 fn lyrics_from_record(json: &serde_json::Value) -> Option<Lyrics> {
     if let Some(synced) = json.get("syncedLyrics").and_then(|v| v.as_str())
         && !synced.trim().is_empty()
@@ -395,7 +395,7 @@ pub fn normalize_artist(raw: &str) -> String {
 
 /// Build the LRCLIB `/api/search?track_name=…&artist_name=…` URL from the
 /// normalised metadata.
-#[cfg(any(feature = "lyrics", feature = "live"))]
+#[cfg(feature = "live")]
 fn lrclib_search_url(meta: &TrackMeta) -> String {
     format!(
         "https://lrclib.net/api/search?track_name={}&artist_name={}",
@@ -421,7 +421,7 @@ pub fn lrclib_url(meta: &TrackMeta) -> String {
 /// a revisit / prefetch of the same song is instant and never re-hammers
 /// LRCLIB. Caches misses (`None`) too, so a track without lyrics isn't refetched
 /// on every visit.
-#[cfg(any(feature = "lyrics", feature = "live"))]
+#[cfg(feature = "live")]
 fn cache_key(meta: &TrackMeta) -> String {
     format!(
         "{}\u{1}{}",
@@ -430,7 +430,7 @@ fn cache_key(meta: &TrackMeta) -> String {
     )
 }
 
-#[cfg(any(feature = "lyrics", feature = "live"))]
+#[cfg(feature = "live")]
 fn lyrics_cache() -> &'static std::sync::Mutex<std::collections::HashMap<String, Option<Lyrics>>> {
     static CACHE: std::sync::OnceLock<
         std::sync::Mutex<std::collections::HashMap<String, Option<Lyrics>>>,
@@ -440,14 +440,14 @@ fn lyrics_cache() -> &'static std::sync::Mutex<std::collections::HashMap<String,
 
 /// The result of a lyrics cache lookup: no entry at all, a cached miss (a
 /// prior lookup found no lyrics for this track), or a cached hit.
-#[cfg(any(feature = "lyrics", feature = "live"))]
+#[cfg(feature = "live")]
 enum CacheEntry {
     Absent,
     Miss,
     Hit(Lyrics),
 }
 
-#[cfg(any(feature = "lyrics", feature = "live"))]
+#[cfg(feature = "live")]
 fn cache_get(key: &str) -> CacheEntry {
     let Ok(map) = lyrics_cache().lock() else {
         return CacheEntry::Absent;
@@ -459,7 +459,7 @@ fn cache_get(key: &str) -> CacheEntry {
     }
 }
 
-#[cfg(any(feature = "lyrics", feature = "live"))]
+#[cfg(feature = "live")]
 fn cache_put(key: String, value: Option<Lyrics>) {
     if let Ok(mut map) = lyrics_cache().lock() {
         map.insert(key, value);
@@ -468,7 +468,7 @@ fn cache_put(key: String, value: Option<Lyrics>) {
 
 /// The lyrics worker: each request resolves as a task on the app runtime and
 /// delivers over a channel. The default live build can fetch network lyrics;
-/// builds without `live` and `lyrics` resolve bundled lyrics through the same
+/// builds without `live` resolve bundled lyrics through the same
 /// interface.
 pub struct LyricsWorker {
     tx: std::sync::mpsc::Sender<(String, Lyrics)>,
@@ -783,7 +783,7 @@ mod tests {
         }
 
         // Phase `lrclib_search_url_uses_normalized_metadata`.
-        #[cfg(any(feature = "lyrics", feature = "live"))]
+        #[cfg(feature = "live")]
         {
             let meta = TrackMeta {
                 track_id: "yt:abc".into(),
