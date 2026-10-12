@@ -2,6 +2,7 @@ use automerge::{AutoCommit, ChangeHash};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashMap};
 use tilo_automerge::ApplyIncoming;
+use tilo_automerge::ReadTyped as _;
 use tilo_clock::unix_now_i64;
 
 mod local_app_records;
@@ -1820,7 +1821,7 @@ impl WorkspaceTree {
         reason = "room-document projection keeps all capability map updates in one Automerge transaction"
     )]
     fn try_sync_room_doc(&mut self, room: RoomId) -> bool {
-        use automerge::{ROOT, ReadDoc, ScalarValue, Value, transaction::Transactable};
+        use automerge::{ROOT, transaction::Transactable};
         use tilo_peer_state::room::media;
 
         if self.requires_native_owner(room) {
@@ -1872,24 +1873,12 @@ impl WorkspaceTree {
         // Identity first: the receiver checks this field against the
         // room it asked for, so an unlabelled document could be applied
         // to the wrong one.
-        let current_room = match doc.get(&ROOT, "room").ok().flatten() {
-            Some((Value::Scalar(s), _)) => match s.as_ref() {
-                ScalarValue::Str(v) => Some(v.to_string()),
-                _ => None,
-            },
-            _ => None,
-        };
+        let current_room = doc.str_at(&ROOT, "room");
         if current_room.as_deref() != Some(room_str.as_str()) {
             let _ = doc.put(&ROOT, "room", room_str.clone());
         }
 
-        let current_name = match doc.get(&ROOT, "name").ok().flatten() {
-            Some((Value::Scalar(s), _)) => match s.as_ref() {
-                ScalarValue::Str(v) => Some(v.to_string()),
-                _ => None,
-            },
-            _ => None,
-        };
+        let current_name = doc.str_at(&ROOT, "name");
         // The name is governed like the owner: only the governing machine
         // writes it. A member's local name (a device's "From another
         // device" placeholder before its first sync) would otherwise race
@@ -7112,17 +7101,11 @@ mod automerge_foundation_tests {
     /// The owner and capability ids the receiver's own **room document**
     /// records — not its cache, so a divergent fold can't hide behind it.
     fn governance_in_room_doc(tree: &WorkspaceTree, room: RoomId) -> (Option<String>, Vec<String>) {
-        use automerge::{ROOT, ReadDoc, ScalarValue, Value};
+        use automerge::{ROOT, ReadDoc};
         let Some(doc) = tree.room_docs.get(&room) else {
             return (None, Vec::new());
         };
-        let owner = match doc.get(&ROOT, "owner").ok().flatten() {
-            Some((Value::Scalar(s), _)) => match s.as_ref() {
-                ScalarValue::Str(v) => Some(v.to_string()),
-                _ => None,
-            },
-            _ => None,
-        };
+        let owner = doc.str_at(&ROOT, "owner");
         let mut caps: Vec<String> =
             match doc.get(&ROOT, projection::ROOM_SANDBOX_KEY).ok().flatten() {
                 Some((_, caps_id)) => doc.keys(&caps_id).collect(),

@@ -840,6 +840,20 @@ mod tests {
     #[test]
     fn shared_display_automatic_input_is_a_separate_local_admin_choice() {
         let mut app = ui::framework::testing::TestApp::<crate::SettingsShell>::new().unwrap();
+        // Discovery now starts on; explicitly disable it to prove the separate
+        // automatic-input choice cannot override the person's master switch.
+        app.surface::<SettingsApp, _>(|settings| {
+            settings
+                .displays()
+                .model()
+                .borrow()
+                .cx
+                .settings::<crate::continuity::ContinuityPrivacy>()
+                .update(|privacy| privacy.enabled = false)
+                .unwrap();
+        })
+        .unwrap();
+        app.settle();
         let before = app
             .call("inspect-shared-displays", serde_json::json!({}))
             .unwrap()

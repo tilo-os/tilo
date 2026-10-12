@@ -34,6 +34,7 @@ mod history_agents_tests;
 #[path = "invocation_journal.rs"]
 mod invocation_journal;
 mod invoker;
+mod native_checkout;
 #[cfg(test)]
 #[path = "collab_broker_capnp/native_effect_recovery_tests.rs"]
 mod native_effect_recovery_tests;
@@ -3179,6 +3180,7 @@ pub struct CapnpBrokerState {
     peer_action_rx: Mutex<Option<tokio::sync::mpsc::Receiver<super::peer_actions::Request>>>,
     action_directory_roots: Mutex<HashMap<u64, ActionDirectoryRoot>>,
     canonical_directories: Mutex<canonical_route::CanonicalDirectories>,
+    native_checkouts: Mutex<HashMap<u64, native_checkout::NativeCheckout>>,
     action_directory_root_snapshot: Mutex<ActionDirectoryRootSnapshot>,
     /// Directed invocation stream registered by each application connection.
     invocation_subscribers: Mutex<HashMap<u64, mpsc::UnboundedSender<InvocationEnvelope>>>,
@@ -3410,6 +3412,7 @@ impl CapnpBrokerState {
         clear!(self.channels);
         clear!(self.surfaces);
         clear!(self.action_directory_roots);
+        clear!(self.native_checkouts);
         clear!(self.invocation_subscribers);
         clear!(self.action_catalogue_subscribers);
         clear!(self.pending_invocations);
@@ -3971,6 +3974,7 @@ impl CapnpBrokerState {
                 peer_action_queue,
                 peer_action_rx: Mutex::new(Some(peer_action_rx)),
                 action_directory_roots: Mutex::new(HashMap::new()),
+                native_checkouts: Mutex::new(HashMap::new()),
                 canonical_directories: Mutex::new(canonical_route::CanonicalDirectories::default()),
                 action_directory_root_snapshot: Mutex::new(ActionDirectoryRootSnapshot::default()),
                 invocation_subscribers: Mutex::new(HashMap::new()),
@@ -6336,6 +6340,9 @@ impl CapnpBrokerState {
         if let Ok(mut roots) = self.action_directory_roots.lock() {
             roots.remove(&peer_id);
         }
+        if let Ok(mut checkouts) = self.native_checkouts.lock() {
+            checkouts.remove(&peer_id);
+        }
         self.refresh_action_directory_root_snapshot();
         if let Ok(mut capabilities) = self.stable_invocation_subscribers.lock() {
             capabilities.remove(&peer_id);
@@ -7241,8 +7248,8 @@ impl CapnpBrokerState {
         Ok(())
     }
 
-    /// Re-check every membership surface and native context subscriber
-    /// (TIL-707), and register with
+    /// Re-check every membership surface and native context subscriber,
+    /// and register with
     /// [`tilo_identity_host::policy_change::wake_at`] the first instant at
     /// which a time-bound input they read (a capability's expiry, a
     /// subscriber certificate's validity) changes the answer. Returns whether
@@ -9306,11 +9313,12 @@ impl channel_handle::Server for CapnpChannelHandle {
                 ActionDirectoryRoot {
                     peer_id: self.peer_id,
                     app_id,
-                    cluster_id: route.cluster_id,
-                    record_id: route.record_id,
+                    cluster_id: route.cluster_id.clone(),
+                    record_id: route.record_id.clone(),
                 },
             );
         }
+        self.retain_native_checkout(&route);
         self.state.refresh_action_directory_root_snapshot();
         // The directory can alter remote discoverability without an eager
         // action snapshot changing, so notify legacy catalogue subscribers.
@@ -12529,7 +12537,7 @@ async fn serve_broker_thread(
     };
     // Membership surfaces and native context subscribers are re-checked when
     // an input announces a change or a registered expiry comes due, not on a
-    // clock (TIL-707). The watch wakes this turn for the first announcement
+    // clock. The watch wakes this turn for the first announcement
     // after it is armed; the schedule coalesces the rest.
     let policy_turn = Arc::new(tokio::sync::Notify::new());
     let policy_watch = {
@@ -14328,6 +14336,8 @@ pub mod tests {
     include!("reliable_resolution_tests.rs");
     #[cfg(test)]
     include!("canonical_route_tests.rs");
+    #[cfg(all(test, target_os = "linux"))]
+    include!("native_checkout_tests.rs");
     #[cfg(test)]
     include!("durable_local_invocation_matrix_tests.rs");
     #[cfg(test)]

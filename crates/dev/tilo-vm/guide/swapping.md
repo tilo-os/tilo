@@ -230,6 +230,31 @@ generation; the pending marker remains for diagnosis. Neither recovery path
 resets account identity or application data. Kernel changes retain their separate
 boot-confirmation lifecycle.
 
+### Matched userspace replacement
+
+```sh
+tilo-vm swap --slot my-slot userspace --builder remote
+```
+
+`userspace` builds the matched session components and `apps+runtime` from one
+verified worktree inventory, using each component's canonical profile and the
+registered remote builder for the target architecture. It stages every member
+before asking the daemon to activate them together. Host/VM builders, custom
+profiles, image sources and the VM-wide slot are not supported for this command.
+
+The daemon checks the admitted session identity and expected generation before
+selection, verifies the signed cohort in its candidate view, and preserves held
+apps and the session's existing application-store location. Publisher rotation
+keeps trust only for exact retained runtime identities, not every runtime signed
+by an old key. One readiness-checked session refresh commits the generation;
+failure restores prior app selections and the prior view through normal recovery.
+Account identity and application data are not reset. A receipt distinguishes
+staging, activation and recovery; missing verification fails rather than skipping.
+
+Older daemons without `userspace.apply` must be updated through the normal daemon
+component swap first. Individual component swaps and `app:<dir>` installs remain
+available for narrower changes; they are not an atomic userspace replacement.
+
 ### Worktree apps and their matching runtime
 
 `tilo-vm swap apps+runtime --builder remote` builds every packaged native app and

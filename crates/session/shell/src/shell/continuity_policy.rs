@@ -63,13 +63,14 @@ pub struct ContinuityPolicySnapshot {
 }
 
 /// The switches the section holds, besides `audit`.
-const SWITCHES: [&str; 10] = [
+const SWITCHES: [&str; 11] = [
     "enabled",
     "clipboard",
     "notifications",
     "wifi_settings",
     "media",
     "display_input",
+    "automatic_display_input",
     "file_transfer",
     "realtime_sessions",
     "typed_gamepad",
@@ -349,6 +350,16 @@ mod tests {
 
     #[test]
     fn automatic_display_input_requires_a_literal_separate_opt_in() {
+        for automatic in [false, true] {
+            let policy = ContinuityPolicySnapshot::from_document(&document(
+                &json!({"continuity": {"enabled":true, "display_input":true, "automatic_display_input":automatic}}),
+            ));
+            assert_eq!(policy.automatic_display_input(), automatic);
+            assert!(
+                policy.permits(ContinuityCapability::DisplayInput),
+                "the known device-local switch must not invalidate the capability policy"
+            );
+        }
         for value in [
             json!(null),
             json!(false),

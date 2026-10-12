@@ -26,6 +26,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::ops::Bound;
 use std::sync::Arc;
 use tilo_automerge::ApplyIncoming;
+use tilo_automerge::ReadTyped as _;
 use tilo_automerge::read::{map_at, str_at, str_entries};
 use tilo_content::{ContentInputs, ContentMeta, ContentSource};
 
@@ -1655,13 +1656,7 @@ fn preserved_segments(
     let Ok(Some((Value::Object(ObjType::Map), part_obj))) = doc.get(&c.preserved, key) else {
         return None;
     };
-    let bytes_at = |obj: &ObjId, prop: &str| match doc.get(obj, prop) {
-        Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
-            ScalarValue::Bytes(b) => Some(b.clone()),
-            _ => None,
-        },
-        _ => None,
-    };
+    let bytes_at = |obj: &ObjId, prop: &str| doc.bytes_at(obj, prop);
     let mut segs: Vec<(Vec<u8>, String, Vec<u8>)> = doc
         .keys(&part_obj)
         .filter_map(|sid| {
@@ -1972,13 +1967,7 @@ impl DocMut<'_> {
             let hi = run.hi.clone();
             return Some((between_salted(Some(&run.key), hi.as_deref(), salt), hi));
         }
-        let order_of = |doc: &AutoCommit, obj: &ObjId| match doc.get(obj, BLOCK_ORDER) {
-            Ok(Some((Value::Scalar(value), _))) => match value.as_ref() {
-                ScalarValue::Bytes(key) => Some(key.clone()),
-                _ => None,
-            },
-            _ => None,
-        };
+        let order_of = |doc: &AutoCommit, obj: &ObjId| doc.bytes_at(obj, BLOCK_ORDER);
         let after_key = order_of(self.doc, &block_obj(self.doc, container, after)?)?;
         let mut next: Option<(Vec<u8>, String)> = None;
         for item in self.doc.map_range(container, ..) {
@@ -2101,13 +2090,7 @@ impl DocMut<'_> {
         let container = region_obj(self.c, region).clone();
         let key_of = |doc: &AutoCommit, id: &str| {
             let obj = block_obj(doc, &container, id)?;
-            match doc.get(&obj, BLOCK_ORDER) {
-                Ok(Some((Value::Scalar(value), _))) => match value.as_ref() {
-                    ScalarValue::Bytes(key) => Some(key.clone()),
-                    _ => None,
-                },
-                _ => None,
-            }
+            doc.bytes_at(&obj, BLOCK_ORDER)
         };
         let bounds = match (self.bulk_active(), next) {
             (false, Some(next)) => key_of(self.doc, after).zip(key_of(self.doc, next)),

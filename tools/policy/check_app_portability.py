@@ -673,9 +673,12 @@ def manifest_findings(
                 continue
             named = {
                 alias
-                for kind in ("dependencies", "dev-dependencies", "build-dependencies")
+                for kind in ("dependencies", "build-dependencies")
                 for alias in (tables or {}).get(kind, {})
             }
+            # Target-specific dev-dependencies only reach tests, which are exempt.
+            if not named and (tables or {}).get("dev-dependencies"):
+                continue
             if named and named <= build_only:
                 continue
             hits.append(("R1", header_line(text, target), f"`[target.{target}]` section"))

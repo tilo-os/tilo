@@ -129,6 +129,7 @@ workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
 landlock.workspace = true
+rustix = { workspace = true, features = ["event", "net", "process", "std"] }
 # `gpu.rs` asks each installed Vulkan ICD directly which render node its
 # devices are on (`VK_EXT_physical_device_drm`), loading the library itself
 # so every answer belongs to exactly one manifest.

@@ -1832,7 +1832,16 @@ impl ActorState {
             Some(NetCmd::Connect { addr }) => {
                 let id = addr.id;
                 self.lookup.add_endpoint_info(addr.clone());
-                if addr.ip_addrs().next().is_some() {
+                // Only bypass gossip's dial when an earlier endpoint-only
+                // address may have left its lookup in flight. A first dial
+                // already sees these addresses through the lookup above;
+                // dialing it twice retains two idle QUIC connections.
+                if addr.ip_addrs().next().is_some()
+                    && self
+                        .peers
+                        .get(&id)
+                        .is_some_and(|previous| previous.ip_addrs().next().is_none())
+                {
                     self.connect_known_addresses(addr.clone());
                 }
                 self.peers.insert(id, addr);
@@ -5096,7 +5105,7 @@ mod tests {
     }
 
     /// A dial wakes the relays; what a lone desktop does on every local
-    /// change (join its own topic, publish to it) does not (TIL-740).
+    /// change (join its own topic, publish to it) does not.
     #[test]
     fn only_a_remote_party_needs_this_device_reachable() {
         let addr = EndpointAddr::new(iroh::SecretKey::generate().public());
@@ -5582,6 +5591,14 @@ mod tests {
                 .send(NetCmd::JoinWorkspace {
                     ws: 42,
                     on_event: event_b,
+                })
+                .await
+                .unwrap();
+            // Enrollment names the endpoint before LAN discovery supplies
+            // its address. Repair that earlier address-less dial on receipt.
+            cmd_a
+                .send(NetCmd::Connect {
+                    addr: EndpointAddr::new(b_addr.id),
                 })
                 .await
                 .unwrap();

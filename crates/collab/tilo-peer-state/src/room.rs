@@ -12,6 +12,7 @@ pub use admit::{
 };
 use automerge::{AutoCommit, ROOT, ReadDoc, ScalarValue, Value};
 use std::collections::BTreeMap;
+use tilo_automerge::ReadTyped as _;
 /// Every governed value a room document records, exactly as stored.
 ///
 /// Member, grant and identity rows are the raw blobs the document holds, not their
@@ -132,13 +133,7 @@ pub fn extract_governed_fields(
 ) -> (Option<String>, tilo_action_policy::RoomPolicy) {
     #[cfg(test)]
     POLICY_READS.with(|count| count.set(count.get().saturating_add(1)));
-    let text = |key: &str| match candidate.get(&ROOT, key).ok().flatten() {
-        Some((Value::Scalar(s), _)) => match s.as_ref() {
-            ScalarValue::Str(v) => Some(v.to_string()),
-            _ => None,
-        },
-        _ => None,
-    };
+    let text = |key: &str| candidate.str_at(&ROOT, key);
     let room = text("room").unwrap_or_default();
     (
         text("name"),

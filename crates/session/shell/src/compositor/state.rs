@@ -4520,6 +4520,9 @@ pub struct ClientState {
     /// Used to recognise xwayland-satellite after its last toplevel dies
     /// while leftover X clients (Wine) still hold the X socket.
     pub pid: Option<u32>,
+    /// Kernel process lifetime observed when this connection was admitted.
+    /// A reused PID can never authorize a mapped-file diagnostic.
+    pub pid_start_time: Option<u64>,
     /// Set when the connection is a legacy VM's Wayland forwarder: every app
     /// id it announces becomes `legacy.<guest>.<app id>`. Claiming this only
     /// lowers what a window is trusted with, so it needs no proof.
@@ -4545,6 +4548,7 @@ impl Default for ClientState {
             enforce_package_id: false,
             executable: None,
             pid: None,
+            pid_start_time: None,
             legacy_guest: None,
             touch_bound: std::sync::atomic::AtomicBool::new(false),
         }
@@ -4582,6 +4586,7 @@ impl ClientState {
             workspace_id: identity.workspace_id,
             enforce_package_id: identity.confined,
             pid: Some(pid),
+            pid_start_time: crate::shell::launcher::proc_stat(pid).map(|(_, start)| start),
             ..Self::default()
         })
     }
@@ -4993,13 +4998,54 @@ fn trusted_osk_identity(surface: &WlSurface, app_id: Option<&str>) -> bool {
     osk_identity_is_trusted(app_id, trusted_osk_connection(surface))
 }
 
+struct SurfaceAdoptionId(uuid::Uuid);
+
+pub(crate) fn surface_adoption_id(surface: &WlSurface) -> Option<uuid::Uuid> {
+    surface.data::<smithay::wayland::compositor::SurfaceUserData>()?;
+    wl_compositor::with_states(surface, |states| {
+        states
+            .data_map
+            .get::<SurfaceAdoptionId>()
+            .map(|identity| identity.0)
+    })
+}
+
+fn ensure_surface_adoption_id(surface: &WlSurface) -> Option<uuid::Uuid> {
+    surface.data::<smithay::wayland::compositor::SurfaceUserData>()?;
+    wl_compositor::with_states(surface, |states| {
+        states
+            .data_map
+            .insert_if_missing(|| SurfaceAdoptionId(uuid::Uuid::new_v4()));
+    });
+    surface_adoption_id(surface)
+}
+
 fn observe_toplevel_startup(surface: &ToplevelSurface) {
-    if let Some(pid) = surface
-        .wl_surface()
-        .client()
-        .and_then(|client| client.get_data::<ClientState>().and_then(|state| state.pid))
+    if let Some(client) = surface.wl_surface().client()
+        && let Some(state) = client.get_data::<ClientState>()
+        && let Some(pid) = state.pid
     {
-        crate::shell::launcher::record_startup_window(pid);
+        let adoption = state
+            .package_id
+            .as_ref()
+            .zip(state.workspace_id.as_ref())
+            .filter(|_| {
+                state.enforce_package_id
+                    && !state.privileged
+                    && state.pid_start_time.is_some_and(|expected| {
+                        crate::shell::launcher::proc_stat(pid)
+                            .is_some_and(|(_, start)| start == expected)
+                    })
+            })
+            .and_then(|(package, room)| {
+                Some(tilo_action_broker::services::LaunchAdoption {
+                    adoption_id: ensure_surface_adoption_id(surface.wl_surface())?,
+                    surface_id: surface_id(surface.wl_surface()),
+                    package_id: package.clone(),
+                    room: room.clone(),
+                })
+            });
+        crate::shell::launcher::record_startup_window(pid, adoption);
     }
 }
 
