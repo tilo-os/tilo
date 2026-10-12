@@ -4,8 +4,8 @@ name: Perf / scheduled
 # results as records (tools/perf/record.py), compare.py checks them against
 # the store's rolling baseline and tools/perf/kpi-budgets.toml, and the
 # annotated records are appended to the store, the public generic package
-# tilo-perf-results (tools/perf/store.py). DEVELOPMENT.md "Performance
-# results" says how a benchmark joins.
+# tilo-perf-results (tools/perf/store.py). docs/measurements/performance.md
+# says how a benchmark joins.
 #
 # It is not a required check and never runs per push: wall-clock numbers
 # from a pull request's shared runner would only be noise. Benchmarks consume
@@ -309,7 +309,7 @@ jobs:
             > perf/footprint.jsonl
           cat perf/footprint.jsonl
 
-      # The enforced app-size gate (DEVELOPMENT.md, "App package size"): every
+      # The enforced app-size gate (docs/measurements/app-package-size.md): every
       # published app within its budget, and the apps' median, p90 and max
       # within the fleet ceilings of tools/perf/tapp-size-budget/. The records
       # above are uploaded either way; compare fails the run on this job.
@@ -318,7 +318,7 @@ jobs:
           python3 tools/perf/tapp_size_ratchet.py fleet "$RUNNER_TEMP/entries.json"
           --summary "$GITHUB_STEP_SUMMARY"
 
-      # The shared runtime (TIL-604; DEVELOPMENT.md, "Runtime size"): the
+      # The shared runtime (TIL-604; docs/measurements/runtime-size.md): the
       # newest published libruntime_dylib.so of each architecture against
       # tools/perf/runtime-size-budget/, recorded as footprint.runtime.*.
       # Records are written before the gate's verdict, so a run over budget
