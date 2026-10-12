@@ -44,6 +44,7 @@ class AppResourceActionContractTests(unittest.TestCase):
             + dependencies,
             encoding="utf-8",
         )
+        (app / "tilo-app.toml").write_text("", encoding="utf-8")
         (app / "src" / "lib.rs").write_text(source, encoding="utf-8")
         return root
 

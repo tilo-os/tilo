@@ -4,7 +4,7 @@
 //! repair.
 
 /// Locale choices supported end to end by the Imager, live installer and OS.
-const LOCALE_CATALOG: &str = include_str!("../../../../os/usr/share/tilo/installer-locales.txt");
+const LOCALE_CATALOG: &str = include_str!("../locales.txt");
 
 /// Keyboard layouts the installer offers, by XKB id.
 pub const KEYBOARDS: &[&str] = &[

@@ -132,7 +132,7 @@ fn shown_value(profile: &InstallProfile, field: CzField) -> String {
 /// value no catalog lists. Free-text identity fields stay as typed.
 pub(crate) fn profile_value(field: CzField, value: &str) -> Option<String> {
     match field {
-        CzField::Locale => tilo_install_profile::locales()
+        CzField::Locale => install_profile_model::locales()
             .any(|locale| locale == value)
             .then(|| value.to_string()),
         CzField::Timezone => timezones().into_iter().find(|zone| zone == value),
@@ -259,7 +259,7 @@ pub(crate) fn form(
         .into_iter()
         .map(|filesystem| filesystem.label().to_string())
         .collect();
-    let locales = tilo_install_profile::locales()
+    let locales = install_profile_model::locales()
         .map(str::to_string)
         .collect();
     Form::new()

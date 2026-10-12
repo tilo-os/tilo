@@ -189,7 +189,7 @@ pub fn maybe_run(args: &[String]) -> Result<Option<i32>, Box<dyn std::error::Err
     check_target(&request.image)?;
     let mut profile = InstallProfile::default();
     if let Some(hostname) = &request.hostname {
-        if !tilo_install_profile::valid_hostname(hostname) {
+        if !install_profile_model::valid_hostname(hostname) {
             return Err(
                 "Hostname must be 1–63 letters, numbers or hyphens, without a hyphen at either end."
                     .into(),
