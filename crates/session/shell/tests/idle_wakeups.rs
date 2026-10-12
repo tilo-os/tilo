@@ -187,33 +187,33 @@ impl Desktop {
     /// Notes tab saved in its session; returns once its control socket
     /// answers with a laid-out frame.
     fn start() -> Self {
-        Self::start_with(&notes_desktop())
+        Self::start_with(notes_desktop())
     }
 
     /// The same with `tree` as the saved session (`idle_memory` starts an
     /// empty desktop).
-    pub(crate) fn start_with(tree: &shell::shell::state::WorkspaceTree) -> Self {
+    pub(crate) fn start_with(tree: shell::shell::state::WorkspaceTree) -> Self {
         Self::start_configured(tree, &[], false)
     }
 
     /// [`Self::start_with`], serving the agent door at
     /// `tilo-session/agent.sock` in its runtime directory (where a client
     /// inside the login looks) when `door`.
-    pub(crate) fn start_with_door(tree: &shell::shell::state::WorkspaceTree, door: bool) -> Self {
+    pub(crate) fn start_with_door(tree: shell::shell::state::WorkspaceTree, door: bool) -> Self {
         Self::start_configured(tree, &[], door)
     }
 
     /// [`Self::start_with`] with `env` added to the compositor's
     /// environment (`workspace_switch_cost` turns on the frame trace).
     pub(crate) fn start_with_env(
-        tree: &shell::shell::state::WorkspaceTree,
+        tree: shell::shell::state::WorkspaceTree,
         env: &[(&str, &std::ffi::OsStr)],
     ) -> Self {
         Self::start_configured(tree, env, false)
     }
 
     fn start_configured(
-        tree: &shell::shell::state::WorkspaceTree,
+        tree: shell::shell::state::WorkspaceTree,
         env: &[(&str, &std::ffi::OsStr)],
         door: bool,
     ) -> Self {
@@ -229,8 +229,13 @@ impl Desktop {
         let _ = std::fs::remove_dir_all(&runtime_dir);
         std::fs::create_dir_all(&runtime_dir).expect("create the private runtime dir");
         let state_path = runtime_dir.join("state.json");
-        shell::shell::persist::save_tree_to(tree, &state_path).expect("seed the saved session");
-        seed_tab_records(&runtime_dir, tree);
+        shell::shell::persist::save_tree_to(&tree, &state_path).expect("seed the saved session");
+        seed_tab_records(&runtime_dir, &tree);
+        // Saving made this tree the state file's writer: it holds the file's
+        // `.writer-lock` until it is dropped. The compositor is the only writer
+        // of the session it restores, so release it before that starts, or the
+        // compositor runs without its durable owner ("file lease is busy").
+        drop(tree);
         let identity_root = seed_identity(&runtime_dir);
         let control = runtime_dir.join("ctl");
 

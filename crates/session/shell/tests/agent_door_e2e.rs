@@ -325,8 +325,8 @@ fn an_agent_without_the_desktop_name_edits_a_note_by_path() {
     // The agent holds no role of its own: the person grants it Notes.
     let granted = control(
         &session.control(),
-        &serde_json::json!({"op":"grant","subject":"agent:claude-code",
-            "scope":"app:so.tilo.notes","verb":"write","id":"e2e-agent-notes"}),
+        &serde_json::json!({"op":"allow","subject":"agent:claude-code","node":"app:so.tilo.notes",
+            "kinds":["read","undoable"],"answer":"allow","id":"e2e-agent-notes"}),
     );
     assert!(granted.get("err").is_none(), "{granted}");
 
@@ -411,7 +411,7 @@ fn an_agent_without_the_desktop_name_edits_a_note_by_path() {
     // needs no view of anyone's, is refused all the same.
     let revoked = control(
         &session.control(),
-        &serde_json::json!({"op":"revoke","id":"e2e-agent-notes"}),
+        &serde_json::json!({"op":"disallow","id":"e2e-agent-notes"}),
     );
     assert!(revoked.get("err").is_none(), "{revoked}");
     let deadline = tilo_test_env::hang_deadline();

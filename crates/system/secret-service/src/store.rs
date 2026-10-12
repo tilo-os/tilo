@@ -134,7 +134,9 @@ fn load_or_create_salt(path: &Path) -> io::Result<Zeroizing<[u8; 32]>> {
     use std::io::Read;
     let read = |path: &Path| -> io::Result<Zeroizing<[u8; 32]>> {
         let mut bytes = Zeroizing::new(Vec::with_capacity(32));
-        tilo_files::native::private::read(path)?.take(33).read_to_end(&mut bytes)?;
+        tilo_files::native::private::read(path)?
+            .take(33)
+            .read_to_end(&mut bytes)?;
         let mut salt = Zeroizing::new([0_u8; 32]);
         if bytes.len() != salt.len() {
             return Err(io::Error::new(
@@ -315,7 +317,8 @@ impl Store {
             .path
             .parent()
             .ok_or_else(|| StoreError::Io("no parent directory".into()))?;
-        tilo_files::native::private::directory(parent).map_err(|error| StoreError::Io(error.to_string()))?;
+        tilo_files::native::private::directory(parent)
+            .map_err(|error| StoreError::Io(error.to_string()))?;
         tilo_files::native::private::write_atomic(&self.path, &sealed)
             .map_err(|error| StoreError::Io(error.to_string()))
     }

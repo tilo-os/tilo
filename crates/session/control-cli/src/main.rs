@@ -899,6 +899,71 @@ fn wait_flag(word: &str) -> Option<Result<u64, ParseError>> {
     }))
 }
 
+/// `actions list [flags] [query words]`.
+fn parse_actions_list<'a>(
+    iter: &mut impl Iterator<Item = &'a String>,
+) -> Result<Command, ParseError> {
+    // Everything after `list` that isn't a flag joins the
+    // query, so `actions list open settings` works without
+    // the caller having to quote it.
+    let mut json = false;
+    let mut include_programmatic = false;
+    let mut page = ListPage::default();
+    let mut wait_ms = None;
+    let mut words: Vec<String> = Vec::new();
+    while let Some(rest) = iter.next() {
+        if rest == "--json" {
+            json = true;
+        } else if rest == "--programmatic" {
+            include_programmatic = true;
+        } else if rest == "--limit" {
+            let raw = iter.next().ok_or_else(|| {
+                ParseError::Usage("actions list --limit needs a number of rows".into())
+            })?;
+            page.limit = Some(raw.parse::<usize>().map_err(|_| {
+                ParseError::Usage(format!(
+                    "actions list --limit: `{raw}` is not a number of rows"
+                ))
+            })?);
+        } else if rest == "--files" {
+            page.files = true;
+        } else if rest == "--kind" {
+            page.kinds.push(
+                iter.next()
+                    .ok_or_else(|| {
+                        ParseError::Usage(
+                            "actions list --kind needs a kind: application, action, \
+                             note, record, file, …"
+                                .into(),
+                        )
+                    })?
+                    .clone(),
+            );
+        } else if rest == "--cursor" {
+            page.cursor = Some(
+                iter.next()
+                    .ok_or_else(|| {
+                        ParseError::Usage(
+                            "actions list --cursor needs the next_cursor a page gave".into(),
+                        )
+                    })?
+                    .clone(),
+            );
+        } else if let Some(wait) = wait_flag(rest) {
+            wait_ms = Some(wait?);
+        } else {
+            words.push(rest.clone());
+        }
+    }
+    Ok(Command::ActionsList {
+        query: words.join(" "),
+        json,
+        include_programmatic,
+        page,
+        wait_ms,
+    })
+}
+
 fn parse_actions_command<'a>(
     iter: &mut impl Iterator<Item = &'a String>,
 ) -> Result<Command, ParseError> {
@@ -915,68 +980,7 @@ fn parse_actions_command<'a>(
                 "actions session takes no arguments (got `{extra}`); it reads requests on stdin"
             ))),
         },
-        "list" => {
-            // Everything after `list` that isn't a flag joins the
-            // query, so `actions list open settings` works without
-            // the caller having to quote it.
-            let mut json = false;
-            let mut include_programmatic = false;
-            let mut page = ListPage::default();
-            let mut wait_ms = None;
-            let mut words: Vec<String> = Vec::new();
-            while let Some(rest) = iter.next() {
-                if rest == "--json" {
-                    json = true;
-                } else if rest == "--programmatic" {
-                    include_programmatic = true;
-                } else if rest == "--limit" {
-                    let raw = iter.next().ok_or_else(|| {
-                        ParseError::Usage("actions list --limit needs a number of rows".into())
-                    })?;
-                    page.limit = Some(raw.parse::<usize>().map_err(|_| {
-                        ParseError::Usage(format!(
-                            "actions list --limit: `{raw}` is not a number of rows"
-                        ))
-                    })?);
-                } else if rest == "--files" {
-                    page.files = true;
-                } else if rest == "--kind" {
-                    page.kinds.push(
-                        iter.next()
-                            .ok_or_else(|| {
-                                ParseError::Usage(
-                                    "actions list --kind needs a kind: application, action, \
-                                     note, record, file, …"
-                                        .into(),
-                                )
-                            })?
-                            .clone(),
-                    );
-                } else if rest == "--cursor" {
-                    page.cursor = Some(
-                        iter.next()
-                            .ok_or_else(|| {
-                                ParseError::Usage(
-                                    "actions list --cursor needs the next_cursor a page gave"
-                                        .into(),
-                                )
-                            })?
-                            .clone(),
-                    );
-                } else if let Some(wait) = wait_flag(rest) {
-                    wait_ms = Some(wait?);
-                } else {
-                    words.push(rest.clone());
-                }
-            }
-            Ok(Command::ActionsList {
-                query: words.join(" "),
-                json,
-                include_programmatic,
-                page,
-                wait_ms,
-            })
-        }
+        "list" => parse_actions_list(iter),
         "invoke" => parse_action_invocation(iter),
         "status" | "cancel" => {
             let raw = iter.next().ok_or_else(|| {

@@ -213,12 +213,11 @@ impl SurfaceTable {
             self.resources.remove(name);
         }
         for resource in &delta.resources {
-            let seq = match self.resources.get(&resource.resource) {
-                Some((seq, _)) => *seq,
-                None => {
-                    self.next = self.next.saturating_add(1);
-                    self.next
-                }
+            let seq = if let Some((seq, _)) = self.resources.get(&resource.resource) {
+                *seq
+            } else {
+                self.next = self.next.saturating_add(1);
+                self.next
             };
             self.resources
                 .insert(resource.resource.clone(), (seq, resource.clone()));

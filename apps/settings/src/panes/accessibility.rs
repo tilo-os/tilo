@@ -475,7 +475,7 @@ impl AccessibilityPane {
                     .described(t("a11y-mouse-keys-desc"))
                     .id("a11y.mouse_keys")
                     .toggle(&shown.mouse_keys, AccessibilitySettings::paths().mouse_keys),
-                caption(&t("a11y-mouse-keys-caption")),
+                note(&t("a11y-mouse-keys-caption")),
                 self.cx
                     .row(t("a11y-large-cursor"))
                     .described(t("a11y-large-cursor-desc"))

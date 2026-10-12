@@ -83,7 +83,6 @@ impl Notes {
     }
 
     /// A resource row (no action) or an action row of `key`.
-    #[allow(clippy::too_many_arguments)]
     fn row(
         &self,
         parent: &str,
