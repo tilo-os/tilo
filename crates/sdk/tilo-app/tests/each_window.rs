@@ -142,7 +142,7 @@ impl ResourceApp for ShownWindow {
     }
 
     fn view(cx: &mut ViewCx<Checklist>) -> Element {
-        let rows = cx.each(|list| &list.tasks, task_row);
+        let rows = cx.each(|list| &list.tasks, |row| task_row(row));
         Box::new(Column::new().push(Box::new(rows)))
     }
 }
@@ -428,6 +428,77 @@ fn adding_an_item_to_a_list_showing_every_row_mounts_its_row_in_place() {
         app.state().tasks.get(&added).unwrap().done,
         "the mounted row's checkbox acts on its item"
     );
+}
+
+/// A host's region of 1280 × 800 logical pixels.
+struct Region;
+
+impl tilo_app::app::AppSurface for Region {
+    fn scale_factor(&self) -> f64 {
+        1.0
+    }
+    fn inner_size(&self) -> tilo_app::winit::dpi::PhysicalSize<u32> {
+        tilo_app::winit::dpi::PhysicalSize::new(1280, 800)
+    }
+    fn request_redraw(&self) {}
+    fn set_cursor(&self, _: tilo_app::winit::window::CursorIcon) {}
+}
+
+/// Frames of a live window until it is at rest, and its accessibility tree.
+fn host_frame(app: &mut tilo_app::App) {
+    for _ in 0..4 {
+        let mut scene = tilo_app::advanced::Scene::new();
+        if !app.surface_frame(&Region, &mut scene) || !app.unsettled() {
+            break;
+        }
+    }
+    let _ = app.refresh_semantic_tree();
+}
+
+/// Each checkbox of a live window, with where it is.
+fn checkboxes(app: &tilo_app::App) -> Vec<String> {
+    app.semantic_tree()
+        .iter()
+        .filter(|node| node.role == tilo_app::a11y::Role::Checkbox)
+        .map(|node| format!("{:?} {:?}", node.name, node.bounds))
+        .collect()
+}
+
+#[test]
+fn a_live_window_mounts_an_added_row_in_place() {
+    use tilo_app::framework::testing::drive_live_window;
+    fn seed(app: &mut tilo_app::App, count: u32) {
+        let serde_json::Value::Object(arguments) = serde_json::json!({ "count": count }) else {
+            unreachable!("an object");
+        };
+        app.invoke_local_resource_action(
+            &tilo_actions::ActionAddress::new("test.window-checklist", "seed"),
+            &arguments,
+        )
+        .unwrap();
+    }
+    drive_live_window::<ShownWindow, _>(|app| {
+        app.init_layout();
+        host_frame(app);
+        seed(app, 12);
+        host_frame(app);
+        assert_eq!(checkboxes(app).len(), 12);
+        let (rebuilds, remounts) = app.layout_tree_changes();
+
+        seed(app, 1);
+        host_frame(app);
+
+        let shown = checkboxes(app);
+        assert_eq!(shown.len(), 13, "the added row is shown");
+        let (rebuilt, remounted) = app.layout_tree_changes();
+        assert_eq!(rebuilt, rebuilds, "the window's layout tree is kept");
+        assert!(remounted > remounts, "the row was mounted into it");
+        // What the window shows is what a rebuilt tree shows.
+        app.init_layout();
+        host_frame(app);
+        assert_eq!(checkboxes(app), shown);
+    })
+    .unwrap();
 }
 
 #[test]

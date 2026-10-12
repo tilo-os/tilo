@@ -2478,6 +2478,14 @@ impl App {
         change.rebuilds()
     }
 
+    /// How many times the layout tree was rebuilt, and how many times widgets
+    /// changed it in place: a test asks whether a change kept the tree.
+    #[cfg(any(test, feature = "test-support"))]
+    #[doc(hidden)]
+    pub fn layout_tree_changes(&self) -> (u64, u64) {
+        (self.layout.rebuilds, self.layout.remounts)
+    }
+
     /// Carry out the change the root's widgets make in place
     /// ([`crate::widget::StructureChange::Children`]) in the retained tree,
     /// admitting what they mounted, and sync them. Returns `false` when it

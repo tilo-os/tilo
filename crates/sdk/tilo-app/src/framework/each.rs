@@ -777,6 +777,26 @@ impl<R: Resource> Widget for Each<R> {
             },
             &nodes,
         );
+        // The track is taller than the list: it stands in a box as tall as
+        // the list that clips what it adds to the list's content, so a
+        // scroll view around the list scrolls the list's own height.
+        let clip = taffy.parent_node(
+            Style {
+                position: taffy::Position::Absolute,
+                inset: taffy::Rect {
+                    left: length(0.0_f32),
+                    right: length(0.0_f32),
+                    top: length(0.0_f32),
+                    bottom: length(0.0_f32),
+                },
+                overflow: taffy::Point {
+                    x: taffy::Overflow::Visible,
+                    y: taffy::Overflow::Clip,
+                },
+                ..Default::default()
+            },
+            &[track],
+        );
         let style = Style {
             size: taffy::Size {
                 width: percent(1.0_f32),
@@ -785,7 +805,7 @@ impl<R: Resource> Widget for Each<R> {
             flex_shrink: 0.0,
             ..Default::default()
         };
-        let node = taffy.parent_node(style, &[track]);
+        let node = taffy.parent_node(style, &[clip]);
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         self.node = Some(node);
         self.track = Some(track);
