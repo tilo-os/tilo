@@ -2,7 +2,7 @@
 name = "tilo-endpoint-reachability"
 version = "0.1.0"
 edition = "2024"
-publish = false
+publish = true
 license.workspace = true
 description = "Hold an iroh endpoint's relays back until something needs the device dialable."
 repository.workspace = true

@@ -149,7 +149,7 @@ bao-tree = { workspace = true }
 irpc = { workspace = true }
 ref-cast = { workspace = true }
 iroh-gossip = { workspace = true, optional = true }
-tilo-endpoint-reachability = { path = "../endpoint-reachability", optional = true }
+tilo-endpoint-reachability = { version = "0.1.0", path = "../endpoint-reachability", optional = true }
 automerge = { workspace = true, optional = true }
 tilo-automerge = { workspace = true, optional = true }
 # Conflict members can come from peers: the qdoc merge decodes them only here.
