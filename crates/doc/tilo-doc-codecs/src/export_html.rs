@@ -424,20 +424,13 @@ fn render_image(
 ) {
     let pad = indent_for(opts, depth);
     let alt = if block.text.is_empty() {
-        match block.attrs.get("alt") {
-            Some(AttrVal::Str(s)) => s.clone(),
-            _ => String::new(),
-        }
+        block.str_attr("alt").unwrap_or_default().to_owned()
     } else {
         block.text.clone()
     };
     let alt_attr = format!(" alt=\"{}\"", escape_html_attr(&alt));
 
-    let hash = match block.attrs.get("blob") {
-        Some(AttrVal::Str(s)) => Some(s.clone()),
-        _ => None,
-    };
-    match hash.as_ref().and_then(|h| snap.image(h)) {
+    match block.str_attr("blob").and_then(|h| snap.image(h)) {
         Some(bytes) => {
             let mime = tilo_content::image_format(bytes).map_or("image/png", |media| media.mime);
             let data = base64::engine::general_purpose::STANDARD.encode(bytes);

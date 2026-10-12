@@ -5,7 +5,7 @@
 //! entry-count / DTD-XXE guards the document codecs enforce apply verbatim to
 //! spreadsheets.
 
-use crate::format::{CodecError, Confidence};
+use crate::format::CodecError;
 use crate::safety::{ZipLimits, read_zip_parts};
 use std::collections::BTreeMap;
 use std::io::{Cursor, Write};
@@ -16,8 +16,6 @@ use zip::{CompressionMethod, ZipWriter};
 /// A spreadsheet format provider — the workbook analogue of [`crate::format::FormatProvider`].
 /// Import is bounded/hardened via `SheetPackage::read`; the contract is identical either side of a sandbox.
 pub trait SheetProvider: Send + Sync {
-    fn schema_id(&self) -> &str;
-    fn detect(&self, head: &[u8]) -> Confidence;
     /// # Errors
     /// Returns [`CodecError`] if `bytes` are malformed, exceed the package's
     /// resource bounds, or use a construct the codec refuses to import.
