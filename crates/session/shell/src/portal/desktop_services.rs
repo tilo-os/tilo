@@ -1519,51 +1519,12 @@ mod tests {
     }
 }
 
-fn jpeg_dimensions(bytes: &[u8]) -> Option<(u16, u16)> {
-    if !bytes.starts_with(&[0xff, 0xd8]) {
-        return None;
-    }
-    let mut index: usize = 2;
-    while index.saturating_add(9) <= bytes.len() {
-        if bytes[index] != 0xff {
-            return None;
-        }
-        while bytes.get(index) == Some(&0xff) {
-            index += 1;
-        }
-        let marker = *bytes.get(index)?;
-        index += 1;
-        if marker == 0xd9 || marker == 0xda {
-            return None;
-        }
-        let length = usize::from(u16::from_be_bytes([
-            *bytes.get(index)?,
-            *bytes.get(index + 1)?,
-        ]));
-        if length < 7 || index.saturating_add(length) > bytes.len() {
-            return None;
-        }
-        if matches!(marker, 0xc0..=0xc3 | 0xc5..=0xc7 | 0xc9..=0xcb | 0xcd..=0xcf) {
-            return Some((
-                u16::from_be_bytes([bytes[index + 5], bytes[index + 6]]),
-                u16::from_be_bytes([bytes[index + 3], bytes[index + 4]]),
-            ));
-        }
-        index += length;
-    }
-    None
-}
 pub(crate) fn valid_icon_payload(bytes: &[u8]) -> bool {
     if bytes.is_empty() || bytes.len() > 2 * 1024 * 1024 {
         return false;
     }
-    if bytes.starts_with(b"\x89PNG\r\n\x1a\n") && bytes.len() >= 24 {
-        let width = u32::from_be_bytes([bytes[16], bytes[17], bytes[18], bytes[19]]);
-        let height = u32::from_be_bytes([bytes[20], bytes[21], bytes[22], bytes[23]]);
-        return (1..=512).contains(&width) && (1..=512).contains(&height);
-    }
-    if let Some((width, height)) = jpeg_dimensions(&bytes) {
-        return (1..=512).contains(&u32::from(width)) && (1..=512).contains(&u32::from(height));
+    if let Some((format, width, height)) = tilo_content::image_size(bytes) {
+        return matches!(format.extension, "png" | "jpg") && width <= 512 && height <= 512;
     }
     if bytes.len() > 256 * 1024 {
         return false;
