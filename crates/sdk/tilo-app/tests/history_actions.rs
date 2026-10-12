@@ -20,7 +20,26 @@ pub struct Card {
     pub text: String,
 }
 
-#[resource(kind = "test.board", label = "Board")]
+fn read_board(board: &Board, item: Option<&Id>) -> Result<Value, String> {
+    match item {
+        Some(id) => board
+            .cards
+            .get(id)
+            .map(|card| json!({"id": id.as_str(), "text": card.text}))
+            .ok_or_else(|| "no such card".into()),
+        None => Ok(json!({
+            "title": board.title,
+            "cards": board.cards.ids().map(|id| json!({
+                "id": id.as_str(), "text": board.cards.get(id).unwrap().text,
+            })).collect::<Vec<_>>(),
+        })),
+    }
+}
+
+#[path = "history_review.rs"]
+mod reviewed;
+
+#[resource(kind = "test.board", label = "Board", read_content = read_board)]
 impl Board {
     /// Rename the board.
     #[action]

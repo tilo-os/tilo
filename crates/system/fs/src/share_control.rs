@@ -210,7 +210,7 @@ impl ShareControlServer {
             ShareControlOperationV1::CreateNamed { .. }
                 | ShareControlOperationV1::CreateBearerV2 { .. }
         ) {
-            self.reachability.wake("a share is being created");
+            crate::reachability::wake(&self.reachability, "a share is being created");
         }
         let result = match request.operation {
             ShareControlOperationV1::CreateNamed {

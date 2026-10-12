@@ -284,30 +284,6 @@ impl<'a> TablePlan<'a> {
     }
 }
 
-/// Image media recognized from content, independent of container syntax.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct ImageMedia {
-    pub extension: &'static str,
-    pub mime: &'static str,
-}
-
-pub fn detect_image_media(bytes: &[u8]) -> Option<ImageMedia> {
-    let (extension, mime) = if bytes.starts_with(&[0x89, b'P', b'N', b'G']) {
-        ("png", "image/png")
-    } else if bytes.starts_with(&[0xff, 0xd8, 0xff]) {
-        ("jpg", "image/jpeg")
-    } else if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
-        ("gif", "image/gif")
-    } else if bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WEBP") {
-        ("webp", "image/webp")
-    } else if bytes.starts_with(b"<svg") || bytes.starts_with(b"<?xml") {
-        ("svg", "image/svg+xml")
-    } else {
-        return None;
-    };
-    Some(ImageMedia { extension, mime })
-}
-
 /// Pre-order, depth-first walk over a block forest.
 pub struct BlockWalk<'a> {
     stack: Vec<std::slice::Iter<'a, BlockView>>,
@@ -705,12 +681,7 @@ mod tests {
         flat.attrs.insert("cols".into(), AttrVal::Int(i64::MAX));
         assert_eq!(TablePlan::new(&flat).rows().len(), 1);
 
-        // Image detection and the canonical depth-first walk.
-        assert_eq!(
-            detect_image_media(b"RIFFxxxxWEBP").map(|m| m.mime),
-            Some("image/webp")
-        );
-        assert_eq!(detect_image_media(b"not an image"), None);
+        // The canonical depth-first walk.
         let mut root = block("paragraph", "root");
         let mut child = block("paragraph", "child");
         child.children.push(block("paragraph", "grandchild"));
