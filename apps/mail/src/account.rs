@@ -67,24 +67,12 @@ impl Account {
         }
     }
 
-    /// Display label for the account header: the display name, falling back to
-    /// the email, falling back to a generic placeholder.
-    pub fn label(&self) -> &str {
-        if !self.config.display_name.is_empty() {
-            &self.config.display_name
-        } else if !self.config.email.is_empty() {
-            &self.config.email
-        } else {
-            "New account"
-        }
-    }
-
     /// The opaque, secret-free config payload persisted into a shared
     /// [`StoredAccount`]. The password is `#[serde(skip)]` on [`AccountConfig`],
     /// so it never reaches this JSON — it lives only in the vault.
     fn to_stored(&self) -> StoredAccount {
         let mut stored = StoredAccount::new(AccountId::from(self.id.clone()), TYPE_ID);
-        stored.display_name = self.label().to_string();
+        stored.display_name = self.config.label().to_string();
         stored.tint = self.tint;
         stored.set_config(&StoredConfig {
             config: self.config.clone(),
