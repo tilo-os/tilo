@@ -42,6 +42,7 @@ impl Ended {
 /// would keep the daemon's (root's `XDG_RUNTIME_DIR=/run/user/0`, no bus).
 pub const SESSION_ENV: &[&str] = &[
     "XDG_RUNTIME_DIR",
+    "XDG_DATA_HOME",
     "DBUS_SESSION_BUS_ADDRESS",
     "WAYLAND_DISPLAY",
     "DISPLAY",
