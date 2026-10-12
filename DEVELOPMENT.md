@@ -34,8 +34,17 @@ driving, storage, platforms and troubleshooting; its source is
 Image-level changes (`os/`, units, packages) move the VM onto a new image
 instead: `tilo-vm vm upgrade --from sha:<commit>` for any commit CI has built,
 `--from local` for one that is not pushed yet (`tilo-vm guide images`). The
-`Build / OS dev` workflow builds every main push and every pull request that
-touches `os/`, fully cached, and publishes `tilo-ci:<ref>-<sha7>-<arch>` plus
+`Build / OS dev` workflow builds on explicit dispatch (select the smallest
+needed architecture list), or for an image-changing pull request labelled
+`os-image` (`os-arm64` also requests both architectures), fully cached. Ordinary
+pushes and unlabelled PRs keep the native slots available for required package
+checks; scheduled and tagged releases retain their existing verification.
+PR dev images and x86 main dev images share one non-cancelling queue, so only
+one of these image workflows can occupy x86 native capacity at a time. This
+also queues an ARM-only request through the PR wrapper; the dedicated ARM main
+wrapper retains its independent queue. Existing requests finish before the
+next image starts.
+Architecture-specific main dispatches build the newest main commit only. It publishes `tilo-ci:<ref>-<sha7>-<arch>` plus
 the dev image `tilo-vm:<ref>-<sha7>-ci` (`<ref>` is `main` or `pr-<number>`);
 main also moves `tilo-vm:main-ci` to its newest dev images.
 `Release / OS` builds signed, reproduced releases only: tags, the nightly run
@@ -129,11 +138,17 @@ Routine changes land through pull requests to `main`. Each PR head revision gets
 its own affected-package check and fast-quality lint result. Both test the head
 merged onto the tip of its base branch (`main`, or the lower branch of a stack)
 at the time the run starts, and select affected packages against that tip, so a
-PR is checked as it would land. When `main` moves after a PR's check went green,
-the lander reruns that check, which then only re-runs the packages and suites
-`main`'s new commits reach. A PR that conflicts with
-`main` fails there; merge `main` into the branch. A newer commit on the PR
-cancels the older revision's runs; every push to `main` keeps its own.
+PR is checked as it would land. A green result stands when `main` moves on; the
+lander re-checks only results older than six hours, and that re-check only
+re-runs the packages and suites `main`'s new commits reach. A newer commit on
+the PR cancels the older revision's runs; every push to `main` keeps its own.
+
+Do not merge `main` into your branch to keep it current, and do not wait for a
+conflict to clear. When a ready PR conflicts with `main`, the merge assistant
+merges `main` into its branch, builds and tests what the merge touched, and
+pushes the merge commit; the PR then lands like any other. If it cannot resolve
+the conflict, it converts the PR to a draft and comments with what is in the
+way; resolve that and mark the PR ready again.
 
 A ready (non-draft) PR lands by itself: within a minute of both required checks
 passing on its current head, the lander merges it with a merge commit. The
@@ -211,6 +226,15 @@ scheduled integration runs do not publish an OS release. macOS setup packaging,
 cask publication and installation tests remain in **Release / imager** but are
 disabled during alpha; tags do not enable those lanes.
 
+## Measurements
+
+How performance and footprint are measured and gated, and what to do when a gate
+fails, is in `docs/measurements/`: [performance KPIs and A/B runs](docs/measurements/performance.md),
+[app package size](docs/measurements/app-package-size.md),
+[runtime size](docs/measurements/runtime-size.md),
+[OS image size](docs/measurements/os-image-size.md) and
+[build speed and the compilation cache](docs/measurements/build-speed.md).
+
 ## Fast checks before assembly
 
 For a native integration test without a full workspace dispatch, use
@@ -246,6 +270,23 @@ expand `-F` files and parses `-f` values as CSV, which breaks JSON arrays.
 Do not reserve runners or ask another agent to allocate a slot. Each case's
 result and the exact source/workflow/builder identities appear in the run summary.
 
+Use operation `clippy` to meet CI's lint gate before pushing, including for
+crates that do not build on macOS (`shell`, `tilo-relay`, `launcher`). It runs
+the source's own `tools/ci/clippy-check.sh -p <pkg>…` (all targets,
+`-D warnings`, the workspace lint table), on the runner label, builder image,
+environment and checkout path of CI's `clippy` job, so the two share compiler
+cache entries and a warm package takes minutes. Name one `package`, or up to 64
+in `packages`; leave the test fields empty. A failure prints the rendered
+Clippy diagnostics; the run summary lists the compiler-cache statistics.
+
+```sh
+jq -n --arg source "$(git rev-parse HEAD)" \
+  '{ref:"main",inputs:{source_sha:$source,package:"shell",operation:"clippy"}}' \
+  | fgj api -X POST repos/tilo/tilo/actions/workflows/dev-focused-test.yml/dispatches --hostname code.tilo.so
+```
+
+The source commit must be pushed (any branch) so the runner can fetch it.
+
 Run these from the checkout on Linux (including WSL), using Python 3.11+:
 
 ```sh
@@ -253,6 +294,27 @@ tools/policy/run.sh
 python3 tools/dev.py check installer
 python3 tools/dev.py check app-packaging
 ```
+
+Give unrelated tasks their own worktree before starting validation:
+
+```sh
+python3 tools/dev.py worktree music-fix --base origin/main
+```
+
+The command prints the new path, branch and exact source commit. It creates the
+worktree in `.worktrees/` beside the shared Git directory, so invoking it from a
+temporary checkout does not place another checkout on `/tmp`'s user quota. It
+uses committed source; existing uncommitted edits stay where they are. An
+existing destination or branch is an error.
+
+Each task has its own Cargo target directory and remote source-sync lock. Remote
+Cargo drop-ins can use the shared Git identity to seed dependency artifacts and
+reuse compiler/download caches. Never share `target/` or set `CARGO_TARGET_DIR`. Run related checks
+sequentially within a task, combine related test targets where appropriate, and
+keep required integration checks. For diagnostics-only builds/checks use
+the remote Cargo drop-in's option to skip artifact downloads; leave fetching
+enabled for rust-analyzer and request artifacts when needed locally. Heavy non-Cargo work runs on the
+builder through SSH; keep only orchestration and small checks on the laptop.
 
 The repository-policy command is the same deterministic suite used by the
 fast-quality workflow. It checks live workflow triggers and timeouts in
@@ -282,12 +344,64 @@ If the environment prohibits user namespaces, use the existing isolated Linux
 builder where these tests can run as container root. Missing capabilities fail
 the command and are recorded in its receipt.
 
+Signal working-profile custody has an explicit native qualification feature:
+`cargo test --locked -p shell --lib --features signal-profile-native-test working_profile::tests`
+and `cargo test --locked -p shell --lib --features signal-profile-native-test verified_enrollment_ram_profile_native_qualification`.
+These execute the production materializer, not a substitute memory policy. They
+require a private tmpfs whose opened mount reports `noswap`, or a host whose swap
+is absent or entirely zram without disk writeback. Otherwise the fixture attempts
+a disposable user/mount namespace; kernels can refuse `noswap` on unprivileged
+mounts, in which case qualification fails. The fixture does not change host swap
+or trust settings. Ordinary custody tests still cover encrypted storage and the
+original protected grant; they do not qualify native working-profile custody.
+A provider lease handed to the launcher cannot use the prelaunch cancellation
+checkpoint. The strict service launcher requires a successful exit of the actual
+private PID-namespace init before collecting the newest bounded working image.
+Forced shutdowns preserve the interrupted marker. Signed-runtime qualification
+remains a separate acceptance requirement.
+
 CI's repository policy tests discover the same app-packaging tests, including
 the build-to-collection handoff regression.
 For an actual installer VM cycle with an already prepared medium, continue using
 `os/dev/test-installer-cycle.sh`. To run a change in the Tilo OS image, use
 `tilo-vm` ([Dev VMs](#dev-vms-tilo-vm)); for the disposable Fedora desktop
 development session use `dist/dev/fedora44-vm-iterate.sh`.
+
+Source builds prepare the pinned font catalog during compilation, outside the
+source tree. Python 3.11+ is required. The first build downloads the exact reviewed
+fonts; subsequent builds verify the cached bytes. Prewarm with
+`python3 tools/font-catalog.py root crates/sdk/ui-core/assets/fonts --scope fixtures`.
+Set `TILO_FONT_ASSETS_OFFLINE=1` (or `CARGO_NET_OFFLINE=true`) to require a warm
+cache, or supply a complete matching catalog with `TILO_FONT_CATALOG_ROOT`.
+See [font artifact preparation](crates/sdk/ui-core/assets/fonts/ARTIFACTS.md).
+
+A Cargo drop-in compiling on another machine prepares the catalog there. If the
+fetched executable will run locally, use the client's generated-artifact fetch
+facility to bring `target/font-artifacts/catalogs` back as part of the build,
+preserving its relative path. Fetching an executable alone does not bring font
+data, license notices or provenance back. With a custom cache location, preserve
+the catalog path compiled into the executable.
+
+Verify the received catalog locally without a network using
+`python3 tools/font-catalog.py root crates/sdk/ui-core/assets/fonts --scope fixtures --offline`.
+Tests and executables running on the builder use its catalog directly.
+Applications do not download fonts at runtime.
+
+For optimized application iteration, use the existing `thin-app` profile:
+
+```sh
+cargo run --locked --profile thin-app -p ebook
+```
+
+This also builds standalone apps: no `thin` feature or dynamic SDK is required.
+It keeps optimization level 3, omits whole-program LTO, and compiles `tilo-ui`
+with sixteen codegen units. `cargo run --release -p ebook` uses the shipping
+profile's fat LTO and one codegen unit; every app edit repeats that final
+whole-program optimization even when the toolkit is fresh. Use `--release`
+for shipping-profile acceptance and measurements. Keep the same worktree and
+profile between edits so Cargo can reuse their outputs. The first `thin-app`
+build needs its own artifacts; it is not a warm edit measurement. The profile
+remains non-incremental and eligible for sccache.
 
 For measured Rust edit feedback on the remote builder, run one scoped command:
 
@@ -670,9 +784,9 @@ exist, investigate Explorer's catalog, then run
 `./tools/windows/check-start-apps.ps1 -Apps hex-editor` (substitute
 the affected package names). The installer does not restart the desktop shell.
 
-Private identity files and local account-vault keys use the shared `private-fs`
-crate. On Windows, files are created with a protected, current-user-only DACL;
-reads validate the opened file's owner, access rules and reparse status. Existing
+Private identity files and local account-vault keys use the shared
+`tilo_files::native::private` module. On Windows, files are created with a
+protected, current-user-only DACL; reads validate the opened file's owner, access rules and reparse status. Existing
 keys with public access are rejected rather than silently replaced. Concurrent
 vault creators publish one complete key without overwriting the winner. The
 shared Accounts vault records failed loads and refuses writes until access is
@@ -690,7 +804,7 @@ transfer verification covers Unicode paths, acknowledged CSV export/import,
 encrypted backup, wrong-passphrase rejection, and fresh-profile restoration.
 
 ```powershell
-cargo test --locked -p private-fs -p tilo-user-identity -p accounts --lib
+cargo test --locked -p tilo-files -p tilo-user-identity -p accounts --lib
 ```
 
 Apps that need persistent content-addressed blobs without mounting a filesystem
@@ -1051,6 +1165,30 @@ example, `printf '%s\n' tilo-build > .build-container`). This file is ignored by
 Git; there is no shared machine-specific default. Install `tools/ci/cargo-shim`
 as `cargo` on PATH; every invocation from the tree or a worktree routes into it.
 
+Agent sessions identified by `CODEX_THREAD_ID`, `CODEX_SESSION_ID` or
+`CLAUDECODE` require a remote-only Cargo executor. Set `QCARGO_REMOTE_CARGO` in
+an untracked developer environment to one executable name or path. The executor
+accepts ordinary Cargo arguments and must fail on remote errors rather than
+compile locally. It may be any Cargo-compatible drop-in or a local adapter that
+configures the chosen remote build service; shell command strings are not
+accepted. Other unattended callers opt into this policy with
+`QCARGO_REMOTE_ONLY=1` in their own environment.
+
+The shim checks this policy before `QCARGO_BYPASS` and container routing. A
+missing executor or a builder failure fails visibly. It sets
+`QCARGO_REMOTE_ACTIVE=1` when invoking the executor: a returned Cargo call in the
+same policy context is rejected before compilation. Executors should not forward
+agent identity, `QCARGO_REMOTE_ONLY` or `QCARGO_REMOTE_ACTIVE` into remote builder
+processes, where ordinary Cargo must run locally. Human shells retain their
+local controls; metadata, formatting and dependency commands can still run
+without compiling. Invoking an absolute Rustup Cargo path bypasses the shim.
+This is a routing guard, not an operating-system execution boundary.
+
+Run `python3 tools/tests/test_cargo_shim_routing.py` for recording-stub routing
+checks; they never invoke Rust. `tools/tests/cargo_shim.sh` also uses stubs to
+verify cache/container environment handling. The separate real-Cargo cache
+policy tests belong on the builder, not on a remote-only development laptop.
+
 It also selects the sccache server, which this route requires: sccache's server
 executes rustc, so it must share the build's mount namespace or it cannot see that
 namespace's headers. distrobox shares the host network namespace and copies the host
@@ -1136,47 +1274,15 @@ it, and never point two worktrees at one target directory — cargo's artifact k
 omits the package path, so worktrees of one repo collide and cargo reports
 `Fresh` while handing you the other's binary.
 
-### What does not make builds faster here
+### Build speed
 
-Measurements from `ui`'s test binary:
-
-| change | effect |
-|---|---|
-| mold instead of GNU ld | none (40 s vs 41 s, and 61 s vs 61 s) |
-| `-C split-debuginfo=unpacked` | binary 697 -> 507 MB, build 14% **slower** |
-| `-C debuginfo=0` | binary 665 -> 475 MB, build unchanged |
-| nightly `--jobs-frontend=4` / `=8` | +13% / 0% |
-| nightly cranelift backend | 23% slower |
-
-Compilation dominates: `-Z time-passes` puts type checking at 14% of a debug
-build and LLVM at 29%, the rest rustc lowering MIR to IR.
-
-Run-to-run noise on a busy machine is ±20%, which is larger than most of the
-effects above. Measure on an idle machine.
-
-Use sccache to share compilation results across worktrees; target directories
-cannot be shared. A measured `ui` build in a fresh worktree took 126 s at 77%
-cache hits, compared with ~562 s cold.
-
-Changing `build.rustflags` invalidates cached compilations across worktrees.
-Batch flag changes and avoid them during verification runs.
-
-### Sizing the compilation cache
-
-116 members over ~1,480 external crates. One full debug+test build is ~2,200
-cacheable units, a few GB compressed (measured: 105,000 objects in 100 GB, mean
-0.97 MB, median 0.22 MB).
-
-Cache dependencies between lockfile changes. Changes to a shared crate such as
-`ui` rebuild the compositor and dependent apps. At roughly 3–5 GB per full set,
-200 GB holds about forty versions.
-
-Prefer cache over target directories when trading disk: a cached object serves
-every worktree and survives `cargo clean`, a target directory serves one and
-does not.
-
-The compiler is part of the cache key, so bumping `rust-toolchain.toml` costs one
-fully cold rebuild.
+Share compilation results across worktrees through sccache; target directories
+cannot be shared. Changing `build.rustflags` invalidates cached compilations
+across worktrees, and bumping `rust-toolchain.toml` costs one fully cold
+rebuild, so batch such changes and avoid them during verification runs.
+Run-to-run noise on a busy machine is ±20 %: measure on an idle machine. What was
+measured not to help (mold, debuginfo and frontend flags, cranelift) and how the
+cache is sized: [docs/measurements/build-speed.md](docs/measurements/build-speed.md).
 
 ## Disk, and why builds hang
 
@@ -1556,14 +1662,19 @@ The compositor starts on a Bazzite host without `/var/workspace`, `/etc/tilo`,
   provisioning returns early once the record exists. Start the compositor by
   hand (`./target/debug/shell`) and you get the warning, because you skipped
   the wrapper.
-- **`crates/session/shell/src/config.rs`'s `load_config` is dead code** — nothing calls it, and
-  it looks for `/etc/tilo-desktop/desktop.toml` while the image ships
-  `/etc/tilo/desktop.toml`. So `desktop.toml` configures nothing today, on a host
-  or on the image. The host package omits this file.
+- **No `/etc/tilo/desktop.toml`.** The host package omits it, so the compositor
+  uses its defaults unless `~/.config/tilo-desktop/desktop.toml` exists.
 
-`/var/workspace` is a FUSE mount `fs.service` makes on the Tilo image; there is
-no such unit here, so the permission UI will talk about a path that is not
-mounted.
+`/var/workspace` is the image's `fs.service` mount. The Fedora host payload
+instead packages the existing daemon/admin tool and the user service
+`tilo-files-workspace.service`, using `~/.local/state/tilo/files/mount` on the
+standard XDG profile. It starts only for saved, signed and Files-authorized
+primary state; package installation never substitutes an empty namespace for
+missing recovery data. The host shell exports that root only through the
+launcher's existing capability filter. See [host Files preparation and
+recovery](os/docs/peer-sync.md#fedora-primary-files-service-and-explicit-first-run).
+The Settings Storage pane's host socket wiring is still pending; its image
+socket does not address this user service.
 
 Alongside Tilo packages, the shell scans `$XDG_DATA_HOME/applications`, each
 `$XDG_DATA_DIRS` entry's `applications`, and both Flatpak export directories
@@ -1676,6 +1787,12 @@ on the staged Rust files, workspace membership
 lint `#[allow]` policy, `#[ignore]` reasons, integration-test module
 declarations, conflict markers, `dbg!` and secrets. Compilation and tests run in
 CI (`.forgejo/workflows/check.yml`).
+
+Committing a merge checks only what the resolution changed. A file staged
+exactly as the merged-in side has it already passed that side's checks, so the
+hook runs against a temporary index where those files are back at `HEAD`. A
+merge of `origin/main` into a branch 300 commits behind (3,400 staged files)
+takes about 13 seconds instead of nearly three minutes.
 
 A vendored crate under `vendor/` is upstream's code, carried as it ships: the
 added-code checks (`#[ignore]` reasons, `#[allow]` placement, `dbg!`) and

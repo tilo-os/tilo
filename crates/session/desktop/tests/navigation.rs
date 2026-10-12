@@ -85,7 +85,7 @@ fn navigation_first_layout_reveals_and_marks_canonical_focus() {
         (&mut *ptr)
             .row_mut(StripId(2))
             .unwrap()
-            .tick_snap_at(ui::clock::Instant::now() + ui::clock::Duration::from_secs(1));
+            .tick_snap_at(ui::time::Instant::now() + ui::time::Duration::from_secs(1));
     }
     frame.relayout();
     let row = unsafe { (&*ptr).row(StripId(2)).unwrap() };
@@ -187,7 +187,7 @@ impl NavigationFrame {
             self.surface_mut()
                 .row_mut(strip)
                 .unwrap()
-                .tick_snap_at(ui::clock::Instant::now() + ui::clock::Duration::from_secs(1));
+                .tick_snap_at(ui::time::Instant::now() + ui::time::Duration::from_secs(1));
         }
         self.frame.relayout();
     }
@@ -242,6 +242,88 @@ fn external_navigation_edge_resize_keeps_a_scrolled_strip_anchored() {
     assert!(test.surface().row(StripId(2)).unwrap().groups[0].edge_resize_in_flight());
     for delta in [20.0, 40.0, 60.0, 80.0] {
         test.frame.send(&moved(point.0 + delta));
+        test.frame.poll_frame().unwrap();
+        let row = test.surface().row(StripId(2)).unwrap();
+        let resized = row.groups[0].get_rect();
+        assert!(
+            (row.scroll_x() - pan).abs() < 1.0,
+            "the viewport stays under the hand: {pan} -> {}",
+            row.scroll_x()
+        );
+        assert!((resized.x0 - before.x0).abs() < 1.0);
+        assert!(
+            (resized.x1 - before.x1 - delta).abs() < 2.0,
+            "the trailing edge follows each actual pointer sample: {before:?} -> {resized:?}"
+        );
+        assert!((row.groups[1].get_rect().width() - neighbor.width()).abs() < 1.0);
+    }
+    test.frame.send(&WindowEvent::MouseInput {
+        device_id: DeviceId::dummy(),
+        state: ElementState::Released,
+        button: MouseButton::Left,
+    });
+    assert!(!test.surface().row(StripId(2)).unwrap().groups[0].edge_resize_in_flight());
+    let intents = test.surface_mut().take_intents();
+    assert!(intents.iter().any(|intent| matches!(
+        intent,
+        tilo_desktop::intents::DesktopIntent::Local(
+            tilo_desktop::intents::LocalViewIntent::Width { group: 3, .. }
+        )
+    )));
+    for intent in intents {
+        if let tilo_desktop::intents::DesktopIntent::Local(view) = intent {
+            tilo_desktop::intents::apply_local_view(&mut test.tree, view);
+        }
+    }
+    test.reconcile();
+    test.frame.poll_frame().unwrap();
+    let row = test.surface().row(StripId(2)).unwrap();
+    assert!((row.scroll_x() - pan).abs() < 1.0);
+    assert!((row.groups[0].get_rect().x0 - before.x0).abs() < 1.0);
+    assert!((row.groups[0].get_rect().x1 - before.x1 - 80.0).abs() < 2.0);
+}
+
+#[test]
+fn external_navigation_edge_resize_survives_unrelated_snapshot_revision() {
+    use tilo_desktop::composition::{NavigationChrome, WorkArea};
+    use ui::widget::Widget;
+    use ui::winit::event::{DeviceId, ElementState, MouseButton, WindowEvent};
+
+    let mut tree = navigation_tree();
+    tree.active_group.insert(StripId(2), 4);
+    let mut test = NavigationFrame::with_chrome(
+        tree,
+        1472,
+        SurfaceChrome {
+            navigation: NavigationChrome::External,
+            work_area: WorkArea::Flush { top: 40.0 },
+            ..SurfaceChrome::default()
+        },
+    );
+    test.frame
+        .set_theme(ui::Theme::light().with_reduce_motion(true));
+    test.frame.poll_frame().unwrap();
+    let row = test.surface().row(StripId(2)).unwrap();
+    let before = row.groups[0].get_rect();
+    let neighbor = row.groups[1].get_rect();
+    let pan = row.scroll_x();
+    assert!(pan > 100.0 && before.x1 > 20.0 && before.x1 < 1400.0);
+    let point = (before.x1 - 2.0, before.center().y);
+    let moved = |x| WindowEvent::CursorMoved {
+        device_id: DeviceId::dummy(),
+        position: ui::winit::dpi::PhysicalPosition::new(x, point.1),
+    };
+    test.frame.send(&moved(point.0));
+    test.frame.send(&WindowEvent::MouseInput {
+        device_id: DeviceId::dummy(),
+        state: ElementState::Pressed,
+        button: MouseButton::Left,
+    });
+    assert!(test.surface().row(StripId(2)).unwrap().groups[0].edge_resize_in_flight());
+    for delta in [20.0, 40.0, 60.0, 80.0] {
+        test.frame.send(&moved(point.0 + delta));
+        test.tree.workspaces[0].strips[0].name = format!("Revision {delta}");
+        test.reconcile();
         test.frame.poll_frame().unwrap();
         let row = test.surface().row(StripId(2)).unwrap();
         let resized = row.groups[0].get_rect();
@@ -429,7 +511,7 @@ fn navigation_stepping_back_twice_pans_once_and_then_asks_for_no_frame() {
             test.surface_mut()
                 .row_mut(StripId(2))
                 .unwrap()
-                .scroll_group_into_view_animated(4, ui::clock::Instant::now());
+                .scroll_group_into_view_animated(4, ui::time::Instant::now());
             std::thread::sleep(std::time::Duration::from_millis(16));
             test.frame.poll_frame().unwrap();
             false

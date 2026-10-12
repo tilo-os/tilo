@@ -86,7 +86,7 @@ impl SearchProvider for PermissionPromptsProvider {
                 t("permission-request-confirm"),
             )],
             contract: Some(tilo_actions::ActionContract {
-                permission: tilo_actions::PermissionRequirement::Admin,
+                kind: tilo_actions::ActionKind::Outside,
                 risk: tilo_actions::RiskLevel::Destructive,
                 confirmation: tilo_actions::ConfirmationPolicy::Confirm,
                 retry: tilo_actions::RetryPolicy::AtMostOnce,
@@ -180,10 +180,7 @@ mod tests {
                 .select(&ResourceRef::new(PROVIDER_ID, &action_id))
                 .expect("pending decision");
             let contract = action.contract().expect("contract");
-            assert_eq!(
-                contract.permission,
-                tilo_actions::PermissionRequirement::Admin
-            );
+            assert_eq!(contract.kind, tilo_actions::ActionKind::Outside);
             assert_eq!(contract.retry, tilo_actions::RetryPolicy::AtMostOnce);
             let mut doc = AutoCommit::new();
             assert!(

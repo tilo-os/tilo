@@ -15,12 +15,14 @@ const port = process.env.CDP_PORT ?? '9333';
 if (process.env.CI === 'true' && process.env.CHROME && process.env.RUNNER_TEMP &&
     process.env.TILO_WEB_SMOKE_WORKER !== '1') {
   const {spawn} = await import('node:child_process');
-  const driver = spawn('bash', ['tools/web/run_smoke_shards.sh', base, ...apps], {
+  // The child can run before spawn returns; install forwarding first.
+  let driver;
+  for (const signal of ['SIGTERM', 'SIGINT']) process.on(signal, () => driver?.kill(signal));
+  driver = spawn('bash', ['tools/web/run_smoke_shards.sh', base, ...apps], {
     stdio: 'inherit',
     // A legacy workflow may already own its browser on `port`.
     env: {...process.env, CDP_PORT: String(Number(port) + 1)},
   });
-  for (const signal of ['SIGTERM', 'SIGINT']) process.on(signal, () => driver.kill(signal));
   const status = await new Promise((resolve, reject) => {
     driver.once('error', reject);
     driver.once('close', code => resolve(code ?? 1));

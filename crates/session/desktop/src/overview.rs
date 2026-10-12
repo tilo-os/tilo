@@ -11,7 +11,7 @@
 //! settings name what a share covers, an app's artwork) comes through
 //! [`OverviewHost`].
 
-use collab_types::caps::{Effect, Principal, Scope, Subject, Verb};
+use collab_types::caps::{Access, Effect, Principal, Scope, Subject};
 use collab_types::role::Role as CapRole;
 use tilo_desktop_model::{
     Collaborator, DesktopTree, GroupId, StripId, TabId, UserId, Workspace, WorkspaceId,
@@ -28,6 +28,9 @@ pub trait OverviewHost: WindowSource {
     /// What a capability covers, in the words the host's workspace settings
     /// use, so a share here is recognisable where it is revoked.
     fn scope_label(&self, scope: &Scope) -> String;
+
+    /// Where in the room a grant applies, in the same words.
+    fn node_label(&self, node: &tilo_action_policy::TreePath) -> String;
 }
 
 /// Cached, plain-data snapshot of a single workspace for rendering a card.
@@ -161,10 +164,6 @@ impl OverviewGroup {
             .or_else(|| self.tabs.first())
             .map_or_else(|| t("overview-empty-window"), |tab| tab.title.clone())
     }
-
-    pub fn present_people(&self) -> impl Iterator<Item = &RoomPerson> {
-        self.tabs.iter().flat_map(|tab| tab.people.iter())
-    }
 }
 
 /// One cheap, anonymous row of non-overlapping window groups.
@@ -250,7 +249,8 @@ pub fn room_people(
     now: u64,
 ) -> Vec<RoomPerson> {
     let me = host.local_user();
-    ws.roster_at(now)
+    let _ = now;
+    ws.roster()
         .into_iter()
         .map(|(id, role)| {
             // Being the local user isn't evidence of being in *this*
@@ -284,13 +284,48 @@ pub fn room_shares(
     host: &dyn OverviewHost,
     now: u64,
 ) -> Vec<RoomShare> {
-    let now = Some(now);
     let mut out: Vec<RoomShare> = Vec::new();
-    for cap in &ws.capabilities {
-        if !cap.is_live_at(now) || cap.effect != Effect::Grant {
+    let mut share = |what: String, holder: String, writable: bool| match out
+        .iter_mut()
+        .find(|s| s.what == what)
+    {
+        Some(existing) => {
+            if !existing.with.contains(&holder) {
+                existing.with.push(holder);
+            }
+            existing.writable |= writable;
+        }
+        None => out.push(RoomShare {
+            what,
+            with: vec![holder],
+            writable,
+        }),
+    };
+    // What one person was given beyond their role in the room: a grant on a
+    // part of it, or a file reached outside the sandbox's own.
+    let room = ws.node();
+    let cx = tilo_desktop_model::context_at(now);
+    for grant in &ws.policy.grants {
+        if grant.node == room
+            || !grant.node.is_within(&room)
+            || grant.answer != tilo_action_policy::Answer::Allow
+            || !grant.is_live(&cx)
+        {
             continue;
         }
-        if cap.is_room_membership() || !cap.subject_is_person() {
+        let tilo_action_policy::Subject::Person(holder) = &grant.subject else {
+            continue;
+        };
+        share(
+            host.node_label(&grant.node),
+            display_name(holder, ws, tree),
+            grant
+                .kinds
+                .contains(tilo_action_policy::ActionKind::Undoable),
+        );
+    }
+    for cap in &ws.sandbox {
+        if !cap.is_live_at(Some(now)) || cap.effect != Effect::Grant {
             continue;
         }
         let holder = match &cap.subject {
@@ -301,24 +336,13 @@ pub fn room_shares(
                 Principal::Person(p) => p,
                 _ => continue,
             },
-            _ => continue,
+            Subject::Principal(_) => continue,
         };
-        let holder = display_name(&holder, ws, tree);
-        let what = host.scope_label(&cap.scope);
-        let writable = cap.verb.implies(Verb::Write);
-        match out.iter_mut().find(|s| s.what == what) {
-            Some(existing) => {
-                if !existing.with.contains(&holder) {
-                    existing.with.push(holder);
-                }
-                existing.writable |= writable;
-            }
-            None => out.push(RoomShare {
-                what,
-                with: vec![holder],
-                writable,
-            }),
-        }
+        share(
+            host.scope_label(&cap.scope),
+            display_name(&holder, ws, tree),
+            cap.access == Access::Write,
+        );
     }
     out.sort_by(|a, b| b.with.len().cmp(&a.with.len()).then(a.what.cmp(&b.what)));
     out
@@ -634,6 +658,10 @@ mod room_tests {
         fn scope_label(&self, scope: &Scope) -> String {
             format!("{scope:?}")
         }
+
+        fn node_label(&self, node: &tilo_action_policy::TreePath) -> String {
+            node.to_string()
+        }
     }
 
     fn room_cards(tree: &DesktopTree) -> Vec<RoomCard> {
@@ -647,7 +675,7 @@ mod room_tests {
 
     fn ws(name: &str) -> Workspace {
         let mut w = Workspace::new(WorkspaceId(fresh_id()), name);
-        w.owner = Some(ME.to_string());
+        w.set_owner(ME.to_string());
         w
     }
 
@@ -677,12 +705,7 @@ mod room_tests {
 
         fn a_member_makes_the_room_read_as_shared_with_them() {
             let mut w = ws("Design");
-            let room = w.id.raw().to_string();
-            w.capabilities.push(CapOverride::grant(
-                Subject::person("ada"),
-                Scope::Room(room),
-                Verb::Write,
-            ));
+            w.admit("ada", collab_types::Role::Editor);
             w.collaborators.push(Collaborator::new("ada", "Ada"));
             let tree = tree_with(vec![w]);
             let card = &room_cards(&tree)[0];
@@ -694,10 +717,10 @@ mod room_tests {
 
         fn a_file_grant_is_a_share_and_not_a_membership() {
             let mut w = ws("Design");
-            w.capabilities.push(CapOverride::grant(
+            w.sandbox.push(CapOverride::grant(
                 Subject::person("ada"),
                 Scope::FsPath("/var/workspace/brief".to_string()),
-                Verb::Read,
+                Access::Read,
             ));
             let tree = tree_with(vec![w]);
             let card = &room_cards(&tree)[0];
@@ -714,10 +737,10 @@ mod room_tests {
         fn two_grants_on_one_path_are_one_share_with_two_holders() {
             let mut w = ws("Design");
             for who in ["ada", "bob"] {
-                w.capabilities.push(CapOverride::grant(
+                w.sandbox.push(CapOverride::grant(
                     Subject::person(who),
                     Scope::FsPath("/var/workspace/brief".to_string()),
-                    Verb::Read,
+                    Access::Read,
                 ));
             }
             let tree = tree_with(vec![w]);
@@ -729,10 +752,10 @@ mod room_tests {
 
         fn write_grants_are_marked_writable() {
             let mut w = ws("Design");
-            w.capabilities.push(CapOverride::grant(
+            w.sandbox.push(CapOverride::grant(
                 Subject::person("ada"),
                 Scope::FsPath("/var/workspace/brief".to_string()),
-                Verb::Write,
+                Access::Write,
             ));
             let tree = tree_with(vec![w]);
             let card = &room_cards(&tree)[0];
@@ -741,16 +764,23 @@ mod room_tests {
 
         fn expired_grants_neither_admit_members_nor_count_as_shares() {
             let mut w = ws("Design");
-            let room = w.id.raw().to_string();
-            w.capabilities.push(
-                CapOverride::grant(Subject::person("ada"), Scope::Room(room), Verb::Write)
-                    .expiring(Expiry::AtUnix(1)),
+            let node = w.node();
+            w.grant(
+                tilo_action_policy::Grant::new(
+                    "ada-for-a-while",
+                    tilo_action_policy::Subject::person("ada"),
+                    node.app("so.tilo.notes"),
+                    tilo_action_policy::KindSet::ALL,
+                    tilo_action_policy::Answer::Allow,
+                    tilo_action_policy::Subject::person(ME),
+                )
+                .with_lifetime(tilo_action_policy::Lifetime::Until(1_000)),
             );
-            w.capabilities.push(
+            w.sandbox.push(
                 CapOverride::grant(
                     Subject::person("ada"),
                     Scope::FsPath("/var/workspace/brief".to_string()),
-                    Verb::Read,
+                    Access::Read,
                 )
                 .expiring(Expiry::AtUnix(1)),
             );
@@ -762,13 +792,8 @@ mod room_tests {
 
         fn access_label_counts_once_naming_stops_helping() {
             let mut w = ws("Design");
-            let room = w.id.raw().to_string();
             for who in ["ada", "bob", "cleo", "dara"] {
-                w.capabilities.push(CapOverride::grant(
-                    Subject::person(who),
-                    Scope::Room(room.clone()),
-                    Verb::Write,
-                ));
+                w.admit(who, collab_types::Role::Editor);
             }
             let tree = tree_with(vec![w]);
             let card = &room_cards(&tree)[0];
@@ -792,13 +817,8 @@ mod room_tests {
     fn room_presence_is_who_is_here_now_and_is_attached_to_tabs() {
         fn presence_is_who_is_here_now_not_who_is_a_member() {
             let mut w = ws("Design");
-            let room = w.id.raw().to_string();
             for who in ["ada", "bob"] {
-                w.capabilities.push(CapOverride::grant(
-                    Subject::person(who),
-                    Scope::Room(room.clone()),
-                    Verb::Write,
-                ));
+                w.admit(who, collab_types::Role::Editor);
             }
             // Only Ada actually showed up.
             w.collaborators.push(Collaborator::new("ada", "Ada"));
@@ -833,11 +853,7 @@ mod room_tests {
             assert_eq!(overview_people_label(&room_cards(&private_tree)[0]), None);
 
             let mut shared = ws("Design");
-            shared.capabilities.push(CapOverride::grant(
-                Subject::person("ada"),
-                Scope::Room(shared.id.raw().to_string()),
-                Verb::Write,
-            ));
+            shared.admit("ada", collab_types::Role::Editor);
             shared.collaborators.push(Collaborator::new("ada", "Ada"));
             let shared_tree = tree_with(vec![shared]);
             assert_eq!(
@@ -906,11 +922,7 @@ mod room_tests {
             let mut w = ws("Design");
             let strip_id = StripId(fresh_id());
             let tab_id = 71;
-            w.capabilities.push(CapOverride::grant(
-                Subject::person("ada"),
-                Scope::Room(w.id.raw().to_string()),
-                Verb::Write,
-            ));
+            w.admit("ada", collab_types::Role::Editor);
             w.collaborators
                 .push(Collaborator::with_active_tab("ada", "Ada", tab_id));
             w.strips = vec![Strip {

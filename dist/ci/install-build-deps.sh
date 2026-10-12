@@ -133,10 +133,13 @@ fedora)
     if [[ $profile == workspace || $profile == test ]]; then
         # nasm, perl-FindBin and python3 drive vendored native builds;
         # zlib-ng-compat provides zlib. Video goes through GStreamer, so no
-        # FFmpeg or libva development packages are needed.
+        # FFmpeg or libva development packages are needed. bash-devel and
+        # readline-devel are what Terminal's Bash editor builds against
+        # (crates/runtime/ush/native/build.py), as in os/Containerfile.
         dnf install -y --setopt=install_weak_deps=False \
             nasm perl-FindBin python3 \
-            sqlite-devel zlib-ng-compat-devel expat-devel
+            sqlite-devel zlib-ng-compat-devel expat-devel \
+            bash-devel readline-devel
     fi
     if [[ $profile == test ]]; then
         install_test_runtime_fedora

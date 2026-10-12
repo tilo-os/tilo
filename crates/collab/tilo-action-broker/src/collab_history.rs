@@ -181,7 +181,7 @@ impl CollabHistoryStore {
     /// Returns an error when `XDG_STATE_HOME` is absent or unusable.
     #[cfg(not(test))]
     pub fn open_for_session() -> std::io::Result<Self> {
-        let state = xdg_paths::env_dir("XDG_STATE_HOME").ok_or_else(|| {
+        let state = tilo_paths::env_dir("XDG_STATE_HOME").ok_or_else(|| {
             std::io::Error::new(
                 std::io::ErrorKind::NotFound,
                 "launcher did not provide XDG_STATE_HOME for collaboration history",
@@ -294,7 +294,7 @@ impl CollabHistoryStore {
 mod tests {
     use super::*;
     use collab_types::{
-        AttestationId, ChannelId, ContentRetention, Ed25519PublicKey, EncryptionMetadata, OpClass,
+        AttestationId, ChannelId, ContentRetention, Ed25519PublicKey, EncryptionMetadata, OpKind,
     };
 
     fn op(artifact: ArtifactId, seq: u64, encryption: Option<EncryptionMetadata>) -> SignedOp {
@@ -303,7 +303,7 @@ mod tests {
             artifact,
             Ed25519PublicKey::from_bytes([4; 32]),
             AttestationId::new(),
-            OpClass::Splice,
+            OpKind::Change,
             std::time::SystemTime::UNIX_EPOCH,
             seq,
         );

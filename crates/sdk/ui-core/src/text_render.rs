@@ -1,3 +1,4 @@
+use crate::num::f32_of_f64;
 use cosmic_text::fontdb::Weight;
 use cosmic_text::{
     Align, Attrs, Buffer, Family, FontFeatures as CosmicFontFeatures, FontSystem, Metrics, Shaping,
@@ -10,6 +11,10 @@ use vello::kurbo::{Affine, BezPath, Point, Rect};
 use vello::peniko::{Color, Fill, FontData as Font, StyleRef};
 
 use crate::text_break::{LineBreakKind, OffsetMap, line_break_opportunities};
+
+mod cache;
+pub use cache::PreparedText;
+use cache::{CacheKey, CacheQuery, TextCache};
 
 /// Product-wide primary font families. Tilo ships these exact faces, and the
 /// renderer also assigns them to the CSS-like generic families below. Keeping
@@ -219,29 +224,43 @@ pub fn configured_font_system() -> FontSystem {
     FontSystem::new_with_locale_and_db(locale.clone(), database.clone())
 }
 
+/// Read the product font catalog into memory and set every renderer this
+/// process makes in it from now on: for a process about to lose the
+/// filesystem (a confined app worker) whose views still lay out text.
+/// Returns whether a catalog loaded.
+#[cfg(not(test))]
+pub fn hold_catalog_fonts_in_memory() -> bool {
+    let Some(font_system) =
+        crate::font_catalog::catalog_in_memory(&crate::i18n::I18nManager::current_locale())
+    else {
+        return false;
+    };
+    share_host_font_database(&font_system);
+    true
+}
+
+/// Unit tests already set text in the fixture catalog, held in memory.
+#[cfg(test)]
+pub fn hold_catalog_fonts_in_memory() -> bool {
+    true
+}
+
+/// Build the font database [`configured_font_system`] copies into every
+/// renderer now, and throw the font system away: a native launch runs this
+/// in the background from process start, so the main thread's first
+/// renderer finds the catalog verified and every font file read instead of
+/// doing both itself (TIL-775). The database is a process-wide `OnceLock`, so
+/// a renderer asked for meanwhile waits for this one: nothing is loaded
+/// twice, and it is the database the main thread would have built.
+pub fn prepare_font_database() {
+    drop(configured_font_system());
+}
+
 /// The system's fonts, scanned once per process. A scan parses every
 /// installed font file, and each renderer would otherwise repeat it.
 #[cfg(not(test))]
 static SYSTEM_FONT_DATABASE: std::sync::OnceLock<(String, cosmic_text::fontdb::Database)> =
     std::sync::OnceLock::new();
-
-/// The toolkit's color emoji face for engines that load their own fonts, as
-/// font data and face index.
-///
-/// The toolkit sets text in its font catalog, so this is the catalog's Noto
-/// Color Emoji face rather than whatever the machine has installed. `None`
-/// only when no emoji face is loaded at all.
-#[must_use]
-pub fn bundled_emoji_face() -> Option<(Vec<u8>, u32)> {
-    let system = configured_font_system();
-    let database = system.db();
-    let face = database.faces().find(|face| {
-        face.families
-            .iter()
-            .any(|(name, _)| name == "Noto Color Emoji")
-    })?;
-    database.with_face_data(face.id, |data, index| (data.to_vec(), index))
-}
 
 pub(crate) fn balance_buffer(buffer: &mut Buffer, font_system: &mut FontSystem, max_width: f32) {
     if max_width <= 0.0 {
@@ -1031,13 +1050,6 @@ impl TextStyle {
         self
     }
 
-    /// Disable discretionary hyphenation while retaining the rest of a style.
-    #[must_use]
-    pub fn without_hyphenation(mut self) -> Self {
-        self.hyphenation = Hyphenation::None;
-        self
-    }
-
     pub fn line_height_px(&self) -> f32 {
         self.size * self.line_height
     }
@@ -1391,14 +1403,6 @@ fn float_range(start: f64, end: f64) -> std::ops::Range<f32> {
     start as f32..end as f32
 }
 
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "validated finite flow-region coordinates are ordinary logical pixels"
-)]
-fn flow_pixel(value: f64) -> f32 {
-    value as f32
-}
-
 fn intersect_spans(
     left: &[std::ops::Range<f32>],
     right: &[std::ops::Range<f32>],
@@ -1461,11 +1465,11 @@ impl PolygonTextLayout {
         }
         let max_width = constraints
             .max_width
-            .unwrap_or_else(|| flow_pixel(self.region.bounds.x1))
+            .unwrap_or_else(|| f32_of_f64(self.region.bounds.x1))
             .max(0.0);
         let max_height = constraints
             .max_height
-            .unwrap_or_else(|| flow_pixel(self.region.bounds.y1))
+            .unwrap_or_else(|| f32_of_f64(self.region.bounds.y1))
             .max(0.0);
         let line_height = style.line_height_px().max(1.0);
         let mut opportunities = BTreeMap::new();
@@ -1484,8 +1488,8 @@ impl PolygonTextLayout {
 
         let mut layout = FlowLayout::default();
         let mut source = 0_usize;
-        let mut y = flow_pixel(self.region.bounds.y0.max(0.0));
-        let bottom = max_height.min(flow_pixel(self.region.bounds.y1));
+        let mut y = f32_of_f64(self.region.bounds.y0.max(0.0));
+        let bottom = max_height.min(f32_of_f64(self.region.bounds.y1));
         while source < text.len() && y + line_height <= bottom + f32::EPSILON {
             let spans = self.region.spans_for_band(y, line_height, max_width);
             let mut forced_next_line = false;
@@ -1616,43 +1620,10 @@ fn force_flow_fragment(
     best
 }
 
-/// Hashable cache key for measured-text results. `max_width` is encoded as a
-/// `u32` bit-pattern so `f32` (not `Hash`) can participate; callers pass a
-/// sane finite width or no max, so the bit-pattern is unique-per-input.
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
-struct MeasureKey {
-    text_hash: u64,
-    size_bits: u32,
-    max_width_bits: u32,
-    weight: u16,
-    line_height_bits: u32,
-    italic: bool,
-    family: u64,
-    hyphenation: u64,
-    advanced: u64,
-    generation: u64,
-}
-
-/// Entries before the cache starts evicting on insertion. 4096 x ~64 bytes ~=
-/// 256 KB — enough for every static label in a several-hundred-widget tree.
+// Fixed metadata is bounded independently from variable retained payloads.
 const MEASURE_CACHE_LIMIT: usize = 4096;
-
-/// Hashable cache key for a fully shaped + positioned run of text. Field-identical
-/// to [`MeasureKey`] so layout and paint share identity; colour and transform stay
-/// out of the key so a theme recolour or a moving widget reuses glyph geometry.
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
-struct ShapeKey {
-    text_hash: u64,
-    size_bits: u32,
-    max_width_bits: u32,
-    weight: u16,
-    line_height_bits: u32,
-    italic: bool,
-    family: u64,
-    hyphenation: u64,
-    advanced: u64,
-    generation: u64,
-}
+const MEASURE_CACHE_BYTES: usize = 2 * 1024 * 1024;
+const SHAPE_CACHE_BYTES: usize = 16 * 1024 * 1024;
 
 /// One contiguous span of glyphs sharing a single font face, already
 /// positioned in the text block's local coordinate space. Painting is then
@@ -1666,6 +1637,30 @@ struct GlyphRun {
     size: f32,
     glyphs: Vec<vello::Glyph>,
     normalized_coords: Vec<vello::NormalizedCoord>,
+}
+
+fn glyph_run_bytes(runs: &Vec<GlyphRun>) -> usize {
+    runs.iter().fold(
+        std::mem::size_of::<Vec<GlyphRun>>()
+            .saturating_add(2 * std::mem::size_of::<usize>())
+            .saturating_add(
+                runs.capacity()
+                    .saturating_mul(std::mem::size_of::<GlyphRun>()),
+            ),
+        |bytes, run| {
+            bytes
+                .saturating_add(
+                    run.glyphs
+                        .capacity()
+                        .saturating_mul(std::mem::size_of::<vello::Glyph>()),
+                )
+                .saturating_add(
+                    run.normalized_coords
+                        .capacity()
+                        .saturating_mul(std::mem::size_of::<vello::NormalizedCoord>()),
+                )
+        },
+    )
 }
 
 /// Consecutive rich-text glyphs that share a face, weight, size, colour and
@@ -1871,10 +1866,9 @@ pub struct TextRenderer {
     /// Uncached cosmic-text re-shape per frame measured ~7.5ms in debug
     /// across a 50-widget tree; most widgets re-measure the same static
     /// strings every frame, so caching drops that to a hash lookup.
-    measure_cache: HashMap<MeasureKey, (f32, f32)>,
+    measure_cache: TextCache<(f32, f32)>,
     /// Bumped by [`Self::bump_generation`] when locale or fonts change.
-    /// Entries from prior generations never match a lookup (generation is
-    /// part of the key); they age out when the cache hits its limit.
+    /// Generation participates in identity; bumping it also clears retained entries.
     generation: u64,
     /// Identity of widget-owned layouts, unique across renderers and font epochs.
     layout_epoch: Arc<()>,
@@ -1889,7 +1883,7 @@ pub struct TextRenderer {
     /// runs. An `Arc` value lets a lookup hand the runs back to the paint
     /// loop without cloning the glyph vecs or holding a borrow on the cache
     /// while the font system is accessed.
-    shape_cache: HashMap<ShapeKey, ShapedText>,
+    shape_cache: TextCache<ShapedText>,
     /// Surfaced via [`Self::take_shape_stats`] so the frame profiler
     /// (`TILO_UI_PERF`) can attribute draw-phase time between cosmic-text
     /// and Vello encoding.
@@ -1994,13 +1988,13 @@ impl TextRenderer {
         Self {
             font_system,
             swash_cache: SwashCache::new(),
-            measure_cache: HashMap::with_capacity(256),
+            measure_cache: TextCache::new(MEASURE_CACHE_LIMIT, MEASURE_CACHE_BYTES),
             generation: 0,
             layout_epoch: Arc::new(()),
             distinct_letters: false,
             hits: 0,
             misses: 0,
-            shape_cache: HashMap::with_capacity(256),
+            shape_cache: TextCache::new(SHAPE_CACHE_LIMIT, SHAPE_CACHE_BYTES),
             shape_hits: 0,
             shape_misses: 0,
             shape_ns: 0,
@@ -2146,18 +2140,22 @@ impl TextRenderer {
     /// The style the shaper sees: only a renderer-relative style
     /// ([`TextScaling::Renderer`]) is grown by the accessibility text scale;
     /// resolved theme roles and document content are already final.
-    fn scaled_style(&self, style: &TextStyle) -> TextStyle {
+    fn scaled_style<'a>(&self, style: &'a TextStyle) -> std::borrow::Cow<'a, TextStyle> {
         self.sync_distinct_letters();
-        let mut scaled = style.clone();
-        // The setting, or a security surface being drawn: part of the style
-        // so measuring and painting key their caches on it.
-        scaled.distinguish |= crate::font_catalog::matched::distinguish_everywhere();
-        if style.scaling != TextScaling::Renderer || (self.text_scale - 1.0).abs() <= f32::EPSILON {
-            return scaled;
+        let distinguish =
+            style.distinguish || crate::font_catalog::matched::distinguish_everywhere();
+        let unscaled =
+            style.scaling != TextScaling::Renderer || (self.text_scale - 1.0).abs() <= f32::EPSILON;
+        if unscaled && distinguish == style.distinguish {
+            return std::borrow::Cow::Borrowed(style);
         }
-        scaled.size *= self.text_scale;
-        scaled.letter_spacing *= self.text_scale;
-        scaled
+        let mut scaled = style.clone();
+        scaled.distinguish = distinguish;
+        if !unscaled {
+            scaled.size *= self.text_scale;
+            scaled.letter_spacing *= self.text_scale;
+        }
+        std::borrow::Cow::Owned(scaled)
     }
 
     /// Take-and-reset the per-frame shape-cache stats:
@@ -2201,40 +2199,8 @@ impl TextRenderer {
         self.ink_bounds_entries = 0;
     }
 
-    /// Evicts at random when the table is full — cheap and good enough since
-    /// most missed entries are one-off animated values (Spinner dots,
-    /// scrubbing slider value) that aren't worth keeping anyway.
-    fn measure_insert(&mut self, key: MeasureKey, value: (f32, f32)) {
-        if self.measure_cache.len() >= MEASURE_CACHE_LIMIT
-            && let Some(victim) = self.measure_cache.keys().next().copied()
-        {
-            self.measure_cache.remove(&victim);
-        }
-        self.measure_cache.insert(key, value);
-    }
-
-    fn make_measure_key(
-        &self,
-        text: &str,
-        max_width: Option<f32>,
-        style: &TextStyle,
-    ) -> MeasureKey {
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
-        let mut hasher = DefaultHasher::new();
-        text.hash(&mut hasher);
-        MeasureKey {
-            text_hash: hasher.finish(),
-            size_bits: style.size.to_bits(),
-            max_width_bits: max_width.map_or(u32::MAX, f32::to_bits),
-            weight: style.effective_weight().0,
-            line_height_bits: style.line_height.to_bits(),
-            italic: style.italic,
-            family: style.family.cache_hash(),
-            hyphenation: style.hyphenation.cache_hash(),
-            advanced: style.advanced_hash(),
-            generation: self.generation,
-        }
+    fn measure_insert(&mut self, key: CacheKey<'_>, value: (f32, f32)) {
+        self.measure_cache.insert(key, value, 0);
     }
 
     pub fn measure(&mut self, text: &str, size: f32, max_width: Option<f32>) -> (f32, f32) {
@@ -2288,11 +2254,29 @@ impl TextRenderer {
         if text.is_empty() {
             return (0.0, 0.0);
         }
-        let scaled_style = self.scaled_style(style);
+        let input = CacheQuery::new(text, style);
+        self.measure_query(&input, max_width, warm_shape)
+    }
+
+    /// Measure retained immutable input without hashing its text/style again.
+    pub fn measure_prepared(&mut self, text: &PreparedText, max_width: Option<f32>) -> (f32, f32) {
+        if text.text().is_empty() {
+            return (0.0, 0.0);
+        }
+        self.measure_query(&CacheQuery::prepared(text), max_width, true)
+    }
+
+    fn measure_query(
+        &mut self,
+        input: &CacheQuery<'_>,
+        max_width: Option<f32>,
+        warm_shape: bool,
+    ) -> (f32, f32) {
+        let scaled_style = self.scaled_style(input.style);
         let style = &scaled_style;
         self.note_browser_explicit_family(style);
-        let max_width = self.collapse_unused_max_width(text, max_width, style, warm_shape);
-        self.measure_style_cached(text, max_width, style, warm_shape)
+        let max_width = self.collapse_unused_max_width(input, max_width, style, warm_shape);
+        self.measure_style_cached(input, max_width, style, warm_shape)
     }
 
     /// When `max_width` is wider than the text's natural line, cosmic-text
@@ -2301,11 +2285,12 @@ impl TextRenderer {
     /// cache entry instead of reshaping the same label twice on first paint.
     fn collapse_unused_max_width(
         &mut self,
-        text: &str,
+        input: &CacheQuery<'_>,
         max_width: Option<f32>,
         style: &TextStyle,
         warm_shape: bool,
     ) -> Option<f32> {
+        let text = input.text;
         let width = max_width?;
         // Balance and hyphenation consult the wrap width even when the natural
         // line would fit; keep those keys distinct. So does drawing a centred
@@ -2317,12 +2302,12 @@ impl TextRenderer {
             return Some(width);
         }
 
-        let key = self.make_measure_key(text, None, style);
+        let key = input.key(None, self.generation, self.text_scale);
         if let Some(natural) = self.measure_cache.get(&key).copied() {
             self.hits = self.hits.saturating_add(1);
             if natural.0 <= width {
                 if warm_shape {
-                    self.ensure_shaped(text, None, style, natural);
+                    self.ensure_shaped(input, None, style, natural);
                 }
                 return None;
             }
@@ -2338,7 +2323,7 @@ impl TextRenderer {
         self.measure_insert(key, natural);
         if natural.0 <= width {
             if warm_shape {
-                let shape_key = self.make_shape_key(text, None, style);
+                let shape_key = input.key(None, self.generation, self.text_scale);
                 self.store_shaped(shape_key, &prepared, style, natural);
             }
             None
@@ -2349,22 +2334,27 @@ impl TextRenderer {
 
     fn measure_style_cached(
         &mut self,
-        text: &str,
+        input: &CacheQuery<'_>,
         max_width: Option<f32>,
         style: &TextStyle,
         warm_shape: bool,
     ) -> (f32, f32) {
-        let key = self.make_measure_key(text, max_width, style);
+        let text = input.text;
+        let key = input.key(max_width, self.generation, self.text_scale);
         if let Some(cached) = self.measure_cache.get(&key).copied() {
             self.hits = self.hits.saturating_add(1);
             if warm_shape {
-                self.ensure_shaped(text, max_width, style, cached);
+                self.ensure_shaped(input, max_width, style, cached);
             }
             return cached;
         }
         // Paint may already have shaped this string under the same key.
-        let shape_key = self.make_shape_key(text, max_width, style);
-        if let Some(shaped) = self.shape_cache.get(&shape_key) {
+        let shape_key = input.key(max_width, self.generation, self.text_scale);
+        if let Some(shaped) = self
+            .shape_cache
+            .get(&shape_key)
+            .or_else(|| shape_key.uncached_shape())
+        {
             self.hits = self.hits.saturating_add(1);
             let result = shaped.size;
             self.measure_insert(key, result);
@@ -2384,13 +2374,14 @@ impl TextRenderer {
 
     fn ensure_shaped(
         &mut self,
-        text: &str,
+        input: &CacheQuery<'_>,
         max_width: Option<f32>,
         style: &TextStyle,
         size: (f32, f32),
     ) {
-        let shape_key = self.make_shape_key(text, max_width, style);
-        if self.shape_cache.contains_key(&shape_key) {
+        let text = input.text;
+        let shape_key = input.key(max_width, self.generation, self.text_scale);
+        if self.shape_cache.contains_key(&shape_key) || shape_key.uncached_shape().is_some() {
             return;
         }
         let prepared = self.shape_buffer(text, max_width, style);
@@ -2718,11 +2709,13 @@ impl TextRenderer {
         if text.is_empty() {
             return;
         }
-        let scaled_style = self.scaled_style(style);
-        let style = &scaled_style;
-        let max_width = self.collapse_unused_max_width(text, max_width, style, true);
-        let runs = self.shaped_runs(text, max_width, style);
-        self.paint_runs(scene, &runs, color, transform);
+        self.draw_query(
+            scene,
+            &CacheQuery::new(text, style),
+            color,
+            transform,
+            max_width,
+        );
     }
 
     /// How far below the origin [`Self::draw_style`], given the same
@@ -2734,35 +2727,54 @@ impl TextRenderer {
         max_width: Option<f32>,
         style: &TextStyle,
     ) -> f32 {
+        let logical_style = style;
         let scaled_style = self.scaled_style(style);
         let style = &scaled_style;
         if text.is_empty() {
             return style.size * 0.8;
         }
-        let max_width = self.collapse_unused_max_width(text, max_width, style, true);
-        let runs = self.shaped_runs(text, max_width, style);
+        let input = CacheQuery::new(text, logical_style);
+        let max_width = self.collapse_unused_max_width(&input, max_width, style, true);
+        let runs = self.shaped_query(&input, max_width, style);
         runs.first()
             .and_then(|run| run.glyphs.first())
             .map_or(style.size * 0.8, |glyph| glyph.y)
     }
 
-    fn make_shape_key(&self, text: &str, max_width: Option<f32>, style: &TextStyle) -> ShapeKey {
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
-        let mut hasher = DefaultHasher::new();
-        text.hash(&mut hasher);
-        ShapeKey {
-            text_hash: hasher.finish(),
-            size_bits: style.size.to_bits(),
-            max_width_bits: max_width.map_or(u32::MAX, f32::to_bits),
-            weight: style.effective_weight().0,
-            line_height_bits: style.line_height.to_bits(),
-            italic: style.italic,
-            family: style.family.cache_hash(),
-            hyphenation: style.hyphenation.cache_hash(),
-            advanced: style.advanced_hash(),
-            generation: self.generation,
+    /// Draw retained immutable input; colour and transform do not affect geometry identity.
+    pub fn draw_prepared(
+        &mut self,
+        scene: &mut Scene,
+        text: &PreparedText,
+        color: Color,
+        transform: Affine,
+        max_width: Option<f32>,
+    ) {
+        if text.text().is_empty() {
+            return;
         }
+        self.draw_query(
+            scene,
+            &CacheQuery::prepared(text),
+            color,
+            transform,
+            max_width,
+        );
+    }
+
+    fn draw_query(
+        &mut self,
+        scene: &mut Scene,
+        input: &CacheQuery<'_>,
+        color: Color,
+        transform: Affine,
+        max_width: Option<f32>,
+    ) {
+        let scaled_style = self.scaled_style(input.style);
+        let style = &scaled_style;
+        let max_width = self.collapse_unused_max_width(input, max_width, style, true);
+        let runs = self.shaped_query(input, max_width, style);
+        self.paint_runs(scene, &runs, color, transform);
     }
 
     /// Shapes `text` into a laid-out cosmic-text [`Buffer`], applying the
@@ -2982,41 +2994,47 @@ impl TextRenderer {
 
     fn store_shaped(
         &mut self,
-        key: ShapeKey,
+        key: CacheKey<'_>,
         prepared: &PreparedBuffer,
         style: &TextStyle,
         size: (f32, f32),
     ) {
-        if self.shape_cache.contains_key(&key) {
+        if self.shape_cache.contains_key(&key) || key.uncached_shape().is_some() {
             return;
         }
         let runs = Arc::new(self.flatten_glyph_runs(&prepared.buffer, style));
-        if self.shape_cache.len() >= SHAPE_CACHE_LIMIT
-            && let Some(victim) = self.shape_cache.keys().next().copied()
-        {
-            self.shape_cache.remove(&victim);
-        }
         // Count measure-time warms as shape misses so paint-side stats still
         // see the cosmic-text work that filled the entry.
         self.shape_misses = self.shape_misses.saturating_add(1);
-        self.shape_cache.insert(key, ShapedText { runs, size });
+        let bytes = glyph_run_bytes(&runs);
+        if !self.shape_cache.insert(
+            key,
+            ShapedText {
+                runs: runs.clone(),
+                size,
+            },
+            bytes,
+        ) {
+            key.remember_uncached_shape(ShapedText { runs, size });
+        }
     }
 
     /// Shape `text` into positioned [`GlyphRun`]s, caching the result. On a
     /// hit this is an `Arc` clone; on a miss it runs cosmic-text once.
-    fn shaped_runs(
+    fn shaped_query(
         &mut self,
-        text: &str,
+        input: &CacheQuery<'_>,
         max_width: Option<f32>,
         style: &TextStyle,
     ) -> Arc<Vec<GlyphRun>> {
+        let text = input.text;
         self.note_browser_explicit_family(style);
-        let key = self.make_shape_key(text, max_width, style);
-        if let Some(shaped) = self.shape_cache.get(&key) {
+        let key = input.key(max_width, self.generation, self.text_scale);
+        if let Some(shaped) = self.shape_cache.get(&key).or_else(|| key.uncached_shape()) {
             self.shape_hits = self.shape_hits.saturating_add(1);
             let runs = shaped.runs.clone();
             let size = shaped.size;
-            let measure_key = self.make_measure_key(text, max_width, style);
+            let measure_key = key;
             if !self.measure_cache.contains_key(&measure_key) {
                 self.measure_insert(measure_key, size);
             }
@@ -3030,23 +3048,29 @@ impl TextRenderer {
         let runs = Arc::new(self.flatten_glyph_runs(&prepared.buffer, style));
         self.shape_ns = self.shape_ns.saturating_add(t0.elapsed().as_nanos());
 
-        if self.shape_cache.len() >= SHAPE_CACHE_LIMIT
-            && let Some(victim) = self.shape_cache.keys().next().copied()
-        {
-            self.shape_cache.remove(&victim);
-        }
         self.shape_cache.insert(
             key,
             ShapedText {
                 runs: runs.clone(),
                 size,
             },
+            glyph_run_bytes(&runs),
         );
-        let measure_key = self.make_measure_key(text, max_width, style);
+        let measure_key = key;
         if !self.measure_cache.contains_key(&measure_key) {
             self.measure_insert(measure_key, size);
         }
         runs
+    }
+
+    #[cfg(test)]
+    fn shaped_runs(
+        &mut self,
+        text: &str,
+        max_width: Option<f32>,
+        style: &TextStyle,
+    ) -> Arc<Vec<GlyphRun>> {
+        self.shaped_query(&CacheQuery::new(text, style), max_width, style)
     }
 
     /// Resolve font handles through cosmic-text's existing face-and-weight cache.
@@ -3087,9 +3111,10 @@ impl TextRenderer {
         if text.is_empty() {
             return Vec::new();
         }
+        let input = CacheQuery::new(text, style);
         let scaled_style = self.scaled_style(style);
         let style = &scaled_style;
-        let max_width = self.collapse_unused_max_width(text, max_width, style, false);
+        let max_width = self.collapse_unused_max_width(&input, max_width, style, false);
         let prepared = self.shape_buffer(text, max_width, style);
         let variations = style.resolved_variations();
         let line_starts: Vec<usize> = std::iter::once(0)
@@ -3590,7 +3615,12 @@ mod tests {
         let mut renderer = crate::font_catalog::fixture_renderer();
         let first_x = |renderer: &mut TextRenderer, align: ParagraphAlign| {
             let style = TextStyle::new(16.0).with_align(align);
-            let width = renderer.collapse_unused_max_width("New note", Some(400.0), &style, true);
+            let width = renderer.collapse_unused_max_width(
+                &CacheQuery::new("New note", &style),
+                Some(400.0),
+                &style,
+                true,
+            );
             let runs = renderer.shaped_runs("New note", width, &style);
             runs.iter()
                 .flat_map(|run| run.glyphs.iter())
@@ -4973,3 +5003,7 @@ mod layout_renderer_pool {
         assert_eq!(constructions(), 2, "and later nested passes reuse it");
     }
 }
+
+#[cfg(test)]
+#[path = "text_render/main_compatibility_tests.rs"]
+mod main_compatibility_tests;

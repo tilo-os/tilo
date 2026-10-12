@@ -86,6 +86,9 @@ fn container_options(attrs: &[Attribute]) -> syn::Result<ContainerOptions> {
         } else if path.is_ident("default") {
             options.default = true;
             ignore(meta)?;
+        } else if path.is_ident("remote") && string_value(meta)? == "Self" {
+            // The type's own derived code under another name: what serde
+            // reads is still the type as written.
         } else if [
             "untagged",
             "from",
@@ -304,9 +307,9 @@ fn plain_doc(attrs: &[Attribute]) -> String {
     out
 }
 
-/// The schema of a set of fields: an object for named fields, the inner
-/// schema for a newtype, a fixed-length array for a tuple, `None` for a
-/// unit.
+/// The table of a set of fields (a `schema::Content`): an object for named
+/// fields, the inner schema for a newtype, a fixed-length array for a tuple,
+/// `None` for a unit.
 fn fields_schema(
     fields: &Fields,
     rule: Option<&String>,
@@ -326,8 +329,7 @@ fn fields_schema(
                 let ty = &field.ty;
                 let doc = plain_doc(&field.attrs);
                 let defaulted = options.default || all_default;
-                let mut schema = quote!(<#ty as #krate::JsonSchema>::json_schema());
-                if let Some(Range { min, max }) = field_range(&field.attrs)? {
+                let range = if let Some(Range { min, max }) = field_range(&field.attrs)? {
                     let bound = |value: Option<syn::Expr>| {
                         value.map_or_else(
                             || quote!(::core::option::Option::None),
@@ -339,15 +341,29 @@ fn fields_schema(
                         )
                     };
                     let (min, max) = (bound(min), bound(max));
-                    schema = quote!(#krate::schema::range(#schema, #min, #max));
-                }
-                properties.push(quote! {(
-                    #name,
-                    #krate::schema::describe(#schema, #doc),
-                    !#defaulted && !<#ty as #krate::JsonSchema>::OPTIONAL,
-                )});
+                    quote!(::core::option::Option::Some({
+                        fn bounds() -> (
+                            ::core::option::Option<#krate::__private::serde_json::Value>,
+                            ::core::option::Option<#krate::__private::serde_json::Value>,
+                        ) {
+                            (#min, #max)
+                        }
+                        bounds as fn() -> _
+                    }))
+                } else {
+                    quote!(::core::option::Option::None)
+                };
+                properties.push(quote! {
+                    #krate::schema::Field {
+                        name: #name,
+                        schema: <#ty as #krate::JsonSchema>::json_schema,
+                        required: !#defaulted && !<#ty as #krate::JsonSchema>::OPTIONAL,
+                        doc: #doc,
+                        range: #range,
+                    }
+                });
             }
-            Some(quote!(#krate::schema::object(::std::vec![#(#properties),*])))
+            Some(quote!(#krate::schema::Content::Object(&[#(#properties),*])))
         }
         Fields::Unnamed(unnamed) => {
             let kept: Vec<_> = unnamed
@@ -361,11 +377,13 @@ fn fields_schema(
             match kept.as_slice() {
                 [(field, _)] if unnamed.unnamed.len() == 1 => {
                     let ty = &field.ty;
-                    Some(quote!(<#ty as #krate::JsonSchema>::json_schema()))
+                    Some(quote!(#krate::schema::Content::Newtype(
+                        <#ty as #krate::JsonSchema>::json_schema
+                    )))
                 }
                 many => {
                     let len = many.len();
-                    Some(quote!(#krate::schema::tuple(#len)))
+                    Some(quote!(#krate::schema::Content::Tuple(#len)))
                 }
             }
         }
@@ -373,8 +391,8 @@ fn fields_schema(
     })
 }
 
-/// One alternative per variant, tagged as serde tags it. An enum of plain
-/// unit variants is a string enumeration.
+/// One alternative per variant, tagged as serde tags it (a `schema::Body`).
+/// An enum of plain unit variants is a string enumeration.
 fn enum_schema(
     input: &DeriveInput,
     data: &syn::DataEnum,
@@ -392,8 +410,7 @@ fn enum_schema(
             ));
         }
     };
-    let mut names = Vec::new();
-    let mut alternatives = Vec::new();
+    let mut variants = Vec::new();
     let mut plain = matches!(tagging, Tagging::External);
     for variant in &data.variants {
         let variant_options = item_options(&variant.attrs, true)?;
@@ -408,39 +425,33 @@ fn enum_schema(
         let variant_doc = plain_doc(&variant.attrs);
         plain &= matches!(variant.fields, Fields::Unit) && variant_doc.is_empty();
         let tuple = matches!(&variant.fields, Fields::Unnamed(fields) if fields.unnamed.len() != 1);
-        let content = fields_schema(&variant.fields, variant_options.rename_all.as_ref(), false)?;
-        let alternative = match (&tagging, content) {
-            (Tagging::External, None) => quote!(#krate::schema::constant(#name)),
-            (Tagging::External, Some(content)) => {
-                quote!(#krate::schema::external(#name, #content))
-            }
-            (Tagging::Internal(tag), None) => quote!(
-                #krate::schema::internal(#tag, #name, #krate::schema::object(::std::vec![]))
-            ),
-            (Tagging::Internal(_), Some(_)) if tuple => {
-                return Err(syn::Error::new(
-                    variant.span(),
-                    "serde cannot tag a tuple variant internally",
-                ));
-            }
-            (Tagging::Internal(tag), Some(content)) => {
-                quote!(#krate::schema::internal(#tag, #name, #content))
-            }
-            (Tagging::Adjacent(tag, key), None) => quote!(
-                #krate::schema::adjacent(#tag, #key, #name, ::core::option::Option::None)
-            ),
-            (Tagging::Adjacent(tag, key), Some(content)) => quote!(
-                #krate::schema::adjacent(#tag, #key, #name, ::core::option::Option::Some(#content))
-            ),
-        };
-        names.push(name);
-        alternatives.push(quote!(#krate::schema::describe(#alternative, #variant_doc)));
+        if tuple && matches!(tagging, Tagging::Internal(_)) {
+            return Err(syn::Error::new(
+                variant.span(),
+                "serde cannot tag a tuple variant internally",
+            ));
+        }
+        let content = fields_schema(&variant.fields, variant_options.rename_all.as_ref(), false)?
+            .map_or_else(
+                || quote!(::core::option::Option::None),
+                |content| quote!(::core::option::Option::Some(#content)),
+            );
+        variants.push(quote!(#krate::schema::Variant {
+            name: #name,
+            doc: #variant_doc,
+            content: #content,
+        }));
     }
-    Ok(if plain {
-        quote!(#krate::schema::string_enum(&[#(#names),*]))
-    } else {
-        quote!(#krate::schema::one_of(::std::vec![#(#alternatives),*]))
-    })
+    let tagging = match tagging {
+        Tagging::External => quote!(#krate::schema::Tagging::External),
+        Tagging::Internal(tag) => quote!(#krate::schema::Tagging::Internal(#tag)),
+        Tagging::Adjacent(tag, key) => quote!(#krate::schema::Tagging::Adjacent(#tag, #key)),
+    };
+    Ok(quote!(#krate::schema::Body::Enum {
+        tagging: #tagging,
+        plain: #plain,
+        variants: &[#(#variants),*],
+    }))
 }
 
 pub fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
@@ -458,20 +469,18 @@ pub fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
                         syn::Error::new(input.span(), "a transparent type needs a field")
                     })?;
                 let ty = &field.ty;
-                quote!(<#ty as #krate::JsonSchema>::json_schema())
+                quote!(#krate::schema::Body::Transparent(
+                    <#ty as #krate::JsonSchema>::json_schema
+                ))
             } else {
-                let schema =
-                    fields_schema(&data.fields, options.rename_all.as_ref(), options.default)?
-                        .unwrap_or_else(
-                            || quote!(#krate::__private::serde_json::json!({"type": "null"})),
-                        );
-                quote!(#krate::schema::describe(#schema, #doc))
+                fields_schema(&data.fields, options.rename_all.as_ref(), options.default)?
+                    .map_or_else(
+                        || quote!(#krate::schema::Body::Unit),
+                        |content| quote!(#krate::schema::Body::Struct(#content)),
+                    )
             }
         }
-        Data::Enum(data) => {
-            let schema = enum_schema(input, data, &options)?;
-            quote!(#krate::schema::describe(#schema, #doc))
-        }
+        Data::Enum(data) => enum_schema(input, data, &options)?,
         Data::Union(_) => {
             return Err(syn::Error::new(
                 input.span(),
@@ -489,7 +498,9 @@ pub fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
     Ok(quote! {
         impl #impl_generics #krate::JsonSchema for #ident #ty_generics #where_clause {
             fn json_schema() -> #krate::__private::serde_json::Value {
-                #body
+                #krate::schema::build(const {
+                    &#krate::schema::TypeSchema { doc: #doc, body: #body }
+                })
             }
         }
     })

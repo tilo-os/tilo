@@ -45,6 +45,8 @@
 #                            store and scratch in DIR instead of
 #                            /var/lib/containers and /var/tmp (a build host
 #                            whose root filesystem is small)
+#   TILO_ROOT_PODMAN_STORAGE_CONF=FILE  explicitly pass a root storage.conf
+#                            through sudo (for a native overlay store)
 #   TILO_QCOW2_COMPRESS=1      write zstd clusters in the first qcow2 conversion;
 #                            useful for the dev-disk runner's limited scratch
 #
@@ -106,6 +108,9 @@ if [ -n "${TILO_ROOT_PODMAN_STORE:-}" ]; then
   ROOT_PODMAN_ARGS=(--root "$ROOT_CONTAINERS/storage" --runroot "$TILO_ROOT_PODMAN_STORE/run")
   ROOT_PODMAN_ENV=("TMPDIR=$TILO_ROOT_PODMAN_STORE/tmp")
 fi
+if [ -n "${TILO_ROOT_PODMAN_STORAGE_CONF:-}" ]; then
+  ROOT_PODMAN_ENV+=("CONTAINERS_STORAGE_CONF=$TILO_ROOT_PODMAN_STORAGE_CONF")
+fi
 root_podman() {
   sudo -n env "${ROOT_PODMAN_ENV[@]+"${ROOT_PODMAN_ENV[@]}"}" \
     podman "${ROOT_PODMAN_ARGS[@]+"${ROOT_PODMAN_ARGS[@]}"}" "$@"
@@ -119,6 +124,7 @@ KARGS=(); USERSPEC=""; TARGET_IMGREF=""; SEALED_SOURCE_IMGREF=""
 FIRSTBOOT_SEED=""
 BOOTC_HELPER=""
 RESEAL_UKI=0
+DIRECT_SEALED_SOURCE=0
 OFFLINE_TARGET_DIR=""
 ETC_OVERLAY=""
 DIRECT_BOOT_DIR=""
@@ -265,7 +271,13 @@ else
   [[ "$IMAGE" =~ @sha256:[0-9a-f]{64}$ ]] \
     || die "--sealed-source-imgref requires digest-pinned IMAGE as the authoritative target-imgref"
   command -v skopeo >/dev/null || die "--sealed-source-imgref requires skopeo to verify the mirror digest"
-  source_identity="$(skopeo inspect --tls-verify=false --format '{{.Name}} {{.Digest}}' \
+  source_tls=(--tls-verify=false)
+  if [ "${SEALED_SOURCE_IMGREF#docker://}" = "$IMAGE" ]; then
+    # An authoritative signed source is not an unsigned construction mirror.
+    DIRECT_SEALED_SOURCE=1
+    source_tls=()
+  fi
+  source_identity="$(skopeo inspect "${source_tls[@]}" --format '{{.Name}} {{.Digest}}' \
     "docker://${SEALED_SOURCE_IMGREF#docker://}")" \
     || die "cannot inspect sealed registry source $SEALED_SOURCE_IMGREF"
   read -r source_repository source_digest <<< "$source_identity"
@@ -556,6 +568,10 @@ if [ -n "$SEALED_SOURCE_IMGREF" ]; then
   REG="${RUNREF%%/*}"
   TLS_ARGS=(--tls-verify=false)
   REGCONF="$OUTDIR/.registries.conf"
+  if [ "$DIRECT_SEALED_SOURCE" = 1 ]; then
+    TLS_ARGS=()
+    printf '[[registry]]\nlocation = "%s"\ninsecure = false\n' "$REG" > "$REGCONF"
+  else
   printf '[[registry]]\nlocation = "%s"\ninsecure = true\n' "$REG" > "$REGCONF"
   # The image's runtime policy correctly trusts its signed authoritative
   # repository, not an unsigned transport mirror. bootc evaluates the running
@@ -581,6 +597,7 @@ with open(path, "w", encoding="utf-8") as output:
     json.dump(policy, output, separators=(",", ":"))
     output.write("\n")
 PY
+  fi
   msg "using verified sealed registry source $SRC_REF (no local import or republish)"
 elif [ "$COMPOSEFS" = yes ]; then
   REG="$(start_registry)" || die "could not bring up a local registry, and the composefs
@@ -761,6 +778,7 @@ install_args=(to-filesystem --generic-image --skip-fetch-check
   && install_args+=(--boot-mount-spec "UUID=$ESP_UUID")
 [ -n "$SRC_REF" ] && install_args+=(--source-imgref "$SRC_REF")
 install_args+=("${KARGS[@]+"${KARGS[@]}"}")
+[ "$DIRECT_SEALED_SOURCE" = 0 ] || install_args+=(--enforce-container-sigpolicy)
 install_args+=("/run/tilo-install-target")
 
 # Bind only the prepared disk target, not the job container's root filesystem.

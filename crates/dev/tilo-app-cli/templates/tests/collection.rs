@@ -1,7 +1,11 @@
 use generated_app::{App, Items};
 use ui::a11y::Action;
 use ui::headless::SemanticExpectation;
-use ui::prelude::{Id, Replica, TestApp};
+use ui::prelude::{Edit, Id, Invoke, Replica, TestApp};
+
+fn edit(edit: &Edit<Items>) -> Invoke<Items> {
+    Invoke::edit(edit).expect("an edit")
+}
 
 fn titles(items: &Items) -> Vec<&str> {
     items
@@ -15,27 +19,22 @@ fn first_id(items: &Items) -> Id {
     items.items.ids().next().cloned().expect("an item")
 }
 
-/// The resource on its own: an item needs a title, and every item action
-/// refuses an item that does not exist.
+/// The resource on its own: an item needs a title, its fields are edited at
+/// their paths, and a verb refuses an item that does not exist.
 #[test]
-fn items_are_added_edited_and_removed_by_actions() {
+fn items_are_added_edited_and_removed() {
     let mut items = Replica::<Items>::new();
-    assert!(items.apply(Items::ADD.invoke()).is_err(), "no empty items");
-    items
-        .apply(Items::SET_DRAFT.with("Buy milk".into()))
-        .expect("draft");
-    items.apply(Items::ADD.invoke()).expect("add");
+    assert!(items.apply(Items::ADD.with(" ")).is_err(), "no empty items");
+    items.apply(Items::ADD.with("Buy milk")).expect("add");
     let state = items.state().expect("items");
     assert_eq!(titles(&state), ["Buy milk"]);
-    assert!(state.draft.is_empty(), "adding clears the draft");
 
     let id = first_id(&state);
+    let item = Items::paths().items.item(&id);
     items
-        .apply(Items::RENAME.with((id.clone(), "Buy oat milk".into())))
+        .apply(edit(&item.title.replace("Buy oat milk")))
         .expect("rename");
-    items
-        .apply(Items::SET_DONE.with((id.clone(), true)))
-        .expect("check off");
+    items.apply(edit(&item.done.set(true))).expect("check off");
     let state = items.state().expect("items");
     assert_eq!(titles(&state), ["Buy oat milk"]);
     assert!(state.items.values().all(|item| item.done));
@@ -63,10 +62,10 @@ fn the_list_starts_empty_and_rows_edit_their_item() {
     assert_eq!(titles(&app.state()), ["Buy milk"]);
 
     app.harness()
-        .perform_named(&format!("set-done-{id}"), &Action::ToggleCheck)
+        .perform_named(&format!("items-{id}-done"), &Action::ToggleCheck)
         .expect("the row's checkbox is addressable");
     app.harness()
-        .expect(&SemanticExpectation::named(format!("set-done-{id}")).checked(true))
+        .expect(&SemanticExpectation::named(format!("items-{id}-done")).checked(true))
         .expect("the checkbox follows the item");
     assert!(app.state().items.values().all(|item| item.done));
 
@@ -82,9 +81,7 @@ fn the_list_starts_empty_and_rows_edit_their_item() {
 #[test]
 fn items_survive_a_relaunch() {
     let mut app = TestApp::<App>::new().expect("the app opens");
-    app.invoke(Items::SET_DRAFT.with("Call Ada".into()))
-        .expect("draft");
-    app.invoke(Items::ADD.invoke()).expect("add");
+    app.invoke(Items::ADD.with("Call Ada")).expect("add");
     let app = app.reopen().expect("the app reopens");
     assert_eq!(titles(&app.state()), ["Call Ada"]);
 }

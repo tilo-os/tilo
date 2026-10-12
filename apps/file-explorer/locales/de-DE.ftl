@@ -291,9 +291,6 @@ files-a11y-shared-recipients = Für { $count } { $count ->
 files-a11y-version-conflict = Hat einen Versionskonflikt
 
 ## Dienst- und Empfangsfehler/status
-files-history-encode-failed = Verlaufsanfrage konnte nicht kodiert werden
-files-history-request-too-large = Verlaufsanfrage überschreitet ihre Übertragungsgrenze
-files-history-restore-failed = Diese Version konnte nicht wiederhergestellt werden: { $error }
 files-open-terminal-failed = Terminal konnte nicht geöffnet werden: { $error }
 files-conflict-strategy-unsupported = Diese Konfliktstrategie wird von Dateien noch nicht unterstützt
 files-conflict-encode-failed = Konfliktanfrage konnte nicht kodiert werden
@@ -311,7 +308,6 @@ files-share-response-truncated = Antwort des Freigabedienstes wurde abgeschnitte
 files-share-response-invalid = Ungültige Antwort des Freigabedienstes: { $error }
 files-share-refused = Freigabedienst hat die Anfrage abgelehnt ({ $code })
 files-received-refused = Empfangsdienst hat den Link abgelehnt ({ $code })
-files-received-retry-refused = Empfangsdienst konnte die Wiederholung nicht ausführen ({ $code })
 files-received-wrong-response = Empfangsdienst hat die falsche Antwort zurückgegeben
 files-received-encode-failed = Empfangsanfrage konnte nicht kodiert werden
 files-received-request-too-large = Empfangsanfrage überschreitet ihre Grenze
@@ -334,6 +330,12 @@ files-received-link-empty = Link zur freigegebenen Datei ist leer
 ## Anwendungsrahmen und Navigation
 files-app-title = Dateien
 files-selection-empty = Wählen Sie zuerst Dateien aus.
+files-clipboard-source-unavailable = Eine ausgewählte Datei wurde geändert oder ist nicht mehr verfügbar. Wählen Sie sie vor dem Kopieren erneut aus.
+files-clipboard-source-changed = Das angezeigte Objekt unterscheidet sich von der gespeicherten Auswahl. Wählen Sie es vor dem Kopieren erneut aus.
+files-clipboard-unavailable = Die Datei-Zwischenablage des Arbeitsbereichs ist nicht verfügbar.
+files-clipboard-empty = Die Datei-Zwischenablage des Arbeitsbereichs ist leer.
+files-clipboard-undone = Einfügen rückgängig gemacht.
+files-clipboard-partial = { $count } Elemente eingefügt. Einige Elemente konnten nicht eingefügt werden: { $error }
 files-selection-unavailable = Ein Eintrag ist nicht mehr im angezeigten Ordner. Die Auswahl wurde nicht geändert.
 files-selection-too-large = Wählen Sie höchstens 256 Einträge pro Anfrage aus oder verwenden Sie „Alles auswählen“.
 files-back = Zurück
@@ -349,6 +351,7 @@ files-place-favorites = Favoriten
 files-place-system = Orte
 files-place-root = Wurzelverzeichnis
 files-place-trash = Papierkorb
+files-trash-unavailable = Der Papierkorb ist auf diesem Gerät nicht verfügbar.
 files-place-workspace = Arbeitsbereich
 files-place-documents = Dokumente
 files-place-downloads = Downloads
@@ -599,3 +602,27 @@ files-airdrop-action-detail = Den gewählten Laborempfänger auf dem Bestätigun
 files-nearby-status = Übertragungsstatus
 files-nearby-transfer-unavailable = Diese Übertragung ist in diesem Dateienfenster nicht mehr verfügbar.
 files-nearby-status-detail = Phase und bestätigte Byteanzahl dieser Übertragung anzeigen.
+
+files-clipboard-recovered = { $count } unterbrochene Übertragungen wiederhergestellt. Wiederherstellbare Kopien sind im Papierkorb.
+files-menu-recover-transfers = Unterbrochene Übertragungen wiederherstellen
+files-clipboard-redone = Einfügen wiederhergestellt.
+
+files-clipboard-cancelled = Dateiübertragung abgebrochen. Unterbrochene Übertragungen vor einem erneuten Versuch wiederherstellen.
+
+files-invalid-destination-name = Das Ziel muss ein einzelner Dateiname sein.
+
+files-native-restore-select-one = Wähle einen Eintrag im persönlichen Papierkorb zum Wiederherstellen. Andere Einträge bleiben unverändert.
+
+## History: what each change to Files did
+
+file-explorer-add-bookmark = { $place } zu den Favoriten hinzugefügt
+file-explorer-remove-bookmark = { $place } aus den Favoriten entfernt
+file-explorer-new-folder = Ordner { $name } erstellt
+file-explorer-rename = { $entry } in { $name } umbenannt
+file-explorer-trash = Dateien in den Papierkorb verschoben
+file-explorer-move = Dateien nach { $to } verschoben
+file-explorer-copy = Dateien nach { $to } kopiert
+file-explorer-revert = Eine Dateiänderung zurückgenommen
+
+files-native-trash-delete-unavailable = Diese Objekte können wiederhergestellt werden. Dauerhaftes Löschen ist hier nicht verfügbar.
+files-user-trash-unavailable = Dein Papierkorb ist in diesem Arbeitsbereich nicht verfügbar.

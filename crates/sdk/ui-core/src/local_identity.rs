@@ -32,12 +32,19 @@ pub trait LocalIdentitySource: Send + Sync {
 }
 
 static SOURCE: RwLock<Option<Arc<dyn LocalIdentitySource>>> = RwLock::new(None);
+static GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Changes whenever the host replaces or revokes this process's identity.
+pub fn generation() -> u64 {
+    GENERATION.load(std::sync::atomic::Ordering::Acquire)
+}
 
 /// Make `source` the identity of this process, or restore the default
 /// (the native runtime identity with `local-daemons`, else none) with `None`.
 /// Readers see the change on their next [`load`].
 pub fn install_source(source: Option<Arc<dyn LocalIdentitySource>>) {
     *SOURCE.write().unwrap_or_else(PoisonError::into_inner) = source;
+    GENERATION.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
 }
 
 /// The local identity from the installed source, else the native runtime

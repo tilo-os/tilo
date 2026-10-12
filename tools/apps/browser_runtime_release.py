@@ -47,6 +47,28 @@ def engine_mode(environment, head):
     return True
 
 
+def signal_mode(environment, head):
+    requested = environment.get('SIGNAL_PROVIDER_ONLY', '')
+    require(requested in ('', 'false', 'true'), 'invalid Signal-only flag')
+    if requested != 'true':
+        return False
+    require(environment.get('GITHUB_EVENT_NAME') == 'workflow_dispatch'
+            and environment.get('GITHUB_REF') == 'refs/heads/main'
+            and environment.get('GITHUB_SHA') == head
+            and re.fullmatch('[0-9a-f]{40}', head), 'Signal release requires exact main dispatch')
+    require(environment.get('REQUESTED_PUBLISH') == 'true', 'Signal release requires existing publishing authority')
+    require(environment.get('ENGINE_RUNTIME_ONLY', '') in ('', 'false'), 'conflicting runtime modes')
+    require(environment.get('REQUESTED_APPS', '') in ('', 'messages')
+            and environment.get('REQUESTED_ARCHITECTURES', '') == 'x86_64'
+            and environment.get('REQUESTED_COLLECTION', '') in ('', 'default'),
+            'Signal release selects only Messages dependencies on x86_64')
+    for name in ('COORDINATOR_INTENT', 'REQUESTED_BUILDER', 'BASELINE_SHA', 'BASELINE_RUN_ID',
+                 'BASELINE_EVIDENCE', 'BASELINE_RECEIPT_SHA256', 'COORDINATOR_POLICY_SHA256'):
+        require(not environment.get(name), 'Signal release conflicts with ' + name)
+    require(environment.get('VERIFY_FINAL_RECEIPT', '') in ('', 'false'), 'Signal release is not collection qualification')
+    return True
+
+
 def head():
     return subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip()
 
@@ -191,10 +213,16 @@ def provenance(architecture, source):
     cef = lock['platforms'][platform]
     require(re.fullmatch('[0-9a-f]{64}', cef['sha256']) and type(cef['size']) is int and cef['size'] > 0,
             'invalid pinned CEF input')
-    return {'schema': 1, 'source': source, 'architecture': architecture,
+    proof = {'schema': 1, 'source': source, 'architecture': architecture,
             'runtime': 'tilo-runtime/' + runtime_version(),
             'cef_version': lock['cef_version'], 'chromium_version': lock['chromium_version'],
             'cef_sha256': cef['sha256'], 'cef_size': cef['size']}
+    if 'source_patch_sha256' in cef:
+        patch = cef['source_patch_sha256']
+        require(isinstance(patch, str) and re.fullmatch('[0-9a-f]{64}', patch),
+                'invalid rebuilt CEF source patch')
+        proof['cef_source_patch_sha256'] = patch
+    return proof
 
 
 def cargo_tools():
@@ -366,6 +394,8 @@ def main():
             runtime_version()
         with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
             output.write('engine_runtime_only=' + str(enabled).lower() + '\n')
+            if 'SIGNAL_PROVIDER_ONLY' in os.environ:
+                output.write('signal_provider_only=' + str(signal_mode(os.environ, head())).lower() + '\n')
     elif arguments.mode == 'compile':
         compile_engine(arguments.out, arguments.arch, arguments.source)
     elif arguments.mode == 'seal':

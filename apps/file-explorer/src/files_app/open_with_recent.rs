@@ -418,7 +418,7 @@ impl FileExplorerWidget {
         if crate::archive::location(path).is_some() {
             return;
         }
-        let at = crate::recent::now_ms();
+        let at = ui::time::unix_now_ms();
         self.edit_recent(|recent| recent.note(path, last_use, at));
     }
 
@@ -478,6 +478,7 @@ impl FileExplorerWidget {
                     share: None,
                     history: None,
                     rich_metadata: None,
+                    observed: host_fs::ObservedObject::from_metadata(&meta),
                 })
             })
             .collect()
@@ -495,6 +496,7 @@ impl FileExplorerWidget {
             .position(|entry| entry.path == path)
         {
             self.selection.select_only(index);
+            self.retain_shown_selection();
         }
         true
     }

@@ -10,12 +10,8 @@
 use crate::widget::{AppModel, ModelPath};
 use automerge::{AutoCommit, ObjId};
 use taffy::{NodeId, Style, TaffyTree};
-use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
-use winit::event::WindowEvent;
+use vello::kurbo::Rect;
 
-use crate::presence::PresenceCtx;
-use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 
 use super::{Element, FullscreenProvider, FullscreenWidgetExt as _, TaffyTreeExt, Text, Widget};
@@ -86,6 +82,7 @@ pub struct ModelView<K> {
     structure_dirty: bool,
     focus_reset: bool,
     autofocus: bool,
+    wake_deadline: Option<Box<dyn Fn() -> Option<crate::time::Instant>>>,
 }
 
 impl<K> ModelView<K>
@@ -116,6 +113,7 @@ where
             structure_dirty: false,
             focus_reset: false,
             autofocus: false,
+            wake_deadline: None,
         }
     }
 
@@ -141,6 +139,18 @@ where
     #[must_use]
     pub fn autofocus_on_change(mut self, autofocus: bool) -> Self {
         self.autofocus = autofocus;
+        self
+    }
+
+    /// Reconcile a time-sensitive projection through the host's existing wake
+    /// scheduler, including while the window is idle. Return None once the
+    /// projection no longer needs a deadline; this never starts a polling loop.
+    #[must_use]
+    pub fn with_wake_deadline(
+        mut self,
+        deadline: impl Fn() -> Option<crate::time::Instant> + 'static,
+    ) -> Self {
+        self.wake_deadline = Some(Box::new(deadline));
         self
     }
 
@@ -269,14 +279,22 @@ where
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         let child = self.child.build_layout(taffy, theme, node_map);
-        let node = taffy.parent_node(boundary_style(taffy.style(child).ok()), &[child]);
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        taffy.widget_node(
+            boundary_style(taffy.style(child).ok()),
+            &[child],
+            node_map,
+            self,
+        )
     }
 
     /// A child that left the flow (an absent element, bound text with
     /// nothing to say) takes the boundary out with it.
-    fn adjust_layout_style(&mut self, taffy: &mut TaffyTree<()>, node: NodeId) -> bool {
+    fn adjust_layout_style(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        node: NodeId,
+        _text: &mut crate::text_render::TextRenderer,
+    ) -> bool {
         let child = taffy
             .children(node)
             .ok()
@@ -295,61 +313,10 @@ where
         }
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x + layout.size.width),
-            origin.y + f64::from(layout.location.y + layout.size.height),
-        );
-        if let Ok(children) = taffy.children(node)
-            && let Some(child) = children.first()
-        {
-            self.child
-                .apply_layout(taffy, *child, Point::new(self.rect.x0, self.rect.y0));
-        }
-    }
-
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
-        self.child
-            .draw(scene, transform, text_renderer, theme, presence);
-    }
-
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
-        if let Ok(children) = ctx.taffy.children(ctx.node_id)
-            && let Some(child) = children.first()
-        {
-            self.child
-                .handle_event(event, &mut ctx.reborrow(ctx.path, *child));
-        }
-    }
-
-    fn children(&self) -> Vec<&dyn Widget> {
-        vec![self.child.as_ref()]
-    }
-
-    fn for_each_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) {
-        visitor(self.child.as_ref());
-    }
-
-    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        vec![self.child.as_mut()]
-    }
+    crate::forward_to_child!(child, rect);
 
     fn name(&self) -> &'static str {
         "ModelView"
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
     }
 
     fn take_focus_reset(&mut self) -> bool {
@@ -362,6 +329,15 @@ where
 
     fn needs_idle_sync(&self) -> bool {
         self.child.needs_idle_sync()
+    }
+
+    fn next_wake_deadline(&self) -> Option<crate::time::Instant> {
+        self.wake_deadline
+            .as_ref()
+            .and_then(|deadline| deadline())
+            .into_iter()
+            .chain(self.child.next_wake_deadline())
+            .min()
     }
 
     fn on_external_event(
@@ -380,25 +356,6 @@ where
         payload: &[u8],
     ) -> bool {
         self.child.apply_room_action(doc, type_id, payload)
-    }
-
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        permissions: &crate::permissions::PermissionContext,
-    ) {
-        self.child.draw_with_presence(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            presence,
-            permissions,
-        );
     }
 }
 
@@ -519,6 +476,49 @@ mod tests {
     use automerge::{ROOT, ReadDoc, ScalarValue, Value, transaction::Transactable};
 
     use super::*;
+    use vello::kurbo::Point;
+
+    #[test]
+    fn deadline_reconciles_an_idle_projection_through_the_real_frame_host() {
+        let deadline = Rc::new(Cell::new(
+            crate::time::now() + crate::time::Duration::from_secs(60),
+        ));
+        let expired = Rc::new(Cell::new(false));
+        let projected_deadline = deadline.clone();
+        let projected_expired = expired.clone();
+        let built_expired = expired.clone();
+        let scheduled_deadline = deadline.clone();
+        let scheduled_expired = expired.clone();
+        let view = ModelView::from_document(
+            move |_, _| projected_expired.get() || crate::time::now() >= projected_deadline.get(),
+            move |expired| {
+                built_expired.set(*expired);
+                Box::new(Text::new(if *expired {
+                    "Pairing expired"
+                } else {
+                    "Pairing active"
+                }))
+            },
+        )
+        .with_wake_deadline(move || (!scheduled_expired.get()).then(|| scheduled_deadline.get()));
+        let mut host =
+            crate::headless::FrameHarness::new(crate::State::new(), Box::new(view), (600, 400));
+        assert!(!expired.get());
+        assert_eq!(
+            host.frame_schedule().next_wake_deadline,
+            Some(deadline.get())
+        );
+        assert!(!host.frame_schedule().needs_animation_frame);
+        // Move the actual projection's deadline to now, without delivering an
+        // input or editing its model. Its existing host wake must remain due.
+        deadline.set(crate::time::now());
+        assert!(host.frame_schedule().next_wake_deadline.unwrap() <= crate::time::now());
+        assert!(host.wait_until(crate::time::Duration::ZERO, |_| expired.get()));
+        assert_eq!(host.frame_schedule().next_wake_deadline, None);
+        assert!(host.a11y_nodes().iter().any(|(_, node)| {
+            node.value() == Some("Pairing expired") || node.label() == Some("Pairing expired")
+        }));
+    }
 
     #[test]
     fn model_view_publishes_each_admitted_child_resource_once() {

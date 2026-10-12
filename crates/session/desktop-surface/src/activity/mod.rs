@@ -12,16 +12,20 @@ use tilo_desktop_model::{
 };
 
 pub mod index;
+pub mod morning;
 pub mod view_actions;
 pub use view_actions::WorkspaceViewRequest;
 mod pane;
 mod replay;
+mod task_review;
+pub use task_review::{TaskReviewCommand, TaskReviewRequest, TaskReviewSnapshot};
 #[cfg(test)]
 mod testing;
 pub use index::*;
 pub use pane::{
     ACTIVITY_ACKNOWLEDGE, ACTIVITY_TASKS, ActivityView, HISTORY_COMPARE, HISTORY_RESTORE,
-    HISTORY_UNDO, Period, RoomActivityOutcome, RoomActivityPane, RoomScope,
+    HISTORY_UNDO, NativeManagedTaskRequest, NativeManualTaskRequest, Period, RoomActivityOutcome,
+    RoomActivityPane, RoomScope,
 };
 
 /// A causal document paired with its admitted desktop projection. Implementors
@@ -39,6 +43,9 @@ pub trait ActivityTree: Clone + Deref<Target = DesktopTree> + DerefMut {
         None
     }
     fn commit_activity_change(&mut self) {}
+    fn native_manual_tasks(&self, _workspace: WorkspaceId) -> bool {
+        false
+    }
     fn create_workspace_task(
         &mut self,
         _workspace: WorkspaceId,
@@ -141,6 +148,40 @@ pub trait ActivityHost {
     fn local_author(&self, _authors: &mut ui::AuthorDirectory, _actor: &str) -> Option<String> {
         None
     }
+    fn morning_sources_available(&self) -> bool {
+        false
+    }
+    /// Presently admitted provider data only; no implicit refresh or account connection.
+    fn morning_payload(
+        &self,
+        _room: &str,
+        _source: &morning::MorningSource,
+    ) -> Option<morning::MorningPayload> {
+        None
+    }
+    /// Submit a chosen source command through the existing admitted action session.
+    ///
+    /// # Errors
+    /// Returns a localized refusal if the source or caller is no longer admitted.
+    fn submit_morning_command(
+        &self,
+        _room: &str,
+        _source: &morning::MorningSource,
+        _command: morning::MorningCommand,
+    ) -> Result<(), String> {
+        Err(crate::i18n::t("activity-morning-command-unavailable"))
+    }
+    fn morning_command_status(
+        &self,
+        _room: &str,
+        _source: &morning::MorningSource,
+    ) -> Option<String> {
+        None
+    }
+    fn load_morning_sources(&self) -> HashMap<u64, morning::MorningPreferences> {
+        HashMap::new()
+    }
+    fn save_morning_sources(&self, _sources: &HashMap<u64, morning::MorningPreferences>) {}
     fn load_frontiers(&self) -> HashMap<u64, WorkspaceSeenFrontier> {
         HashMap::new()
     }
@@ -151,16 +192,6 @@ pub trait ActivityHost {
         HashMap::new()
     }
     fn save_departures(&self, _departures: &HashMap<u64, WorkspaceDeparture>) {}
-    /// Record work the host finished outside the room document, such as a
-    /// shortcut run, as runs in `doc`, reading the changed documents from
-    /// `records`. Returns whether it wrote to `doc`.
-    fn record_finished_runs(
-        &self,
-        _doc: &mut AutoCommit,
-        _records: &ui::record::RecordStore,
-    ) -> bool {
-        false
-    }
     fn mutations_available(&self) -> bool {
         false
     }
@@ -170,11 +201,34 @@ pub trait ActivityHost {
     fn app_display_name(&self, _app: &str) -> Option<String> {
         None
     }
-    fn agent_members(&self, _workspace: &Workspace) -> Vec<(String, collab_types::role::Role)> {
+    fn agent_members(&self, _workspace: &Workspace) -> Vec<(String, tilo_action_policy::KindSet)> {
         Vec::new()
     }
     fn agent_is_live(&self, _room: &str, _agent: &str) -> bool {
         false
+    }
+    /// Cached, asynchronously refreshed evidence from the admitted room owner.
+    /// `None` means loading; an error means unavailable, never an empty success.
+    fn task_review_required(&self, _room: &str) -> bool {
+        false
+    }
+
+    fn task_review_snapshot(
+        &self,
+        _room: &str,
+    ) -> Option<Result<std::sync::Arc<TaskReviewSnapshot>, String>> {
+        Some(Err(crate::i18n::t("activity-task-review-unavailable")))
+    }
+    /// Queue an authenticated owner command without blocking the paint/input thread.
+    ///
+    /// # Errors
+    /// The owner adapter is unavailable or its bounded queue is full.
+    fn submit_task_review(&self, _request: TaskReviewRequest) -> Result<(), String> {
+        Err(crate::i18n::t("activity-task-review-unavailable"))
+    }
+    /// A command is successful only after its durable owner receipt is verified.
+    fn poll_task_review(&self, _invocation: uuid::Uuid) -> Option<Result<(), String>> {
+        None
     }
     /// Dispatch a workspace task to its agent.
     ///
@@ -198,6 +252,7 @@ impl ActivityHost for UnavailableActivityHost {}
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ActivityDeepLink {
+    pub task_id: Option<String>,
     pub author: Option<String>,
     pub group_id: Option<String>,
     pub entry_id: Option<[u8; 16]>,

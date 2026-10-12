@@ -88,6 +88,26 @@ class QueueReliefTests(unittest.TestCase):
             self.assertIn("needs.plan.result == 'success'", build)
             self.assertIn("needs.signing-preflight.result == 'skipped'", build)
 
+    def test_integration_promotion_uses_control_pool_with_publication_guards(self):
+        job = section(workflow("build-image"), "promote-integration", 2)
+        self.assertRegex(job, r"(?m)^    runs-on: runner-quality$")
+        self.assertIn("needs: [plan, build-and-push]", job)
+        for guard in ("needs.plan.outputs.publish != 'true'",
+                      "needs.plan.outputs.signed-development-board != 'true'",
+                      "needs.plan.outputs.skip != 'true'",
+                      "github.ref == 'refs/heads/main'"):
+            self.assertIn(guard, job)
+        # Exercise the production publication section: routing must retain
+        # source binding, exact native children, monotonicity and provenance.
+        for contract in ('org.opencontainers.image.revision',
+                         '[[ "$actual" == "$expected" ]]',
+                         'merge-base --is-ancestor "$current" "$GITHUB_SHA"',
+                         '--multi-arch index-only --preserve-digests',
+                         "name: tilo-os-integration-index",
+                         "if-no-files-found: error"):
+            self.assertIn(contract, job)
+        self.assertEqual(job.count("if: steps.lanes.outputs.both == 'true'"), 3)
+
     def test_queue_relief_cancels_only_superseded_heavy_pr_runs(self):
         with self.subTest(phase='fast checks replace only a superseded run of the same pull request'):
             for name in ("check", "lint"):

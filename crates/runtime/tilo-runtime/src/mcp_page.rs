@@ -280,7 +280,7 @@ fn param(param: &ActionParam) -> String {
         text.push(':');
         text.push_str(param.ty.label());
     }
-    if let Some(range) = param.schema.as_ref().and_then(range) {
+    if let Some(range) = param.schema.as_deref().and_then(range) {
         text.push(' ');
         text.push_str(&range);
     }

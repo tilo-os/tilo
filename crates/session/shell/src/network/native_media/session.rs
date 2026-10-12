@@ -52,6 +52,9 @@ impl MediaFactory for Factory {
         let runtime = self.runtime.clone();
         Box::pin(async move {
             let mut preparing = AbortTask(runtime.spawn(async move {
+                // From here until the call ends the observations it reads
+                // stay fresh; waiting for the grant can outlast them.
+                let fresh = devices.watch();
                 let observed = devices.prepare().await.map_err(|_| Issue::Unavailable)?;
                 let output = devices.output().ok_or(Issue::Unavailable)?;
                 if !observed.contains(output.cookie, output.node, output.serial, false) {
@@ -68,11 +71,15 @@ impl MediaFactory for Factory {
                 drop(observed);
                 let opened = command(&commands, Operation::Open { owner, target })
                     .await
-                    .map_err(|_| Issue::Denied)?;
+                    .map_err(|_| {
+                        tracing::debug!("native voice open command refused");
+                        Issue::Denied
+                    })?;
                 let Reply::Opened(ticket) = opened else {
                     return Err(Issue::Unavailable);
                 };
                 if ticket.granted(OPEN_DEADLINE).await.is_err() {
+                    tracing::debug!("native voice first grant unavailable");
                     ticket.stop();
                     return Err(Issue::Denied);
                 }
@@ -89,6 +96,17 @@ impl MediaFactory for Factory {
                 let task = tokio::spawn(async move {
                     let result = maintain(&commands, &controller).await;
                     if !controller.cancelled.load(Ordering::Acquire) {
+                        if result.is_err() {
+                            let category = match result.as_ref().err().map(String::as_str) {
+                                Some("native carrier retry budget exhausted") => {
+                                    "carrier_retry_exhausted"
+                                }
+                                Some("native actor deadline") => "actor_deadline",
+                                Some("the participation ended") => "participation_ended",
+                                _ => "unavailable",
+                            };
+                            tracing::warn!(category, "native call carrier maintenance ended");
+                        }
                         controller.ticket.stop();
                         *controller.state.lock() = result
                             .map(|()| CallState::Ended)
@@ -99,10 +117,13 @@ impl MediaFactory for Factory {
                 Ok(Box::new(Session {
                     runtime,
                     devices,
+                    _fresh: fresh,
                     output,
                     audio,
                     capture: None,
                     decoded_generation: None,
+                    first_packet_diagnosed: false,
+                    next_audio_diagnostic: Instant::now(),
                     publishers: Vec::new(),
                 }) as Box<dyn MediaSession>)
             }));
@@ -127,12 +148,15 @@ struct Running {
 }
 impl Running {
     fn retire(&self) {
+        tracing::debug!("native carrier retirement started");
         self.ticket.clear_carrier();
+        tracing::debug!("native carrier participation paused");
         let client = self.client.lock().take();
         if let Some(client) = client {
             client.close();
         }
         *self.state.lock() = Ok(CallState::Reconnecting);
+        tracing::debug!("native carrier retirement completed");
     }
 }
 async fn command(commands: &mpsc::Sender<NetCmd>, operation: Operation) -> Result<Reply, String> {
@@ -243,6 +267,7 @@ async fn maintain(commands: &mpsc::Sender<NetCmd>, running: &Arc<Running>) -> Re
 
 struct StopSlot {
     current: AtomicBool,
+    expired: AtomicBool,
     startup: AtomicU64,
     ready: AtomicBool,
     generation: Mutex<Option<(CaptureStop, Weak<Client>)>>,
@@ -251,6 +276,7 @@ impl StopSlot {
     fn new() -> Self {
         Self {
             current: AtomicBool::new(true),
+            expired: AtomicBool::new(false),
             startup: AtomicU64::new(0),
             ready: AtomicBool::new(false),
             generation: Mutex::new(None),
@@ -259,7 +285,7 @@ impl StopSlot {
     fn begin(&self) -> Result<u64, Issue> {
         let _generation = self.generation.lock();
         if !self.current.load(Ordering::SeqCst) {
-            return Err(Issue::PermissionDenied);
+            return Err(self.stopped_issue());
         }
         self.advance()
     }
@@ -273,7 +299,23 @@ impl StopSlot {
             .map_err(|_| Issue::CaptureFailed)
             .and_then(|value| value.checked_add(1).ok_or(Issue::CaptureFailed))
     }
-    fn pause(&self) {
+    // A nonterminal owner fence retires this startup, but preserves the
+    // explicit unmute intent. A terminal stop never becomes resumable.
+    fn check_startup(&self, startup: u64) -> Result<bool, Issue> {
+        if !self.current.load(Ordering::SeqCst) {
+            return Err(self.stopped_issue());
+        }
+        Ok(self.startup.load(Ordering::SeqCst) == startup)
+    }
+    fn stopped_issue(&self) -> Issue {
+        if self.expired.load(Ordering::SeqCst) {
+            Issue::CaptureFailed
+        } else {
+            Issue::PermissionDenied
+        }
+    }
+    fn pause(&self) -> u64 {
+        tracing::debug!("native capture slot pause started");
         let mut generation = self.generation.lock();
         // A timer or prepared FD from the previous start cannot affect a later
         // resume of the same explicit unmute intent.
@@ -286,6 +328,10 @@ impl StopSlot {
             }
             capture.stop();
         }
+        let idle = self.startup.load(Ordering::SeqCst);
+        drop(generation);
+        tracing::debug!("native capture slot pause completed");
+        idle
     }
     fn stop(&self) {
         self.current.store(false, Ordering::SeqCst);
@@ -294,7 +340,11 @@ impl StopSlot {
     fn expire(&self, startup: u64) {
         let mut generation = self.generation.lock();
         if self.startup.load(Ordering::SeqCst) == startup && !self.ready.load(Ordering::SeqCst) {
-            tracing::warn!("native microphone capture startup deadline expired");
+            tracing::warn!(
+                installed = generation.is_some(),
+                "native microphone capture startup deadline expired"
+            );
+            self.expired.store(true, Ordering::SeqCst);
             self.current.store(false, Ordering::SeqCst);
             let _ = self.advance();
             if let Some((capture, client)) = generation.take() {
@@ -339,20 +389,51 @@ impl Drop for CaptureIntent {
         self.cancel_pending();
     }
 }
+fn installation_fence(
+    intent: &CaptureIntent,
+    ticket: Weak<Ticket>,
+) -> Arc<dyn Fn() -> bool + Send + Sync> {
+    let startup = intent.startup;
+    let slot = Arc::downgrade(&intent.slot);
+    let source = intent.source.clone();
+    let allowed = intent.allowed.clone();
+    Arc::new(move || {
+        let (Some(slot), Some(ticket)) = (slot.upgrade(), ticket.upgrade()) else {
+            return false;
+        };
+        slot.current.load(Ordering::SeqCst)
+            && slot.startup.load(Ordering::SeqCst) == startup
+            && allowed()
+            && source.current()
+            && ticket.live().is_ok()
+            && !ticket.leaving()
+            && ticket.authorized()
+    })
+}
+
 struct Session {
     runtime: Arc<Running>,
     devices: Arc<devices::Devices>,
+    /// Keeps `devices` refreshing for as long as the call lasts.
+    _fresh: devices::Watch,
     output: Arc<devices::Observation>,
     audio: VoiceAudio,
     capture: Option<CaptureIntent>,
     decoded_generation: Option<u64>,
+    first_packet_diagnosed: bool,
+    next_audio_diagnostic: Instant,
     publishers: Vec<voice::PublicationId>,
 }
 impl Session {
-    fn install_prepared_capture(&mut self, client: &Arc<Client>) -> Result<(), Issue> {
+    // False requests guarded recovery from a nonterminal owner fence.
+    fn install_prepared_capture(&mut self, client: &Arc<Client>) -> Result<bool, Issue> {
         let Some(intent) = &mut self.capture else {
-            return Ok(());
+            return Ok(true);
         };
+        if !intent.slot.check_startup(intent.startup)? {
+            intent.cancel_pending();
+            return Ok(false);
+        }
         if let Some(pending) = &mut intent.pending {
             match pending.receive.try_recv() {
                 Ok(Ok(observed)) => {
@@ -362,11 +443,11 @@ impl Session {
                 Ok(Err(_)) | Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
                     return Err(Issue::SourceLost);
                 }
-                Err(tokio::sync::oneshot::error::TryRecvError::Empty) => return Ok(()),
+                Err(tokio::sync::oneshot::error::TryRecvError::Empty) => return Ok(true),
             }
         }
         let Some(observed) = &intent.prepared else {
-            return Ok(());
+            return Ok(true);
         };
         if !observed.contains(
             intent.source.cookie,
@@ -378,32 +459,23 @@ impl Session {
         }
         let startup = intent.startup;
         let slot = intent.slot.clone();
-        let source = intent.source.clone();
-        let allowed = intent.allowed.clone();
-        let weak_slot = Arc::downgrade(&slot);
-        let ticket = Arc::downgrade(&self.runtime.ticket);
-        let current: Arc<dyn Fn() -> bool + Send + Sync> = Arc::new(move || {
-            let (Some(slot), Some(ticket)) = (weak_slot.upgrade(), ticket.upgrade()) else {
-                return false;
-            };
-            slot.current.load(Ordering::SeqCst)
-                && slot.startup.load(Ordering::SeqCst) == startup
-                && allowed()
-                && source.current()
-                && ticket.live().is_ok()
-                && !ticket.leaving()
-                && ticket.authorized()
-        });
+        let current = installation_fence(intent, Arc::downgrade(&self.runtime.ticket));
         // Fresh owner reads precede the independent slot lock. Owner fences
         // may hold their publication gate while synchronously stopping a slot.
-        client.enable_publication().map_err(|_| {
+        if client.enable_publication().is_err() {
+            if !slot.check_startup(startup)? {
+                return Ok(false);
+            }
             tracing::warn!("native microphone publication authority refused");
-            Issue::PermissionDenied
-        })?;
+            return Err(Issue::PermissionDenied);
+        }
         let mut installing = slot.generation.lock();
         if !current() {
-            tracing::warn!("native microphone capture installation fence closed");
             client.stop_publication();
+            if !slot.check_startup(startup)? {
+                return Ok(false);
+            }
+            tracing::warn!("native microphone capture installation fence closed");
             return Err(Issue::PermissionDenied);
         }
         let (node, serial) = observed.call_capture_node(intent.source.node, intent.source.serial);
@@ -420,7 +492,7 @@ impl Session {
                 // Capacity is checked before any worker takes this socket.
                 // Keep it until the original two-second startup deadline.
                 client.stop_publication();
-                return Ok(());
+                return Ok(true);
             }
             Err(_) => {
                 client.stop_publication();
@@ -435,7 +507,7 @@ impl Session {
         *installing = Some((stop, Arc::downgrade(client)));
         drop(installing);
         intent.prepared = None;
-        Ok(())
+        Ok(true)
     }
     fn retire_decoders(&mut self) {
         for publisher in self.publishers.drain(..) {
@@ -452,6 +524,7 @@ impl MediaSession for Session {
     )]
     fn tick(&mut self, now: Instant) -> Result<CallState, Issue> {
         if !self.output.current() {
+            tracing::debug!("native call output observation is no longer current");
             self.stop_capture();
             return Err(Issue::SourceLost);
         }
@@ -502,25 +575,51 @@ impl MediaSession for Session {
                     source_current,
                     "native microphone capture fence closed"
                 );
+                let issue = if consent_current && source_current {
+                    intent.slot.stopped_issue()
+                } else {
+                    Issue::PermissionDenied
+                };
                 self.stop_capture();
-                return Err(Issue::PermissionDenied);
+                return Err(issue);
             }
         }
-        self.install_prepared_capture(&client)?;
+        if !self.install_prepared_capture(&client)? {
+            return Ok(CallState::Reconnecting);
+        }
         if let Some(intent) = &self.capture {
             let installed = intent.slot.generation.lock().is_some();
             if installed {
-                for frame in self
+                let frames = self
                     .audio
                     .poll_capture(now)
-                    .map_err(|_| Issue::CaptureFailed)?
-                {
+                    .map_err(|_| Issue::CaptureFailed)?;
+                if now >= self.next_audio_diagnostic {
+                    tracing::debug!(
+                        frames = frames.len(),
+                        "native voice capture poll progressed"
+                    );
+                    self.next_audio_diagnostic = later(Duration::from_secs(1));
+                }
+                for frame in frames {
+                    let first_packet = !self.first_packet_diagnosed;
+                    self.first_packet_diagnosed = true;
+                    if first_packet {
+                        tracing::debug!("native voice first packet entering carrier");
+                    }
                     let result = client.try_send(client::CapturedOpus {
                         timestamp_48k: frame.timestamp_48k,
                         duration_samples: frame.duration_samples,
                         payload: frame.payload,
                         captured_at: frame.captured_at,
                     });
+                    if first_packet {
+                        tracing::debug!(
+                            accepted = result.is_ok(),
+                            expired = matches!(result, Err(client::ClientError::Expired)),
+                            "native voice first packet carrier returned"
+                        );
+                    }
                     if !matches!(result, Ok(()) | Err(client::ClientError::Expired)) {
                         self.pause_capture();
                         return Ok(CallState::Reconnecting);
@@ -542,6 +641,10 @@ impl MediaSession for Session {
             let Some(frame) = client.try_recv() else {
                 break;
             };
+            // Carrier arrivals are asynchronous: this frame can arrive after
+            // the tick began. Compare it with a fresh local clock observation,
+            // retaining its original arrival and expiry without clamping either.
+            let received_now = Instant::now();
             let publisher = voice::PublicationId {
                 namespace: frame.publisher.namespace,
                 carrier_generation: frame.publisher.carrier_generation,
@@ -560,11 +663,16 @@ impl MediaSession for Session {
                         received_at: frame.received_at,
                         expires_at: frame.expires_at,
                     },
-                    now,
+                    received_now,
                 )
-                .map_err(|_| Issue::TransportFailed)?;
+                .map_err(|error| {
+                    tracing::debug!(?error, "native voice receive admission failed");
+                    Issue::TransportFailed
+                })?;
         }
-        self.audio.playout(now).map_err(|_| Issue::Unavailable)?;
+        self.audio
+            .playout(Instant::now())
+            .map_err(|_| Issue::Unavailable)?;
         Ok(CallState::Live)
     }
     fn inventory(&self) -> Inventory {
@@ -682,7 +790,11 @@ impl MediaSession for Session {
     fn pause_capture(&mut self) {
         if let Some(intent) = &mut self.capture {
             intent.cancel_pending();
-            intent.slot.pause();
+            // Acknowledge the retired generation without starting capture.
+            // Otherwise a live replacement carrier keeps returning Reconnecting
+            // for this stale startup, while the service waits for Live before
+            // restarting under the existing current consent/source lease.
+            intent.startup = intent.slot.pause();
         }
         self.audio.stop_capture();
     }
@@ -728,6 +840,42 @@ mod tests {
     use super::*;
 
     #[test]
+    fn pending_capture_pause_reconnects_but_terminal_stop_refuses_resume() {
+        let slot = StopSlot::new();
+        let first = slot.begin().unwrap();
+        assert_eq!(slot.check_startup(first), Ok(true));
+        slot.pause();
+        assert_eq!(slot.check_startup(first), Ok(false));
+        slot.expire(first);
+        let resumed = slot.begin().unwrap();
+        assert_eq!(slot.check_startup(resumed), Ok(true));
+        slot.stop();
+        assert_eq!(slot.check_startup(resumed), Err(Issue::PermissionDenied));
+        assert_eq!(slot.begin(), Err(Issue::PermissionDenied));
+    }
+
+    #[test]
+    fn acknowledged_idle_generation_is_not_ready_and_cannot_outlive_terminal_stop() {
+        let slot = StopSlot::new();
+        let old = slot.begin().unwrap();
+        slot.ready.store(true, Ordering::SeqCst);
+        let idle = slot.pause();
+        assert_eq!(slot.check_startup(old), Ok(false));
+        assert_eq!(slot.check_startup(idle), Ok(true));
+        assert!(!slot.ready.load(Ordering::SeqCst));
+        assert!(slot.generation.lock().is_none());
+        // The old watchdog cannot revoke idle recovery or a fresh startup.
+        slot.expire(old);
+        let resumed = slot.begin().unwrap();
+        assert_ne!(resumed, idle);
+        assert_eq!(slot.check_startup(idle), Ok(false));
+        assert_eq!(slot.check_startup(resumed), Ok(true));
+        slot.stop();
+        assert_eq!(slot.check_startup(resumed), Err(Issue::PermissionDenied));
+        assert_eq!(slot.begin(), Err(Issue::PermissionDenied));
+    }
+
+    #[test]
     fn paused_startup_timeout_cannot_revoke_resumed_intent_but_current_timeout_does() {
         let slot = StopSlot::new();
         let old = slot.begin().unwrap();
@@ -737,10 +885,8 @@ mod tests {
         assert!(slot.current.load(Ordering::SeqCst));
         slot.expire(resumed);
         assert!(!slot.current.load(Ordering::SeqCst));
-        assert!(
-            slot.begin().is_err(),
-            "deadline is terminal for this unmute"
-        );
+        assert_eq!(slot.check_startup(resumed), Err(Issue::CaptureFailed));
+        assert_eq!(slot.begin(), Err(Issue::CaptureFailed));
     }
 
     #[test]

@@ -345,7 +345,7 @@ impl Fixture {
             .unwrap()
             .effect_receipts
             .iter()
-            .map(|receipt| receipt.context.action_label.clone())
+            .filter_map(|receipt| ui::history_source::sentence::step_summary(&receipt.context))
             .collect()
     }
 

@@ -301,7 +301,7 @@ mod live_probe {
                 let client = async_imap::Client::new(stream);
                 let mut session = match token {
                     Some(access) => {
-                        let auth = XOAuth2 {
+                        let auth = crate::oauth::XOAuth2 {
                             user: user.clone(),
                             token: access,
                         };
@@ -326,18 +326,6 @@ mod live_probe {
             },
             cancellation,
         )
-    }
-
-    /// async-imap `XOAUTH2` authenticator (raw SASL string; async-imap base64s).
-    struct XOAuth2 {
-        user: String,
-        token: String,
-    }
-    impl async_imap::Authenticator for XOAuth2 {
-        type Response = String;
-        fn process(&mut self, _challenge: &[u8]) -> Self::Response {
-            format!("user={}\x01auth=Bearer {}\x01\x01", self.user, self.token)
-        }
     }
 
     pub fn smtp_handshake(

@@ -12,6 +12,7 @@ use std::{
 use tilo_action_broker::services::{
     AppActionGrants, LegacyWorkspaceProjection, WorkspaceAuthority,
 };
+use tilo_actions::remote::{InvokeArgument, PendingPoll, RemoteActionTarget};
 use tilo_desktop_model::{RoomId, WorkspaceTaskStatus};
 use tilo_identity_host::broker::WorkspaceMembership;
 
@@ -35,7 +36,6 @@ async fn runtime_invocation_ownership_survives_device_normalization() {
         },
         test_support::{Workspace, WorkspaceId, WorkspaceTree},
     };
-    use tilo_actions::remote::{InvokeArgument, PendingPoll, RemoteActionTarget};
 
     let mut workspace = Workspace::new(WorkspaceId(41), "Execution isolation");
     workspace.set_owner("a1".repeat(32));
@@ -96,6 +96,7 @@ async fn runtime_invocation_ownership_survives_device_normalization() {
         context: None,
         confirmation: None,
         revision: None,
+        wait_ms: None,
     };
     let PendingPoll::Ready(Ok(receipt)) = host.invoke(&owner, request.clone()).poll_ready() else {
         panic!("the synthetic app must accept the invocation");
@@ -103,6 +104,11 @@ async fn runtime_invocation_ownership_survives_device_normalization() {
     assert!(invocations.try_recv().is_ok());
     assert!(host.observe(&owner, &id).is_some());
     assert!(host.observe(&other, &id).is_none());
+    // Waiting on a change is authorized exactly as observing.
+    assert!(host.next_change(&other, &id).is_none());
+    let change = host
+        .next_change(&owner, &id)
+        .expect("the owner may wait on its invocation");
     assert_eq!(
         host.cancel(&other, &id),
         Err(ActionHostError::UnknownInvocation)
@@ -120,6 +126,13 @@ async fn runtime_invocation_ownership_survives_device_normalization() {
         "retries must not dispatch again"
     );
     assert_eq!(host.cancel(&owner, &id), Ok(()));
+    // The cancellation request changed the invocation: the waiter wakes on
+    // it, well before the broker's one-second safety interval.
+    assert_eq!(
+        tokio::time::timeout(Duration::from_millis(500), change).await,
+        Ok(Some(())),
+        "a change wakes its waiter"
+    );
 }
 
 /// In the parent, runs the test at path `test` again in a child process
@@ -232,7 +245,7 @@ fn sdk_apps_join_a_standalone_session_and_publish_to_mcp() {
     let listed = tilo_rt::try_app()
         .unwrap()
         .block_on(async {
-            let mut server = McpServer::new(
+            let server = McpServer::new(
                 session.action_host().unwrap(),
                 session.room().to_owned(),
                 session.actor().to_owned(),
@@ -404,7 +417,10 @@ fn a_new_profile_bootstraps_one_owned_workspace_and_keeps_it() {
     assert_eq!(reopened.room(), room);
     let tree = reopened.snapshot().unwrap();
     assert_eq!(tree.workspaces.len(), 1);
-    assert_eq!(tree.workspaces[0].owner.as_deref(), Some("person-1"));
+    assert_eq!(
+        tree.workspaces[0].owner().map(String::as_str),
+        Some("person-1")
+    );
     assert_eq!(tree.workspaces[0].strips.len(), 1);
     // An owner is kept, not replaced by the next actor.
     reopened.adopt("person-2").unwrap();
@@ -412,7 +428,10 @@ fn a_new_profile_bootstraps_one_owned_workspace_and_keeps_it() {
         .unwrap()
         .snapshot()
         .unwrap();
-    assert_eq!(tree.workspaces[0].owner.as_deref(), Some("person-1"));
+    assert_eq!(
+        tree.workspaces[0].owner().map(String::as_str),
+        Some("person-1")
+    );
     let mut seen = None;
     reopened.with_workspace(&tree.workspaces[0].room, &mut |workspace| {
         seen = Some(workspace.name.clone());
@@ -450,10 +469,12 @@ fn effect_and_task_records_persist_in_the_profile() {
     let workspace = ProfileWorkspace::open(temp.path()).unwrap();
 
     let invocation = tilo_actions::InvocationId(uuid::Uuid::from_u128(1));
-    let context = tilo_actions::ActionContext {
-        action_label: "Send".into(),
-        ..tilo_actions::ActionContext::default()
-    };
+    let context = tilo_actions::ActionContext::default().with_described(
+        tilo_actions::Described::new(tilo_actions::Did::verb(
+            tilo_actions::ActionKey::new("org.tilo.Mail", "mail.message", "send"),
+            [],
+        )),
+    );
     let status = tilo_actions::EffectReceiptStatus::Succeeded;
     for _ in 0..2 {
         workspace
@@ -499,13 +520,14 @@ fn effect_and_task_records_persist_in_the_profile() {
     assert_eq!(workspace.effect_receipts[0].invocation, invocation);
     let task = &workspace.tasks[0];
     assert_eq!(task.status, WorkspaceTaskStatus::Done);
-    let summaries: Vec<_> = task.audit.iter().map(|event| &*event.summary).collect();
+    let events: Vec<_> = task
+        .audit
+        .iter()
+        .map(|event| (event.action(), event.note.as_deref()))
+        .collect();
     assert_eq!(
-        summaries,
-        [
-            format!("Status · {}", WorkspaceTaskStatus::Done.label()).as_str(),
-            "Wrote the outline"
-        ]
+        events,
+        [("set-status", None), ("report", Some("Wrote the outline"))]
     );
 }
 
@@ -564,12 +586,14 @@ fn the_desktop_sessions_workspace_is_served_read_only() {
     assert_eq!(std::fs::read(&desktop).unwrap(), bytes, "never rewritten");
     assert!(!temp.path().join(STANDALONE_WORKSPACE).exists());
     assert_eq!(
-        workspace.snapshot().unwrap().workspaces[0].owner.as_deref(),
+        workspace.snapshot().unwrap().workspaces[0]
+            .owner()
+            .map(String::as_str),
         Some("desktop-owner")
     );
 
     // Without an owner there is nobody this host could act as.
-    value["workspaces"][0]["owner"] = serde_json::Value::Null;
+    value["workspaces"][0]["policy"]["owner"] = serde_json::Value::Null;
     std::fs::write(&desktop, serde_json::to_vec(&value).unwrap()).unwrap();
     assert!(
         ProfileWorkspace::open(temp.path())
@@ -592,22 +616,28 @@ fn consent(room: &str, person: &str) -> tilo_action_broker::app_actions::AppActi
         person: person.into(),
         app_id: "so.tilo.caller".into(),
         target_app: "so.tilo.target-app".into(),
+        resource: "target.document".into(),
         action: "open".into(),
+        resource_label: "Document".into(),
         action_label: "Open".into(),
         risk: tilo_actions::RiskLevel::default(),
         needs_confirmation: false,
+        confirming: false,
     }
 }
 
-fn app_grant() -> collab_types::caps::CapOverride {
-    use collab_types::caps::{CapOverride, Scope, Subject, Verb};
-    CapOverride::grant(
-        Subject::app("so.tilo.caller"),
-        Scope::Action {
-            app: "so.tilo.target-app".into(),
-            action: "open".into(),
-        },
-        Verb::Write,
+fn app_grant(room: &str) -> tilo_action_policy::Grant {
+    tilo_action_policy::Grant::new(
+        "caller-opens-target",
+        tilo_action_policy::Subject::App("so.tilo.caller".into()),
+        tilo_action_policy::TreePath::room(room)
+            .app("so.tilo.target-app")
+            .any(tilo_action_policy::Level::Kind)
+            .resource("target.document")
+            .action("open"),
+        tilo_action_policy::KindSet::ALL,
+        tilo_action_policy::Answer::Allow,
+        tilo_action_policy::Subject::person("owner"),
     )
 }
 
@@ -634,7 +664,7 @@ fn grants_in_the_runtimes_own_workspace_are_recorded_by_its_administrator_and_sa
         grants
             .record(
                 &consent(&room, "stranger"),
-                app_grant(),
+                app_grant(&room),
                 AppActionConsent::Always
             )
             .is_none()
@@ -643,31 +673,36 @@ fn grants_in_the_runtimes_own_workspace_are_recorded_by_its_administrator_and_sa
     let id = grants
         .record(
             &consent(&room, "owner"),
-            app_grant(),
+            app_grant(&room),
             AppActionConsent::Always,
         )
         .unwrap();
     let saved = read_tree(&temp.path().join(STANDALONE_WORKSPACE)).unwrap();
     let workspace = &saved.workspaces[0];
-    assert!(workspace.capabilities.iter().any(|cap| cap.id == id));
+    assert!(
+        workspace
+            .policy
+            .grants
+            .iter()
+            .any(|grant| grant.id.as_str() == id)
+    );
     let receipt = workspace.effect_receipts.last().unwrap();
     assert_eq!(receipt.actor, "owner");
-    assert!(
-        receipt
-            .context
-            .action_label
-            .contains("Allowed Caller to use Target App: Open in this workspace"),
-        "{}",
-        receipt.context.action_label
-    );
+    let Some(tilo_actions::Did::Verb(verb)) = &receipt.context.what else {
+        panic!("the grant is recorded as a verb: {:?}", receipt.context);
+    };
+    assert_eq!(verb.args["app"].as_str(), Some("Caller"));
+    assert_eq!(verb.args["target"].as_str(), Some("Target App"));
+    assert_eq!(verb.args["lifetime"].as_str(), Some("workspace"));
 
     grants.revoke(&room, &id);
     let saved = read_tree(&temp.path().join(STANDALONE_WORKSPACE)).unwrap();
     assert!(
         saved.workspaces[0]
-            .capabilities
+            .policy
+            .grants
             .iter()
-            .all(|cap| cap.id != id)
+            .all(|grant| grant.id.as_str() != id)
     );
 }
 
@@ -688,7 +723,7 @@ fn the_desktop_sessions_workspace_takes_no_grants_here() {
         grants
             .record(
                 &consent(&room, "owner"),
-                app_grant(),
+                app_grant(&room),
                 AppActionConsent::Always
             )
             .is_none()
@@ -696,12 +731,13 @@ fn the_desktop_sessions_workspace_takes_no_grants_here() {
     grants.revoke(&room, "owner-1");
     assert_eq!(std::fs::read(&desktop).unwrap(), bytes, "never rewritten");
     assert!(!temp.path().join(STANDALONE_WORKSPACE).exists());
-    assert_eq!(
+    assert!(
         grants.workspace.snapshot().unwrap().workspaces[0]
-            .capabilities
-            .len(),
-        1,
-        "only the owner's membership"
+            .policy
+            .grants
+            .iter()
+            .all(|grant| grant.subject != tilo_action_policy::Subject::App("so.tilo.caller".into())),
+        "nothing granted to the app"
     );
 }
 

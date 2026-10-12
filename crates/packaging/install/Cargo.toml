@@ -19,7 +19,7 @@ path = "src/lib.rs"
 [dependencies]
 tilo-clock = { path = "../../platform/tilo-clock" }
 fnv.workspace = true
-tilo-xdg-paths = { path = "../../system/xdg-paths" }
+tilo-paths.workspace = true
 tilo-app-package = { path = "../tilo-app-package" }
 # The one installed-package registry and content store, shared with the
 # launcher, the shell and the app host.
@@ -28,6 +28,7 @@ runtime-bundle = { path = "../runtime-bundle" }
 clap.workspace = true
 hex.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 toml.workspace = true
 thiserror.workspace = true
 semver.workspace = true
@@ -46,6 +47,9 @@ tilo-os-search = { path = "../../runtime/os-search" }
 getrandom.workspace = true
 ed25519-dalek.workspace = true
 tempfile.workspace = true
+# A sealed runtime needs a filesystem with fs-verity; the test says so where
+# there is none.
+tilo-test-env = { path = "../../dev/test-env" }
 
 [[test]]
 name = "it"

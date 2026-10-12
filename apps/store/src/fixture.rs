@@ -12,37 +12,37 @@ const PREVIEWS: usize = 3;
 const ARTWORK_HOST: &str = "https://artwork.invalid/";
 
 macro_rules! artwork {
-    ($($file:literal),* $(,)?) => {
-        &[$(($file, include_bytes!(concat!("../fixtures/artwork/", $file)))),*]
+    ($($file:literal => $artifact:literal),* $(,)?) => {
+        &[$(($file, include_bytes!(concat!(env!("OUT_DIR"), "/", $artifact)))),*]
     };
 }
 
 /// The bundled artwork of the fixture apps: an icon and previews each.
 const ARTWORK: &[(&str, &[u8])] = artwork![
-    "Notes.png",
-    "Terminal.png",
-    "Files.png",
-    "Chess.png",
-    "Inkscape.png",
-    "VLC.png",
-    "Notes-preview-1.png",
-    "Notes-preview-2.png",
-    "Notes-preview-3.png",
-    "Terminal-preview-1.png",
-    "Terminal-preview-2.png",
-    "Terminal-preview-3.png",
-    "Files-preview-1.png",
-    "Files-preview-2.png",
-    "Files-preview-3.png",
-    "Chess-preview-1.png",
-    "Chess-preview-2.png",
-    "Chess-preview-3.png",
-    "Inkscape-preview-1.png",
-    "Inkscape-preview-2.png",
-    "Inkscape-preview-3.png",
-    "VLC-preview-1.png",
-    "VLC-preview-2.png",
-    "VLC-preview-3.png",
+    "Notes.png" => "notes.png",
+    "Terminal.png" => "terminal.png",
+    "Files.png" => "files.png",
+    "Chess.png" => "chess.png",
+    "Inkscape.png" => "inkscape.png",
+    "VLC.png" => "vlc.png",
+    "Notes-preview-1.png" => "notes-preview-1.png",
+    "Notes-preview-2.png" => "notes-preview-2.png",
+    "Notes-preview-3.png" => "notes-preview-3.png",
+    "Terminal-preview-1.png" => "terminal-preview-1.png",
+    "Terminal-preview-2.png" => "terminal-preview-2.png",
+    "Terminal-preview-3.png" => "terminal-preview-3.png",
+    "Files-preview-1.png" => "files-preview-1.png",
+    "Files-preview-2.png" => "files-preview-2.png",
+    "Files-preview-3.png" => "files-preview-3.png",
+    "Chess-preview-1.png" => "chess-preview-1.png",
+    "Chess-preview-2.png" => "chess-preview-2.png",
+    "Chess-preview-3.png" => "chess-preview-3.png",
+    "Inkscape-preview-1.png" => "inkscape-preview-1.png",
+    "Inkscape-preview-2.png" => "inkscape-preview-2.png",
+    "Inkscape-preview-3.png" => "inkscape-preview-3.png",
+    "VLC-preview-1.png" => "vlc-preview-1.png",
+    "VLC-preview-2.png" => "vlc-preview-2.png",
+    "VLC-preview-3.png" => "vlc-preview-3.png",
 ];
 
 /// The image store of a capture: every bundled icon and preview is decoded

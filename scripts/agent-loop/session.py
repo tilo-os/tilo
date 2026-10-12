@@ -104,7 +104,6 @@ class Session:
                 "XDG_RUNTIME_DIR": str(self.run),
                 "TILO_IDENTITY_ROOT": str(self.root / "identity"),
                 "TILO_AUTHORITY_SOCKET_DIR": str(self.run / "system"),
-                "TILO_FS_AUTHORITY_CACHE_DIR": str(self.root / "system" / "fs-cache"),
                 "TILO_FS_CONTENT_PEER_CACHE_DIR": str(self.root / "system" / "peer-cache"),
                 "TILO_RUNTIME_PROFILE": str(self.profile),
                 "TILO_RUNTIME_BINARY": str(RUNTIME_HOST),

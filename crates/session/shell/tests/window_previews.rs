@@ -21,8 +21,8 @@ use shell::shell::window_previews::{
     MAX_PREVIEW_HEIGHT, MAX_PREVIEW_WIDTH, MAX_PREVIEWS, REFRESH_INTERVAL, RENDERS_PER_REFRESH,
 };
 use tilo_desktop::window_switcher::WindowThumbnails as _;
-use winit::event::{ElementState, KeyEvent, Modifiers, WindowEvent};
-use winit::keyboard::{Key, KeyLocation, ModifiersState, NamedKey, PhysicalKey};
+use winit::event::{ElementState, Modifiers, WindowEvent};
+use winit::keyboard::{Key, ModifiersState, NamedKey};
 
 const W: u32 = 1600;
 const H: u32 = 900;
@@ -105,18 +105,9 @@ fn open_overview(fb: &mut FrameBuilder, open: bool) {
 }
 
 fn key_event(key: Key, state: ElementState) -> WindowEvent {
-    // SAFETY: `KeyEvent` has a platform-private field and no public
-    // constructor; every field a handler reads is set below.
-    let mut event: KeyEvent = unsafe { std::mem::zeroed() };
-    event.logical_key = key;
-    event.physical_key = PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
-    event.location = KeyLocation::Standard;
-    event.state = state;
-    event.repeat = false;
-    event.text = None;
+    let event = ui::synthetic_input::key_event(key, None, state);
     WindowEvent::KeyboardInput {
-        // SAFETY: an opaque id no handler inspects.
-        device_id: unsafe { std::mem::zeroed() },
+        device_id: winit::event::DeviceId::dummy(),
         event,
         is_synthetic: false,
     }

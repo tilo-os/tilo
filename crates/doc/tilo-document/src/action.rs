@@ -29,13 +29,9 @@ use tilo_actions::{Action, ActionError, Doc, ExecutionLocus};
 
 use crate::ClipBlock;
 
-/// Registry type id every *new* rich-text action is encoded under — the
-/// resource kind. The legacy word-processor id stays registered as an alias
-/// so history recorded before the rename still replays.
+/// Registry type id every rich-text action is encoded under: the resource
+/// kind.
 pub const RICH_TEXT_ACTION_TYPE: &str = "tilo.rich-text";
-
-/// Legacy registry type id. Kept registered so old envelopes decode.
-pub const RICH_TEXT_ACTION_TYPE_LEGACY: &str = "word-processor.action";
 
 /// Saturating integer conversions for offsets and counts.
 mod num {
@@ -218,7 +214,9 @@ pub enum RichTextAction {
     },
     /// Set one block attribute (`align`, `page_break_before`, `indent`,
     /// `first_line_indent`, `line_spacing`, `tab_stops`, `style`, image
-    /// `width`/`height`/`flip_*`) to `value` on each of `blocks`.
+    /// `width`/`height`/`flip_*`/`alt`) to `value` on each of `blocks`. An
+    /// image's `alt` is its accessible description and is accepted on image
+    /// blocks only.
     SetBlockAttr {
         region: RegionKind,
         blocks: Vec<String>,
@@ -228,7 +226,8 @@ pub enum RichTextAction {
     /// Remove one block attribute from each of `blocks`, restoring its
     /// default: a list item that stops being a task (`checked`), a code line
     /// that becomes prose (`code`, `lang`, `code_group`), a block back at the
-    /// outline's top (`nesting`).
+    /// outline's top (`nesting`), an image whose description falls back to its
+    /// caption (`alt`).
     ClearBlockAttr {
         #[serde(default)]
         region: RegionKind,
@@ -409,6 +408,10 @@ pub enum RichTextAction {
     /// restore a version): every existing body block is removed, then the
     /// Markdown is imported as fresh blocks.
     ReplaceBody { markdown: String },
+    /// Replace the whole body with `blocks`, formatted as they are: text an
+    /// app brings with marks Markdown cannot carry (a note's links to other
+    /// notes, a slide's runs, a copied fragment).
+    ReplaceClips { blocks: Vec<ClipBlock> },
     /// Replace the body with `bytes` decoded as `format`. A decode failure
     /// refuses the action so the open document stays as it was. The
     /// document remembers the bytes' content address as the file it was
@@ -486,6 +489,7 @@ impl RichTextAction {
             | Self::RemoveRegionBlocks { .. }
             | Self::EnsureRegionBlock { .. }
             | Self::ReplaceBody { .. }
+            | Self::ReplaceClips { .. }
             | Self::ReplaceFormatted { .. } => ActionDomain::Text,
             Self::SetParagraphStyle { .. }
             | Self::ApplyNamedStyle { .. }
@@ -524,6 +528,8 @@ pub const MAX_ACTION_TEXT_CHARS: usize = 1_000_000;
 pub const MAX_ACTION_BLOB_BYTES: usize = 64 * 1024 * 1024;
 pub const MAX_TABLE_DIMENSION: usize = 100;
 pub const MAX_TABLE_CELLS: usize = 10_000;
+/// The longest image description an action may set, in characters.
+pub const MAX_IMAGE_ALT_CHARS: usize = 2_048;
 
 /// Read only the addressed block while matching qdoc's snapshot membership:
 /// a region block must be a map with a byte-valued order key. Missing or
@@ -547,20 +553,14 @@ fn target_block(
     id: &str,
 ) -> Option<(usize, Vec<u8>)> {
     use automerge::{ObjType, ScalarValue, Value};
-    use tilo_doc::schema::{BLOCK_ORDER, BLOCK_TEXT, KEY_FOOTER, KEY_HEADER};
+    use tilo_doc::schema::{BLOCK_ORDER, BLOCK_TEXT};
 
-    let optional_region = |cached: &Option<ObjId>, key: &str| {
-        cached.clone().or_else(|| match doc.get(&c.root, key) {
-            Ok(Some((Value::Object(ObjType::Map), obj))) => Some(obj),
-            _ => None,
-        })
-    };
     let container = match region {
-        RegionKind::Body => c.blocks.clone(),
-        RegionKind::Header => optional_region(&c.header, KEY_HEADER)?,
-        RegionKind::Footer => optional_region(&c.footer, KEY_FOOTER)?,
+        RegionKind::Body => &c.blocks,
+        RegionKind::Header => &c.header,
+        RegionKind::Footer => &c.footer,
     };
-    let Ok(Some((Value::Object(ObjType::Map), block))) = doc.get(&container, id) else {
+    let Ok(Some((Value::Object(ObjType::Map), block))) = doc.get(container, id) else {
         return None;
     };
     let key = match doc.get(&block, BLOCK_ORDER) {
@@ -684,8 +684,29 @@ impl<'a> ActionValidator<'a> {
             }
             "code_group" => matches!(value, AttrVal::Str(v) if Self::safe_name(v)),
             "nesting" => matches!(value, AttrVal::Int(v) if (0..=9).contains(v)),
+            "alt" => matches!(value, AttrVal::Str(v) if Self::valid_alt(v)),
             _ => false,
         }
+    }
+
+    /// An image description a screen reader can speak: non-blank, bounded,
+    /// and free of control characters that would corrupt exports.
+    fn valid_alt(alt: &str) -> bool {
+        !alt.trim().is_empty()
+            && alt.chars().count() <= MAX_IMAGE_ALT_CHARS
+            && !alt.chars().any(char::is_control)
+    }
+
+    /// Whether every one of `blocks` is a body image: only an image has an
+    /// accessible description to set.
+    fn all_images(&self, region: RegionKind, blocks: &[String]) -> bool {
+        region == RegionKind::Body
+            && blocks.iter().all(|block| {
+                self.snapshot()
+                    .blocks
+                    .iter()
+                    .any(|b| b.id == *block && b.kind == "image")
+            })
     }
 
     fn valid_clip_attrs(block: &crate::ClipBlock) -> bool {
@@ -712,7 +733,7 @@ impl<'a> ActionValidator<'a> {
     fn clearable_attr(key: &str) -> bool {
         matches!(
             key,
-            "checked" | "code" | "lang" | "code_group" | "nesting" | "table_source"
+            "checked" | "code" | "lang" | "code_group" | "nesting" | "table_source" | "alt"
         )
     }
 
@@ -836,6 +857,19 @@ impl<'a> ActionValidator<'a> {
         }
     }
 
+    /// A pasted or written paragraph the document can hold.
+    fn valid_clip(block: &ClipBlock) -> bool {
+        Self::safe_text(&block.text)
+            && Self::safe_name(&block.kind)
+            && block.level.is_none_or(|level| (0..=9).contains(&level))
+            && Self::valid_clip_attrs(block)
+            && block.marks.iter().all(|mark| {
+                Self::safe_name(&mark.name)
+                    && mark.start < mark.end
+                    && mark.end <= block.text.chars().count()
+            })
+    }
+
     fn validate_paste_and_body(&self, action: &RichTextAction) -> bool {
         match action {
             RichTextAction::PasteFragment {
@@ -852,17 +886,7 @@ impl<'a> ActionValidator<'a> {
                 valid_range
                     && !blocks.is_empty()
                     && blocks.len() <= 10_000
-                    && blocks.iter().all(|block| {
-                        Self::safe_text(&block.text)
-                            && Self::safe_name(&block.kind)
-                            && block.level.is_none_or(|level| (0..=9).contains(&level))
-                            && Self::valid_clip_attrs(block)
-                            && block.marks.iter().all(|mark| {
-                                Self::safe_name(&mark.name)
-                                    && mark.start < mark.end
-                                    && mark.end <= block.text.chars().count()
-                            })
-                    })
+                    && blocks.iter().all(Self::valid_clip)
             }
             RichTextAction::InsertParagraph { after, text } => {
                 self.block_len(RegionKind::Body, after).is_some() && Self::safe_text(text)
@@ -882,6 +906,9 @@ impl<'a> ActionValidator<'a> {
             }
             RichTextAction::EnsureRegionBlock { .. } => true,
             RichTextAction::ReplaceBody { markdown } => Self::safe_text(markdown),
+            RichTextAction::ReplaceClips { blocks } => {
+                blocks.len() <= 10_000 && blocks.iter().all(Self::valid_clip)
+            }
             RichTextAction::ReplaceFormatted { bytes, .. } => bytes.len() <= MAX_IMPORT_BYTES,
             _ => false,
         }
@@ -919,7 +946,11 @@ impl<'a> ActionValidator<'a> {
             blocks,
             key,
             value,
-        } => self.unique_existing(*region, blocks) && Self::valid_attr(key, value),
+        } => {
+            self.unique_existing(*region, blocks)
+                && Self::valid_attr(key, value)
+                && (key != "alt" || self.all_images(*region, blocks))
+        }
         RichTextAction::ClearBlockAttr {
             region,
             blocks,
@@ -2077,6 +2108,29 @@ fn apply_replace_body(dm: &mut DocMut, markdown: &str) {
     keep_a_paragraph(dm);
 }
 
+fn apply_replace_clips(dm: &mut DocMut, blocks: &[ClipBlock]) {
+    let existing = tilo_doc::model::blocks_in_order(dm.doc, dm.c);
+    for id in &existing {
+        dm.tombstone_block_in(Region::Body, id);
+    }
+    if !blocks.is_empty() {
+        let first = dm.insert_block(None, "paragraph");
+        apply_paste_fragment(
+            dm,
+            Region::Body,
+            &SelectionTarget {
+                start_block: first.clone(),
+                start: 0,
+                end_block: first,
+                end: 0,
+            },
+            blocks,
+            true,
+        );
+    }
+    keep_a_paragraph(dm);
+}
+
 /// A body replaced by nothing (an empty file, an empty template) still has
 /// a paragraph to write in, as a new document does.
 fn keep_a_paragraph(dm: &mut DocMut) {
@@ -2134,17 +2188,16 @@ fn apply_resolve_comment(dm: &mut DocMut, id: &str) {
     {
         dm.remove_mark(&block, start, end, tilo_doc::schema::MARK_COMMENT);
     }
-    if let Some(comments) = dm.c.comments.as_ref() {
-        // Thread replies are sibling records in the canonical comments map,
-        // not dangling private overlay state. Remove them deterministically
-        // before their parent so a resolved thread leaves no orphan resources.
-        let mut replies = tilo_doc::model::comment_reply_ids(dm.doc, dm.c, id);
-        replies.sort();
-        for reply in replies {
-            let _ = dm.doc.delete(comments, reply);
-        }
-        let _ = dm.doc.delete(comments, id);
+    // Thread replies are sibling records in the canonical comments map,
+    // not dangling private overlay state. Remove them deterministically
+    // before their parent so a resolved thread leaves no orphan resources.
+    let comments = &dm.c.comments;
+    let mut replies = tilo_doc::model::comment_reply_ids(dm.doc, dm.c, id);
+    replies.sort();
+    for reply in replies {
+        let _ = dm.doc.delete(comments, reply);
     }
+    let _ = dm.doc.delete(comments, id);
 }
 
 fn apply_add_comment(
@@ -2316,6 +2369,7 @@ fn apply_block_text_action(dm: &mut DocMut<'_>, action: &RichTextAction) {
             apply_ensure_region_block(dm, region.to_region());
         }
         RichTextAction::ReplaceBody { markdown } => apply_replace_body(dm, markdown),
+        RichTextAction::ReplaceClips { blocks } => apply_replace_clips(dm, blocks),
         RichTextAction::ReplaceFormatted { format, bytes } => {
             apply_replace_formatted(dm, *format, bytes);
         }
@@ -2798,16 +2852,6 @@ pub fn set_image_placement_action(
     }
 }
 
-/// Set alignment (`left`/`center`/`right`/`justify`) on `blocks`.
-pub fn set_align_action(blocks: Vec<String>, align: &str) -> RichTextAction {
-    set_block_attr_action(
-        RegionKind::Body,
-        blocks,
-        "align",
-        AttrVal::Str(align.to_string()),
-    )
-}
-
 /// Apply a named paragraph style (and, for a built-in, its structural kind) to
 /// `blocks` in one action.
 pub fn apply_named_style_action(
@@ -2992,15 +3036,6 @@ pub fn insert_image_action(block: &str, at: usize, image: ImageInput) -> RichTex
     }
 }
 
-/// Remove `blocks` (an image, or a table's cells).
-/// Insert a paragraph carrying `text` after block `after`.
-pub fn insert_paragraph_action(after: &str, text: &str) -> RichTextAction {
-    RichTextAction::InsertParagraph {
-        after: after.to_string(),
-        text: text.to_string(),
-    }
-}
-
 /// Append `text` as a new paragraph at the end of the body (resolved at apply).
 pub fn append_paragraph_action(text: &str) -> RichTextAction {
     RichTextAction::AppendParagraph {
@@ -3013,15 +3048,6 @@ pub fn continue_paragraph_action(text: &str) -> RichTextAction {
     RichTextAction::ContinueParagraph {
         text: text.to_string(),
     }
-}
-
-pub fn remove_blocks_action(blocks: Vec<String>) -> RichTextAction {
-    RichTextAction::RemoveBlocks { blocks }
-}
-
-/// Move `blocks` to directly after `after` (the start of the body for `None`).
-pub fn move_blocks_action(blocks: Vec<String>, after: Option<String>) -> RichTextAction {
-    RichTextAction::MoveBlocks { blocks, after }
 }
 
 /// Replace the whole document body with `markdown`.
@@ -3083,22 +3109,6 @@ pub fn add_comment_action(
         author: author.to_string(),
         date: date.to_string(),
         text: text.to_string(),
-    }
-}
-
-/// Append one durable reply to the stable parent comment resource.
-pub fn reply_to_comment_action(
-    comment: &str,
-    author: &str,
-    date: &str,
-    text: &str,
-) -> RichTextAction {
-    RichTextAction::ReplyToComment {
-        comment: comment.to_string(),
-        author: author.to_string(),
-        date: date.to_string(),
-        text: text.to_string(),
-        body: Vec::new(),
     }
 }
 

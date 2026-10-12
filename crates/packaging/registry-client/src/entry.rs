@@ -20,8 +20,6 @@ pub enum Platform {
     /// Native Tilo OS thin app (`x86_64` or `aarch64`).
     #[default]
     TiloOs,
-    /// WebAssembly side module for the browser toolkit core (`wasm32`).
-    Web,
     /// Self-contained executable for Linux desktops other than Tilo OS
     /// (`x86_64` or `aarch64`).
     Linux,
@@ -40,7 +38,6 @@ impl Platform {
     pub fn wire(self) -> &'static str {
         match self {
             Self::TiloOs => registry_types::TILO_OS_PLATFORM,
-            Self::Web => registry_types::WEB_PLATFORM,
             Self::Linux => registry_types::LINUX_PLATFORM,
             Self::Windows => registry_types::WINDOWS_PLATFORM,
             Self::Macos => registry_types::MACOS_PLATFORM,
@@ -55,15 +52,9 @@ impl Platform {
         let Some(target) = &manifest.target else {
             return Some(Self::TiloOs);
         };
-        [
-            Self::Web,
-            Self::Linux,
-            Self::Windows,
-            Self::Macos,
-            Self::Android,
-        ]
-        .into_iter()
-        .find(|platform| platform.wire() == target.platform)
+        [Self::Linux, Self::Windows, Self::Macos, Self::Android]
+            .into_iter()
+            .find(|platform| platform.wire() == target.platform)
     }
 }
 
@@ -268,11 +259,9 @@ fn entry_for_checked(
 ) -> Result<registry_types::RegistryEntry> {
     let binding = match platform {
         Platform::TiloOs => native_binding(tapp_bytes, checked, arch)?,
-        Platform::Web
-        | Platform::Linux
-        | Platform::Windows
-        | Platform::Macos
-        | Platform::Android => signed_target_binding(tapp_bytes, checked, platform, arch)?,
+        Platform::Linux | Platform::Windows | Platform::Macos | Platform::Android => {
+            signed_target_binding(tapp_bytes, checked, platform, arch)?
+        }
     };
     let package = &checked.manifest.package;
     let now = std::env::var("SOURCE_DATE_EPOCH")
@@ -339,18 +328,15 @@ fn entry_for_checked(
                 Platform::TiloOs => {
                     format!("{display_name} is a native Tilo OS application.").into()
                 }
-                Platform::Web
-                | Platform::Linux
-                | Platform::Windows
-                | Platform::Macos
-                | Platform::Android => format!("{display_name} is a Tilo application.").into(),
+                Platform::Linux | Platform::Windows | Platform::Macos | Platform::Android => {
+                    format!("{display_name} is a Tilo application.").into()
+                }
             },
             |entry| entry.description.clone(),
         ),
         tagline: previous.map_or_else(
             || match platform {
                 Platform::TiloOs => format!("{display_name} for Tilo OS").into(),
-                Platform::Web => format!("{display_name} on Tilo").into(),
                 Platform::Linux => format!("{display_name} for Linux").into(),
                 Platform::Windows => format!("{display_name} for Windows").into(),
                 Platform::Macos => format!("{display_name} for macOS").into(),
@@ -449,7 +435,7 @@ fn arch_wire(arch: Arch) -> &'static str {
     }
 }
 
-/// A web, Linux, Windows, macOS or Android build binds the `[target]` its signed manifest
+/// A Linux, Windows, macOS or Android build binds the `[target]` its signed manifest
 /// records; the tapp passes the same verification a native one does before
 /// anything is signed.
 fn signed_target_binding(
@@ -458,11 +444,6 @@ fn signed_target_binding(
     platform: Platform,
     arch: Option<&str>,
 ) -> Result<ArtifactBinding> {
-    if platform == Platform::Web
-        && arch.is_some_and(|arch| arch != registry_types::WASM32_ARCHITECTURE)
-    {
-        bail!("web builds target wasm32");
-    }
     let target = checked.manifest.target.as_ref().ok_or_else(|| {
         anyhow!(
             "the tapp has no [target]; it is a Tilo OS build, not a {} build",
@@ -725,12 +706,7 @@ module = "{module}"
         );
         assert!(registry_types::verify_entry_signature(&entry));
 
-        for platform in [
-            Platform::TiloOs,
-            Platform::Linux,
-            Platform::Web,
-            Platform::Macos,
-        ] {
+        for platform in [Platform::TiloOs, Platform::Linux, Platform::Macos] {
             assert!(
                 build_entry(
                     &bytes,

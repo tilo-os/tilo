@@ -1,3 +1,9 @@
+use super::morning::{
+    MORNING_OPEN, MORNING_REMOVE, MORNING_SOURCE, MorningCommand, MorningPreferences, MorningSource,
+};
+mod morning_sources;
+mod task_review_view;
+
 // Room activity — everything that has happened to this workspace, by
 // everyone, in one filterable pane.
 //
@@ -10,7 +16,7 @@
 //
 // A row's `[Revert]` writes the delta back as a **new forward change**;
 // history is appended to, never rewritten. Governance rows
-// ([`OpClass::Govern`]) are non-revertible — an owner counters a
+// ([`EntryKind::Access`]) are non-revertible — an owner counters a
 // governance act with another one rather than rewinding it.
 
 use super::replay::{ReplayPointer, WorkspaceReplayFrame};
@@ -24,16 +30,16 @@ use std::cell::{Cell, RefCell};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fmt::Write as _;
 use std::rc::Rc;
-use ui::clock::{Duration, Instant, SystemTime};
 use ui::i18n::ArgValue;
+use ui::time::{Duration, Instant, SystemTime};
 
 use automerge::transaction::Transactable;
 use automerge::{ChangeHash, Prop, ReadDoc, ScalarValue, Value};
-use collab_types::OpClass;
-use collab_types::caps::{CapOverride, Effect, Principal, Scope, Subject, Verb};
+use collab_types::caps::{Access, CapOverride, Effect, Principal, Scope, Subject};
 use ui::paint::PaintCtx;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
+use ui::widget::EntryKind;
 use ui::widget::{
     ArtifactKind, HistoryClassification, HistoryEntry, HistoryEntryId, HistoryFilter,
 };
@@ -82,13 +88,14 @@ fn seed_roster_colours(authors: &mut AuthorDirectory, tree: &tilo_desktop_model:
             .flat_map(|ws| ws.collaborators.iter()),
     );
     for person in people {
-        let Some(rgb) = person
+        if person.name.trim().is_empty() {
+            continue;
+        }
+        let rgb = person
             .cursor_color
             .as_deref()
             .and_then(ui::presence::parse_hex_color)
-        else {
-            continue;
-        };
+            .unwrap_or_else(|| authors.colour_for(&person.id));
         authors.set_color_override(&person.id, rgb);
         let handle = automerge::ActorId::from(person.id.as_bytes()).to_hex_string();
         authors.register(
@@ -193,6 +200,8 @@ enum ActivityFocus {
     Author(Option<String>),
     MorePeople,
     Resume,
+    Morning(String, bool),
+    MorningCommand(String, MorningCommand),
     Brief(usize),
     WorkSessionBoundary(WorkSessionBoundary),
     MoreBriefs,
@@ -203,6 +212,7 @@ enum ActivityFocus {
     TaskCreate,
     TaskCancelCompose,
     TaskAction(TaskAction),
+    DirectionField,
     Lens(LensSelection),
     MoreLenses,
     Detail(DetailAction),
@@ -228,6 +238,15 @@ struct WorkSessionBoundary {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum TaskAction {
+    ApproveRun,
+    ReviewHistory,
+    Steer,
+    CancelRun,
+    RetryRun,
+    SendDirection,
+    CloseDirection,
+    NextTasks,
+    PreviousTasks,
     OpenResource,
     StartAgent,
     Launch,
@@ -239,6 +258,15 @@ enum TaskAction {
 impl TaskAction {
     fn label(self) -> String {
         t(match self {
+            Self::ApproveRun => "activity-task-approve-run",
+            Self::ReviewHistory => "activity-task-review-history",
+            Self::Steer => "activity-task-steer",
+            Self::CancelRun => "activity-task-cancel-run",
+            Self::RetryRun => "activity-task-retry-run",
+            Self::SendDirection => "activity-task-direction-send",
+            Self::CloseDirection => "activity-task-direction-close",
+            Self::NextTasks => "activity-task-next",
+            Self::PreviousTasks => "activity-task-previous",
             Self::OpenResource => "activity-task-open-resource",
             Self::StartAgent => "activity-task-start-agent",
             Self::Launch => "activity-task-launch-agent",
@@ -258,6 +286,7 @@ struct AccessControl {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum DetailAction {
+    MorningSource,
     Open,
     Compare,
     Restore,
@@ -270,6 +299,7 @@ enum DetailAction {
 impl DetailAction {
     fn label(self) -> String {
         t(match self {
+            Self::MorningSource => "activity-morning-choose",
             Self::Open => "activity-detail-open",
             Self::Compare => "activity-detail-compare",
             Self::Restore => "activity-detail-restore",
@@ -287,6 +317,33 @@ impl DetailAction {
 struct IndexedAgentRun {
     source_record: Option<RecordId>,
     run: AgentRun,
+}
+
+/// Where the pane's task list comes from: the workspace tree, the room
+/// owner's review snapshot (by identity), or nowhere while a required review
+/// is unavailable.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TaskListOrigin {
+    Tree,
+    Review(usize),
+    Withheld,
+}
+
+/// What [`RoomActivityPane::tasks`] was last built from, so an unchanged
+/// list is not cloned and sorted again on every refresh.
+#[derive(Debug)]
+struct TaskListSource {
+    room: String,
+    origin: TaskListOrigin,
+    tree_tasks: Vec<WorkspaceTask>,
+}
+
+/// The agent runs a persisted record held at one revision, so an unchanged
+/// document on disk is not read and decoded again on every refresh.
+#[derive(Debug)]
+struct ColdAgentRuns {
+    revision: u64,
+    runs: Vec<AgentRun>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -342,7 +399,7 @@ fn others_work(rows: Vec<&WorkspaceHistoryEntry>, local: &str) -> Vec<HistoryEnt
 
 fn is_feed_change(entry: &HistoryEntry) -> bool {
     !entry.context.as_ref().is_some_and(|context| {
-        context.is_housekeeping()
+        !context.is_activity()
             || context
                 .facets
                 .iter()
@@ -588,12 +645,31 @@ impl RoomScope {
 }
 
 /// What a dispatched event did.
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NativeManualTaskRequest {
+    pub workspace: tilo_desktop_model::WorkspaceId,
+    pub room: String,
+    pub title: String,
+    pub actor: String,
+    pub resource: Option<WorkspaceTaskResource>,
+}
+
+/// Deferred managed creation; selection grants neither actor authority nor a run lease.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NativeManagedTaskRequest {
+    pub person_draft: NativeManualTaskRequest,
+    pub assigned_agent: String,
+    pub route: WorkspaceTaskRoute,
+}
+
 #[allow(
     clippy::struct_excessive_bools,
     reason = "these independent flags report distinct effects to the overlay host"
 )]
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct RoomActivityOutcome {
+    pub create_native_manual: Option<NativeManualTaskRequest>,
+    pub create_native_managed: Option<NativeManagedTaskRequest>,
     pub handled: bool,
     pub reverted: bool,
     /// A band was named/renamed/un-named — a document write too.
@@ -602,6 +678,7 @@ pub struct RoomActivityOutcome {
     pub compared: bool,
     pub undo_partial: bool,
     pub task_changed: bool,
+    pub task_refused: bool,
     /// A local managed-agent lifecycle changed. It is intentionally not a
     /// task-document write: a process beginning to connect is not work done.
     pub agent_runtime_changed: bool,
@@ -658,6 +735,8 @@ pub struct RoomActivityPane {
     feed_coverage: FeedCoverage,
     pub(super) scope: RoomScope,
     scope_rects: Vec<(RoomScope, Rect)>,
+    #[cfg(test)]
+    painted_title: RefCell<String>,
     author: Option<String>,
     /// First-seen order, derived from the rows rather than a roster — a
     /// name appears only if that person did something in this room.
@@ -717,11 +796,18 @@ pub struct RoomActivityPane {
     /// Where the "you left off" card was drawn and what it reopens.
     resume_rect: Rect,
     resume_target: Option<ui::HistoryResourceTarget>,
+    morning_sources: HashMap<u64, MorningPreferences>,
+    morning_workspace: u64,
+    morning_rects: Vec<((String, bool), Rect)>,
+    morning_command_rects: Vec<((String, MorningCommand), Rect)>,
+    morning_command_message: Option<String>,
+    morning_source_offset: usize,
     brief_more_advance: usize,
     brief_offset: usize,
     brief_expansion_started: Option<(usize, Instant)>,
     expanded_brief: Option<usize>,
     tasks: Vec<WorkspaceTask>,
+    task_source: Option<TaskListSource>,
     selected_task: Option<String>,
     task_rects: Vec<(String, Rect)>,
     new_task_rect: Option<Rect>,
@@ -736,6 +822,13 @@ pub struct RoomActivityPane {
     task_agent: Option<String>,
     host: Rc<dyn ActivityHost>,
     task_room: String,
+    task_review: Option<Result<std::sync::Arc<super::TaskReviewSnapshot>, String>>,
+    review_approval: Option<task_review_view::ApprovalFrontier>,
+    direction: Option<task_review_view::DirectionDraft>,
+    review_pending: Option<uuid::Uuid>,
+    review_notice: Option<String>,
+    review_task_offset: usize,
+    requested_review_task: Option<String>,
     /// Local process lifecycle only. Broker subscription remains the source
     /// of truth for whether an agent may receive a task lease.
     agent_startup: HashMap<(String, String), AgentStartup>,
@@ -755,6 +848,16 @@ pub struct RoomActivityPane {
     pub(super) replay_unavailable: usize,
     replay_presentation_note: Option<String>,
     pub(super) replay_frames: Vec<WorkspaceReplayFrame>,
+    /// What [`Self::source`] has read of the room's change log, kept across
+    /// refreshes: a refresh reads only the changes appended since the last
+    /// one ([`HistorySource::entries_since`]).
+    pub(super) history_log: ui::history_source::HistoryLog,
+    /// Each room change's reading, kept across refreshes; see
+    /// [`describe_room_changes`].
+    room_changes: HashMap<ChangeHash, RoomChange>,
+    /// Each replayed entry's desktop, kept across rebuilds; see
+    /// [`Self::rebuild_replay_frames`].
+    pub(super) replay_checkpoints: HashMap<HistoryEntryId, super::replay::ReplayCheckpoint>,
     pub(super) replay_index: usize,
     pub(super) replay_playing: bool,
     replay_last_advance: Instant,
@@ -766,6 +869,7 @@ pub struct RoomActivityPane {
     /// Task receipts live beside the records they describe. They are indexed
     /// here so selecting any affected change can explain the whole task.
     agent_runs: Vec<IndexedAgentRun>,
+    cold_agent_runs: HashMap<RecordId, ColdAgentRuns>,
     agent_undo_notice: Option<(String, String)>,
     open_agent_records: HashSet<RecordId>,
 }
@@ -796,6 +900,23 @@ impl RoomActivityPane {
     }
 
     fn detail_action_label(&self, action: DetailAction) -> String {
+        if action == DetailAction::MorningSource {
+            return t(
+                if self
+                    .selection_detail()
+                    .and_then(|detail| detail.resources.first().cloned())
+                    .is_some_and(|target| {
+                        self.chosen_morning_sources()
+                            .iter()
+                            .any(|source| source.matches(&target))
+                    })
+                {
+                    "activity-morning-remove"
+                } else {
+                    "activity-morning-choose"
+                },
+            );
+        }
         if action == DetailAction::Open
             && self.selection_detail().is_some_and(|detail| {
                 detail.resources.first().is_some_and(|resource| {
@@ -867,6 +988,8 @@ impl RoomActivityPane {
             feed_coverage: FeedCoverage::default(),
             scope: RoomScope::default(),
             scope_rects: Vec::new(),
+            #[cfg(test)]
+            painted_title: RefCell::default(),
             author: None,
             contributors: Vec::new(),
             sheet: Rect::ZERO,
@@ -903,11 +1026,18 @@ impl RoomActivityPane {
             boundary_rects: Vec::new(),
             resume_rect: Rect::ZERO,
             resume_target: None,
+            morning_sources: HashMap::new(),
+            morning_workspace: 0,
+            morning_rects: Vec::new(),
+            morning_command_rects: Vec::new(),
+            morning_command_message: None,
+            morning_source_offset: 0,
             brief_more_advance: 0,
             brief_offset: 0,
             expanded_brief: None,
             brief_expansion_started: None,
             tasks: Vec::new(),
+            task_source: None,
             selected_task: None,
             task_rects: Vec::new(),
             new_task_rect: None,
@@ -922,6 +1052,13 @@ impl RoomActivityPane {
             task_agent: None,
             host: Rc::new(UnavailableActivityHost),
             task_room: String::new(),
+            task_review: None,
+            review_approval: None,
+            direction: None,
+            review_pending: None,
+            review_notice: None,
+            review_task_offset: 0,
+            requested_review_task: None,
             agent_startup: HashMap::new(),
             facet_index: HistoryFacetIndex::default(),
             lens: LensSelection::default(),
@@ -939,6 +1076,9 @@ impl RoomActivityPane {
             replay_unavailable: 0,
             replay_presentation_note: None,
             replay_frames: Vec::new(),
+            history_log: ui::history_source::HistoryLog::default(),
+            room_changes: HashMap::new(),
+            replay_checkpoints: HashMap::new(),
             replay_index: 0,
             replay_playing: false,
             replay_last_advance: Instant::now(),
@@ -948,6 +1088,7 @@ impl RoomActivityPane {
             narrative: None,
             narrative_request: None,
             agent_runs: Vec::new(),
+            cold_agent_runs: HashMap::new(),
             agent_undo_notice: None,
             open_agent_records: HashSet::new(),
         }
@@ -958,6 +1099,7 @@ impl RoomActivityPane {
         self.persistent_frontiers = true;
         self.seen_frontiers = self.host.load_frontiers();
         self.departures = self.host.load_departures();
+        self.morning_sources = self.host.load_morning_sources();
     }
 
     /// Tests pin "now" so period windows don't depend on when the suite runs.
@@ -1110,9 +1252,11 @@ impl RoomActivityPane {
     }
 
     pub fn needs_animation_frame(&self, now: Instant) -> bool {
-        self.brief_expansion_started.is_some_and(|(_, started)| {
-            now.saturating_duration_since(started) < BRIEF_EXPANSION_DURATION
-        })
+        self.review_pending.is_some()
+            || (self.view == ActivityView::Tasks && self.task_review.is_none())
+            || self.brief_expansion_started.is_some_and(|(_, started)| {
+                now.saturating_duration_since(started) < BRIEF_EXPANSION_DURATION
+            })
     }
 
     pub fn finish_view(&mut self, workspace: u64) {
@@ -1289,6 +1433,7 @@ impl RoomActivityPane {
     }
 
     pub fn set_view(&mut self, view: ActivityView) {
+        self.requested_review_task = None;
         if view != ActivityView::Replay {
             self.replay_playing = false;
         }
@@ -1378,6 +1523,12 @@ impl RoomActivityPane {
             return Vec::new();
         };
         let mut out = Vec::new();
+        if self.selected_morning_source().is_some() {
+            out.push((
+                MORNING_SOURCE,
+                self.detail_action_label(DetailAction::MorningSource),
+            ));
+        }
         if detail.can_compare {
             out.push((HISTORY_COMPARE, t("activity-history-compare")));
             out.push((HISTORY_RESTORE, t("activity-history-restore")));
@@ -1394,6 +1545,45 @@ impl RoomActivityPane {
         tree: &mut impl ActivityTree,
         records: Option<&RecordStore>,
     ) -> RoomActivityOutcome {
+        if let Some(room) = id.strip_prefix(&format!("{MORNING_SOURCE}.")) {
+            if room == self.task_room {
+                self.toggle_morning_selection();
+            }
+            return handled_outcome();
+        }
+        if id == MORNING_SOURCE {
+            self.toggle_morning_selection();
+            return handled_outcome();
+        }
+        if let Some((room, key)) = super::morning::decode_action(id, MORNING_OPEN) {
+            if room != self.task_room {
+                return handled_outcome();
+            }
+            return RoomActivityOutcome {
+                handled: true,
+                open_target: self.activate_morning_source(key, false),
+                ..Default::default()
+            };
+        }
+        if let Some((room, key)) = super::morning::decode_action(id, MORNING_REMOVE) {
+            if room != self.task_room {
+                return handled_outcome();
+            }
+            self.remove_morning_source(key);
+            return handled_outcome();
+        }
+        for command in [
+            MorningCommand::Refresh,
+            MorningCommand::DraftRefresh,
+            MorningCommand::NextSource,
+        ] {
+            if let Some((room, key)) = super::morning::decode_action(id, command.prefix()) {
+                if room == self.task_room {
+                    self.submit_morning_command(key, command);
+                }
+                return handled_outcome();
+            }
+        }
         if id == ACTIVITY_TASKS {
             self.set_view(ActivityView::Tasks);
             return handled_outcome();
@@ -1409,6 +1599,11 @@ impl RoomActivityPane {
             _ => return RoomActivityOutcome::default(),
         };
         self.apply_detail_action(action, tree, records)
+    }
+
+    fn selected_resource_target(&self) -> Option<ui::HistoryResourceTarget> {
+        self.selection_detail()
+            .and_then(|detail| detail.resources.into_iter().next())
     }
 
     pub fn selection_detail(&self) -> Option<HistorySelectionDetail> {
@@ -1915,6 +2110,20 @@ impl RoomActivityPane {
     }
 
     pub fn apply_deep_link(&mut self, focus: ActivityDeepLink) {
+        if let Some(task_id) = focus.task_id {
+            self.set_view(ActivityView::Tasks);
+            self.requested_review_task = Some(task_id.clone());
+            self.selected_task = self
+                .tasks
+                .iter()
+                .find(|task| task.id == task_id)
+                .map(|task| task.id.clone());
+            self.keyboard_focus = self.selected_task.clone().map(ActivityFocus::Task);
+            if self.selected_task.is_none() {
+                self.review_notice = Some(t("activity-task-review-missing"));
+            }
+            return;
+        }
         if let Some(author) = focus.author {
             self.author = Some(author);
         }
@@ -2020,8 +2229,10 @@ impl RoomActivityPane {
         self.named.clear();
         self.timeline.set_named_ranges(Vec::new());
         self.replay_frames.clear();
+        self.replay_checkpoints.clear();
         self.replay_playing = false;
         self.tasks.clear();
+        self.task_source = None;
         self.selected_task = None;
         self.close_task_composer();
         self.clear_comparison();
@@ -2042,7 +2253,11 @@ impl RoomActivityPane {
         reason = "timeline refresh keeps document observation, filter projection, and retained activity rows in one ordered read-only projection pass"
     )]
     pub fn refresh(&mut self, tree: &mut impl ActivityTree) {
-        tree.commit_activity_change();
+        // Commit only what was written: an empty commit on every refresh
+        // would still open and roll back a transaction each frame.
+        if tree.document().pending_ops() > 0 {
+            tree.commit_activity_change();
+        }
         if tree.document().pending_ops() > 0 {
             self.defer_pending_tree(tree);
             return;
@@ -2057,28 +2272,30 @@ impl RoomActivityPane {
         if name != self.room_name {
             self.room_name = name;
         }
-        self.task_room = tree
+        let room = tree
             .active_workspace()
             .map(|workspace| workspace.room.to_string())
             .unwrap_or_default();
-        self.tasks = tree
+        if self.task_room != room || self.morning_workspace != tree.active.raw() {
+            self.morning_command_message = None;
+            self.morning_source_offset = 0;
+        }
+        self.task_room = room;
+        self.morning_workspace = tree.active.raw();
+        let origin = self.refresh_task_review();
+        let tree_tasks = tree
             .active_workspace()
-            .map(|workspace| workspace.tasks.clone())
-            .unwrap_or_default();
-        self.tasks.sort_by(|left, right| {
-            (left.status != WorkspaceTaskStatus::Waiting)
-                .cmp(&(right.status != WorkspaceTaskStatus::Waiting))
-                .then_with(|| left.status.is_finished().cmp(&right.status.is_finished()))
-                .then_with(|| right.updated_at.cmp(&left.updated_at))
-                .then_with(|| left.id.cmp(&right.id))
-        });
+            .map_or(&[][..], |workspace| workspace.tasks.as_slice());
+        self.rebuild_tasks_if_changed(origin, tree_tasks);
         self.refresh_agent_startup();
         if self
             .selected_task
             .as_ref()
             .is_some_and(|id| !self.tasks.iter().any(|task| &task.id == id))
         {
-            self.selected_task = None;
+            self.requested_review_task = self.selected_task.take();
+            self.review_notice = Some(t("activity-task-review-missing"));
+            self.keyboard_focus = Some(ActivityFocus::View(ActivityView::Tasks));
         }
 
         let heads = tree.document_mut().get_heads();
@@ -2091,6 +2308,15 @@ impl RoomActivityPane {
         }
         self.last_heads = heads;
         seed_roster_colours(self.source.authors_mut(), tree);
+        let local = self.local_user();
+        if !local.is_empty() {
+            // The reader's own changes read as theirs.
+            self.source.authors_mut().set_reader(local.clone());
+        }
+        if !local.is_empty() && self.explicit_local_user.is_none() {
+            let handle = automerge::ActorId::from(local.as_bytes()).to_hex_string();
+            self.host.local_author(self.source.authors_mut(), &handle);
+        }
 
         // Bind the local automerge actor to the Tilo identity, or local user
         // id; a peer's actor stays unresolved until collaboration says who.
@@ -2117,8 +2343,15 @@ impl RoomActivityPane {
             }
         }
 
-        let mut entries = self.source.entries(tree.document_mut());
-        let mut tags = describe_room_changes(tree.document_mut(), &mut entries);
+        let mut entries = self
+            .source
+            .entries_since(tree.document_mut(), &mut self.history_log);
+        let mut tags = describe_room_changes(
+            tree.document_mut(),
+            &self.history_log,
+            &mut entries,
+            &mut self.room_changes,
+        );
         // A receipt is committed by the room host, but its authenticated
         // `actor` is the person (or agent) who performed the semantic action.
         // Attribute the projected CRDT row to that actor rather than to the
@@ -2170,17 +2403,14 @@ impl RoomActivityPane {
                         ui::history_source::short_id(&actor),
                         self.source.authors().colour_for(&actor),
                     ),
-                    op_class: OpClass::EditMeta,
+                    entry_kind: EntryKind::Details,
                     artifact_kind: ArtifactKind::Cluster,
                     timestamp: SystemTime::UNIX_EPOCH
                         .checked_add(Duration::from_secs(
                             u64::try_from(receipt.completed_at).unwrap_or_default(),
                         ))
                         .unwrap_or(SystemTime::UNIX_EPOCH),
-                    summary: receipt
-                        .context
-                        .summary()
-                        .unwrap_or_else(|| receipt_status_label(&receipt.status)),
+                    summary: receipt_summary(&receipt.context, &receipt.status),
                     text_delta: None,
                     diff_payload: None,
                     redaction: None,
@@ -2189,15 +2419,16 @@ impl RoomActivityPane {
                 tags.push(Some(workspace.id.raw()));
             }
         }
-        // Housekeeping stays in the room document's history, out of the feed.
+        // Housekeeping and what came from outside stay in the room
+        // document's history, out of the feed.
         self.derived = entries
             .into_iter()
             .zip(tags)
             .filter(|(entry, _)| {
-                !entry
+                entry
                     .context
                     .as_ref()
-                    .is_some_and(ui::tilo_actions::ActionContext::is_housekeeping)
+                    .is_none_or(ui::tilo_actions::ActionContext::is_activity)
             })
             .collect();
         self.derived.sort_by_key(|(entry, _)| entry.timestamp);
@@ -2214,6 +2445,39 @@ impl RoomActivityPane {
     fn agent_startup_state(&self, agent: &str) -> Option<&AgentStartup> {
         self.agent_startup
             .get(&(self.task_room.clone(), agent.to_string()))
+    }
+
+    /// Rebuild the sorted task list only when its source moved: the room,
+    /// the review snapshot it is read from, or the tree's tasks.
+    fn rebuild_tasks_if_changed(&mut self, origin: TaskListOrigin, tree_tasks: &[WorkspaceTask]) {
+        let unchanged = self.task_source.as_ref().is_some_and(|source| {
+            source.room == self.task_room
+                && source.origin == origin
+                && source.tree_tasks.as_slice() == tree_tasks
+        });
+        if unchanged {
+            return;
+        }
+        self.tasks = match origin {
+            TaskListOrigin::Tree => tree_tasks.to_vec(),
+            TaskListOrigin::Review(_) => match &self.task_review {
+                Some(Ok(snapshot)) => snapshot.tasks.clone(),
+                _ => Vec::new(),
+            },
+            TaskListOrigin::Withheld => Vec::new(),
+        };
+        self.tasks.sort_by(|left, right| {
+            (left.status != WorkspaceTaskStatus::Waiting)
+                .cmp(&(right.status != WorkspaceTaskStatus::Waiting))
+                .then_with(|| left.status.is_finished().cmp(&right.status.is_finished()))
+                .then_with(|| right.updated_at.cmp(&left.updated_at))
+                .then_with(|| left.id.cmp(&right.id))
+        });
+        self.task_source = Some(TaskListSource {
+            room: self.task_room.clone(),
+            origin,
+            tree_tasks: tree_tasks.to_vec(),
+        });
     }
 
     fn refresh_agent_startup(&mut self) {
@@ -2295,6 +2559,11 @@ impl RoomActivityPane {
 
     /// Hand the timeline the rows [`Self::scope`] selects and re-derive
     /// everything that depends on which rows are in play.
+    /// Every entry of the room's derived history, in any workspace.
+    pub(super) fn derived_entry_ids(&self) -> impl Iterator<Item = HistoryEntryId> + '_ {
+        self.derived.iter().map(|(entry, _)| entry.id)
+    }
+
     fn apply_scope(&mut self, tree: &impl ActivityTree) {
         let active = tree.active.raw();
         self.last_active = Some(active);
@@ -2318,13 +2587,7 @@ impl RoomActivityPane {
                             .cloned()
                             .unwrap_or_else(|| t("activity-removed-workspace"));
                         e.summary = format!("{label} \u{00b7} {}", e.summary);
-                        let mut context =
-                            e.context
-                                .take()
-                                .unwrap_or_else(|| ui::tilo_actions::ActionContext {
-                                    action_label: e.summary.clone(),
-                                    ..ui::tilo_actions::ActionContext::default()
-                                });
+                        let mut context = e.context.take().unwrap_or_default();
                         context
                             .facets
                             .push(ui::tilo_actions::ActionFacet::new("workspace", label));
@@ -2495,12 +2758,7 @@ impl RoomActivityPane {
                     {
                         let label = labels.join(" + ");
                         projected.summary = format!("{label} \u{00b7} {}", projected.summary);
-                        let mut context = projected.context.take().unwrap_or_else(|| {
-                            ui::tilo_actions::ActionContext {
-                                action_label: projected.summary.clone(),
-                                ..ui::tilo_actions::ActionContext::default()
-                            }
-                        });
+                        let mut context = projected.context.take().unwrap_or_default();
                         context
                             .facets
                             .push(ui::tilo_actions::ActionFacet::new("workspace", label));
@@ -2513,9 +2771,6 @@ impl RoomActivityPane {
             self.install_rows(rows);
             self.timeline
                 .set_named_ranges(self.history_index.origin_safe_named_ranges(&self.named));
-        }
-        if self.host.record_finished_runs(tree.document_mut(), records) {
-            tree.commit_activity_change();
         }
         self.refresh_agent_runs(tree, records, local);
 
@@ -2599,12 +2854,11 @@ impl RoomActivityPane {
             .flat_map(|held| held.keys())
             .filter_map(|id| RecordId::parse(id))
             .collect();
+        self.cold_agent_runs.retain(|id, _| record_ids.contains(id));
         for id in record_ids {
             let runs = records
                 .read(&id, ui::read_runs)
-                .or_else(|| {
-                    local.and_then(|source| source.load_record(&id).map(|doc| ui::read_runs(&doc)))
-                })
+                .or_else(|| local.and_then(|source| self.cold_agent_runs_of(source, &id)))
                 .unwrap_or_default();
             indexed.extend(runs.into_iter().map(|run| IndexedAgentRun {
                 source_record: Some(id.clone()),
@@ -2621,8 +2875,36 @@ impl RoomActivityPane {
         self.agent_runs = indexed;
     }
 
-    pub fn set_excluded_apps(&mut self, apps: Vec<String>) {
-        self.feed_coverage.excluded_apps = apps;
+    /// The agent runs persisted record `id` carries, read from `source` only
+    /// when its revision moved since the last read.
+    fn cold_agent_runs_of(
+        &mut self,
+        source: &dyn super::index::PersistedRecordHistory,
+        id: &RecordId,
+    ) -> Option<Vec<AgentRun>> {
+        let revision = source.revision(id);
+        if let Some(revision) = revision
+            && let Some(cached) = self.cold_agent_runs.get(id)
+            && cached.revision == revision
+        {
+            return Some(cached.runs.clone());
+        }
+        let runs = ui::read_runs(&source.load_record(id)?);
+        match revision {
+            Some(revision) => {
+                self.cold_agent_runs.insert(
+                    id.clone(),
+                    ColdAgentRuns {
+                        revision,
+                        runs: runs.clone(),
+                    },
+                );
+            }
+            None => {
+                self.cold_agent_runs.remove(id);
+            }
+        }
+        Some(runs)
     }
 
     /// A host bounded the retained desktop document's history projection.
@@ -2919,7 +3201,6 @@ impl RoomActivityPane {
             &card,
         );
 
-        self.draw_title_and_subtitle(scene, transform, tr, theme);
         if self.view == ActivityView::CatchUp {
             // Catch Up is the friendly, focused recap. Full-history scope and
             // mode tabs belong to the deeper views and must not leak into its
@@ -2932,6 +3213,9 @@ impl RoomActivityPane {
             self.draw_scope_chips(scene, transform, tr, theme);
             self.draw_view_tabs(scene, transform, tr, theme);
         }
+        // Title elision must use this frame's scope geometry, not rectangles
+        // retained from an earlier viewport, view, or text scale.
+        self.draw_title_and_subtitle(scene, transform, tr, theme);
 
         self.period_rects.clear();
         self.author_rects.clear();
@@ -3161,19 +3445,33 @@ impl RoomActivityPane {
                 self.draw_agent_task_detail(scene, transform, tr, theme, bounds, width, &indexed);
                 return;
             }
+            let gap = f64::from(theme.tokens.spacing.s2);
+            let title_style = theme.text(TextRole::Body);
+            let title = tr
+                .clamp_to_lines(&detail.title, &title_style, width, 2)
+                .join("\n");
+            let (_, heading_height) = tr.measure_style(&t("activity-provenance"), None, &style);
+            let title_y =
+                bounds.y0 + f64::from(theme.tokens.spacing.s3) + f64::from(heading_height) + gap;
+            let (_, title_height) = tr.measure_style(&title, Some(width), &title_style);
             tr.draw_style(
                 scene,
-                &detail.title,
+                &title,
                 theme.tokens.colors.text_primary,
-                at(transform, bounds.x0 + 12.0, bounds.y0 + 40.0),
+                at(transform, bounds.x0 + 12.0, title_y),
                 Some(width),
-                &theme.text(TextRole::Body),
+                &title_style,
             );
+            let provenance = tr
+                .clamp_to_lines(&detail_provenance(&detail), &style, width, 4)
+                .join("\n");
+            let provenance_y = title_y + f64::from(title_height) + gap;
+            let (_, provenance_height) = tr.measure_style(&provenance, Some(width), &style);
             tr.draw_style(
                 scene,
-                &detail_provenance(&detail),
+                &provenance,
                 theme.tokens.colors.text_dim,
-                at(transform, bounds.x0 + 12.0, bounds.y0 + 88.0),
+                at(transform, bounds.x0 + 12.0, provenance_y),
                 Some(width),
                 &style,
             );
@@ -3184,7 +3482,7 @@ impl RoomActivityPane {
                 theme,
                 bounds,
                 &detail,
-                bounds.y0 + 170.0,
+                provenance_y + f64::from(provenance_height) + gap,
             );
             self.draw_detail_comparison(
                 scene,
@@ -3330,7 +3628,7 @@ impl RoomActivityPane {
             y += 18.0;
             tr.draw_style(
                 scene,
-                &step.summary,
+                &step.sentence(),
                 theme.tokens.colors.text_dim,
                 at(transform, x + 10.0, y),
                 Some((width - 10.0).max(0.0)),
@@ -3377,10 +3675,15 @@ impl RoomActivityPane {
         detail: &HistorySelectionDetail,
         start_y: f64,
     ) -> f64 {
-        let mut x = bounds.x0 + 12.0;
+        let spacing = theme.tokens.spacing;
+        let inset = f64::from(spacing.s3);
+        let gap = f64::from(spacing.s2);
+        let mut row_height = 0.0_f64;
+        let mut x = bounds.x0 + inset;
         let mut y = start_y;
         let compared = self.comparison_attempted;
         for action in [
+            DetailAction::MorningSource,
             DetailAction::Open,
             DetailAction::Compare,
             DetailAction::Restore,
@@ -3390,11 +3693,15 @@ impl RoomActivityPane {
             DetailAction::Merge,
         ] {
             if !self.host.mutations_available()
-                && !matches!(action, DetailAction::Open | DetailAction::Compare)
+                && !matches!(
+                    action,
+                    DetailAction::MorningSource | DetailAction::Open | DetailAction::Compare
+                )
             {
                 continue;
             }
             let enabled = match action {
+                DetailAction::MorningSource => self.selected_morning_source().is_some(),
                 DetailAction::Open => !detail.resources.is_empty(),
                 DetailAction::Compare | DetailAction::Restore => detail.can_compare,
                 DetailAction::Undo => detail.can_undo && self.selected_agent_run().is_none(),
@@ -3406,17 +3713,21 @@ impl RoomActivityPane {
                 continue;
             }
             let label = self.detail_action_label(action);
-            let button_width = f64::from(
-                (tr.measure_style(&label, None, &theme.text(TextRole::Caption))
-                    .0
-                    + 20.0)
-                    .max(60.0),
+            let (label_width, label_height) =
+                tr.measure_style(&label, None, &theme.text(TextRole::Caption));
+            let button_width = (f64::from(label_width) + 2.0 * gap).max(
+                ui::widget::ButtonFace::height(ui::widget::ControlSize::Regular, theme),
             );
-            if x + button_width > bounds.x1 - 12.0 {
-                x = bounds.x0 + 12.0;
-                y += 34.0;
+            let button_height = (f64::from(label_height) + 2.0 * gap).max(
+                ui::widget::ButtonFace::height(ui::widget::ControlSize::Regular, theme),
+            );
+            if x + button_width > bounds.x1 - inset {
+                x = bounds.x0 + inset;
+                y += row_height + gap;
+                row_height = 0.0;
             }
-            let rect = Rect::new(x, y, x + button_width, y + 28.0);
+            row_height = row_height.max(button_height);
+            let rect = Rect::new(x, y, x + button_width, y + button_height);
             let is_active = action == DetailAction::Compare && compared;
             // Control role (HIG §9.1/§9.3): a chip at the Control radius. The
             // one that is "on" (Compare, while a comparison shows) is a lift
@@ -3432,14 +3743,14 @@ impl RoomActivityPane {
                 scene,
                 &label,
                 theme.tokens.colors.text_primary,
-                at(transform, rect.x0 + 8.0, rect.y0 + 8.0),
+                at(transform, rect.x0 + gap, rect.y0 + gap),
                 None,
                 &theme.text(TextRole::Caption),
             );
             self.detail_action_rects.push((action, rect));
-            x += button_width + 6.0;
+            x += button_width + gap;
         }
-        y + 28.0
+        y + row_height
     }
 
     #[allow(
@@ -3820,7 +4131,10 @@ impl RoomActivityPane {
                 "activity-catch-up-waiting-detail",
                 &[
                     ("task", task.title.as_str().into()),
-                    ("who", task_assignee_label(task).into()),
+                    (
+                        "who",
+                        task_assignee_label(task, &self.task_creator_label(task)).into(),
+                    ),
                 ],
             );
             let style = theme.text(TextRole::Caption);
@@ -3860,6 +4174,8 @@ impl RoomActivityPane {
         self.boundary_rects.clear();
         self.brief_more_rect = None;
         self.brief_more_advance = 0;
+        self.morning_rects.clear();
+        self.morning_command_rects.clear();
         self.resume_rect = Rect::ZERO;
         self.resume_target = None;
         let mut y = self.sheet.y0 + self.chrome_height() + 8.0;
@@ -3876,6 +4192,7 @@ impl RoomActivityPane {
             y = acknowledge.y1 + 8.0;
         }
         y = self.draw_catch_up_tasks(scene, transform, tr, theme, y);
+        y = self.draw_morning_sources(scene, transform, tr, theme, y);
         if let Some(resume) = local_resume_snapshot(self.timeline.entries(), &self.local_user()) {
             let (_, caption_h) = tr.measure_style("Mg", None, &theme.text(TextRole::Caption));
             let (_, title_h) = tr.measure_style("Mg", None, &theme.text(TextRole::Label));
@@ -4319,7 +4636,10 @@ impl RoomActivityPane {
         let mut y = self.sheet.y0 + self.chrome_height() + 8.0;
         let new_task = Rect::new(x1 - 116.0, y, x1, y + 30.0);
         self.new_task_rect = None;
-        if self.host.mutations_available() && !self.feed_coverage.pending_tree {
+        if self.host.mutations_available()
+            && !self.feed_coverage.pending_tree
+            && !self.host.task_review_required(&self.task_room)
+        {
             self.new_task_rect = Some(new_task);
             draw_task_button(
                 scene,
@@ -4340,6 +4660,22 @@ impl RoomActivityPane {
             &theme.text(TextRole::Label),
         );
         y += 40.0;
+
+        if self.direction.is_some() {
+            self.draw_direction(
+                &mut PaintCtx::new(scene, transform, tr, theme),
+                Rect::new(x0, y, x1, self.sheet.y1),
+            );
+            return;
+        }
+
+        if matches!(&self.task_review,Some(Ok(snapshot)) if snapshot.room==self.task_room) {
+            self.draw_review_tasks(
+                &mut PaintCtx::new(scene, transform, tr, theme),
+                Rect::new(x0, y, x1, self.sheet.y1),
+            );
+            return;
+        }
 
         if self.task_compose_open {
             let composer = Rect::new(x0, y, x1, y + 164.0);
@@ -4504,11 +4840,17 @@ impl RoomActivityPane {
         if self.tasks.is_empty() {
             tr.draw_style(
                 scene,
-                &t(if self.feed_coverage.pending_tree {
-                    "activity-tasks-pending"
-                } else {
-                    "activity-tasks-empty"
-                }),
+                &t(
+                    if self.host.task_review_required(&self.task_room)
+                        && !matches!(&self.task_review, Some(Ok(_)))
+                    {
+                        "activity-task-review-unavailable"
+                    } else if self.feed_coverage.pending_tree {
+                        "activity-tasks-pending"
+                    } else {
+                        "activity-tasks-empty"
+                    },
+                ),
                 theme.tokens.colors.text_primary,
                 at(transform, x0 + 4.0, y + 16.0),
                 None,
@@ -4554,6 +4896,7 @@ impl RoomActivityPane {
                 selected,
                 self.now(),
                 execution_notice.as_deref(),
+                &self.task_creator_label(task),
             );
             if selected {
                 let actions = self.task_actions_for(task);
@@ -4608,6 +4951,8 @@ impl RoomActivityPane {
             .fold(self.sheet.x1 - 16.0, f64::min);
         let title_room = (pills_x0 - f64::from(tokens.spacing.s3) - title_x).max(1.0);
         let title = tr.elide_to_width_style(&title, text_width(title_room), &title_style);
+        #[cfg(test)]
+        self.painted_title.replace(title.clone());
         let (_, title_h) = tr.measure_style(&title, None, &title_style);
         let title_y = self.sheet.y0 + HEADER_TOP;
         tr.draw_style(
@@ -5152,18 +5497,94 @@ impl RoomActivityPane {
         self.task_attachment = None;
     }
 
+    fn task_creator_label(&self, task: &WorkspaceTask) -> String {
+        let handle = automerge::ActorId::from(task.created_by.as_bytes()).to_hex_string();
+        let authors = self.source.authors();
+        if authors.is_registered(&handle) {
+            return authors.resolve(&handle).name;
+        }
+        if task.created_by == self.local_user() {
+            return t("workspace-settings-you");
+        }
+        if task.created_by.len() == 64 && task.created_by.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return format!(
+                "{} · {}",
+                t("activity-unknown-collaborator"),
+                ui::history_source::short_id(&task.created_by),
+            );
+        }
+        participant_display_label(&task.created_by)
+    }
+
     fn local_user(&self) -> String {
         self.explicit_local_user
             .clone()
             .unwrap_or_else(|| self.host.local_user())
     }
 
+    /// Close the draft only after the native owner retained its actual receipt.
+    pub fn complete_native_manual_task(&mut self, id: String, tree: &mut impl ActivityTree) {
+        self.selected_task = Some(id);
+        self.close_task_composer();
+        self.refresh(tree);
+    }
+
     fn create_task_from_draft(&mut self, tree: &mut impl ActivityTree) -> RoomActivityOutcome {
         if !self.host.mutations_available() || tree.document().pending_ops() > 0 {
+            if tree.native_manual_tasks(tree.active) {
+                return RoomActivityOutcome {
+                    handled: true,
+                    task_refused: true,
+                    ..RoomActivityOutcome::default()
+                };
+            }
             self.close_task_composer();
             return handled_outcome();
         }
         let workspace = tree.active;
+        if self.task_route == WorkspaceTaskRoute::Manual && tree.native_manual_tasks(workspace) {
+            let Some(slot) = tree.active_workspace() else {
+                return handled_outcome();
+            };
+            return RoomActivityOutcome {
+                handled: true,
+                create_native_manual: Some(NativeManualTaskRequest {
+                    workspace,
+                    room: slot.room.to_string(),
+                    title: self.task_draft.clone(),
+                    actor: self.local_user(),
+                    resource: self.task_attachment.clone(),
+                }),
+                ..RoomActivityOutcome::default()
+            };
+        }
+        if tree.native_manual_tasks(workspace) {
+            let Some(slot) = tree.active_workspace() else {
+                return handled_outcome();
+            };
+            let Some(agent) = self.task_agent.clone().filter(|agent| !agent.is_empty()) else {
+                return RoomActivityOutcome {
+                    handled: true,
+                    task_refused: true,
+                    ..Default::default()
+                };
+            };
+            return RoomActivityOutcome {
+                handled: true,
+                create_native_managed: Some(NativeManagedTaskRequest {
+                    person_draft: NativeManualTaskRequest {
+                        workspace,
+                        room: slot.room.to_string(),
+                        title: self.task_draft.clone(),
+                        actor: self.local_user(),
+                        resource: self.task_attachment.clone(),
+                    },
+                    assigned_agent: agent,
+                    route: self.task_route,
+                }),
+                ..Default::default()
+            };
+        }
         let assigned_agent = (self.task_route != WorkspaceTaskRoute::Manual)
             .then(|| self.task_agent.clone())
             .flatten();
@@ -5198,6 +5619,21 @@ impl RoomActivityPane {
         action: TaskAction,
         tree: &mut impl ActivityTree,
     ) -> RoomActivityOutcome {
+        if matches!(
+            action,
+            TaskAction::ReviewHistory
+                | TaskAction::ApproveRun
+                | TaskAction::Steer
+                | TaskAction::CancelRun
+                | TaskAction::RetryRun
+                | TaskAction::SendDirection
+                | TaskAction::CloseDirection
+                | TaskAction::NextTasks
+                | TaskAction::PreviousTasks
+        ) {
+            self.apply_review_action(action);
+            return handled_outcome();
+        }
         if action != TaskAction::OpenResource
             && (!self.host.mutations_available() || tree.document().pending_ops() > 0)
         {
@@ -5289,10 +5725,12 @@ impl RoomActivityPane {
             TaskAction::Start => WorkspaceTaskStatus::InProgress,
             TaskAction::Complete => WorkspaceTaskStatus::Done,
             TaskAction::Cancel => WorkspaceTaskStatus::Cancelled,
-            TaskAction::OpenResource | TaskAction::StartAgent | TaskAction::Launch => {
+            _ => {
                 return handled_outcome();
             }
         };
+        let native_manual =
+            task.route == WorkspaceTaskRoute::Manual && tree.native_manual_tasks(tree.active);
         let changed =
             tree.set_workspace_task_status(tree.active, &task_id, status, &self.local_user());
         if changed {
@@ -5301,12 +5739,64 @@ impl RoomActivityPane {
         RoomActivityOutcome {
             handled: true,
             task_changed: changed,
+            task_refused: !changed && native_manual,
             ..RoomActivityOutcome::default()
         }
     }
 
+    fn reviewed_task_description(&self, task: &WorkspaceTask) -> String {
+        let mut description =
+            task_accessibility_description(task, self.now(), &self.task_creator_label(task));
+        if let Some((_, control)) = self.reviewed_control(&task.id) {
+            for line in task_review_view::task_run_evidence(control, self.now()) {
+                description.push('\n');
+                description.push_str(&line);
+            }
+        }
+        description
+    }
+
     fn task_actions_for(&self, task: &WorkspaceTask) -> Vec<TaskAction> {
+        if let Some((snapshot, control)) = self.reviewed_control(&task.id) {
+            let mut actions = vec![TaskAction::ReviewHistory];
+            if task.resource.is_some() {
+                actions.push(TaskAction::OpenResource);
+            }
+            if snapshot.writable && self.review_pending.is_none() {
+                if task.status == WorkspaceTaskStatus::Queued
+                    && control.active_run.is_none()
+                    && task.assigned_agent.is_some()
+                    && task.route != WorkspaceTaskRoute::Manual
+                    && task
+                        .resource
+                        .as_ref()
+                        .is_none_or(|resource| resource.agent_request.is_none())
+                {
+                    actions.push(TaskAction::ApproveRun);
+                }
+                if task.status == WorkspaceTaskStatus::Waiting && control.active_run.is_none() {
+                    actions.push(TaskAction::RetryRun);
+                }
+                if !task.status.is_finished() {
+                    if control.active_run.is_some() {
+                        actions.push(TaskAction::Steer);
+                    }
+                    actions.push(TaskAction::CancelRun);
+                }
+            }
+            return actions;
+        }
         let mut actions = task_actions(task);
+        if self.host.task_review_required(&self.task_room)
+            && task.route != WorkspaceTaskRoute::Manual
+        {
+            actions.retain(|action| {
+                !matches!(
+                    action,
+                    TaskAction::Cancel | TaskAction::Complete | TaskAction::Start
+                )
+            });
+        }
         if !self.host.mutations_available() || self.feed_coverage.pending_tree {
             actions.retain(|action| *action == TaskAction::OpenResource);
             return actions;
@@ -5388,6 +5878,14 @@ impl RoomActivityPane {
             self.keyboard_focus = Some(ActivityFocus::Acknowledge);
             self.finish_view(tree.active.raw());
             return Some(handled_outcome());
+        }
+        if let Some((key, command)) = hit_value(&self.morning_command_rects, point) {
+            self.keyboard_focus = Some(ActivityFocus::MorningCommand(key, command));
+            return Some(self.activate_focus(tree, None));
+        }
+        if let Some((key, remove)) = hit_value(&self.morning_rects, point) {
+            self.keyboard_focus = Some(ActivityFocus::Morning(key, remove));
+            return Some(self.activate_focus(tree, None));
         }
         if self.resume_rect.contains(point)
             && let Some(open_target) = self.resume_target.clone()
@@ -5481,6 +5979,7 @@ impl RoomActivityPane {
     ) -> RoomActivityOutcome {
         let mut outcome = handled_outcome();
         match action {
+            DetailAction::MorningSource => self.toggle_morning_selection(),
             DetailAction::Open => {
                 outcome.open_target = self
                     .selection_detail()
@@ -5676,6 +6175,22 @@ impl RoomActivityPane {
             return handled_outcome();
         }
         let mut out = RoomActivityOutcome::default();
+        if cursor.is_some_and(|point| {
+            self.direction
+                .as_ref()
+                .is_some_and(|draft| draft.rect.contains(point))
+        }) && matches!(
+            event,
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                ..
+            }
+        ) {
+            self.keyboard_focus = Some(ActivityFocus::DirectionField);
+        }
+        if self.direction_event(event, scale_factor, *modifiers, tree) {
+            return handled_outcome();
+        }
 
         // The inline group-name editor owns every unchorded key until it
         // commits or cancels; Tab included, so a half-typed name cannot be
@@ -5786,6 +6301,18 @@ impl RoomActivityPane {
                         .iter()
                         .map(|(view, _)| ActivityFocus::View(*view)),
                 );
+                order.extend(
+                    self.morning_rects
+                        .iter()
+                        .map(|((key, remove), _)| ActivityFocus::Morning(key.clone(), *remove)),
+                );
+                order.extend(
+                    self.morning_command_rects
+                        .iter()
+                        .map(|((key, command), _)| {
+                            ActivityFocus::MorningCommand(key.clone(), *command)
+                        }),
+                );
                 if self.resume_target.is_some() && self.resume_rect.area() > 0.0 {
                     order.push(ActivityFocus::Resume);
                 }
@@ -5816,6 +6343,9 @@ impl RoomActivityPane {
                     if self.task_create_rect.is_some() {
                         order.push(ActivityFocus::TaskCreate);
                     }
+                }
+                if self.direction.is_some() {
+                    order.push(ActivityFocus::DirectionField);
                 }
                 order.extend(
                     self.task_rects
@@ -5899,6 +6429,17 @@ impl RoomActivityPane {
                 .iter()
                 .find_map(|(item, rect)| (item == value).then_some(*rect)),
             ActivityFocus::MorePeople => self.author_more_rect,
+            ActivityFocus::MorningCommand(key, command) => self
+                .morning_command_rects
+                .iter()
+                .find_map(|((id, item), rect)| (id == key && item == command).then_some(*rect)),
+            ActivityFocus::Morning(key, remove) => {
+                self.morning_rects
+                    .iter()
+                    .find_map(|((id, is_remove), rect)| {
+                        (id == key && is_remove == remove).then_some(*rect)
+                    })
+            }
             ActivityFocus::Resume => Some(self.resume_rect),
             ActivityFocus::Brief(value) => self
                 .brief_rects
@@ -5919,6 +6460,7 @@ impl RoomActivityPane {
                 .task_route_rects
                 .iter()
                 .find_map(|(route, rect)| (route == value).then_some(*rect)),
+            ActivityFocus::DirectionField => self.direction.as_ref().map(|draft| draft.rect),
             ActivityFocus::TaskCreate => self.task_create_rect,
             ActivityFocus::TaskCancelCompose => self.task_cancel_rect,
             ActivityFocus::TaskAction(value) => self
@@ -5977,6 +6519,15 @@ impl RoomActivityPane {
             .set_focus(self.keyboard_focus == Some(ActivityFocus::Timeline));
     }
 
+    fn activate_brief(&mut self, index: usize) {
+        if self.expanded_brief == Some(index) {
+            self.open_brief_in_explorer(index);
+        } else {
+            self.expanded_brief = Some(index);
+            self.brief_expansion_started = Some((index, Instant::now()));
+        }
+    }
+
     fn activate_focus(
         &mut self,
         tree: &mut impl ActivityTree,
@@ -5995,15 +6546,14 @@ impl RoomActivityPane {
             ActivityFocus::Period(value) => self.set_period(value),
             ActivityFocus::Author(value) => self.set_author_filter(value),
             ActivityFocus::MorePeople => self.advance_people(),
-            ActivityFocus::Resume => outcome.open_target.clone_from(&self.resume_target),
-            ActivityFocus::Brief(index) => {
-                if self.expanded_brief == Some(index) {
-                    self.open_brief_in_explorer(index);
-                } else {
-                    self.expanded_brief = Some(index);
-                    self.brief_expansion_started = Some((index, Instant::now()));
-                }
+            ActivityFocus::MorningCommand(key, command) => {
+                self.submit_morning_command(&key, command);
             }
+            ActivityFocus::Morning(key, remove) => {
+                outcome.open_target = self.activate_morning_source(&key, remove);
+            }
+            ActivityFocus::Resume => outcome.open_target.clone_from(&self.resume_target),
+            ActivityFocus::Brief(index) => self.activate_brief(index),
             ActivityFocus::WorkSessionBoundary(boundary) => {
                 outcome.named = self.move_work_session_boundary(tree, boundary);
             }
@@ -6015,6 +6565,7 @@ impl RoomActivityPane {
                     (self.selected_task.as_deref() != Some(id.as_str())).then_some(id);
             }
             ActivityFocus::TaskRoute(route) => self.task_route = route,
+            ActivityFocus::DirectionField => {}
             ActivityFocus::TaskCreate => return self.create_task_from_draft(tree),
             ActivityFocus::TaskCancelCompose => self.close_task_composer(),
             ActivityFocus::TaskAction(action) => return self.apply_task_action(action, tree),
@@ -6023,10 +6574,9 @@ impl RoomActivityPane {
                 self.reinstall_filter();
             }
             ActivityFocus::MoreLenses => self.advance_lenses(),
+            ActivityFocus::Detail(DetailAction::MorningSource) => self.toggle_morning_selection(),
             ActivityFocus::Detail(DetailAction::Open) => {
-                outcome.open_target = self
-                    .selection_detail()
-                    .and_then(|detail| detail.resources.into_iter().next());
+                outcome.open_target = self.selected_resource_target();
             }
             ActivityFocus::Detail(DetailAction::Compare) => {
                 self.comparison_attempted = true;
@@ -6136,6 +6686,13 @@ impl RoomActivityPane {
             ) => Some(value.clone()),
             ActivityFocus::Author(None) => Some(t("a11y-shell-activity-everyone")),
             ActivityFocus::MorePeople => Some(t("a11y-shell-activity-more-people")),
+            ActivityFocus::MorningCommand(_, command) => Some(t(command.label_key())),
+            ActivityFocus::Morning(key, remove) => Some(if *remove {
+                t("activity-morning-remove")
+            } else {
+                self.morning_target(key)
+                    .map_or_else(|| t("activity-morning-unavailable"), |target| target.label)
+            }),
             ActivityFocus::Resume => self.resume_target.as_ref().map(|target| {
                 t_args(
                     "a11y-shell-activity-resume",
@@ -6160,6 +6717,7 @@ impl RoomActivityPane {
                 .find(|task| &task.id == id)
                 .map(|task| task.title.clone()),
             ActivityFocus::TaskRoute(route) => Some(task_route_label(*route)),
+            ActivityFocus::DirectionField => Some(t("activity-task-direction-label")),
             ActivityFocus::TaskCreate => Some(t("a11y-shell-activity-create-task")),
             ActivityFocus::TaskCancelCompose => Some(t("a11y-shell-activity-cancel-task")),
             ActivityFocus::TaskAction(action) => Some(action.label()),
@@ -6244,6 +6802,26 @@ impl RoomActivityPane {
                 false,
                 None,
                 t("a11y-shell-activity-more-people-description"),
+            ),
+            ActivityFocus::MorningCommand(_, command) => control(
+                Role::Button,
+                false,
+                None,
+                t(if *command == MorningCommand::DraftRefresh {
+                    "activity-morning-draft-description"
+                } else {
+                    command.label_key()
+                }),
+            ),
+            ActivityFocus::Morning(key, _) => control(
+                Role::Button,
+                false,
+                None,
+                format!(
+                    "{}\n{}",
+                    self.morning_display_label(key, self.morning_evidence(key).as_ref()),
+                    self.morning_payload_text(key)
+                ),
             ),
             ActivityFocus::Resume => {
                 let target = self.resume_target.as_ref()?;
@@ -6350,6 +6928,12 @@ impl RoomActivityPane {
                 None,
                 t("a11y-shell-activity-task-composer-action"),
             ),
+            ActivityFocus::DirectionField => control(
+                Role::TextInput,
+                false,
+                None,
+                t("activity-task-direction-label"),
+            ),
             ActivityFocus::TaskAction(_) => control(
                 Role::Button,
                 false,
@@ -6415,6 +6999,9 @@ impl RoomActivityPane {
     ) -> Option<ui::a11y::AccessNode> {
         use ui::a11y::{AccessNode, AccessState, Role};
 
+        if *focus == ActivityFocus::DirectionField {
+            return self.direction.as_ref()?.input.accessibility();
+        }
         if *focus == ActivityFocus::Timeline {
             return self.timeline.accessibility();
         }
@@ -6485,7 +7072,10 @@ impl RoomActivityPane {
                         "activity-catch-up-waiting-detail",
                         &[
                             ("task", task.title.as_str().into()),
-                            ("who", task_assignee_label(task).into()),
+                            (
+                                "who",
+                                task_assignee_label(task, &self.task_creator_label(task)).into(),
+                            ),
                         ],
                     )));
             }
@@ -6514,7 +7104,7 @@ impl RoomActivityPane {
                 .map(|task| {
                     AccessNode::new(Role::ListItem)
                         .with_name(task.title.clone())
-                        .with_description(task_accessibility_description(task, self.now()))
+                        .with_description(self.reviewed_task_description(task))
                 })
                 .collect();
             root.children.push(tasks);
@@ -6572,7 +7162,7 @@ impl RoomActivityPane {
                 &[
                     ("app", humanize_app_id(&step.app).into()),
                     ("record", (&step.record).into()),
-                    ("summary", (&step.summary).into()),
+                    ("summary", step.sentence().into()),
                 ],
             ));
         }
@@ -6632,6 +7222,17 @@ impl RoomActivityPane {
                 .iter()
                 .find_map(|(item, rect)| (item == value).then_some(*rect)),
             ActivityFocus::MorePeople => self.author_more_rect,
+            ActivityFocus::MorningCommand(key, command) => self
+                .morning_command_rects
+                .iter()
+                .find_map(|((id, item), rect)| (id == key && item == command).then_some(*rect)),
+            ActivityFocus::Morning(key, remove) => {
+                self.morning_rects
+                    .iter()
+                    .find_map(|((id, is_remove), rect)| {
+                        (id == key && is_remove == remove).then_some(*rect)
+                    })
+            }
             ActivityFocus::Resume => Some(self.resume_rect),
             ActivityFocus::Brief(value) => self
                 .brief_rects
@@ -6652,6 +7253,7 @@ impl RoomActivityPane {
                 .task_route_rects
                 .iter()
                 .find_map(|(route, rect)| (route == value).then_some(*rect)),
+            ActivityFocus::DirectionField => self.direction.as_ref().map(|draft| draft.rect),
             ActivityFocus::TaskCreate => self.task_create_rect,
             ActivityFocus::TaskCancelCompose => self.task_cancel_rect,
             ActivityFocus::TaskAction(value) => self
@@ -6956,6 +7558,7 @@ fn draw_task_card(
     selected: bool,
     now: SystemTime,
     execution_notice: Option<&str>,
+    creator: &str,
 ) {
     let (scene, transform, tr, theme) = (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
     scene.fill(
@@ -7018,7 +7621,7 @@ fn draw_task_card(
             .text(TextRole::Body)
             .with_weight(ui::text_render::TextWeight::Medium),
     );
-    let assignee = task_assignee_label(task);
+    let assignee = task_assignee_label(task, creator);
     let resource = task
         .resource
         .as_ref()
@@ -7083,15 +7686,12 @@ fn draw_task_card(
     }
 }
 
-fn task_assignee_label(task: &WorkspaceTask) -> String {
+fn task_assignee_label(task: &WorkspaceTask, creator: &str) -> String {
     task.assigned_agent.as_ref().map_or_else(
         || {
             t_args(
                 "activity-task-unassigned-by",
-                &[(
-                    "creator",
-                    participant_display_label(&task.created_by).into(),
-                )],
+                &[("creator", creator.into())],
             )
         },
         |agent| {
@@ -7109,15 +7709,24 @@ fn task_audit_line(
     event_time: SystemTime,
     now: SystemTime,
 ) -> String {
+    crate::i18n::ensure();
+    let what = ui::history_source::sentence::sentence(&event.entry());
+    let what = match &event.note {
+        Some(note) => t_args(
+            "activity-task-audit-noted",
+            &[("what", what.into()), ("note", note.as_str().into())],
+        ),
+        None => what,
+    };
     format!(
         "{} · {} · {}",
         participant_display_label(&event.actor),
-        event.summary,
+        what,
         format_relative_time(event_time, now)
     )
 }
 
-fn task_accessibility_description(task: &WorkspaceTask, now: SystemTime) -> String {
+fn task_accessibility_description(task: &WorkspaceTask, now: SystemTime, creator: &str) -> String {
     let latest = task.audit.last().map(|event| {
         let event_time = u64::try_from(event.at)
             .ok()
@@ -7130,7 +7739,7 @@ fn task_accessibility_description(task: &WorkspaceTask, now: SystemTime) -> Stri
         &[
             ("status", task_status_label(task.status).into()),
             ("route", task_route_label(task.route).into()),
-            ("assignee", task_assignee_label(task).into()),
+            ("assignee", task_assignee_label(task, creator).into()),
             ("count", task.audit.len().into()),
         ],
     );
@@ -8181,53 +8790,70 @@ fn draw_more_row(
 // Room vocabulary
 // =====================================================================
 
+/// What one room change did, read from its patches once: a change's
+/// patches are fixed by its hash, and diffing every change of the room on
+/// every refresh made a workspace switch's first frame O(history).
+#[derive(Default)]
+pub(super) struct RoomChange {
+    /// The workspace the change belongs to; `None` for several or none.
+    workspace: Option<u64>,
+    counts: PatchCounts,
+    bookkeeping: bool,
+}
+
+impl RoomChange {
+    fn read(doc: &mut automerge::AutoCommit, deps: &[ChangeHash], hash: ChangeHash) -> Self {
+        #[cfg(test)]
+        ROOM_CHANGE_READS.with(|reads| reads.set(reads.get().saturating_add(1)));
+        let patches = doc.diff(deps, &[hash]);
+        let mut counts = PatchCounts::default();
+        for patch in &patches {
+            counts.record(patch);
+        }
+        Self {
+            workspace: workspace_touched(doc, &patches, hash),
+            counts,
+            bookkeeping: is_room_bookkeeping(&patches),
+        }
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// How many room changes this thread diffed, for the tests that pin
+    /// that a refresh reads only new changes.
+    pub(super) static ROOM_CHANGE_READS: Cell<usize> = const { Cell::new(0) };
+}
+
 /// Rewrite each row's summary in the room's own words where nameable,
 /// else keeps [`HistorySource`]'s generic one. Returns, per entry, the
-/// workspace the change belongs to — `None` for several or none.
+/// workspace the change belongs to — `None` for several or none. `known`
+/// keeps each change's reading across refreshes; only new changes are
+/// diffed. Each entry's hash and dependencies come from `log`, the history
+/// log `entries` were read through, so the room's changes are not listed
+/// again.
 fn describe_room_changes(
     doc: &mut automerge::AutoCommit,
+    log: &ui::history_source::HistoryLog,
     entries: &mut [HistoryEntry],
+    known: &mut HashMap<ChangeHash, RoomChange>,
 ) -> Vec<Option<u64>> {
     let mut tags: Vec<Option<u64>> = vec![None; entries.len()];
-    if entries.is_empty() {
-        return tags;
-    }
-    // Indexed so a long-lived room avoids a linear scan per change:
-    // `deps -> [hash]` isolates exactly that change.
-    let mut by_id: std::collections::HashMap<HistoryEntryId, usize> =
-        std::collections::HashMap::with_capacity(entries.len());
-    for (i, e) in entries.iter().enumerate() {
-        by_id.insert(e.id, i);
-    }
-    let changes: Vec<(HistoryEntryId, Vec<ChangeHash>, ChangeHash)> = doc
-        .get_changes(&[])
-        .into_iter()
-        .map(|c| {
-            (
-                ui::history_source::entry_id_from_hash(&c.hash().to_string()),
-                c.deps().to_vec(),
-                c.hash(),
-            )
-        })
-        .collect();
-
-    for (id, deps, hash) in changes {
-        let Some(&i) = by_id.get(&id) else {
+    for (entry, tag) in entries.iter_mut().zip(&mut tags) {
+        let Some((hash, deps)) = log.change(&entry.id) else {
             continue;
         };
-        let patches = doc.diff(&deps, &[hash]);
-        if let Some(tag) = tags.get_mut(i) {
-            *tag = workspace_touched(doc, &patches, hash);
-        }
-        let Some(entry) = entries.get_mut(i) else {
-            continue;
-        };
-        if let Some((summary, op_class)) = describe_patches(&patches) {
+        // `deps -> [hash]` isolates exactly that change.
+        let change = known
+            .entry(hash)
+            .or_insert_with(|| RoomChange::read(doc, deps, hash));
+        *tag = change.workspace;
+        if let Some((summary, entry_kind)) = change.counts.describe() {
             if entry.context.is_none() {
                 entry.summary = summary;
             }
-            entry.op_class = op_class;
-            if !room_event_belongs_in_feed(&patches) {
+            entry.entry_kind = entry_kind;
+            if !change.counts.feed_kind().belongs_in_feed() {
                 let mut context = entry.context.take().unwrap_or_default();
                 if !context
                     .facets
@@ -8240,7 +8866,7 @@ fn describe_room_changes(
                 }
                 entry.context = Some(context);
             }
-        } else if is_room_bookkeeping(&patches) {
+        } else if change.bookkeeping {
             entry.context = Some(
                 entry
                     .context
@@ -8345,11 +8971,12 @@ fn workspace_touched(
     found
 }
 
-/// Running counts [`describe_patches`] accumulates one patch at a time,
-/// then turns into a single room-event description. Split out from
-/// [`describe_patches`] purely to keep each step under the line-count
-/// guard — the accumulation and the priority cascade are still one
-/// pipeline, just two named steps of it.
+/// Running counts of one change's patches, turned into a single room event
+/// ([`PatchCounts::describe`]) and its place in the feed
+/// ([`PatchCounts::feed_kind`]). Content, membership and permission changes
+/// stay in the feed; setup (the workspace's own first writes), a plain open
+/// and window layout do not — they are durable, but they are not "what
+/// people did".
 #[derive(Default)]
 struct PatchCounts {
     grants: Vec<String>,
@@ -8371,18 +8998,31 @@ impl PatchCounts {
     fn record(&mut self, p: &automerge::Patch) {
         let container = path_tail(p);
         match (&p.action, container.as_str()) {
-            (automerge::PatchAction::PutMap { key, value, .. }, "capabilities") => {
-                let _ = key;
-                if let Value::Scalar(s) = &value.0
-                    && let ScalarValue::Bytes(blob) = s.as_ref()
-                    && let Ok(cap) = serde_json::from_slice::<CapOverride>(blob)
-                {
-                    self.grants.push(describe_capability(&cap));
-                } else {
-                    self.grants.push(t("activity-capability-unknown"));
-                }
+            (
+                automerge::PatchAction::PutMap { key, value, .. },
+                map @ ("grants" | "sandbox" | "members"),
+            ) => {
+                let described = match (&value.0, map) {
+                    (Value::Scalar(s), _) => match s.as_ref() {
+                        ScalarValue::Bytes(blob) => match map {
+                            "grants" => serde_json::from_slice::<tilo_action_policy::Grant>(blob)
+                                .ok()
+                                .map(|grant| describe_grant(&grant)),
+                            "sandbox" => serde_json::from_slice::<CapOverride>(blob)
+                                .ok()
+                                .map(|cap| describe_capability(&cap)),
+                            _ => serde_json::from_slice::<tilo_action_policy::Role>(blob)
+                                .ok()
+                                .map(|role| describe_member(key, role)),
+                        },
+                        _ => None,
+                    },
+                    (Value::Object(_), _) => None,
+                };
+                self.grants
+                    .push(described.unwrap_or_else(|| t("activity-capability-unknown")));
             }
-            (automerge::PatchAction::DeleteMap { .. }, "capabilities") => {
+            (automerge::PatchAction::DeleteMap { .. }, "grants" | "sandbox" | "members") => {
                 self.revokes = self.revokes.saturating_add(1);
             }
             // A room's `contents` map: a window is an entry of a group's
@@ -8453,11 +9093,11 @@ impl PatchCounts {
     /// noise, and a whole-list write (the first `seed_doc_from_cache`) is
     /// recognised before the per-field cases, or a flush that granted
     /// nothing reads as "granted 4 capabilities".
-    fn describe(&self) -> Option<(String, OpClass)> {
+    fn describe(&self) -> Option<(String, EntryKind)> {
         if self.workspaces_removed > 0 && self.workspaces_added == 0 {
             return Some((
                 counted("activity-event-removed-workspaces", self.workspaces_removed),
-                OpClass::Tombstone,
+                EntryKind::Delete,
             ));
         }
         if self.workspaces_added > 0 {
@@ -8475,7 +9115,7 @@ impl PatchCounts {
                     ],
                 ),
             };
-            return Some((s, OpClass::Splice));
+            return Some((s, EntryKind::Text));
         }
         // A room document's first change names the room, its owner and its
         // name at once: that is the workspace being made.
@@ -8484,7 +9124,7 @@ impl PatchCounts {
                 Some(name) => t_args("activity-event-created-named", &[("name", name.into())]),
                 None => t("activity-event-created"),
             };
-            return Some((s, OpClass::Govern));
+            return Some((s, EntryKind::Access));
         }
 
         if !self.grants.is_empty() {
@@ -8499,19 +9139,19 @@ impl PatchCounts {
             } else {
                 counted("activity-event-granted-capabilities", self.grants.len())
             };
-            return Some((s, OpClass::Govern));
+            return Some((s, EntryKind::Access));
         }
         if self.revokes > 0 {
             return Some((
                 counted("activity-event-revoked-capabilities", self.revokes),
-                OpClass::Govern,
+                EntryKind::Access,
             ));
         }
         if self.owner_set {
-            return Some((t("activity-event-owner"), OpClass::Govern));
+            return Some((t("activity-event-owner"), EntryKind::Access));
         }
         if self.room_set {
-            return Some((t("activity-event-identity"), OpClass::Govern));
+            return Some((t("activity-event-identity"), EntryKind::Access));
         }
         if let Some(name) = self.names.first() {
             let s = if name.is_empty() {
@@ -8519,7 +9159,7 @@ impl PatchCounts {
             } else {
                 t_args("activity-event-named", &[("name", name.into())])
             };
-            return Some((s, OpClass::EditMeta));
+            return Some((s, EntryKind::Details));
         }
         if self.tabs_added > 0 {
             let s = if self.tab_titles.is_empty() {
@@ -8530,19 +9170,19 @@ impl PatchCounts {
                     &[("titles", join_titles(&self.tab_titles).into())],
                 )
             };
-            return Some((s, OpClass::Splice));
+            return Some((s, EntryKind::Text));
         }
         if self.tabs_removed > 0 {
             return Some((
                 counted("activity-event-closed-windows", self.tabs_removed),
-                OpClass::Tombstone,
+                EntryKind::Delete,
             ));
         }
         if self.groups_moved > 0 {
-            return Some((t("activity-event-rearranged"), OpClass::Move));
+            return Some((t("activity-event-rearranged"), EntryKind::Move));
         }
         if self.geometry > 0 {
-            return Some((t("activity-event-resized"), OpClass::EditMeta));
+            return Some((t("activity-event-resized"), EntryKind::Details));
         }
         if self.active_switched {
             return Some((
@@ -8551,32 +9191,11 @@ impl PatchCounts {
                 // workspace-switch confirmation to truncate at accessibility
                 // text sizes.
                 t("activity-event-switched"),
-                OpClass::EditMeta,
+                EntryKind::Details,
             ));
         }
         None
     }
-}
-
-/// Map a change's patches onto a room event, or `None` when nothing in it is
-/// recognised.
-fn describe_patches(patches: &[automerge::Patch]) -> Option<(String, OpClass)> {
-    let mut counts = PatchCounts::default();
-    for p in patches {
-        counts.record(p);
-    }
-    counts.describe()
-}
-
-/// Content, membership and permission changes stay in the feed. Setup
-/// (the workspace's own first writes), a plain open, and window layout
-/// do not — they are durable, but they are not "what people did".
-fn room_event_belongs_in_feed(patches: &[automerge::Patch]) -> bool {
-    let mut counts = PatchCounts::default();
-    for p in patches {
-        counts.record(p);
-    }
-    counts.feed_kind().belongs_in_feed()
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -8648,14 +9267,88 @@ fn scalar_string(v: &Value<'_>) -> Option<String> {
     }
 }
 
-/// A capability in one short phrase: what, over what, to whom.
+/// A grant in one short phrase: its answer, for which kinds of action, on
+/// what, to whom.
+fn describe_grant(grant: &tilo_action_policy::Grant) -> String {
+    use tilo_action_policy::{ActionKind, Answer};
+    let answer = match grant.answer {
+        Answer::Allow => "allow",
+        Answer::Ask => "ask",
+        Answer::Deny => "deny",
+    };
+    let kinds = grant.kinds;
+    let kinds = match (
+        kinds.contains(ActionKind::Read),
+        kinds.contains(ActionKind::Undoable),
+        kinds.contains(ActionKind::Outside),
+    ) {
+        (true, true, true) => "all",
+        (true, true, false) => "read-undoable",
+        (true, false, true) => "read-outside",
+        (false, true, true) => "undoable-outside",
+        (true, false, false) => "read",
+        (false, true, false) => "undoable",
+        (false, false, true) => "outside",
+        (false, false, false) => "none",
+    };
+    t_args(
+        "activity-grant",
+        &[
+            ("answer", answer.into()),
+            ("kinds", kinds.into()),
+            (
+                "node",
+                tilo_action_policy::describe_node(&grant.node, &tilo_action_policy::Ids).into(),
+            ),
+            ("subject", describe_grantee(&grant.subject).into()),
+        ],
+    )
+}
+
+fn describe_grantee(subject: &tilo_action_policy::Subject) -> String {
+    use tilo_action_policy::Subject as Grantee;
+    match subject {
+        Grantee::Person(id) => short(id),
+        Grantee::Role(role) => t_args(
+            "activity-capability-role",
+            &[("role", role_key(*role).into())],
+        ),
+        Grantee::Agent(agent) => t_args("activity-capability-agent", &[("agent", agent.into())]),
+        Grantee::Task(task) => t_args("activity-grant-task", &[("task", short(task).into())]),
+        Grantee::Shortcut(shortcut) => {
+            t_args("activity-grant-shortcut", &[("shortcut", shortcut.into())])
+        }
+        Grantee::App(app) => app.clone(),
+        Grantee::ForeignDevice => t("activity-grant-foreign-device"),
+    }
+}
+
+/// The catalogue selector of a role.
+fn role_key(role: tilo_action_policy::Role) -> &'static str {
+    match role {
+        tilo_action_policy::Role::Owner => "owner",
+        tilo_action_policy::Role::Editor => "editor",
+        tilo_action_policy::Role::Commenter => "commenter",
+        tilo_action_policy::Role::Viewer => "viewer",
+    }
+}
+
+/// A member admitted to the room, or their role changed.
+fn describe_member(person: &str, role: tilo_action_policy::Role) -> String {
+    t_args(
+        "activity-member",
+        &[
+            ("person", short(person).into()),
+            ("role", role_key(role).into()),
+        ],
+    )
+}
+
+/// A sandbox capability in one short phrase: what, over what, to whom.
 fn describe_capability(cap: &CapOverride) -> String {
-    let verb = match cap.verb {
-        Verb::Read => "read",
-        Verb::Comment => "comment",
-        Verb::Write => "write",
-        Verb::Invite => "invite",
-        Verb::Admin => "admin",
+    let verb = match cap.access {
+        Access::Read => "read",
+        Access::Write => "write",
     };
     let effect = match cap.effect {
         Effect::Grant => "grant",
@@ -8674,39 +9367,17 @@ fn describe_capability(cap: &CapOverride) -> String {
 
 fn describe_scope(scope: &Scope) -> String {
     match scope {
-        Scope::Workspace | Scope::Room(_) => t("activity-capability-this-workspace"),
-        Scope::App(a) => a.clone(),
-        Scope::ResourceType(k) => t_args(
-            "activity-capability-every-type",
-            &[("kind", format!("{k:?}").into())],
-        ),
-        Scope::ResourceInstance(_) => t("activity-capability-one-artifact"),
         Scope::FsPath(p) => p.clone(),
         // Record authority intentionally has no path: it follows the file
         // across rename/move and the stable id is not useful activity copy.
         Scope::FsRecord(_) => t("activity-capability-one-shared-file"),
         Scope::Device(d) => d.clone(),
         Scope::NetHost(h) => t_args("activity-capability-network", &[("host", h.into())]),
-        Scope::Action { app, action } => format!("{app}:{action}"),
     }
 }
 
 fn describe_subject(subject: &Subject) -> String {
     match subject {
-        Subject::Role(role) => t_args(
-            "activity-capability-role",
-            &[(
-                "role",
-                match role {
-                    collab_types::role::Role::Owner => "owner",
-                    collab_types::role::Role::Editor => "editor",
-                    collab_types::role::Role::Commenter => "commenter",
-                    collab_types::role::Role::Viewer => "viewer",
-                    collab_types::role::Role::Denied => "denied",
-                }
-                .into(),
-            )],
-        ),
         Subject::User(_) => t("activity-capability-a-person"),
         Subject::Principal(p) => describe_principal(p),
     }
@@ -8774,6 +9445,28 @@ fn task_route_label(route: WorkspaceTaskRoute) -> String {
 }
 
 /// How an action with no summary of its own ended.
+/// What an effect's receipt says: what the effect did, with how it ended
+/// when it did not complete.
+fn receipt_summary(
+    context: &tilo_actions::ActionContext,
+    status: &tilo_actions::EffectReceiptStatus,
+) -> String {
+    crate::i18n::ensure();
+    let Some(what) = ui::history_source::sentence::step_summary(context) else {
+        return receipt_status_label(status);
+    };
+    match status {
+        tilo_actions::EffectReceiptStatus::Succeeded => what,
+        _ => t_args(
+            "activity-receipt-ended",
+            &[
+                ("status", receipt_status_label(status).into()),
+                ("what", what.into()),
+            ],
+        ),
+    }
+}
+
 fn receipt_status_label(status: &tilo_actions::EffectReceiptStatus) -> String {
     t(match status {
         tilo_actions::EffectReceiptStatus::Succeeded => "activity-receipt-completed",

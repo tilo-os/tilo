@@ -56,17 +56,40 @@ impl Stewardship {
         }
     }
 
-    /// Read keys only for an already-open channel. No initialization occurs.
+    /// Read keys for an existing channel, recovering its sealed state if cold.
+    /// Missing channels are refused; this path never initializes a group.
     #[cfg(feature = "agents")]
     pub(super) fn existing_keys(
-        &self,
+        &mut self,
         channel: ChannelId,
     ) -> Result<channel_crypto::ChannelContentKeys, String> {
+        if !self.stewards.contains_key(&channel) {
+            if self.stewards.len() >= MAX_CHANNELS {
+                return Err("the room stewards too many channels".into());
+            }
+            let steward =
+                ChannelSteward::open_existing(&self.dir, channel, self.key.clone(), &self.vault)
+                    .map_err(|error| error.to_string())?;
+            self.stewards.insert(channel, steward);
+        }
         self.stewards
             .get(&channel)
             .ok_or("the source channel is not open on this host")?
             .content_keys()
             .map_err(|error| error.to_string())
+    }
+
+    /// Open `channel` for this device's own endpoint, which is about to
+    /// write its first record there: create its group when it has none yet,
+    /// with `allowed` admitted as they ask, exactly as the first member's
+    /// request would. Returns the governance messages to publish.
+    #[cfg(feature = "agents")]
+    pub(super) fn open_channel(
+        &mut self,
+        channel: ChannelId,
+        allowed: &BTreeSet<Ed25519PublicKey>,
+    ) -> Result<Vec<NeighbourMsg>, String> {
+        self.reconcile(channel, allowed)
     }
 
     fn device(&self) -> Ed25519PublicKey {

@@ -9,6 +9,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).parent))
 from acceptance.action_jobs import PendingJob
 from acceptance.vm import VmError
+from acceptance import official_runtime
 spec = importlib.util.spec_from_file_location("store_chooser", Path(__file__).with_name("store-chooser.py"))
 driver = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(driver)
@@ -55,6 +56,20 @@ class ChooserSafety(unittest.TestCase):
             with patch.object(driver, "workspace"), patch.object(driver, "picker_rows", return_value=[row()]), patch.object(driver, "invoke", return_value=reply):
                 with self.assertRaises(VmError):
                     chooser.call("inspect")
+
+    def test_initial_documents_parent_uses_current_state_and_declared_up(self):
+        chooser = driver.Chooser(None, IDENTITY, "room", Path("."), None)
+        inspected = value(); inspected["can_up"] = True
+        with patch.object(chooser, "call", return_value=inspected) as call:
+            chooser.ascend(1)
+        self.assertEqual(call.call_args_list[0].args, ("inspect", {"page": 0}))
+        self.assertEqual(call.call_args_list[1].args, ("up", {"state": inspected["state"]}))
+        for fields in ({"can_up": False}, {"completed": True}, {}):
+            refused = value(); refused.update(fields)
+            with patch.object(chooser, "call", return_value=refused) as call:
+                with self.assertRaises(VmError):
+                    chooser.ascend(1)
+                self.assertEqual(call.call_count, 1)
 
     def test_paged_entry_uses_actual_opaque_id_and_rejects_listing_changes(self):
         chooser = driver.Chooser(None, IDENTITY, "room", Path("."), None)
@@ -152,6 +167,97 @@ class ChooserSafety(unittest.TestCase):
         job = PendingJob(vm, receipt(), Path("."), "import")
         with self.assertRaises(VmError):
             job.pending()
+
+
+class CanonicalRuntimeAudit(unittest.TestCase):
+    def test_invalid_subject_does_not_invoke_installer(self):
+        with patch.object(official_runtime, "command") as command:
+            with self.assertRaises(RuntimeError):
+                official_runtime.inspect("so.tilo.notes", "f" * 64, "1", "tilo-runtime/official", "d" * 64)
+        command.assert_not_called()
+
+    def test_canonical_refusal_and_wrong_root_stop_before_bundle_lookup(self):
+        for response in (VmError("signature revoked"),
+                         "id : so.tilo.calculator\nversion : 1\npackage-id : tapp:" + "e" * 64):
+            with patch.object(official_runtime, "command", side_effect=["verified", response]) as command:
+                with self.assertRaises((RuntimeError, VmError)):
+                    official_runtime.inspect("so.tilo.calculator", "f" * 64, "1", "tilo-runtime/official", "d" * 64)
+            self.assertEqual(command.call_count, 2)
+
+    def test_public_file_hash_is_bounded_and_matches_actual_bytes(self):
+        import hashlib
+        with tempfile.TemporaryDirectory() as directory:
+            file = Path(directory) / "official-public-payload"
+            file.write_bytes(b"public signed-payload fixture bytes")
+            digest, status = official_runtime.hash_file(file)
+            self.assertEqual(digest, hashlib.sha256(file.read_bytes()).hexdigest())
+            self.assertEqual(status.st_size, file.stat().st_size)
+            file.write_bytes(b"")
+            with self.assertRaises(RuntimeError):
+                official_runtime.hash_file(file)
+
+    def test_duplicate_inspector_fields_are_ambiguous(self):
+        with self.assertRaises(RuntimeError):
+            official_runtime.fields("version : old\nversion : new")
+
+
+class InstalledOpen(unittest.TestCase):
+    fixture = {"package_id": "so.tilo.calculator", "publisher": "d" * 64,
+               "offer": {"version": "official", "tapp_root_hash_hex": "f" * 64,
+                         "target": {"runtime": "tilo-runtime/official"}}}
+
+    def subject(self):
+        return {"workspace_tree": {"local_app_records": {"7": {
+            "room": "room", "app_id": "so.tilo.calculator", "record_instance": 11}},
+            "workspaces": [{"room": "room", "strips": [{"window_groups": [{"tabs": [
+                {"id": 7, "tile": {"Foreign": {"app_id": "so.tilo.calculator", "surface_id": 99}}}
+            ]}]}]}]}}
+
+    def door(self):
+        from unittest.mock import Mock
+        vm = Mock()
+        vm.state.side_effect = lambda: self.subject()
+        vm.slot_uid.return_value = 1000
+        vm.run.return_value = __import__("json").dumps({"uid": 1000,
+            "runtime": "tilo-runtime/official", "files": {"signed-file": "sha"}, "executable_sha256": "app-sha"})
+        door = Mock(vm=vm, bound=(driver.app.STORE, "room", "record", "resource"))
+        door.settled.return_value = {"detail": {"installed": True}}
+        return door
+
+    def test_existing_window_update_requires_official_backing_without_close(self):
+        door = self.door()
+        with tempfile.TemporaryDirectory() as directory, patch.object(driver.app, "mapped") as mapped:
+            value = driver.install_open(door, self.fixture, True, Path(directory))
+        self.assertEqual(value["installation"], "update/reuse")
+        self.assertEqual(value["window"], "reuse")
+        self.assertEqual(value["record"], "derived:default@tab:000000000000000b")
+        self.assertEqual([call.args[0] for call in door.call.call_args_list],
+                         ["install-imported-package", "open"])
+        self.assertEqual(mapped.call_args.args[1:4], ("calculator", {"signed-file": "sha"}, 1000))
+
+    def test_old_resident_sdk_and_missing_association_fail_without_closing(self):
+        for missing in (False, True):
+            door = self.door()
+            if missing:
+                state = self.subject()
+                state["workspace_tree"]["local_app_records"] = {}
+                door.vm.state.side_effect = None
+                door.vm.state.return_value = state
+            with tempfile.TemporaryDirectory() as directory, \
+                    patch.object(driver, "wait_until", side_effect=lambda probe, _: probe()), \
+                    patch.object(driver.app, "mapped", side_effect=VmError("old resident SDK")):
+                with self.assertRaises(VmError):
+                    driver.install_open(door, self.fixture, True, Path(directory))
+            self.assertEqual([call.args[0] for call in door.call.call_args_list],
+                             ["install-imported-package", "open"])
+
+    def test_canonical_identity_failure_stops_before_open(self):
+        door = self.door()
+        door.vm.run.side_effect = VmError("verified installed root differs")
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaises(VmError):
+                driver.install_open(door, self.fixture, True, Path(directory))
+        self.assertEqual([call.args[0] for call in door.call.call_args_list], ["install-imported-package"])
 
 
 if __name__ == "__main__":

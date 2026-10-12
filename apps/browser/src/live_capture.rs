@@ -8,7 +8,6 @@ use std::sync::{Arc, Mutex};
 
 use taffy::prelude::*;
 use ui::offscreen::OffscreenRenderer;
-use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::webview::{FrameSlot, SharedEngine, WebViewCommand, WebViewEngine, WebViewEvent};
@@ -151,7 +150,6 @@ fn render_live_shot_to_png(
     let (w, h) = viewport;
     let theme = ui::launch::shot_theme_from_env()?;
     let presence = PresenceCtx::empty();
-    let permission = PermissionContext::permissive();
     let mut text_renderer = TextRenderer::new();
     text_renderer.set_text_scale(theme.text_scale);
 
@@ -241,13 +239,12 @@ fn render_live_shot_to_png(
                         continue;
                     }
                     let mut scene = Scene::new();
-                    widget.draw_with_presence(
+                    widget.draw(
                         &mut scene,
                         Affine::IDENTITY,
                         &mut text_renderer,
                         &theme,
                         &presence,
-                        &permission,
                     );
                     return write_live_capture(
                         &scene,

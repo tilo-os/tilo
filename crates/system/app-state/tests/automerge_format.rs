@@ -21,9 +21,30 @@ use automerge::{
 };
 use tilo_automerge::ApplyIncoming;
 
-const DOCUMENT: &[u8] = include_bytes!("data/automerge-0.8/document.automerge");
-const CHANGES: &[u8] = include_bytes!("data/automerge-0.8/changes.automerge");
-const SYNC_MESSAGE: &[u8] = include_bytes!("data/automerge-0.8/sync-message.bin");
+static DOCUMENT: std::sync::LazyLock<Vec<u8>> = std::sync::LazyLock::new(|| {
+    include_str!("data/automerge-0.8/document.automerge.hex")
+        .split_ascii_whitespace()
+        .map(|byte| {
+            u8::from_str_radix(byte, 16).expect("checked-in fixture contains hexadecimal bytes")
+        })
+        .collect()
+});
+static CHANGES: std::sync::LazyLock<Vec<u8>> = std::sync::LazyLock::new(|| {
+    include_str!("data/automerge-0.8/changes.automerge.hex")
+        .split_ascii_whitespace()
+        .map(|byte| {
+            u8::from_str_radix(byte, 16).expect("checked-in fixture contains hexadecimal bytes")
+        })
+        .collect()
+});
+static SYNC_MESSAGE: std::sync::LazyLock<Vec<u8>> = std::sync::LazyLock::new(|| {
+    include_str!("data/automerge-0.8/sync-message.bin.hex")
+        .split_ascii_whitespace()
+        .map(|byte| {
+            u8::from_str_radix(byte, 16).expect("checked-in fixture contains hexadecimal bytes")
+        })
+        .collect()
+});
 
 /// Change hashes automerge 0.8.0 computed for [`build`], in causal order.
 const CHANGE_HASHES: [&str; 4] = [
@@ -161,19 +182,19 @@ fn assert_reference_content(doc: &AutoCommit) {
 fn documents_change_logs_and_sync_messages_from_automerge_0_8_still_load() {
     // Phase `documents_saved_by_automerge_0_8_still_load`.
     {
-        let mut doc = AutoCommit::load(DOCUMENT).unwrap();
+        let mut doc = AutoCommit::load(DOCUMENT.as_slice()).unwrap();
         assert_eq!(hex_heads(&mut doc), [HEAD]);
         assert_reference_content(&doc);
     }
     // Phase `change_logs_written_by_automerge_0_8_still_load`.
     {
-        let mut doc = AutoCommit::load(CHANGES).unwrap();
+        let mut doc = AutoCommit::load(CHANGES.as_slice()).unwrap();
         assert_eq!(hex_heads(&mut doc), [HEAD]);
         assert_reference_content(&doc);
     }
     // Phase `sync_messages_from_automerge_0_8_peers_are_understood`.
     {
-        let message = sync::Message::decode(SYNC_MESSAGE).unwrap();
+        let message = sync::Message::decode(SYNC_MESSAGE.as_slice()).unwrap();
         assert_eq!(
             message
                 .heads
@@ -185,7 +206,7 @@ fn documents_change_logs_and_sync_messages_from_automerge_0_8_still_load() {
 
         // An empty peer answering the old peer's opening message asks for
         // everything, and the old peer's document then syncs across.
-        let mut old_peer = AutoCommit::load(DOCUMENT).unwrap();
+        let mut old_peer = AutoCommit::load(DOCUMENT.as_slice()).unwrap();
         let mut old_state = sync::State::new();
         let mut new_peer = AutoCommit::new();
         let mut new_state = sync::State::new();
@@ -221,12 +242,12 @@ fn rebuilt_documents_keep_their_change_hashes_and_saved_bytes() {
     // Phase `saved_bytes_are_unchanged`.
     {
         let mut doc = build().unwrap();
-        assert_eq!(doc.save(), DOCUMENT, "save() output");
+        assert_eq!(doc.save(), DOCUMENT.as_slice(), "save() output");
         let changes: Vec<u8> = doc
             .get_changes(&[])
             .iter()
             .flat_map(|c| c.raw_bytes().to_vec())
             .collect();
-        assert_eq!(changes, CHANGES, "raw change bytes");
+        assert_eq!(changes, CHANGES.as_slice(), "raw change bytes");
     }
 }

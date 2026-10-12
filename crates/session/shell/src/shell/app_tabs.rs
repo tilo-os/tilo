@@ -415,7 +415,21 @@ mod tests {
             let chrome = ChromeState::new(WorkspaceTree::bootstrap_demo());
             let mut st = chrome.borrow_mut();
             let fixture = group_with_page(&mut st.tree_mut(), APP, 44);
+            crate::shell::foreign::store().note_adopted(9_001);
             apply_request(&mut st, APP, Some(44), AppTabRequest::Close).unwrap();
+            assert_eq!(
+                group_tabs(&st.tree(), fixture.group).0,
+                vec![fixture.page, fixture.other],
+                "the app can defer its ordinary close request"
+            );
+            assert!(
+                crate::shell::tab_binding::close_tab_for_destroyed_surface_and_persist(
+                    &mut st.tree_mut(),
+                    9_001,
+                )
+            );
+            crate::shell::foreign::store().forget(9_001);
+            st.sync_external_tree_revision();
             assert_eq!(group_tabs(&st.tree(), fixture.group).0, vec![fixture.other]);
             apply_request(&mut st, APP, None, AppTabRequest::ReopenClosed).unwrap();
             let tree = st.tree();
@@ -470,7 +484,10 @@ mod tests {
                              key: &str,
                              modifiers: ModifiersState| {
                 frame.dispatch_event(
-                    &crate::shell::test_support::typed_key_event(Key::Character(key.into())),
+                    &ui::synthetic_input::key_input(
+                        &Key::Character(key.into()),
+                        winit::event::ElementState::Pressed,
+                    ),
                     &Modifiers::from(modifiers),
                     &mut ui::widget::Edits::lend(&mut document),
                     &automerge::ROOT,

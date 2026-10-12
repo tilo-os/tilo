@@ -145,7 +145,7 @@ impl PickerScope {
 /// conventional `~/Documents`. Nothing is created — a machine without one falls back to `$HOME`.
 fn documents_dir(home: Option<&Path>) -> Option<PathBuf> {
     let home = home?;
-    let configured = xdg_paths::UserDir::Documents.resolve_for_home(home);
+    let configured = tilo_paths::UserDir::Documents.resolve_for_home(home);
     if let Some(dir) = configured.filter(|d| is_useful_documents_dir(d, home)) {
         return Some(dir);
     }

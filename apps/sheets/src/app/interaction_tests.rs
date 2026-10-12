@@ -7,19 +7,16 @@
 use super::tests::{char_event, ctrl_mods, feed, measured_app_with_doc, paint_frame};
 use super::*;
 use crate::model::FormatCategory;
+use automerge::AutoCommit;
 
 fn mouse(state: ElementState) -> WindowEvent {
-    WindowEvent::MouseInput {
-        device_id: unsafe { std::mem::zeroed() },
-        state,
-        button: MouseButton::Left,
-    }
+    ui::synthetic_input::mouse_input(state, ui::winit::event::MouseButton::Left)
 }
 
 /// Move the pointer to `p` and press and release the left button there.
 fn click(app: &mut SheetsApp, doc: &mut AutoCommit, p: Point) {
     let moved = WindowEvent::CursorMoved {
-        device_id: unsafe { std::mem::zeroed() },
+        device_id: winit::event::DeviceId::dummy(),
         position: winit::dpi::PhysicalPosition::new(p.x, p.y),
     };
     feed(app, doc, &moved, Modifiers::default());

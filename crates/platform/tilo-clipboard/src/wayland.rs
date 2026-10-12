@@ -139,6 +139,7 @@ enum ClipboardCommand {
     SetImage(Vec<u8>, std::sync::mpsc::Sender<bool>, tilo_clock::Instant),
     Exit,
     Fence(std::sync::mpsc::Sender<()>),
+    ReadText(std::sync::mpsc::Sender<Option<String>>, tilo_clock::Instant),
     #[cfg(test)]
     CommandProcessed(std::sync::mpsc::Sender<()>),
 }
@@ -379,6 +380,7 @@ mod image_worker_impl {
         rich_seat: Option<WlSeat>,
         rich_active_seat: Option<WlSeat>,
         rich_pending: Option<PendingRich>,
+        plain_pending: Option<PendingPlain>,
         rich_read_budget: tilo_clock::Duration,
         exit: bool,
     }
@@ -454,6 +456,7 @@ mod image_worker_impl {
             rich_seat: None,
             rich_active_seat: None,
             rich_pending: None,
+            plain_pending: None,
             rich_read_budget,
             exit: false,
         };
@@ -495,6 +498,9 @@ mod image_worker_impl {
                         fence_connection.display().sync(&state.queue_handle, reply);
                         let _ = fence_connection.flush();
                     }
+                    ClipboardCommand::ReadText(reply, deadline) => {
+                        state.request_plain_read(&fence_connection, reply, deadline);
+                    }
                 }
             }
         });
@@ -516,6 +522,36 @@ mod image_worker_impl {
         payload: std::sync::Mutex<Option<PublicationPayload>>,
         reply: std::sync::mpsc::Sender<bool>,
         deadline: tilo_clock::Instant,
+    }
+
+    struct PlainRequest {
+        reply: std::sync::Mutex<Option<std::sync::mpsc::Sender<Option<String>>>>,
+        deadline: tilo_clock::Instant,
+    }
+
+    struct PendingPlain {
+        seat: WlSeat,
+        generation: u64,
+        reply: std::sync::mpsc::Sender<Option<String>>,
+        reader: Option<calloop::RegistrationToken>,
+        timer: Option<calloop::RegistrationToken>,
+    }
+
+    impl Dispatch<sctk::reexports::client::protocol::wl_callback::WlCallback, PlainRequest> for State {
+        fn event(
+            state: &mut Self,
+            _: &sctk::reexports::client::protocol::wl_callback::WlCallback,
+            _: sctk::reexports::client::protocol::wl_callback::Event,
+            request: &PlainRequest,
+            connection: &Connection,
+            _: &QueueHandle<Self>,
+        ) {
+            if let Ok(mut reply) = request.reply.lock()
+                && let Some(reply) = reply.take()
+            {
+                state.start_plain_read(connection, reply, request.deadline);
+            }
+        }
     }
 
     impl PendingPublication {
@@ -858,6 +894,159 @@ mod image_worker_impl {
     }
 
     impl State {
+        fn request_plain_read(
+            &self,
+            connection: &Connection,
+            reply: std::sync::mpsc::Sender<Option<String>>,
+            deadline: tilo_clock::Instant,
+        ) {
+            // Read only after this queue has handled preceding selection and
+            // keyboard-focus events, including a queued focus revocation.
+            connection.display().sync(
+                &self.queue_handle,
+                PlainRequest {
+                    reply: std::sync::Mutex::new(Some(reply)),
+                    deadline,
+                },
+            );
+            let _ = connection.flush();
+        }
+
+        fn finish_plain_read(&mut self, value: Option<String>) {
+            if let Some(pending) = self.plain_pending.take() {
+                for token in [pending.reader, pending.timer].into_iter().flatten() {
+                    self.loop_handle.remove(token);
+                }
+                let _ = pending.reply.send(value);
+                self.rich.wake.wake();
+            }
+        }
+
+        fn start_plain_read(
+            &mut self,
+            connection: &Connection,
+            reply: std::sync::mpsc::Sender<Option<String>>,
+            deadline: tilo_clock::Instant,
+        ) {
+            // One explicit paste can own one bounded pipe. A newer request
+            // cancels the previous transfer rather than accumulating readers.
+            self.finish_plain_read(None);
+            let offered = self.latest_seat.as_ref().and_then(|seat| {
+                let data = self.seats.get(seat)?;
+                if !data.keyboard_focus || !data.rich_offer_seen {
+                    return None;
+                }
+                let device = data.data_device.as_ref()?;
+                let offer = device.data().selection_offer()?;
+                let mime = offer.with_mime_types(|types| {
+                    [
+                        "text/plain;charset=utf-8",
+                        "text/plain",
+                        "UTF8_STRING",
+                        "STRING",
+                        "TEXT",
+                    ]
+                    .into_iter()
+                    .find(|mime| types.iter().any(|offered| offered == mime))
+                })?;
+                Some((seat.clone(), offer.receive(mime.into()).ok()?))
+            });
+            let Some((seat, pipe)) = offered.filter(|_| tilo_clock::now() < deadline) else {
+                let _ = reply.send(None);
+                self.rich.wake.wake();
+                return;
+            };
+            let generation = self.rich.generation();
+            self.plain_pending = Some(PendingPlain {
+                seat,
+                generation,
+                reply,
+                reader: None,
+                timer: None,
+            });
+            if !self.register_plain_reader(pipe, generation, deadline) {
+                self.finish_plain_read(None);
+                return;
+            }
+            let timer = self.loop_handle.insert_source(
+                calloop::timer::Timer::from_deadline(deadline),
+                move |_, (), state| {
+                    if let Some(pending) = state.plain_pending.as_mut()
+                        && pending.generation == generation
+                    {
+                        pending.timer = None;
+                        state.finish_plain_read(None);
+                    }
+                    calloop::timer::TimeoutAction::Drop
+                },
+            );
+            if let Ok(timer) = timer {
+                if let Some(pending) = self.plain_pending.as_mut() {
+                    pending.timer = Some(timer);
+                }
+            } else {
+                self.finish_plain_read(None);
+            }
+            if connection.flush().is_err() {
+                self.finish_plain_read(None);
+            }
+        }
+
+        fn register_plain_reader(
+            &mut self,
+            pipe: sctk::data_device_manager::ReadPipe,
+            generation: u64,
+            deadline: tilo_clock::Instant,
+        ) -> bool {
+            let Ok(flags) = get_fd_flags(pipe.as_raw_fd()) else {
+                return false;
+            };
+            if !set_fd_flags(pipe.as_raw_fd(), flags | libc::O_NONBLOCK) {
+                return false;
+            }
+            let mut reader = RichPipe::new(RichPart::Plain);
+            let inserted = self
+                .loop_handle
+                .insert_source(pipe, move |(), pipe, state| {
+                    let Some(pending) = state.plain_pending.as_ref() else {
+                        return PostAction::Remove;
+                    };
+                    if pending.generation != generation {
+                        return PostAction::Remove;
+                    }
+                    let current = generation == state.rich.generation()
+                        && tilo_clock::now() < deadline
+                        && state
+                            .seats
+                            .get(&pending.seat)
+                            .is_some_and(|seat| seat.keyboard_focus);
+                    // SAFETY: this source owns the nonblocking pipe throughout
+                    // this callback, and the borrow ends before returning.
+                    let result = if current {
+                        reader.read(unsafe { pipe.get_mut() })
+                    } else {
+                        RichRead::Finished(None)
+                    };
+                    match result {
+                        RichRead::Pending => PostAction::Continue,
+                        RichRead::Finished(value) => {
+                            if let Some(pending) = state.plain_pending.as_mut() {
+                                pending.reader = None;
+                            }
+                            state.finish_plain_read(value);
+                            PostAction::Remove
+                        }
+                    }
+                });
+            let Ok(token) = inserted else {
+                return false;
+            };
+            if let Some(pending) = self.plain_pending.as_mut() {
+                pending.reader = Some(token);
+            }
+            true
+        }
+
         fn stop_rich_readers(&mut self) {
             if let Some(pending) = self.rich_pending.take() {
                 for token in [pending.html_reader, pending.plain_reader, pending.timer]
@@ -870,13 +1059,19 @@ mod image_worker_impl {
         }
 
         fn invalidate_rich(&mut self) {
+            self.finish_plain_read(None);
             self.rich.invalidate();
             self.stop_rich_readers();
             self.rich_seat = None;
         }
 
         fn invalidate_rich_seat(&mut self, seat: &WlSeat) {
-            if self.rich_seat.as_ref() == Some(seat) {
+            if self.rich_seat.as_ref() == Some(seat)
+                || self
+                    .plain_pending
+                    .as_ref()
+                    .is_some_and(|pending| &pending.seat == seat)
+            {
                 self.invalidate_rich();
             }
         }
@@ -1515,6 +1710,22 @@ fn publication_worker(
 }
 
 impl ClipboardBackend for WaylandClipboard {
+    fn request_text(&self, target: ClipboardTarget) -> std::sync::mpsc::Receiver<Option<String>> {
+        let (reply, result) = std::sync::mpsc::channel();
+        if target == ClipboardTarget::Primary {
+            let _ = reply.send(self.text(target));
+        } else {
+            let now = tilo_clock::now();
+            let deadline = now
+                .checked_add(tilo_clock::Duration::from_secs(2))
+                .unwrap_or(now);
+            if !self.send_publication(ClipboardCommand::ReadText(reply.clone(), deadline)) {
+                let _ = reply.send(None);
+            }
+        }
+        result
+    }
+
     fn set_text(&self, target: ClipboardTarget, text: &str) -> bool {
         match target {
             ClipboardTarget::Clipboard => {

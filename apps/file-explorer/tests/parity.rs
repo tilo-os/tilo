@@ -28,6 +28,7 @@ fn e(name: &str, is_dir: bool, size: u64, mime: &str, year: i32) -> Entry {
         share: None,
         history: None,
         rich_metadata: None,
+        observed: None,
     }
 }
 
@@ -372,17 +373,9 @@ fn open_terminal_asks_the_shell_for_terminal_in_this_directory() {
 
 #[test]
 fn list_and_grid_builders_compose_real_file_views() {
-    list_mode_has_name_size_modified_columns();
     list_build_yields_a_file_view();
     grid_mode_uses_responsive_file_view();
     draw_composition_exercises_the_five_pass_pipeline();
-}
-
-fn list_mode_has_name_size_modified_columns() {
-    // The type glyph is now drawn inline in the Name column, so the header
-    // columns are Name / Size / Modified.
-    use file_explorer::views::list_view::COLUMN_KEYS;
-    assert_eq!(COLUMN_KEYS, ["name", "size", "modified"]);
 }
 
 fn list_build_yields_a_file_view() {
@@ -405,6 +398,7 @@ fn list_build_yields_a_file_view() {
         share: None,
         history: None,
         rich_metadata: None,
+        observed: None,
     }];
     let rename_rect = std::rc::Rc::new(std::cell::Cell::new(None));
     let drop_targets = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
@@ -441,6 +435,7 @@ fn grid_mode_uses_responsive_file_view() {
         share: None,
         history: None,
         rich_metadata: None,
+        observed: None,
     }];
     let sel = SelectionModel::new();
     let sink = new_sink();

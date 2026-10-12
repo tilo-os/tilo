@@ -1,6 +1,7 @@
 //! Command implementations. Each returns an [`Outcome`]: what happened, as
 //! text and as JSON, plus the likely next commands.
 
+use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -44,8 +45,11 @@ use crate::sshkey;
 use crate::vmbuild;
 
 mod admin;
+mod artifact;
 mod builder;
 mod device;
+#[cfg(test)]
+mod forwarded_port_tests;
 mod kernel;
 mod reach;
 mod scenario;
@@ -296,6 +300,7 @@ struct Published {
 /// What `vm create` will do, settled before it does anything.
 struct Plan {
     choice: host::Choice,
+    ssh_port: Option<u16>,
     image: Option<PathBuf>,
     /// The format of `image`.
     image_format: Option<image::Format>,
@@ -309,6 +314,13 @@ struct Plan {
 impl Plan {
     fn describe(&self) -> String {
         let mut lines = vec![format!("  hypervisor: {}", self.choice.describe())];
+        if let Some(port) = self.ssh_port
+            && matches!(self.choice.adapter, "libvirt" | "qemu" | "whpx")
+        {
+            lines.push(format!(
+                "  SSH forwarding: host TCP port {port} (availability checked, not reserved)"
+            ));
+        }
         match (&self.image, &self.published) {
             (Some(image), _) => {
                 let format = self.image_format.map_or("", image::Format::name);
@@ -355,6 +367,7 @@ impl Plan {
 
 pub struct App {
     pub json: bool,
+    pub target: Option<String>,
     pub worktree: Option<Worktree>,
     pub registry_path: PathBuf,
     pub runner: SystemRunner,
@@ -606,8 +619,16 @@ impl App {
     /// # Errors
     /// No VM selected, or a name the registry does not know.
     pub fn resolve_vm(&self, explicit: Option<&str>) -> Result<Resolved, CliError> {
+        if let (Some(target), Some(name)) = (self.target.as_deref(), explicit)
+            && target != name
+        {
+            return Err(CliError::TargetConflict {
+                target: target.to_owned(),
+                name: name.to_owned(),
+            });
+        }
         let registry = self.registry()?;
-        let (name, source) = if let Some(name) = explicit {
+        let (name, source) = if let Some(name) = explicit.or(self.target.as_deref()) {
             (name.to_owned(), Source::Argument)
         } else {
             let file = self.worktree.as_ref().map(|w| w.root.join(WORKTREE_FILE));
@@ -662,6 +683,15 @@ impl App {
     /// that is not on this network, at its address or by name, is reached
     /// over the peer network instead ([`Self::connect_peer`]).
     fn connect(&mut self, vm: &Resolved) -> Result<Remote, CliError> {
+        self.connect_with_wake(vm, false)
+    }
+
+    /// Swaps may resume a managed VM before transport; status remains observational.
+    fn connect_for_swap(&mut self, vm: &Resolved) -> Result<Remote, CliError> {
+        self.connect_with_wake(vm, true)
+    }
+
+    fn connect_with_wake(&mut self, vm: &Resolved, wake: bool) -> Result<Remote, CliError> {
         self.peer = None;
         if let Some(route) = vm.entry.peer.clone()
             && vm.entry.hypervisor == hypervisor::DEVICE
@@ -680,13 +710,20 @@ impl App {
         let mut retried = false;
         let (endpoint, connected) = loop {
             let endpoint = self.endpoint(vm)?;
-            let connected = Remote::connect(
-                &vm.name,
-                &endpoint,
-                vm.entry.key.as_deref(),
-                vm.entry.daemon.as_deref(),
-                debug.clone(),
-            );
+            let transport = || {
+                Remote::connect(
+                    &vm.name,
+                    &endpoint,
+                    vm.entry.key.as_deref(),
+                    vm.entry.daemon.as_deref(),
+                    debug.clone(),
+                )
+            };
+            let connected = if wake {
+                swap_transport(adapter.as_ref(), &vm.vm(), &mut self.runner, transport)
+            } else {
+                transport()
+            };
             match &connected {
                 Err(CliError::Unreachable { detail, .. })
                     if !retried
@@ -844,6 +881,7 @@ impl App {
             Some(Command::Vm(command)) => self.vm(command),
             Some(Command::Slot(SlotCommand::Apps(SlotAppsCommand::List))) => Ok(apps_list()),
             Some(Command::Slot(command)) => self.slot(command),
+            Some(Command::SwapArtifact(request)) => self.swap_artifact(&request),
             Some(Command::Swap {
                 component,
                 slot,
@@ -853,12 +891,14 @@ impl App {
                 direct,
                 jobs,
                 cmdline,
+                frame_cpu_trace,
             }) => self.swap(
                 slot,
                 component,
                 &from,
                 builder,
                 profile.as_deref(),
+                frame_cpu_trace,
                 KernelFlags {
                     direct,
                     jobs,
@@ -911,13 +951,8 @@ impl App {
             Some(Command::Control { slot, args }) => self.control(slot, &args),
             Some(Command::Flight(command)) => self.flight(command),
             Some(Command::Scenario(ScenarioCommand::Install(args))) => self.scenario_install(&args),
-            Some(Command::LayerPack {
-                component,
-                profile,
-                features,
-            }) => {
-                crate::builderlayer::pack(&component, &profile, &features)?;
-                Ok(Outcome::new("", json!({})))
+            Some(command @ (Command::LayerPack { .. } | Command::AppPack { .. })) => {
+                Self::pack_command(command)
             }
             Some(Command::Image(ImageCommand::Build { disk, out })) => self.image_build(disk, &out),
             Some(Command::Image(ImageCommand::Disk { image })) => self.image_disk(&image),
@@ -928,6 +963,36 @@ impl App {
                 min_age,
             }) => self.gc(dry_run, keep, keep_targets, min_age),
         }
+    }
+
+    fn pack_command(command: Command) -> Result<Outcome, CliError> {
+        match command {
+            Command::LayerPack {
+                component,
+                profile,
+                features,
+                source_inventory,
+                cached_layer,
+                binary,
+            } => Self::packed(crate::builderlayer::pack_with_source(
+                &component,
+                &profile,
+                &features,
+                source_inventory.as_deref(),
+                &cached_layer,
+                binary,
+            )),
+            Command::AppPack {
+                app,
+                source_inventory,
+            } => Self::packed(crate::builderapp::pack(&app, &source_inventory)),
+            _ => Err(CliError::InvalidInput("not a remote pack command".into())),
+        }
+    }
+
+    fn packed(result: Result<(), CliError>) -> Result<Outcome, CliError> {
+        result?;
+        Ok(Outcome::new("", json!({})))
     }
 
     fn guide(topic: Option<&str>) -> Result<Outcome, CliError> {
@@ -1251,6 +1316,9 @@ impl App {
 
     fn vm(&mut self, command: VmCommand) -> Result<Outcome, CliError> {
         match command {
+            VmCommand::Actions { name, command } => {
+                self.vm_device_actions(name.as_deref(), command)
+            }
             VmCommand::List => self.vm_list(),
             VmCommand::Use { name, global } => self.vm_use(&name, global),
             VmCommand::Ssh {
@@ -1701,6 +1769,8 @@ impl App {
             });
         }
         Self::validate_create_options(choice.adapter, args)?;
+        let ssh_port =
+            crate::forwarded_port::select(&self.registry()?, choice.adapter, args.ssh_port)?;
         if !sshkey::key_path(&self.registry_path, &args.name).exists() && !on_path("ssh-keygen") {
             return Err(CliError::ToolMissing {
                 tool: "ssh-keygen".into(),
@@ -1750,7 +1820,7 @@ impl App {
         let disk_path = match (&args.disk, image.is_some() || published.is_some()) {
             (Some(path), _) => Some(absolute(Path::new(path))),
             (None, true) => Some(
-                xdg_paths::data_local_dir()
+                tilo_paths::data_local_dir()
                     .unwrap_or_else(std::env::temp_dir)
                     .join("tilo-vm")
                     .join("vms")
@@ -1777,6 +1847,7 @@ impl App {
         }
         Ok(Plan {
             choice,
+            ssh_port,
             image,
             image_format,
             import,
@@ -1961,7 +2032,7 @@ impl App {
             gl: args.gl,
             resolution: args.resolution,
             cpus: args.cpus,
-            ssh_port: args.ssh_port,
+            ssh_port: plan.ssh_port,
             template: args.template,
             image_format: image_format
                 .filter(|f| *f == image::Format::Raw)
@@ -2023,7 +2094,7 @@ impl App {
         let slot = "tilo-vm slot create --headless".to_owned();
         let mut outcome = Outcome::new(
             text,
-            json!({ "vm": args.name, "created": true, "tag": tag, "hypervisor": plan.choice, "key": key, "key_as_credential": credentials, "commands": commands }),
+            json!({ "vm": args.name, "created": true, "tag": tag, "hypervisor": plan.choice, "ssh_port": plan.ssh_port, "key": key, "key_as_credential": credentials, "commands": commands }),
         );
         outcome.next = vec![start, slot];
         Ok(outcome)
@@ -3799,9 +3870,10 @@ impl App {
             }
             SlotCommand::Show { name, .. } => {
                 let name = self.slot_name(name)?;
-                let shown = self.connect(&vm)?.call(SlotShow { name })?;
-                Ok(Outcome::new(describe_show(&shown), json!(shown))
-                    .next(&["tilo-vm slot exec -- sha256sum <path>"]))
+                let mut remote = self.connect(&vm)?;
+                let shown = remote.call(SlotShow { name })?;
+                let layers = remote.call(LayerList {})?;
+                Ok(installed_slot_outcome(&shown, &layers))
             }
             SlotCommand::Exec {
                 name,
@@ -3965,8 +4037,10 @@ impl App {
         from: &str,
         builder: Option<Builder>,
         profile: Option<&str>,
+        frame_cpu_trace: bool,
         kernel: KernelFlags,
     ) -> Result<Outcome, CliError> {
+        validate_frame_cpu_component(&component, frame_cpu_trace)?;
         // Boot components first: the kernel swaps VM-wide (its slot is `vm`
         // unless named), the others go to their scenario.
         if !component.starts_with("app:")
@@ -3994,11 +4068,7 @@ impl App {
         let manifest = self.manifest()?;
         let entry = manifest.as_ref().and_then(|m| m.get(&component)).cloned();
         if let Some(c) = &entry {
-            let fits = if slot == VM_SLOT {
-                c.info.scope == Scope::Vm
-            } else {
-                c.info.scope != Scope::Vm
-            };
+            let fits = (slot == VM_SLOT) == (c.info.scope == Scope::Vm);
             if !fits {
                 return Err(CliError::ScopeMismatch {
                     component,
@@ -4019,8 +4089,9 @@ impl App {
                 std::env::consts::OS,
             )?;
         }
+        let cohort_inputs = self.cohort_inputs(&component, &source)?;
         let vm = self.resolve_vm(None)?;
-        let mut remote = self.connect(&vm)?;
+        let mut remote = self.connect_for_swap(&vm)?;
         self.check_vm_space(&mut remote, &vm)?;
         let layer = if let ci::Source::Layer(hash) = source {
             hash
@@ -4036,15 +4107,16 @@ impl App {
             if let ci::Source::Ci { tag, commit } = source {
                 self.ci_layer(&mut remote, &vm, entry, &tag, commit)?
             } else {
-                worktree_buildable(entry)?;
-                let entry = entry.clone().with_profile(profile);
-                self.build_worktree_layer(&mut remote, &vm, &entry, builder)?
+                self.worktree_component_layer(&mut remote, &vm, entry, builder, profile)?
             }
         };
+        if let Some(inputs) = &cohort_inputs {
+            self.cohort_prerequisites(&slot, &component, inputs)?;
+        }
         self.receipt.set("layer", &layer);
         // Building or pulling the layer can outlast the idle connection.
-        remote = self.connect(&vm)?;
-        let info = entry.map(|c| c.info);
+        remote = self.connect_for_swap(&vm)?;
+        let info = frame_cpu_info(entry, frame_cpu_trace)?;
         let result = self.receipt.phase("apply", || {
             remote.call(Swap {
                 slot: slot.clone(),
@@ -4070,6 +4142,86 @@ impl App {
             "tilo-vm logs",
             "tilo-vm rollback",
         ]))
+    }
+
+    fn cohort_inputs(
+        &self,
+        component: &str,
+        source: &ci::Source,
+    ) -> Result<Option<crate::source_inputs::Snapshot>, CliError> {
+        if component == "apps+runtime" && matches!(source, ci::Source::Worktree) {
+            crate::source_inputs::Snapshot::create(
+                self.worktree.as_ref().ok_or(CliError::NotInWorktree)?,
+                component,
+            )
+            .map(Some)
+        } else {
+            Ok(None)
+        }
+    }
+
+    fn worktree_component_layer(
+        &mut self,
+        remote: &mut Remote,
+        vm: &Resolved,
+        entry: &Component,
+        builder: Option<Builder>,
+        profile: Option<&str>,
+    ) -> Result<String, CliError> {
+        let selected = if entry.image_assembled && entry.name == "apps+runtime" {
+            if matches!(builder, Some(Builder::Host | Builder::Vm)) {
+                return Err(CliError::Unsupported {
+                    what: "a host/VM-only cargo build for the paired apps+runtime assembly".into(),
+                    alternative: "tilo-vm swap apps+runtime --builder remote".into(),
+                });
+            }
+            Some(Builder::Remote)
+        } else {
+            worktree_buildable(entry)?;
+            builder
+        };
+        self.build_worktree_layer(remote, vm, &entry.clone().with_profile(profile), selected)
+    }
+
+    /// The same source's normal session components understand its installed pins.
+    fn cohort_prerequisites(
+        &mut self,
+        slot: &str,
+        component: &str,
+        inputs: &crate::source_inputs::Snapshot,
+    ) -> Result<(), CliError> {
+        let root = self
+            .worktree
+            .as_ref()
+            .ok_or(CliError::NotInWorktree)?
+            .root
+            .clone();
+        self.receipt.set(
+            "cohort_source",
+            build::source_provenance(
+                self.worktree.as_ref().ok_or(CliError::NotInWorktree)?,
+                component,
+                "remote",
+            ),
+        );
+        let mut outcomes = Vec::new();
+        for component in ["launcher", "install"] {
+            inputs.unchanged(&root)?;
+            let outcome = self.swap(
+                Some(slot.into()),
+                component.into(),
+                "worktree",
+                Some(Builder::Remote),
+                None,
+                false,
+                KernelFlags::default(),
+            )?;
+            inputs.unchanged(&root)?;
+            outcomes.push(json!({"component": component, "result": outcome.data}));
+            self.receipt.set("cohort_prerequisites", &outcomes);
+        }
+        self.receipt.set("component", component);
+        Ok(())
     }
 
     /// A boot component: the kernel swaps, the rest are refused with their
@@ -4396,6 +4548,19 @@ impl App {
         }
         let vm = self.resolve_vm(None)?;
         let mut remote = self.connect(&vm)?;
+        let arch = remote.hello.arch.clone();
+        let configured = self.registry()?.remote_builders.get(&arch).cloned();
+        let builder = match builder {
+            None if vm.entry.hypervisor == hypervisor::DEVICE => Some(Builder::Remote),
+            other => other,
+        };
+        if vm.entry.hypervisor == hypervisor::DEVICE && !matches!(builder, Some(Builder::Remote)) {
+            return Err(CliError::Unsupported {
+                what: "building an app on a physical device or the caller's host".into(),
+                alternative:
+                    "use --builder remote with the device architecture's configured builder".into(),
+            });
+        }
         let (chosen, note) = choose_builder(
             builder,
             &remote.hello.tools,
@@ -4428,12 +4593,12 @@ impl App {
                     }
                 }
             }
-            Builder::Host => self.install_app_from_host(&mut remote, &worktree, slot, dir)?,
+            Builder::Host => self.install_app_from_host(&mut remote, &vm, &worktree, slot, dir)?,
             Builder::Remote => {
-                return Err(CliError::Unsupported {
-                    what: "installing an app with --builder remote".into(),
-                    alternative: "--builder vm, or --builder host on Linux".into(),
-                });
+                let command = configured
+                    .filter(|line| !line.is_empty())
+                    .ok_or_else(|| self.no_remote_builder(&arch))?;
+                self.install_app_from_remote(&mut remote, &vm, slot, dir, &command)?
             }
         };
         let what = match (&result.id, &result.version) {
@@ -4454,29 +4619,45 @@ impl App {
     fn install_app_from_host(
         &mut self,
         remote: &mut Remote,
+        vm: &Resolved,
         worktree: &Worktree,
         slot: &str,
         dir: &str,
     ) -> Result<AppInstallResult, CliError> {
         self.runner.cwd = Some(worktree.root.clone());
-        let target = build::target_dir(&self.cargo_metadata());
+        let target = build::target_dir(&self.cargo_metadata()?);
         let staging = build::Staging::new(worktree)?;
         let tapp = staging.tree().with_extension("tapp");
-        let [tools, package] = build::app_package(&target, dir, &tapp);
-        let runner = &mut self.runner;
-        let built = self.receipt.phase("build", || -> Result<(), CliError> {
-            for command in [&tools, &package] {
-                if !runner.interactive(command)? {
+        let package = build::app_package(&target, dir, &tapp);
+        self.install_host_app_package(
+            remote,
+            slot,
+            |runner| {
+                if !runner.interactive(&package)? {
                     return Err(CliError::CommandFailed {
-                        command: command.display(),
+                        command: package.display(),
                         status: "failed".into(),
                         stderr: String::new(),
                     });
                 }
-            }
-            Ok(())
-        });
-        built?;
+                Ok(tapp)
+            },
+            |app| app.connect(vm),
+        )
+    }
+
+    fn install_host_app_package(
+        &mut self,
+        remote: &mut Remote,
+        slot: &str,
+        build: impl FnOnce(&mut SystemRunner) -> Result<PathBuf, CliError>,
+        reconnect: impl FnOnce(&mut Self) -> Result<Remote, CliError>,
+    ) -> Result<AppInstallResult, CliError> {
+        let runner = &mut self.runner;
+        let tapp = self.receipt.phase("build", || build(runner))?;
+        // Packaging may outlast the transport's idle lifetime. Open the usual
+        // authenticated route again before any upload; never replay AppInstall.
+        *remote = reconnect(self)?;
         let upload = self
             .receipt
             .phase("transfer", || -> Result<String, CliError> {
@@ -4492,15 +4673,10 @@ impl App {
         })
     }
 
-    fn cargo_metadata(&mut self) -> Value {
-        self.runner
-            .output(&CommandLine::new(
-                "cargo",
-                &["metadata", "--no-deps", "--format-version", "1"],
-            ))
-            .ok()
-            .and_then(|o| serde_json::from_str(&o.stdout).ok())
-            .unwrap_or(Value::Null)
+    fn cargo_metadata(&mut self) -> Result<Value, CliError> {
+        let runner = &mut self.runner;
+        self.receipt
+            .phase("metadata", || build::cargo_metadata(runner))
     }
 
     /// `--builder host`: cargo on this Linux host, layer uploaded.
@@ -4512,7 +4688,7 @@ impl App {
     ) -> Result<String, CliError> {
         let worktree = self.worktree.clone().ok_or(CliError::NotInWorktree)?;
         self.runner.cwd = Some(worktree.root.clone());
-        let metadata = self.cargo_metadata();
+        let metadata = self.cargo_metadata()?;
         let target = build::target_dir(&metadata);
         let extra = build::dev_features(&metadata, &component.packages);
         let cargo = build::cargo_build(component, &extra);
@@ -4529,6 +4705,19 @@ impl App {
         let after = build::sccache_stats(&mut self.runner);
         self.receipt
             .set("cache", build::cache_summary(before, after));
+        for native in build::native_builds(component, &target) {
+            let runner = &mut self.runner;
+            if !self
+                .receipt
+                .phase("native-build", || runner.interactive(&native))?
+            {
+                return Err(CliError::CommandFailed {
+                    command: native.display(),
+                    status: "build failed".into(),
+                    stderr: String::new(),
+                });
+            }
+        }
         let staging = build::Staging::new(&worktree)?;
         let install = build::install(component, &target, &staging.tree());
         let runner = &mut self.runner;
@@ -4540,7 +4729,7 @@ impl App {
                     stderr: String::new(),
                 });
             }
-            build::pack(&staging.tree(), &staging.archive())
+            Ok(())
         });
         assembled?;
         // A build can outlast an idle SSH connection (a release shell takes
@@ -4554,6 +4743,37 @@ impl App {
             features,
             &staging.tree(),
         );
+        self.import_host_layer(remote, &staging, provenance)
+    }
+
+    /// Reuse an already imported content-identical layer before packing or sending it.
+    fn import_host_layer(
+        &mut self,
+        remote: &mut Remote,
+        staging: &build::Staging,
+        provenance: tilo_vm_protocol::Provenance,
+    ) -> Result<String, CliError> {
+        let hash = self.receipt.phase("digest", || {
+            tilo_vm_protocol::layer_hash::tree_hash(&staging.tree())
+                .map_err(CliError::io("hash assembled layer"))
+        })?;
+        let cached = self
+            .receipt
+            .phase("layer_lookup", || remote.call(LayerList {}))?;
+        if cached
+            .iter()
+            .any(|layer| layer.hash == hash && layer.provenance.component == provenance.component)
+        {
+            self.receipt.set("upload", "skipped");
+            self.receipt.set("layer_reused", &hash);
+            eprintln!(
+                "tilo-vm: device already holds layer {}; no pack or upload",
+                short(&hash)
+            );
+            return Ok(hash);
+        }
+        self.receipt
+            .phase("pack", || build::pack(&staging.tree(), &staging.archive()))?;
         let archive = staging.archive();
         let upload = self
             .receipt
@@ -4568,6 +4788,12 @@ impl App {
                 provenance: Box::new(provenance),
             })
         })?;
+        if imported.hash != hash {
+            return Err(CliError::InvalidInput(format!(
+                "imported layer {} does not match assembled layer {hash}",
+                imported.hash
+            )));
+        }
         Ok(imported.hash)
     }
 
@@ -5762,6 +5988,7 @@ pub fn scenario_driver(entry: &Component) -> String {
 /// The slot a command names explicitly, after `--slot` was folded in.
 fn named_slot(command: &Command) -> Option<String> {
     match command {
+        Command::SwapArtifact(request) => request.slot.clone(),
         Command::Swap { slot, .. }
         | Command::Input { slot, .. }
         | Command::Control { slot, .. }
@@ -5851,6 +6078,86 @@ fn exec_words(daemon: Option<&str>, slot: &str, timeout: u64, command: &[String]
     ]);
     words.extend(command.iter().map(|w| vmbuild::sh_quote(w)));
     words
+}
+
+fn validate_frame_cpu_component(component: &str, enabled: bool) -> Result<(), CliError> {
+    if enabled && component != "shell" {
+        return Err(CliError::InvalidInput(
+            "--frame-cpu-trace is supported only for the shell component".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn frame_cpu_info(
+    entry: Option<Component>,
+    enabled: bool,
+) -> Result<Option<tilo_vm_protocol::ComponentInfo>, CliError> {
+    let mut info = entry.map(|entry| entry.info);
+    if enabled {
+        let shell = info.as_mut().ok_or_else(|| {
+            CliError::InvalidInput("--frame-cpu-trace requires the shell component manifest".into())
+        })?;
+        shell.frame_cpu_trace = true;
+    }
+    Ok(info)
+}
+
+#[derive(serde::Serialize)]
+struct InstalledSlotReceipt<'a> {
+    #[serde(flatten)]
+    shown: &'a SlotShowResult,
+    installed_builds: BTreeMap<String, Option<&'a tilo_vm_protocol::LayerInfo>>,
+    identity_scope: &'static str,
+}
+
+fn installed_slot_outcome(
+    shown: &SlotShowResult,
+    layers: &[tilo_vm_protocol::LayerInfo],
+) -> Outcome {
+    let installed_builds = installed_builds(shown, layers);
+    let mut text = describe_show(shown);
+    text.push_str("\n  build receipts: installed layers; running process image unverified");
+    for (component, layer) in &installed_builds {
+        let receipt = layer.map_or_else(
+            || "unavailable".into(),
+            |layer| {
+                let p = &layer.provenance;
+                format!(
+                    "source={} toolchain={} profile={} builder={}",
+                    p.source_commit.as_deref().unwrap_or("unavailable"),
+                    p.toolchain.as_deref().unwrap_or("unavailable"),
+                    p.cargo_profile.as_deref().unwrap_or("unavailable"),
+                    p.builder.as_deref().unwrap_or("unavailable")
+                )
+            },
+        );
+        let _ = write!(text, "\n    {component}: {receipt}");
+    }
+    let data = json!(InstalledSlotReceipt {
+        shown,
+        installed_builds,
+        identity_scope: "installed_layer_not_running_process",
+    });
+    Outcome::new(text, data).next(&["tilo-vm --json slot show"])
+}
+
+/// Build receipts describe immutable installed layers, never process memory.
+fn installed_builds<'a>(
+    shown: &SlotShowResult,
+    layers: &'a [tilo_vm_protocol::LayerInfo],
+) -> BTreeMap<String, Option<&'a tilo_vm_protocol::LayerInfo>> {
+    shown
+        .slot
+        .components
+        .iter()
+        .map(|(component, hash)| {
+            (
+                component.clone(),
+                layers.iter().find(|layer| &layer.hash == hash),
+            )
+        })
+        .collect()
 }
 
 /// `slot show` as text: the slot, then each component's files.
@@ -6181,7 +6488,7 @@ fn check_local_disks(
                     .ok()
                     .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
                     .map_or(0, |d| d.as_nanos());
-                let cache = xdg_paths::cache_dir().unwrap_or_else(std::env::temp_dir);
+                let cache = tilo_paths::cache_dir().unwrap_or_else(std::env::temp_dir);
                 Some(image::import_path(&cache, &text, meta.len(), modified))
             } else {
                 None
@@ -6380,6 +6687,29 @@ fn wait_for_session(remote: &mut Remote, slot: &str) -> bool {
     false
 }
 
+/// Resume only an observed suspended managed VM before the ordinary strict transport.
+fn swap_transport<T>(
+    adapter: &dyn Hypervisor,
+    vm: &Vm<'_>,
+    runner: &mut dyn Runner,
+    transport: impl FnOnce() -> Result<T, CliError>,
+) -> Result<T, CliError> {
+    if adapter.name() != hypervisor::DEVICE && adapter.suspended(vm, runner) == Some(true) {
+        let commands = adapter.wake(vm).ok_or_else(|| CliError::Unsupported {
+            what: format!("waking suspended VM {} with {}", vm.name, adapter.name()),
+            alternative: "resume the VM in the hypervisor's UI before swapping".into(),
+        })?;
+        run_all(runner, &commands)?;
+    }
+    transport()
+}
+
+#[cfg(test)]
+mod swap_wake_tests;
+
+#[cfg(test)]
+mod host_layer_tests;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -6465,6 +6795,7 @@ mod tests {
             changed,
             policy,
             actions,
+            cohort_selection: Vec::new(),
             warnings: vec![],
             boot: None,
         }
@@ -7075,6 +7406,7 @@ mod tests {
     fn app_with_empty_registry(dir: &Path) -> App {
         App {
             json: false,
+            target: None,
             worktree: None,
             registry_path: dir.join("vms.toml"),
             runner: SystemRunner { cwd: None },
@@ -7082,6 +7414,26 @@ mod tests {
             warnings: Vec::new(),
             peer: None,
         }
+    }
+
+    #[test]
+    fn explicit_target_refuses_unknown_and_conflicting_targets() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app_with_empty_registry(dir.path());
+        std::fs::write(&app.registry_path, "default = 'default-vm'\n[vms.default-vm]\nhypervisor = 'libvirt'\n[vms.review]\nhypervisor = 'libvirt'\n").unwrap();
+        app.target = Some("review".into());
+        let selected = app.resolve_vm(None).unwrap();
+        assert_eq!(selected.name, "review");
+        assert!(matches!(selected.source, Source::Argument));
+        assert!(matches!(
+            app.resolve_vm(Some("default-vm")),
+            Err(CliError::TargetConflict { .. })
+        ));
+        app.target = Some("unknown".into());
+        assert!(matches!(
+            app.resolve_vm(None),
+            Err(CliError::UnknownVm { .. })
+        ));
     }
 
     #[test]
@@ -7794,6 +8146,7 @@ mod tests {
                 direct: false,
                 jobs: None,
                 cmdline: None,
+                frame_cpu_trace: false,
             };
             assert_eq!(named_slot(&swap).as_deref(), Some("ux1"));
             assert_eq!(named_slot(&Command::Doctor), None);
@@ -7873,6 +8226,43 @@ mod tests {
             );
             assert!(text.contains("/usr/bin/sh-alias  -> shell"), "{text}");
         }
+    }
+
+    #[test]
+    fn installed_build_receipts_exclude_unselected_layers_and_keep_missing_explicit() {
+        let mut slot = slot_info("a", SlotKind::Headless, 2, &[0, 1, 2]);
+        slot.components.insert("shell".into(), "current".into());
+        slot.components.insert("missing".into(), "unknown".into());
+        let shown = SlotShowResult {
+            slot,
+            files: vec![],
+        };
+        let layers = vec![
+            tilo_vm_protocol::LayerInfo {
+                hash: "previous".into(),
+                provenance: tilo_vm_protocol::Provenance::local("shell"),
+            },
+            tilo_vm_protocol::LayerInfo {
+                hash: "current".into(),
+                provenance: tilo_vm_protocol::Provenance::local("shell"),
+            },
+        ];
+        let builds = installed_builds(&shown, &layers);
+        assert_eq!(builds.len(), 2);
+        assert_eq!(builds["shell"].unwrap().hash, "current");
+        assert!(builds["missing"].is_none());
+        let outcome = installed_slot_outcome(&shown, &layers);
+        let receipt = outcome.data;
+        assert!(receipt["installed_builds"]["missing"].is_null());
+        assert_eq!(
+            receipt["installed_builds"]["shell"]["provenance"]["component"],
+            "shell"
+        );
+        assert_eq!(
+            receipt["identity_scope"],
+            "installed_layer_not_running_process"
+        );
+        assert_eq!(receipt["slot"]["generation"], 2);
     }
 
     #[test]

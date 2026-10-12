@@ -129,11 +129,6 @@ impl Document {
     pub fn fields(&self) -> &[(String, FieldWeight)] {
         &self.fields
     }
-
-    #[must_use]
-    pub const fn body_source(&self) -> Option<&Arc<dyn BodySource>> {
-        self.body.as_ref()
-    }
 }
 
 /// One match.

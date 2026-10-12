@@ -106,9 +106,10 @@ jobs:
               command -v "$tool"
             done
             # The security-boundary invariants must not skip for a missing tool.
-            for tool in cc modinfo clang ld.lld rpmbuild rpmkeys systemd-escape fc-match; do
+            for tool in cc modinfo clang ld.lld rpmbuild rpmkeys systemd-escape fc-match bwrap; do
               command -v "$tool"
             done
+            bwrap --version
             python3 -c "import PIL"
             fc-match -f "%{family}" "Noto Sans" | grep -Fq "Noto Sans"
             test -n "$(find /etc/pki/rpm-gpg -maxdepth 1 -name "RPM-GPG-KEY-fedora-*-primary" -print -quit)"'

@@ -82,6 +82,13 @@ class Chooser:
                 and re.fullmatch(r"[0-9a-f]{64}", value.get("state", "")), "chooser subject/state unobservable")
         return value
 
+    def ascend(self, count):
+        for _ in range(count):
+            current = self.call("inspect", {"page": 0})
+            require(current.get("completed") is False and current.get("can_up") is True,
+                    "declared chooser parent unavailable; no path inferred")
+            self.call("up", {"state": current["state"]})
+
     def find(self, name, directory):
         component(name)
         first = self.call("inspect", {"page": 0})
@@ -99,7 +106,9 @@ class Chooser:
         return first["state"], matches[0]["id"]
 
 
-def review(door, fixture, filename, directories, out):
+def review(door, fixture, filename, directories, out, initial_up=0):
+    require(isinstance(initial_up, int) and not isinstance(initial_up, bool) and 0 <= initial_up <= 16,
+            "initial parent count must be bounded")
     component(filename)
     for name in directories:
         component(name)
@@ -116,6 +125,7 @@ def review(door, fixture, filename, directories, out):
     identity = wait_until(appeared, 30)
     require(identity is not None, "Import did not publish an observable chooser")
     chooser = Chooser(vm, identity, door.bound[1], out, original)
+    chooser.ascend(initial_up)
     for name in directories:
         state, entry = chooser.find(name, True)
         chooser.call("navigate", {"state": state, "entry": entry})
@@ -134,6 +144,47 @@ def review(door, fixture, filename, directories, out):
     return value
 
 
+def install_open(door, fixture, installed_before, out):
+    vm = door.vm
+    package, offer = fixture["package_id"], fixture["offer"]
+    before = app.windows(vm.state(), package)
+    door.call("install-imported-package", {"app": package, "root": offer["tapp_root_hash_hex"]}, 300)
+    require(door.settled(package)["detail"]["installed"] is True, "Store install readback absent")
+    audit = Path(__file__).with_name("acceptance") / "official_runtime.py"
+    verified = first_json(vm.run("slot", "exec", "--", "python3", "-c", audit.read_text(),
+        package, offer["tapp_root_hash_hex"], offer["version"], offer["target"]["runtime"],
+        fixture["publisher"], timeout=300))
+    require(verified.get("uid") == vm.slot_uid() and verified.get("files"),
+            "canonical installed official runtime audit unavailable")
+    (out / "official-runtime.json").write_text(json.dumps(verified, indent=2))
+    door.call("open", {"app": package})
+    def subject():
+        state = vm.state()
+        current = app.windows(state, package)
+        candidates = [tab for tab in current if tab[0] == door.bound[1]]
+        require(len(candidates) <= 1, "official app has ambiguous same-room windows; none closed")
+        if candidates:
+            tab = candidates[0]
+            record = app.mapped_record(state, tab, package)
+            if record is not None:
+                return tab, record
+        return None
+    selected = wait_until(subject, 60)
+    require(selected, "installed app has no observable public tab/record association")
+    # Conservatively require every existing Calculator worker to carry the exact
+    # official bundle. No PID/surface guess may excuse an old resident worker.
+    app.mapped(vm, "calculator", verified["files"], vm.slot_uid(), out,
+               executable=verified["executable_sha256"])
+    state = vm.state()
+    require(selected[0] in app.windows(state, package)
+            and app.mapped_record(state, selected[0], package) == selected[1],
+            "official app public association changed during mapped-backing audit")
+    return {"installation": "update/reuse" if installed_before else "first-install",
+            "window": "reuse" if selected[0] in before else "new", "tab": selected[0],
+            "record": selected[1], "root": offer["tapp_root_hash_hex"], "version": offer["version"],
+            "runtime": verified["runtime"], "mapped_backing": "calculator-mapped-sdk.json"}
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--tilo-vm", default="tilo-vm")
@@ -141,6 +192,8 @@ def main():
     parser.add_argument("--slot", required=True)
     parser.add_argument("--cohort-receipt", type=Path, required=True)
     parser.add_argument("--fixture", type=Path, required=True, help="canonical verified-offer.json audit receipt")
+    parser.add_argument("--initial-up", type=int, choices=range(17), default=0,
+                        help="explicit declared parent steps before directories (normally 1 from Documents to HOME)")
     parser.add_argument("--directories", nargs="*", default=["Downloads"], help="declared components from initial chooser directory")
     parser.add_argument("--full", required=True, help="already staged filename, not a path")
     parser.add_argument("--thin", required=True, help="already staged filename, not a path")
@@ -157,21 +210,12 @@ def main():
             "expected independently verified official ARM fixture receipt required")
     door = app.store(vm, args.out)
     app.mapped(vm, "store", installed_sdk, vm.slot_uid(), args.out)
-    first = review(door, fixture, args.thin, args.directories, args.out)
-    review(door, fixture, args.full, args.directories, args.out)
+    first = review(door, fixture, args.thin, args.directories, args.out, args.initial_up)
+    review(door, fixture, args.full, args.directories, args.out, args.initial_up)
     result = {"reviewed_full_and_thin": True, "installed_before": first["detail"]["installed"],
               "installation": "not requested", "runtime": fixture["offer"]["target"]["runtime"]}
     if args.install_open:
-        require(not app.windows(vm.state(), fixture["package_id"]), "fixture already open; no existing window touched")
-        door.call("install-imported-package", {"app": fixture["package_id"], "root": fixture["offer"]["tapp_root_hash_hex"]}, 300)
-        installed = door.settled(fixture["package_id"])["detail"]
-        require(installed["installed"] is True, "Store install readback absent")
-        rows = first_json(vm.run("slot", "exec", "--", "app", "list", "--installed", "--json"))
-        matches = [r for r in rows if r.get("package_id") == fixture["package_id"]]
-        require(len(matches) == 1 and matches[0]["version"] == fixture["offer"]["version"], "installed version differs")
-        door.call("open", {"app": fixture["package_id"]})
-        require(wait_until(lambda: app.windows(vm.state(), fixture["package_id"]), 60), "installed app never mapped")
-        result["installation"] = "update/reuse" if first["detail"]["installed"] else "first-install"
+        result.update(install_open(door, fixture, first["detail"]["installed"], args.out))
     (args.out / "result.json").write_text(json.dumps(result, indent=2))
 
 

@@ -14,8 +14,8 @@
 //! reach past their own column.
 //!
 //! On top of the shell the app layers the transient overlays it owns directly:
-//! the movable [`ComposeWindow`], the row context menu, the account-setup
-//! sheet, and a status toast.
+//! the movable [`ComposeWindow`], the row context menu and the account-setup
+//! sheet. Status messages show as the shell's toast.
 //!
 //! A live window loads the [`AccountStore`] of its host's profile and drives
 //! the account [`crate::engine`] worker (IMAP fetch / SMTP submit). It does
@@ -42,13 +42,12 @@ use accounts::person::PersonAccounts;
 use tilo_content::ContentStore;
 use ui::framework::PersonRecord;
 use ui::icons::Icon;
-use ui::permissions::PermissionContext;
 use ui::portal::{FileFilter, OpenFileChannel, OpenFileOutcome, PickRequest};
 use ui::presence::PresenceCtx;
 use ui::search::{ScopeDecl, SearchOpener, SearchRequest};
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind, paint_transient};
+use ui::widget::toast::ToastKind;
 use ui::widget::{
     Button, ContextMenu, EmptyState, MenuItem, ModalDialog, NavPane, NavShell, SidebarPlacement,
     TaffyTreeExt, Text, Widget,
@@ -56,12 +55,11 @@ use ui::widget::{
 use ui::{ImageStore, TextRole};
 
 use crate::account::{Account, AccountStore};
-use crate::actions::{MailAction, Outgoing, ServerUpdate};
+use crate::actions::{DraftData, Outgoing, ServerUpdate};
 #[path = "contact_recipients.rs"]
 mod contact_recipients;
 
 use crate::compose::{ComposeAction, ComposeEventContext, ComposeWindow};
-use crate::doc::MailDoc;
 use crate::engine::{EngineEvent, EngineRequest, EngineRequestId, EngineRequestKind};
 use crate::header::{BarSpec, header_actions, list_bar, reader_bar};
 use crate::list::MessageList;
@@ -69,6 +67,7 @@ use crate::model::{
     AccountConfig, Addr, Attachment, ComposeFormat, Draft, Folder, Message, MessageId,
 };
 use crate::reader::MessageReader;
+use crate::resource::{Mail, mailbox, read_mail};
 use crate::shortcuts_overlay::MailShortcutsOverlay;
 use crate::sidebar::MailSidebar;
 use crate::state::{BulkAction, Command, CtxAction, Intent, MailState, Shared};
@@ -78,9 +77,6 @@ use crate::util::format_absolute;
 /// use. Checked each active frame; a manual refresh (the `r` shortcut) forces
 /// one immediately regardless.
 const AUTO_REFRESH_MIN: i64 = 5;
-/// How long a status toast ("Synced N messages", "Account saved", …) stays on
-/// screen before it fades out on its own, like any normal transient toast.
-const TOAST_TTL: std::time::Duration = std::time::Duration::from_millis(3500);
 /// A loaded mail body can be huge, but Mail refuses to turn a resource action
 /// into an unbounded filesystem write. Larger attachments can be downloaded
 /// through Files after Mail exposes a proper streamed handoff.
@@ -124,22 +120,26 @@ struct PendingSend {
     outgoing: Outgoing,
     /// The copy Sent shows once it is delivered.
     message: Message,
-    done: ServerUpdateDone,
+    done: DeliveryDone,
 }
 
 /// How the drain that asked for a server update hears how it went.
 type ServerUpdateDone = Box<dyn FnOnce(Result<(), String>)>;
 
+/// How the outbox drain hears how a delivery went: delivered, or refused
+/// for good with the server's reason; an error leaves it to try again.
+type DeliveryDone = Box<dyn FnOnce(Result<ui::tilo_resource::Settled, String>)>;
+
 /// The server updates the document's projection asked for: queued until the
 /// next sync hands them to the engine, then carried out by it. Whichever
 /// device's drain asked, the engine's acknowledgement records the update as
-/// applied in the document ([`crate::actions::MailAction::ServerApplied`]).
+/// applied in the document ([`Mail::SERVER_APPLIED`](crate::resource::Mail::SERVER_APPLIED)).
 #[derive(Default)]
 pub(crate) struct ServerOutbox {
     queued: Vec<(ServerUpdate, ServerUpdateDone)>,
     sent: HashMap<EngineRequestId, (ServerUpdate, ServerUpdateDone)>,
     /// Messages from the document's outbox, waiting for the engine.
-    deliveries: Vec<(Outgoing, ServerUpdateDone)>,
+    deliveries: Vec<(Outgoing, DeliveryDone)>,
 }
 
 impl ServerOutbox {
@@ -149,7 +149,7 @@ impl ServerOutbox {
     }
 
     /// Deliver `outgoing`, then tell `done` how it went.
-    pub(crate) fn deliver(&mut self, outgoing: Outgoing, done: ServerUpdateDone) {
+    pub(crate) fn deliver(&mut self, outgoing: Outgoing, done: DeliveryDone) {
         self.deliveries.push((outgoing, done));
     }
 }
@@ -259,7 +259,7 @@ impl Drop for PendingSetupValidation {
     reason = "the bools split across unrelated concerns (shell layout flags and engine-request bookkeeping); grouping them would need a real design pass"
 )]
 pub struct MailApp {
-    shared: Shared,
+    pub(crate) shared: Shared,
     /// Where draft attachment bytes live; drafts carry only their content id.
     /// The engine worker holds a clone to build outgoing MIME.
     content: ContentStore,
@@ -293,7 +293,7 @@ pub struct MailApp {
     pending_drawer: bool,
     /// An explicit destructive confirmation for the selection toolbar. This
     /// is local presentation state; the actual purge remains one canonical
-    /// `MailAction` only after the person confirms.
+    /// verb of the mailbox, only after the person confirms.
     bulk_purge_confirmation: Option<PurgeConfirmation>,
     /// Opens the platform search from the app's own input handling.
     search: SearchOpener,
@@ -359,19 +359,14 @@ pub struct MailApp {
     compose_attachment_rx: Option<OpenFileChannel>,
     /// What effects asked to show that needs the document, for the next sync.
     reveals: Vec<Reveal>,
+    /// What search hits and agents asked to open, taken up on the next
+    /// settle.
+    opens: std::rc::Rc<std::cell::RefCell<Vec<crate::actions::MailTarget>>>,
     /// Callers waiting for a refresh to settle.
     effect_replies: Vec<(tilo_actions::InvocationId, ui::framework::EffectReply)>,
     /// Wall-clock minute of the last automatic inbox refresh, so periodic sync
     /// fires at most once per [`AUTO_REFRESH_MIN`] while the app is in use.
     last_auto_refresh_min: i64,
-
-    /// The status text currently being shown as a toast, and the instant it
-    /// should auto-dismiss. Any code path may set `shared.status`; the app
-    /// notices the change each frame, (re)arms the deadline, and clears the
-    /// status once [`TOAST_TTL`] elapses — so a "Synced N messages" toast fades
-    /// on its own instead of lingering forever.
-    toast_text: Option<String>,
-    toast_deadline: Option<ui::time::Instant>,
 
     rect: Rect,
     /// The host theme captured during layout, for the overlays laid out
@@ -550,10 +545,9 @@ impl MailApp {
             resource_refresh_result: None,
             compose_attachment_rx: None,
             reveals: Vec::new(),
+            opens: std::rc::Rc::default(),
             effect_replies: Vec::new(),
             last_auto_refresh_min: 0,
-            toast_text: None,
-            toast_deadline: None,
             rect: Rect::ZERO,
             layout_theme: Theme::dark(),
             first_layout: true,
@@ -633,13 +627,6 @@ impl MailApp {
         self.dirty = true;
     }
 
-    /// Push the message in and snap it (narrow "reading a message" shot).
-    pub fn prime_detail_shot(&mut self) {
-        self.nav.show(NavPane::Content);
-        self.nav.snap();
-        self.dirty = true;
-    }
-
     /// A blank "Add account" sheet with an email typed and its servers
     /// filled in, focus on a server field so its focus ring shows.
     fn stage_setup_add(&mut self) {
@@ -663,7 +650,7 @@ impl MailApp {
                 .map(|m| m.id)
         };
         if let Some(id) = id {
-            self.shared.borrow_mut().select_message(doc, id);
+            self.shared.borrow_mut().open_message(doc, id);
             self.process_intents();
         }
     }
@@ -744,78 +731,6 @@ impl MailApp {
         self.dirty = true;
     }
 
-    /// Open the same menu a row right-click produces, on the selected row,
-    /// once the list has been laid out.
-    pub fn prime_context_menu_shot(&mut self) {
-        self.pending_menu = self.shared.borrow().selected;
-        self.dirty = true;
-    }
-
-    /// Open the account-setup sheet (setup shot).
-    pub fn prime_setup_shot(&mut self) {
-        let active = self.shared.borrow().accounts.active;
-        self.open_setup_edit(Some(active));
-    }
-
-    /// Open a blank "Add account" sheet with an email typed + servers
-    /// autofilled, so the shot shows the add flow with single-border fields.
-    pub fn prime_setup_add_shot(&mut self) {
-        self.open_setup_edit(None);
-        self.set_setup_input(0, "Alex Morgan");
-        self.set_setup_input(1, "alex@fastmail.com");
-        self.maybe_autofill();
-    }
-
-    /// Open a blank "Add account" sheet with a Gmail address — which presets to
-    /// OAuth — so the shot shows the OAuth sign-in flow.
-    pub fn prime_setup_oauth_shot(&mut self) {
-        self.open_setup_edit(None);
-        self.set_setup_input(0, "Alex Morgan");
-        self.set_setup_input(1, "alex.morgan@gmail.com");
-        self.maybe_autofill();
-    }
-
-    /// Select the bundled HTML newsletter so the reader renders it through the
-    /// sandboxed `WebView` (HTML-mail shot). Also demonstrates the filled-star
-    /// action (the newsletter is starred).
-    pub fn prime_html_mail_shot(&mut self) {
-        let id = {
-            let st = self.shared.borrow();
-            st.mailbox
-                .messages
-                .values()
-                .find(|m| m.from.email == "hello@fieldnotes.example")
-                .map(|m| m.id)
-        };
-        if let Some(id) = id {
-            let mut doc = automerge::AutoCommit::new();
-            self.shared
-                .borrow_mut()
-                .select_message(&mut ui::widget::Edits::lend(&mut doc), id);
-            self.process_intents();
-        }
-        self.dirty = true;
-    }
-
-    /// A configured mailbox before any messages have arrived.
-    pub fn prime_empty_shot(&mut self) {
-        let mut st = self.shared.borrow_mut();
-        let account = st.mailbox.account.clone();
-        st.mailbox = crate::model::Mailbox::new(account);
-        st.selected = None;
-        st.folder = Folder::Inbox;
-        st.dirty = true;
-        drop(st);
-        self.dirty = true;
-    }
-
-    /// A real in-flight sync indication over cached mail.
-    pub fn prime_loading_shot(&mut self) {
-        self.awaiting_engine = true;
-        self.shared.borrow_mut().status = Some("Syncing Inbox…".into());
-        self.dirty = true;
-    }
-
     /// Queue one worker request and account for it exactly once.  Every engine
     /// backend emits a matching `EngineEvent::Completed` after handling the
     /// request, including successful flag/move/purge writes.
@@ -841,23 +756,6 @@ impl MailApp {
     /// out-of-order result must not update a different operation's UI state.
     fn expects_engine_event(&self, request_id: EngineRequestId, kind: EngineRequestKind) -> bool {
         self.pending_engine_requests.get(&request_id) == Some(&kind)
-    }
-
-    /// Cached mail remains usable while connectivity is unavailable.
-    pub fn prime_offline_shot(&mut self) {
-        self.shared.borrow_mut().status =
-            Some("You’re offline. Downloaded mail is still here.".into());
-        self.dirty = true;
-    }
-
-    /// A recoverable account error: the configuration stays open and editable.
-    pub fn prime_error_shot(&mut self) {
-        self.prime_setup_add_shot();
-        self.set_setup_error(Some(
-            "Couldn’t connect to IMAP. Check the server, port, and TLS settings, then try again."
-                .into(),
-        ));
-        self.dirty = true;
     }
 
     /// Open the sidebar drawer once the window has its size (narrow drawer
@@ -1445,9 +1343,19 @@ impl MailApp {
         {
             let st = self.shared.borrow();
             if let Some(refused) = self.resending.take() {
-                st.dispatch_external(doc, &MailAction::CancelSend { id: refused });
+                st.submit(
+                    doc,
+                    Mail::CANCEL_SEND.with(mailbox::CancelSend { id: refused }),
+                );
             }
-            st.dispatch_external(doc, &MailAction::Send(Outgoing::new(&acct.email, &draft)));
+            st.submit(
+                doc,
+                Mail::SEND_MESSAGE.with(mailbox::SendMessage {
+                    account: acct.email,
+                    message: DraftData::from_draft(&draft),
+                    in_reply_to: draft.in_reply_to.map(|id| id.to_string()),
+                }),
+            );
         }
         // The message is in the outbox now; the draft it was written in is
         // done with.
@@ -2205,31 +2113,34 @@ impl MailApp {
 
     // ---- transient status toast ------------------------------------------
 
-    /// Notice a newly-set status toast, arm its dismiss deadline, and clear the
-    /// status once the deadline passes. Parameterised on `now` so the timing is
-    /// unit-testable without a real sleep.
-    fn expire_toast_at(&mut self, now: ui::time::Instant) {
-        let current = self.shared.borrow().status.clone();
-        if current != self.toast_text {
-            // The status changed (or was cleared): (re)arm the timer.
-            self.toast_text.clone_from(&current);
-            self.toast_deadline = current.as_ref().map(|_| now + TOAST_TTL);
-        }
-        if let Some(deadline) = self.toast_deadline
-            && now >= deadline
-        {
-            let mut st = self.shared.borrow_mut();
-            st.status = None;
-            st.dirty = true;
-            self.toast_text = None;
-            self.toast_deadline = None;
-        }
+    /// Hand a newly-set status to the shell, which shows it as a toast and
+    /// lets it fade on its own.
+    fn show_status(&mut self) {
+        let Some(msg) = self.shared.borrow_mut().status.take() else {
+            return;
+        };
+        let kind = Self::status_kind(&msg);
+        self.nav.toast(msg, kind);
     }
 
-    /// Whether a toast is currently on screen and still counting down — used to
-    /// keep the frame pump alive so the auto-dismiss fires even with no input.
-    fn toast_pending(&self) -> bool {
-        self.toast_deadline.is_some()
+    fn status_kind(msg: &str) -> ToastKind {
+        let lower = msg.to_ascii_lowercase();
+        if lower.contains("failed")
+            || lower.contains("couldn’t")
+            || lower.contains("couldn't")
+            || lower.contains("error")
+        {
+            ToastKind::Error
+        } else if lower.contains("offline") || lower.contains("isn't available") {
+            ToastKind::Warning
+        } else if lower.contains("sync")
+            || lower.contains("connecting")
+            || lower.contains("opening")
+        {
+            ToastKind::Info
+        } else {
+            ToastKind::Success
+        }
     }
 
     // ---- engine drain -----------------------------------------------------
@@ -2293,13 +2204,7 @@ impl MailApp {
         // A message joins Sent only after SMTP has accepted its bytes.
         st.ingest_messages(doc, std::slice::from_ref(&pending.message));
         st.mailbox.insert(pending.message);
-        st.dispatch_external(
-            doc,
-            &MailAction::Delivered {
-                id: pending.outgoing.id,
-            },
-        );
-        (pending.done)(Ok(()));
+        (pending.done)(Ok(ui::tilo_resource::Settled::Done(())));
         st.status = Some("Delivered".into());
         self.editing_draft = None;
         self.compose.close();
@@ -2307,7 +2212,6 @@ impl MailApp {
 
     fn apply_engine_error(
         &mut self,
-        doc: &mut ui::widget::Edits<'_>,
         st: &mut MailState,
         request_id: EngineRequestId,
         context: &str,
@@ -2333,18 +2237,11 @@ impl MailApp {
         if let Some(pending) = self.pending_send.remove(&request_id) {
             // The server refused it: it stays in the outbox with the reason,
             // and comes back to the composer to be fixed and sent again.
-            st.dispatch_external(
-                doc,
-                &MailAction::SendFailed {
-                    id: pending.outgoing.id.clone(),
-                    reason: detail.clone(),
-                },
-            );
             if !self.compose.open {
                 self.compose.open_with_draft(&pending.outgoing.to_draft());
-                self.resending = Some(pending.outgoing.id);
+                self.resending = Some(pending.outgoing.id.clone());
             }
-            (pending.done)(Err(detail.clone()));
+            (pending.done)(Ok(ui::tilo_resource::Settled::failed(detail.clone())));
         }
         if self
             .resource_refresh_invocation
@@ -2420,7 +2317,7 @@ impl MailApp {
                 context,
                 message,
             } if self.expects_engine_event(request_id, kind) => {
-                self.apply_engine_error(doc, st, request_id, &context, &message);
+                self.apply_engine_error(st, request_id, &context, &message);
             }
             EngineEvent::Completed { request_id, kind }
                 if self.expects_engine_event(request_id, kind) =>
@@ -2430,7 +2327,10 @@ impl MailApp {
                 self.pending_engine_requests.remove(&request_id);
                 let sent = self.server_outbox.borrow_mut().sent.remove(&request_id);
                 if let Some((update, done)) = sent {
-                    st.dispatch_external(doc, &MailAction::ServerApplied(update));
+                    st.submit(
+                        doc,
+                        Mail::SERVER_APPLIED.with(mailbox::ServerApplied { update }),
+                    );
                     done(Ok(()));
                 }
             }
@@ -2487,7 +2387,7 @@ impl MailApp {
     /// Hand an outbox message to the engine on the account it is sent from.
     /// One whose account this device does not hold is left for a device
     /// that does.
-    fn deliver(&mut self, outgoing: Outgoing, done: ServerUpdateDone) {
+    fn deliver(&mut self, outgoing: Outgoing, done: DeliveryDone) {
         let account = self
             .shared
             .borrow()
@@ -2776,13 +2676,14 @@ impl MailApp {
     /// Apply collaborative domain state to the local hydrated corpus. Folder,
     /// selection, search, and composer format remain local to this window.
     fn hydrate_domain_state(&self, doc: &mut ui::widget::Edits<'_>) {
+        let mail = read_mail(doc.doc()).unwrap_or_default();
         {
             let mut st = self.shared.borrow_mut();
-            MailDoc::apply_flags(doc, &mut st.mailbox);
+            mail.apply_flags(&mut st.mailbox);
         }
         // A persisted draft becomes a local Drafts projection, but does not
         // force another collaborator's composer open.
-        let draft = MailDoc::load_draft(doc);
+        let draft = mail.draft.draft();
         if !draft.is_empty() {
             self.upsert_draft_message(doc, &draft);
         } else if let Some((id, _)) = self.projected_draft.borrow_mut().take() {
@@ -2828,43 +2729,10 @@ impl MailApp {
                 .message_ids
                 .into_iter()
                 .filter_map(|id| state.mailbox.get(id))
-                .take(crate::actions::OPEN_MESSAGE_LIMIT)
+                .take(crate::resource::OPEN_MESSAGE_LIMIT)
                 .map(crate::actions::message_row)
                 .collect(),
         ))
-    }
-
-    // ---- drawing the app-owned overlays ----------------------------------
-
-    fn draw_status(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
-        let st = self.shared.borrow();
-        let Some(msg) = &st.status else { return };
-        let lower = msg.to_ascii_lowercase();
-        let kind = if lower.contains("failed")
-            || lower.contains("couldn’t")
-            || lower.contains("couldn't")
-            || lower.contains("error")
-        {
-            ToastKind::Error
-        } else if lower.contains("offline") || lower.contains("isn't available") {
-            ToastKind::Warning
-        } else if lower.contains("sync")
-            || lower.contains("connecting")
-            || lower.contains("opening")
-        {
-            ToastKind::Info
-        } else {
-            ToastKind::Success
-        };
-        paint_transient(
-            scene,
-            t,
-            tr,
-            theme,
-            self.rect,
-            ToastAnchor::BottomRight,
-            &ToastCard::new(msg, kind),
-        );
     }
 
     // ---- test / probe accessors ------------------------------------------
@@ -3493,8 +3361,7 @@ impl Widget for MailApp {
         // before the chosen file is actually written.
         self.drain_compose_attachment();
         self.compose.sync(state, path);
-        // Fade out a transient status toast once its lifetime elapses.
-        self.expire_toast_at(ui::time::now());
+        self.show_status();
 
         let mem_seeded = self.shared.borrow().seeded;
         if !mem_seeded {
@@ -3549,6 +3416,12 @@ impl Widget for MailApp {
     }
 
     fn settle(&mut self, state: &mut ui::widget::Edits<'_>, path: &ObjId) {
+        let opens = std::mem::take(&mut *self.opens.borrow_mut());
+        for target in opens {
+            if let Err(error) = self.open_target(target) {
+                tracing::warn!(%error, "mail: a hit could not be opened");
+            }
+        }
         self.drain_engine(state);
         self.reveal_requested(state);
         self.deliver_effect_replies();
@@ -3600,19 +3473,11 @@ impl Widget for MailApp {
             },
             ..Default::default()
         };
-        let node = taffy.parent_node(style, &children);
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        taffy.widget_node(style, &children, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
+        self.rect = ui::widget::layout_rect(taffy, node, origin);
         let inner = Point::new(self.rect.x0, self.rect.y0);
         if let Some(first_run_node) = self.first_run_node {
             self.first_run.apply_layout(taffy, first_run_node, inner);
@@ -3648,31 +3513,11 @@ impl Widget for MailApp {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        self.draw_with_presence(
-            scene,
-            t,
-            tr,
-            theme,
-            presence,
-            &PermissionContext::permissive(),
-        );
-    }
-
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        permissions: &PermissionContext,
-    ) {
         // No ground of our own: the window paints it, the shell its regions.
         if self.is_first_run() {
             self.first_run.draw(scene, t, tr, theme, presence);
         } else {
-            self.nav
-                .draw_with_presence(scene, t, tr, theme, presence, permissions);
+            self.nav.draw(scene, t, tr, theme, presence);
         }
         if let Some(id) = self.pending_menu.take() {
             self.open_menu_on_row(id, tr, theme);
@@ -3681,8 +3526,7 @@ impl Widget for MailApp {
 
     /// The window's top layer: the shell's own floating parts and the
     /// confirmation dialog, then the composer, the account sheet, the row
-    /// menu, the status toast and the shortcut list, over the window's
-    /// chrome.
+    /// menu and the shortcut list, over the window's chrome.
     fn draw_overlay(
         &mut self,
         scene: &mut Scene,
@@ -3709,7 +3553,6 @@ impl Widget for MailApp {
         if self.menu.is_open() {
             self.menu.draw_overlay(scene, t, tr, theme, presence);
         }
-        self.draw_status(scene, t, tr, theme);
         self.shortcuts.draw(scene, t, tr, theme);
     }
 
@@ -3878,10 +3721,10 @@ impl Widget for MailApp {
                     .with_state(AccessState::new().busy(true)),
             );
         }
-        if let Some(status) = &st.status {
+        if let Some(status) = self.nav.toast_text() {
             children.push(
                 AccessNode::new(Role::StaticText)
-                    .with_name(status.clone())
+                    .with_name(status.to_owned())
                     .with_live(Politeness::Polite),
             );
         }
@@ -4000,23 +3843,25 @@ impl Widget for MailApp {
             self.background_poll_deadline.set(Some(deadline));
             deadline
         });
-        background.into_iter().chain(self.toast_deadline).min()
+        background
+            .into_iter()
+            .chain(self.nav.next_wake_deadline())
+            .min()
     }
 
     fn needs_animation_frame(&self) -> bool {
         // Keep the event loop pumping frames while a worker request is in
         // flight so its result (a fetched batch, a send ack, an error) drains
-        // and surfaces promptly instead of waiting for unrelated input, and
-        // while a toast is counting down so it fades on time. Drops back to
-        // idle the moment the reply settles and the toast clears.
-        self.awaiting_engine || self.toast_pending() || self.nav.needs_animation_frame()
+        // and surfaces promptly instead of waiting for unrelated input. Drops
+        // back to idle the moment the reply settles.
+        self.awaiting_engine || self.nav.needs_animation_frame()
     }
 
     fn needs_idle_sync(&self) -> bool {
-        // Keep syncing while a connect/fetch reply is outstanding or a toast is
-        // still on screen (so `sync` can expire it), then idle rather than
-        // busy-loop once results have arrived and the toast has cleared.
-        self.awaiting_engine || self.toast_pending() || self.nav.needs_idle_sync()
+        // Keep syncing while a connect/fetch reply is outstanding or a status
+        // waits for `sync` to show it, then idle rather than busy-loop once
+        // results have arrived.
+        self.awaiting_engine || self.shared.borrow().status.is_some() || self.nav.needs_idle_sync()
     }
 
     fn mark_drawn(&mut self) {
@@ -4171,6 +4016,40 @@ impl MailApp {
         self.begin_effect(invocation, effect)
     }
 
+    /// What opens the place a search hit or an agent's `open` names: a
+    /// folder, a message the mailbox publishes or one the window loaded.
+    pub(crate) fn opener(
+        &self,
+    ) -> impl FnMut(&str) -> Result<(), ui::tilo_resource::Refusal> + 'static {
+        use crate::actions::MailTarget;
+        let opens = std::rc::Rc::clone(&self.opens);
+        let shared = std::rc::Rc::clone(&self.shared);
+        move |anchor| {
+            let message = anchor
+                .strip_prefix("mail.message:")
+                .or_else(|| anchor.rsplit_once("/message:").map(|(_, id)| id));
+            let target = if let Some(id) = message {
+                let loaded = id
+                    .parse::<MessageId>()
+                    .is_ok_and(|id| shared.borrow().mailbox.get(id).is_some());
+                if !loaded {
+                    return Err(ui::tilo_resource::Refusal::new(
+                        "the message is not loaded here",
+                    ));
+                }
+                MailTarget::Message(id.to_owned())
+            } else {
+                let key = Folder::ALL
+                    .into_iter()
+                    .find(|folder| crate::resource::folder_resource(folder.as_key()) == anchor)
+                    .ok_or_else(|| ui::tilo_resource::Refusal::new("no such folder or message"))?;
+                MailTarget::Folder(key.as_key().to_owned())
+            };
+            opens.borrow_mut().push(target);
+            Ok(())
+        }
+    }
+
     /// Show `target`, once it is still there.
     fn open_target(&mut self, target: crate::actions::MailTarget) -> Result<(), String> {
         use crate::actions::MailTarget;
@@ -4236,7 +4115,7 @@ impl MailApp {
                     }
                 }
                 Reveal::Draft => {
-                    let draft = MailDoc::load_draft(doc);
+                    let draft = read_mail(doc.doc()).unwrap_or_default().draft.draft();
                     self.compose.open_with_draft(&draft);
                     self.editing_draft = None;
                 }
@@ -4777,7 +4656,7 @@ impl MailApp {
         if is_draft {
             mail.push_intent(Intent::EditDraft(id));
         } else {
-            mail.select_message(state, id);
+            mail.open_message(state, id);
         }
         drop(mail);
         self.process_intents();
@@ -5052,59 +4931,31 @@ impl MailApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::resource::TestMail;
     use automerge::ReadDoc;
-    use winit::event::{DeviceId, Modifiers, MouseButton};
 
-    fn synth_device() -> DeviceId {
-        unsafe { std::mem::zeroed() }
-    }
     fn cursor_at(p: Point) -> WindowEvent {
-        WindowEvent::CursorMoved {
-            device_id: synth_device(),
-            position: winit::dpi::PhysicalPosition::new(p.x, p.y),
-        }
+        ui::synthetic_input::cursor_moved(p.x, p.y)
     }
     fn left_press() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: synth_device(),
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        }
+        ui::synthetic_input::mouse_press()
     }
     fn esc_event() -> WindowEvent {
         named_key(NamedKey::Escape)
     }
     fn named_key(k: NamedKey) -> WindowEvent {
-        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = Key::Named(k);
-        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-            winit::keyboard::NativeKeyCode::Unidentified,
-        );
-        ev.location = winit::keyboard::KeyLocation::Standard;
-        ev.state = ElementState::Pressed;
-        ev.repeat = false;
-        ev.text = None;
-        WindowEvent::KeyboardInput {
-            device_id: synth_device(),
-            event: ev,
-            is_synthetic: false,
-        }
+        ui::synthetic_input::keyboard_input(ui::synthetic_input::key_event(
+            Key::Named(k),
+            None,
+            ElementState::Pressed,
+        ))
     }
     fn char_key(s: &str) -> WindowEvent {
-        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = Key::Character(s.into());
-        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-            winit::keyboard::NativeKeyCode::Unidentified,
-        );
-        ev.location = winit::keyboard::KeyLocation::Standard;
-        ev.state = ElementState::Pressed;
-        ev.repeat = false;
-        ev.text = Some(s.into());
-        WindowEvent::KeyboardInput {
-            device_id: synth_device(),
-            event: ev,
-            is_synthetic: false,
-        }
+        ui::synthetic_input::keyboard_input(ui::synthetic_input::key_event(
+            Key::Character(s.into()),
+            Some(s.into()),
+            ElementState::Pressed,
+        ))
     }
 
     /// Route `ev` to the app through the tree it was last laid out in (a
@@ -5115,21 +4966,11 @@ mod tests {
             let node = taffy.new_leaf(Style::default()).unwrap();
             (taffy, node)
         });
-        let mut handled = false;
-        let mut focus = None;
-        app.handle_event(
-            ev,
-            &mut ui::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &Modifiers::default(),
-                state: ui::widget::Edits::lend(doc),
-                path: &automerge::ROOT,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: node,
-                taffy: &taffy,
-            },
-        );
+        let handled = ui::testing::Dispatch::new()
+            .doc(doc)
+            .layout(&taffy, node)
+            .send(app, ev)
+            .handled;
         if app.test_layout.is_none() {
             app.test_layout = Some((taffy, node));
         }
@@ -5137,16 +4978,12 @@ mod tests {
     }
 
     fn left_release() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: synth_device(),
-            state: ElementState::Released,
-            button: MouseButton::Left,
-        }
+        ui::synthetic_input::mouse_release()
     }
 
     fn app() -> (MailApp, AutoCommit) {
         let mut app = MailApp::new_sample();
-        let mut doc = AutoCommit::new();
+        let mut doc = crate::resource::TestMail::doc();
         app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
         app.sync(&doc, &automerge::ROOT);
         app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
@@ -5262,7 +5099,7 @@ mod tests {
         app.shared
             .borrow_mut()
             .set_read(&mut ui::widget::Edits::lend(&mut doc), id, !message.read);
-        let [update] = MailDoc::server_updates(&doc).try_into().unwrap();
+        let [update] = TestMail::server_updates(&doc).try_into().unwrap();
 
         let outcome = push(&app, update.clone());
         app.flush_server_outbox();
@@ -5296,7 +5133,7 @@ mod tests {
         app.drain_engine(&mut ui::widget::Edits::lend(&mut doc));
         assert!(matches!(outcome.borrow().as_ref(), Some(Err(_))));
         assert_eq!(
-            MailDoc::server_updates(&doc),
+            TestMail::server_updates(&doc),
             std::slice::from_ref(&update),
             "still to tell"
         );
@@ -5313,7 +5150,7 @@ mod tests {
         app.drain_engine(&mut ui::widget::Edits::lend(&mut doc));
         assert!(matches!(outcome.borrow().as_ref(), Some(Ok(()))));
         assert!(
-            MailDoc::server_updates(&doc).is_empty(),
+            TestMail::server_updates(&doc).is_empty(),
             "the server has it"
         );
 
@@ -5350,10 +5187,10 @@ mod tests {
                 ics,
             )
             .unwrap();
-            let mut doc = AutoCommit::new();
+            let mut doc = crate::resource::TestMail::doc();
             let mut state = MailState::new_sample(avatar_store_offline());
             state.save_draft(&mut ui::widget::Edits::lend(&mut doc), &draft);
-            let stored = MailDoc::load_draft(&doc);
+            let stored = TestMail::load_draft(&doc);
             assert_eq!(stored.to, "guest@example.com");
             assert_eq!(stored.subject, "Invitation: Review");
             assert_eq!(stored.calendar_ics.as_deref(), Some(ics));
@@ -5699,7 +5536,7 @@ mod tests {
                 .expect("second sample message");
             app.shared
                 .borrow_mut()
-                .select_message(&mut ui::widget::Edits::lend(&mut doc), other);
+                .open_message(&mut ui::widget::Edits::lend(&mut doc), other);
             app.process_intents();
             assert!(
                 !app.perform_semantic_action(
@@ -5806,13 +5643,13 @@ mod tests {
             .expect("an unread message");
             app.shared
                 .borrow_mut()
-                .select_message(&mut ui::widget::Edits::lend(&mut doc), id);
+                .open_message(&mut ui::widget::Edits::lend(&mut doc), id);
             assert!(app.shared.borrow().mailbox.get(id).unwrap().read);
             let mut fresh = app.shared.borrow().mailbox.clone();
             for m in fresh.messages.values_mut() {
                 m.read = false;
             }
-            MailDoc::apply_flags(&doc, &mut fresh);
+            TestMail::apply_flags(&doc, &mut fresh);
             assert!(
                 fresh.get(id).unwrap().read,
                 "read flag persisted to the CRDT"
@@ -5848,7 +5685,7 @@ mod tests {
                 "Open dispatches the canonical mark-read action"
             );
             assert_eq!(
-                MailDoc::get_read(&doc, &id.to_string()),
+                TestMail::get_read(&doc, &id.to_string()),
                 Some(true),
                 "resource Open writes the same mark-read every on-screen control does"
             );
@@ -5982,7 +5819,7 @@ mod tests {
                 "unlike Open message, explicit preview never queues mark-read"
             );
             assert_ne!(
-                MailDoc::get_read(&doc, &id.to_string()),
+                TestMail::get_read(&doc, &id.to_string()),
                 Some(true),
                 "a read-state-neutral preview writes no read state"
             );
@@ -6030,7 +5867,7 @@ mod tests {
                     .is_some_and(|mail| mail.read),
                 "Enter uses the normal Open boundary, rather than silently previewing"
             );
-            assert_eq!(MailDoc::get_read(&doc, &unread.to_string()), Some(true));
+            assert_eq!(TestMail::get_read(&doc, &unread.to_string()), Some(true));
             assert_ne!(app.shared.borrow().inspection, Some(unread));
         }
 
@@ -6136,7 +5973,18 @@ mod tests {
             };
             app.compose.reattach(&draft);
             app.send_compose(&mut ui::widget::Edits::lend(&mut doc));
-            let outbox = MailDoc::outbox(&doc);
+            assert!(
+                TestMail::outbox(&doc).is_empty(),
+                "sending asks the person first"
+            );
+            let dispatcher = app
+                .shared
+                .borrow()
+                .dispatcher
+                .clone()
+                .expect("a dispatcher");
+            TestMail::confirm(&mut doc, &dispatcher);
+            let outbox = TestMail::outbox(&doc);
             let [(outgoing, None)] = outbox.as_slice() else {
                 panic!("one message waits in the outbox: {outbox:?}");
             };
@@ -6160,9 +6008,12 @@ mod tests {
                 tx: outgoing_tx,
                 rx: incoming_rx,
             });
-            app.server_outbox()
-                .borrow_mut()
-                .deliver(outgoing.clone(), Box::new(|_| {}));
+            let heard = std::rc::Rc::new(std::cell::RefCell::new(None));
+            let answer = std::rc::Rc::clone(&heard);
+            app.server_outbox().borrow_mut().deliver(
+                outgoing.clone(),
+                Box::new(move |result| *answer.borrow_mut() = Some(result)),
+            );
             app.flush_server_outbox();
             let (&request_id, _) = app
                 .pending_send
@@ -6178,7 +6029,15 @@ mod tests {
                 })
                 .unwrap();
             app.drain_engine(&mut ui::widget::Edits::lend(&mut doc));
-            let outbox = MailDoc::outbox(&doc);
+            let settled = heard
+                .borrow_mut()
+                .take()
+                .expect("the delivery answered")
+                .expect("refused for good, not tried again");
+            assert!(!settled.is_done());
+            // The outbox drain records how it settled.
+            TestMail::settle_delivery(&mut doc, &outgoing.id, &settled);
+            let outbox = TestMail::outbox(&doc);
             assert!(
                 matches!(outbox.as_slice(), [(_, Some(reason))] if reason.contains("relay denied")),
                 "{outbox:?}"
@@ -6190,7 +6049,8 @@ mod tests {
 
             // Sending it again replaces the refused one.
             app.send_compose(&mut ui::widget::Edits::lend(&mut doc));
-            let outbox = MailDoc::outbox(&doc);
+            TestMail::confirm(&mut doc, &dispatcher);
+            let outbox = TestMail::outbox(&doc);
             assert!(
                 matches!(outbox.as_slice(), [(again, None)] if again.id != outgoing.id),
                 "{outbox:?}"
@@ -6364,9 +6224,8 @@ mod tests {
                 app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
                 app.sync(&doc, &automerge::ROOT);
                 assert!(app.compose_attachment_rx.is_none());
-                assert_eq!(app.shared.borrow().status.as_deref(), Some(expected));
-                assert_eq!(app.next_wake_deadline(), app.toast_deadline);
-                app.expire_toast_at(app.toast_deadline.unwrap());
+                assert_eq!(app.nav.toast_text(), Some(expected));
+                app.nav.dismiss_toast();
                 assert!(app.next_wake_deadline().is_none());
             }
         }
@@ -6659,7 +6518,10 @@ mod tests {
             fixture.drain();
             assert!(fixture.app.pending_send.is_empty());
             assert!(!fixture.app.awaiting_engine);
-            assert_eq!(fixture.app.next_wake_deadline(), fixture.app.toast_deadline);
+            assert_eq!(
+                fixture.app.next_wake_deadline(),
+                fixture.app.nav.next_wake_deadline()
+            );
         }
 
         // Phase `completed_refresh_cannot_be_replaced_before_its_owner_polls`.
@@ -6852,7 +6714,7 @@ mod tests {
     fn presentation_state_stays_local() {
         // Phase `presentation_state_is_local_and_never_restored_from_a_peer_document`.
         {
-            let mut doc = AutoCommit::new();
+            let mut doc = crate::resource::TestMail::doc();
             {
                 let mut app = MailApp::new_sample();
                 app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
@@ -6924,7 +6786,7 @@ mod tests {
         // Phase `first_run_shows_onboarding_and_add_opens_setup`.
         {
             let mut app = MailApp::new_first_run();
-            let mut doc = AutoCommit::new();
+            let mut doc = crate::resource::TestMail::doc();
             app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
             app.sync(&doc, &automerge::ROOT);
             app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
@@ -6942,6 +6804,7 @@ mod tests {
             assert!(
                 app.first_run.perform_action(
                     &ui::a11y::Action::Activate,
+                    &[],
                     &mut ui::widget::Edits::lend(&mut doc),
                     &automerge::ROOT,
                 ),
@@ -6958,31 +6821,16 @@ mod tests {
             );
         }
 
-        // Phase `status_toast_auto_dismisses_after_its_lifetime`.
+        // Phase `status_shows_as_the_shell_toast`.
         {
-            // A "Synced N messages" toast must fade on its own, not linger forever.
             let (mut app, _doc) = app();
-            let t0 = ui::time::now();
             app.shared.borrow_mut().status = Some("Synced 3 messages".into());
-            app.expire_toast_at(t0); // first observation arms the deadline
-            assert!(
-                app.shared.borrow().status.is_some(),
-                "toast shows immediately"
-            );
-            assert!(app.toast_pending(), "a dismiss deadline is armed");
-            assert_eq!(app.next_wake_deadline(), Some(t0 + TOAST_TTL));
-            app.expire_toast_at(t0 + std::time::Duration::from_secs(1));
-            assert!(
-                app.shared.borrow().status.is_some(),
-                "still visible within its lifetime"
-            );
-            app.expire_toast_at(t0 + std::time::Duration::from_secs(5));
+            app.show_status();
+            assert_eq!(app.nav.toast_text(), Some("Synced 3 messages"));
             assert!(
                 app.shared.borrow().status.is_none(),
-                "toast auto-dismissed past its deadline"
+                "the shell owns it now"
             );
-            assert!(!app.toast_pending(), "the deadline cleared once dismissed");
-            assert!(app.next_wake_deadline().is_none());
         }
     }
 
@@ -7097,7 +6945,7 @@ mod tests {
                 "'e' archived the selection"
             );
             assert_eq!(
-                MailDoc::get_folder_for(&doc, &id.to_string()),
+                TestMail::get_folder_for(&doc, &id.to_string()),
                 Some(Folder::Archive)
             );
         }
@@ -7119,13 +6967,13 @@ mod tests {
                 !was_starred
             );
             assert_eq!(
-                MailDoc::get_starred(&doc, &id.to_string()),
+                TestMail::get_starred(&doc, &id.to_string()),
                 Some(!was_starred)
             );
 
             assert!(dispatch(&mut app, &char_key("u"), &mut doc));
             assert!(!app.shared.borrow().mailbox.get(id).unwrap().read);
-            assert_eq!(MailDoc::get_read(&doc, &id.to_string()), Some(false));
+            assert_eq!(TestMail::get_read(&doc, &id.to_string()), Some(false));
         }
 
         // Phase `shortcut_arrow_down_moves_selection`.
@@ -7154,7 +7002,7 @@ mod tests {
                 "Delete moved the selection to Trash"
             );
             assert_eq!(
-                MailDoc::get_folder_for(&doc, &id.to_string()),
+                TestMail::get_folder_for(&doc, &id.to_string()),
                 Some(Folder::Trash)
             );
         }
@@ -7524,7 +7372,7 @@ mod tests {
             app.sync(&doc, &automerge::ROOT);
             assert_eq!(app.shared.borrow().accounts.accounts.len(), accounts_before);
             assert!(app.setup_validation.is_none());
-            assert_eq!(app.next_wake_deadline(), app.toast_deadline);
+            assert_eq!(app.next_wake_deadline(), app.nav.next_wake_deadline());
         }
 
         // Phase `edited_setup_cannot_persist_an_earlier_successful_verification`.
@@ -7738,7 +7586,7 @@ mod tests {
             assert_eq!(app.setup_value(3), "user-entered-secret");
             assert_eq!(app.setup_value(6), discovered.smtp_host);
             assert!(app.setup_discovery.is_none());
-            assert_eq!(app.next_wake_deadline(), app.toast_deadline);
+            assert_eq!(app.next_wake_deadline(), app.nav.next_wake_deadline());
         }
 
         // Phase `discovery_for_a_previous_address_cannot_fill_the_current_sheet`.

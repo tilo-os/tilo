@@ -82,14 +82,20 @@ the private app directory are not globally flushed. The six-process sample is
 small and the synthetic app is a text payload, not forty application journeys.
 
 `--fresh-mesa-cache` selects a fresh unseeded cache. `--mesa-seed-source session`
-requires the existing session seed bind: the headless launcher currently omits
-that bind when no render node is selected, and this mode fails observation
-rather than reporting a successful seeded run. The package mode above requires
+requires the existing session seed bind. At the time of this fixture experiment,
+the headless launcher omitted that bind when no render node was selected, so
+this mode failed observation rather than reporting a successful seeded run. The package mode above requires
 no extra filesystem, device or networking permissions.
 
-## Product integration still to prove
+## Follow-up production qualification
 
-No production renderer, launcher policy, boot unit or OS package is changed.
+The [ordinary publisher/launcher qualification](production-mesa-seed-2026-10-07.md)
+adds the software-session bind and validates the production cache path,
+invalidation, isolation and corruption recovery. Its measurements and limits
+are separate from this fixture result.
+
+This earlier experiment changed no production renderer, launcher policy, boot
+unit or OS package.
 A production publisher must own trusted public shaders, preserve compatible
 driver/device identities and keep writable app caches private. It must be
 measured with representative apps and cold OS boots; warming shaders on the

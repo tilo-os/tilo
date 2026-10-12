@@ -1,0 +1,62 @@
+{
+  "abc_delay_target_ps": 1000,
+  "artifact_sha256": {
+    "library_cells.json": "f7cea423ab65102a40a965a23aab481d9de3121a6ef564af064600ae9dd27f88",
+    "library_cells.v": "e7307e05359a35594fb589281b2a5e349089995527911b1c4aba59ea285957b2",
+    "map.ys": "b8bc5e7636ffb93953a2e62ac15388c89bc34090498ca5cdf10a4c89a09d2361",
+    "mapped-compile.log": "ee74d9fef8ca95172bc1722239b36f36fc6ed429280f140a8bcf865832b84996",
+    "mapped-simulation.log": "8ea41ba0965a75c52a4b02d34379d9d93501c8ac3c3f40af574d7e8b99f04b94",
+    "mapped.json": "8d20c5fd1a1f061058e7e7b6679630acbe678ece3a0b3925973a29104d74e00b",
+    "mapped.v": "0b5dfd06a70841b041bd7cfd76324176edcbfaa6e8a62090bcb20a2a94bfa6da",
+    "mapping.log": "c870c6eaf777c3d4fb5747edc275b2e0b420ae8094ecedb38f6a86e03ea83faf",
+    "stat.json": "c2dffbc21fc5bc79f16a2089574c3415fb6c9a85d3f43b5c1ab1d51811793e86",
+    "verilator-version.log": "2175ffb050acb6313454034aaf1695eccd48050d53818498656c8f6038895d71",
+    "yosys-version.log": "381c9074689e35e1774ea321defab123870434217a3a15960fb74ce54242aa51"
+  },
+  "artifact_validator_sha256": "3d94adf7c6d3fc3a8c7054dc2adf041b7fc6280300edab0b38439c6ca05b5fc3",
+  "checks": {
+    "input_validation": "passed",
+    "library_mapping": "passed",
+    "mapped_netlist_vs_integer_oracle": "passed"
+  },
+  "declared_toolchain_image": "sha256:cad34536eae2acc360319a2515aa0a799519ad93bc77eb721d657cfac7448558",
+  "evidence": "research_library_checkpoint_tile",
+  "excludes": [
+    "timing_closure",
+    "physical_layout",
+    "physical_power",
+    "manufacturability",
+    "full_model_area",
+    "group_rescaling",
+    "coding_quality",
+    "offline_checkpoint_payload_authentication"
+  ],
+  "input_sha256": {
+    "LICENSE": "550d67dffffc2bbe4baa70e6cba93da707eab94c17dfcf927056ef9e63880c9c",
+    "README.md": "f3e87ac6e05dee0c05268133aad114894cf9bf70d71d4494ccdf6a5ffeb18904",
+    "fixed_linear_fixture.sv": "7dd5378904b3ea3fd16238f59a2709546a4125ea77866eb62bc80761843a7d64",
+    "integer_group_tile.sv": "632603c5743156441cc66275e54daf802ed7d4f63bd3c8752089eac5d395e41e",
+    "sample.bf16": "00321caa18bcc1b79974c2b1a96bf5efcc1a7490eacda1b71274b4a0fab5fe5b",
+    "sample.json": "94211c4ffae237d5920f16f2f4ab39ce2720e813d5fad90c7506578bee497c86",
+    "synthetic_standard_cells.lib": "153a6b46ab97dc228d20b9240c337a16ea41f7dadf49a5ebd7edfaeb32754e87",
+    "tb.sv": "f3b305b88e5abe9e38226a0b3bcdb5dd540beb6639b4c35710b0fc0b96f185a1",
+    "vectors.json": "fdddd850c76a2433b498088bf8ce3f6c2b2b38c174aefdde4613d18c7e9f6ae4"
+  },
+  "library_revision": "ac55b927f00931921ca0fe63b687acb32dc660f8",
+  "manufacturable": false,
+  "mapped_cell_count": 100,
+  "mapper_sha256": "2d8c9549f81e602972e5057b535b877a98b5f7143132738a1db3edb3f448ceea",
+  "reported_library_area": 123.5,
+  "schema_version": 1,
+  "status": "passed",
+  "tools": {
+    "verilator": {
+      "executable_sha256": "5705421431fc14e781881ca71c61bfdcf228c212d9f8f22ff26a54234e8bac41",
+      "version": "Synthetic contract tool identity 1.0"
+    },
+    "yosys": {
+      "executable_sha256": "8fed2d40b40a22ead3956dad9d067e09444c56a0dbf732d3ac74b6b9aa8cbb3b",
+      "version": "Synthetic contract tool identity 1.0"
+    }
+  }
+}

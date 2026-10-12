@@ -1,7 +1,8 @@
 //! Retained unified backup views over the resource-native device runtime.
-use crate::actions::{self, BackupsEffect, Blocked};
-use crate::doc::PolicyField;
+use crate::actions::{BackupsEffect, Blocked};
 use crate::i18n;
+use crate::model::MAX_KEPT;
+use crate::model::PolicyField;
 use crate::model::{Catalog, Filter, RetentionPolicy};
 use crate::resource::{BackupLocation, Backups, DemoRepository};
 use crate::view::{self, Intent, Intents, JobKind, Order, Page, Setup};
@@ -17,8 +18,7 @@ use ui::framework::{
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::time::{Duration, Instant};
-use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind, paint_transient};
+use ui::widget::toast::ToastKind;
 use ui::widget::{AppModel, Column, ModalDialog, ModelPath, NavShell, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -31,7 +31,6 @@ enum View {
     Destinations,
     Schedules,
 }
-const TOAST_TTL: Duration = Duration::from_millis(3500);
 /// Which screen the window shows instead of the catalog, if any.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum SetupKey {
@@ -67,7 +66,6 @@ pub struct BackupsApp {
     order: Order,
     restore: Option<ModalDialog<Column>>,
     restore_changed: bool,
-    toast: Option<(String, ToastKind, Instant)>,
     failure: Option<(String, String)>,
     status_bubble: ui::StatusBubble,
     cursor: Option<Point>,
@@ -183,7 +181,6 @@ impl BackupsApp {
             ],
             order: Order::NewestFirst,
             restore: None,
-            toast: None,
             failure: None,
             status_bubble: ui::StatusBubble::new(),
             cursor: None,
@@ -284,20 +281,14 @@ impl BackupsApp {
         Ok(())
     }
 
-    /// Adjust one retention field by `delta`, clamped to `[0, 999]`, through the
-    /// dispatcher. This is the single production funnel both the on-screen +/-
-    /// buttons and the keyboard arrow / `+` / `-` handlers call, and it submits
-    /// the byte-identical [`BackupsAction`](crate::actions::BackupsAction) the
-    /// Ctrl+K increment/decrement spec exports.
+    /// Adjust one retention class by `delta`, within `[0, MAX_KEPT]`: the
+    /// field edit at its path, which both the on-screen +/- buttons and the
+    /// keyboard arrow / `+` / `-` handlers submit.
     fn bump_retention(&self, field: PolicyField, delta: i64) {
-        let current = match field {
-            PolicyField::Hourly => self.ui.policy.hourly,
-            PolicyField::Daily => self.ui.policy.daily,
-            PolicyField::Weekly => self.ui.policy.weekly,
-            PolicyField::Monthly => self.ui.policy.monthly,
-        };
+        let count = (i64::from(field.of(&self.ui.policy)) + delta).clamp(0, i64::from(MAX_KEPT));
+        let count = u32::try_from(count).unwrap_or_default();
         if let Some(dispatcher) = &self.dispatcher {
-            dispatcher.apply(&actions::bump_retention_action(field, current, delta));
+            dispatcher.submit(field.path(&Backups::paths().policy).set(count));
         }
     }
 
@@ -309,7 +300,7 @@ impl BackupsApp {
     }
 
     fn toast_now(&mut self, msg: impl Into<String>) {
-        self.toast = Some((msg.into(), ToastKind::Success, ui::time::now()));
+        self.shell.toast(msg, ToastKind::Success);
     }
 
     /// Errors must read as errors — a green success toast after a rejected
@@ -317,7 +308,7 @@ impl BackupsApp {
     fn toast_error(&mut self, msg: impl Into<String>) {
         let msg = msg.into();
         self.failure = Some(("Backup paused".into(), msg.clone()));
-        self.toast = Some((msg, ToastKind::Error, ui::time::now()));
+        self.shell.toast(msg, ToastKind::Error);
     }
 
     /// Why the repository effects cannot run here now, if they cannot.
@@ -1016,32 +1007,6 @@ impl BackupsApp {
 
     // ---- overlays -----------------------------------------------------------
 
-    fn paint_toast(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        window: Rect,
-    ) {
-        let Some((message, kind, shown)) = &self.toast else {
-            return;
-        };
-        if shown.elapsed() >= TOAST_TTL {
-            self.toast = None;
-            return;
-        }
-        paint_transient(
-            scene,
-            transform,
-            text,
-            theme,
-            window,
-            ToastAnchor::BottomCenter,
-            &ToastCard::new(message, *kind),
-        );
-    }
-
     fn paint_status(
         &mut self,
         scene: &mut Scene,
@@ -1181,21 +1146,19 @@ impl ui::widget::Decorator for BackupsApp {
             .get()
             .unwrap_or_else(|| self.shell.get_rect());
         self.paint_status(scene, transform, text, theme, window);
-        self.paint_toast(scene, transform, text, theme, window);
         if let Some(dialog) = &mut self.restore {
             dialog.draw_overlay(scene, transform, text, theme, presence);
         }
     }
 
     fn needs_animation_frame(&self) -> bool {
-        self.toast.is_some()
-            || self.work != Work::Idle
+        self.work != Work::Idle
             || self.status_bubble.needs_frame(ui::time::now())
             || self.shell.needs_animation_frame()
     }
 
     fn needs_redraw(&self) -> bool {
-        self.dirty || self.toast.is_some() || self.restore.is_some() || self.shell.needs_redraw()
+        self.dirty || self.restore.is_some() || self.shell.needs_redraw()
     }
 
     fn mark_drawn(&mut self) {
@@ -1530,12 +1493,12 @@ mod tests {
             .unwrap();
         let before = app.state().policy.daily;
         app.harness()
-            .perform_semantic_named("backups-keep-ret_daily", None, &Action::Increment)
+            .perform_semantic_named("backups-keep-daily", None, &Action::Increment)
             .unwrap();
         app.settle();
         assert_eq!(app.state().policy.daily, before + 1);
         app.invoke(
-            ui::tilo_resource::Invoke::apply(&actions::set_retention_action(PolicyField::Daily, 3))
+            ui::tilo_resource::Invoke::edit(&crate::resource::Backups::paths().policy.daily.set(3))
                 .unwrap(),
         )
         .unwrap();
@@ -1642,13 +1605,13 @@ mod tests {
         );
     }
     #[test]
-    fn a_fresh_backup_record_stays_empty_until_a_retention_action() {
+    fn the_window_alone_writes_nothing_to_the_record() {
         let app = frame(BackupsApp::new(), 1280.0, 800.0, 1.0);
         assert!(
             Framed::harness(&app)
                 .state()
                 .doc
-                .get(automerge::ROOT, "ret_hourly")
+                .get(automerge::ROOT, "policy")
                 .unwrap()
                 .is_none()
         );

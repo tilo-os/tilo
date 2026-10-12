@@ -21,7 +21,7 @@ def identity(row):
 
 def terminal_actions(vm):
     # App action contracts are machine discovery, not human palette suggestions.
-    return vm.control_json("actions", "list", APP, "--programmatic", "--json")["actions"]
+    return vm.actions(APP, programmatic=True)
 
 
 def terminal_rows(rows):
@@ -52,7 +52,6 @@ for p in pathlib.Path('/proc').iterdir():
  except (FileNotFoundError,ProcessLookupError): continue
 print(json.dumps({'uid':os.getuid(),'processes':rows}))
 '''
-
 
 
 def processes(vm):

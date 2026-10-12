@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pathlib
 import re
+import tomllib
 import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
@@ -53,6 +54,24 @@ class FilesystemWorkflowTriggers(unittest.TestCase):
 
         self.assertIn("crates/system/fs/**", paths("push"))
         self.assertEqual(paths("push"), paths("pull_request"))
+
+
+class FilesystemWorkflowNamedShareWire(unittest.TestCase):
+    def test_filter_selects_the_production_share_control_test(self) -> None:
+        source = (WORKFLOWS / "ci-filesystem.yml").read_text()
+        command = next(line for line in source.splitlines()
+                       if '"named-share control wire"' in line)
+        match = re.search(r"cargo test --locked -p (\S+) (\S+) --lib", command)
+        self.assertIsNotNone(match, "wire gate must run its native library test")
+        manifest = ROOT / "crates/system/fs-protocol/Cargo.toml"
+        package = tomllib.loads(manifest.read_text())["package"]["name"]
+        self.assertEqual(match.group(1), package,
+                         "wire protocol moved out of collab-types; its filter otherwise runs zero tests")
+        self.assertIn("pub mod share_control;", (manifest.parent / "src/lib.rs").read_text())
+        module = (manifest.parent / "src/share_control.rs").read_text()
+        tests = re.findall(r"#\[test\]\s+fn (\w+)\(", module)
+        self.assertTrue(any(match.group(2) in name for name in tests),
+                        "wire filter must match an existing production framing test")
 
 
 if __name__ == "__main__":

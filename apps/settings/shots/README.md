@@ -10,4 +10,4 @@ Screenshots can be regenerated using the app’s `--shots` scenarios.
 | [settings-panel-power-narrow.png](https://code.tilo.so/api/packages/tilo/generic/source-evidence/11260e7e40ae4559169564edfdc9053f7d1ca862a078838ebd5c9d942e06503d/settings-panel-power-narrow.png) | 73822 | `11260e7e40ae4559169564edfdc9053f7d1ca862a078838ebd5c9d942e06503d` |
 | [settings-panel-power.png](https://code.tilo.so/api/packages/tilo/generic/source-evidence/9384980ea50a77ae37c91fc6e22bb3e85b8824b453d605761d03c9e8968df4ef/settings-panel-power.png) | 115976 | `9384980ea50a77ae37c91fc6e22bb3e85b8824b453d605761d03c9e8968df4ef` |
 
-`settings.png` remains a source fixture for Notes tests and image scenarios.
+`settings.png` is also preserved as a [verified build-time fixture](fixture-README.md) for Notes tests and image scenarios. Its original bytes are embedded from the prewarmed artifact cache.

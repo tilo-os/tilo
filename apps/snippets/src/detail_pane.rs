@@ -9,6 +9,7 @@
 
 use std::collections::HashMap;
 use std::rc::Rc;
+use ui::widget::TaffyTreeExt;
 
 use taffy::style_helpers::{length, percent};
 use taffy::{NodeId, Style, TaffyTree};
@@ -26,10 +27,13 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::WindowEvent;
 
-use crate::actions;
 use crate::app::{Action, Core, Requests, Shared};
+use crate::model::Snippets;
 use crate::model::{Language, SnippetId};
+use crate::resource::SnippetsView;
 use crate::tr;
+use ui::tilo_actions::ActionBinding;
+use ui::tilo_resource::{Derived, Effect};
 
 /// What the content column shows. A change rebuilds the column.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -43,17 +47,18 @@ pub(crate) struct DetailKey {
 impl DetailKey {
     pub(crate) fn of(core: &Core) -> Self {
         Self {
-            snippet: core.open.and_then(|id| core.library.get(id)).map(|s| {
-                (
-                    s.id,
+            snippet: core.open.as_ref().and_then(|id| {
+                let s = core.library.get(id)?;
+                Some((
+                    id.clone(),
                     s.language,
-                    s.folder.clone(),
-                    s.tags.clone(),
+                    s.folder.0.clone(),
+                    s.tags.iter().cloned().collect(),
                     s.description.clone(),
                     s.has_placeholders(),
-                )
+                ))
             }),
-            library_empty: core.library.snippets.is_empty(),
+            library_empty: core.library.is_empty(),
         }
     }
 
@@ -71,7 +76,7 @@ pub(crate) fn build(core: &Shared, requests: &Requests) -> Element {
         return Box::new(EmptyAction {
             state: EmptyState::new(tr("snippets-empty-library"))
                 .with_icon(Icon::Code)
-                .with_action(tr("snippets-new-snippet"))
+                .with_action(tr("snippets-new"))
                 .with_action_id("snippets.library.new-snippet"),
             requests: Rc::clone(requests),
         });
@@ -84,6 +89,7 @@ pub(crate) fn build(core: &Shared, requests: &Requests) -> Element {
     // folder and tags.
     let picker = {
         let requests = Rc::clone(requests);
+        let id = id.clone();
         Dropdown::from_state(
             Language::ALL.into_iter().map(Language::name).collect(),
             &ui::LocalState::new(language.name()),
@@ -96,7 +102,7 @@ pub(crate) fn build(core: &Shared, requests: &Requests) -> Element {
             if let Some(language) = Language::ALL.into_iter().find(|l| l.name() == name) {
                 requests
                     .borrow_mut()
-                    .push(Action::SetLanguage(id, language));
+                    .push(Action::SetLanguage(id.clone(), language));
             }
         })
     };
@@ -104,13 +110,20 @@ pub(crate) fn build(core: &Shared, requests: &Requests) -> Element {
         dropdown: picker,
         core: Rc::clone(core),
     }));
-    // The folder and each tag open the library at them.
+    // The folder and each tag reveal their snippets, as the place each is
+    // published as does.
+    let reveal = |place: Derived<Snippets>, view: SnippetsView| {
+        ActionBinding::unit_for(&place.publish(), view.id()).ok()
+    };
     if !folder.is_empty() {
         let mut chip = Chip::new(folder.clone())
             .with_id(format!("snippets.snippet:{id}.folder"))
             .with_lead(ChipLead::Glyph(Icon::Folder))
             .with_accessible_name(format!("Folder: {folder}"));
-        if let Some(reveal) = actions::reveal_folder_binding(&folder) {
+        if let Some(reveal) = reveal(
+            Snippets::folder_place(folder.clone()),
+            SnippetsView::RevealFolder { folder },
+        ) {
             chip = chip.on_action(reveal);
         }
         facts = facts.push(Box::new(chip));
@@ -119,7 +132,10 @@ pub(crate) fn build(core: &Shared, requests: &Requests) -> Element {
         let mut chip = Chip::new(tag.clone())
             .with_id(format!("snippets.snippet:{id}.tag:{tag}"))
             .with_accessible_name(format!("Tag: {tag}"));
-        if let Some(reveal) = actions::reveal_tag_binding(&tag) {
+        if let Some(reveal) = reveal(
+            Snippets::tag_place(tag.clone()),
+            SnippetsView::Reveal { tag: tag.clone() },
+        ) {
             chip = chip.on_action(reveal);
         }
         facts = facts.push(Box::new(chip));
@@ -139,6 +155,7 @@ pub(crate) fn build(core: &Shared, requests: &Requests) -> Element {
     // variables.
     let copy = {
         let requests = Rc::clone(requests);
+        let copied = id.clone();
         Button::new(
             &format!("snippets.snippet:{id}.copy"),
             &tr(if templated {
@@ -148,7 +165,7 @@ pub(crate) fn build(core: &Shared, requests: &Requests) -> Element {
             }),
         )
         .role(ButtonRole::Primary)
-        .on_effect(move || requests.borrow_mut().push(Action::Copy(id)))
+        .on_effect(move || requests.borrow_mut().push(Action::Copy(copied.clone())))
     };
 
     Box::new(
@@ -174,7 +191,7 @@ fn open_snippet_button(
     let core = Rc::clone(core);
     let requests = Rc::clone(requests);
     button.on_effect(move || {
-        if let Some(id) = core.try_borrow().ok().and_then(|core| core.open) {
+        if let Some(id) = core.try_borrow().ok().and_then(|core| core.open.clone()) {
             requests.borrow_mut().push(action(id));
         }
     })
@@ -240,7 +257,7 @@ impl Anchored {
         let Ok(core) = self.core.try_borrow() else {
             return;
         };
-        let open = core.open.and_then(|id| core.library.get(id));
+        let open = core.open.as_ref().and_then(|id| core.library.get(id));
         let state = (open.is_some(), open.is_some_and(|s| s.favorite));
         drop(core);
         if self.shown == Some(state) {
@@ -410,10 +427,11 @@ impl ui::widget::Decorator for EmptyAction {
     fn perform_action(
         &mut self,
         action: &ui::a11y::Action,
+        _key_path: &[u64],
         state: &mut ui::widget::Edits<'_>,
         root: &ModelPath,
     ) -> bool {
-        let done = Widget::perform_action(&mut self.state, action, state, root);
+        let done = Widget::perform_action(&mut self.state, action, &[], state, root);
         self.drain();
         done
     }
@@ -442,27 +460,24 @@ impl Widget for BodyWell {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         let lines = 4.0 * theme.text(TextRole::Code).line_height_px();
-        let node = taffy
-            .new_leaf(Style {
-                flex_grow: 1.0,
-                flex_basis: length(0.0_f32),
-                size: taffy::Size {
-                    width: percent(1.0_f32),
-                    height: taffy::Dimension::auto(),
-                },
-                min_size: taffy::Size {
-                    width: length(0.0_f32),
-                    height: length(lines),
-                },
-                ..Default::default()
-            })
-            .expect("a leaf node");
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        let style = Style {
+            flex_grow: 1.0,
+            flex_basis: length(0.0_f32),
+            size: taffy::Size {
+                width: percent(1.0_f32),
+                height: taffy::Dimension::auto(),
+            },
+            min_size: taffy::Size {
+                width: length(0.0_f32),
+                height: length(lines),
+            },
+            ..Default::default()
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = crate::draw::leaf_rect(taffy, node, origin);
+        self.rect = ui::widget::layout_rect(taffy, node, origin);
     }
 
     fn draw(
@@ -485,8 +500,9 @@ impl Widget for BodyWell {
             ground,
         );
         let mut core = self.core.borrow_mut();
-        core.body_editor.set_rect(self.rect);
-        core.body_editor
+        core.body.control_mut().set_rect(self.rect);
+        core.body
+            .control_mut()
             .draw_embedded(scene, transform, text, &theme.on_ground(ground));
     }
 

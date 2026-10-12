@@ -18,6 +18,7 @@ thin = ["dep:runtime-dylib"]
 
 [dependencies]
 tilo-files = { path = "../../crates/platform/tilo-files" }
+tilo-locale = { path = "../../crates/platform/tilo-locale" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 # The Tilo action model: doc-mutating operations are replayable, undoable actions.
 tilo-actions = { path = "../../crates/collab/actions" }
@@ -40,7 +41,6 @@ ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["te
 # Builds real-world-shaped .xlsx/.ods fixtures and inspects exported packages.
 zip.workspace = true
 tempfile.workspace = true
-tilo-automerge.workspace = true
 
 [lints]
 workspace = true

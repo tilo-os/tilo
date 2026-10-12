@@ -10,6 +10,12 @@ files-shortcuts-summary = Files controls that work with the current desktop keyb
 files-shortcuts-primary = Primary modifier: Ctrl on most desktops, Command on macOS
 files-shortcuts-navigate = Move selection: ↑ and ↓
 files-selection-empty = Select files first.
+files-clipboard-source-unavailable = A selected file has changed or is no longer available. Select it again before copying.
+files-clipboard-source-changed = The shown object differs from its retained selection. Select it again before copying.
+files-clipboard-unavailable = The workspace file clipboard is unavailable.
+files-clipboard-empty = The workspace file clipboard is empty.
+files-clipboard-undone = Paste undone.
+files-clipboard-partial = Pasted { $count } items. Some items could not be pasted: { $error }
 files-selection-unavailable = An entry is no longer in the folder shown. The selection was not changed.
 files-selection-too-large = Select at most 256 entries in one request, or use Select all.
 files-shortcuts-range = Select a range: Shift + ↑ and ↓
@@ -295,9 +301,6 @@ files-a11y-shared-recipients = Shared with { $count } { $count ->
 files-a11y-version-conflict = Has a version conflict
 
 ## Service and received-share errors/status
-files-history-encode-failed = Could not encode the history request
-files-history-request-too-large = History request exceeds its wire bound
-files-history-restore-failed = Could not restore that version: { $error }
 files-open-terminal-failed = Could not open Terminal: { $error }
 files-conflict-strategy-unsupported = That conflict strategy is not supported by Files yet
 files-conflict-encode-failed = Could not encode the conflict request
@@ -315,7 +318,6 @@ files-share-response-truncated = Share response was truncated: { $error }
 files-share-response-invalid = Invalid share-service response: { $error }
 files-share-refused = Share service refused the request ({ $code })
 files-received-refused = Received-file service refused the link ({ $code })
-files-received-retry-refused = Received-file service could not retry ({ $code })
 files-received-wrong-response = Received-file service returned the wrong response
 files-received-encode-failed = Could not encode received-file request
 files-received-request-too-large = Received-file request exceeds its bound
@@ -350,6 +352,7 @@ files-place-favorites = Favorites
 files-place-system = Locations
 files-place-root = Root
 files-place-trash = Trash
+files-trash-unavailable = Trash is unavailable on this device.
 files-place-workspace = Workspace
 files-place-documents = Documents
 files-place-downloads = Downloads
@@ -600,3 +603,27 @@ files-airdrop-action-detail = Verify a manually selected lab receiver on the com
 files-nearby-status = Transfer status
 files-nearby-transfer-unavailable = This transfer is no longer available in this Files window.
 files-nearby-status-detail = Read this transfer’s phase and confirmed byte counts.
+
+files-clipboard-recovered = Recovered { $count } interrupted transfers. Recoverable copies are in Trash.
+files-menu-recover-transfers = Recover interrupted transfers
+files-clipboard-redone = Paste restored.
+
+files-clipboard-cancelled = File transfer cancelled. Recover interrupted transfers before retrying.
+
+files-invalid-destination-name = The destination must be one file name.
+
+files-native-restore-select-one = Select one home Trash entry to restore. Other items are unchanged.
+
+## History: what each change to Files did
+
+file-explorer-add-bookmark = Added { $place } to Favourites
+file-explorer-remove-bookmark = Removed { $place } from Favourites
+file-explorer-new-folder = Created the folder { $name }
+file-explorer-rename = Renamed { $entry } to { $name }
+file-explorer-trash = Moved files to Trash
+file-explorer-move = Moved files to { $to }
+file-explorer-copy = Copied files to { $to }
+file-explorer-revert = Took back a change to files
+
+files-native-trash-delete-unavailable = These items can be restored. Permanent deletion is unavailable here.
+files-user-trash-unavailable = Your Trash isn’t available in this workspace.

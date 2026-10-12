@@ -479,14 +479,7 @@ struct Session {
     owner: String,
     caller: PortalCaller,
     shortcuts: Vec<GlobalShortcut>,
-    #[cfg(any(test, target_os = "linux"))]
-    #[cfg_attr(
-        not(target_os = "linux"),
-        expect(
-            dead_code,
-            reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
-        )
-    )]
+    #[cfg(target_os = "linux")]
     binding: bool,
 }
 
@@ -596,7 +589,7 @@ impl GlobalShortcutsHandle {
                         preferred_trigger: None,
                     })
                     .collect(),
-                #[cfg(any(test, target_os = "linux"))]
+                #[cfg(target_os = "linux")]
                 binding: false,
             },
         );
@@ -1563,6 +1556,7 @@ mod tests {
                         description: None,
                         preferred_trigger: None,
                     }],
+                    #[cfg(target_os = "linux")]
                     binding: false,
                 },
             );
@@ -1672,11 +1666,19 @@ mod tests {
             shortcuts: vec![GlobalShortcut {
                 id: "talk".into(),
                 description: None,
-                preferred_trigger: Some("Ctrl+Shift+T".into()),
+                preferred_trigger: Some("Ctrl+Shift+M".into()),
             }],
         };
+        assert!(
+            service.is_reserved("CTRL+SHIFT+KEYT"),
+            "reopen is owned by the shell"
+        );
+        assert!(
+            !service.is_reserved("CTRL+SHIFT+KEYM"),
+            "the grant fixture is unreserved"
+        );
         assert_eq!(service.install_approved(&request), vec!["talk"]);
-        let key = PhysicalKey::Code(KeyCode::KeyT);
+        let key = PhysicalKey::Code(KeyCode::KeyM);
         let chord = Modifiers::from(ModifiersState::CONTROL | ModifiersState::SHIFT);
         assert!(service.claims(&key, chord));
         assert!(!service.claims(&key, Modifiers::from(ModifiersState::CONTROL)));
