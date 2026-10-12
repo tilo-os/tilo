@@ -409,13 +409,15 @@ pub struct BuildOptions<'a> {
     /// Hashed and signature-covered like any other bundle file; absolute
     /// host paths, must exist.
     ///
-    /// Each soname is signed once. A loader-set library also given here
-    /// (the shared runtime includes its whole `ldd` closure, glibc too) is
-    /// kept only at `lib/<name>`, where `LD_LIBRARY_PATH` finds it, not again
-    /// under its absolute-path shape, which nothing searches. The loader
-    /// itself stays only at its canonical interpreter path: the launcher binds
-    /// it there for `INTERP`, and the mapped interpreter answers every
-    /// `DT_NEEDED` on its soname. The two copies must be the same bytes.
+    /// A loader-set library also given here (the shared runtime includes its
+    /// whole `ldd` closure, glibc too) is kept only at `lib/<name>`, where
+    /// `LD_LIBRARY_PATH` finds it, not again under its absolute-path shape,
+    /// which nothing searches. The loader is the exception: the launcher binds
+    /// it from its canonical interpreter path for `INTERP`, and tools that
+    /// follow `DT_NEEDED` by soname within `lib/` (the dev VM's cohort check,
+    /// the native SDK's linkage check) find it at `lib/<name>`, so an included
+    /// loader is kept at both. Either way the two sources must be the same
+    /// bytes.
     pub extra_libs: &'a [PathBuf],
 }
 
@@ -1263,8 +1265,9 @@ fn ensure_same_bytes(name: &str, first: &Path, second: &Path) -> Result<(), Bund
 /// `lib/` by file name for soname resolution via `LD_LIBRARY_PATH` — unlike
 /// the loader/libc set, these are explicit absolute paths, not resolved
 /// against the host root. A directory (an engine with its resources) keeps
-/// its tree under `lib/<name>/`. Repeated source paths are copied once, and
-/// an include of a loader already in `loaders` (name → source) not at all.
+/// its tree under `lib/<name>/`. Repeated source paths are copied once. An
+/// include named like a loader in `loaders` (name → source) must be that
+/// loader's bytes.
 fn copy_includes(
     out: &Path,
     includes: &[PathBuf],
@@ -1299,7 +1302,6 @@ fn copy_includes(
         }
         if let Some(loader) = loaders.get(name.as_str()) {
             ensure_same_bytes(&name, loader, extra)?;
-            continue;
         }
         let rel_in_bundle = format!("lib/{name}");
         let dst = out.join(&rel_in_bundle);
@@ -1842,11 +1844,13 @@ mod tests {
             },
         )
         .unwrap();
-        // libc where LD_LIBRARY_PATH finds it, the loader where the launcher
-        // binds it for INTERP, libm (no include) where it always was.
+        // libc where LD_LIBRARY_PATH finds it, libm (no include) where it
+        // always was; the loader where the launcher binds it for INTERP and
+        // where soname-following tools find it.
         assert_eq!(
             payload_paths(&manifest),
             [
+                "lib/ld-linux-x86-64.so.2",
                 "lib/lib64/ld-linux-x86-64.so.2",
                 "lib/lib64/libm.so.6",
                 "lib/libc.so.6",
@@ -1885,6 +1889,7 @@ mod tests {
         assert_eq!(
             payload_paths(&manifest),
             [
+                "lib/ld-linux-aarch64.so.1",
                 "lib/lib/ld-linux-aarch64.so.1",
                 "lib/lib64/libgcc_s.so.1",
                 "lib/lib64/libm.so.6",
