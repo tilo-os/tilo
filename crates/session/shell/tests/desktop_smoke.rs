@@ -124,6 +124,7 @@ fn sweep(desktop: &Desktop) {
     ] {
         desktop.pointer_move(x, y);
     }
+    close_overlays(desktop);
 }
 
 /// Into a window, across it and out of it onto the desktop, repeatedly: the
@@ -149,6 +150,28 @@ fn clients_report(clients: &[crate::support::desktop::Client]) -> String {
         .map(|(n, c)| format!("client {n}:\n{}", c.output()))
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// The pointer's visit to a corner or edge opens what lives there (the overview
+/// at the top left, quick settings at the top right), and the next click lands
+/// on it. A person moves on; so does the scenario, closing whatever the sweep
+/// opened before it clicks anything.
+fn close_overlays(desktop: &Desktop) {
+    const OVERLAYS: [&str; 4] = ["overview", "quick_settings", "ws_settings", "collaborators"];
+    let open = |desktop: &Desktop| {
+        let chrome = desktop.chrome();
+        OVERLAYS
+            .iter()
+            .any(|name| chrome["overlays"][name].as_bool() == Some(true))
+    };
+    for _ in 0..4 {
+        if !open(desktop) {
+            return;
+        }
+        desktop.key("Escape");
+        desktop.pause(Duration::from_millis(100));
+    }
+    desktop.wait_for("the corner overlays to close", || !open(desktop));
 }
 
 fn window_count(desktop: &Desktop) -> usize {
@@ -288,12 +311,7 @@ fn scenario(desktop: &Desktop, max_idle_cpu: f64) {
     desktop.key("Escape");
 
     // Workspaces.
-    // Away and back, as a person pressing the keys would. The scenario that
-    // follows needs the clients' workspace showing, so a `previous` that did not
-    // take (seen about one run in three here, never in `workspace_cycle`, which
-    // makes the same two requests with nothing else going on: the shell logs the
-    // request and a switch that changed the workspace, and the tree is still on
-    // the other one afterwards) is asked for again and reported, not hidden.
+    // Away and back, as a person pressing the keys would.
     desktop.invoke_action("actions", "workspace.next");
     desktop.wait_for_with(
         "the next workspace to show",
@@ -301,27 +319,11 @@ fn scenario(desktop: &Desktop, max_idle_cpu: f64) {
         || desktop.active_workspace() != "Smoke desktop",
     );
     sweep_edges(desktop);
-    for attempt in 1..=3 {
-        desktop.invoke_action("actions", "workspace.previous");
-        let deadline = std::time::Instant::now()
-            .checked_add(Duration::from_secs(5))
-            .unwrap_or_else(std::time::Instant::now);
-        while desktop.active_workspace() != "Smoke desktop" && std::time::Instant::now() < deadline
-        {
-            desktop.pause(Duration::from_millis(50));
-        }
-        if desktop.active_workspace() == "Smoke desktop" {
-            break;
-        }
-        eprintln!(
-            "[desktop-smoke] FINDING: workspace.previous (attempt {attempt}) left the desktop on {:?}",
-            desktop.active_workspace()
-        );
-    }
-    assert_eq!(
-        desktop.active_workspace(),
-        "Smoke desktop",
-        "workspace.previous never brought the first workspace back"
+    desktop.invoke_action("actions", "workspace.previous");
+    desktop.wait_for_with(
+        "FINDING: workspace.previous to bring the first workspace back",
+        || format!("showing {:?}", desktop.active_workspace()),
+        || desktop.active_workspace() == "Smoke desktop",
     );
 
     // Lock, move the pointer over the lock screen, unlock.
@@ -384,6 +386,7 @@ fn sweep_edges(desktop: &Desktop) {
     ] {
         desktop.pointer_move(x, y);
     }
+    close_overlays(desktop);
 }
 
 fn run(desktop: &Desktop, max_idle_cpu: f64) {

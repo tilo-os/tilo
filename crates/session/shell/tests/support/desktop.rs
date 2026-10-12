@@ -178,7 +178,7 @@ impl Desktop {
             .env("TILO_TEST_CONTROL", &control)
             .env("TILO_LOCK_TEST_PASSWORD", UNLOCK_PASSWORD)
             .env("TILO_HEADLESS_SIZE", format!("{}x{}", size.0, size.1))
-            .env("RUST_LOG", "warn,tilo::shortcut=info")
+            .env("RUST_LOG", "warn,tilo::shortcut=info,tilo::workspace=info")
             .env_remove("WAYLAND_DISPLAY")
             .env_remove("DISPLAY")
             .stdout(Stdio::piped())
@@ -640,7 +640,15 @@ impl Drop for Desktop {
         self.watch.stop.store(true, Ordering::Relaxed);
         // For investigations: keep everything the compositor said.
         if let Some(path) = std::env::var_os("TILO_SMOKE_COMPOSITOR_LOG") {
-            let _ = std::fs::write(path, self.recent_log(usize::MAX));
+            let mut named = path.clone();
+            named.push(format!(
+                ".{}",
+                self.runtime_dir
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default()
+            ));
+            let _ = std::fs::write(named, self.recent_log(usize::MAX));
         }
         if std::thread::panicking() {
             let _ = writeln!(
