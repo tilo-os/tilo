@@ -128,8 +128,8 @@ pub use runtime_collab::{
 pub use runtime_collab::{
     NearbyDestinationHandle, NearbyTargetHandle, NearbyTransferCommand, NearbyTransferDestination,
     NearbyTransferDirection, NearbyTransferHandle, NearbyTransferPhase, NearbyTransferReply,
-    NearbyTransferSnapshot, NearbyTransferStatus, NearbyTransferTarget, PortableWifiSecurity,
-    WifiContinuityCommand, WifiContinuityReply,
+    NearbyTransferSnapshot, NearbyTransferStatus, NearbyTransferTarget, NetworkWakeStatus,
+    PortableWifiSecurity, WifiContinuityCommand, WifiContinuityReply,
 };
 
 use crate::presence::PresenceKey;

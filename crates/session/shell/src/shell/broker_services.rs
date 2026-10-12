@@ -1784,6 +1784,32 @@ impl tilo_action_broker::services::WifiContinuityServices for NativeWifiContinui
             runtime_collab::PortableWifiSecurity::Wpa3 => os_actions::WifiSecurity::Wpa3,
         };
         match command {
+            runtime_collab::WifiContinuityCommand::NetworkWake {
+                profile_uuid,
+                enabled,
+            } => {
+                let result = match enabled {
+                    Some(enabled) => os_actions::network_wake::configure(&profile_uuid, enabled),
+                    None => os_actions::network_wake::status(&profile_uuid),
+                };
+                match result {
+                    Ok(status) => runtime_collab::WifiContinuityReply::NetworkWake {
+                        status: runtime_collab::NetworkWakeStatus {
+                            profile: status.profile,
+                            interface: status.interface,
+                            configured: status.configured,
+                            supported: status.supported,
+                            applied: status.applied,
+                            problem: status
+                                .problem
+                                .map(|problem| problem.chars().take(128).collect()),
+                        },
+                    },
+                    Err(reason) => runtime_collab::WifiContinuityReply::Rejected {
+                        reason: reason.chars().take(128).collect(),
+                    },
+                }
+            }
             runtime_collab::WifiContinuityCommand::Lookup {
                 ssid,
                 security: mode,

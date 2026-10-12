@@ -18612,6 +18612,7 @@ dependencies = [
  "hex",
  "launcher",
  "libc",
+ "os-actions",
  "package-store",
  "runtime-bundle",
  "serde",
