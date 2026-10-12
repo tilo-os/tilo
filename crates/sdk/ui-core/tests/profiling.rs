@@ -4,16 +4,6 @@
 //! stands up the same headless [`tilo_ui::headless::FrameHarness`] the persistence
 //! harness uses.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::string_slice,
-    clippy::panic,
-    clippy::unreachable,
-    reason = "in a test these are the assertion, not a hazard"
-)]
-
 use tilo_ui::profiling::{FRAME_BUDGET_US, PerfScenario, PerfStep, run_scenario_on};
 use tilo_ui::state::State;
 use tilo_ui::widget::{Column, Scrollable, Text, Widget};

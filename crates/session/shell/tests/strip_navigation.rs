@@ -14,9 +14,6 @@
     clippy::unwrap_used,
     clippy::expect_used,
     clippy::indexing_slicing,
-    clippy::string_slice,
-    clippy::panic,
-    clippy::unreachable,
     reason = "in a test these are the assertion, not a hazard"
 )]
 #![allow(
@@ -566,10 +563,6 @@ fn window_actions_run_the_operations_their_chords_run() {
 }
 
 #[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-)]
 fn the_plus_chip_opens_an_apps_picker_without_moving_the_wide_strip() {
     // Phase `the_fixture_strip_is_wider_than_its_viewport`.
     // The strip must actually overflow, or nothing below is testing panning.

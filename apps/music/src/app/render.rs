@@ -950,10 +950,6 @@ impl Widget for MusicApp {
             ),
             _ => {}
         }
-        #[allow(
-            clippy::expect_used,
-            reason = "the child belongs to this same tree; Widget::build_layout has no error return"
-        )]
         let style = Style {
             size: Size {
                 width: Dimension::percent(1.0),
@@ -2668,10 +2664,6 @@ impl MusicApp {
         2.0 * look.sibling + top + look.tight + scrub
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the frame pipeline deliberately keeps its ordered worker, layout, overlay, and chrome passes together"
-    )]
     pub(super) fn render_frame(
         &mut self,
         scene: &mut Scene,

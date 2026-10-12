@@ -11,12 +11,7 @@
 //! by-eye inspection.
 
 #![allow(
-    clippy::unwrap_used,
     clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::string_slice,
-    clippy::panic,
-    clippy::unreachable,
     reason = "in a test these are the assertion, not a hazard"
 )]
 
@@ -173,10 +168,6 @@ fn maybe_write_png(rgba: &[u8], w: u32, h: u32, name: &str) {
     eprintln!("wrote {} to {}", name, path.display());
 }
 
-#[allow(
-    clippy::too_many_lines,
-    reason = "merged scenario keeps its original cases together; each case builds a fresh fixture"
-)]
 #[test]
 fn window_group_journey_is_deterministic_and_distinguishes_states_in_both_themes() {
     // Case `window_group_visual_journey_distinguishes_all_states`.

@@ -238,10 +238,6 @@ impl Widget for Stack {
         let row = self.direction == FlexDirection::Row;
         // `new_with_children` only fails when a child belongs to a different
         // tree; every entry in `child_nodes` was just built in this one above.
-        #[allow(
-            clippy::unwrap_used,
-            reason = "every child node was just created in this same tree"
-        )]
         let style = Style {
             display: Display::Flex,
             flex_direction: self.direction,

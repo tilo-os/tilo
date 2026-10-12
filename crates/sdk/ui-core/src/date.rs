@@ -114,10 +114,6 @@ pub fn days_in_month(year: i64, month: u32) -> u32 {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::arithmetic_side_effects,
-    reason = "test arithmetic on small, in-range day counts"
-)]
 mod tests {
     use super::*;
 

@@ -1,7 +1,3 @@
-#![allow(
-    clippy::unwrap_used,
-    reason = "controlled encrypted inbox fixtures must construct before assertions"
-)]
 use super::*;
 use crate::external_broker::receipt_tests::{Fixture, fixture as fixture_account};
 use std::sync::atomic::{AtomicBool, Ordering};

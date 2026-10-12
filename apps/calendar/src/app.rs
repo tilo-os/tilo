@@ -426,10 +426,6 @@ impl CalendarApp {
         app
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the constructor deliberately keeps every per-widget local state default adjacent to its field"
-    )]
     fn build() -> Self {
         let today = ui::clock::today();
         let model = Calendar::default();
@@ -2649,10 +2645,6 @@ impl CalendarApp {
         result.handled()
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the complete local action routing table remains intentionally centralized so every hit and semantic action shares one persistence boundary"
-    )]
     fn apply_action(&mut self, action: Action, doc: &mut ui::widget::Edits<'_>) {
         match action {
             Action::View(v) => {
@@ -3256,10 +3248,6 @@ impl CalendarApp {
     /// didn't consume the event) a left click resolved against the hit map
     /// — the dismiss scrim, a calendar row, or a popover guard (part of
     /// [`Widget::handle_event`]).
-    #[allow(
-        clippy::too_many_lines,
-        reason = "internal event-handling split of an over-length function"
-    )]
     /// Route input to the editor's dropdowns: an open list owns every
     /// event; a press on a closed dropdown opens it. Picks are applied at
     /// once. Returns whether the event was consumed.
@@ -3547,10 +3535,6 @@ impl CalendarApp {
     /// Mouse click resolution: a form text field, the notes region, or the
     /// generic hit-map (topmost last) (part of [`Widget::handle_event`]).
     /// Returns `true` if the event was consumed.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "internal event-handling split of an over-length function"
-    )]
     fn handle_mouse_click(
         &mut self,
         input: &mut InputContext<'_>,
@@ -3976,10 +3960,6 @@ impl Widget for CalendarApp {
     // every widget; every parameter is independently meaningful (the raw
     // event, scaling, modifiers, CRDT handle+path, two out-params, and the
     // node's own identity/layout).
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the widget-system dispatcher deliberately keeps input precedence visible: modal popovers, shared task controls, timeline, keyboard, hit map, fields, then notes"
-    )]
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         // Track the pointer in logical coordinates.
         if let WindowEvent::CursorMoved { position, .. } = event {

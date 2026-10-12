@@ -1,8 +1,4 @@
 //! Exercise the production vector renderer through repeated viewport changes.
-#![allow(
-    clippy::unwrap_used,
-    reason = "exact test fixtures and measured samples"
-)]
 use canvas::{
     App,
     render::{Options, Renderer},

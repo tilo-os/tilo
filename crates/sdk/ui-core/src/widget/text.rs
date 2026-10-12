@@ -128,10 +128,6 @@ enum TextSource {
     Document(DocumentTextSource),
 }
 
-#[allow(
-    clippy::struct_excessive_bools,
-    reason = "independent typography, wrapping, localization, and render-cache flags are orthogonal presentation options rather than a single state machine"
-)]
 pub struct Text {
     label: String,
     test_id: Option<String>,

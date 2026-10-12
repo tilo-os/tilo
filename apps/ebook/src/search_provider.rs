@@ -1181,10 +1181,6 @@ mod tests {
     }
 
     /// Body pages are clamped and complete and resume inside oversized blocks and spans without prose copies.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "merged scenario test: each labelled phase is one original case, kept verbatim"
-    )]
     #[test]
     fn body_pages_clamp_and_resume_without_prose_copies() {
         // --- phase: body_pages_are_clamped_and_complete ---

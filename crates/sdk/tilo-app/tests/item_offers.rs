@@ -1,5 +1,3 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, reason = "test assertions")]
-
 //! An item resource offers the views its record declares for it, and a
 //! labelled item offers its renaming: the field edit of its label, asking
 //! for the new name.

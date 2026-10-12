@@ -16,9 +16,7 @@
     clippy::unwrap_used,
     clippy::expect_used,
     clippy::indexing_slicing,
-    clippy::string_slice,
     clippy::panic,
-    clippy::unreachable,
     reason = "in a test these are the assertion, not a hazard"
 )]
 #![allow(
@@ -537,10 +535,6 @@ fn render_with_ws_settings_tab(tree: &WorkspaceTree, tab: WsTab) -> (usize, Chro
 }
 
 #[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-)]
 fn global_search_renders_its_icon_kbd_chip_and_indigo_selection() {
     // Phase `global_search_renders_leading_search_icon`.
     // Audit `concept-coverage.md:25,204-207` (`GlobalSearch.tsx:138-153`):
@@ -635,10 +629,6 @@ fn global_search_renders_its_icon_kbd_chip_and_indigo_selection() {
 }
 
 #[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-)]
 fn quick_settings_renders_power_utility_white_slider_fill_and_wifi_drill_in() {
     // Phase `quick_settings_renders_a_danger_marked_power_utility`.
     // Audit `concept-coverage.md:22,128-131` (`QuickSettings.tsx:181-201`):
@@ -772,10 +762,6 @@ fn render_quick_settings_open(
 }
 
 #[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-)]
 fn topbar_system_monitor_labels_and_sparkline_take_their_theme_colours() {
     // Phase `topbar_system_monitor_cpu_label_takes_the_themes_success_colour`.
     // Audit `concept-coverage.md:23,163-166` (`TopBarWidgets.tsx:120-124`):
@@ -1359,10 +1345,6 @@ mod overview_add_workspace {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn overview_add_workspace_button_renders_and_click_appends_workspace() {
         // Phase `overview_renders_add_workspace_button`.
         // Overview must paint a visible add-workspace affordance at the list

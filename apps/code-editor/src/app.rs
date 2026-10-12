@@ -2921,10 +2921,6 @@ impl Widget for CodeApp {
         }))
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the widget lifecycle deliberately sequences every asynchronous projection in one auditable frame boundary"
-    )]
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         let (state, path) = ui::doc::document_ref(state, path);
         if !self.seeded {

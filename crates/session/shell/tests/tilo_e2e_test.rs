@@ -9,10 +9,6 @@
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::string_slice,
-    clippy::panic,
-    clippy::unreachable,
     reason = "in a test these are the assertion, not a hazard"
 )]
 
@@ -366,10 +362,6 @@ fn topbar_avatars_cap_at_three_and_never_leak_into_an_empty_workspace() {
 }
 
 #[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-)]
 fn tab_presence_seeds_per_tab_peers_and_colours_without_phantom_carets() {
     // Phase `sync_tab_presence_seeds_per_tab_peer_registrations`.
     {

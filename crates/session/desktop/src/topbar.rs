@@ -862,10 +862,6 @@ impl TopBarChrome {
         self.cache_fp = CacheFingerprint::default();
     }
 
-    #[allow(
-        clippy::arithmetic_side_effects,
-        reason = "bounded pointer coordinates minus bounded overlay coordinates produce a screen-space drag offset"
-    )]
     fn begin_clock_drag_at(&mut self, point: Point) -> bool {
         let header = clock_overlay_drag_region(self.clock_overlay_rect);
         if !header.contains(point) {

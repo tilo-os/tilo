@@ -2,7 +2,6 @@
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
-    clippy::indexing_slicing,
     reason = "test fixtures pin original checked admission and owner custody"
 )]
 use std::{

@@ -2708,10 +2708,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn lens_layout_keeps_its_rhythm_bezel_and_footer_on_every_output() {
         // Phase `lens_header_keeps_one_rhythm_and_centres_the_close_chip`.
         // One rhythm across the header (HIG §7b): `s4` above the identity
