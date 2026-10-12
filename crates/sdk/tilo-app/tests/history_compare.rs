@@ -3,6 +3,8 @@ use super::*;
 use tilo_app::Role;
 use ui_core::automerge::transaction::Transactable;
 
+#[path = "history_compare_children.rs"]
+mod children;
 #[path = "history_compare_readability.rs"]
 mod readability;
 

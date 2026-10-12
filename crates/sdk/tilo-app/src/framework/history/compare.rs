@@ -37,9 +37,41 @@ pub(crate) fn spec() -> ActionSpec {
         "Compare frozen typed public content, with exact causal heads. Each side is present with content or explicitly absent; unreadable versions fail. The entire result is limited to 256 KiB.",
     );
     spec.contract.result = ResultSpec::Json {
-        schema: json!({"type": "object"}),
+        schema: result_schema(),
     };
     spec
+}
+
+fn result_schema() -> Value {
+    let heads = json!({"type": "array", "items": {"type": "string"}});
+    let side = json!({"oneOf": [
+        {"type": "object", "required": ["status", "content"],
+         "properties": {"status": {"const": "present"}, "content": {}},
+         "additionalProperties": false},
+        {"type": "object", "required": ["status"],
+         "properties": {"status": {"const": "absent"}},
+         "additionalProperties": false}
+    ]});
+    json!({
+        "type": "object",
+        "required": ["from", "to", "from_heads", "to_heads", "comparisons"],
+        "additionalProperties": false,
+        "properties": {
+            "from": {"type": "string"}, "to": {"type": "string"},
+            "from_heads": heads, "to_heads": heads,
+            "comparisons": {
+                "type": "array", "minItems": 1, "maxItems": MAX_ITEMS,
+                "items": {
+                    "type": "object", "required": ["item", "before", "after"],
+                    "additionalProperties": false,
+                    "properties": {
+                        "item": {"type": ["string", "null"], "minLength": 1, "maxLength": 512},
+                        "before": side, "after": side
+                    }
+                }
+            }
+        }
+    })
 }
 
 pub(crate) fn answer(

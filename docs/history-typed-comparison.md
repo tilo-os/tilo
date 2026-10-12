@@ -16,7 +16,11 @@ For example, `{"from":"before-edit","items":["notes/pages/page-id"]}`.
 The resource's published tree supplies the item ids; restore selection paths
 are a separate vocabulary, such as `pages/page-id`.
 
-The result carries version labels, full causal head arrays, and `comparisons`:
+The published result schema requires version labels (`from`/`to`), full causal
+head arrays (`from_heads`/`to_heads`), and 1–32 `comparisons`. Each comparison
+requires an `item` (a published id, or null for the whole resource), `before`
+and `after`. A side is exactly `absent`, or `present` with required `content`;
+the adapter's content may be any JSON value.
 
 ```json
 {
@@ -28,7 +32,9 @@ The result carries version labels, full causal head arrays, and `comparisons`:
 
 Each frontier is resolved once and forked before either side is decoded with
 `TypedRoot::read`. Content comes only from the resource's `read_content` adapter.
-Absent means the decoded and demanded state has no published child of that id;
+Published children are searched recursively before demand-loading and resolving
+items omitted from the published page. Absent means the decoded and demanded
+state has no published child of that id;
 a model, demand-load, or content decoder failure fails the request rather than
 claiming absence. `READABLE=false` never calls the content adapter. Unknown ids
 are absent on both sides. Content deliberately omitted by an adapter stays
@@ -41,6 +47,9 @@ limited to 256 KiB; oversized results fail, never truncate.
 door: public before/after data, omitted private keys, explicit additions and
 removals, full concurrent frontiers, Viewer Read access, schema/adapter failure,
 non-readable resources, oversized results and unchanged structural diff.
+The children-only fixture also proves nested published children work without a
+`child` override, demand-load failures remain errors, and the published result
+schema constrains comparison structure without constraining adapter content.
 `crates/sdk/tilo-app/tests/history_review.rs` couples an exact historical read and
 typed comparison to the native reviewed restore handler, preserving other
 collaborators' work and checking attribution and undo.

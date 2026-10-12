@@ -4,7 +4,7 @@ use tilo_resource::{Doc, ModelError};
 
 struct Guarded<const READABLE: bool>;
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
-struct Noop;
+pub(super) struct Noop;
 impl tilo_actions::Action for Noop {
     fn apply(&self, _: &mut Doc) -> Result<(), ActionError> {
         Ok(())
