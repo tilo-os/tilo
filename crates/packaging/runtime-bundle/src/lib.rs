@@ -194,6 +194,15 @@ pub enum BundleError {
     #[error("included directory holds something other than files and directories: {path}")]
     IncludeSpecialFile { path: PathBuf },
     #[error(
+        "{name} is named twice with different bytes, {first} and {second}: a bundle signs one \
+         library per soname"
+    )]
+    IncludeConflict {
+        name: String,
+        first: PathBuf,
+        second: PathBuf,
+    },
+    #[error(
         "bundle version {version} claims ABI digest {claimed}, but its payload's digest is \
          {computed}: it is not the runtime build it names"
     )]
@@ -399,6 +408,14 @@ pub struct BuildOptions<'a> {
     /// `lib/` so `LD_LIBRARY_PATH=<mount>/lib` resolves them by soname.
     /// Hashed and signature-covered like any other bundle file; absolute
     /// host paths, must exist.
+    ///
+    /// Each soname is signed once. A loader-set library also given here
+    /// (the shared runtime includes its whole `ldd` closure, glibc too) is
+    /// kept only at `lib/<name>`, where `LD_LIBRARY_PATH` finds it, not again
+    /// under its absolute-path shape, which nothing searches. The loader
+    /// itself stays only at its canonical interpreter path: the launcher binds
+    /// it there for `INTERP`, and the mapped interpreter answers every
+    /// `DT_NEEDED` on its soname. The two copies must be the same bytes.
     pub extra_libs: &'a [PathBuf],
 }
 
@@ -616,10 +633,20 @@ fn stage_payload(
 
     // Copy each candidate, tracking what we got so the manifest is deterministic.
     let mut written: Vec<(String, PathBuf)> = Vec::new(); // relative-in-bundle → absolute-in-bundle
+    // One copy per soname (see `BuildOptions::extra_libs`).
+    let included = included_files(opts.extra_libs);
+    let mut loaders: BTreeMap<&str, PathBuf> = BTreeMap::new();
 
     for src_abs in paths {
         let src = resolve_from(host_root, src_abs);
         if !src.exists() {
+            continue;
+        }
+        let name = src_abs.rsplit('/').next().unwrap_or(src_abs);
+        if is_loader(name) {
+            loaders.entry(name).or_insert_with(|| src.clone());
+        } else if let Some(include) = included.get(name) {
+            ensure_same_bytes(name, &src, include)?;
             continue;
         }
         // Preserve the absolute-path shape under `lib/` (e.g.
@@ -635,7 +662,7 @@ fn stage_payload(
         written.push((rel_in_bundle, dst));
     }
 
-    copy_includes(out, opts.extra_libs, &mut written)?;
+    copy_includes(out, opts.extra_libs, &loaders, &mut written)?;
 
     // Optional ld.so.cache.
     let cache_src = resolve_from(host_root, HOST_LD_SO_CACHE);
@@ -1198,14 +1225,50 @@ fn digest_file(path: &Path, with_verity: bool) -> Result<FileDigests, BundleErro
     })
 }
 
+/// Whether `name` is a dynamic loader (`ld-linux-x86-64.so.2`,
+/// `ld-linux-aarch64.so.1`, `ld-linux.so.2`): what the launcher binds at a
+/// canonical interpreter path rather than finding through `LD_LIBRARY_PATH`.
+fn is_loader(name: &str) -> bool {
+    name.starts_with("ld-linux")
+}
+
+/// The included regular files by the name they get at the top of `lib/`.
+fn included_files(includes: &[PathBuf]) -> BTreeMap<&str, &Path> {
+    let mut files = BTreeMap::new();
+    for include in includes {
+        if let Some(name) = include.file_name().and_then(|name| name.to_str())
+            && include.is_file()
+        {
+            files.entry(name).or_insert(include.as_path());
+        }
+    }
+    files
+}
+
+/// Fail unless `first` and `second`, two sources of the one library `name`,
+/// hold the same bytes: a loader must never be signed beside a C library
+/// from another build.
+fn ensure_same_bytes(name: &str, first: &Path, second: &Path) -> Result<(), BundleError> {
+    if digest_file(first, false)?.blake3 == digest_file(second, false)?.blake3 {
+        return Ok(());
+    }
+    Err(BundleError::IncludeConflict {
+        name: name.to_string(),
+        first: first.to_path_buf(),
+        second: second.to_path_buf(),
+    })
+}
+
 /// Extra libs (libstd, `libruntime_dylib.so`) copy verbatim to the top of
 /// `lib/` by file name for soname resolution via `LD_LIBRARY_PATH` — unlike
 /// the loader/libc set, these are explicit absolute paths, not resolved
 /// against the host root. A directory (an engine with its resources) keeps
-/// its tree under `lib/<name>/`. Repeated source paths are copied once.
+/// its tree under `lib/<name>/`. Repeated source paths are copied once, and
+/// an include of a loader already in `loaders` (name → source) not at all.
 fn copy_includes(
     out: &Path,
     includes: &[PathBuf],
+    loaders: &BTreeMap<&str, PathBuf>,
     written: &mut Vec<(String, PathBuf)>,
 ) -> Result<(), BundleError> {
     let mut sources = BTreeSet::new();
@@ -1233,6 +1296,10 @@ fn copy_includes(
             return Err(BundleError::IncludeMissing {
                 path: extra.clone(),
             });
+        }
+        if let Some(loader) = loaders.get(name.as_str()) {
+            ensure_same_bytes(&name, loader, extra)?;
+            continue;
         }
         let rel_in_bundle = format!("lib/{name}");
         let dst = out.join(&rel_in_bundle);
@@ -1743,6 +1810,115 @@ mod tests {
             verify_bundle(&root),
             Err(BundleError::InvalidPayloadPath { path }) if path == format!("lib/{name}")
         ));
+    }
+
+    /// The bundle's payload paths, sorted.
+    fn payload_paths(manifest: &BundleManifest) -> Vec<&str> {
+        manifest.files.iter().map(|f| f.path.as_str()).collect()
+    }
+
+    #[test]
+    fn a_library_in_the_loader_set_and_the_includes_is_signed_once() {
+        // x86_64: the shared runtime includes its `ldd` closure, which names the
+        // host's libc and loader again.
+        let host = tempfile::tempdir().unwrap();
+        fake_x86_64_host(host.path());
+        let runtime = host.path().join("libruntime_dylib.so");
+        fs::write(&runtime, b"Tilo runtime fixture").unwrap();
+        let closure = [
+            runtime,
+            host.path().join("lib64/libc.so.6"),
+            host.path().join("lib64/ld-linux-x86-64.so.2"),
+        ];
+        let out = tempfile::tempdir().unwrap();
+        let manifest = build_bundle_with(
+            out.path(),
+            "2026.07",
+            &BuildOptions {
+                from: Some(host.path()),
+                arch: Some("x86_64"),
+                identity: None,
+                extra_libs: &closure,
+            },
+        )
+        .unwrap();
+        // libc where LD_LIBRARY_PATH finds it, the loader where the launcher
+        // binds it for INTERP, libm (no include) where it always was.
+        assert_eq!(
+            payload_paths(&manifest),
+            [
+                "lib/lib64/ld-linux-x86-64.so.2",
+                "lib/lib64/libm.so.6",
+                "lib/libc.so.6",
+                "lib/libruntime_dylib.so",
+            ]
+        );
+        assert_eq!(
+            fs::read(out.path().join("lib/libc.so.6")).unwrap(),
+            b"fake contents of lib64/libc.so.6"
+        );
+        verify_bundle(out.path()).expect("the deduplicated bundle verifies");
+
+        // aarch64 Fedora lists libc under both /lib64 and /usr/lib64: neither
+        // copy stays beside the included one.
+        let host = tempfile::tempdir().unwrap();
+        fake_aarch64_fedora_host(host.path());
+        let usr = host.path().join("usr/lib64");
+        fs::create_dir_all(&usr).unwrap();
+        fs::copy(host.path().join("lib64/libc.so.6"), usr.join("libc.so.6")).unwrap();
+        let closure = [
+            host.path().join("lib64/libc.so.6"),
+            host.path().join("lib/ld-linux-aarch64.so.1"),
+        ];
+        let out = tempfile::tempdir().unwrap();
+        let manifest = build_bundle_with(
+            out.path(),
+            "1",
+            &BuildOptions {
+                from: Some(host.path()),
+                arch: Some("aarch64"),
+                identity: None,
+                extra_libs: &closure,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            payload_paths(&manifest),
+            [
+                "lib/lib/ld-linux-aarch64.so.1",
+                "lib/lib64/libgcc_s.so.1",
+                "lib/lib64/libm.so.6",
+                "lib/libc.so.6",
+            ]
+        );
+        verify_bundle(out.path()).expect("the deduplicated bundle verifies");
+    }
+
+    #[test]
+    fn a_loader_set_library_and_an_include_of_its_name_must_be_the_same_bytes() {
+        for name in ["libc.so.6", "ld-linux-x86-64.so.2"] {
+            let host = tempfile::tempdir().unwrap();
+            fake_x86_64_host(host.path());
+            let other = tempfile::tempdir().unwrap();
+            let include = other.path().join(name);
+            fs::write(&include, b"another glibc build").unwrap();
+            let out = tempfile::tempdir().unwrap();
+            let error = build_bundle_with(
+                out.path(),
+                "2026.07",
+                &BuildOptions {
+                    from: Some(host.path()),
+                    arch: Some("x86_64"),
+                    identity: None,
+                    extra_libs: std::slice::from_ref(&include),
+                },
+            )
+            .unwrap_err();
+            assert!(
+                matches!(&error, BundleError::IncludeConflict { name: named, .. } if named == name),
+                "{name}: {error}"
+            );
+        }
     }
 
     fn fake_x86_64_host(root: &Path) {

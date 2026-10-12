@@ -1140,8 +1140,8 @@ RUN --network=none \
         "/image/usr/share/tilo/font-catalogs/$catalog" --scope product \
     && python3 /tilo-src/tools/font-catalog.py link "$fonts" /image/usr/share/fonts/tilo \
         --scope os --extra /tilo-os-fonts \
-    # The runtimes also name some files twice (libgcc_s in lib/ and lib/lib64/,
-    # the native and browser runtimes' shared glibc): one inode each (TIL-736).
+    # The runtimes also share files (the browser runtime's loader set is the
+    # same glibc the native runtime signs at lib/): one inode each.
     && python3 /tilo-src/hardlink-identical.py /image/usr \
     && test "$(stat -c %i "$fonts/NotoSansCJK-VF.ttc")" = "$(stat -c %i /image/usr/share/fonts/tilo/NotoSansCJK-VF.ttc)" \
     && test "$(stat -c %i "$fonts/NotoSansCJK-VF.ttc")" = "$(stat -c %i "/image/usr/share/tilo/font-catalogs/$catalog/NotoSansCJK-VF.ttc")"

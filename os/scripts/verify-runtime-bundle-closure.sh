@@ -8,12 +8,29 @@
 # build-thin-apps.sh checks the apps against the build's
 # own target dir, which always has libstd; an image whose bundle lacked it
 # still shipped, and no thin app could start.
+#
+# The one exception is the dynamic loader. The bundle signs it once, at its
+# canonical interpreter path (lib/lib64/ld-linux-x86-64.so.2,
+# lib/lib/ld-linux-aarch64.so.1, ...), where the launcher binds it for INTERP;
+# the mapped interpreter then answers libc's NEEDED on its soname.
 set -euo pipefail
 
 bundle=${1:?usage: verify-runtime-bundle-closure.sh BUNDLE_DIR [THIN_APP...]}
 shift
 lib=$bundle/lib
 fail() { printf 'verify-runtime-bundle-closure: %s\n' "$*" >&2; exit 1; }
+# Whether the bundle signs NEEDED entry $1: at the top of lib/, or, for the
+# loader, at one of the launcher's canonical interpreter paths
+# (CANONICAL_LOADER_PATHS in crates/packaging/launcher/src/sandbox.rs).
+signed() {
+  [ -f "$lib/$1" ] && return 0
+  case $1 in ld-linux*) ;; *) return 1 ;; esac
+  local directory
+  for directory in lib64 lib usr/lib64 lib/x86_64-linux-gnu lib/aarch64-linux-gnu; do
+    [ -f "$lib/$directory/$1" ] && return 0
+  done
+  return 1
+}
 
 [ -d "$lib" ] || fail "$lib does not exist"
 [ -f "$lib/libruntime_dylib.so" ] || fail "$lib has no libruntime_dylib.so"
@@ -35,7 +52,7 @@ for object in "${objects[@]}"; do
     continue
   fi
   while IFS= read -r needed; do
-    if [ ! -f "$lib/$needed" ]; then
+    if ! signed "$needed"; then
       printf '%s: signed runtime is missing %s\n' "$object" "$needed" >&2
       broken=1
     fi

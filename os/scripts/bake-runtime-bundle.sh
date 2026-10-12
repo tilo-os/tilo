@@ -142,6 +142,20 @@ if [ -n "$FONT_CATALOG_ROOT" ]; then
     python3 "$REPO_DIR/tools/font-catalog.py" verify "$BUNDLE_DIR/lib/fonts" --scope product \
         || die "signed SDK is missing its verified product font catalog"
 fi
+# One copy per soname (tilo-runtime-bundle's BuildOptions::extra_libs): a
+# library at the top of lib/, where LD_LIBRARY_PATH finds it, is not signed
+# again in the loader set below it, and the loader only at its interpreter path.
+for object in "$BUNDLE_DIR"/lib/*.so*; do
+    [ -f "$object" ] || continue
+    name=${object##*/}
+    case $name in
+        ld-linux*) die "the loader is signed at lib/$name as well as at its interpreter path" ;;
+    esac
+    for directory in lib64 lib usr/lib64 lib/x86_64-linux-gnu lib/aarch64-linux-gnu; do
+        [ ! -e "$BUNDLE_DIR/lib/$directory/$name" ] \
+            || die "$name is signed twice, at lib/$name and lib/$directory/$name"
+    done
+done
 msg "baked runtime $(cat "$VERSION_OUT")"
 
 # 4. Extract + record the pubkey.
