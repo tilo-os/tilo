@@ -14,7 +14,9 @@
 //! The same area is the daemon's bounded cache: resident bytes of cached
 //! entries are kept under a byte budget, least recently used first, and
 //! pinned or local-only content is never evicted. A `moka` cache sits in
-//! front of loose blobs for hot reads. The provider serves both backings
+//! front of loose blobs for hot reads, bounded by bytes
+//! ([`BLOB_CACHE_BYTES`]) and holding only small blobs
+//! ([`MAX_CACHED_BLOB`]). The provider serves both backings
 //! ([`ContentStore::blobs_protocol`]).
 
 use std::collections::HashSet;
@@ -52,6 +54,8 @@ use crate::eviction::{
 use crate::namespace::{LiveRecordBlobRoots, LiveRecordBlobScanError, Namespace};
 
 pub mod area;
+#[cfg(test)]
+mod cache_tests;
 mod content;
 mod files;
 mod serve;
@@ -210,6 +214,57 @@ impl Drop for StoreRuntime {
     }
 }
 
+/// Heap the hot cache in front of loose blobs may hold, counting each
+/// entry's bookkeeping. It is for what is read again and again and is small:
+/// manifests, the chunks of small files, thumbnails.
+pub const BLOB_CACHE_BYTES: u64 = 32 * 1024 * 1024;
+
+/// Largest blob the hot cache admits. Anything larger is file-backed content
+/// ([`crate::content::FILE_BACKED_MIN`] is the same size) or document media,
+/// both read by range, and one such blob would take a large share of the
+/// budget for a single read.
+pub const MAX_CACHED_BLOB: usize = 1024 * 1024;
+
+/// What a cache entry costs beyond its bytes: the key, the `Bytes` handle
+/// and the cache's own node.
+const CACHE_ENTRY_OVERHEAD: u32 = 256;
+
+/// An insert at least this large settles the cache at once. moka applies
+/// writes in batches of 64, so without this a run of large inserts could sit
+/// above the budget until the next batch; with it, what waits is at most 64
+/// inserts smaller than this.
+const CACHE_SETTLE_AT: usize = 64 * 1024;
+
+/// The hot cache in front of loose blobs, bounded by bytes. Its admission
+/// weighs a newcomer's access frequency against that of every entry it would
+/// evict, so a run of cold large reads does not flush small hot entries.
+fn blob_cache() -> Cache<Hash, Bytes> {
+    Cache::builder()
+        .max_capacity(BLOB_CACHE_BYTES)
+        .weigher(|_, bytes: &Bytes| {
+            u32::try_from(bytes.len())
+                .unwrap_or(u32::MAX)
+                .saturating_add(CACHE_ENTRY_OVERHEAD)
+        })
+        .build()
+}
+
+/// Removes what imports left in the blob store's spill directory. A stream
+/// import spills to a file there and the store removes it only when the
+/// import succeeds, so an upload abandoned halfway leaves its part behind.
+/// Called right after the store loads, before anything imports, so every
+/// file there is from an earlier run.
+fn remove_import_spills(dir: &Path) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        if entry.file_type().is_ok_and(|kind| kind.is_file()) {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
+}
+
 /// Budget for cached file-backed content when the caller sets none: a
 /// quarter of the filesystem that holds it.
 fn default_budget(dir: &Path) -> u64 {
@@ -304,9 +359,10 @@ impl ContentStore {
             .await
             .map_err(|error| anyhow::anyhow!("opening the content store failed: {error}"))??;
         gc_ready.store(true, Ordering::Release);
+        remove_import_spills(&dir.join("temp"));
         Ok(Self {
             backend: Backend::Fs(store),
-            cache: Cache::new(2048),
+            cache: blob_cache(),
             owned_tags: tokio::sync::Mutex::new(()),
             mutation: tokio::sync::Mutex::new(()),
             gc,
@@ -343,7 +399,7 @@ impl ContentStore {
         };
         Self {
             backend: Backend::Mem(MemStore::new_with_opts(options)),
-            cache: Cache::new(2048),
+            cache: blob_cache(),
             owned_tags: tokio::sync::Mutex::new(()),
             mutation: tokio::sync::Mutex::new(()),
             gc,
@@ -385,7 +441,7 @@ impl ContentStore {
                     add_protected: None,
                 }),
             })),
-            cache: Cache::new(2048),
+            cache: blob_cache(),
             owned_tags: tokio::sync::Mutex::new(()),
             mutation: tokio::sync::Mutex::new(()),
             gc: GcGate::default(),
@@ -483,11 +539,93 @@ impl ContentStore {
         }
         match self.store().blobs().get_bytes(hash).await {
             Ok(b) => {
-                self.cache.insert(hash, b.clone());
+                self.cache_insert(hash, b.clone());
                 Some(b)
             }
             Err(_) => self.local_chunk(hash).await,
         }
+    }
+
+    /// Keep `bytes` hot if they are small enough to be worth their share of
+    /// [`BLOB_CACHE_BYTES`].
+    fn cache_insert(&self, hash: Hash, bytes: Bytes) {
+        if bytes.len() > MAX_CACHED_BLOB {
+            return;
+        }
+        let settle = bytes.len() >= CACHE_SETTLE_AT;
+        self.cache.insert(hash, bytes);
+        if settle {
+            self.cache.run_pending_tasks();
+        }
+    }
+
+    /// Import content that arrives as a stream of pieces, hashing and
+    /// writing each as it comes: a persistent store spills it to a file
+    /// after the first 16 KiB and builds the BAO outboard from that file, so
+    /// it never holds the whole content. Returns the content's hash and
+    /// length. Never fills the hot cache.
+    ///
+    /// The stream is consumed before any lock is taken, so a slow producer
+    /// (an app uploading) holds up nothing else; the import is protected
+    /// from collection by its temporary tag until the owned tag is in
+    /// place, as for [`Self::ingest`]. A piece that is an error abandons the
+    /// import and stores nothing.
+    ///
+    /// # Errors
+    ///
+    /// Returns the stream's error, or an error if the blob store fails.
+    pub async fn ingest_stream<S>(&self, pieces: S) -> Result<(Hash, u64)>
+    where
+        S: futures_util::Stream<Item = std::io::Result<Bytes>> + Send + Sync + 'static,
+    {
+        // iroh-blobs' `add_stream` stops forwarding at an error but keeps
+        // the import open, waiting for an end that never comes. So an error
+        // is never handed to it: it abandons the import here instead, and
+        // dropping the import ends the store's side of it.
+        let (abandon, abandoned) = tokio::sync::oneshot::channel::<std::io::Error>();
+        let mut abandon = Some(abandon);
+        let mut pieces = Box::pin(pieces);
+        let forwarded =
+            futures_util::stream::poll_fn(move |cx| match pieces.as_mut().poll_next(cx) {
+                std::task::Poll::Ready(Some(Err(error))) => {
+                    if let Some(abandon) = abandon.take() {
+                        let _ = abandon.send(error);
+                    }
+                    std::task::Poll::Pending
+                }
+                other => other,
+            });
+        let import = async {
+            self.store()
+                .blobs()
+                .add_stream(forwarded)
+                .await
+                .temp_tag()
+                .await
+        };
+        let temporary = tokio::select! {
+            imported = import => imported?,
+            Ok(error) = abandoned => {
+                return Err(anyhow::Error::new(error).context("the streamed import was abandoned"));
+            }
+        };
+        let hash = temporary.hash();
+        let size = match self.store().blobs().status(hash).await? {
+            BlobStatus::Complete { size } => size,
+            _ => anyhow::bail!("streamed blob {hash} is not complete after its import"),
+        };
+        let _mutation = self.mutation.lock().await;
+        let _owned_tags = self.owned_tags.lock().await;
+        self.store()
+            .tags()
+            .set(
+                owned_blob_tag(hash, temporary.format()),
+                temporary.hash_and_format(),
+            )
+            .await?;
+        self.sync_unless_deferred().await?;
+        drop(temporary);
+        Ok((hash, size))
     }
 
     /// Read a clipped range and the whole length of a locally complete blob.
@@ -546,6 +684,13 @@ impl ContentStore {
     #[cfg(test)]
     pub(crate) fn forget_cached(&self, hash: Hash) {
         self.cache.invalidate(&hash);
+    }
+
+    /// Bytes the hot cache holds once its pending writes are applied.
+    #[cfg(test)]
+    pub(crate) fn cached_bytes(&self) -> u64 {
+        self.cache.run_pending_tasks();
+        self.cache.weighted_size()
     }
 
     /// Persist + cache bytes that were fetched and verified from a peer.
@@ -744,7 +889,7 @@ impl ContentStore {
             .map(|(temporary, _)| temporary.hash())
             .collect::<Vec<_>>();
         for (temporary, bytes) in protected {
-            self.cache.insert(temporary.hash(), bytes);
+            self.cache_insert(temporary.hash(), bytes);
             drop(temporary);
         }
         Ok(hashes)
