@@ -199,7 +199,9 @@ jobs:
   # Hermetic test suites outside Cargo (tools/ci/suites.toml), selected by the
   # paths they read. They need no builder image and run beside the Rust jobs.
   suites:
-    if: needs.select.outputs.suites_required == 'true'
+    # Keep admission tied to the completed selector, even when unrelated
+    # native jobs are intentionally skipped for non-compiling inputs.
+    if: ${{ !cancelled() && needs.select.result == 'success' && needs.select.outputs.suites_required == 'true' }}
     needs: [select]
     runs-on: runner-quality
     timeout-minutes: 20
